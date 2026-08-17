@@ -237,6 +237,20 @@ pub enum SmbArchiveSelectorPolicy {
     /// campaign recorded under either reproduces only at its recording commit.
     #[default]
     ConcentratedRecency,
+    /// C84 ruling: every draw is pinned to active entries of the registered
+    /// pair inside the registered bucket window, with the concentrated
+    /// recency draw applied within the pin; selection falls back to the
+    /// promoted behaviour only when the pin is empty.
+    PinnedWindow {
+        /// Registered pair world.
+        world: u8,
+        /// Registered pair level.
+        level: u8,
+        /// Inclusive window low bucket.
+        low: u16,
+        /// Inclusive window high bucket.
+        high: u16,
+    },
 }
 
 /// Selections since the last retained descendant at which a parent is exhausted.
@@ -544,6 +558,10 @@ pub(crate) struct Archive<'a> {
 }
 
 impl<'a> Archive<'a> {
+    pub(crate) fn set_selector_policy(&mut self, policy: SmbArchiveSelectorPolicy) {
+        self.selector_accounting.policy = policy;
+    }
+
     pub(crate) fn new(ranking: Option<&'a dyn SmbRanking>) -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
@@ -721,9 +739,32 @@ impl<'a> Archive<'a> {
         if active.is_empty() {
             return Err("SMB archive has no expandable entry".into());
         }
+        // C84 ruling: under the pinned policy every draw narrows to the
+        // registered window when it is populated.
+        let pool: Vec<usize> = match self.selector_accounting.policy {
+            SmbArchiveSelectorPolicy::PinnedWindow {
+                world,
+                level,
+                low,
+                high,
+            } => {
+                let members: Vec<usize> = active
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        let key = self.entries[*id].report.key;
+                        (key.world, key.level) == (world, level)
+                            && key.progress >= low
+                            && key.progress <= high
+                    })
+                    .collect();
+                if members.is_empty() { active } else { members }
+            }
+            SmbArchiveSelectorPolicy::ConcentratedRecency => active,
+        };
         let use_frontier = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
         if !use_frontier {
-            let id = active[rand.below(NonZeroUsize::new(active.len()).ok_or("empty archive")?)];
+            let id = pool[rand.below(NonZeroUsize::new(pool.len()).ok_or("empty archive")?)];
             return Ok((
                 id,
                 SmbSelectorDraw {
@@ -737,7 +778,7 @@ impl<'a> Archive<'a> {
         let mut classes_skipped = 0_u64;
         let mut counter_reset = false;
         loop {
-            if let Some(class) = self.best_unexhausted_class(&active, &mut classes_skipped) {
+            if let Some(class) = self.best_unexhausted_class(&pool, &mut classes_skipped) {
                 let (id, concentration) = self.draw_from_class(rand, class)?;
                 return Ok((
                     id,

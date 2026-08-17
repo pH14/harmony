@@ -1680,6 +1680,9 @@ fn run_archive_resume_mode(
         "parent_scheduler": if matches!(selection, ResumeSelection::PlayBucket) {
             match selector_policy {
                 SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128",
+                // The serial modes never select the campaign pinned window;
+                // the identifier is recorded for completeness.
+                SmbArchiveSelectorPolicy::PinnedWindow { .. } => "pinned_window_128",
             }
         } else if frozen_search {
             "frozen_frontier_128"

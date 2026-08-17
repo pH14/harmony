@@ -361,9 +361,15 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
 
 /// Header identifier for a parent-selector policy.
 #[must_use]
-pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> &'static str {
+pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> String {
     match policy {
-        SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128",
+        SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128".to_owned(),
+        SmbArchiveSelectorPolicy::PinnedWindow {
+            world,
+            level,
+            low,
+            high,
+        } => format!("pinned_window_128:{world},{level},{low},{high}"),
     }
 }
 
@@ -375,13 +381,41 @@ pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> &'static str {
 pub fn selector_from_identifier(
     identifier: &str,
 ) -> Result<SmbArchiveSelectorPolicy, Box<dyn Error>> {
-    match identifier {
-        "concentrated_recency_128" => Ok(SmbArchiveSelectorPolicy::ConcentratedRecency),
-        // The frozen and uncapped-corrected selectors were deleted on
-        // promotion. A stream recorded under either replays only at the commit
-        // that recorded it.
-        _ => Err("campaign stream parent scheduler is not recognized".into()),
+    if identifier == "concentrated_recency_128" {
+        return Ok(SmbArchiveSelectorPolicy::ConcentratedRecency);
     }
+    if let Some(window) = identifier.strip_prefix("pinned_window_128:") {
+        let mut parts = window.split(',');
+        let world = parts
+            .next()
+            .ok_or("pinned selector identifier is missing its world")?
+            .parse()?;
+        let level = parts
+            .next()
+            .ok_or("pinned selector identifier is missing its level")?
+            .parse()?;
+        let low = parts
+            .next()
+            .ok_or("pinned selector identifier is missing its low bucket")?
+            .parse()?;
+        let high = parts
+            .next()
+            .ok_or("pinned selector identifier is missing its high bucket")?
+            .parse()?;
+        if parts.next().is_some() {
+            return Err("pinned selector identifier carries extra fields".into());
+        }
+        return Ok(SmbArchiveSelectorPolicy::PinnedWindow {
+            world,
+            level,
+            low,
+            high,
+        });
+    }
+    // The frozen and uncapped-corrected selectors were deleted on promotion.
+    // A stream recorded under either replays only at the commit that
+    // recorded it.
+    Err("campaign stream parent scheduler is not recognized".into())
 }
 
 /// Header identifier for an admission retention policy.
@@ -422,20 +456,24 @@ fn verify_selector_annotation(
     annotation: Option<&SmbSelectorDraw>,
 ) -> Result<(), Box<dyn Error>> {
     match (policy, annotation) {
-        (SmbArchiveSelectorPolicy::ConcentratedRecency, None) => {
-            Err("concentrated-selector stream is missing a selector annotation".into())
-        }
-        (SmbArchiveSelectorPolicy::ConcentratedRecency, Some(draw)) => {
-            match (draw.path, draw.concentration) {
-                (SmbSelectorPath::TieClass, None) => {
-                    Err("concentrated tie-class draw is missing its concentration record".into())
-                }
-                (SmbSelectorPath::Uniform, Some(_)) => {
-                    Err("concentrated uniform draw carries a concentration record".into())
-                }
-                _ => Ok(()),
+        (
+            SmbArchiveSelectorPolicy::ConcentratedRecency
+            | SmbArchiveSelectorPolicy::PinnedWindow { .. },
+            None,
+        ) => Err("concentrated-selector stream is missing a selector annotation".into()),
+        (
+            SmbArchiveSelectorPolicy::ConcentratedRecency
+            | SmbArchiveSelectorPolicy::PinnedWindow { .. },
+            Some(draw),
+        ) => match (draw.path, draw.concentration) {
+            (SmbSelectorPath::TieClass, None) => {
+                Err("concentrated tie-class draw is missing its concentration record".into())
             }
-        }
+            (SmbSelectorPath::Uniform, Some(_)) => {
+                Err("concentrated uniform draw carries a concentration record".into())
+            }
+            _ => Ok(()),
+        },
     }
 }
 
@@ -711,13 +749,14 @@ struct CoordinatorCore<'a> {
 impl CoordinatorCore<'_> {
     fn new(
         max_actions: usize,
-        _selector_policy: SmbArchiveSelectorPolicy,
+        selector_policy: SmbArchiveSelectorPolicy,
         retention_policy: SmbArchiveRetentionPolicy,
         archive_entry_limit: usize,
         key_policy: SmbArchiveKeyPolicy,
     ) -> Self {
         let mut archive = Archive::new(None);
         archive.max_entries = archive_entry_limit;
+        archive.set_selector_policy(selector_policy);
         Self {
             archive,
             aggregate: SmbMilestones::default(),
@@ -1048,7 +1087,7 @@ fn stream_header(
         duration_policy: "stratified".to_owned(),
         suffix_policy: "one_or_two".to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
-        parent_scheduler: selector_identifier(config.selector_policy).to_owned(),
+        parent_scheduler: selector_identifier(config.selector_policy),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),

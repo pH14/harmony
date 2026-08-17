@@ -5508,6 +5508,63 @@ one variable of science only when a link stalls.
   returns to the table with this pilot as its evidence, beside the waypoint
   dispatch it was meant to gate.
 
+### Ruling on the cascade gap — the pinned window builds; threshold surgery becomes debt
+
+- The integrator ruled on the C84 escalation, opening with a recorded
+  concession: the cascade carried an unpriced dependency — the barren
+  threshold's arithmetic was already refuted by the selection panels'
+  measured draws-per-parent — and the report drawing that line is the
+  record working. The ruling: the **pinned selection window** — the
+  original escalation's third shape — builds as a registered policy value
+  scoped to the maze section; refusal stays in the stack and carries to the
+  final castle; **neither threshold surgery nor waypoint machinery builds
+  today**, and global barren-threshold surgery is declined mid-endgame,
+  recorded as standing mechanism debt for the instrumentor era with census
+  (a) below as its evidence.
+- **Census (a) — wiggle-novelty arrival curve, C84's archive, free.**
+  Retentions in buckets 57 through 73 per five-thousand-execution bin:
+  1,598, 916, 609, 405, 402, 306, 426, 293, 202, 161. Geometric decay with
+  a long tail — the trap manufactures novelty ever more slowly but would
+  stay marginally fertile for hundreds of thousands of executions. The
+  doctrine point, recorded as the debt's evidence: exhaustion machinery
+  keyed on total barrenness cannot see a trap with a long novelty tail.
+- **Census (b) — entrance integrity, C84's archive.** The entrance region
+  survives in the pilot's own archive: 63 upper-band states across buckets
+  0 through 19 plus lower-band population through 29. Pin parameters
+  registered from it: pair `(6, 3)`, window buckets 0 through 29.
+- **Census (c) — draws per parent, C84's stream.** 11,414 distinct parents
+  drawn, mean 4.39 draws, lifetime maximum 36 — no parent has ever come
+  within half of the sixty-four threshold.
+- **The build**: `pinned_window_128:6,3,0,29` — every selection draw,
+  uniform and tie-class alike, narrows to active entries of the registered
+  pair inside the registered window, with the concentrated recency draw
+  applied within the pin and fall-back to promoted behaviour only when the
+  pin is empty. Header-recorded in `parent_scheduler`; legacy identifiers
+  parse unchanged; the four quality gates pass and the standing inertness
+  reference re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+## C85 — registered pin pilot, seventeenth link
+
+- Pilot and chain link in one. One live conquest campaign, 50,000
+  executions, twelve workers on the ARM machine, campaign seed
+  `0x5eed_c015`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, archive
+  bound 131,072, key policy `frozen_room_x_16:3,1,208`, selector
+  `pinned_window_128:6,3,0,29` — **the pin is the single variable changed
+  from C84**, launched from the identical derived play-72 origin, SHA-256
+  `aa28ca4b3c176babde811ac0cde27e90731116d2a6ff38a40e59dd757f58168a`. One
+  live run, no retries; serial replay as a background audit.
+- **Preregistered pilot question, unchanged: does retention cross bucket
+  73?**
+- **The waypoint trigger transfers verbatim and unsoftened**: pin
+  demonstrably working — entrance draws happening and upper-band cells
+  appearing at bucket 30 onward — but no crossing within this budget
+  dispatches track-2 waypoints immediately, reported the moment the
+  condition is read.
+- Raw destination: `target/smb-completion/c85-conquest/` on the ARM
+  machine, log `c85.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
