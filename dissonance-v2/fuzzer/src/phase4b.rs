@@ -600,6 +600,14 @@ pub struct SmbSnapshot {
     failed: bool,
 }
 
+impl SmbSnapshot {
+    /// Serialized emulator-state size in bytes, for diagnostics.
+    #[must_use]
+    pub fn emulator_state_len(&self) -> usize {
+        self.emulator_state.len()
+    }
+}
+
 /// Deterministic TetaNES-backed target used by the Super Mario Bros campaigns.
 #[derive(Debug)]
 pub struct SmbTarget {

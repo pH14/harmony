@@ -1922,6 +1922,9 @@ pub struct SmbDownCensusReport {
 ///
 /// Returns an error when the stream is malformed, the ROM mismatches, a
 /// parent is missing, or emulation fails.
+// Wall-clock here feeds stderr cost diagnostics only; nothing timed is ever
+// serialized into an artifact, so determinism is not in play.
+#[allow(clippy::disallowed_methods)]
 pub fn diagnose_down_census(
     rom: &[u8],
     stream_text: &str,
@@ -1997,19 +2000,27 @@ pub fn diagnose_down_census(
         return Err("census base input does not match the recorded resume input".into());
     }
     eprintln!(
-        "down-census: emulating shared prefix of {} actions once",
+        "down-census: emulating shared prefix of {} actions once, snapshotting every boundary",
         base.actions.len()
     );
     target.reset();
+    let mut boundary_snapshots: Vec<SmbSnapshot> = Vec::with_capacity(base.actions.len() + 1);
+    boundary_snapshots.push(
+        target
+            .snapshot()
+            .ok_or("failed to snapshot the census genesis")?,
+    );
     for action in &base.actions {
         target.apply(action);
+        boundary_snapshots.push(
+            target
+                .snapshot()
+                .ok_or("failed to snapshot a census boundary")?,
+        );
     }
     if target.is_dead() || target.exit_kind() != ExitKind::Ok {
         return Err("the shared resume prefix replays to a dead state".into());
     }
-    let base_snapshot = target
-        .snapshot()
-        .ok_or("failed to snapshot the shared resume prefix")?;
     const CENSUS_FRAME_BUDGET: u64 = 20_000_000;
     let frames_at_start = target.frames_clocked();
     let mut parent_snapshots: BTreeMap<u64, SmbSnapshot> = BTreeMap::new();
@@ -2020,30 +2031,40 @@ pub fn diagnose_down_census(
         if target.frames_clocked().saturating_sub(frames_at_start) > CENSUS_FRAME_BUDGET {
             return Err("down census exceeded its hard frame budget".into());
         }
+        let phase_started = std::time::Instant::now();
         let parent_snapshot = match parent_snapshots.entry(job.parent_id) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
             std::collections::btree_map::Entry::Vacant(slot) => {
                 let parent = by_id
                     .get(&job.parent_id)
                     .ok_or("sampled parent is missing from the source archive")?;
-                let tail = parent
+                // Restore from the longest common prefix with the base
+                // bootstrap: every archive lineage shares its history with
+                // some boundary of the resume input, so the replayed tail is
+                // short regardless of which bootstrap entry it descends from.
+                let shared = parent
                     .input
                     .actions
-                    .strip_prefix(base.actions.as_slice())
-                    .map(<[ButtonChord]>::to_vec);
-                if let Some(tail) = tail {
-                    target.restore(&base_snapshot)?;
-                    for action in &tail {
-                        target.apply(action);
-                    }
-                } else {
-                    // A bootstrap-prefix parent or a foreign lineage: replay
-                    // it whole under the frame budget.
-                    target.reset();
-                    for action in &parent.input.actions {
-                        target.apply(action);
-                    }
+                    .iter()
+                    .zip(&base.actions)
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                let tail = parent.input.actions[shared..].to_vec();
+                let restore_started = std::time::Instant::now();
+                target.restore(&boundary_snapshots[shared])?;
+                let restored = restore_started.elapsed().as_millis();
+                let apply_started = std::time::Instant::now();
+                for action in &tail {
+                    target.apply(action);
                 }
+                eprintln!(
+                    "down-census: parent {} shared {} tail {} restore_ms {} apply_ms {}",
+                    job.parent_id,
+                    shared,
+                    tail.len(),
+                    restored,
+                    apply_started.elapsed().as_millis()
+                );
                 if target.is_dead() || target.exit_kind() != ExitKind::Ok {
                     return Err("a sampled parent input replays to a dead state".into());
                 }
@@ -2051,19 +2072,27 @@ pub fn diagnose_down_census(
                 let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
                     + u32::from(wram[PLAYER_HORIZONTAL_LOW_OFFSET]);
                 parent_positions.insert(job.parent_id, (x, wram[0x00ce]));
+                let snapshot_started = std::time::Instant::now();
                 let snapshot = target
                     .snapshot()
                     .ok_or("failed to snapshot a sampled parent")?;
+                eprintln!(
+                    "down-census: parent {} snapshot_ms {} snapshot_bytes {}",
+                    job.parent_id,
+                    snapshot_started.elapsed().as_millis(),
+                    snapshot.emulator_state_len()
+                );
                 slot.insert(snapshot).clone()
             }
         };
         eprintln!(
-            "down-census: job {}/{} sequence {} parent {} frames {}",
+            "down-census: job {}/{} sequence {} parent {} frames {} job_setup_ms {}",
             index + 1,
             jobs_sampled,
             job.sequence,
             job.parent_id,
-            target.frames_clocked().saturating_sub(frames_at_start)
+            target.frames_clocked().saturating_sub(frames_at_start),
+            phase_started.elapsed().as_millis()
         );
         target.restore(&parent_snapshot)?;
         let suffix = derive_suffix(job.mutation_seed, vocabulary)?;

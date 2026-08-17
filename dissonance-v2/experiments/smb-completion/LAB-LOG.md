@@ -5027,6 +5027,22 @@ one variable of science only when a link stalls.
   full-replay cost shape exists in the refused-candidate grid and inherits
   this pattern if that tool runs again at depth; noted here so it is not
   rediscovered.
+- **A second cost defect surfaced on the relaunch and was profiled to
+  ground, on the integrator's instruction, before a second fix**: the
+  progress lines showed one job per 180 seconds at roughly 250 emulated
+  frames per job — emulation provably not the cost. One instrumented job
+  answered it: parents that descend from **mid-bootstrap entries** — the
+  campaign bootstrap retains a prefix of the resume input at every action
+  boundary — fail the whole-prefix match and fell into the full power-on
+  replay fallback, 123 seconds for the profiled parent, and most lineages
+  at the frontier are such descendants. The fix exploits a measured fact
+  the profile also surfaced: an emulator snapshot is about 1.3 KB, so the
+  one-time bootstrap now snapshots **every boundary** of the base input —
+  about two megabytes total — and each parent restores from its longest
+  common prefix with the base, replaying only its true tail. The profiled
+  worst parent fell from 123 seconds to 183 milliseconds; the full census
+  runs in minutes. Cost shape recorded beside the first: per-parent work
+  must be proportional to lineage divergence, never to lineage depth.
 
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
