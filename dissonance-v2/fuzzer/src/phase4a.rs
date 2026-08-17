@@ -912,6 +912,11 @@ pub struct InstrumentorDecision {
     pub rust_source: String,
     /// Optional corpus id whose descendants should receive the detector.
     pub scope_to_lineage: Option<u64>,
+    /// Declared campaign-scale scope identifier,
+    /// `world,level,progress_min,progress_max`; campaign installs require
+    /// it, and phase-4a decisions carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// Concise evidence-grounded reason for the decision.
     pub rationale: String,
     /// Updated prompt-only strategy memory returned by the instrumentor.

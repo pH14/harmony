@@ -986,4 +986,95 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&base);
     }
+
+    /// The full loop entry over genuinely recorded outputs: a two-link
+    /// synthetic chain whose second link cannot advance is proven stalled
+    /// from its own recorded stream and archives, and its operator view
+    /// assembles.
+    #[test]
+    fn recorded_synthetic_chain_stall_proves_and_prepares() {
+        use crate::campaign::{
+            SmbCampaignConfig, SmbCampaignOrigin, SmbCampaignVocabulary, run_smb_campaign,
+        };
+        use crate::phase4c::SmbArchiveSelectorPolicy;
+        use crate::phase4c::{SmbArchiveKeyPolicy, SmbArchiveRetentionPolicy};
+        use sha2::{Digest, Sha256};
+
+        let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
+        rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let prg_len = 16 * 1024;
+        let prg = &mut rom[16..16 + prg_len];
+        prg.fill(0xea);
+        prg[..3].copy_from_slice(&[0x4c, 0x00, 0x80]);
+        for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
+            prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
+        }
+        let config = |seed: u64| SmbCampaignConfig {
+            campaign_seed: seed,
+            workers: 2,
+            execution_budget: 10,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::Frozen,
+            archive_entry_limit: 32_768,
+            vocabulary: SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: SmbArchiveKeyPolicy::Frozen,
+        };
+        let mut first_stream = Vec::new();
+        let first = run_smb_campaign(
+            &rom,
+            &config(0x5eed_ca10),
+            &SmbCampaignOrigin::Genesis,
+            &mut first_stream,
+        )
+        .expect("first link");
+        let origin_bytes = serde_json::to_vec_pretty(&first.archive).expect("origin bytes");
+        let origin_sha = format!("{:x}", Sha256::digest(&origin_bytes));
+        let mut second_stream = Vec::new();
+        let second = run_smb_campaign(
+            &rom,
+            &config(0x5eed_ca11),
+            &SmbCampaignOrigin::Archive {
+                path: "first-archive.json".to_owned(),
+                file_sha256: origin_sha.clone(),
+                report: Box::new(first.archive.clone()),
+            },
+            &mut second_stream,
+        )
+        .expect("second link");
+        // The synthetic target has no forward progress to give, so the
+        // second link stalls at its origin's frontier by construction.
+        let produced_bytes = serde_json::to_vec_pretty(&second.archive).expect("produced bytes");
+        let produced_sha = format!("{:x}", Sha256::digest(&produced_bytes));
+        let proof =
+            prove_smb_campaign_plateau(&first.archive, &second.archive, &origin_sha, &produced_sha)
+                .expect("prove recorded stall");
+        assert!(proof.stalled);
+        let view_dir = std::env::temp_dir().join("fuzzer-instrumentor-recorded-chain-test");
+        let _ = fs::remove_dir_all(&view_dir);
+        let stream_text = String::from_utf8(second_stream).expect("stream utf-8");
+        let assembled = assemble_smb_stall_operator_view(
+            &view_dir,
+            &first.archive,
+            &origin_sha,
+            &second.archive,
+            &produced_sha,
+            &stream_text,
+            None,
+            &[],
+        )
+        .expect("assemble view over recorded outputs");
+        assert_eq!(assembled, proof);
+        let flow: super::SmbRetentionFlowReport = serde_json::from_slice(
+            &fs::read(view_dir.join("retention-flow.json")).expect("read flow"),
+        )
+        .expect("parse flow");
+        assert_eq!(
+            flow.records,
+            second.executions_completed + second.duplicates_skipped
+        );
+        let _ = fs::remove_dir_all(&view_dir);
+    }
 }
