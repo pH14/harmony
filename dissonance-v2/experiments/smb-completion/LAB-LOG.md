@@ -5953,6 +5953,26 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c90-conquest/` on the ARM
   machine, log `c90.log`, sentinel discipline in force.
 
+### C90 result — the castle's back half
+
+- The live run completed its full 50,000 executions, campaign seed
+  `0x5eed_c01a`, the promoted stack without waypoint, from the derived
+  play-84 origin: 29,591 retained with 1,843 deaths. **The castle advanced
+  from 84 to `(6, 3, 136)`**, watermark 137 — the back half crossed, the
+  axe section within a link's reach. Play equals viable equals recorded at
+  136; direct resume. Serial replay as a background audit.
+
+## C91 — registered concentrated conquest, twenty-third link
+
+- Observational, ordinary chain shape. One live conquest campaign, 50,000
+  executions, twelve workers on the ARM machine, campaign seed
+  `0x5eed_c01b`, the promoted stack unchanged, sourced from C90's live
+  archive, SHA-256
+  `369cdf7017519faf95e1a08edbaee37c1345b75632b335631e6ba08abd06cd33`.
+  One live run, no retries; serial replay as a background audit.
+- Raw destination: `target/smb-completion/c91-conquest/` on the ARM
+  machine, log `c91.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
