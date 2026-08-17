@@ -5588,6 +5588,42 @@ one variable of science only when a link stalls.
   registration follows its ladder. Serial replay of C85 continues as a
   background audit; the chain holds pending the waypoint registration.
 
+### D86 — the descent diagnosis: the upper route starved in the pin's shadow
+
+- Pattern-library measurement on C85's recorded artifacts, run as the
+  session lane of the waypoint dispatch; its output parameterizes the
+  declared region.
+- **The fine census**: the upper population splits into two segments —
+  strong at buckets 30 and 31, a near-empty physical gap at 32 through 34,
+  a second segment at 35 through 45 peaking at 104 — and goes extinct at
+  46. The film of the deepest upper trajectory shows stepped ledges with
+  gaps, ending mid-descent between platforms, no enemy and no death.
+- **The child census overturns the terrain reading**: of 564 upper parents
+  at buckets 35 through 45, **467 — eighty-three percent — have zero
+  retained children**, and the reason is structural, not terrain: the pin's
+  static window at buckets 0 through 29 excluded every one of them from
+  every draw. The 97 retained children all came from single long-action
+  suffixes reaching out of pinned parents — one 120-frame hold covers
+  roughly eleven buckets — which also sets a hard reach ceiling near bucket
+  50 for the entire pilot. **C85 could not have crossed the checkpoint by
+  construction**; recorded plainly because honesty requires it, and the
+  waypoint dispatch stands regardless by the ruling's letter.
+- Cause ranking for the record: starvation by static window first; forced
+  descent through ledge gaps second — 33 descended against 48
+  upper-forward among the retained children; deaths a non-factor at 523
+  for the whole run.
+- **The declared region, parameterized from this diagnosis**: pair
+  `(6, 3)`, buckets 30 through 73, vertical bands 0 through 7 — the upper
+  corridor from past the entrance gap to the checkpoint. Unlike the static
+  pin, the mechanism's preference follows the region's population wherever
+  it deepens, which is exactly what the measured starvation calls for:
+  iterated draws on the deepest upper states, extending chains across the
+  ledge gaps the one-shot reaches could not.
+- The waypoint registration is drafted against this region and waits, per
+  the ruling, on the builder's mechanism; the preregistered next
+  escalation is stated now — if waypoint steering also fails, the fork
+  goes to the program's owner as strategy, not to more mechanism.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
