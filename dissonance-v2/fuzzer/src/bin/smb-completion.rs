@@ -1025,10 +1025,15 @@ fn run_x_transit_mode(
     let stream_text = fs::read_to_string(&stream_path)?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
     let vertical = std::env::var("HARMONY_TRANSIT_VERTICAL").is_ok();
+    let origin: Option<SmbArchiveReport> = match std::env::var("HARMONY_TRANSIT_ORIGIN") {
+        Ok(path) => Some(serde_json::from_slice(&fs::read(path)?)?),
+        Err(_) => None,
+    };
     let report = fuzzer::campaign::diagnose_x_transit(
         &rom,
         &stream_text,
         &source,
+        origin.as_ref(),
         (parent_low, parent_high),
         sample_cap,
         vertical,

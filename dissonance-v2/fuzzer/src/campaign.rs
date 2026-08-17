@@ -1989,6 +1989,7 @@ pub fn diagnose_x_transit(
     rom: &[u8],
     stream_text: &str,
     source: &SmbArchiveReport,
+    origin: Option<&SmbArchiveReport>,
     parent_range: (u16, u16),
     sample_cap: usize,
     vertical_bands: bool,
@@ -2046,7 +2047,10 @@ pub fn diagnose_x_transit(
         });
     }
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
-    let base = select_frontier_resume_input(source)?;
+    // The stream's recorded resume input comes from the run's ORIGIN archive,
+    // which for derived-origin links is not the produced archive; the caller
+    // passes it explicitly in that case.
+    let base = select_frontier_resume_input(origin.unwrap_or(source))?;
     let base_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&base)?));
     if base_sha256 != header.resume_input_sha256 {
         return Err("x-transit base input does not match the recorded resume input".into());

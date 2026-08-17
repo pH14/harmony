@@ -5420,6 +5420,21 @@ one variable of science only when a link stalls.
   rejected — a cell or probe defect — or never produced at all, a pure
   production bottleneck that refusal-plus-fall-through addresses alone.
 
+### D83 execution note — a launch crash sat undetected behind a blind waiter
+
+- The first y-transit launch died in its first second — the census
+  reconstructs the resume input from the produced archive's frontier rule,
+  and C81 launched from a **derived origin**, so the reconstruction
+  mismatched the recorded resume hash: the D73 defect class again, caught
+  by the integrator after hours of idle box because the waiter was watching
+  for an output file that a launch-time error never creates. Two fixes,
+  both now checklist: the census takes the run's origin archive explicitly
+  for derived-origin lineages; and **every remote launch now emits a
+  completion sentinel on success or failure that the waiter matches on
+  either branch**, with the first progress line confirmed in the log before
+  parking. The relaunch's first progress line was confirmed before this
+  entry was written.
+
 ### Ruling on the action ceiling — raised to 8192 ahead of need
 
 - The integrator ruled on the standing headroom flag before any link could
