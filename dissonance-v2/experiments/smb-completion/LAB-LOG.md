@@ -5778,6 +5778,46 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c87-conquest/` on the ARM
   machine, log `c87.log`, sentinel discipline in force.
 
+### C87 result — void as a steering verdict: the waypoint idled all run
+
+- The live run completed its full 50,000 executions, campaign seed
+  `0x5eed_c017`, header confirming `waypoint_4_bucket_uniform:6,3,30,73,0,7`
+  — and every waypoint counter is zero: no selections, no auxiliary
+  retentions, no exemptions, not one state in the region across the whole
+  run. The ladder tops at `(6, 3, 73)`. **This is not a steering null; the
+  mechanism never engaged**, and the result is recorded void for the
+  registered question rather than counted as evidence against the draw
+  variant.
+- The investigation, in order, before any interpretation: the recorded
+  header verified; the binary timeline verified fresh; the origin
+  hash-verified against its registration; then a unit-scale A/B from
+  C87's exact origin — both waypoint variants nucleate within 2,000
+  executions at one schedule (999 and 983 selections) — followed by a
+  seed-by-workers bisect in which **every other schedule cell is zero**,
+  and a rerun of the nucleating cell which nucleates again (659
+  selections). The matrix's meaning: **the waypoint as built amplifies an
+  occupied region but cannot seed an empty one.** Nucleation — the first
+  candidate landing in the region's bands and retaining — is left to
+  unsteered base dynamics, which concentrate on the lower tip and are
+  schedule-chaotic about ever producing it.
+- **The origin choice was the session's error, recorded plainly**: the
+  play-frontier derivation, applied mechanically per precedent, produced a
+  single-entry origin that discarded C86's twelve thousand in-region
+  states, so C87's region started empty and stayed empty. C86 itself
+  nucleated from its shortest-input resume at the recorded maximum bucket
+  73; C87's resume one bucket back never did.
+- **A precedent conflict is hereby surfaced for ruling**: the play-frontier
+  derivation exists to avoid resuming from an admitted sinker, and it
+  serves ordinary links well; under a waypoint registration it can strip
+  the origin of exactly the population the mechanism needs. The immediate
+  zero-mechanism option is a re-registration from C86's full archive with
+  the resume at its recorded maximum — the configuration that empirically
+  nucleated — with the derivation waived and the waiver reasoned in the
+  registration. The mechanism-shaped alternative is origin seeding —
+  bootstrap walking the origin's in-region entries alongside the resume
+  input — which is builder-class work. Escalated with the matrix; the
+  chain holds.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
