@@ -5680,6 +5680,50 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c86-conquest/` on the ARM
   machine, log `c86.log`, sentinel discipline in force.
 
+### C86 pilot result — the waypoint performs; the maze reveals its full shape
+
+- The live run completed its full 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c016`, the waypoint stack without the pin, from
+  C85's archive: 29,734 retained against 21,136 rejected with 1,167
+  deaths. Mechanism accounting, all live: 37,395 waypoint selections,
+  3,485 auxiliary retentions, 2 snapback exemptions, 13,034 ordinary snap
+  refusals. Serial replay as a background audit.
+- **The mechanism performed**: the upper corridor at the checkpoint itself
+  is occupied for the first time in the program's history — 5,716
+  upper-band cells at buckets 65 through 69 and 7,133 at 70 through 73,
+  against zero past bucket 49 in every prior campaign. **And the
+  checkpoint held**: the ladder tops at `(6, 3, 73)`, watermark equal. The
+  preregistered question resolves no.
+- **D87, the closing probe**: 600 states at buckets 65 through 73 driven
+  forward under held Right — zero advanced. The lower band loops, 123 of
+  123, replicating D82; the newly occupied upper band fails too, 234
+  looping and 243 holding against terrain. With the upper population's
+  leapfrog origin — long-action reaches over a near-empty 50-through-64
+  upper gap — the maze's full shape is now measured: **a lane-sequence
+  test across checks in the middle section**; states that skip the middle
+  carry failed check-state regardless of their lane at the final crossing.
+- **The preregistered escalation fires as registered: the fork goes to the
+  program's owner as strategy, not to more mechanism.** The strategy
+  options, stated with their measured characters:
+  - **Reroute through the fourth world's vine warp.** The 4-2 warp zone
+    reached by the hidden vine offers passage to worlds six, seven and
+    eight directly — bypassing this castle entirely. The route uses only
+    existing machinery: the frozen warp-room-era archives still hold that
+    frontier, the vocabulary already carries Up for climbing, and a
+    declared waypoint region can steer at the vine. The remaining game
+    would then be the eighth world's four levels.
+  - **Break the maze in sequence with the built mechanism**: declare the
+    middle-section upper region — buckets 50 through 64 — as the next
+    waypoint link so the check sequence is walked rather than leapfrogged,
+    then re-declare the crossing region. Costs at least two more links
+    with no guarantee the sequence semantics are lane-only.
+  - **Wait for the model rung**: the instrumentor loop's diagnosis and
+    macro stages land after the branches merge, and this obstacle is
+    their natural first case.
+- Raw evidence: `target/smb-completion/c86-conquest/` and
+  `target/smb-completion/d87-loop-diff/` on the ARM machine; the chain
+  holds pending the strategy ruling.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
