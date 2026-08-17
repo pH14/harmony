@@ -5477,6 +5477,37 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c84-conquest/` on the ARM
   machine, log `c84.log`, sentinel discipline in force.
 
+### C84 pilot result — refusal fires, the cascade does not
+
+- The live run completed its full 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c014`, the snapback-refusal stack, from the derived
+  play-72 origin. **The preregistered question resolves no: the ladder
+  tops at `(6, 3, 73)`, watermark equal.** Serial replay as a background
+  audit.
+- The mechanism accounting, reported prominently: `snap_refused` 22,541 —
+  the refusal fired on nearly half of all candidates, exactly as designed —
+  yet `classes_skipped` and `counter_resets` are **zero**, 18,618 entries
+  still retained, and zero upper-band cells appeared at bucket 30 onward.
+  The cascade died at its first joint: the loop band never went barren,
+  because the trap is fertile through **local** diversity — within-band
+  wiggles retained through fingerprint and vertical-cell churn in buckets
+  57 through 73, which the snapback predicate deliberately does not touch.
+  The barren threshold of sixty-four draws per parent remains
+  arithmetically unreachable at measured draws-per-parent, the same
+  shortfall recorded since the selection panels, now binding in the one
+  regime the leg was expected to serve.
+- **The waypoint trigger's premise was not reached**: entrance draws never
+  happened and vertical retention never appeared, because fall-through
+  never engaged. The trigger as registered — entrance draws working,
+  vertical retention holding, no crossing — cannot fire on this record, and
+  the condition the ruling ordered reported-on-sight is therefore reported
+  as failed-upstream-of-premise: the pilot did not reach the state the
+  trigger guards. Escalated to the integrator with the measured mechanics;
+  the chain holds. The threshold question the C67-era note called moot —
+  lowering the barren threshold to a value real draw rates can reach —
+  returns to the table with this pilot as its evidence, beside the waypoint
+  dispatch it was meant to gate.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
