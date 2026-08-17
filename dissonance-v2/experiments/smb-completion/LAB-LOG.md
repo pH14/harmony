@@ -6018,6 +6018,35 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c92-conquest/` on the ARM
   machine, log `c92.log`, sentinel discipline in force.
 
+### C92 result — the final check refuses every reachable lane
+
+- The live run completed its full 50,000 executions, campaign seed
+  `0x5eed_c01c`, the approved all-heights region over buckets 120 through
+  144: 29,185 retained, 37,519 waypoint selections, 4,152 auxiliary
+  retentions — fully engaged — **and the ladder tops at `(6, 3, 137)`
+  unchanged.** The C89 recipe did not transfer. Serial replay as a
+  background audit.
+- The joined evidence revises the obstacle's classification: the D92
+  snap-backs land at buckets 72 through 77 — **the maze sequence's own
+  start** — so the barrier at 137 is not a second check group but the
+  first sequence's final check, resetting failures to its beginning. The
+  crossing geometry, from C92's own archive: the region's top bands were
+  populated mid-section — 969 states in bands 0 through 4 across buckets
+  128 through 135 — but the terrain funnels all lanes down approaching
+  the crossing; at buckets 136 and 137 only bands 5 through 8 exist.
+  Bands 9 through 11 hold at the wall without crossing; bands 5 through 8
+  cross and fail; bands 0 through 4 cannot reach the crossing at all.
+- **Every lane the game permits at the final check fails it**, across
+  roughly 100,000 executions of all-lane composition. The satisfying
+  condition is therefore not a lane at this page producible by
+  composition — it lives in the loop logic's sequence semantics, which no
+  recorded-artifact measurement can read. Escalated on the standing path:
+  the numbers go to the program's owner. The recorded facts for that
+  ruling: the same-class judgment is revised by the snap-target evidence;
+  the all-heights cure engaged and failed; and the model-facing diagnosis
+  rung remains the standing candidate for reading route semantics the
+  archive cannot express. The chain holds.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
