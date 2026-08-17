@@ -5044,6 +5044,37 @@ one variable of science only when a link stalls.
   runs in minutes. Cost shape recorded beside the first: per-parent work
   must be proportional to lineage divergence, never to lineage depth.
 
+### D73 result — Down is inert because the population never stands over the pipe
+
+- The census re-derived 600 Down-carrying jobs from C72's stream — 610
+  presses — with the promised validation: **zero engine-state changes and
+  zero world-byte changes across every press**, consistent with the
+  unmoved watermark. Every press ran from engine state 8 to engine state 8.
+- **The positional verdict**: press screen-x masses at the room's right
+  wall — 345 of 610 presses in the 208-to-223 band, median 209 — while the
+  warp pipe's horizontal window, roughly screen-x 64 through 96 from the
+  film frame, received **zero presses at any height**. The population piles
+  right and never stands over the pipe; vertical spread is wide, so jumping
+  is not the gap — horizontal steering is.
+- Why the archive cannot help, stated mechanically: inside a scroll-frozen
+  room the progress bucket is constant, and the player's horizontal
+  position appears nowhere in the retention key — every x-position competes
+  for the same cells, so retention exerts no pressure to hold left-side
+  states, while four of the ten vocabulary masks carry Right against one
+  Left. The room's equilibrium is the right wall.
+- **Escalated to the integrator as selection-pressure design**, per the
+  standing prediction that this class of problem would arrive: the
+  motivated candidate named in advance is the waypoint mechanism from the
+  track-2 strategic-calls ladder, which registers only on the integrator's
+  dispatch. The in-doctrine alternative the measurement suggests: a key
+  policy variant carrying a player-x term inside scroll-frozen rooms, which
+  would give retention distinct cells across the room's width — H51-class
+  key surgery, a registered experiment either way. No campaign launches
+  from the warp room until ruled; the audit backlog continues on both
+  machines.
+- Raw evidence: `target/smb-completion/d73-down-census/c72-census.json` on
+  the ARM machine.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
