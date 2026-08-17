@@ -5856,6 +5856,38 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c88-conquest/` on the ARM
   machine, log `c88.log`, sentinel discipline in force.
 
+### C88 result — the draw variant succeeds completely; the maze refuses completely
+
+- The live run completed its full 50,000 executions, campaign seed
+  `0x5eed_c018`, bucket-uniform waypoint from C86's full archive under the
+  direct-resume rule: 37,395 retained with 875 deaths, 37,641 waypoint
+  selections, 5,171 auxiliary retentions, 8,750 snap refusals. Serial
+  replay as a background audit.
+- **The mechanism achieved its entire design goal.** The upper corridor is
+  occupied in every five-bucket bin from 30 through 73 — 1,244 / 4,784 /
+  3,533 / 714 / 586 / 1,778 / 400 / 2,996 / 3,994 — including 2,764 cells
+  across the 50-to-64 middle that received two draws under the recency
+  allocation. The check section was walked continuously, incrementally,
+  in the upper lane, with the draw spread exactly as registered.
+- **And the ladder tops at `(6, 3, 73)`, watermark equal: zero crossings.**
+  The preregistered question resolves no, on a run where nothing about the
+  mechanism underperformed. The simple lane-sequence hypothesis is refuted
+  at scale: continuous upper-lane occupancy through the middle and at the
+  wall does not satisfy the checkpoint, on top of D82's lower-lane
+  refusals and C86's mixed-lane refusals. Whatever the maze's sequence
+  semantics are, blind lane occupancy — lower, upper, or mixed — does not
+  meet them, across roughly 250,000 executions and five links of
+  mechanisms that each did what they were built to do.
+- **Per the preregistration, the numbers go to the program's owner as
+  strategy.** The mechanical facts for that decision: every steering
+  mechanism built for this castle worked as designed and the checkpoint
+  refused them all; the game's loop semantics are the one thing no
+  recorded-artifact measurement can read, because they are the ROM's
+  logic, not the archive's; and the model-facing diagnosis rung — built
+  as the instrumentor loop's operator view on its own branch — is the
+  standing candidate for reading them, on the integrator's prior note.
+  The chain holds.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
