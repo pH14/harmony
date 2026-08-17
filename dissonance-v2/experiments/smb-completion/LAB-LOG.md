@@ -5973,6 +5973,29 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c91-conquest/` on the ARM
   machine, log `c91.log`, sentinel discipline in force.
 
+### C91 result and D92 — a second check section before the axe
+
+- C91 completed its full 50,000 executions, campaign seed `0x5eed_c01b`,
+  the promoted stack: 27,636 retained with 1,278 deaths, and **the ladder
+  advanced one bucket to `(6, 3, 137)`** — an effective stall. Play equals
+  viable equals recorded at 137; 7,631 snap refusals; the frontier film
+  shows the descending staircase structure. Serial replay as a background
+  audit.
+- **D92, the forward probe**: 400 frontier states at buckets 130 through
+  137 driven under held Right for twenty chords — **zero advanced, zero
+  died, 337 held against terrain, 63 snapped backward.** No combat
+  gauntlet: nothing dies. The snap-backs at a page crossing plus the
+  staircase geometry mirror the mid-maze shape exactly — the castle's
+  loop system has a **second check section** between the first checks and
+  the axe.
+- The proven cure is the C89 recipe re-scoped: the all-heights
+  bucket-uniform waypoint over the new check section. **Proposed region,
+  submitted for the integrator's registration review as the waypoint
+  ruling requires**: pair `(6, 3)`, buckets 120 through 144, all vertical
+  bands — `waypoint_4_bucket_uniform:6,3,120,144,0,15` — from C91's full
+  archive under the direct-resume standing rule, question: does retention
+  cross 137 to the castle's completion. The chain holds for the review.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
