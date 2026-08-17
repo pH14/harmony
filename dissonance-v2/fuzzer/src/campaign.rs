@@ -18,13 +18,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
+    phase4b::{
+        ButtonChord, MAX_HOLD_FRAMES, SmbDetector, SmbDetectorStats, SmbInput, SmbMacro,
+        SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget,
+    },
     phase4c::{
         Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
         SmbArchiveProgressPoint, SmbArchiveReport, SmbArchiveRetentionPolicy,
-        SmbArchiveSelectorPolicy, SmbSelectorDraw, SmbSelectorPath, admission_is_viable,
-        archive_key, merge_action_milestones, merge_milestones, merge_progress_watermark,
-        milestone_key, update_first_inputs,
+        SmbArchiveSelectorPolicy, SmbArtifactScope, SmbGeneratedMutatorAccounting, SmbSelectorDraw,
+        SmbSelectorPath, admission_is_viable, archive_key, merge_action_milestones,
+        merge_milestones, merge_progress_watermark, milestone_key, update_first_inputs,
     },
     target::Target,
 };
@@ -87,6 +90,128 @@ pub struct SmbCampaignConfig {
     pub vocabulary: SmbCampaignVocabulary,
     /// Archive key policy for this run, recorded in the header and report.
     pub key_policy: SmbArchiveKeyPolicy,
+}
+
+/// One seeded choice in this many selects the installed mutator for an
+/// in-scope parent, the M14 odds carried to campaign scale.
+const GENERATED_MUTATOR_ODDS: usize = 5;
+
+/// Bound on feature keys one installed-detector call may return, the M12
+/// contract carried to campaign scale.
+const CAMPAIGN_DETECTOR_FEATURE_LIMIT: usize = 4_096;
+
+/// Header record for one installed authored artifact: provenance name, the
+/// SHA-256 of its authored source, and its declared scope. Recorded in the
+/// stream header like every policy, so replay can demand the exact artifact.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbCampaignArtifactRecord {
+    /// Host-assigned artifact provenance name.
+    pub name: String,
+    /// SHA-256 of the complete authored source file.
+    pub source_sha256: String,
+    /// Declared scope identifier, `world,level,progress_min,progress_max`.
+    pub scope: String,
+}
+
+/// One installed generated mutator active for a campaign run.
+pub struct SmbCampaignGeneratedMutator<'a> {
+    /// Host-assigned provenance name.
+    pub name: String,
+    /// SHA-256 of the complete authored source file.
+    pub source_sha256: String,
+    /// Declared scope; the mutator fires only on parents drawn inside it.
+    pub scope: SmbArtifactScope,
+    /// The authored mutator.
+    pub mutator: &'a (dyn SmbMacro + Sync),
+}
+
+/// One installed generated detector active for a campaign run.
+pub struct SmbCampaignGeneratedDetector<'a> {
+    /// Host-assigned provenance name.
+    pub name: String,
+    /// SHA-256 of the complete authored source file.
+    pub source_sha256: String,
+    /// Declared scope; the detector contributes features only inside it.
+    pub scope: SmbArtifactScope,
+    /// The authored detector.
+    pub detector: &'a (dyn SmbDetector + Sync),
+}
+
+/// The authored artifacts one campaign runs with; empty for every run that
+/// installs none, in which case every code path is byte-identical to a tree
+/// without this mechanism.
+#[derive(Default)]
+pub struct SmbCampaignArtifacts<'a> {
+    /// Installed generated mutator, if any.
+    pub generated_mutator: Option<SmbCampaignGeneratedMutator<'a>>,
+    /// Installed generated detector, if any.
+    pub generated_detector: Option<SmbCampaignGeneratedDetector<'a>>,
+}
+
+impl SmbCampaignGeneratedMutator<'_> {
+    fn record(&self) -> SmbCampaignArtifactRecord {
+        SmbCampaignArtifactRecord {
+            name: self.name.clone(),
+            source_sha256: self.source_sha256.clone(),
+            scope: scope_identifier(self.scope),
+        }
+    }
+}
+
+impl SmbCampaignGeneratedDetector<'_> {
+    fn record(&self) -> SmbCampaignArtifactRecord {
+        SmbCampaignArtifactRecord {
+            name: self.name.clone(),
+            source_sha256: self.source_sha256.clone(),
+            scope: scope_identifier(self.scope),
+        }
+    }
+}
+
+/// Header identifier for an artifact scope, in the room-key comma form.
+#[must_use]
+pub fn scope_identifier(scope: SmbArtifactScope) -> String {
+    format!(
+        "{},{},{},{}",
+        scope.world, scope.level, scope.progress.0, scope.progress.1
+    )
+}
+
+/// Artifact scope named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier does not carry exactly a world, a
+/// level, and an inclusive progress-bucket range.
+pub fn scope_from_identifier(identifier: &str) -> Result<SmbArtifactScope, Box<dyn Error>> {
+    let mut parts = identifier.split(',');
+    let world = parts
+        .next()
+        .ok_or("artifact scope identifier is missing its world")?
+        .parse()?;
+    let level = parts
+        .next()
+        .ok_or("artifact scope identifier is missing its level")?
+        .parse()?;
+    let progress_min = parts
+        .next()
+        .ok_or("artifact scope identifier is missing its progress minimum")?
+        .parse()?;
+    let progress_max = parts
+        .next()
+        .ok_or("artifact scope identifier is missing its progress maximum")?
+        .parse()?;
+    if parts.next().is_some() {
+        return Err("artifact scope identifier carries extra fields".into());
+    }
+    if progress_min > progress_max {
+        return Err("artifact scope progress range is inverted".into());
+    }
+    Ok(SmbArtifactScope {
+        world,
+        level,
+        progress: (progress_min, progress_max),
+    })
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -164,6 +289,14 @@ pub struct SmbCampaignStreamHeader {
     pub worker_seed_derivation: String,
     /// SHA-256 of the ROM bytes.
     pub rom_sha256: String,
+    /// Installed generated-mutator record; absent for every stream recorded
+    /// without one, so legacy headers keep their byte shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_mutator: Option<SmbCampaignArtifactRecord>,
+    /// Installed generated-detector record; absent for every stream recorded
+    /// without one, so legacy headers keep their byte shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_detector: Option<SmbCampaignArtifactRecord>,
 }
 
 /// One admission decision for one candidate boundary, in candidate order.
@@ -309,6 +442,14 @@ pub struct SmbCampaignModeReport {
     pub worker_seed_derivation: String,
     /// SHA-256 of the ROM bytes.
     pub rom_sha256: String,
+    /// Installed generated-mutator record, echoed from the stream header;
+    /// absent for every run without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_mutator: Option<SmbCampaignArtifactRecord>,
+    /// Installed generated-detector record, echoed from the stream header;
+    /// absent for every run without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_detector: Option<SmbCampaignArtifactRecord>,
     /// Frames emulated by the origin bootstrap walk, probes included.
     pub bootstrap_frames: u64,
     /// Bootstrap frames plus every job's frames, probes included.
@@ -449,6 +590,14 @@ fn derive_suffix(
     vocabulary: SmbCampaignVocabulary,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = StdRand::with_seed(mutation_seed);
+    derive_suffix_from_rand(&mut rand, vocabulary)
+}
+
+/// The frozen suffix draw itself, from an already-positioned RNG.
+fn derive_suffix_from_rand(
+    rand: &mut StdRand,
+    vocabulary: SmbCampaignVocabulary,
+) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let suffix_len = if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
         2
     } else {
@@ -457,12 +606,95 @@ fn derive_suffix(
     let mut suffix = Vec::with_capacity(suffix_len);
     for _ in 0..suffix_len {
         suffix.push(crate::phase4c::sample_chord_from_masks(
-            &mut rand,
+            rand,
             SmbArchiveDurationPolicy::Stratified,
             vocabulary.masks(),
         )?);
     }
     Ok(suffix)
+}
+
+/// Expand one job's suffix, routing in-scope parents through the installed
+/// mutator on one seeded choice in five.
+///
+/// The suffix stays a pure function of (parent, mutation seed, header
+/// policies): the mutator draw and the mutator's own seed both derive from
+/// the mutation seed alone, so replay re-derives the identical suffix from
+/// the recorded stream with no extra fields. Parents outside the declared
+/// scope — and every run without an installed mutator — take exactly the
+/// frozen derivation.
+///
+/// Returns the suffix and whether the installed mutator produced it.
+fn derive_job_suffix(
+    parent_input: &SmbInput,
+    parent_key: &SmbArchiveKey,
+    mutation_seed: u64,
+    vocabulary: SmbCampaignVocabulary,
+    max_actions: usize,
+    artifacts: &SmbCampaignArtifacts<'_>,
+) -> Result<(Vec<ButtonChord>, bool), Box<dyn Error>> {
+    let Some(installed) = &artifacts.generated_mutator else {
+        return Ok((derive_suffix(mutation_seed, vocabulary)?, false));
+    };
+    if !installed
+        .scope
+        .contains(parent_key.world, parent_key.level, parent_key.progress)
+    {
+        return Ok((derive_suffix(mutation_seed, vocabulary)?, false));
+    }
+    let mut rand = StdRand::with_seed(mutation_seed);
+    if rand.below(NonZeroUsize::new(GENERATED_MUTATOR_ODDS).ok_or("invalid mutator odds")?) != 0 {
+        return Ok((derive_suffix_from_rand(&mut rand, vocabulary)?, false));
+    }
+    let candidate = installed.mutator.mutate(parent_input, rand.next());
+    if candidate.actions.len() > max_actions
+        || !candidate.actions.starts_with(&parent_input.actions)
+        || candidate
+            .actions
+            .iter()
+            .any(|action| action.hold_frames == 0 || action.hold_frames > MAX_HOLD_FRAMES)
+    {
+        return Err("generated SMB archive mutator violated deterministic bounds".into());
+    }
+    Ok((
+        candidate.actions[parent_input.actions.len()..].to_vec(),
+        true,
+    ))
+}
+
+/// Reduce one detector call to the 64-bit feature mask keyed by the archive:
+/// each returned key sets bit `key % 64`, the phase-4a reduction.
+fn detector_feature_mask(
+    detector: &dyn SmbDetector,
+    observations: &[SmbObservations],
+) -> Result<u64, Box<dyn Error>> {
+    let features = detector.features(observations);
+    if features.len() > CAMPAIGN_DETECTOR_FEATURE_LIMIT {
+        return Err("generated detector exceeded the feature bound".into());
+    }
+    let mut mask = 0_u64;
+    for feature in features {
+        mask |= 1_u64 << (feature % 64);
+    }
+    Ok(mask)
+}
+
+/// The detector binding worker threads and the coordinator share: the
+/// authored detector and its declared scope.
+type DetectorBinding<'a> = (&'a (dyn SmbDetector + Sync), SmbArtifactScope);
+
+/// Stamp the installed detector's feature mask onto one in-scope key.
+fn apply_detector_features(
+    key: &mut SmbArchiveKey,
+    detector: Option<DetectorBinding<'_>>,
+    observations: &[SmbObservations],
+) -> Result<(), Box<dyn Error>> {
+    if let Some((detector, scope)) = detector
+        && scope.contains(key.world, key.level, key.progress)
+    {
+        key.detector_features = detector_feature_mask(detector, observations)?;
+    }
+    Ok(())
 }
 
 /// Controller vocabulary a campaign derives suffixes from, recorded in the
@@ -625,6 +857,7 @@ fn execute_job(
     parent_milestones: SmbMilestones,
     suffix: &[ButtonChord],
     policies: SmbJobPolicies,
+    detector: Option<DetectorBinding<'_>>,
 ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
     target.restore(parent_snapshot)?;
     let mut milestones = parent_milestones;
@@ -646,7 +879,8 @@ fn execute_job(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
-            let key = archive_key(target.wram(), policies.key_policy);
+            let mut key = archive_key(target.wram(), policies.key_policy);
+            apply_detector_features(&mut key, detector, &observations)?;
             let viable = admission_is_viable(target, &snapshot, policies.retention_policy)?;
             Some(SmbCampaignCandidate {
                 key,
@@ -688,18 +922,25 @@ struct CoordinatorCore<'a> {
     max_actions: usize,
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
+    detector: Option<DetectorBinding<'a>>,
+    generated_mutator_accounting: SmbGeneratedMutatorAccounting,
+    detector_stats: SmbDetectorStats,
+    detector_seen_features: u64,
 }
 
-impl CoordinatorCore<'_> {
+impl<'a> CoordinatorCore<'a> {
     fn new(
         max_actions: usize,
         _selector_policy: SmbArchiveSelectorPolicy,
         retention_policy: SmbArchiveRetentionPolicy,
         archive_entry_limit: usize,
         key_policy: SmbArchiveKeyPolicy,
+        artifacts: &SmbCampaignArtifacts<'a>,
     ) -> Self {
         let mut archive = Archive::new(None);
         archive.max_entries = archive_entry_limit;
+        let mutator_installed = artifacts.generated_mutator.is_some();
+        let detector_installed = artifacts.generated_detector.is_some();
         Self {
             archive,
             aggregate: SmbMilestones::default(),
@@ -715,6 +956,24 @@ impl CoordinatorCore<'_> {
             max_actions,
             retention_policy,
             key_policy,
+            detector: artifacts
+                .generated_detector
+                .as_ref()
+                .map(|installed| (installed.detector, installed.scope)),
+            // Installed artifacts stay active for the whole bounded run;
+            // retirement is a between-run decision read from these counters,
+            // because an in-run deactivation would depend on live worker
+            // interleaving that replay cannot reconstruct.
+            generated_mutator_accounting: SmbGeneratedMutatorAccounting {
+                installed: mutator_installed,
+                active: mutator_installed,
+                ..SmbGeneratedMutatorAccounting::default()
+            },
+            detector_stats: SmbDetectorStats {
+                active: detector_installed,
+                ..SmbDetectorStats::default()
+            },
+            detector_seen_features: 0,
         }
     }
 
@@ -786,7 +1045,9 @@ impl CoordinatorCore<'_> {
                     .snapshot()
                     .ok_or("failed to snapshot campaign bootstrap prefix")?;
                 let observations = target.last_action_observations().to_vec();
-                let key = archive_key(target.wram(), self.key_policy);
+                let mut key = archive_key(target.wram(), self.key_policy);
+                apply_detector_features(&mut key, self.detector, &observations)?;
+                self.note_detector_features(key.detector_features);
                 if !admission_is_viable(target, &snapshot, self.retention_policy)? {
                     continue;
                 }
@@ -808,13 +1069,30 @@ impl CoordinatorCore<'_> {
         Ok(())
     }
 
+    /// Account distinct installed-detector feature keys, phase-4a style:
+    /// each mask bit is one generated key reduced modulo 64.
+    fn note_detector_features(&mut self, mask: u64) {
+        let new_bits = mask & !self.detector_seen_features;
+        if new_bits != 0 {
+            self.detector_seen_features |= new_bits;
+            self.detector_stats.novelties = self
+                .detector_stats
+                .novelties
+                .saturating_add(u64::from(new_bits.count_ones()));
+        }
+    }
+
     /// Admit one executed job at the next sequence position, merging its
     /// per-action evidence in order and applying the promoted retention rules
     /// through the same archive the serial engine uses.
+    ///
+    /// `generated` reports whether the installed mutator produced the job's
+    /// suffix; replay recomputes it from the recorded mutation seed.
     fn admit_job(
         &mut self,
         parent_id: u64,
         result: &SmbCampaignJobResult,
+        generated: bool,
     ) -> Result<(u64, Vec<SmbCampaignAdmissionDecision>), Box<dyn Error>> {
         self.sequence = self.sequence.saturating_add(1);
         let sequence = self.sequence;
@@ -883,6 +1161,48 @@ impl CoordinatorCore<'_> {
                 }
             }
         }
+        if self.generated_mutator_accounting.installed && generated {
+            self.generated_mutator_accounting.attempts =
+                self.generated_mutator_accounting.attempts.saturating_add(1);
+            if !result.actions.is_empty() {
+                self.generated_mutator_accounting.offspring = self
+                    .generated_mutator_accounting
+                    .offspring
+                    .saturating_add(1);
+                let retained = decisions.iter().any(|decision| {
+                    matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
+                });
+                if retained {
+                    self.generated_mutator_accounting.retained_offspring = self
+                        .generated_mutator_accounting
+                        .retained_offspring
+                        .saturating_add(1);
+                    self.generated_mutator_accounting.consecutive_nonretained = 0;
+                } else {
+                    self.generated_mutator_accounting.consecutive_nonretained = self
+                        .generated_mutator_accounting
+                        .consecutive_nonretained
+                        .saturating_add(1);
+                }
+            }
+        }
+        if self.detector.is_some() {
+            self.detector_stats.executions = self.detector_stats.executions.saturating_add(1);
+            let novelties_before = self.detector_stats.novelties;
+            for action in &result.actions {
+                if let Some(candidate) = &action.candidate {
+                    self.note_detector_features(candidate.key.detector_features);
+                }
+            }
+            if self.detector_stats.novelties > novelties_before {
+                self.detector_stats.executions_without_novelty = 0;
+            } else {
+                self.detector_stats.executions_without_novelty = self
+                    .detector_stats
+                    .executions_without_novelty
+                    .saturating_add(1);
+            }
+        }
         if sequence.is_multiple_of(CURVE_INTERVAL) {
             self.push_curve_point();
         }
@@ -944,7 +1264,8 @@ impl CoordinatorCore<'_> {
             rejected: self.archive.rejected,
             deaths: self.deaths,
             ranking: Default::default(),
-            generated_mutator: Default::default(),
+            generated_mutator: self.generated_mutator_accounting,
+            detector: self.detector_stats,
             // Frozen ladder policy: absent, so campaign archives keep their
             // recorded byte shape.
             ladder: Default::default(),
@@ -991,6 +1312,7 @@ fn stream_header(
     config: &SmbCampaignConfig,
     origin: &SmbCampaignOriginRecord,
     rom: &[u8],
+    artifacts: &SmbCampaignArtifacts<'_>,
 ) -> SmbCampaignStreamHeader {
     SmbCampaignStreamHeader {
         format: CAMPAIGN_STREAM_FORMAT.to_owned(),
@@ -1016,6 +1338,14 @@ fn stream_header(
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
         rom_sha256: format!("{:x}", Sha256::digest(rom)),
+        generated_mutator: artifacts
+            .generated_mutator
+            .as_ref()
+            .map(SmbCampaignGeneratedMutator::record),
+        generated_detector: artifacts
+            .generated_detector
+            .as_ref()
+            .map(SmbCampaignGeneratedDetector::record),
     }
 }
 
@@ -1100,6 +1430,8 @@ fn build_report(
         executor_mode: header.executor_mode.clone(),
         worker_seed_derivation: header.worker_seed_derivation.clone(),
         rom_sha256: header.rom_sha256.clone(),
+        generated_mutator: header.generated_mutator.clone(),
+        generated_detector: header.generated_detector.clone(),
         bootstrap_frames: counters.bootstrap_frames,
         frames_emulated: counters
             .bootstrap_frames
@@ -1130,6 +1462,8 @@ struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
     selector: Option<SmbSelectorDraw>,
+    /// Whether the installed mutator produced the job's suffix.
+    generated: bool,
 }
 
 struct WorkerReply {
@@ -1154,6 +1488,32 @@ pub fn run_smb_campaign(
     origin: &SmbCampaignOrigin,
     stream: &mut dyn Write,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
+    run_smb_campaign_with_artifacts(
+        rom,
+        config,
+        origin,
+        stream,
+        &SmbCampaignArtifacts::default(),
+    )
+}
+
+/// Run one live campaign with installed authored artifacts active.
+///
+/// The artifacts are recorded in the stream header like every policy. A run
+/// with no artifacts is byte-identical to [`run_smb_campaign`].
+///
+/// # Errors
+///
+/// Returns an error when the origin is unusable, a worker fails, an authored
+/// artifact violates its deterministic bounds, emulation or snapshotting
+/// fails, or the stream cannot be written.
+pub fn run_smb_campaign_with_artifacts(
+    rom: &[u8],
+    config: &SmbCampaignConfig,
+    origin: &SmbCampaignOrigin,
+    stream: &mut dyn Write,
+    artifacts: &SmbCampaignArtifacts<'_>,
+) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
     }
@@ -1167,7 +1527,7 @@ pub fn run_smb_campaign(
         return Err("campaign archive entry limit is outside its bounded range".into());
     }
     let resolved = resolve_origin(origin)?;
-    let header = stream_header(config, &resolved.record, rom);
+    let header = stream_header(config, &resolved.record, rom, artifacts);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
@@ -1177,6 +1537,7 @@ pub fn run_smb_campaign(
         config.retention_policy,
         config.archive_entry_limit,
         config.key_policy,
+        artifacts,
     );
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -1211,6 +1572,10 @@ pub fn run_smb_campaign(
     thread::scope(|scope| -> Result<(), Box<dyn Error>> {
         let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply>();
         let mut job_senders = Vec::with_capacity(workers);
+        let detector_binding: Option<DetectorBinding<'_>> = artifacts
+            .generated_detector
+            .as_ref()
+            .map(|installed| (installed.detector, installed.scope));
         for index in 0..config.workers {
             let (job_sender, job_receiver) = mpsc::channel::<JobSpec>();
             let reply_sender = reply_sender.clone();
@@ -1239,6 +1604,7 @@ pub fn run_smb_campaign(
                         spec.parent_milestones,
                         &spec.suffix,
                         worker_policies,
+                        detector_binding,
                     )
                     .map(|result| {
                         (
@@ -1286,7 +1652,15 @@ pub fn run_smb_campaign(
             loop {
                 let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                 let mutation_seed = rand.next();
-                let suffix = derive_suffix(mutation_seed, config.vocabulary)?;
+                let parent_report = &core.archive.entries[parent_index].report;
+                let (suffix, generated) = derive_job_suffix(
+                    &parent_report.input,
+                    &parent_report.key,
+                    mutation_seed,
+                    config.vocabulary,
+                    max_actions,
+                    artifacts,
+                )?;
                 if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                     && core.all_prefixes_archived(parent_index, &suffix)
                 {
@@ -1318,6 +1692,7 @@ pub fn run_smb_campaign(
                         parent_id: u64::try_from(parent_index)?,
                         mutation_seed,
                         selector,
+                        generated,
                     },
                 )));
             }
@@ -1360,7 +1735,8 @@ pub fn run_smb_campaign(
             let pending_job = pending[worker_index]
                 .take()
                 .ok_or("campaign worker replied without a pending job")?;
-            let (sequence, decisions) = core.admit_job(pending_job.parent_id, &result)?;
+            let (sequence, decisions) =
+                core.admit_job(pending_job.parent_id, &result, pending_job.generated)?;
             if let Some(draw) = &pending_job.selector {
                 let parent_index = usize::try_from(pending_job.parent_id)?;
                 core.archive.record_selection(parent_index, draw);
@@ -1438,6 +1814,54 @@ pub fn replay_smb_campaign(
     stream_bytes: &[u8],
     origin_report: Option<&SmbArchiveReport>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
+    replay_smb_campaign_with_artifacts(
+        rom,
+        stream_bytes,
+        origin_report,
+        &SmbCampaignArtifacts::default(),
+    )
+}
+
+/// Verify that the artifacts supplied to a replay are exactly the artifacts
+/// the stream header records.
+fn verify_artifact_record(
+    kind: &str,
+    recorded: Option<&SmbCampaignArtifactRecord>,
+    supplied: Option<SmbCampaignArtifactRecord>,
+) -> Result<(), Box<dyn Error>> {
+    match (recorded, supplied) {
+        (None, None) => Ok(()),
+        (Some(_), None) => Err(format!(
+            "campaign stream records an installed {kind} the replay did not supply"
+        )
+        .into()),
+        (None, Some(_)) => {
+            Err(format!("campaign replay supplies a {kind} the stream did not record").into())
+        }
+        (Some(recorded), Some(supplied)) if *recorded == supplied => Ok(()),
+        (Some(_), Some(_)) => {
+            Err(format!("campaign replay {kind} does not match the recorded stream").into())
+        }
+    }
+}
+
+/// Replay a recorded campaign stream that ran with installed artifacts.
+///
+/// The supplied artifacts must match the header records exactly; a stream
+/// recorded without artifacts replays through [`replay_smb_campaign`]
+/// unchanged.
+///
+/// # Errors
+///
+/// Returns an error when the stream is malformed, the origin or artifacts do
+/// not match the header, or any recomputed value differs from the recorded
+/// one.
+pub fn replay_smb_campaign_with_artifacts(
+    rom: &[u8],
+    stream_bytes: &[u8],
+    origin_report: Option<&SmbArchiveReport>,
+    artifacts: &SmbCampaignArtifacts<'_>,
+) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
@@ -1474,12 +1898,33 @@ pub fn replay_smb_campaign(
     let retention_policy = retention_from_identifier(&header.retention_policy)?;
     let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
     let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
+    verify_artifact_record(
+        "generated mutator",
+        header.generated_mutator.as_ref(),
+        artifacts
+            .generated_mutator
+            .as_ref()
+            .map(SmbCampaignGeneratedMutator::record),
+    )?;
+    verify_artifact_record(
+        "generated detector",
+        header.generated_detector.as_ref(),
+        artifacts
+            .generated_detector
+            .as_ref()
+            .map(SmbCampaignGeneratedDetector::record),
+    )?;
+    let detector_binding: Option<DetectorBinding<'_>> = artifacts
+        .generated_detector
+        .as_ref()
+        .map(|installed| (installed.detector, installed.scope));
     let mut core = CoordinatorCore::new(
         header.action_limit,
         selector_policy,
         retention_policy,
         header.archive_entry_limit,
         replay_key_policy,
+        artifacts,
     );
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -1495,7 +1940,15 @@ pub fn replay_smb_campaign(
                 if parent_index >= core.archive.entries.len() {
                     return Err("recorded skip names a parent the archive does not hold".into());
                 }
-                let suffix = derive_suffix(skip.mutation_seed, vocabulary)?;
+                let parent_report = &core.archive.entries[parent_index].report;
+                let (suffix, _generated) = derive_job_suffix(
+                    &parent_report.input,
+                    &parent_report.key,
+                    skip.mutation_seed,
+                    vocabulary,
+                    header.action_limit,
+                    artifacts,
+                )?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -1521,7 +1974,14 @@ pub fn replay_smb_campaign(
                 let snapshot = entry.snapshot.clone();
                 let parent_actions = entry.report.input.actions.len();
                 let parent_milestones = entry.report.milestones;
-                let suffix = derive_suffix(job.mutation_seed, vocabulary)?;
+                let (suffix, generated) = derive_job_suffix(
+                    &entry.report.input,
+                    &entry.report.key,
+                    job.mutation_seed,
+                    vocabulary,
+                    header.action_limit,
+                    artifacts,
+                )?;
                 let job_frames_before = target.frames_clocked();
                 let result = execute_job(
                     &mut target,
@@ -1534,6 +1994,7 @@ pub fn replay_smb_campaign(
                         retention_policy,
                         key_policy: replay_key_policy,
                     },
+                    detector_binding,
                 )?;
                 let frames = target.frames_clocked().saturating_sub(job_frames_before);
                 if frames != job.frames {
@@ -1551,7 +2012,7 @@ pub fn replay_smb_campaign(
                     )
                     .into());
                 }
-                let (sequence, decisions) = core.admit_job(job.parent_id, &result)?;
+                let (sequence, decisions) = core.admit_job(job.parent_id, &result, generated)?;
                 if sequence != job.sequence {
                     return Err(format!(
                         "replayed admission order {sequence} diverged from recorded {}",
@@ -2683,12 +3144,16 @@ pub fn diagnose_down_census(
 #[cfg(test)]
 mod tests {
     use super::{
-        SmbCampaignConfig, SmbCampaignOrigin, derive_suffix, derive_worker_seed, execute_job,
-        replay_smb_campaign, run_smb_campaign,
+        SmbCampaignArtifacts, SmbCampaignConfig, SmbCampaignGeneratedDetector,
+        SmbCampaignGeneratedMutator, SmbCampaignOrigin, derive_job_suffix, derive_suffix,
+        derive_worker_seed, execute_job, replay_smb_campaign, replay_smb_campaign_with_artifacts,
+        run_smb_campaign, run_smb_campaign_with_artifacts, scope_from_identifier, scope_identifier,
     };
     use crate::{
-        phase4b::{ButtonChord, SmbMilestones, SmbTarget},
-        phase4c::{SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy},
+        phase4b::{
+            ButtonChord, SmbDetector, SmbInput, SmbMacro, SmbMilestones, SmbObservations, SmbTarget,
+        },
+        phase4c::{SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArtifactScope},
         target::Target,
     };
 
@@ -2756,6 +3221,7 @@ mod tests {
                 retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
                 key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             },
+            None,
         )
         .expect("execute job on first instance");
         let on_second = execute_job(
@@ -2769,6 +3235,7 @@ mod tests {
                 retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
                 key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             },
+            None,
         )
         .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -2963,5 +3430,314 @@ mod tests {
             concentration.draws_per_parent_milli,
             concentration.window_draws * 1000 / concentration.distinct_window_parents
         );
+    }
+
+    /// Appends one bounded chord parameterized by the seed.
+    struct AppendChordMacro;
+
+    impl SmbMacro for AppendChordMacro {
+        fn mutate(&self, input: &SmbInput, seed: u64) -> SmbInput {
+            let mut candidate = input.clone();
+            let hold = u8::try_from(2 + (seed % 12)).unwrap_or(2);
+            candidate.actions.push(ButtonChord::new(0x81, hold));
+            candidate
+        }
+    }
+
+    /// Emits an out-of-bounds hold so validation must reject it.
+    struct ZeroHoldMacro;
+
+    impl SmbMacro for ZeroHoldMacro {
+        fn mutate(&self, input: &SmbInput, _seed: u64) -> SmbInput {
+            let mut candidate = input.clone();
+            candidate.actions.push(ButtonChord {
+                buttons: 0x01,
+                hold_frames: 0,
+            });
+            candidate
+        }
+    }
+
+    /// Contributes one feature per observation from visible decoded state.
+    struct VerticalBucketDetector;
+
+    impl SmbDetector for VerticalBucketDetector {
+        fn features(&self, observations: &[SmbObservations]) -> Vec<u64> {
+            observations
+                .iter()
+                .map(|observation| u64::from(observation.decoded.player_y_bucket))
+                .collect()
+        }
+    }
+
+    fn test_config(campaign_seed: u64, execution_budget: u64) -> SmbCampaignConfig {
+        SmbCampaignConfig {
+            campaign_seed,
+            workers: 2,
+            execution_budget,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+        }
+    }
+
+    fn in_scope() -> SmbArtifactScope {
+        // The synthetic target's mechanical tuple stays at world 0, level 0.
+        SmbArtifactScope {
+            world: 0,
+            level: 0,
+            progress: (0, u16::MAX),
+        }
+    }
+
+    fn out_of_scope() -> SmbArtifactScope {
+        SmbArtifactScope {
+            world: 7,
+            level: 3,
+            progress: (100, 200),
+        }
+    }
+
+    #[test]
+    fn scope_identifier_round_trips() {
+        let scope = SmbArtifactScope {
+            world: 3,
+            level: 1,
+            progress: (208, 210),
+        };
+        let identifier = scope_identifier(scope);
+        assert_eq!(identifier, "3,1,208,210");
+        assert_eq!(
+            scope_from_identifier(&identifier).expect("parse scope"),
+            scope
+        );
+        assert!(scope_from_identifier("3,1,208").is_err());
+        assert!(scope_from_identifier("3,1,210,208").is_err());
+        assert!(scope.contains(3, 1, 208));
+        assert!(scope.contains(3, 1, 210));
+        assert!(!scope.contains(3, 1, 211));
+        assert!(!scope.contains(3, 2, 208));
+    }
+
+    #[test]
+    fn job_suffix_derivation_is_pure_and_scope_gated() {
+        let parent_input = SmbInput::default();
+        let parent_key =
+            crate::phase4c::archive_key(&[0; 2048], crate::phase4c::SmbArchiveKeyPolicy::Frozen);
+        let vocabulary = super::SmbCampaignVocabulary::FrozenNineMask;
+        let mutator = AppendChordMacro;
+        let artifacts = SmbCampaignArtifacts {
+            generated_mutator: Some(SmbCampaignGeneratedMutator {
+                name: "test_macro".to_owned(),
+                source_sha256: "00".to_owned(),
+                scope: out_of_scope(),
+                mutator: &mutator,
+            }),
+            generated_detector: None,
+        };
+        for seed in [0_u64, 0x5eed_ca07, u64::MAX] {
+            // Outside the declared scope every seed derives the frozen suffix.
+            let (suffix, generated) =
+                derive_job_suffix(&parent_input, &parent_key, seed, vocabulary, 96, &artifacts)
+                    .expect("derive out-of-scope suffix");
+            assert!(!generated);
+            assert_eq!(
+                suffix,
+                derive_suffix(seed, vocabulary).expect("frozen suffix")
+            );
+            // Inside the scope the derivation stays pure across calls.
+            let in_scope_artifacts = SmbCampaignArtifacts {
+                generated_mutator: Some(SmbCampaignGeneratedMutator {
+                    name: "test_macro".to_owned(),
+                    source_sha256: "00".to_owned(),
+                    scope: in_scope(),
+                    mutator: &mutator,
+                }),
+                generated_detector: None,
+            };
+            let first = derive_job_suffix(
+                &parent_input,
+                &parent_key,
+                seed,
+                vocabulary,
+                96,
+                &in_scope_artifacts,
+            )
+            .expect("derive in-scope suffix");
+            let second = derive_job_suffix(
+                &parent_input,
+                &parent_key,
+                seed,
+                vocabulary,
+                96,
+                &in_scope_artifacts,
+            )
+            .expect("derive in-scope suffix again");
+            assert_eq!(first, second);
+        }
+    }
+
+    #[test]
+    fn out_of_scope_artifacts_leave_the_recorded_search_byte_identical() {
+        let rom = synthetic_nrom();
+        let mutator = AppendChordMacro;
+        let detector = VerticalBucketDetector;
+        let artifacts = SmbCampaignArtifacts {
+            generated_mutator: Some(SmbCampaignGeneratedMutator {
+                name: "test_macro".to_owned(),
+                source_sha256: "11".to_owned(),
+                scope: out_of_scope(),
+                mutator: &mutator,
+            }),
+            generated_detector: Some(SmbCampaignGeneratedDetector {
+                name: "test_detector".to_owned(),
+                source_sha256: "22".to_owned(),
+                scope: out_of_scope(),
+                detector: &detector,
+            }),
+        };
+        let mut plain_stream = Vec::new();
+        let plain = run_smb_campaign(
+            &rom,
+            &test_config(0x5eed_ca0a, 24),
+            &SmbCampaignOrigin::Genesis,
+            &mut plain_stream,
+        )
+        .expect("plain campaign");
+        let mut scoped_stream = Vec::new();
+        let scoped = run_smb_campaign_with_artifacts(
+            &rom,
+            &test_config(0x5eed_ca0a, 24),
+            &SmbCampaignOrigin::Genesis,
+            &mut scoped_stream,
+            &artifacts,
+        )
+        .expect("out-of-scope campaign");
+        // The artifacts self-deactivate outside their region: every record
+        // after the header, and the complete retained archive, must be
+        // byte-identical to the run without them.
+        let plain_text = String::from_utf8(plain_stream).expect("plain stream utf-8");
+        let scoped_text = String::from_utf8(scoped_stream).expect("scoped stream utf-8");
+        let plain_records = plain_text.lines().skip(1).collect::<Vec<_>>();
+        let scoped_records = scoped_text.lines().skip(1).collect::<Vec<_>>();
+        assert_eq!(plain_records, scoped_records);
+        assert_ne!(plain_text.lines().next(), scoped_text.lines().next());
+        assert_eq!(
+            serde_json::to_vec(&plain.archive.entries).expect("plain entries"),
+            serde_json::to_vec(&scoped.archive.entries).expect("scoped entries"),
+        );
+        assert_eq!(
+            plain.archive.progress_watermark,
+            scoped.archive.progress_watermark
+        );
+        assert_eq!(plain.archive.retained, scoped.archive.retained);
+        assert_eq!(plain.archive.rejected, scoped.archive.rejected);
+        assert_eq!(scoped.archive.generated_mutator.attempts, 0);
+        assert_eq!(scoped.archive.detector.novelties, 0);
+        assert!(scoped.generated_mutator.is_some());
+        assert!(scoped.generated_detector.is_some());
+        assert!(
+            scoped
+                .archive
+                .entries
+                .iter()
+                .all(|entry| entry.key.detector_features == 0)
+        );
+    }
+
+    #[test]
+    fn in_scope_artifacts_fire_and_replay_byte_identically() {
+        let rom = synthetic_nrom();
+        let mutator = AppendChordMacro;
+        let detector = VerticalBucketDetector;
+        let artifacts = SmbCampaignArtifacts {
+            generated_mutator: Some(SmbCampaignGeneratedMutator {
+                name: "test_macro".to_owned(),
+                source_sha256: "11".to_owned(),
+                scope: in_scope(),
+                mutator: &mutator,
+            }),
+            generated_detector: Some(SmbCampaignGeneratedDetector {
+                name: "test_detector".to_owned(),
+                source_sha256: "22".to_owned(),
+                scope: in_scope(),
+                detector: &detector,
+            }),
+        };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign_with_artifacts(
+            &rom,
+            &test_config(0x5eed_ca0b, 64),
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            &artifacts,
+        )
+        .expect("in-scope campaign");
+        assert!(live.archive.generated_mutator.installed);
+        assert!(live.archive.generated_mutator.active);
+        assert!(live.archive.generated_mutator.attempts > 0);
+        assert!(live.archive.detector.active);
+        assert_eq!(live.archive.detector.executions, live.executions_completed);
+        assert!(live.archive.detector.novelties > 0);
+        assert!(
+            live.archive
+                .entries
+                .iter()
+                .skip(1)
+                .any(|entry| entry.key.detector_features != 0)
+        );
+        let replayed = replay_smb_campaign_with_artifacts(&rom, &stream, None, &artifacts)
+            .expect("replay artifact campaign");
+        assert_eq!(live, replayed);
+        let live_bytes = serde_json::to_vec_pretty(&live).expect("serialize live report");
+        let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
+        assert_eq!(live_bytes, replay_bytes);
+        // A replay without the recorded artifacts must refuse loudly.
+        assert!(replay_smb_campaign(&rom, &stream, None).is_err());
+        // A replay with a different declared scope must refuse loudly.
+        let rescoped = SmbCampaignArtifacts {
+            generated_mutator: Some(SmbCampaignGeneratedMutator {
+                name: "test_macro".to_owned(),
+                source_sha256: "11".to_owned(),
+                scope: out_of_scope(),
+                mutator: &mutator,
+            }),
+            generated_detector: Some(SmbCampaignGeneratedDetector {
+                name: "test_detector".to_owned(),
+                source_sha256: "22".to_owned(),
+                scope: in_scope(),
+                detector: &detector,
+            }),
+        };
+        assert!(replay_smb_campaign_with_artifacts(&rom, &stream, None, &rescoped).is_err());
+    }
+
+    #[test]
+    fn out_of_bounds_generated_mutator_is_rejected() {
+        let rom = synthetic_nrom();
+        let mutator = ZeroHoldMacro;
+        let artifacts = SmbCampaignArtifacts {
+            generated_mutator: Some(SmbCampaignGeneratedMutator {
+                name: "zero_hold".to_owned(),
+                source_sha256: "33".to_owned(),
+                scope: in_scope(),
+                mutator: &mutator,
+            }),
+            generated_detector: None,
+        };
+        let mut stream = Vec::new();
+        let outcome = run_smb_campaign_with_artifacts(
+            &rom,
+            &test_config(0x5eed_ca0c, 64),
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            &artifacts,
+        );
+        assert!(outcome.is_err());
     }
 }

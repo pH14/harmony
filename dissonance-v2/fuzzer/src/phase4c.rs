@@ -17,10 +17,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     phase4b::{
         ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS,
-        PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, SmbDeathBytes, SmbInput, SmbMacro,
-        SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
-        SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels, smb_death_bytes,
-        smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, SmbDeathBytes, SmbDetectorStats,
+        SmbInput, SmbMacro, SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes,
+        SmbMilestones, SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
+        smb_camera_pixels, smb_death_bytes, smb_mechanical_state_from_wram,
+        smb_milestones_from_wram,
     },
     target::Target,
 };
@@ -183,6 +184,35 @@ pub fn derive_smb_ladder(source: &SmbArchiveReport) -> SmbLadder {
                 },
             )
             .collect(),
+    }
+}
+
+/// Region one authored campaign artifact declares itself active inside: the
+/// H75 room-tuple pattern generalized to an inclusive progress-bucket range.
+///
+/// A macro fires only on parents whose mechanical tuple sits inside its scope;
+/// a detector contributes features only for states inside its scope. Outside
+/// the scope the artifact takes no code path at all, so it is byte-inert
+/// there by construction, exactly as the room-x key term is outside its
+/// registered room.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbArtifactScope {
+    /// Registered world of the scoped region.
+    pub world: u8,
+    /// Registered level of the scoped region.
+    pub level: u8,
+    /// Inclusive progress-bucket range of the scoped region.
+    pub progress: (u16, u16),
+}
+
+impl SmbArtifactScope {
+    /// Report whether a mechanical `(world, level, progress)` tuple is inside
+    /// this scope.
+    #[must_use]
+    pub fn contains(&self, world: u8, level: u8, progress: u16) -> bool {
+        (world, level) == (self.world, self.level)
+            && progress >= self.progress.0
+            && progress <= self.progress.1
     }
 }
 
@@ -370,10 +400,20 @@ pub struct SmbArchiveKey {
     /// serialization — everywhere else, so legacy keys are byte-identical.
     #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
     pub room_x_bucket: u8,
+    /// Installed-detector feature mask, present only for states inside the
+    /// detector's declared scope: each generated feature key sets bit
+    /// `key % 64`, the phase-4a reduction. Zero — and omitted from
+    /// serialization — everywhere else, so legacy keys are byte-identical.
+    #[serde(default, skip_serializing_if = "detector_features_are_absent")]
+    pub detector_features: u64,
 }
 
 fn room_x_bucket_is_absent(bucket: &u8) -> bool {
     *bucket == 0
+}
+
+fn detector_features_are_absent(mask: &u64) -> bool {
+    *mask == 0
 }
 
 /// Serializable lineage and retention record for one archived testcase.
@@ -445,6 +485,10 @@ pub struct SmbArchiveReport {
     /// Execution-count accounting for the optional generated archive mutator.
     #[serde(default)]
     pub generated_mutator: SmbGeneratedMutatorAccounting,
+    /// Installed-detector accounting, omitted entirely when no campaign
+    /// detector ran, so recorded reports keep their byte shape.
+    #[serde(default, skip_serializing_if = "SmbDetectorStats::is_absent")]
+    pub detector: SmbDetectorStats,
     /// Extended ladder record, omitted entirely under the frozen ladder policy.
     #[serde(default, skip_serializing_if = "SmbLadder::is_absent")]
     pub ladder: SmbLadder,
@@ -3596,6 +3640,7 @@ pub fn readmit_smb_archive(
         progress_curve: Vec::new(),
         ranking: SmbRankingAccounting::default(),
         generated_mutator: SmbGeneratedMutatorAccounting::default(),
+        detector: SmbDetectorStats::default(),
         ladder: SmbLadder::default(),
         selector: SmbSelectorAccounting::default(),
     };
@@ -4580,6 +4625,7 @@ fn run_smb_archive_search_internal(
         deaths,
         ranking: archive.ranking_accounting,
         generated_mutator: generated_mutator_accounting,
+        detector: SmbDetectorStats::default(),
         ladder: match ladder_policy {
             SmbArchiveLadderPolicy::Frozen => SmbLadder::default(),
             SmbArchiveLadderPolicy::Extended => SmbLadder {
@@ -4699,6 +4745,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
         player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
         room_x_bucket,
+        detector_features: 0,
     }
 }
 
@@ -5381,6 +5428,7 @@ mod tests {
                 player_engine_state: 0,
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
                 room_x_bucket: 0,
+                detector_features: 0,
             };
             archive
                 .insert(

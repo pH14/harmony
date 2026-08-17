@@ -117,6 +117,18 @@ pub struct SmbDetectorStats {
     pub active: bool,
 }
 
+impl SmbDetectorStats {
+    /// Report whether this record should be omitted from a report entirely.
+    ///
+    /// A campaign without an installed detector must serialize exactly the
+    /// fields it serialized before this mechanism existed, so an absent
+    /// record writes nothing.
+    #[must_use]
+    pub fn is_absent(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 // These offsets are used only by the deliberately coarse, operator-authored base map.
 const SCREEN_PAGE_OFFSET: usize = 0x071a;
 const SCREEN_X_OFFSET: usize = 0x071c;
