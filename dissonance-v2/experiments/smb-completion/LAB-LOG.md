@@ -5141,6 +5141,50 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c76-conquest/` on the ARM
   machine.
 
+### H75 pilot result — the pipe opens, and world five falls behind it
+
+- **The preregistered pilot question resolves yes, and the run went far past
+  its own question.** The room-x key populated the warp room across every
+  16-pixel bucket — the pipe band that held zero retained states under the
+  frozen key now holds roughly a thousand entries across its two buckets —
+  and at execution 9,919 a Down press on the pipe entered it: the warp
+  fired into the fifth world. The run then cleared the fifth world's four
+  levels in sequence — 196, 198, 149, 144, first reached at executions
+  9,919, 18,423, 23,870 and 35,672 — and **opened the sixth world at
+  execution 44,177**, reaching `(5, 0, 166)` with watermark 168.
+- The live run: 50,000 executions, twelve workers, campaign seed
+  `0x5eed_c00e`, the full promoted stack plus `frozen_room_x_16:3,1,208`:
+  39,129 retained against 12,691 rejected with 8,219 deaths, ceiling never
+  bound. Serial replay as a background audit. Quarantine lineage now runs
+  C67 through C76; the audits grind in spare capacity.
+- **The escalation criterion is moot**: the condition — pipe-x cells
+  retained but no scene change — cannot fire, because the scene change
+  happened. The track-2 waypoint mechanism stays in reserve, undis­patched.
+- The missing-diversity diagnosis is confirmed end to end: one added key
+  dimension in one registered room converted a two-link stall into a
+  two-world advance. The chain stands at the sixth of eight worlds.
+
+## C77 — registered concentrated conquest, eleventh link
+
+- Observational, in the C49/C61 pattern. One live concentrated-policy
+  conquest campaign, 50,000 executions, twelve workers on the ARM machine,
+  campaign seed `0x5eed_c00f`, action limit 4096, retention
+  `probe_at_admission_45`, vocabulary `down_ten_mask`, archive bound
+  131,072, key policy `frozen_room_x_16:3,1,208` carried unchanged — the
+  registered room is behind the frontier and the term is inert everywhere
+  else, so the stack stays exactly the pilot's. One live run, no retries;
+  serial replay as a background audit.
+- Origin: the resume-rule assumption check on C76 returns recorded 166,
+  viable 166, **play 165** — a one-bucket divergence, so per the standing
+  precedent the link launches from a derived single-entry origin at the
+  play frontier: the shortest input among the nine entries at
+  `(5, 0, 165)`, entry 39040, 2,064 actions, chosen by the resume rule's
+  own ordering. Derived origin
+  `target/smb-completion/c76-conquest/origin-play165.json`, SHA-256
+  `01e2e25b13b87e98b046b7cc3a0ff0c9228c393367341242f5c6526ce33c3535`.
+- Raw destination: `target/smb-completion/c77-conquest/` on the ARM
+  machine, log `c77.log`.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
