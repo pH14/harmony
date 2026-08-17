@@ -10,7 +10,7 @@ use fuzzer::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, SmbCampaignVocabulary,
         key_policy_from_identifier, replay_smb_campaign, retention_from_identifier,
         run_smb_campaign, select_frontier_resume_input, selector_from_identifier,
-        vocabulary_from_identifier,
+        vocabulary_from_identifier, waypoint_from_identifier,
     },
     phase4b::SmbInput,
     phase4c::{
@@ -99,6 +99,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut retention_policy = SmbArchiveRetentionPolicy::ProbeAtAdmission;
     let mut vocabulary = SmbCampaignVocabulary::FrozenNineMask;
     let mut key_policy = fuzzer::phase4c::SmbArchiveKeyPolicy::Frozen;
+    let mut waypoint_policy = fuzzer::phase4c::SmbArchiveWaypointPolicy::Absent;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -133,6 +134,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
             key_policy = key_policy_from_identifier(
                 &args.next().ok_or("missing --key value")?.to_string_lossy(),
             )?;
+        } else if flag == "--waypoint" {
+            waypoint_policy = waypoint_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --waypoint value")?
+                    .to_string_lossy(),
+            )?;
         } else {
             return Err("unexpected run argument".into());
         }
@@ -155,6 +163,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         archive_entry_limit: fuzzer::phase4c::MAX_ARCHIVE_ENTRIES,
         vocabulary,
         key_policy,
+        waypoint_policy,
     };
 
     let stream_path = output.join("stream.jsonl");
