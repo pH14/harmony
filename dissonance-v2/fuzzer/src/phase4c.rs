@@ -193,6 +193,17 @@ pub enum SmbArchiveKeyPolicy {
     Frozen,
     /// H51: the vertical term also carries the recorded vertical page byte.
     VerticalPage,
+    /// H75: the frozen key plus a 16-pixel screen-x bucket, applied only to
+    /// states whose mechanical tuple equals the registered scroll-frozen
+    /// room; all other states key exactly as `Frozen`.
+    FrozenRoomX16 {
+        /// Registered room world.
+        world: u8,
+        /// Registered room level.
+        level: u8,
+        /// Registered room progress bucket.
+        progress: u16,
+    },
 }
 
 /// Whether admission probes a candidate for viability before retaining it.
@@ -353,6 +364,15 @@ pub struct SmbArchiveKey {
     pub player_engine_state: u8,
     /// Six-bit deterministic fingerprint of otherwise-hidden work RAM state.
     pub state_fingerprint: u8,
+    /// H75: one-based 16-pixel screen-x bucket, present only for states
+    /// inside a registered scroll-frozen room; zero — and omitted from
+    /// serialization — everywhere else, so legacy keys are byte-identical.
+    #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
+    pub room_x_bucket: u8,
+}
+
+fn room_x_bucket_is_absent(bucket: &u8) -> bool {
+    *bucket == 0
 }
 
 /// Serializable lineage and retention record for one archived testcase.
@@ -4648,11 +4668,27 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
     // The decoded observation field keeps its recorded 0..=15 meaning; only the
     // key term carries the page, so both operator views stay true.
     let vertical = match policy {
-        SmbArchiveKeyPolicy::Frozen => state.player_y_bucket,
+        SmbArchiveKeyPolicy::Frozen | SmbArchiveKeyPolicy::FrozenRoomX16 { .. } => {
+            state.player_y_bucket
+        }
         SmbArchiveKeyPolicy::VerticalPage => smb_death_bytes(wram)
             .vertical_page
             .saturating_mul(16)
             .saturating_add(state.player_y_bucket),
+    };
+    let room_x_bucket = match policy {
+        SmbArchiveKeyPolicy::FrozenRoomX16 {
+            world,
+            level,
+            progress,
+        } if (state.world, state.level, state.progress) == (world, level, progress) => {
+            let player_x = u32::from(wram[PLAYER_ROOM_X_PAGE_OFFSET]) * 256
+                + u32::from(wram[PLAYER_ROOM_X_LOW_OFFSET]);
+            let camera = smb_camera_pixels(wram);
+            let screen_x = player_x.saturating_sub(camera).min(255);
+            u8::try_from(screen_x / 16).unwrap_or(15).saturating_add(1)
+        }
+        _ => 0,
     };
     SmbArchiveKey {
         world: state.world,
@@ -4661,8 +4697,14 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
         player_y_bucket: vertical,
         player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
+        room_x_bucket,
     }
 }
+
+/// SMB player horizontal page byte, `$006d`, read by the room-x key term.
+const PLAYER_ROOM_X_PAGE_OFFSET: usize = 0x006d;
+/// SMB player horizontal position byte within the page, `$0086`.
+const PLAYER_ROOM_X_LOW_OFFSET: usize = 0x0086;
 
 /// D71 ruling: the frozen nine masks plus Down (`0x20`), appended so the
 /// shared prefix keeps its order. Selecting this table changes every
@@ -5337,6 +5379,7 @@ mod tests {
                 player_y_bucket: u8::try_from(index / 64).expect("vertical bucket"),
                 player_engine_state: 0,
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
+                room_x_bucket: 0,
             };
             archive
                 .insert(

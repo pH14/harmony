@@ -1595,6 +1595,9 @@ fn run_archive_resume_mode(
         "key_policy": match key_policy {
             SmbArchiveKeyPolicy::Frozen => "frozen",
             SmbArchiveKeyPolicy::VerticalPage => "vertical_page",
+            // The serial modes never select the campaign room-x policy; the
+            // identifier is recorded for completeness.
+            SmbArchiveKeyPolicy::FrozenRoomX16 { .. } => "frozen_room_x_16",
         },
         "retention_policy": match retention_policy {
             SmbArchiveRetentionPolicy::Frozen => "frozen",

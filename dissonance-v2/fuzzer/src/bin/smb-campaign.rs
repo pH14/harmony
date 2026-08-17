@@ -8,8 +8,9 @@ use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 use fuzzer::{
     campaign::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, SmbCampaignVocabulary,
-        replay_smb_campaign, retention_from_identifier, run_smb_campaign,
-        select_frontier_resume_input, selector_from_identifier, vocabulary_from_identifier,
+        key_policy_from_identifier, replay_smb_campaign, retention_from_identifier,
+        run_smb_campaign, select_frontier_resume_input, selector_from_identifier,
+        vocabulary_from_identifier,
     },
     phase4b::SmbInput,
     phase4c::{
@@ -97,6 +98,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut selector_policy = SmbArchiveSelectorPolicy::ConcentratedRecency;
     let mut retention_policy = SmbArchiveRetentionPolicy::ProbeAtAdmission;
     let mut vocabulary = SmbCampaignVocabulary::FrozenNineMask;
+    let mut key_policy = fuzzer::phase4c::SmbArchiveKeyPolicy::Frozen;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -127,6 +129,10 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --vocabulary value")?
                     .to_string_lossy(),
             )?;
+        } else if flag == "--key" {
+            key_policy = key_policy_from_identifier(
+                &args.next().ok_or("missing --key value")?.to_string_lossy(),
+            )?;
         } else {
             return Err("unexpected run argument".into());
         }
@@ -148,6 +154,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         retention_policy,
         archive_entry_limit: fuzzer::phase4c::MAX_ARCHIVE_ENTRIES,
         vocabulary,
+        key_policy,
     };
 
     let stream_path = output.join("stream.jsonl");

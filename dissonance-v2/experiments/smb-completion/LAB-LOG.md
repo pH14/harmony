@@ -5089,6 +5089,58 @@ one variable of science only when a link stalls.
 - Raw evidence: `target/smb-completion/d73-down-census/c72-census.json` on
   the ARM machine.
 
+## H75 — preregistered positional key term for scroll-frozen rooms
+
+- Ruled by the integrator on the D73 escalation: the pipe-entry defect is a
+  missing diversity dimension, and the cheapest in-doctrine mechanism
+  supplies it. The track-2 waypoint mechanism stays in reserve, not
+  dispatched.
+- **Assumption checks, run against recorded artifacts before any build, as
+  the ruling requires. Both hold.**
+  - *The collapse is real (check one).* From the D73 census's recorded
+    parent positions: 517 distinct retained frontier parents at bucket 208;
+    282 of them — fifty-five percent — stand in the single 16-pixel band
+    3536 through 3551 at the room's right wall, and the pipe band 3376
+    through 3423 holds **zero** retained parents while both neighbouring
+    bands are populated. A literal retention hole.
+  - *The defect is retention, not reachability (check two).* The x-transit
+    census re-derived 4,000 frontier jobs — 5,021 candidate boundaries —
+    and histogrammed candidate player-x against the recorded admission
+    decisions: **seven candidates stood in the pipe band, and retention
+    rejected all seven**, against healthy retain ratios in every
+    neighbouring band; the right-wall band shows the competition doing it,
+    2,282 rejections against 838 retentions in one 16-pixel cell
+    population. Transit into the band happens and is discarded; with no
+    retained parent in the band, no children spawn there, and the hole
+    self-sustains. Raw evidence:
+    `target/smb-completion/d74-x-transit/c72-transit-v2.json`.
+- Mechanism, per the ruling's requirements: a new archive key policy value
+  carrying a positional term **only inside the registered scroll-frozen
+  room**. The room is identified by its `(world, level, progress)` tuple —
+  derived from the recorded watermark stall of the origin archive, a
+  registered value, nothing NES-shaped in core — and the positional bucket
+  width is a registered parameter, sixteen pixels here. States matching the
+  room tuple gain a player-x bucket term in the key; every other state keys
+  exactly as the frozen policy does, so the variant is provably byte-inert
+  outside the room. Header-recorded like the retention, vocabulary and
+  ceiling values; legacy streams carry no field and replay under their
+  recorded key.
+- Gates before the pilot: the four quality gates and the standing inertness
+  reference byte-identical.
+- **Pilot before fleet**: one live campaign on the ARM machine from C72's
+  archive, 50,000 executions, twelve workers, campaign seed `0x5eed_c00e`,
+  action limit 4096, retention `probe_at_admission_45`, vocabulary
+  `down_ten_mask`, archive bound 131,072, key policy
+  `frozen_room_x_16` at room `(3, 1, 208)`. Preregistered pilot question:
+  **does the archive retain standing cells in the pipe x-band** — decided
+  from the recorded archive's keys, plus the ladder for anything more.
+- **Escalation criterion, fixed now as ruled**: if the pilot retains
+  pipe-x-band cells and a budgeted campaign still produces no scene change
+  from any Down press in that band, the track-2 waypoint mechanism gets
+  dispatched — reported the moment the condition is met.
+- Raw destination: `target/smb-completion/c76-conquest/` on the ARM
+  machine.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the

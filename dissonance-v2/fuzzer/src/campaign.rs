@@ -85,6 +85,8 @@ pub struct SmbCampaignConfig {
     pub archive_entry_limit: usize,
     /// Controller vocabulary for this run, recorded in the header and report.
     pub vocabulary: SmbCampaignVocabulary,
+    /// Archive key policy for this run, recorded in the header and report.
+    pub key_policy: SmbArchiveKeyPolicy,
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -141,6 +143,13 @@ pub struct SmbCampaignStreamHeader {
         skip_serializing_if = "is_legacy_vocabulary_identifier"
     )]
     pub controller_vocabulary: String,
+    /// Archive key policy identifier; streams and reports recorded before
+    /// this field existed keyed under, and replay under, the frozen key.
+    #[serde(
+        default = "legacy_key_policy_identifier",
+        skip_serializing_if = "is_legacy_key_policy_identifier"
+    )]
+    pub key_policy: String,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -279,6 +288,13 @@ pub struct SmbCampaignModeReport {
         skip_serializing_if = "is_legacy_vocabulary_identifier"
     )]
     pub controller_vocabulary: String,
+    /// Archive key policy identifier; streams and reports recorded before
+    /// this field existed keyed under, and replay under, the frozen key.
+    #[serde(
+        default = "legacy_key_policy_identifier",
+        skip_serializing_if = "is_legacy_key_policy_identifier"
+    )]
+    pub key_policy: String,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -495,6 +511,67 @@ pub fn vocabulary_from_identifier(
     }
 }
 
+/// Header identifier for an archive key policy.
+#[must_use]
+pub fn key_policy_identifier(policy: SmbArchiveKeyPolicy) -> String {
+    match policy {
+        SmbArchiveKeyPolicy::Frozen => "frozen".to_owned(),
+        SmbArchiveKeyPolicy::VerticalPage => "vertical_page".to_owned(),
+        SmbArchiveKeyPolicy::FrozenRoomX16 {
+            world,
+            level,
+            progress,
+        } => format!("frozen_room_x_16:{world},{level},{progress}"),
+    }
+}
+
+/// Archive key policy named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known key policy.
+pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolicy, Box<dyn Error>> {
+    if identifier == "frozen" {
+        return Ok(SmbArchiveKeyPolicy::Frozen);
+    }
+    if identifier == "vertical_page" {
+        return Ok(SmbArchiveKeyPolicy::VerticalPage);
+    }
+    if let Some(room) = identifier.strip_prefix("frozen_room_x_16:") {
+        let mut parts = room.split(',');
+        let world = parts
+            .next()
+            .ok_or("room key identifier is missing its world")?
+            .parse()?;
+        let level = parts
+            .next()
+            .ok_or("room key identifier is missing its level")?
+            .parse()?;
+        let progress = parts
+            .next()
+            .ok_or("room key identifier is missing its progress")?
+            .parse()?;
+        if parts.next().is_some() {
+            return Err("room key identifier carries extra fields".into());
+        }
+        return Ok(SmbArchiveKeyPolicy::FrozenRoomX16 {
+            world,
+            level,
+            progress,
+        });
+    }
+    Err("campaign stream key policy is not recognized".into())
+}
+
+fn legacy_key_policy_identifier() -> String {
+    "frozen".to_owned()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_legacy_key_policy_identifier(identifier: &String) -> bool {
+    identifier == "frozen"
+}
+
 fn legacy_vocabulary_identifier() -> String {
     "frozen_nine_mask".to_owned()
 }
@@ -533,21 +610,28 @@ struct SmbCampaignJobResult {
 /// Execute one job: restore the parent snapshot and apply the suffix exactly as
 /// the serial engine's suffix loop does, collecting per-boundary candidates
 /// with worker-side probe verdicts.
+/// Per-run execution policies a worker applies to every job.
+#[derive(Clone, Copy, Debug)]
+struct SmbJobPolicies {
+    max_actions: usize,
+    retention_policy: SmbArchiveRetentionPolicy,
+    key_policy: SmbArchiveKeyPolicy,
+}
+
 fn execute_job(
     target: &mut SmbTarget,
     parent_snapshot: &SmbSnapshot,
     parent_actions: usize,
     parent_milestones: SmbMilestones,
     suffix: &[ButtonChord],
-    max_actions: usize,
-    retention_policy: SmbArchiveRetentionPolicy,
+    policies: SmbJobPolicies,
 ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
     target.restore(parent_snapshot)?;
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     for action in suffix {
-        if target.is_dead() || length >= max_actions {
+        if target.is_dead() || length >= policies.max_actions {
             break;
         }
         length = length.saturating_add(1);
@@ -562,8 +646,8 @@ fn execute_job(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
-            let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
-            let viable = admission_is_viable(target, &snapshot, retention_policy)?;
+            let key = archive_key(target.wram(), policies.key_policy);
+            let viable = admission_is_viable(target, &snapshot, policies.retention_policy)?;
             Some(SmbCampaignCandidate {
                 key,
                 viable,
@@ -603,6 +687,7 @@ struct CoordinatorCore<'a> {
     probe_refused: u64,
     max_actions: usize,
     retention_policy: SmbArchiveRetentionPolicy,
+    key_policy: SmbArchiveKeyPolicy,
 }
 
 impl CoordinatorCore<'_> {
@@ -611,6 +696,7 @@ impl CoordinatorCore<'_> {
         _selector_policy: SmbArchiveSelectorPolicy,
         retention_policy: SmbArchiveRetentionPolicy,
         archive_entry_limit: usize,
+        key_policy: SmbArchiveKeyPolicy,
     ) -> Self {
         let mut archive = Archive::new(None);
         archive.max_entries = archive_entry_limit;
@@ -628,6 +714,7 @@ impl CoordinatorCore<'_> {
             probe_refused: 0,
             max_actions,
             retention_policy,
+            key_policy,
         }
     }
 
@@ -649,7 +736,7 @@ impl CoordinatorCore<'_> {
             return Err("campaign bootstrap input exceeds the configured action limit".into());
         }
         target.reset();
-        let genesis_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+        let genesis_key = archive_key(target.wram(), self.key_policy);
         let genesis_snapshot = target
             .snapshot()
             .ok_or("failed to snapshot campaign genesis")?;
@@ -699,7 +786,7 @@ impl CoordinatorCore<'_> {
                     .snapshot()
                     .ok_or("failed to snapshot campaign bootstrap prefix")?;
                 let observations = target.last_action_observations().to_vec();
-                let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+                let key = archive_key(target.wram(), self.key_policy);
                 if !admission_is_viable(target, &snapshot, self.retention_policy)? {
                     continue;
                 }
@@ -920,6 +1007,7 @@ fn stream_header(
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
         controller_vocabulary: vocabulary_identifier(config.vocabulary).to_owned(),
+        key_policy: key_policy_identifier(config.key_policy),
         duration_policy: "stratified".to_owned(),
         suffix_policy: "one_or_two".to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
@@ -1004,6 +1092,7 @@ fn build_report(
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
         controller_vocabulary: header.controller_vocabulary.clone(),
+        key_policy: header.key_policy.clone(),
         duration_policy: header.duration_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
         retention_policy: header.retention_policy.clone(),
@@ -1087,6 +1176,7 @@ pub fn run_smb_campaign(
         config.selector_policy,
         config.retention_policy,
         config.archive_entry_limit,
+        config.key_policy,
     );
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -1124,8 +1214,11 @@ pub fn run_smb_campaign(
         for index in 0..config.workers {
             let (job_sender, job_receiver) = mpsc::channel::<JobSpec>();
             let reply_sender = reply_sender.clone();
-            let max_actions = config.action_limit;
-            let retention_policy = config.retention_policy;
+            let worker_policies = SmbJobPolicies {
+                max_actions: config.action_limit,
+                retention_policy: config.retention_policy,
+                key_policy: config.key_policy,
+            };
             scope.spawn(move || {
                 let mut target = match SmbTarget::from_smb_rom_bytes_headless(rom) {
                     Ok(target) => target,
@@ -1145,8 +1238,7 @@ pub fn run_smb_campaign(
                         spec.parent_actions,
                         spec.parent_milestones,
                         &spec.suffix,
-                        max_actions,
-                        retention_policy,
+                        worker_policies,
                     )
                     .map(|result| {
                         (
@@ -1381,11 +1473,13 @@ pub fn replay_smb_campaign(
     let selector_policy = selector_from_identifier(&header.parent_scheduler)?;
     let retention_policy = retention_from_identifier(&header.retention_policy)?;
     let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
+    let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
     let mut core = CoordinatorCore::new(
         header.action_limit,
         selector_policy,
         retention_policy,
         header.archive_entry_limit,
+        replay_key_policy,
     );
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -1435,8 +1529,11 @@ pub fn replay_smb_campaign(
                     parent_actions,
                     parent_milestones,
                     &suffix,
-                    header.action_limit,
-                    retention_policy,
+                    SmbJobPolicies {
+                        max_actions: header.action_limit,
+                        retention_policy,
+                        key_policy: replay_key_policy,
+                    },
                 )?;
                 let frames = target.frames_clocked().saturating_sub(job_frames_before);
                 if frames != job.frames {
@@ -1666,6 +1763,7 @@ pub fn diagnose_refused_grid(
         return Err("grid diagnosis ROM does not match the recorded stream".into());
     }
     let grid_vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
+    let grid_key_policy = key_policy_from_identifier(&header.key_policy)?;
     let frontier_pair = source
         .entries
         .iter()
@@ -1771,7 +1869,7 @@ pub fn diagnose_refused_grid(
             );
             if refused {
                 refused_candidates = refused_candidates.saturating_add(1);
-                let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+                let key = archive_key(target.wram(), grid_key_policy);
                 if (key.world, key.level) == frontier_pair
                     && key.progress >= candidate_range.0
                     && key.progress <= candidate_range.1
@@ -2409,8 +2507,11 @@ mod tests {
             1,
             SmbMilestones::default(),
             &suffix,
-            96,
-            SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            super::SmbJobPolicies {
+                max_actions: 96,
+                retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+                key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            },
         )
         .expect("execute job on first instance");
         let on_second = execute_job(
@@ -2419,8 +2520,11 @@ mod tests {
             1,
             SmbMilestones::default(),
             &suffix,
-            96,
-            SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            super::SmbJobPolicies {
+                max_actions: 96,
+                retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+                key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            },
         )
         .expect("execute job on second instance");
         assert_eq!(on_first, on_second);
@@ -2440,6 +2544,7 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -2467,6 +2572,7 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -2500,6 +2606,7 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -2522,6 +2629,7 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -2555,6 +2663,7 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
