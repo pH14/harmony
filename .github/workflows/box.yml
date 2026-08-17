@@ -5,13 +5,14 @@ name: box
 # can answer; the gates here need bare metal — a real /dev/kvm, the patched KVM
 # modules, hardware performance counters, and quiet pinned cores.
 #
-# ## This workflow is INERT until a box registers
-#
-# Each job below is keyed on a self-hosted runner **label set**. GitHub only
-# schedules a job when a runner matching every label is registered; with no such
-# runner, these jobs simply never schedule and the workflow is a no-op. That is
-# deliberate: the lane is a drop-in, landed now so the day a box is registered
-# needs no workflow edit and no archaeology into which command ran which gate.
+# Every job here must have a REGISTERED runner. A job whose label set matches
+# no registered runner does not skip — GitHub leaves it queued (for about a
+# day), and with `cancel-in-progress: false` on the repo-wide concurrency
+# group below, that phantom job wedges the whole hardware lane behind it.
+# That is why the x86 lane (`det-cfl-v1`, the retired determinism box) was
+# REMOVED with its machine in 2026-08 rather than left as a drop-in: this
+# commit's parent has the full job and `scripts/box-gates.sh`, its packaged
+# suite, when a successor box exists.
 #
 # `workflow_dispatch` only — **no schedule**. The box is a shared, leased
 # resource: a cron-triggered run would take a core out from under whoever is
@@ -27,28 +28,15 @@ name: box
 # This is what stops a determinism gate from scheduling onto the wrong silicon
 # and reporting a green that means nothing.
 #
-#   [self-hosted, kvm, x86_64, det-cfl-v1]   the x86 determinism box
-#   [self-hosted, kvm, arm64,  msr1]         the arm64 box
+#   [self-hosted, kvm, arm64,  msr1]         the arm64 box (live)
 #
-# Adding a box means registering a runner with the matching labels and adding
-# its `HostId` variant in consonance/acceptance-suite/src/manifest.rs — the
-# acceptance matrix's host axis and these labels name the same hosts.
+# Adding a box means registering a runner with the matching labels, adding a
+# job here, and adding its `HostId` variant in
+# consonance/acceptance-suite/src/manifest.rs — the acceptance matrix's host
+# axis and these labels name the same hosts.
 
 on:
   workflow_dispatch:
-    inputs:
-      gates:
-        description: >-
-          Space-separated gate names for the x86 lane (see
-          `scripts/box-gates.sh --list`). Empty runs every gate, in order.
-        required: false
-        default: ""
-      skip:
-        description: >-
-          Space-separated gate names to skip on the x86 lane. Useful to drop the
-          multi-hour workload gates from a short window.
-        required: false
-        default: ""
 
 # One hardware run at a time, repo-wide. Two concurrent runs would contend for
 # the same pinned cores and the same KVM modules — and the module revert of one
@@ -62,55 +50,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The x86 determinism box: the packaged hardware suite. `scripts/box-gates.sh`
-  # owns the gate ordering (pvclock's g0 smoke first), the core pinning, and the
-  # patched-module load/revert discipline — this job only invokes it, so the
-  # hand-run path on the box and the CI path are the same path.
-  x86:
-    name: x86 hardware suite (det-cfl-v1)
-    runs-on: [self-hosted, kvm, x86_64, det-cfl-v1]
-    # Long enough for the multi-hour workload gates; a run that exceeds it has
-    # wedged, and failing loudly beats holding the box's cores indefinitely.
-    timeout-minutes: 600
-    steps:
-      - uses: actions/checkout@v4
-      - name: Show the gate list
-        run: scripts/box-gates.sh --list
-      - name: Run the hardware gates
-        # The dispatch inputs reach the shell through `env`, never through
-        # `${{ }}` interpolation into the script body — interpolation would
-        # splice attacker-chosen text straight into a command line.
-        env:
-          GATES: ${{ inputs.gates }}
-          SKIP: ${{ inputs.skip }}
-        run: |
-          args=()
-          if [[ -n "$GATES" ]]; then
-            read -r -a names <<< "$GATES"
-            args+=("${names[@]}")
-          fi
-          if [[ -n "$SKIP" ]]; then
-            read -r -a skips <<< "$SKIP"
-            args+=(--skip "${skips[@]}")
-          fi
-          scripts/box-gates.sh ${args[@]+"${args[@]}"}
-      - name: Confirm the box was left on stock KVM
-        # The script reverts after every patched gate and verifies each revert.
-        # This is the belt-and-braces check on the run as a whole: the box is
-        # shared, and a patched module left loaded silently changes the meaning
-        # of the next person's run. `if: always()` so it also runs after a
-        # failed gate — that is precisely when a module is most likely stranded.
-        if: always()
-        run: |
-          size=$(awk '$1 == "kvm" { print $2 }' /proc/modules | head -n1)
-          expected="${STOCK_KVM_SIZE:-1396736}"
-          if [[ "$size" != "$expected" ]]; then
-            echo "::error::box left with kvm module size '$size' (stock is $expected) — \
-          the patched modules are still loaded. Revert them before the next run."
-            exit 1
-          fi
-          echo "box is on stock KVM (kvm size $size)"
-
   # The arm64 box: the CPU-qualification lane (docs/TESTING.md, rung 1).
   #
   # The qualification suite does not exist yet — it is specified in TESTING.md

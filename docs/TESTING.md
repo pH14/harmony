@@ -207,8 +207,10 @@ to run them on:
 | `consonance/vm-state/tests/golden.rs` | the golden regenerator behind `--ignored`; the golden assertion itself runs in the ordinary lane | `cargo test -p vm-state --test golden -- --ignored --nocapture` |
 | every crate's `tests/public_api.rs` | frozen-surface snapshots; need the pinned nightly + `cargo-public-api` | the `public-api` job in `.github/workflows/quality.yml` |
 
-**Gate ordering on hardware.** Two orderings are load-bearing and are encoded in
-`scripts/box-gates.sh` rather than left to memory:
+**Gate ordering on hardware.** Two orderings are load-bearing. They were encoded in
+`scripts/box-gates.sh`, the packaged x86 suite retired with the det-cfl-v1 box in 2026-08
+(git history has the script); any future hardware-suite runner must re-encode both rather
+than leave them to memory:
 
 - **`live_pvclock` runs its `g0` smoke first.** `g0_smoke_boot_registers_and_reads_sane_time` is
   the minutes-long probe of the riskiest live assumptions (does the kernel build, does the guest
@@ -289,24 +291,25 @@ unrun cell in the report, never as a pass.
 
 ## The runner-label scheme for hardware lanes
 
-Hardware CI is a `workflow_dispatch`-only workflow, `.github/workflows/box.yml`, with one matrix
-lane per hardware class, keyed on **self-hosted runner labels**. A lane whose label set matches no
-registered runner simply never schedules — so the workflow is *inert* until a box is registered,
-and needs no edit on the day one is.
+Hardware CI is a `workflow_dispatch`-only workflow, `.github/workflows/box.yml`, with one lane
+per hardware class, keyed on **self-hosted runner labels**. Every lane in the workflow must have
+a registered runner: a job whose label set matches nothing does not skip — GitHub leaves it
+queued, and the workflow's one-run-at-a-time concurrency group wedges behind it. A lane is added
+alongside its box and removed with it.
 
 | Lane | Labels | What it runs |
 |---|---|---|
-| x86 determinism box | `[self-hosted, kvm, x86_64, det-cfl-v1]` | `scripts/box-gates.sh` — the packaged x86 hardware suite |
 | ARM box | `[self-hosted, kvm, arm64, msr1]` | the CPU-qualification lane (rung 1). A placeholder step plus the portable arm64 checks until the qualification suite exists |
 
-Label discipline: the first three labels are *capabilities* (self-hosted, has KVM, this
-architecture) and the fourth is the **chip baseline identity** (`det-cfl-v1`, `msr1`). A gate that
-depends on a specific chip names that chip in its label set; a gate that merely needs KVM does
-not. This is what keeps a determinism gate from scheduling onto the wrong silicon and reporting
-a green that means nothing.
+(The x86 determinism-box lane — `[self-hosted, kvm, x86_64, det-cfl-v1]`, running the packaged
+`scripts/box-gates.sh` suite — was retired with its machine in 2026-08; both live in git history
+for the day a successor box exists.)
 
-The script is invoked by the lane and is also the hand-run entry point on the box. Each gate in it
-is individually skippable by argument, so a run window can spend its lease on one gate.
+Label discipline: the first three labels are *capabilities* (self-hosted, has KVM, this
+architecture) and the fourth is the **chip baseline identity** (`msr1`; the retired x86 box was
+`det-cfl-v1`). A gate that depends on a specific chip names that chip in its label set; a gate
+that merely needs KVM does not. This is what keeps a determinism gate from scheduling onto the
+wrong silicon and reporting a green that means nothing.
 
 ---
 
@@ -315,7 +318,7 @@ is individually skippable by argument, so a run window can spend its lease on on
 | Rung | Portable evidence | Hardware evidence |
 |---|---|---|
 | 1 CPU qualification | — (nothing about a chip is portable) | the qualification report, per chip |
-| 2 backend contract | `contract_mock.rs` in the ordinary lane | `contract_kvm.rs` + `kvm_smoke.rs` via `scripts/box-gates.sh` |
+| 2 backend contract | `contract_mock.rs` in the ordinary lane | `contract_kvm.rs` + `kvm_smoke.rs`, box-only `#[ignore]` gates (their packaged runner retired with the det-cfl-v1 box) |
 | 3 engine identity | `unison` + `acceptance-suite` O1 over toy subjects | the `live_*` identity gates |
 | 4 protocol | `control-proto` goldens + `vmm-core/tests/protocol.rs` | the live improvisation/taint gate |
 | 5 acceptance matrix | portable cells via the `acceptance-suite` binary | hardware cells, plus the `live_*` workload gates until migration |
