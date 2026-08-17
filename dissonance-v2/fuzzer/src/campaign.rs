@@ -3470,10 +3470,15 @@ mod tests {
         }
     }
 
+    /// One-worker configuration: with a single worker, selection and
+    /// admission fully serialize, so two live runs at one seed are
+    /// byte-identical and live-versus-live comparisons are sound. Multi-
+    /// worker live schedules are not comparable across runs; those tests
+    /// compare live against replay instead.
     fn test_config(campaign_seed: u64, execution_budget: u64) -> SmbCampaignConfig {
         SmbCampaignConfig {
             campaign_seed,
-            workers: 2,
+            workers: 1,
             execution_budget,
             action_limit: 96,
             host: "unit-test".to_owned(),
