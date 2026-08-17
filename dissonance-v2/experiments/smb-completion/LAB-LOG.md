@@ -5624,6 +5624,62 @@ one variable of science only when a link stalls.
   escalation is stated now — if waypoint steering also fails, the fork
   goes to the program's owner as strategy, not to more mechanism.
 
+### The waypoint mechanism lands — built, reviewed, merged
+
+- The waypoint steering mechanism, built by a separate builder on its own
+  branch and independently reviewed and approved by the integrator, is
+  merged: a registered policy value
+  `waypoint_4:world,level,low,high,band_low,band_high` granting a declared
+  region auxiliary retention — four entries per cell against the base two —
+  and selection preference through the existing concentrated recency draw,
+  with per-member exhaustion at the standing threshold so a sterile region
+  falls through rather than livelocking. Waypoint draws, auxiliary
+  retentions and waived snapbacks are all stream-annotated and counted.
+  Header-recorded; legacy streams carry no field and replay byte-identical.
+- The integrator's rulings on the builder's open questions are recorded as
+  confirmed-as-built: auxiliary capacity stays a compiled constant with a
+  new identifier if ever changed; the in-region snapback exemption stands,
+  guarded by integrator review of every declared region plus capacity caps
+  and the `waypoint_snap_exempt` counter; preference strength and the
+  per-run lifecycle stand as built.
+- **Question five verified for this registration**: C86 runs the
+  `frozen_room_x_16:3,1,208` key policy, under which states at pair
+  `(6, 3)` carry the frozen vertical term — the raw sixteen-pixel bucket —
+  and D86's census read exactly that key field from C85's archive under the
+  same policy, so bands 0 through 7 in the registration mean precisely what
+  the diagnosis measured.
+- Gates on the merged tree: all four pass with 92 tests; the standing
+  inertness reference re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`; the
+  ARM machine's release build — the aarch64 compile gate — passes on sync.
+
+## C86 — registered waypoint pilot, eighteenth link
+
+- The waypoint mechanism's debut, per the standing dispatch: an
+  integrator-approved, measurement-declared region. The model-declared
+  rung arrives later through other machinery; recorded for honesty.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c016`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4:6,3,30,73,0,7`. **The pinned window is deliberately
+  absent**, per the integrator's composition warning: the pin outranks the
+  waypoint in selection and its window lies entirely outside the declared
+  region, so a stacked registration would leave the waypoint
+  selection-inert and reproduce C85's starvation. One live run, no
+  retries; serial replay as a background audit.
+- Origin: C85's live archive — which already holds the upper-corridor
+  cells at buckets 30 through 49 that the waypoint preference draws
+  directly — SHA-256
+  `a3b0994aff6c1ac7241711aeaa1d68d26653e30af4f0de59f504c6d96e343d63`. The
+  play measurement returns recorded 72, viable 72, play 72; direct resume.
+- **Preregistered question, unchanged: does retention cross bucket 73?**
+  The preregistered next escalation stands: if waypoint steering also
+  fails, the fork goes to the program's owner as strategy, not to more
+  mechanism.
+- Raw destination: `target/smb-completion/c86-conquest/` on the ARM
+  machine, log `c86.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
