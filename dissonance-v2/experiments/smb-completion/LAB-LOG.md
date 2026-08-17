@@ -5357,6 +5357,36 @@ one variable of science only when a link stalls.
   fertile — 24,231 entries retained inside it — so the barren-threshold
   leg, which measures retention rather than progress, cannot see this trap.
 
+### D82 verdict — a steering problem the probe repertoire cannot cross
+
+- The third probe closes the measurement: from 500 entrance states in
+  buckets 0 through 29, **zero crossed the checkpoint**, six looped, 38
+  died in the castle's hazards and 456 stalled against mid-castle
+  obstacles — held Right alone cannot traverse the section, so lane
+  verification beyond this point requires play-quality input, which is
+  search, not measurement. The pattern library has extracted everything a
+  recorded-artifact probe can.
+- The complete measured picture for the ruling: the checkpoint at bucket
+  73 snaps back every state the archive holds there — all of which sit in
+  the lower vertical bands; the upper bands are empty from bucket 30
+  onward across roughly 150,000 maze executions; no stored route variable
+  exists, the check is positional at the crossing; the winning selection
+  band sits forty-plus buckets above the entrance region where the only
+  upper-band states live, so that region receives no draws; and the loop
+  keeps retention fertile, so the barren-threshold leg — which measures
+  retention, not progress — structurally cannot see the trap.
+- **Escalated to the integrator as selection-pressure design, the fork the
+  standing plan reserved.** The candidate arms, stated with their
+  characters: the track-2 waypoint mechanism, twice named in reserve, now
+  with a measured target — occupy the upper corridor across the crossing;
+  or a backward-retention-refusal policy value — refuse candidates whose
+  bucket snaps well below their parent's within a pair — which starves the
+  loop of retention, lets the existing barren-threshold fall-through walk
+  selection back to the entrance, and generalizes to any future loop trap,
+  at the cost of being slower and indirect. A pinned selection window is
+  the third shape, waypoint-lite without the track-2 machinery. The chain
+  holds until ruled; audits continue.
+
 ### Ruling on the action ceiling — raised to 8192 ahead of need
 
 - The integrator ruled on the standing headroom flag before any link could
