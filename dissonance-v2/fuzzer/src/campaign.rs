@@ -184,6 +184,9 @@ pub enum SmbCampaignAdmissionDecision {
     Rejected,
     /// No fixed probe mask kept the candidate alive for the horizon.
     ProbeRefused,
+    /// The candidate's progress snapped below its parent's beyond the
+    /// registered threshold; loop-trap retention is refused.
+    SnapRefused,
 }
 
 /// Stream record for one executed, admitted job.
@@ -317,6 +320,10 @@ pub struct SmbCampaignModeReport {
     pub duplicates_skipped: u64,
     /// Candidates refused by the admission probe.
     pub probe_refused: u64,
+    /// Candidates refused by the snapback rule; zero and omitted for runs
+    /// recorded before the rule existed.
+    #[serde(default, skip_serializing_if = "snap_refused_is_absent")]
+    pub snap_refused: u64,
     /// Executed jobs per worker index.
     pub jobs_per_worker: Vec<u64>,
     /// Pre-execution duplicate skips per worker index.
@@ -384,6 +391,9 @@ pub fn retention_identifier(policy: SmbArchiveRetentionPolicy) -> &'static str {
         SmbArchiveRetentionPolicy::Frozen => "frozen",
         SmbArchiveRetentionPolicy::ProbeAtAdmission => "probe_at_admission",
         SmbArchiveRetentionPolicy::ProbeAtAdmission45 => "probe_at_admission_45",
+        SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16 => {
+            "probe_at_admission_45_snapback_16"
+        }
     }
 }
 
@@ -399,6 +409,9 @@ pub fn retention_from_identifier(
         "frozen" => Ok(SmbArchiveRetentionPolicy::Frozen),
         "probe_at_admission" => Ok(SmbArchiveRetentionPolicy::ProbeAtAdmission),
         "probe_at_admission_45" => Ok(SmbArchiveRetentionPolicy::ProbeAtAdmission45),
+        "probe_at_admission_45_snapback_16" => {
+            Ok(SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16)
+        }
         _ => Err("campaign stream retention policy is not recognized".into()),
     }
 }
@@ -563,6 +576,10 @@ pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolic
     Err("campaign stream key policy is not recognized".into())
 }
 
+fn snap_refused_is_absent(count: &u64) -> bool {
+    *count == 0
+}
+
 fn legacy_key_policy_identifier() -> String {
     "frozen".to_owned()
 }
@@ -685,6 +702,7 @@ struct CoordinatorCore<'a> {
     deaths: u64,
     sequence: u64,
     probe_refused: u64,
+    snap_refused: u64,
     max_actions: usize,
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
@@ -712,6 +730,7 @@ impl CoordinatorCore<'_> {
             deaths: 0,
             sequence: 0,
             probe_refused: 0,
+            snap_refused: 0,
             max_actions,
             retention_policy,
             key_policy,
@@ -854,6 +873,24 @@ impl CoordinatorCore<'_> {
                     self.probe_refused = self.probe_refused.saturating_add(1);
                     decisions.push(SmbCampaignAdmissionDecision::ProbeRefused);
                     continue;
+                }
+                if self.retention_policy == SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16
+                {
+                    let parent_key = self
+                        .archive
+                        .entries
+                        .get(current_parent)
+                        .ok_or("campaign snapback check lost its parent")?
+                        .report
+                        .key;
+                    if (parent_key.world, parent_key.level)
+                        == (candidate.key.world, candidate.key.level)
+                        && parent_key.progress > candidate.key.progress.saturating_add(16)
+                    {
+                        self.snap_refused = self.snap_refused.saturating_add(1);
+                        decisions.push(SmbCampaignAdmissionDecision::SnapRefused);
+                        continue;
+                    }
                 }
                 let inserted_before = self.archive.entries.len();
                 match self.archive.insert(
@@ -1078,6 +1115,7 @@ fn build_report(
 ) -> SmbCampaignModeReport {
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
+    let snap_refused = core.snap_refused;
     let archive = core.into_archive_report(header.campaign_seed);
     SmbCampaignModeReport {
         mode: "campaign".to_owned(),
@@ -1106,6 +1144,7 @@ fn build_report(
             .saturating_add(counters.job_frames),
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
+        snap_refused,
         jobs_per_worker: counters.jobs_per_worker.clone(),
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
@@ -2131,7 +2170,10 @@ pub fn diagnose_x_transit(
             match job.decisions.get(candidate_index) {
                 Some(SmbCampaignAdmissionDecision::Retained { .. }) => slot.0 += 1,
                 Some(SmbCampaignAdmissionDecision::Rejected) => slot.1 += 1,
-                Some(SmbCampaignAdmissionDecision::ProbeRefused) => slot.2 += 1,
+                Some(
+                    SmbCampaignAdmissionDecision::ProbeRefused
+                    | SmbCampaignAdmissionDecision::SnapRefused,
+                ) => slot.2 += 1,
                 Some(SmbCampaignAdmissionDecision::Duplicate { .. }) | None => slot.3 += 1,
             }
             candidates += 1;

@@ -1668,6 +1668,9 @@ fn run_archive_resume_mode(
             SmbArchiveRetentionPolicy::Frozen => "frozen",
             SmbArchiveRetentionPolicy::ProbeAtAdmission => "probe_at_admission",
             SmbArchiveRetentionPolicy::ProbeAtAdmission45 => "probe_at_admission_45",
+            SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16 => {
+                "probe_at_admission_45_snapback_16"
+            }
         },
         "suffix_policy": match suffix_policy {
             SmbArchiveSuffixPolicy::OneOrTwo => "one_or_two",

@@ -219,6 +219,11 @@ pub enum SmbArchiveRetentionPolicy {
     /// the measured shallow tail the 120-frame demand refuses.
     #[serde(rename = "probe_at_admission_45")]
     ProbeAtAdmission45,
+    /// D82 maze ruling: the 45-frame probe plus refusal of candidates whose
+    /// progress lands more than sixteen buckets below their parent's within
+    /// the same pair — loop traps starve instead of absorbing retention.
+    #[serde(rename = "probe_at_admission_45_snapback_16")]
+    ProbeAtAdmission45Snapback16,
 }
 
 /// How the archive chooses expansion parents.
@@ -4616,7 +4621,8 @@ pub(crate) fn admission_is_viable(
     let horizon = match policy {
         SmbArchiveRetentionPolicy::Frozen => return Ok(true),
         SmbArchiveRetentionPolicy::ProbeAtAdmission => VIABILITY_PROBE_FRAMES,
-        SmbArchiveRetentionPolicy::ProbeAtAdmission45 => VIABILITY_PROBE_FRAMES_SHORT,
+        SmbArchiveRetentionPolicy::ProbeAtAdmission45
+        | SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16 => VIABILITY_PROBE_FRAMES_SHORT,
     };
     let mut viable = false;
     for mask in VIABILITY_PROBE_MASKS {

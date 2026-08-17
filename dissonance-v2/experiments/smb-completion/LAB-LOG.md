@@ -5420,6 +5420,63 @@ one variable of science only when a link stalls.
   rejected — a cell or probe defect — or never produced at all, a pure
   production bottleneck that refusal-plus-fall-through addresses alone.
 
+### D83 result — a pure production bottleneck; the companion key term has no work
+
+- The y-transit census over C81's stream re-derived 4,000 frontier jobs —
+  5,019 candidate boundaries — and found **zero upper-band candidates
+  anywhere in buckets 30 through 73**, against 3,471 lower-band candidates
+  there. Upper states are never produced past the entrance, not produced
+  and rejected, so the collision the companion vertical key term would
+  prevent cannot occur — and the frozen key already carries a global
+  sixteen-pixel vertical band in any case. **Per the ruling's gate, the
+  companion term does not build; backward-retention refusal is the whole
+  fix.** Raw evidence:
+  `target/smb-completion/d83-y-transit/c81-ytransit-v2.json`.
+
+### The snapback-refusal build — gated, inert, ready
+
+- `probe_at_admission_45_snapback_16`: the 45-frame admission probe plus
+  refusal of any candidate whose progress lands more than sixteen buckets
+  below its immediate parent's within the same `(world, level)` pair — the
+  threshold the snap-delta census registered, with its measured
+  twelve-entry program-wide false-positive footprint. Refusals are recorded
+  in the stream as their own decision kind and counted in the report as
+  `snap_refused`, omitted when zero so every legacy artifact serializes
+  byte-identically. Header-recorded like every policy before it; replay
+  reproduces refusals deterministically from the recorded policy.
+- The four quality gates pass; the standing inertness reference re-verifies
+  byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+## C84 — registered snapback pilot, sixteenth link
+
+- Pilot and chain link in one, per the maze ruling. One live
+  concentrated-policy conquest campaign, 50,000 executions, twelve workers
+  on the ARM machine, campaign seed `0x5eed_c014`, action limit 4096,
+  retention `probe_at_admission_45_snapback_16`, vocabulary
+  `down_ten_mask`, archive bound 131,072, key policy
+  `frozen_room_x_16:3,1,208`. One live run, no retries; serial replay as a
+  background audit.
+- Origin: C81's play measurement reads recorded 73, viable 73, play 72, so
+  per precedent the pilot launches from a derived single-entry origin at
+  the play frontier — the shortest of 1,056 entries at `(6, 3, 72)`, entry
+  3073, 3,082 actions. Derived origin
+  `target/smb-completion/c81-conquest/origin-play72b.json`, SHA-256
+  `aa28ca4b3c176babde811ac0cde27e90731116d2a6ff38a40e59dd757f58168a`.
+- **Preregistered pilot question: does retention cross bucket 73?**
+  Expected mechanics, stated for honest reading: refusal starves the loop
+  band, the barren threshold finally binds, fall-through walks selection
+  toward the entrance's 86 upper-band states, and new high cells at bucket
+  30 onward become fresh draw targets as they appear.
+- **The waypoint trigger, verbatim from the ruling and unsoftened**: if the
+  recorded stream shows entrance draws working and vertical retention
+  holding — upper-band cells appearing at bucket 30 onward — but no
+  checkpoint crossing within this run's budget, the track-2 waypoint
+  mechanism dispatches immediately, reported the moment the condition is
+  read from the ladder and archive.
+- Raw destination: `target/smb-completion/c84-conquest/` on the ARM
+  machine, log `c84.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
