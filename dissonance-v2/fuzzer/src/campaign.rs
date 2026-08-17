@@ -2138,6 +2138,238 @@ pub fn diagnose_x_transit(
     })
 }
 
+/// One probed frontier entry of the loop differential.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLoopProbeRecord {
+    /// Archive entry id.
+    pub entry_id: u64,
+    /// Entry progress bucket.
+    pub progress: u16,
+    /// `advanced`, `looped`, `dead`, or `held`.
+    pub outcome: String,
+    /// Maximum progress bucket observed during the probe.
+    pub max_progress: u16,
+    /// Minimum progress bucket observed during the probe.
+    pub min_progress: u16,
+}
+
+/// One discriminating work-RAM byte between advancing and looping states.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLoopDiscriminator {
+    /// Work-RAM offset.
+    pub offset: usize,
+    /// Distinct (value, count) pairs among advancing states.
+    pub advanced_values: Vec<(u8, u64)>,
+    /// Distinct (value, count) pairs among looping states.
+    pub looped_values: Vec<(u8, u64)>,
+    /// Whether the byte perfectly separates the two classes.
+    pub separates: bool,
+}
+
+/// Report of the loop-differential probe over one recorded archive.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLoopDifferentialReport {
+    /// Frontier `(world, level)` pair probed.
+    pub frontier_pair: (u8, u8),
+    /// Inclusive entry-progress bounds sampled.
+    pub bucket_range: (u16, u16),
+    /// Entries probed.
+    pub probed: usize,
+    /// Outcome counts: advanced, looped, dead, held.
+    pub outcomes: (u64, u64, u64, u64),
+    /// Bytes that perfectly separate advancing from looping states, plus the
+    /// strongest imperfect discriminators.
+    pub discriminators: Vec<SmbLoopDiscriminator>,
+    /// Every probed entry.
+    pub probes: Vec<SmbLoopProbeRecord>,
+}
+
+/// Probe frontier entries forward under held Right and diff the starting
+/// work RAM of advancing states against looping ones.
+///
+/// # Errors
+///
+/// Returns an error when the archive is empty or emulation fails.
+// Wall-clock feeds stderr progress only; nothing timed is serialized.
+#[allow(clippy::disallowed_methods)]
+pub fn diagnose_loop_differential(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    bucket_range: (u16, u16),
+    sample_cap: usize,
+    probe_chords: u16,
+    output_discriminators: usize,
+) -> Result<SmbLoopDifferentialReport, Box<dyn Error>> {
+    use crate::phase4b::WRAM_SIZE;
+    let frontier_pair = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no entries")?;
+    let base = select_frontier_resume_input(source)?;
+    let mut sample: Vec<&crate::phase4c::SmbArchiveEntryReport> = source
+        .entries
+        .iter()
+        .filter(|entry| {
+            (entry.key.world, entry.key.level) == frontier_pair
+                && entry.key.progress >= bucket_range.0
+                && entry.key.progress <= bucket_range.1
+        })
+        .collect();
+    sample.sort_by_key(|entry| entry.id);
+    sample.truncate(sample_cap);
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    eprintln!(
+        "loop-diff: emulating shared prefix of {} actions once",
+        base.actions.len()
+    );
+    target.reset();
+    let mut boundary_snapshots: Vec<SmbSnapshot> = Vec::with_capacity(base.actions.len() + 1);
+    boundary_snapshots.push(
+        target
+            .snapshot()
+            .ok_or("failed to snapshot the loop-diff genesis")?,
+    );
+    for action in &base.actions {
+        target.apply(action);
+        boundary_snapshots.push(
+            target
+                .snapshot()
+                .ok_or("failed to snapshot a loop-diff boundary")?,
+        );
+    }
+    let mut probes: Vec<SmbLoopProbeRecord> = Vec::new();
+    let mut advanced_wram: Vec<[u8; WRAM_SIZE]> = Vec::new();
+    let mut looped_wram: Vec<[u8; WRAM_SIZE]> = Vec::new();
+    for (index, entry) in sample.iter().enumerate() {
+        if index % 50 == 0 {
+            eprintln!("loop-diff: entry {}/{}", index + 1, sample.len());
+        }
+        let shared = entry
+            .input
+            .actions
+            .iter()
+            .zip(&base.actions)
+            .take_while(|(a, b)| a == b)
+            .count();
+        target.restore(&boundary_snapshots[shared])?;
+        for action in &entry.input.actions[shared..] {
+            target.apply(action);
+        }
+        if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+            probes.push(SmbLoopProbeRecord {
+                entry_id: entry.id,
+                progress: entry.key.progress,
+                outcome: "dead".to_owned(),
+                max_progress: entry.key.progress,
+                min_progress: entry.key.progress,
+            });
+            continue;
+        }
+        let start_wram = *target.wram();
+        let mut max_progress = entry.key.progress;
+        let mut min_progress = entry.key.progress;
+        let mut died = false;
+        for _ in 0..probe_chords {
+            target.apply(&ButtonChord::new(0x80, 60));
+            let state = crate::phase4b::smb_mechanical_state_from_wram(target.wram());
+            if (state.world, state.level) == frontier_pair {
+                max_progress = max_progress.max(state.progress);
+                min_progress = min_progress.min(state.progress);
+            } else if (state.world, state.level) > frontier_pair {
+                max_progress = u16::MAX;
+            }
+            if target.is_dead() {
+                died = true;
+                break;
+            }
+        }
+        let outcome = if max_progress > bucket_range.1 {
+            advanced_wram.push(start_wram);
+            "advanced"
+        } else if min_progress + 4 < entry.key.progress {
+            looped_wram.push(start_wram);
+            "looped"
+        } else if died {
+            "dead"
+        } else {
+            "held"
+        };
+        probes.push(SmbLoopProbeRecord {
+            entry_id: entry.id,
+            progress: entry.key.progress,
+            outcome: outcome.to_owned(),
+            max_progress,
+            min_progress,
+        });
+    }
+    let mut discriminators: Vec<SmbLoopDiscriminator> = Vec::new();
+    if !advanced_wram.is_empty() && !looped_wram.is_empty() {
+        let mut scored: Vec<(usize, bool, f64)> = Vec::new();
+        for offset in 0..WRAM_SIZE {
+            let mut a_vals = std::collections::BTreeMap::<u8, u64>::new();
+            for wram in &advanced_wram {
+                *a_vals.entry(wram[offset]).or_insert(0) += 1;
+            }
+            let mut l_vals = std::collections::BTreeMap::<u8, u64>::new();
+            for wram in &looped_wram {
+                *l_vals.entry(wram[offset]).or_insert(0) += 1;
+            }
+            let separates = a_vals.keys().all(|value| !l_vals.contains_key(value));
+            let a_mean = advanced_wram
+                .iter()
+                .map(|wram| f64::from(wram[offset]))
+                .sum::<f64>()
+                / advanced_wram.len() as f64;
+            let l_mean = looped_wram
+                .iter()
+                .map(|wram| f64::from(wram[offset]))
+                .sum::<f64>()
+                / looped_wram.len() as f64;
+            let score = (a_mean - l_mean).abs();
+            if separates || score > 0.0 {
+                scored.push((offset, separates, score));
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then(b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        scored.truncate(output_discriminators);
+        for (offset, separates, _) in scored {
+            let mut a_vals = std::collections::BTreeMap::<u8, u64>::new();
+            for wram in &advanced_wram {
+                *a_vals.entry(wram[offset]).or_insert(0) += 1;
+            }
+            let mut l_vals = std::collections::BTreeMap::<u8, u64>::new();
+            for wram in &looped_wram {
+                *l_vals.entry(wram[offset]).or_insert(0) += 1;
+            }
+            discriminators.push(SmbLoopDiscriminator {
+                offset,
+                advanced_values: a_vals.into_iter().collect(),
+                looped_values: l_vals.into_iter().collect(),
+                separates,
+            });
+        }
+    }
+    let outcomes = (
+        probes.iter().filter(|p| p.outcome == "advanced").count() as u64,
+        probes.iter().filter(|p| p.outcome == "looped").count() as u64,
+        probes.iter().filter(|p| p.outcome == "dead").count() as u64,
+        probes.iter().filter(|p| p.outcome == "held").count() as u64,
+    );
+    Ok(SmbLoopDifferentialReport {
+        frontier_pair,
+        bucket_range,
+        probed: probes.len(),
+        outcomes,
+        discriminators,
+        probes,
+    })
+}
+
 /// SMB player horizontal page byte, `$006d`.
 const PLAYER_HORIZONTAL_PAGE_OFFSET: usize = 0x006d;
 /// SMB player horizontal position byte within the page, `$0086`.

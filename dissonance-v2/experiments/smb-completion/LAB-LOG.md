@@ -5292,6 +5292,41 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c81-conquest/` on the ARM
   machine, log `c81.log`.
 
+### C81 live result — the maze flattens the chain at bucket 73
+
+- The live run completed its full 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c013`, the full promoted stack, from the derived
+  play-72 origin: 24,231 retained against 39,788 rejected with 1,189
+  deaths. **Its ladder tops at `(6, 3, 73)` — exactly the origin frontier,
+  zero new buckets — and the watermark never moved**, which carries the
+  diagnosis's first fact: no execution ever observed bucket 74, so nothing
+  forward was ever produced and discarded — the loop gates forward progress
+  itself. The maze fork's flatten branch fires; the standing plan runs.
+- The film locates the frontier precisely: the trajectory crosses the
+  castle's lava span and ends in the three-lane brick section — the maze
+  fork where the game checks the player's lane at page crossings and snaps
+  wrong routes back. Serial replay as a background audit.
+
+## D82 — preregistered loop differential
+
+- Sixth entry in the diagnostic pattern library. Question, fixed before
+  execution: **which work-RAM state separates maze states that advance from
+  states that loop?** The probe: up to 400 archive entries at the maze pair
+  in buckets 60 through 73, each restored via the shared-prefix boundary
+  machinery, then driven forward under held Right for ten sixty-frame
+  chords; an entry whose observed bucket exceeds 73 classifies as advanced,
+  one that snaps more than four buckets below its own bucket as looped.
+  The starting work RAM of the two classes is then differenced byte by
+  byte, reporting perfect separators first and the strongest imperfect
+  discriminators after, twenty-four in all.
+- Decision shape, per the standing maze plan: if a clean route-state
+  variable emerges and route-correct states exist in the archives'
+  collapsed cells, the pre-authorized room-x-class key term registers for
+  the maze variable without a further ruling; a surprising diagnosis
+  escalates instead.
+- Raw destination: `target/smb-completion/d82-loop-diff/` on the ARM
+  machine, versioned output, progress lines on.
+
 ### Ruling on the action ceiling — raised to 8192 ahead of need
 
 - The integrator ruled on the standing headroom flag before any link could

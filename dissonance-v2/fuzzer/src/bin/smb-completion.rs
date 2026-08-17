@@ -158,6 +158,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "diagnose-x-transit" {
         return run_x_transit_mode(&mut args);
     }
+    if mode == "diagnose-loop-differential" {
+        return run_loop_differential_mode(&mut args);
+    }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
     }
@@ -942,6 +945,54 @@ fn run_derive_ladder_mode(
     }
     fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
     println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
+fn run_loop_differential_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let bucket_low = u16::try_from(parse_u64(
+        &args.next().ok_or("missing bucket low")?.to_string_lossy(),
+    )?)?;
+    let bucket_high = u16::try_from(parse_u64(
+        &args.next().ok_or("missing bucket high")?.to_string_lossy(),
+    )?)?;
+    let sample_cap = usize::try_from(parse_u64(
+        &args.next().ok_or("missing sample cap")?.to_string_lossy(),
+    )?)?;
+    let probe_chords = u16::try_from(parse_u64(
+        &args.next().ok_or("missing probe chords")?.to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = fuzzer::campaign::diagnose_loop_differential(
+        &rom,
+        &source,
+        (bucket_low, bucket_high),
+        sample_cap,
+        probe_chords,
+        24,
+    )?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    let (advanced, looped, dead, held) = report.outcomes;
+    println!(
+        "probed {} advanced {} looped {} dead {} held {}",
+        report.probed, advanced, looped, dead, held
+    );
+    for d in report.discriminators.iter().take(10) {
+        println!(
+            "offset {:#06x} separates {} advanced {:?} looped {:?}",
+            d.offset, d.separates, d.advanced_values, d.looped_values
+        );
+    }
     Ok(())
 }
 
