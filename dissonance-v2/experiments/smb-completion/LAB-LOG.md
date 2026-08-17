@@ -5215,6 +5215,29 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c78-conquest/` on the ARM
   machine, log `c78.log`.
 
+### C78 live result — the sixth world falls and the seventh opens
+
+- The live run completed its full 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c010`, the full promoted stack, from C77's archive:
+  31,760 retained against 13,871 rejected with 12,810 deaths. **The sixth
+  world's third level completed at 163, its castle opened at execution
+  30,322 and completed at 144, the seventh world opened at execution
+  43,174 with its first level driven to 177, and its second level opened
+  at execution 47,585, reaching bucket 27** — watermark equal, play equals
+  viable equals recorded at 27, settled play, direct resume. Serial replay
+  as a background audit.
+
+## C79 — registered concentrated conquest, thirteenth link
+
+- Observational, in the C49/C61 pattern. One live concentrated-policy
+  conquest campaign, 50,000 executions, twelve workers on the ARM machine,
+  campaign seed `0x5eed_c011`, the full promoted stack unchanged, sourced
+  from C78's live archive, SHA-256
+  `02ffdfa8a464d632b6dad6e0db6430c9ac6696f80858f7efc25237868d60981f`. One
+  live run, no retries; serial replay as a background audit.
+- Raw destination: `target/smb-completion/c79-conquest/` on the ARM
+  machine, log `c79.log`.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
