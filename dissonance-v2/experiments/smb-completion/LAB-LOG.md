@@ -5996,6 +5996,28 @@ one variable of science only when a link stalls.
   archive under the direct-resume standing rule, question: does retention
   cross 137 to the castle's completion. The chain holds for the review.
 
+## C92 — registered all-heights waypoint pilot, twenty-fourth link
+
+- The integrator's region review passed as submitted, with the
+  classification recorded: D92's signature — zero deaths, terrain-held
+  plus page-crossing snapbacks — matches the first check section's shape,
+  so this is **the same obstacle class with the same cure, second
+  instance**; the repetition is the class signal the altitude doctrine
+  watches for, and it strengthens the expectation of a third instance in
+  the final castle.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c01c`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:6,3,120,144,0,15`.
+- Origin: C91's full archive, direct resume per the standing rule, SHA-256
+  `41b5417f20ebab62847a539a2dbf1ce7ccf9ef517250ff2928ccd4b6c7901ee5`. One
+  live run, no retries; serial replay as a background audit.
+- **Preregistered question: does retention cross 137 to the castle's
+  completion?**
+- Raw destination: `target/smb-completion/c92-conquest/` on the ARM
+  machine, log `c92.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
