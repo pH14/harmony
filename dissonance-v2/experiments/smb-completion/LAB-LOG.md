@@ -5818,6 +5818,44 @@ one variable of science only when a link stalls.
   input — which is builder-class work. Escalated with the matrix; the
   chain holds.
 
+### Ruling on the origin conflict — direct resume is the standing rule under region policies
+
+- The integrator ruled option one, and promoted the waiver to a **standing
+  rule, recorded here**: while a region policy is registered, links resume
+  **direct from the full archive** — the single-entry play-frontier
+  derivation is incompatible with region-preference mechanisms because it
+  discards the population the preference exists to draw, which is exactly
+  what C87 measured. The sinker risk the derivation guarded against is
+  mostly mooted under a region policy: selection preference goes to region
+  members, not the resume anchor.
+- Origin seeding is **not queued** — cheapest-first: it builds only if a
+  genuine sinker pathology appears under direct resume while a waypoint is
+  registered, on that evidence, not speculatively. Recorded as the known
+  fallback with that trigger.
+- C87's disposition: **quarantined as a mechanism-incompatibility
+  casualty, not a search result.** The draw-allocation question transfers
+  intact to C88.
+
+## C88 — registered bucket-uniform waypoint pilot, twentieth link
+
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c018`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:6,3,30,73,0,7`.
+- Origin: **C86's full archive, direct resume at its recorded maximum**,
+  per the standing rule above — the configuration that empirically
+  nucleated in C86 — SHA-256
+  `11525604417956ad646e2742a3467922dd11447d5b6654df5329dfaae6b78d24`. The
+  play-frontier derivation is waived under the standing rule; the waiver's
+  reasoning is the C87 record.
+- One live run, no retries; serial replay as a background audit.
+  **Preregistered question, transferred intact: does retention cross
+  bucket 73?** The escalation path is unchanged: on failure the numbers go
+  to the program's owner.
+- Raw destination: `target/smb-completion/c88-conquest/` on the ARM
+  machine, log `c88.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
