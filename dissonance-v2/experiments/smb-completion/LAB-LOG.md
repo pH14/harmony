@@ -5888,6 +5888,33 @@ one variable of science only when a link stalls.
   standing candidate for reading them, on the integrator's prior note.
   The chain holds.
 
+### Ruling on the maze numbers — let the search try all heights
+
+- The program's owner ruled, relayed by the integrator: the upper-only
+  band restriction encoded the falsified constant-upper hypothesis and is
+  removed. The region widens to every vertical band; the archive then
+  holds every lane at every bucket, and extensions compose lane changes
+  between checks by pure trial and error — no new mechanism, no outside
+  knowledge, no model call.
+
+## C89 — registered all-heights waypoint pilot, twenty-first link
+
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c019`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:6,3,30,73,0,15` — **the band range
+  is the single variable changed from C88**, widened to all vertical
+  bands.
+- Origin: C88's full archive, direct resume at its recorded maximum per
+  the standing rule, SHA-256
+  `0fe031c278a5dd2acb591ca98705019fc68dc41b70fbeed66de88aae75a1eb84`.
+- One live run, no retries; serial replay as a background audit.
+  **Preregistered question, unchanged: does retention cross bucket 73?**
+  Escalation path unchanged: the numbers go to the program's owner.
+- Raw destination: `target/smb-completion/c89-conquest/` on the ARM
+  machine, log `c89.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
