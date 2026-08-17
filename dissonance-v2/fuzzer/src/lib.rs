@@ -3,6 +3,7 @@
 //! The from-scratch Dissonance LibAFL prototype.
 
 pub mod campaign;
+pub mod instrumentor;
 pub mod phase0;
 pub mod phase1;
 pub mod phase2;
