@@ -1862,6 +1862,184 @@ pub fn diagnose_refused_grid(
     })
 }
 
+/// Candidate-boundary positions and decisions re-derived from a stream.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbXTransitReport {
+    /// Frontier `(world, level)` pair sampled.
+    pub frontier_pair: (u8, u8),
+    /// Inclusive parent-progress bounds sampled.
+    pub parent_range: (u16, u16),
+    /// Jobs re-derived.
+    pub jobs_sampled: usize,
+    /// Candidate boundaries recorded.
+    pub candidates: u64,
+    /// Per 16-pixel level-x band: retained, rejected, probe-refused and
+    /// duplicate candidate counts.
+    pub bands: Vec<(u32, u64, u64, u64, u64)>,
+}
+
+/// Re-derive frontier jobs and histogram candidate-boundary player-x against
+/// the recorded admission decisions.
+///
+/// # Errors
+///
+/// Returns an error when the stream is malformed, the ROM mismatches, a
+/// parent is missing, or emulation fails.
+// Wall-clock feeds stderr progress only; nothing timed is serialized.
+#[allow(clippy::disallowed_methods)]
+pub fn diagnose_x_transit(
+    rom: &[u8],
+    stream_text: &str,
+    source: &SmbArchiveReport,
+    parent_range: (u16, u16),
+    sample_cap: usize,
+) -> Result<SmbXTransitReport, Box<dyn Error>> {
+    use std::collections::BTreeMap;
+    type EntryIndex<'a> = BTreeMap<u64, &'a crate::phase4c::SmbArchiveEntryReport>;
+    let mut lines = stream_text.lines();
+    let header: SmbCampaignStreamHeader =
+        serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
+    if header.format != CAMPAIGN_STREAM_FORMAT {
+        return Err("campaign stream format is not recognized".into());
+    }
+    if header.rom_sha256 != format!("{:x}", Sha256::digest(rom)) {
+        return Err("x-transit ROM does not match the recorded stream".into());
+    }
+    let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
+    let frontier_pair = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no entries")?;
+    let by_id: EntryIndex<'_> = source
+        .entries
+        .iter()
+        .map(|entry| (entry.id, entry))
+        .collect();
+    struct SampledJob {
+        parent_id: u64,
+        mutation_seed: u64,
+        decisions: Vec<SmbCampaignAdmissionDecision>,
+    }
+    let mut sample: Vec<SampledJob> = Vec::new();
+    for line in lines {
+        if sample.len() >= sample_cap {
+            break;
+        }
+        let record: SmbCampaignStreamRecord = serde_json::from_str(line)?;
+        let SmbCampaignStreamRecord::Job(job) = record else {
+            continue;
+        };
+        let Some(parent) = by_id.get(&job.parent_id) else {
+            continue;
+        };
+        if (parent.key.world, parent.key.level) != frontier_pair
+            || parent.key.progress < parent_range.0
+            || parent.key.progress > parent_range.1
+        {
+            continue;
+        }
+        sample.push(SampledJob {
+            parent_id: job.parent_id,
+            mutation_seed: job.mutation_seed,
+            decisions: job.decisions,
+        });
+    }
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let base = select_frontier_resume_input(source)?;
+    let base_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&base)?));
+    if base_sha256 != header.resume_input_sha256 {
+        return Err("x-transit base input does not match the recorded resume input".into());
+    }
+    eprintln!(
+        "x-transit: emulating shared prefix of {} actions once",
+        base.actions.len()
+    );
+    target.reset();
+    let mut boundary_snapshots: Vec<SmbSnapshot> = Vec::with_capacity(base.actions.len() + 1);
+    boundary_snapshots.push(
+        target
+            .snapshot()
+            .ok_or("failed to snapshot the transit genesis")?,
+    );
+    for action in &base.actions {
+        target.apply(action);
+        boundary_snapshots.push(
+            target
+                .snapshot()
+                .ok_or("failed to snapshot a transit boundary")?,
+        );
+    }
+    let mut parent_snapshots: BTreeMap<u64, SmbSnapshot> = BTreeMap::new();
+    let mut bands: BTreeMap<u32, (u64, u64, u64, u64)> = BTreeMap::new();
+    let mut candidates = 0_u64;
+    let jobs_sampled = sample.len();
+    for (index, job) in sample.iter().enumerate() {
+        if index % 200 == 0 {
+            eprintln!("x-transit: job {}/{}", index + 1, jobs_sampled);
+        }
+        let parent_snapshot = match parent_snapshots.entry(job.parent_id) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                let parent = by_id
+                    .get(&job.parent_id)
+                    .ok_or("sampled parent is missing from the source archive")?;
+                let shared = parent
+                    .input
+                    .actions
+                    .iter()
+                    .zip(&base.actions)
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                target.restore(&boundary_snapshots[shared])?;
+                for action in &parent.input.actions[shared..] {
+                    target.apply(action);
+                }
+                if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                    return Err("a sampled parent input replays to a dead state".into());
+                }
+                let snapshot = target
+                    .snapshot()
+                    .ok_or("failed to snapshot a sampled parent")?;
+                slot.insert(snapshot).clone()
+            }
+        };
+        target.restore(&parent_snapshot)?;
+        let suffix = derive_suffix(job.mutation_seed, vocabulary)?;
+        for (candidate_index, chord) in suffix.iter().enumerate() {
+            if target.is_dead() {
+                break;
+            }
+            target.apply(chord);
+            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                break;
+            }
+            let wram = target.wram();
+            let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
+                + u32::from(wram[PLAYER_HORIZONTAL_LOW_OFFSET]);
+            let slot = bands.entry((x / 16) * 16).or_insert((0, 0, 0, 0));
+            match job.decisions.get(candidate_index) {
+                Some(SmbCampaignAdmissionDecision::Retained { .. }) => slot.0 += 1,
+                Some(SmbCampaignAdmissionDecision::Rejected) => slot.1 += 1,
+                Some(SmbCampaignAdmissionDecision::ProbeRefused) => slot.2 += 1,
+                Some(SmbCampaignAdmissionDecision::Duplicate { .. }) | None => slot.3 += 1,
+            }
+            candidates += 1;
+        }
+    }
+    Ok(SmbXTransitReport {
+        frontier_pair,
+        parent_range,
+        jobs_sampled,
+        candidates,
+        bands: bands
+            .into_iter()
+            .map(|(band, (a, b, c, d))| (band, a, b, c, d))
+            .collect(),
+    })
+}
+
 /// SMB player horizontal page byte, `$006d`.
 const PLAYER_HORIZONTAL_PAGE_OFFSET: usize = 0x006d;
 /// SMB player horizontal position byte within the page, `$0086`.

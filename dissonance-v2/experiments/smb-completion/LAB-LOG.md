@@ -5043,6 +5043,20 @@ one variable of science only when a link stalls.
   worst parent fell from 123 seconds to 183 milliseconds; the full census
   runs in minutes. Cost shape recorded beside the first: per-parent work
   must be proportional to lineage divergence, never to lineage depth.
+- **Two hygiene defects caught by the integrator and folded into the
+  diagnostic checklist.** First, the killed second attempt was not in fact
+  dead — its census child survived the wrapper kill, burned a core for
+  fifty-eight minutes, and was writing toward the **same output path** as
+  the completed census, which it would eventually have overwritten; the
+  integrator killed it by exact process id and verified the artifact of
+  record intact. The checklist gains: when replacing a running diagnostic,
+  confirm the worker process id is dead — not just the wrapper — and
+  version every diagnostic output path so a stale process can never clobber
+  an artifact a verdict was read from. Second, the first x-transit launch
+  paired a thirty-minute backstop with a run whose own measured per-job
+  cost projected twenty-seven to sixty-seven minutes, and discarded the
+  per-job progress lines; relaunched with a versioned output, a two-hour
+  backstop sized from the measured cost, and progress visible.
 
 ### D73 result — Down is inert because the population never stands over the pipe
 
