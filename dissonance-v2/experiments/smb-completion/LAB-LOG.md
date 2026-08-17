@@ -5565,6 +5565,29 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c85-conquest/` on the ARM
   machine, log `c85.log`, sentinel discipline in force.
 
+### C85 pilot result — the pin works, the maze holds, the waypoint trigger fires
+
+- The live run completed its full 50,000 executions, twelve workers,
+  campaign seed `0x5eed_c015`, the pinned stack, from the same derived
+  play-72 origin as C84: 27,538 retained against 37,098 rejected with 523
+  deaths, `snap_refused` zero — selection never left the entrance region
+  far enough to snap, exactly as a working pin predicts.
+- **The pin demonstrably worked**: upper-band cells appeared at bucket 30
+  onward for the first time in the program's history — 1,904 across buckets
+  30 through 39 and 181 across 40 through 49, where every previous campaign
+  recorded zero. Entrance draws happened throughout; vertical retention
+  held. The upper route's population thins out by bucket 49 and **the
+  checkpoint did not cross**: the ladder tops at `(6, 3, 72)`, watermark
+  equal. The preregistered question resolves no.
+- **The transferred waypoint trigger's condition is met on its exact
+  terms** — pin working, entrance draws happening, upper-band cells at 30
+  onward, no crossing within the budget — and per the ruling it is applied
+  unsoftened: **the track-2 waypoint mechanism dispatches immediately**,
+  reported the moment this record was read from the ladder and archive.
+  The track-2 specification receives its first read under this dispatch;
+  registration follows its ladder. Serial replay of C85 continues as a
+  background audit; the chain holds pending the waypoint registration.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
