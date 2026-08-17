@@ -1,7 +1,7 @@
 # Code-quality tooling — backlog & rationale
 
 Notes on tightening code quality beyond the current gates. **Status today:** every crate
-runs `build`/`test`/`clippy -D warnings`/`fmt` (`tasks/00-CONVENTIONS.md`), `proptest` is
+runs `build`/`test`/`clippy -D warnings`/`fmt` (`AGENTS.md` §Build & gates), `proptest` is
 adopted in all four crates (≥256 cases), clippy is `all = deny`, and `vtime` additionally
 denies float arithmetic. This doc is the plan for the next layer.
 
