@@ -1991,6 +1991,7 @@ pub fn diagnose_x_transit(
     source: &SmbArchiveReport,
     parent_range: (u16, u16),
     sample_cap: usize,
+    vertical_bands: bool,
 ) -> Result<SmbXTransitReport, Box<dyn Error>> {
     use std::collections::BTreeMap;
     type EntryIndex<'a> = BTreeMap<u64, &'a crate::phase4c::SmbArchiveEntryReport>;
@@ -2114,9 +2115,15 @@ pub fn diagnose_x_transit(
                 break;
             }
             let wram = target.wram();
-            let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
-                + u32::from(wram[PLAYER_HORIZONTAL_LOW_OFFSET]);
-            let slot = bands.entry((x / 16) * 16).or_insert((0, 0, 0, 0));
+            let band = if vertical_bands {
+                let state = crate::phase4b::smb_mechanical_state_from_wram(wram);
+                u32::from(state.progress) * 100 + u32::from(state.player_y_bucket)
+            } else {
+                let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
+                    + u32::from(wram[PLAYER_HORIZONTAL_LOW_OFFSET]);
+                (x / 16) * 16
+            };
+            let slot = bands.entry(band).or_insert((0, 0, 0, 0));
             match job.decisions.get(candidate_index) {
                 Some(SmbCampaignAdmissionDecision::Retained { .. }) => slot.0 += 1,
                 Some(SmbCampaignAdmissionDecision::Rejected) => slot.1 += 1,

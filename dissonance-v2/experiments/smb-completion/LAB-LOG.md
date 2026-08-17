@@ -5387,6 +5387,39 @@ one variable of science only when a link stalls.
   the third shape, waypoint-lite without the track-2 machinery. The chain
   holds until ruled; audits continue.
 
+### Ruling on the maze — backward-retention refusal, gated on free censuses
+
+- The integrator ruled option two — the backward-retention-refusal policy —
+  plus a companion vertical key term for the maze section, both gated on
+  free censuses first, with the rationale recorded: generality pays twice
+  because the eighth world's maze needs the same immunity; refusal treats
+  the structural blindness — fertile-loop invisibility — rather than
+  overriding it per instance; and it is this program's analog of pruning
+  dead branches. Track-2 waypoints stay in reserve a third time under a
+  preregistered trigger, to be applied unsoftened: entrance draws working
+  and vertical retention holding but no checkpoint crossing within the
+  pilot's budget dispatches waypoints immediately.
+- **Census one — snap-delta distribution, from the recorded archives, no
+  emulation.** Backward same-pair parent-to-child deltas across every
+  archive on the machine are bimodal: none at all between 1 and 30, then
+  the maze snap massing at 31 through 50-plus — 12,068 entries at the cap.
+  A refusal threshold of sixteen has enormous margin on both sides;
+  sixteen is registered.
+- **Census two — false-positive scan of the refusal predicate, same
+  sources.** Retained entries with backward delta above eight outside the
+  maze pair: **twelve, program-wide** — seven in the water level, five in
+  the sixth world's first level — against 12,812 inside the maze trap. The
+  predicate's measured collateral is negligible, and the policy is
+  header-recorded per campaign in any case.
+- **Calibrating fact for the companion term**: the frozen key already
+  carries a global sixteen-pixel vertical band — altitude is keyed
+  everywhere, unlike the H75 case where x was genuinely absent. Whether a
+  further maze-scoped vertical term has any work to do is exactly what the
+  third census decides: the y-transit over C81's stream, asking whether
+  upper-band candidates at buckets 30 through 73 were produced and
+  rejected — a cell or probe defect — or never produced at all, a pure
+  production bottleneck that refusal-plus-fall-through addresses alone.
+
 ### Ruling on the action ceiling — raised to 8192 ahead of need
 
 - The integrator ruled on the standing headroom flag before any link could

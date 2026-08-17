@@ -1024,12 +1024,14 @@ fn run_x_transit_mode(
     let rom = read_rom()?;
     let stream_text = fs::read_to_string(&stream_path)?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let vertical = std::env::var("HARMONY_TRANSIT_VERTICAL").is_ok();
     let report = fuzzer::campaign::diagnose_x_transit(
         &rom,
         &stream_text,
         &source,
         (parent_low, parent_high),
         sample_cap,
+        vertical,
     )?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
