@@ -9,6 +9,8 @@
 /.claude/skills/pr-review-workspace/
 .agent-prompt.md
 .env
+# The alder client's machine-local state (config, driver socket, cache, db).
+/.alder/
 # Spikes are worktrees on spike/* branches, never directories on main
 # (AGENTS.md, Conventions). Historical spike trees live on the spike/*
 # branches; local spike checkouts and build litter stay untracked here.
