@@ -5724,6 +5724,60 @@ one variable of science only when a link stalls.
   `target/smb-completion/d87-loop-diff/` on the ARM machine; the chain
   holds pending the strategy ruling.
 
+### Ruling on the maze strategy — routes are discovered, never imported
+
+- The program's owner ruled on the C86 escalation, relayed by the
+  integrator, and the first part is a standing principle recorded
+  permanently: **the vine-warp reroute is rejected, hard.** The vine's
+  existence is out-of-band game knowledge no search ever discovered;
+  leveraging it would smuggle imported knowledge into the claim. Routes
+  must be discovered by the machine. The option is struck.
+- The path forward instead, from the owner's framing — what would a
+  budget-spread explorer do — and C86's own data: the middle gap exists
+  because the waypoint's recency draw concentrated on the newest tip
+  cells and starved the population whose incremental extensions would
+  fill the middle — the pin's starvation failure repeated one level up.
+  Census first; on confirmation, a bucket-uniform draw allocation inside
+  the region; on refutation, stop and escalate the numbers.
+- **The census confirms, decisively.** Joining C86's 37,395
+  waypoint-annotated draws to their parents' recorded keys: **87.8
+  percent — 32,834 draws — sat on tip cells at buckets 65 through 73**,
+  the middle at 50 through 64 received exactly two draws, and the base at
+  30 through 49 received 4,559. Tip concentration is the gap's mechanism.
+- **The build**: `waypoint_4_bucket_uniform` — the same declared region
+  and preference, with the draw allocated bucket-uniformly: every
+  occupied progress bucket in the region equally likely, the concentrated
+  recency draw applied only within the chosen bucket, so gap-adjacent
+  buckets earn turns instead of the newest cells absorbing the draw.
+  Identifier in the existing family; the vocabulary rule is satisfied by
+  construction — draw, bucket, region, uniform, no new names. Gates pass
+  with 92 tests; the standing inertness reference re-verifies
+  byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+## C87 — registered bucket-uniform waypoint pilot, nineteenth link
+
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c017`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:6,3,30,73,0,7` — **the draw
+  allocation is the single variable changed from C86**. One live run, no
+  retries; serial replay as a background audit.
+- Origin: the resume check on C86's archive reads recorded 73, viable 73,
+  play 72, so per precedent the pilot launches from a derived single-entry
+  origin at the play frontier — the shortest of 1,284 entries at
+  `(6, 3, 72)`, entry 3073, 3,082 actions, derived origin
+  `target/smb-completion/c86-conquest/origin-play72c.json`, SHA-256
+  `27cfc43c9d6a405efe942f0128bc48ce7b0b487e113cf8e0ad468ecd46f0186a`. The
+  campaign's own bootstrap and the region preference then regenerate and
+  spread over the occupied buckets.
+- **Preregistered question, unchanged: does retention cross bucket 73?**
+  The preregistered next escalation stands unchanged: failure goes to the
+  program's owner as strategy.
+- Raw destination: `target/smb-completion/c87-conquest/` on the ARM
+  machine, log `c87.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

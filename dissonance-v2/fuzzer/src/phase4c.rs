@@ -289,6 +289,25 @@ pub enum SmbArchiveWaypointPolicy {
         /// Inclusive vertical band high bucket, in the key's vertical term.
         band_high: u8,
     },
+    /// C86 census ruling: the same region and preference, with the draw
+    /// allocated bucket-uniformly — each occupied progress bucket in the
+    /// region equally likely, the concentrated recency draw applied only
+    /// within the chosen bucket — so gap-adjacent buckets earn turns
+    /// instead of the newest tip cells absorbing the draw.
+    RegionBucketUniform {
+        /// Registered pair world.
+        world: u8,
+        /// Registered pair level.
+        level: u8,
+        /// Inclusive window low progress bucket.
+        low: u16,
+        /// Inclusive window high progress bucket.
+        high: u16,
+        /// Inclusive vertical band low bucket, in the key's vertical term.
+        band_low: u8,
+        /// Inclusive vertical band high bucket, in the key's vertical term.
+        band_high: u8,
+    },
 }
 
 impl SmbArchiveWaypointPolicy {
@@ -302,6 +321,14 @@ impl SmbArchiveWaypointPolicy {
         match self {
             Self::Absent => false,
             Self::Region {
+                world,
+                level,
+                low,
+                high,
+                band_low,
+                band_high,
+            }
+            | Self::RegionBucketUniform {
                 world,
                 level,
                 low,
@@ -905,6 +932,29 @@ impl<'a> Archive<'a> {
                     })
                     .collect();
                 if !members.is_empty() {
+                    let members = if matches!(
+                        self.waypoint_policy,
+                        SmbArchiveWaypointPolicy::RegionBucketUniform { .. }
+                    ) {
+                        // Bucket-uniform allocation: choose one occupied
+                        // progress bucket uniformly, then apply the recency
+                        // draw within it.
+                        let mut buckets: Vec<u16> = members
+                            .iter()
+                            .map(|id| self.entries[*id].report.key.progress)
+                            .collect();
+                        buckets.sort_unstable();
+                        buckets.dedup();
+                        let chosen = buckets[rand.below(
+                            NonZeroUsize::new(buckets.len()).ok_or("empty waypoint bucket set")?,
+                        )];
+                        members
+                            .into_iter()
+                            .filter(|id| self.entries[*id].report.key.progress == chosen)
+                            .collect()
+                    } else {
+                        members
+                    };
                     let (id, concentration) = self.draw_from_class(rand, members)?;
                     return Ok((
                         id,

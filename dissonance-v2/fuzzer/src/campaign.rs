@@ -662,6 +662,16 @@ pub fn waypoint_identifier(policy: SmbArchiveWaypointPolicy) -> String {
             band_low,
             band_high,
         } => format!("waypoint_4:{world},{level},{low},{high},{band_low},{band_high}"),
+        SmbArchiveWaypointPolicy::RegionBucketUniform {
+            world,
+            level,
+            low,
+            high,
+            band_low,
+            band_high,
+        } => {
+            format!("waypoint_4_bucket_uniform:{world},{level},{low},{high},{band_low},{band_high}")
+        }
     }
 }
 
@@ -677,7 +687,8 @@ pub fn waypoint_from_identifier(
     if identifier == "absent" {
         return Ok(SmbArchiveWaypointPolicy::Absent);
     }
-    if let Some(region) = identifier.strip_prefix("waypoint_4:") {
+    let bucket_uniform = identifier.strip_prefix("waypoint_4_bucket_uniform:");
+    if let Some(region) = bucket_uniform.or_else(|| identifier.strip_prefix("waypoint_4:")) {
         let mut parts = region.split(',');
         let world = parts
             .next()
@@ -708,6 +719,16 @@ pub fn waypoint_from_identifier(
         }
         if low > high || band_low > band_high {
             return Err("waypoint identifier declares an inverted window".into());
+        }
+        if bucket_uniform.is_some() {
+            return Ok(SmbArchiveWaypointPolicy::RegionBucketUniform {
+                world,
+                level,
+                low,
+                high,
+                band_low,
+                band_high,
+            });
         }
         return Ok(SmbArchiveWaypointPolicy::Region {
             world,
