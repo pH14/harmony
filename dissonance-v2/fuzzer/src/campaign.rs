@@ -22,9 +22,9 @@ use crate::{
     phase4c::{
         Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
         SmbArchiveProgressPoint, SmbArchiveReport, SmbArchiveRetentionPolicy,
-        SmbArchiveSelectorPolicy, SmbSelectorDraw, SmbSelectorPath, admission_is_viable,
-        archive_key, merge_action_milestones, merge_milestones, merge_progress_watermark,
-        milestone_key, update_first_inputs,
+        SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy, SmbSelectorDraw, SmbSelectorPath,
+        admission_is_viable, archive_key, merge_action_milestones, merge_milestones,
+        merge_progress_watermark, milestone_key, update_first_inputs,
     },
     target::Target,
 };
@@ -87,6 +87,8 @@ pub struct SmbCampaignConfig {
     pub vocabulary: SmbCampaignVocabulary,
     /// Archive key policy for this run, recorded in the header and report.
     pub key_policy: SmbArchiveKeyPolicy,
+    /// Waypoint policy for this run, recorded in the header and report.
+    pub waypoint_policy: SmbArchiveWaypointPolicy,
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -150,6 +152,13 @@ pub struct SmbCampaignStreamHeader {
         skip_serializing_if = "is_legacy_key_policy_identifier"
     )]
     pub key_policy: String,
+    /// Waypoint policy identifier; streams recorded before this field
+    /// existed ran without a waypoint and replay under `absent`.
+    #[serde(
+        default = "legacy_waypoint_identifier",
+        skip_serializing_if = "is_legacy_waypoint_identifier"
+    )]
+    pub waypoint_policy: String,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -298,6 +307,13 @@ pub struct SmbCampaignModeReport {
         skip_serializing_if = "is_legacy_key_policy_identifier"
     )]
     pub key_policy: String,
+    /// Waypoint policy identifier; reports recorded before this field
+    /// existed ran without a waypoint.
+    #[serde(
+        default = "legacy_waypoint_identifier",
+        skip_serializing_if = "is_legacy_waypoint_identifier"
+    )]
+    pub waypoint_policy: String,
     /// Frozen duration policy identifier.
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
@@ -324,6 +340,14 @@ pub struct SmbCampaignModeReport {
     /// recorded before the rule existed.
     #[serde(default, skip_serializing_if = "snap_refused_is_absent")]
     pub snap_refused: u64,
+    /// Candidates retained through the waypoint auxiliary cell capacity;
+    /// zero and omitted for runs without a registered waypoint.
+    #[serde(default, skip_serializing_if = "waypoint_count_is_absent")]
+    pub waypoint_retained: u64,
+    /// Snapback refusals waived inside the waypoint region; zero and
+    /// omitted likewise.
+    #[serde(default, skip_serializing_if = "waypoint_count_is_absent")]
+    pub waypoint_snap_exempt: u64,
     /// Executed jobs per worker index.
     pub jobs_per_worker: Vec<u64>,
     /// Pre-execution duplicate skips per worker index.
@@ -450,9 +474,10 @@ pub fn retention_from_identifier(
     }
 }
 
-/// Reject streams whose selector annotations disagree with the header policy.
+/// Reject streams whose selector annotations disagree with the header policies.
 fn verify_selector_annotation(
     policy: SmbArchiveSelectorPolicy,
+    waypoint_policy: SmbArchiveWaypointPolicy,
     annotation: Option<&SmbSelectorDraw>,
 ) -> Result<(), Box<dyn Error>> {
     match (policy, annotation) {
@@ -465,15 +490,25 @@ fn verify_selector_annotation(
             SmbArchiveSelectorPolicy::ConcentratedRecency
             | SmbArchiveSelectorPolicy::PinnedWindow { .. },
             Some(draw),
-        ) => match (draw.path, draw.concentration) {
-            (SmbSelectorPath::TieClass, None) => {
-                Err("concentrated tie-class draw is missing its concentration record".into())
+        ) => {
+            if draw.waypoint && waypoint_policy == SmbArchiveWaypointPolicy::Absent {
+                return Err(
+                    "waypoint draw is recorded without a registered waypoint policy".into(),
+                );
             }
-            (SmbSelectorPath::Uniform, Some(_)) => {
-                Err("concentrated uniform draw carries a concentration record".into())
+            if draw.waypoint && draw.path == SmbSelectorPath::Uniform {
+                return Err("waypoint draw claims the uniform path".into());
             }
-            _ => Ok(()),
-        },
+            match (draw.path, draw.concentration) {
+                (SmbSelectorPath::TieClass, None) => {
+                    Err("concentrated tie-class draw is missing its concentration record".into())
+                }
+                (SmbSelectorPath::Uniform, Some(_)) => {
+                    Err("concentrated uniform draw carries a concentration record".into())
+                }
+                _ => Ok(()),
+            }
+        }
     }
 }
 
@@ -614,8 +649,93 @@ pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolic
     Err("campaign stream key policy is not recognized".into())
 }
 
+/// Header identifier for a waypoint policy.
+#[must_use]
+pub fn waypoint_identifier(policy: SmbArchiveWaypointPolicy) -> String {
+    match policy {
+        SmbArchiveWaypointPolicy::Absent => "absent".to_owned(),
+        SmbArchiveWaypointPolicy::Region {
+            world,
+            level,
+            low,
+            high,
+            band_low,
+            band_high,
+        } => format!("waypoint_4:{world},{level},{low},{high},{band_low},{band_high}"),
+    }
+}
+
+/// Waypoint policy named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known waypoint policy or
+/// declares an inverted window.
+pub fn waypoint_from_identifier(
+    identifier: &str,
+) -> Result<SmbArchiveWaypointPolicy, Box<dyn Error>> {
+    if identifier == "absent" {
+        return Ok(SmbArchiveWaypointPolicy::Absent);
+    }
+    if let Some(region) = identifier.strip_prefix("waypoint_4:") {
+        let mut parts = region.split(',');
+        let world = parts
+            .next()
+            .ok_or("waypoint identifier is missing its world")?
+            .parse()?;
+        let level = parts
+            .next()
+            .ok_or("waypoint identifier is missing its level")?
+            .parse()?;
+        let low = parts
+            .next()
+            .ok_or("waypoint identifier is missing its low bucket")?
+            .parse()?;
+        let high = parts
+            .next()
+            .ok_or("waypoint identifier is missing its high bucket")?
+            .parse()?;
+        let band_low = parts
+            .next()
+            .ok_or("waypoint identifier is missing its band low bucket")?
+            .parse()?;
+        let band_high = parts
+            .next()
+            .ok_or("waypoint identifier is missing its band high bucket")?
+            .parse()?;
+        if parts.next().is_some() {
+            return Err("waypoint identifier carries extra fields".into());
+        }
+        if low > high || band_low > band_high {
+            return Err("waypoint identifier declares an inverted window".into());
+        }
+        return Ok(SmbArchiveWaypointPolicy::Region {
+            world,
+            level,
+            low,
+            high,
+            band_low,
+            band_high,
+        });
+    }
+    Err("campaign stream waypoint policy is not recognized".into())
+}
+
 fn snap_refused_is_absent(count: &u64) -> bool {
     *count == 0
+}
+
+fn waypoint_count_is_absent(count: &u64) -> bool {
+    *count == 0
+}
+
+fn legacy_waypoint_identifier() -> String {
+    "absent".to_owned()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_legacy_waypoint_identifier(identifier: &String) -> bool {
+    identifier == "absent"
 }
 
 fn legacy_key_policy_identifier() -> String {
@@ -744,6 +864,8 @@ struct CoordinatorCore<'a> {
     max_actions: usize,
     retention_policy: SmbArchiveRetentionPolicy,
     key_policy: SmbArchiveKeyPolicy,
+    waypoint_policy: SmbArchiveWaypointPolicy,
+    waypoint_snap_exempt: u64,
 }
 
 impl CoordinatorCore<'_> {
@@ -753,10 +875,12 @@ impl CoordinatorCore<'_> {
         retention_policy: SmbArchiveRetentionPolicy,
         archive_entry_limit: usize,
         key_policy: SmbArchiveKeyPolicy,
+        waypoint_policy: SmbArchiveWaypointPolicy,
     ) -> Self {
         let mut archive = Archive::new(None);
         archive.max_entries = archive_entry_limit;
         archive.set_selector_policy(selector_policy);
+        archive.set_waypoint_policy(waypoint_policy);
         Self {
             archive,
             aggregate: SmbMilestones::default(),
@@ -773,6 +897,8 @@ impl CoordinatorCore<'_> {
             max_actions,
             retention_policy,
             key_policy,
+            waypoint_policy,
+            waypoint_snap_exempt: 0,
         }
     }
 
@@ -926,9 +1052,21 @@ impl CoordinatorCore<'_> {
                         == (candidate.key.world, candidate.key.level)
                         && parent_key.progress > candidate.key.progress.saturating_add(16)
                     {
-                        self.snap_refused = self.snap_refused.saturating_add(1);
-                        decisions.push(SmbCampaignAdmissionDecision::SnapRefused);
-                        continue;
+                        // Waypoint composition with the snapback refusal: a
+                        // candidate inside the registered region is exempt.
+                        // The snapback rule starves accidental loop traps,
+                        // while the waypoint declares backward motion into
+                        // its region intentional; the region's auxiliary
+                        // retention stays capacity-capped, so the exemption
+                        // cannot flood the archive. Outside the region the
+                        // refusal is unchanged.
+                        if self.waypoint_policy.contains(&candidate.key) {
+                            self.waypoint_snap_exempt = self.waypoint_snap_exempt.saturating_add(1);
+                        } else {
+                            self.snap_refused = self.snap_refused.saturating_add(1);
+                            decisions.push(SmbCampaignAdmissionDecision::SnapRefused);
+                            continue;
+                        }
                     }
                 }
                 let inserted_before = self.archive.entries.len();
@@ -1084,6 +1222,7 @@ fn stream_header(
         archive_entry_limit: config.archive_entry_limit,
         controller_vocabulary: vocabulary_identifier(config.vocabulary).to_owned(),
         key_policy: key_policy_identifier(config.key_policy),
+        waypoint_policy: waypoint_identifier(config.waypoint_policy),
         duration_policy: "stratified".to_owned(),
         suffix_policy: "one_or_two".to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
@@ -1155,6 +1294,8 @@ fn build_report(
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
     let snap_refused = core.snap_refused;
+    let waypoint_retained = core.archive.waypoint_retained();
+    let waypoint_snap_exempt = core.waypoint_snap_exempt;
     let archive = core.into_archive_report(header.campaign_seed);
     SmbCampaignModeReport {
         mode: "campaign".to_owned(),
@@ -1170,6 +1311,7 @@ fn build_report(
         archive_entry_limit: header.archive_entry_limit,
         controller_vocabulary: header.controller_vocabulary.clone(),
         key_policy: header.key_policy.clone(),
+        waypoint_policy: header.waypoint_policy.clone(),
         duration_policy: header.duration_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
         retention_policy: header.retention_policy.clone(),
@@ -1184,6 +1326,8 @@ fn build_report(
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
         snap_refused,
+        waypoint_retained,
+        waypoint_snap_exempt,
         jobs_per_worker: counters.jobs_per_worker.clone(),
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
@@ -1244,6 +1388,17 @@ pub fn run_smb_campaign(
     {
         return Err("campaign archive entry limit is outside its bounded range".into());
     }
+    if let SmbArchiveWaypointPolicy::Region {
+        low,
+        high,
+        band_low,
+        band_high,
+        ..
+    } = config.waypoint_policy
+        && (low > high || band_low > band_high)
+    {
+        return Err("campaign waypoint region declares an inverted window".into());
+    }
     let resolved = resolve_origin(origin)?;
     let header = stream_header(config, &resolved.record, rom);
     let mut writer = StreamWriter::new(stream);
@@ -1255,6 +1410,7 @@ pub fn run_smb_campaign(
         config.retention_policy,
         config.archive_entry_limit,
         config.key_policy,
+        config.waypoint_policy,
     );
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -1552,12 +1708,14 @@ pub fn replay_smb_campaign(
     let retention_policy = retention_from_identifier(&header.retention_policy)?;
     let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
     let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
+    let waypoint_policy = waypoint_from_identifier(&header.waypoint_policy)?;
     let mut core = CoordinatorCore::new(
         header.action_limit,
         selector_policy,
         retention_policy,
         header.archive_entry_limit,
         replay_key_policy,
+        waypoint_policy,
     );
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -1581,7 +1739,11 @@ pub fn replay_smb_campaign(
                 if worker >= counters.skips_per_worker.len() {
                     return Err("recorded skip names an unknown worker".into());
                 }
-                verify_selector_annotation(selector_policy, skip.selector.as_ref())?;
+                verify_selector_annotation(
+                    selector_policy,
+                    waypoint_policy,
+                    skip.selector.as_ref(),
+                )?;
                 if let Some(draw) = &skip.selector {
                     core.archive.record_selection(parent_index, draw);
                 }
@@ -1644,7 +1806,11 @@ pub fn replay_smb_campaign(
                     )
                     .into());
                 }
-                verify_selector_annotation(selector_policy, job.selector.as_ref())?;
+                verify_selector_annotation(
+                    selector_policy,
+                    waypoint_policy,
+                    job.selector.as_ref(),
+                )?;
                 if let Some(draw) = &job.selector {
                     core.archive.record_selection(parent_index, draw);
                     core.archive.record_selection_outcome(
@@ -2764,12 +2930,17 @@ pub fn diagnose_down_census(
 #[cfg(test)]
 mod tests {
     use super::{
-        SmbCampaignConfig, SmbCampaignOrigin, derive_suffix, derive_worker_seed, execute_job,
-        replay_smb_campaign, run_smb_campaign,
+        CoordinatorCore, SmbCampaignActionResult, SmbCampaignAdmissionDecision,
+        SmbCampaignCandidate, SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin,
+        derive_suffix, derive_worker_seed, execute_job, replay_smb_campaign, run_smb_campaign,
+        waypoint_from_identifier, waypoint_identifier,
     };
     use crate::{
-        phase4b::{ButtonChord, SmbMilestones, SmbTarget},
-        phase4c::{SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy},
+        phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
+        phase4c::{
+            ArchiveCandidate, SmbArchiveKey, SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy,
+            SmbArchiveWaypointPolicy,
+        },
         target::Target,
     };
 
@@ -2870,6 +3041,7 @@ mod tests {
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -2898,6 +3070,7 @@ mod tests {
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -2932,6 +3105,7 @@ mod tests {
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -2955,6 +3129,7 @@ mod tests {
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -2989,6 +3164,7 @@ mod tests {
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3044,5 +3220,273 @@ mod tests {
             concentration.draws_per_parent_milli,
             concentration.window_draws * 1000 / concentration.distinct_window_parents
         );
+    }
+
+    #[test]
+    fn waypoint_identifier_round_trips() {
+        let region = SmbArchiveWaypointPolicy::Region {
+            world: 4,
+            level: 2,
+            low: 96,
+            high: 128,
+            band_low: 3,
+            band_high: 9,
+        };
+        assert_eq!(waypoint_identifier(region), "waypoint_4:4,2,96,128,3,9");
+        assert_eq!(
+            waypoint_from_identifier("waypoint_4:4,2,96,128,3,9").expect("parse region"),
+            region
+        );
+        assert_eq!(
+            waypoint_from_identifier("absent").expect("parse absent"),
+            SmbArchiveWaypointPolicy::Absent
+        );
+        assert_eq!(
+            waypoint_identifier(SmbArchiveWaypointPolicy::Absent),
+            "absent"
+        );
+        assert!(waypoint_from_identifier("waypoint_4:4,2,96,128,3").is_err());
+        assert!(waypoint_from_identifier("waypoint_4:4,2,96,128,3,9,1").is_err());
+        assert!(waypoint_from_identifier("waypoint_4:4,2,128,96,3,9").is_err());
+        assert!(waypoint_from_identifier("waypoint_4:4,2,96,128,9,3").is_err());
+        assert!(waypoint_from_identifier("pinned_window_128:1,0,0,1").is_err());
+    }
+
+    /// The key every state of the synthetic NROM target decodes to.
+    fn synthetic_genesis_key() -> SmbArchiveKey {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load genesis target");
+        target.reset();
+        crate::phase4c::archive_key(target.wram(), crate::phase4c::SmbArchiveKeyPolicy::Frozen)
+    }
+
+    #[test]
+    fn stacked_waypoint_campaign_replays_byte_identically() {
+        let rom = synthetic_nrom();
+        let genesis = synthetic_genesis_key();
+        // All three registered policies stacked: the pin, the snapback
+        // refusal, and a waypoint covering the genesis pair.
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca0a,
+            workers: 4,
+            execution_budget: 32,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::PinnedWindow {
+                world: genesis.world,
+                level: genesis.level,
+                low: 0,
+                high: u16::MAX,
+            },
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16,
+            archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: SmbArchiveWaypointPolicy::Region {
+                world: genesis.world,
+                level: genesis.level,
+                low: 0,
+                high: u16::MAX,
+                band_low: 0,
+                band_high: u8::MAX,
+            },
+        };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("stacked live campaign");
+        assert_eq!(live.executions_completed, 32);
+        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
+        let header = text.lines().next().expect("header");
+        assert!(header.contains("waypoint_4:"));
+        assert!(header.contains("pinned_window_128:"));
+        assert!(header.contains("probe_at_admission_45_snapback_16"));
+        assert!(
+            text.contains("\"waypoint\":true"),
+            "the waypoint preference must record its draws"
+        );
+        assert!(live.archive.selector.waypoint_selections > 0);
+        assert!(
+            live.waypoint_retained > 0,
+            "the auxiliary cell capacity must retain past the base bound"
+        );
+        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay stacked campaign");
+        assert_eq!(live, replayed);
+        let live_bytes = serde_json::to_vec_pretty(&live).expect("serialize live report");
+        let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
+        assert_eq!(live_bytes, replay_bytes);
+    }
+
+    #[test]
+    fn waypoint_absent_and_unentered_regions_are_inert() {
+        let rom = synthetic_nrom();
+        let genesis = synthetic_genesis_key();
+        // One worker keeps the live schedule serial, so the two live runs
+        // are comparable; multi-worker schedules may differ live by design.
+        let config = |waypoint_policy| SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca0b,
+            workers: 1,
+            execution_budget: 16,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy,
+        };
+        let mut absent_stream = Vec::new();
+        let absent = run_smb_campaign(
+            &rom,
+            &config(SmbArchiveWaypointPolicy::Absent),
+            &SmbCampaignOrigin::Genesis,
+            &mut absent_stream,
+        )
+        .expect("absent-waypoint campaign");
+        // A registered region no state ever enters changes nothing but the
+        // header record.
+        let unentered = SmbArchiveWaypointPolicy::Region {
+            world: genesis.world.wrapping_add(1),
+            level: genesis.level,
+            low: 0,
+            high: u16::MAX,
+            band_low: 0,
+            band_high: u8::MAX,
+        };
+        let mut region_stream = Vec::new();
+        let region = run_smb_campaign(
+            &rom,
+            &config(unentered),
+            &SmbCampaignOrigin::Genesis,
+            &mut region_stream,
+        )
+        .expect("unentered-region campaign");
+        let absent_text = String::from_utf8(absent_stream.clone()).expect("absent stream utf-8");
+        let region_text = String::from_utf8(region_stream.clone()).expect("region stream utf-8");
+        assert!(
+            !absent_text
+                .lines()
+                .next()
+                .expect("absent header")
+                .contains("waypoint"),
+            "an absent policy must keep the legacy header byte shape"
+        );
+        assert!(
+            region_text
+                .lines()
+                .next()
+                .expect("region header")
+                .contains("waypoint_4:")
+        );
+        let absent_records: Vec<&str> = absent_text.lines().skip(1).collect();
+        let region_records: Vec<&str> = region_text.lines().skip(1).collect();
+        assert_eq!(
+            absent_records, region_records,
+            "an unentered region must record the identical stream after the header"
+        );
+        assert_eq!(absent.archive, region.archive);
+        assert_eq!(absent.waypoint_retained, 0);
+        assert_eq!(region.waypoint_retained, 0);
+        assert_eq!(region.waypoint_snap_exempt, 0);
+        assert_eq!(region.archive.selector.waypoint_selections, 0);
+        // Both streams, one with the field and one without, replay exactly.
+        let absent_replay =
+            replay_smb_campaign(&rom, &absent_stream, None).expect("replay absent stream");
+        assert_eq!(absent, absent_replay);
+        let region_replay =
+            replay_smb_campaign(&rom, &region_stream, None).expect("replay region stream");
+        assert_eq!(region, region_replay);
+    }
+
+    #[test]
+    fn waypoint_exempts_snapback_only_inside_the_region() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        target.reset();
+        let snapshot = target.snapshot().expect("snapshot genesis");
+        let parent_key = SmbArchiveKey {
+            world: 1,
+            level: 0,
+            progress: 40,
+            player_y_bucket: 5,
+            player_engine_state: 0,
+            state_fingerprint: 0,
+            room_x_bucket: 0,
+        };
+        let candidate_key = SmbArchiveKey {
+            progress: 10,
+            ..parent_key
+        };
+        let admit = |waypoint_policy| -> (Vec<SmbCampaignAdmissionDecision>, u64, u64) {
+            let mut core = CoordinatorCore::new(
+                96,
+                SmbArchiveSelectorPolicy::ConcentratedRecency,
+                SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16,
+                32_768,
+                crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+                waypoint_policy,
+            );
+            core.archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input: SmbInput::default(),
+                        key: parent_key,
+                        milestones: SmbMilestones::default(),
+                    },
+                    snapshot.clone(),
+                    &[],
+                )
+                .expect("insert snapback parent")
+                .expect("retain snapback parent");
+            let result = SmbCampaignJobResult {
+                actions: vec![SmbCampaignActionResult {
+                    action: ButtonChord::new(0x01, 8),
+                    observations: Vec::new(),
+                    milestones: SmbMilestones::default(),
+                    dead: false,
+                    failed: false,
+                    candidate: Some(SmbCampaignCandidate {
+                        key: candidate_key,
+                        viable: true,
+                        snapshot: snapshot.clone(),
+                    }),
+                }],
+            };
+            let (_, decisions) = core.admit_job(0, &result).expect("admit snapback job");
+            (decisions, core.snap_refused, core.waypoint_snap_exempt)
+        };
+        // Without a waypoint the snapback rule refuses the backward candidate.
+        let (decisions, snap_refused, exempted) = admit(SmbArchiveWaypointPolicy::Absent);
+        assert_eq!(decisions, vec![SmbCampaignAdmissionDecision::SnapRefused]);
+        assert_eq!((snap_refused, exempted), (1, 0));
+        // A region containing the candidate waives the refusal and counts it.
+        let (decisions, snap_refused, exempted) = admit(SmbArchiveWaypointPolicy::Region {
+            world: 1,
+            level: 0,
+            low: 0,
+            high: 16,
+            band_low: 0,
+            band_high: 15,
+        });
+        assert_eq!(
+            decisions,
+            vec![SmbCampaignAdmissionDecision::Retained { id: 1 }]
+        );
+        assert_eq!((snap_refused, exempted), (0, 1));
+        // A region elsewhere in the same pair leaves the refusal unchanged.
+        let (decisions, snap_refused, exempted) = admit(SmbArchiveWaypointPolicy::Region {
+            world: 1,
+            level: 0,
+            low: 30,
+            high: 50,
+            band_low: 0,
+            band_high: 15,
+        });
+        assert_eq!(decisions, vec![SmbCampaignAdmissionDecision::SnapRefused]);
+        assert_eq!((snap_refused, exempted), (1, 0));
     }
 }
