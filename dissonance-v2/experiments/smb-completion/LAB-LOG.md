@@ -5915,6 +5915,44 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c89-conquest/` on the ARM
   machine, log `c89.log`, sentinel discipline in force.
 
+### C89 result — the maze breaks
+
+- **The preregistered question resolves yes: retention crossed bucket 73
+  and ran to `(6, 3, 87)`, watermark equal.** The live run completed its
+  full 50,000 executions, campaign seed `0x5eed_c019`, the all-heights
+  region: 43,960 retained with 599 deaths, 37,621 waypoint selections,
+  7,884 auxiliary retentions, 12 snapback exemptions, 5,781 refusals.
+  Serial replay as a background audit.
+- The mechanism story, recorded because it is the finding: five mechanisms
+  and six links each did exactly what they were designed to do and the
+  checkpoint refused them all — until the owner's ruling removed the
+  band restriction that encoded the falsified constant-upper hypothesis.
+  With every lane at every bucket held in the archive, bucket-uniform
+  draws composed lane changes between checks by pure trial and error, and
+  the sequence was satisfied with no new mechanism, no outside knowledge,
+  and no model call. Routes are discovered.
+- The resume check reads recorded 87, viable 84, play 84. **The waypoint
+  is dropped for the next link** — the maze is crossed and the region now
+  lies behind the frontier, where its preference would pull three
+  quarters of draws backward — so the region-policy standing rule no
+  longer applies and the play-frontier derivation returns: the next link
+  launches from the derived single-entry origin at `(6, 3, 84)`, the
+  shortest of four entries, entry 31547, 3,088 actions,
+  `target/smb-completion/c89-conquest/origin-play84.json`, SHA-256
+  `02f6e49a9daabac2f80b8f32b1dcd8887b9bfcfa1cb4ed480a2493acb1a9886a`.
+
+## C90 — registered concentrated conquest, twenty-second link
+
+- Observational, the chain resuming its ordinary shape past the maze. One
+  live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c01a`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  no waypoint. One live run, no retries; serial replay as a background
+  audit. From the derived play-84 origin above.
+- Raw destination: `target/smb-completion/c90-conquest/` on the ARM
+  machine, log `c90.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
