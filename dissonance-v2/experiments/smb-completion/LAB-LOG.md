@@ -5420,6 +5420,29 @@ one variable of science only when a link stalls.
   rejected — a cell or probe defect — or never produced at all, a pure
   production bottleneck that refusal-plus-fall-through addresses alone.
 
+### H75 registration corrigendum — the pilot's origin was C72's archive
+
+- Surfaced while freezing the stall fixtures, from the recorded stream
+  header, which is the ground truth: **the C76 pilot launched from C72's
+  archive**, path and SHA-256
+  `6040043ce5be7aa0671ab8cffe8b24fa68eff3352114cd02ee7cc22509556bc2`
+  recorded in its header — while the H75 registration text named C70's
+  archive and cited C70's hash. The registration prose was wrong; the run,
+  its gates and its result are unaffected in substance because C70 and C72
+  tie at the same frontier with the byte-identical shortest resume entry,
+  1,547 actions, which is what the campaign actually resumes from. The
+  quarantine lineage as written — C76 depending on C70's audit — transfers
+  to C72's audit, which also passed. Recorded rather than edited in place,
+  per the standing practice for corrections.
+- The two held-out stall fixtures are frozen on the integrator's
+  instruction for the instrumentor-loop mechanism's validation: the
+  warp-room stall (C72 pre-room-x, tarball SHA-256
+  `e109c3f4835e45b86e29699ff11049365f1e9414a86b7ae1ea9a595960d7f341`) and
+  the maze stall (C81 pre-refusal, tarball SHA-256
+  `e55b5559954bc615bc528d0b5a3459f5a342370b2bfdee0521234f62da7998e5`),
+  with manifest and provenance README at the neutral fixtures location
+  outside this tree; box copies stay in place, excluded from cleanup.
+
 ### D83 execution note — a launch crash sat undetected behind a blind waiter
 
 - The first y-transit launch died in its first second — the census
