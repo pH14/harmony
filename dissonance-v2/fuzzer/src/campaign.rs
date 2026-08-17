@@ -1987,20 +1987,62 @@ pub fn diagnose_down_census(
         });
     }
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    // Every frontier parent extends the run's resume input, so the shared
+    // prefix is emulated once and each parent replays only its tail. Without
+    // this the census re-emulates roughly 146,000 frames per parent — the
+    // cost blowup that hung the first D73 launch.
+    let base = select_frontier_resume_input(source)?;
+    let base_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&base)?));
+    if base_sha256 != header.resume_input_sha256 {
+        return Err("census base input does not match the recorded resume input".into());
+    }
+    eprintln!(
+        "down-census: emulating shared prefix of {} actions once",
+        base.actions.len()
+    );
+    target.reset();
+    for action in &base.actions {
+        target.apply(action);
+    }
+    if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+        return Err("the shared resume prefix replays to a dead state".into());
+    }
+    let base_snapshot = target
+        .snapshot()
+        .ok_or("failed to snapshot the shared resume prefix")?;
+    const CENSUS_FRAME_BUDGET: u64 = 20_000_000;
+    let frames_at_start = target.frames_clocked();
     let mut parent_snapshots: BTreeMap<u64, SmbSnapshot> = BTreeMap::new();
     let mut parent_positions: BTreeMap<u64, (u32, u8)> = BTreeMap::new();
     let mut presses: Vec<SmbDownPressRecord> = Vec::new();
     let jobs_sampled = sample.len();
-    for job in &sample {
+    for (index, job) in sample.iter().enumerate() {
+        if target.frames_clocked().saturating_sub(frames_at_start) > CENSUS_FRAME_BUDGET {
+            return Err("down census exceeded its hard frame budget".into());
+        }
         let parent_snapshot = match parent_snapshots.entry(job.parent_id) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.get().clone(),
             std::collections::btree_map::Entry::Vacant(slot) => {
                 let parent = by_id
                     .get(&job.parent_id)
                     .ok_or("sampled parent is missing from the source archive")?;
-                target.reset();
-                for action in &parent.input.actions {
-                    target.apply(action);
+                let tail = parent
+                    .input
+                    .actions
+                    .strip_prefix(base.actions.as_slice())
+                    .map(<[ButtonChord]>::to_vec);
+                if let Some(tail) = tail {
+                    target.restore(&base_snapshot)?;
+                    for action in &tail {
+                        target.apply(action);
+                    }
+                } else {
+                    // A bootstrap-prefix parent or a foreign lineage: replay
+                    // it whole under the frame budget.
+                    target.reset();
+                    for action in &parent.input.actions {
+                        target.apply(action);
+                    }
                 }
                 if target.is_dead() || target.exit_kind() != ExitKind::Ok {
                     return Err("a sampled parent input replays to a dead state".into());
@@ -2015,6 +2057,14 @@ pub fn diagnose_down_census(
                 slot.insert(snapshot).clone()
             }
         };
+        eprintln!(
+            "down-census: job {}/{} sequence {} parent {} frames {}",
+            index + 1,
+            jobs_sampled,
+            job.sequence,
+            job.parent_id,
+            target.frames_clocked().saturating_sub(frames_at_start)
+        );
         target.restore(&parent_snapshot)?;
         let suffix = derive_suffix(job.mutation_seed, vocabulary)?;
         for chord in &suffix {

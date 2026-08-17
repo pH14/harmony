@@ -5004,6 +5004,30 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/d73-down-census/` on the ARM
   machine.
 
+### D73 execution note — first launch killed; root cause a cost blowup, not a loop
+
+- The first launch computed for twelve hours with no output and was killed
+  by exact process id on the integrator's instruction. Root cause,
+  established from recorded artifacts rather than guessed: **the census
+  replayed every distinct parent from power-on, and at this depth a parent
+  input is roughly 146,000 frames** — the 1,547-action resume prefix
+  averages 94.6 frames per action, an order of magnitude above the naive
+  frames-per-action estimate, and bucket 208 holds 5,309 distinct parents,
+  so the 600 sampled jobs were nearly all distinct parents: about 88
+  million frames on one core. The process was computing, not looping;
+  the defect was cost, plus a tool that printed nothing until completion,
+  which made slow indistinguishable from hung.
+- The fix, gated before relaunch: the shared resume prefix — which every
+  frontier parent extends, the median parent being eight actions past it —
+  is emulated **once** and verified against the recorded header's resume
+  input hash; each parent then replays only its tail, collapsing the cost
+  roughly twenty-thousand-fold. Per the ruling the census now emits a
+  progress line per job and enforces a hard twenty-million-frame budget
+  that fails loudly instead of silently grinding. The same
+  full-replay cost shape exists in the refused-candidate grid and inherits
+  this pattern if that tool runs again at depth; noted here so it is not
+  rediscovered.
+
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
 - The integrator ruled on the C68 ceiling finding, same doctrine as the
