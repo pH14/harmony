@@ -5184,6 +5184,11 @@ one variable of science only when a link stalls.
   `01e2e25b13b87e98b046b7cc3a0ff0c9228c393367341242f5c6526ce33c3535`.
 - Raw destination: `target/smb-completion/c77-conquest/` on the ARM
   machine, log `c77.log`.
+- Launch note: the first attempt exited at file-not-found — the launch
+  script's global rename had clobbered the derived-origin path — with zero
+  executions and no stream, so the registered arm was not consumed; the
+  path was corrected and the same arm launched. Films: C76's furthest
+  trajectory through the warp and the fifth world is cut and delivered.
 
 ### Ruling on the archive ceiling — raised to 131,072, recorded per run
 
