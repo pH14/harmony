@@ -6159,6 +6159,29 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c94-conquest/` on the ARM
   machine, log `c94.log`, sentinel discipline in force.
 
+### C94 result — rung three null; the three-rung plan closes
+
+- The live run completed its full 50,000 executions over roughly seven
+  hours — long jobs emulating whole-section trajectories cost twenty-fold
+  — campaign seed `0x5eed_c01e`, the long-suffix stack from the slimmed
+  origin. **The ladder tops at `(6, 3, 137)` unchanged. The preregistered
+  question resolves no.** Serial replay continues as a background audit.
+- The three-rung plan is now fully resolved, each rung honest: the
+  stored-state differential surfaced no clean discriminator; whole-path
+  all-lane composition failed; and single-trajectory traversal — the
+  poisoning-immune design, thousands of up-to-48-action pushes from every
+  entrance lane — failed. **The final check has refused every lane, every
+  composition, and whole-section single trajectories.** If a correct
+  route exists in the reachable action space, its probability under
+  uniform chord draws is below what these budgets sample — multiple
+  consecutive precise maneuvers compound beyond blind reach.
+- Escalated to the program's owner on the standing path, with the honest
+  option set: larger long-suffix budgets priced against the compounding
+  probability argument; the model-facing diagnosis rung, which reads the
+  recorded films and names route semantics — the one lever that changes
+  the sampling distribution rather than the sample count; or the owner's
+  strategic reframing. The chain holds; every stream is preserved.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
