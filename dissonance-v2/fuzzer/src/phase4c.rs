@@ -676,6 +676,11 @@ impl<'a> Archive<'a> {
         self.waypoint_policy = policy;
     }
 
+    /// Report whether a key sits inside the registered waypoint region.
+    pub(crate) fn waypoint_contains(&self, key: &SmbArchiveKey) -> bool {
+        self.waypoint_policy.contains(key)
+    }
+
     /// Candidates retained through the waypoint auxiliary cell capacity.
     pub(crate) fn waypoint_retained(&self) -> u64 {
         self.waypoint_retained

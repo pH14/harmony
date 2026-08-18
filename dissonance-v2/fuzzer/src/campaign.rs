@@ -89,6 +89,8 @@ pub struct SmbCampaignConfig {
     pub key_policy: SmbArchiveKeyPolicy,
     /// Waypoint policy for this run, recorded in the header and report.
     pub waypoint_policy: SmbArchiveWaypointPolicy,
+    /// Suffix policy for this run, recorded in the header and report.
+    pub suffix: SmbCampaignSuffixPolicy,
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -534,8 +536,25 @@ fn derive_suffix(
     mutation_seed: u64,
     vocabulary: SmbCampaignVocabulary,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+    derive_suffix_sized(mutation_seed, vocabulary, false)
+}
+
+/// Region-conditional suffix derivation: ordinary draws keep the frozen
+/// one-or-two shape; a long draw — taken when the selected parent sits
+/// inside the registered waypoint region under the long-suffix policy —
+/// samples its length uniformly up to [`REGION_LONG_SUFFIX_CAP`], so one
+/// job can traverse the whole registered section in a single trajectory.
+/// Single-trajectory traversal is immune to cross-lineage poisoning by
+/// construction: every page crossing inside the job shares one history.
+fn derive_suffix_sized(
+    mutation_seed: u64,
+    vocabulary: SmbCampaignVocabulary,
+    long: bool,
+) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = StdRand::with_seed(mutation_seed);
-    let suffix_len = if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
+    let suffix_len = if long {
+        1 + rand.below(NonZeroUsize::new(REGION_LONG_SUFFIX_CAP).ok_or("invalid long cap")?)
+    } else if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
         2
     } else {
         1
@@ -549,6 +568,47 @@ fn derive_suffix(
         )?);
     }
     Ok(suffix)
+}
+
+/// Length cap for region-conditional long suffixes, named in the policy
+/// identifier per the numeric-constant convention.
+const REGION_LONG_SUFFIX_CAP: usize = 48;
+
+/// Suffix policy a campaign derives suffix lengths from, recorded in the
+/// stream header; the long variant binds to the registered waypoint region.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbCampaignSuffixPolicy {
+    /// The program's frozen shape: one action, or two at one-in-four odds.
+    #[default]
+    OneOrTwo,
+    /// C93 ruling: parents inside the registered waypoint region draw long
+    /// suffixes with length uniform up to the cap; all other parents keep
+    /// the frozen shape. Requires a registered waypoint region to bind.
+    OneOrTwoRegionLong48,
+}
+
+/// Header identifier for a suffix policy.
+#[must_use]
+pub fn suffix_policy_identifier(policy: SmbCampaignSuffixPolicy) -> &'static str {
+    match policy {
+        SmbCampaignSuffixPolicy::OneOrTwo => "one_or_two",
+        SmbCampaignSuffixPolicy::OneOrTwoRegionLong48 => "one_or_two_region_long_48",
+    }
+}
+
+/// Suffix policy named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known suffix policy.
+pub fn suffix_policy_from_identifier(
+    identifier: &str,
+) -> Result<SmbCampaignSuffixPolicy, Box<dyn Error>> {
+    match identifier {
+        "one_or_two" => Ok(SmbCampaignSuffixPolicy::OneOrTwo),
+        "one_or_two_region_long_48" => Ok(SmbCampaignSuffixPolicy::OneOrTwoRegionLong48),
+        _ => Err("campaign stream suffix policy is not recognized".into()),
+    }
 }
 
 /// Controller vocabulary a campaign derives suffixes from, recorded in the
@@ -1245,7 +1305,7 @@ fn stream_header(
         key_policy: key_policy_identifier(config.key_policy),
         waypoint_policy: waypoint_identifier(config.waypoint_policy),
         duration_policy: "stratified".to_owned(),
-        suffix_policy: "one_or_two".to_owned(),
+        suffix_policy: suffix_policy_identifier(config.suffix).to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
         parent_scheduler: selector_identifier(config.selector_policy),
         executor_mode: "snapshot_resume_archive".to_owned(),
@@ -1541,7 +1601,13 @@ pub fn run_smb_campaign(
             loop {
                 let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                 let mutation_seed = rand.next();
-                let suffix = derive_suffix(mutation_seed, config.vocabulary)?;
+                let long = config.suffix == SmbCampaignSuffixPolicy::OneOrTwoRegionLong48
+                    && core
+                        .archive
+                        .entries
+                        .get(parent_index)
+                        .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
+                let suffix = derive_suffix_sized(mutation_seed, config.vocabulary, long)?;
                 if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                     && core.all_prefixes_archived(parent_index, &suffix)
                 {
@@ -1729,6 +1795,7 @@ pub fn replay_smb_campaign(
     let retention_policy = retention_from_identifier(&header.retention_policy)?;
     let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
     let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
+    let replay_suffix_policy = suffix_policy_from_identifier(&header.suffix_policy)?;
     let waypoint_policy = waypoint_from_identifier(&header.waypoint_policy)?;
     let mut core = CoordinatorCore::new(
         header.action_limit,
@@ -1752,7 +1819,15 @@ pub fn replay_smb_campaign(
                 if parent_index >= core.archive.entries.len() {
                     return Err("recorded skip names a parent the archive does not hold".into());
                 }
-                let suffix = derive_suffix(skip.mutation_seed, vocabulary)?;
+                let skip_parent = usize::try_from(skip.parent_id)?;
+                let skip_long = replay_suffix_policy
+                    == SmbCampaignSuffixPolicy::OneOrTwoRegionLong48
+                    && core
+                        .archive
+                        .entries
+                        .get(skip_parent)
+                        .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
+                let suffix = derive_suffix_sized(skip.mutation_seed, vocabulary, skip_long)?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -1782,7 +1857,14 @@ pub fn replay_smb_campaign(
                 let snapshot = entry.snapshot.clone();
                 let parent_actions = entry.report.input.actions.len();
                 let parent_milestones = entry.report.milestones;
-                let suffix = derive_suffix(job.mutation_seed, vocabulary)?;
+                let job_long = replay_suffix_policy
+                    == SmbCampaignSuffixPolicy::OneOrTwoRegionLong48
+                    && core
+                        .archive
+                        .entries
+                        .get(parent_index)
+                        .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
+                let suffix = derive_suffix_sized(job.mutation_seed, vocabulary, job_long)?;
                 let job_frames_before = target.frames_clocked();
                 let result = execute_job(
                     &mut target,
@@ -3235,6 +3317,7 @@ mod tests {
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3264,6 +3347,7 @@ mod tests {
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3299,6 +3383,7 @@ mod tests {
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -3323,6 +3408,7 @@ mod tests {
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -3358,6 +3444,7 @@ mod tests {
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3484,6 +3571,7 @@ mod tests {
                 band_low: 0,
                 band_high: u8::MAX,
             },
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3529,6 +3617,7 @@ mod tests {
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
         };
         let mut absent_stream = Vec::new();
         let absent = run_smb_campaign(

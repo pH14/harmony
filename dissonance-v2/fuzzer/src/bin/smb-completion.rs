@@ -164,6 +164,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "diagnose-wram-diff" {
         return run_wram_diff_mode(&mut args);
     }
+    if mode == "derive-origin-pair" {
+        return run_derive_origin_pair_mode(&mut args);
+    }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
     }
@@ -948,6 +951,39 @@ fn run_derive_ladder_mode(
     }
     fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
     println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
+fn run_derive_origin_pair_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let world = u8::try_from(parse_u64(
+        &args.next().ok_or("missing world")?.to_string_lossy(),
+    )?)?;
+    let level = u8::try_from(parse_u64(
+        &args.next().ok_or("missing level")?.to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let mut source: SmbArchiveReport = serde_json::from_slice(&fs::read(&source_path)?)?;
+    let resume_before = fuzzer::campaign::select_frontier_resume_input(&source)?;
+    let before = source.entries.len();
+    source
+        .entries
+        .retain(|entry| (entry.key.world, entry.key.level) == (world, level));
+    let after = source.entries.len();
+    let resume_after = fuzzer::campaign::select_frontier_resume_input(&source)?;
+    if resume_before != resume_after {
+        return Err("origin slimming changed the resume input".into());
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec(&source)?)?;
+    println!("kept {after} of {before} entries; resume input unchanged");
     Ok(())
 }
 
