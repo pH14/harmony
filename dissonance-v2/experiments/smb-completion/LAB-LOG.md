@@ -6089,6 +6089,30 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c93-conquest/` on the ARM
   machine, log `c93.log`, sentinel discipline in force.
 
+### C93 result and the D94 differentials — rung two null, rung one open, and an operational alarm
+
+- **C93, the whole-path run, resolves no**: 50,000 executions with the
+  region spanning the entire check section at all heights, 12,112
+  auxiliary retentions — fully engaged — and the ladder unchanged at
+  `(6, 3, 137)`. Serial replay as a background audit.
+- **The D94 differentials so far**: the cross-section pass's separators
+  are scenery — the tile buffer differs trivially between sections — and
+  the within-position pass's surface table is generic engine state; no
+  clean stored-sequence byte has surfaced yet. The deeper cut — joining
+  per-state bytes to snap outcomes at fixed position — remains open, and
+  the first pass's design lesson is recorded: cross-section grouping
+  confounds scenery, within-position grouping is the honest frame.
+- **Operational alarm, flagged before it bites**: C93's archive is 12.5
+  gigabytes — the whole-path auxiliary retention times 3,100-action
+  inputs — large enough that the diagnostic loader was killed reading it
+  and the next link's origin load is at risk. Archive size now needs
+  either streaming loads in the tooling or retention-footprint attention
+  in the next registrations.
+- Per the three-rung ruling's own sequencing, rung three — the registered
+  long-suffix variant for in-region draws — is now unblocked: rung two is
+  null and rung one has delivered its first pass. Escalated with all
+  numbers; the chain holds.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
