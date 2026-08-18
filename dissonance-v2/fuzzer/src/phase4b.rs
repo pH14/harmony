@@ -708,10 +708,32 @@ impl SmbTarget {
         Ok(target)
     }
 
+    /// Load SMB at gameplay genesis with sound synthesis enabled, for film rendering only.
+    ///
+    /// Campaigns stay on the silent constructors: sound mixing is pure render-side cost and
+    /// the mixer's sample buffer is not part of campaign state or snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns a TetaNES error if ROM loading, frame execution, or state saving fails.
+    pub fn from_smb_rom_bytes_with_audio(rom: &[u8]) -> tetanes_core::control_deck::Result<Self> {
+        Self::from_smb_rom_bytes_with_mode(rom, HeadlessMode::empty())
+    }
+
     /// Return the latest RGBA frame for film generation.
     #[must_use]
     pub fn frame_rgba(&mut self) -> Vec<u8> {
         self.deck.frame_buffer().to_vec()
+    }
+
+    /// Return the sound samples mixed for the most recently clocked frame.
+    ///
+    /// The deck clears this buffer at the start of every clock, so each read is exactly one
+    /// frame of audio: 48 kHz mono `f32` under the deck's default sample rate. Empty when the
+    /// target was constructed without audio.
+    #[must_use]
+    pub fn audio_samples(&self) -> &[f32] {
+        self.deck.audio_samples()
     }
 
     /// Advance exactly one video frame with the supplied raw controller mask.

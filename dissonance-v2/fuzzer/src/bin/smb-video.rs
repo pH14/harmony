@@ -68,6 +68,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     create_parent(&video)?;
     create_parent(&video_manifest)?;
 
+    // The streaming pass writes a silent video; a second pass muxes the audio in. Encoding
+    // straight to the final path would make the mux an in-place edit, which FFmpeg rejects.
+    let video_only = video.with_extension("video-only.mp4");
     let mut ffmpeg = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -96,19 +99,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             "-movflags",
             "+faststart",
         ])
-        .arg(&video)
+        .arg(&video_only)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()?;
     let mut encoder = ffmpeg.stdin.take().ok_or("FFmpeg has no input pipe")?;
-    let mut target = SmbTarget::from_smb_rom_bytes(&rom)?;
+    let mut target = SmbTarget::from_smb_rom_bytes_with_audio(&rom)?;
+    let audio_raw = video.with_extension("f32le");
+    let mut audio_out = std::io::BufWriter::new(fs::File::create(&audio_raw)?);
+    let mut sample_count = 0_u64;
     let mut frame_count = 0_u64;
     write_frame(&mut encoder, &mut target, &mut frame_count)?;
     'actions: for action in &film.input.actions {
         for _ in 0..action.bounded_hold_frames() {
             target.clock_frame_for_film(action.buttons)?;
             write_frame(&mut encoder, &mut target, &mut frame_count)?;
+            write_audio(&mut audio_out, &target, &mut sample_count)?;
             if target.is_dead() {
                 target.release_buttons_for_film();
                 break 'actions;
@@ -117,10 +124,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         target.release_buttons_for_film();
     }
     drop(encoder);
+    audio_out.flush()?;
+    drop(audio_out);
     let status = ffmpeg.wait()?;
     if !status.success() {
         return Err(format!("FFmpeg failed with {status}").into());
     }
+    let audio = sample_count > 0;
+    if audio {
+        mux_audio(&video_only, &audio_raw, &video, frame_count, sample_count)?;
+        fs::remove_file(&video_only)?;
+    } else {
+        fs::rename(&video_only, &video)?;
+    }
+    fs::remove_file(&audio_raw)?;
 
     let manifest = VideoManifest {
         source_manifest,
@@ -134,7 +151,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         fps: FPS,
         frame_count,
         duration_millis: frame_count.saturating_mul(1_000) / FPS,
-        audio: false,
+        audio,
     };
     fs::write(&video_manifest, serde_json::to_vec_pretty(&manifest)?)?;
     println!("{}", serde_json::to_string_pretty(&manifest)?);
@@ -144,6 +161,72 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn create_parent(path: &Path) -> Result<(), Box<dyn Error>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+/// Append the most recent frame's mono `f32` samples as little-endian bytes.
+fn write_audio(
+    out: &mut impl Write,
+    target: &SmbTarget,
+    sample_count: &mut u64,
+) -> Result<(), Box<dyn Error>> {
+    for sample in target.audio_samples() {
+        out.write_all(&sample.to_le_bytes())?;
+    }
+    *sample_count = sample_count.saturating_add(target.audio_samples().len() as u64);
+    Ok(())
+}
+
+/// Mux the raw audio track into the silent video.
+///
+/// The deck mixes at 48 kHz against its own NTSC frame cadence (~60.10 Hz), while the video
+/// is timestamped at exactly 60 fps, so declaring 48 kHz here would leave the audio a few
+/// seconds short over a long film. Declaring the rate that spreads the recorded samples over
+/// the video's duration keeps the tracks aligned end to end, at an inaudible pitch shift.
+fn mux_audio(
+    video_only: &Path,
+    audio_raw: &Path,
+    video: &Path,
+    frame_count: u64,
+    sample_count: u64,
+) -> Result<(), Box<dyn Error>> {
+    if frame_count == 0 {
+        return Err("cannot mux audio into a zero-frame video".into());
+    }
+    let declared_rate = sample_count
+        .saturating_mul(FPS)
+        .checked_div(frame_count)
+        .ok_or("audio rate division overflow")?;
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(video_only)
+        .args([
+            "-f",
+            "f32le",
+            "-ar",
+            &declared_rate.to_string(),
+            "-ac",
+            "1",
+            "-i",
+        ])
+        .arg(audio_raw)
+        .args([
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(video)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    if !status.success() {
+        return Err(format!("FFmpeg audio mux failed with {status}").into());
     }
     Ok(())
 }
