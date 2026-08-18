@@ -6267,6 +6267,59 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c96-conquest/` on the ARM
   machine, log `c96.log`, sentinel discipline in force.
 
+### C96 result — the axe falls and the final world opens
+
+- **The seventh world is complete and the eighth — the final world — is
+  open.** The live run completed its full 50,000 executions, campaign
+  seed `0x5eed_c020`, the promoted stack from C95's archive at 155. The
+  castle fell almost immediately: the ladder's `(7, 0)` transition
+  records first execution 2,040, so the run crossed the remaining
+  fifty-three buckets of 7-4 — past the broken check to the axe at the
+  level's 208 — inside its first two thousand executions, and spent the
+  other forty-eight thousand exploring 8-1, settling the ladder at
+  `(7, 0, 216)`, watermark 223.
+- Counters: 25,980 retained, 10,152 deaths — the open-terrain jump from
+  the castle links' one to two thousand, as 8-1's pits and enemies
+  replace the check sections — 3,228 probe refusals, 24,240 rejected,
+  5,740,535 frames emulated. Stream SHA-256 `709a6a27…`, live archive
+  SHA-256
+  `00c8f5df9c8811def7dce2c617c7b1a234feb6c128ee1267658f5aebd06acb5e`.
+  Serial replay as a background audit.
+- The resume check reads recorded 216, viable 214, play 216 — **play
+  equals recorded, direct resume** under the standing rule. The
+  viability probe finds no 120-frame survivor in the last two buckets
+  (0/7 at 216, 0/8 at 215, 1/3 at 214); recorded as an observation on
+  8-1's terrain ahead, not actionable, since the honest power-on replay
+  reaches 216.
+- The milestone film is cut for visual inspection under the
+  workloads-first directive: the frontier lineage, 3,295 actions from
+  power-on through the axe into 8-1, filmed on the ARM machine
+  (`target/smb-completion/c96-frontier-film/`) and rendered to
+  real-time sixty-frame H.264 on the workstation
+  (`target/smb-completion/c96-frontier-film/c96-frontier.mp4`, video
+  manifest beside it).
+
+## C97 — registered concentrated conquest, twenty-ninth link
+
+- Observational, the chain in its ordinary shape into the final world.
+  One live conquest campaign, 50,000 executions, twelve workers on the
+  ARM machine, campaign seed `0x5eed_c021`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector
+  `concentrated_recency_128`, no waypoint, no long suffixes, no chord
+  bias — the promoted stack. Sourced from C96's live archive, SHA-256
+  `00c8f5df9c8811def7dce2c617c7b1a234feb6c128ee1267658f5aebd06acb5e`,
+  direct resume at the settled play frontier 216.
+- Action-limit arithmetic, recorded as a standing flag: the frontier
+  lineage stands at 3,295 actions and grows roughly three hundred per
+  link, so the per-run 4096 holds for this link and the next but
+  breaches around the third; the compiled ceiling already sits at 8192,
+  and the per-run recorded limit rises at a future registration when
+  the arithmetic demands it.
+- One live run, no retries; serial replay as a background audit.
+- Raw destination: `target/smb-completion/c97-conquest/` on the ARM
+  machine, log `c97.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
