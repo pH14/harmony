@@ -6227,6 +6227,30 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c95-conquest/` on the ARM
   machine, log `c95.log`, sentinel discipline in force.
 
+### C95 result — the final check breaks under the machine's own moves
+
+- **The preregistered question resolves yes: retention crossed 137 and
+  ran to `(6, 3, 155)`** — eighteen buckets through the check that had
+  refused every lane, every composition, and every uniform-drawn single
+  trajectory. The live run completed its full 50,000 executions over
+  roughly eight hours, campaign seed `0x5eed_c01f`, the recorded-chord
+  stack. Serial replay as a background audit.
+- The mechanism story, recorded as the finding: the only variable changed
+  from C94's null was the chord distribution — half of region long-draw
+  chords sampled from the 328 recorded crossing maneuvers of C89's own
+  winners. Uniform sampling had the reach but not the density; the mined
+  bimodal shape — precise taps and full commits, jump-right heavy,
+  leftward lane changes present — put the compound maneuver sequence
+  within sampled reach. **Discovery feeding discovery, as the owner's
+  principle names it: the machine crossed on the distribution of its own
+  recorded successes, with no outside knowledge.**
+- The eighth world is not yet entered: the castle's completion transition
+  lies past 155, and per the C90 precedent after the first break, the
+  steering extras drop and the promoted stack resumes for the next link —
+  the region policies' work here is done, and their pull would now point
+  backward. Resume checks and the next registration follow the standing
+  rules.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
