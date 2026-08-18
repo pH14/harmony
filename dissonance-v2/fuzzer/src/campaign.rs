@@ -2471,6 +2471,178 @@ pub struct SmbLoopDifferentialReport {
 /// Returns an error when the archive is empty or emulation fails.
 // Wall-clock feeds stderr progress only; nothing timed is serialized.
 #[allow(clippy::disallowed_methods)]
+/// One work-RAM byte's value distributions across two entry groups.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbWramDiffByte {
+    /// Work-RAM offset.
+    pub offset: usize,
+    /// Distinct (value, count) pairs in group A.
+    pub group_a_values: Vec<(u8, u64)>,
+    /// Distinct (value, count) pairs in group B.
+    pub group_b_values: Vec<(u8, u64)>,
+    /// Whether the byte's value sets are disjoint between the groups.
+    pub separates: bool,
+    /// Distinct value count inside group A, for packed-state hunting.
+    pub group_a_modes: usize,
+}
+
+/// Report of the two-group work-RAM differential over one archive.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbWramDiffReport {
+    /// Frontier `(world, level)` pair sampled.
+    pub frontier_pair: (u8, u8),
+    /// Group A inclusive bucket range.
+    pub group_a: (u16, u16),
+    /// Group B inclusive bucket range.
+    pub group_b: (u16, u16),
+    /// Entries replayed per group.
+    pub sampled: (usize, usize),
+    /// Bytes that separate the groups, then the strongest non-separators.
+    pub bytes: Vec<SmbWramDiffByte>,
+}
+
+/// Replay two bucket-range groups of frontier entries and diff their work
+/// RAM byte by byte, reporting separators and multi-modal in-group bytes.
+///
+/// # Errors
+///
+/// Returns an error when the archive is empty or emulation fails.
+// Wall-clock feeds stderr progress only; nothing timed is serialized.
+#[allow(clippy::disallowed_methods)]
+pub fn diagnose_wram_diff(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    group_a: (u16, u16),
+    group_b: (u16, u16),
+    cap_per_group: usize,
+    output_bytes: usize,
+) -> Result<SmbWramDiffReport, Box<dyn Error>> {
+    use crate::phase4b::WRAM_SIZE;
+    let frontier_pair = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level))
+        .max()
+        .ok_or("source archive has no entries")?;
+    let base = select_frontier_resume_input(source)?;
+    let collect = |low: u16, high: u16| {
+        let mut picks: Vec<&crate::phase4c::SmbArchiveEntryReport> = source
+            .entries
+            .iter()
+            .filter(|entry| {
+                (entry.key.world, entry.key.level) == frontier_pair
+                    && entry.key.progress >= low
+                    && entry.key.progress <= high
+            })
+            .collect();
+        picks.sort_by_key(|entry| entry.id);
+        picks.truncate(cap_per_group);
+        picks
+    };
+    let picks_a = collect(group_a.0, group_a.1);
+    let picks_b = collect(group_b.0, group_b.1);
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    eprintln!(
+        "wram-diff: emulating shared prefix of {} actions once",
+        base.actions.len()
+    );
+    target.reset();
+    let mut boundary_snapshots: Vec<SmbSnapshot> = Vec::with_capacity(base.actions.len() + 1);
+    boundary_snapshots.push(
+        target
+            .snapshot()
+            .ok_or("failed to snapshot the wram-diff genesis")?,
+    );
+    for action in &base.actions {
+        target.apply(action);
+        boundary_snapshots.push(
+            target
+                .snapshot()
+                .ok_or("failed to snapshot a wram-diff boundary")?,
+        );
+    }
+    let mut replay_group = |picks: &[&crate::phase4c::SmbArchiveEntryReport],
+                            tag: &str|
+     -> Result<Vec<[u8; WRAM_SIZE]>, Box<dyn Error>> {
+        let mut wrams = Vec::with_capacity(picks.len());
+        for (index, entry) in picks.iter().enumerate() {
+            if index % 100 == 0 {
+                eprintln!("wram-diff: {tag} {}/{}", index + 1, picks.len());
+            }
+            let shared = entry
+                .input
+                .actions
+                .iter()
+                .zip(&base.actions)
+                .take_while(|(a, b)| a == b)
+                .count();
+            target.restore(&boundary_snapshots[shared])?;
+            for action in &entry.input.actions[shared..] {
+                target.apply(action);
+            }
+            if target.exit_kind() != ExitKind::Ok {
+                return Err("a sampled entry failed to replay".into());
+            }
+            wrams.push(*target.wram());
+        }
+        Ok(wrams)
+    };
+    let wram_a = replay_group(&picks_a, "group-a")?;
+    let wram_b = replay_group(&picks_b, "group-b")?;
+    let mut scored: Vec<(usize, bool, usize, f64)> = Vec::new();
+    for offset in 0..WRAM_SIZE {
+        let mut a_vals = std::collections::BTreeMap::<u8, u64>::new();
+        for wram in &wram_a {
+            *a_vals.entry(wram[offset]).or_insert(0) += 1;
+        }
+        let mut b_vals = std::collections::BTreeMap::<u8, u64>::new();
+        for wram in &wram_b {
+            *b_vals.entry(wram[offset]).or_insert(0) += 1;
+        }
+        let separates = !wram_a.is_empty()
+            && !wram_b.is_empty()
+            && a_vals.keys().all(|value| !b_vals.contains_key(value));
+        let a_mean =
+            wram_a.iter().map(|w| f64::from(w[offset])).sum::<f64>() / wram_a.len().max(1) as f64;
+        let b_mean =
+            wram_b.iter().map(|w| f64::from(w[offset])).sum::<f64>() / wram_b.len().max(1) as f64;
+        let score = (a_mean - b_mean).abs();
+        if separates || score > 0.0 || a_vals.len() > 1 {
+            scored.push((offset, separates, a_vals.len(), score));
+        }
+    }
+    scored.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then(b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    scored.truncate(output_bytes);
+    let mut bytes = Vec::with_capacity(scored.len());
+    for (offset, separates, modes, _) in scored {
+        let mut a_vals = std::collections::BTreeMap::<u8, u64>::new();
+        for wram in &wram_a {
+            *a_vals.entry(wram[offset]).or_insert(0) += 1;
+        }
+        let mut b_vals = std::collections::BTreeMap::<u8, u64>::new();
+        for wram in &wram_b {
+            *b_vals.entry(wram[offset]).or_insert(0) += 1;
+        }
+        bytes.push(SmbWramDiffByte {
+            offset,
+            group_a_values: a_vals.into_iter().collect(),
+            group_b_values: b_vals.into_iter().collect(),
+            separates,
+            group_a_modes: modes,
+        });
+    }
+    Ok(SmbWramDiffReport {
+        frontier_pair,
+        group_a,
+        group_b,
+        sampled: (wram_a.len(), wram_b.len()),
+        bytes,
+    })
+}
+
 pub fn diagnose_loop_differential(
     rom: &[u8],
     source: &SmbArchiveReport,

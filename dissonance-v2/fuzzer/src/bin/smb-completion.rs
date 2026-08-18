@@ -161,6 +161,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "diagnose-loop-differential" {
         return run_loop_differential_mode(&mut args);
     }
+    if mode == "diagnose-wram-diff" {
+        return run_wram_diff_mode(&mut args);
+    }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
     }
@@ -945,6 +948,60 @@ fn run_derive_ladder_mode(
     }
     fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
     println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
+fn run_wram_diff_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let a_low = u16::try_from(parse_u64(
+        &args.next().ok_or("missing group-a low")?.to_string_lossy(),
+    )?)?;
+    let a_high = u16::try_from(parse_u64(
+        &args.next().ok_or("missing group-a high")?.to_string_lossy(),
+    )?)?;
+    let b_low = u16::try_from(parse_u64(
+        &args.next().ok_or("missing group-b low")?.to_string_lossy(),
+    )?)?;
+    let b_high = u16::try_from(parse_u64(
+        &args.next().ok_or("missing group-b high")?.to_string_lossy(),
+    )?)?;
+    let cap = usize::try_from(parse_u64(
+        &args
+            .next()
+            .ok_or("missing per-group cap")?
+            .to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = fuzzer::campaign::diagnose_wram_diff(
+        &rom,
+        &source,
+        (a_low, a_high),
+        (b_low, b_high),
+        cap,
+        32,
+    )?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!("sampled A={} B={}", report.sampled.0, report.sampled.1);
+    for b in report.bytes.iter().take(12) {
+        println!(
+            "offset {:#06x} separates {} a_modes {} A {:?} B {:?}",
+            b.offset,
+            b.separates,
+            b.group_a_modes,
+            &b.group_a_values[..b.group_a_values.len().min(6)],
+            &b.group_b_values[..b.group_b_values.len().min(6)]
+        );
+    }
     Ok(())
 }
 
