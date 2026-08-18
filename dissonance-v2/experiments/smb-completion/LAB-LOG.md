@@ -6113,6 +6113,52 @@ one variable of science only when a link stalls.
   null and rung one has delivered its first pass. Escalated with all
   numbers; the chain holds.
 
+### The long-suffix build and the slimmed origin
+
+- **Rung three built as session work per the ruling**:
+  `one_or_two_region_long_48` — parents inside the registered waypoint
+  region draw suffixes with length uniform up to 48 actions; every other
+  parent keeps the frozen one-or-two shape. Header-recorded; replay
+  derives identically through the same region test; the cap's arithmetic
+  from recorded measurements: the check section spans roughly 114 buckets
+  — about 1,800 pixels — and a held action averages 95 frames, about 140
+  pixels or nine buckets, so thirteen perfect actions traverse the
+  section and the cap gives three-point-seven-fold slack for jumps and
+  lane changes. **Single-trajectory traversal is immune to cross-lineage
+  poisoning by construction — the design's whole point, recorded as
+  such.** Gates pass with 92 tests; the standing inertness reference
+  byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+- **The origin-slimming derivation ran as registered**: keep every entry
+  of the frontier pair — covering in-region, frontier-adjacent and the
+  resume lineage generously — drop the rest; the resume input verified
+  byte-unchanged before writing. Result recorded with its honest
+  deviation: 45,947 of 52,017 entries kept — the far-behind dead weight
+  was twelve percent of entries, not the expected bulk, because the
+  archive's weight is the frontier pair's own long-input population — and
+  the byte cut is 2.7-fold, 12.5 to 4.6 gigabytes, compact serialization
+  contributing. The predicate held; the load risk is mitigated. Slimmed
+  origin `target/smb-completion/c93-conquest/origin-pair63.json`, SHA-256
+  `09042bbd38c7de18f5d41108db3347e9ae8813fedd74e359c9f0bde270bfc7b8`.
+
+## C94 — registered long-suffix waypoint pilot, twenty-sixth link
+
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c01e`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:6,3,30,144,0,15`, suffix
+  `one_or_two_region_long_48` — **the suffix policy is the single
+  variable changed from C93.** From the slimmed origin above, direct
+  resume per the standing rule.
+- One live run, no retries; serial replay as a background audit.
+  **Preregistered question: does retention cross 137 to the axe?**
+  Escalation unchanged. The deeper outcome-joined differential queues
+  behind this run if capacity allows and informs the next registration,
+  not this one.
+- Raw destination: `target/smb-completion/c94-conquest/` on the ARM
+  machine, log `c94.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
