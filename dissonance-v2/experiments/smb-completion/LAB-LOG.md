@@ -6320,6 +6320,67 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c97-conquest/` on the ARM
   machine, log `c97.log`, sentinel discipline in force.
 
+### C97 result — one bucket in fifty thousand, a stall in 8-1
+
+- The run completed all 50,000 executions and the ladder settled at
+  `(7,0,217)` — one bucket beyond C96's 216 over the full budget. By the
+  chain's own definition this is a stall signature: the concentrated
+  selector held the frontier under pressure for the whole run and bought
+  a single bucket.
+- Counters: 23,432 retained, 25,097 rejected, 11,047 deaths, 3,910
+  probe refusals, 85 duplicates skipped, 5,669,897 frames emulated.
+  The execution watermark reached bucket 222 — draws touch five buckets
+  past the settled frontier, but nothing admitted there survives.
+- Stream SHA-256
+  `b0a17dd6c8c71e34cec18d8ad036bad6ce6fe35bf5bf8011aae4e69ecae3e8ca`,
+  live archive SHA-256
+  `4744923c994cbf0ae44806da01ac6e865bcbe6c0e0a7bc89139c22670a41044c`.
+  The serial replay audit chained by the wrapper is running in the
+  background.
+
+### 8-1 stall census — recorded artifacts before any new arm
+
+- Per the standing cheapest-decisive-first protocol, the response to the
+  stall is a census on recorded artifacts, not a new campaign arm. Four
+  diagnostics, all replays of what C97 already recorded: the standing
+  resume measurement, the frontier film strip for visual inspection, a
+  span diagnosis over buckets 205–217 on the frontier lineage, and a
+  refused-candidate grid plus per-band transit census over the stream
+  (results recorded when they land).
+- The resume measurement (`c97-conquest/play-measurement.json`, horizon
+  120, eight per bucket): recorded 217, **play 216**, viable 213. The
+  play frontier sits one bucket short of the recorded frontier, so under
+  the standing resume rules the next link takes a play-frontier derived
+  origin, not a direct resume. The viability probe finds no 120-frame
+  survivor in any of the last four buckets (0/2 at 217, 0/8 at 216,
+  0/8 at 215, 0/8 at 214, 1/5 at 213) — consistent with the span
+  diagnosis: the archive's deepest entries are all inside the gauntlet's
+  kill horizon.
+- The span diagnosis (`c97-conquest/span-205-217.json`, endpoint 217)
+  walks eight action boundaries and is decisive about the terrain class:
+  - Boundaries at progress 209–211 sit on ground (vertical trend zero)
+    and the viability probe admits them.
+  - From the boundary at 211 onward the lineage is airborne over a gap:
+    the still and right probe masks end `below_play_area` — a fall into
+    a pit — and the jump mask ends in a kill.
+  - From progress 214 through the frontier tip at 217 **all three
+    constant probe masks end in a kill state within 42–62 frames**.
+    The camera advances monotonically (3351 → 3472) and the tuple stays
+    `(7,0)` throughout: no snapback, no lane check, no hidden-check
+    signature like 7-4's.
+- The frontier film strip confirms the terrain visually: the lineage
+  tip is mid-jump across a wide pit in open 8-1 ground, with a pair of
+  enemies patrolling the landing zone ahead. The obstacle reads as plain
+  distance — a wide-gap-plus-enemy gauntlet — not a hidden check.
+- The admission arithmetic explains the stall mechanically. Retention
+  probes at a 45-frame horizon; at the frontier tip the three masks die
+  at 42, 42 and 46 frames. A state whose doom lies just past the horizon
+  squeaks in (the tip's jump mask survives to 46); everything landing
+  short of that dies inside it. Deeper admission therefore requires a
+  candidate that has already actively cleared the hazard — landed past
+  the pit and through the enemies — inside a single draw, and in 50,000
+  executions no draw produced one.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
