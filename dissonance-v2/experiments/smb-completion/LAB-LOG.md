@@ -6251,6 +6251,22 @@ one variable of science only when a link stalls.
   backward. Resume checks and the next registration follow the standing
   rules.
 
+## C96 — registered concentrated conquest, twenty-eighth link
+
+- Observational, the chain resuming its ordinary shape past the broken
+  check. The resume check on C95 reads recorded 155, viable 155, play 155
+  — settled play, direct resume. One live conquest campaign, 50,000
+  executions, twelve workers on the ARM machine, campaign seed
+  `0x5eed_c020`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  no waypoint, no long suffixes, no chord bias — the promoted stack.
+  Sourced from C95's live archive, SHA-256
+  `8d79161e9e8065de9d3c89e3e92284a22109ef91538dc49bf4babd0ccf37035e`.
+- One live run, no retries; serial replay as a background audit.
+- Raw destination: `target/smb-completion/c96-conquest/` on the ARM
+  machine, log `c96.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
