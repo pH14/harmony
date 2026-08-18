@@ -6047,6 +6047,48 @@ one variable of science only when a link stalls.
   rung remains the standing candidate for reading route semantics the
   archive cannot express. The chain holds.
 
+### Ruling on the final check — three rungs, cheapest first
+
+- The program's owner's direction, relayed with the integrator's plan: he
+  leans whole-path, and the plan runs three rungs cheapest-first.
+- **Rung one, free measurement, and it re-opens a closed conclusion**:
+  D82 ruled no stored route variable — but a check that grades lanes
+  across multiple pages must store state between pages, or C92's
+  all-lanes-at-the-final-page would have found a crosser. The
+  contradiction says the earlier byte-diff missed it or the state is
+  packed. The differential re-runs at the second section:
+  crossed-and-failed states against each other and against pre-section
+  states, hunting the stored discriminator. If found, it enters the key
+  fingerprint as a registered policy so clean and poisoned states stop
+  colliding — **with the eviction mechanism named**: the shortest-input
+  replacement systematically evicts clean-but-longer lineages that
+  collide with poisoned ones at the same key, which is why a hundred
+  thousand compositions failed.
+- **Rung two, in parallel**: the whole-path run, region approved by the
+  integrator on this evidence — the full check section from before its
+  start through the axe, all heights.
+- **Rung three, held in reserve pending one and two**: a registered
+  long-suffix variant for in-region draws — deep single-trajectory pushes
+  from pre-section parents, one job traversing whole pages, the honest
+  translation of fork-dense long-trajectory search; composition cannot be
+  poisoned inside a single trajectory.
+
+## C93 — registered whole-path waypoint pilot, twenty-fifth link
+
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c01d`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:6,3,30,144,0,15` — the full check
+  section, all heights.
+- Origin: C92's full archive, direct resume per the standing rule, SHA-256
+  `f3633af6fbc2345722a344b4970cd466a2a8ef453bd8da07f9aef041fb5fabe5`.
+  One live run, no retries; serial replay as a background audit.
+- **Preregistered question: does retention cross 137 to the axe?**
+  Escalation unchanged.
+- Raw destination: `target/smb-completion/c93-conquest/` on the ARM
+  machine, log `c93.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
