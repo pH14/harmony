@@ -167,6 +167,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "derive-origin-pair" {
         return run_derive_origin_pair_mode(&mut args);
     }
+    if mode == "census-suffix-chords" {
+        return run_census_suffix_chords_mode(&mut args);
+    }
     if mode == "measure-viable-progress" {
         return run_viable_progress_mode(&mut args);
     }
@@ -951,6 +954,66 @@ fn run_derive_ladder_mode(
     }
     fs::write(&output, serde_json::to_vec_pretty(&ladder)?)?;
     println!("{}", serde_json::to_string_pretty(&ladder)?);
+    Ok(())
+}
+
+fn run_census_suffix_chords_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let world = u8::try_from(parse_u64(
+        &args.next().ok_or("missing world")?.to_string_lossy(),
+    )?)?;
+    let level = u8::try_from(parse_u64(
+        &args.next().ok_or("missing level")?.to_string_lossy(),
+    )?)?;
+    let min_progress = u16::try_from(parse_u64(
+        &args.next().ok_or("missing min progress")?.to_string_lossy(),
+    )?)?;
+    let prefix_len = usize::try_from(parse_u64(
+        &args
+            .next()
+            .ok_or("missing prefix length")?
+            .to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(&source_path)?)?;
+    let mut chords: Vec<(u8, u8)> = Vec::new();
+    let mut entries_used = 0_u64;
+    for entry in &source.entries {
+        if (entry.key.world, entry.key.level) != (world, level)
+            || entry.key.progress < min_progress
+            || entry.input.actions.len() <= prefix_len
+        {
+            continue;
+        }
+        entries_used += 1;
+        for action in &entry.input.actions[prefix_len..] {
+            chords.push((action.buttons, action.hold_frames));
+        }
+    }
+    let mut mask_hist = std::collections::BTreeMap::<u8, u64>::new();
+    let mut hold_hist = std::collections::BTreeMap::<u8, u64>::new();
+    for (mask, hold) in &chords {
+        *mask_hist.entry(*mask).or_insert(0) += 1;
+        *hold_hist.entry(hold / 12).or_insert(0) += 1;
+    }
+    let report = serde_json::json!({
+        "entries_used": entries_used,
+        "chords": chords,
+        "mask_histogram": mask_hist,
+        "hold_histogram_by_12s": hold_hist,
+    });
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!("entries {} chords {}", entries_used, chords.len());
+    println!("masks: {:?}", mask_hist);
+    println!("holds/12: {:?}", hold_hist);
     Ok(())
 }
 

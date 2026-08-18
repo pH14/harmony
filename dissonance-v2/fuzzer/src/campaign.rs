@@ -91,6 +91,8 @@ pub struct SmbCampaignConfig {
     pub waypoint_policy: SmbArchiveWaypointPolicy,
     /// Suffix policy for this run, recorded in the header and report.
     pub suffix: SmbCampaignSuffixPolicy,
+    /// Chord policy for this run, recorded in the header and report.
+    pub chord: SmbCampaignChordPolicy,
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -165,6 +167,13 @@ pub struct SmbCampaignStreamHeader {
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
     pub suffix_policy: String,
+    /// Chord policy identifier; streams recorded before this field existed
+    /// drew uniformly and replay that way.
+    #[serde(
+        default = "legacy_chord_policy_identifier",
+        skip_serializing_if = "is_legacy_chord_policy_identifier"
+    )]
+    pub chord_policy: String,
     /// Promoted retention policy identifier.
     pub retention_policy: String,
     /// Frozen parent scheduler identifier.
@@ -320,6 +329,13 @@ pub struct SmbCampaignModeReport {
     pub duration_policy: String,
     /// Frozen suffix policy identifier.
     pub suffix_policy: String,
+    /// Chord policy identifier; streams recorded before this field existed
+    /// drew uniformly and replay that way.
+    #[serde(
+        default = "legacy_chord_policy_identifier",
+        skip_serializing_if = "is_legacy_chord_policy_identifier"
+    )]
+    pub chord_policy: String,
     /// Promoted retention policy identifier.
     pub retention_policy: String,
     /// Frozen parent scheduler identifier.
@@ -536,7 +552,12 @@ fn derive_suffix(
     mutation_seed: u64,
     vocabulary: SmbCampaignVocabulary,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-    derive_suffix_sized(mutation_seed, vocabulary, false)
+    derive_suffix_sized(
+        mutation_seed,
+        vocabulary,
+        false,
+        SmbCampaignChordPolicy::Uniform,
+    )
 }
 
 /// Region-conditional suffix derivation: ordinary draws keep the frozen
@@ -550,6 +571,7 @@ fn derive_suffix_sized(
     mutation_seed: u64,
     vocabulary: SmbCampaignVocabulary,
     long: bool,
+    chord_policy: SmbCampaignChordPolicy,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = StdRand::with_seed(mutation_seed);
     let suffix_len = if long {
@@ -561,13 +583,406 @@ fn derive_suffix_sized(
     };
     let mut suffix = Vec::with_capacity(suffix_len);
     for _ in 0..suffix_len {
-        suffix.push(crate::phase4c::sample_chord_from_masks(
-            &mut rand,
-            SmbArchiveDurationPolicy::Stratified,
-            vocabulary.masks(),
-        )?);
+        let recorded = long
+            && chord_policy == SmbCampaignChordPolicy::RecordedHalf
+            && rand.below(NonZeroUsize::new(2).ok_or("invalid chord odds")?) == 0;
+        if recorded {
+            let (buttons, hold) = RECORDED_CHORD_TABLE[rand.below(
+                NonZeroUsize::new(RECORDED_CHORD_TABLE.len())
+                    .ok_or("empty recorded chord table")?,
+            )];
+            suffix.push(ButtonChord::new(buttons, hold));
+        } else {
+            suffix.push(crate::phase4c::sample_chord_from_masks(
+                &mut rand,
+                SmbArchiveDurationPolicy::Stratified,
+                vocabulary.masks(),
+            )?);
+        }
     }
     Ok(suffix)
+}
+
+/// C95 ruling: every post-resume chord from C89's crossing lineages — the
+/// machine's own recorded sample of maneuvers this castle's checks reward.
+/// Drawing uniformly from the list reproduces the empirical distribution;
+/// duplicates carry the frequencies. Provenance: the crossing-chord census
+/// over the C89 archive, entries at the frontier pair past bucket 73.
+const RECORDED_CHORD_TABLE: [(u8, u8); 328] = [
+    (131, 102),
+    (130, 4),
+    (64, 6),
+    (131, 108),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (130, 115),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (131, 4),
+    (130, 112),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (130, 9),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 118),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 118),
+    (64, 4),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (0, 96),
+    (129, 111),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (0, 96),
+    (129, 111),
+    (32, 115),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (16, 3),
+    (129, 107),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (0, 96),
+    (32, 8),
+    (129, 113),
+    (131, 7),
+    (1, 97),
+    (128, 119),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (1, 2),
+    (131, 103),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (0, 96),
+    (32, 8),
+    (128, 108),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (0, 96),
+    (32, 8),
+    (128, 108),
+    (16, 10),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (131, 4),
+    (1, 7),
+    (16, 99),
+    (2, 115),
+    (16, 119),
+    (16, 12),
+    (130, 108),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (131, 4),
+    (1, 7),
+    (16, 99),
+    (128, 102),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (16, 108),
+    (128, 106),
+    (131, 96),
+    (64, 99),
+    (2, 105),
+    (0, 3),
+    (16, 4),
+    (128, 116),
+    (131, 120),
+    (2, 11),
+    (131, 96),
+    (64, 99),
+    (2, 105),
+    (0, 3),
+    (16, 4),
+    (128, 116),
+    (131, 120),
+    (130, 11),
+    (16, 5),
+    (129, 12),
+    (129, 115),
+    (1, 105),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (64, 6),
+    (128, 119),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (129, 7),
+    (131, 100),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (16, 108),
+    (128, 4),
+    (128, 97),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (1, 2),
+    (130, 96),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (129, 11),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (16, 108),
+    (128, 4),
+    (128, 9),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (0, 100),
+    (1, 107),
+    (2, 118),
+    (128, 112),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (16, 3),
+    (130, 3),
+    (0, 10),
+    (128, 105),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (16, 3),
+    (130, 3),
+    (0, 10),
+    (128, 105),
+    (129, 11),
+    (32, 112),
+    (1, 5),
+    (128, 100),
+    (2, 9),
+    (131, 98),
+    (128, 110),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (32, 97),
+    (1, 8),
+    (131, 97),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (32, 97),
+    (1, 8),
+    (131, 2),
+    (1, 12),
+    (0, 6),
+    (129, 111),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (32, 97),
+    (1, 8),
+    (32, 103),
+    (32, 112),
+    (131, 115),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (0, 100),
+    (1, 107),
+    (2, 118),
+    (131, 10),
+    (129, 115),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (131, 4),
+    (1, 7),
+    (16, 99),
+    (2, 4),
+    (32, 115),
+    (64, 107),
+    (130, 114),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (131, 4),
+    (1, 7),
+    (16, 99),
+    (2, 4),
+    (32, 115),
+    (32, 4),
+    (129, 107),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (32, 97),
+    (1, 8),
+    (32, 110),
+    (131, 107),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (16, 3),
+    (130, 3),
+    (0, 10),
+    (128, 105),
+    (129, 4),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (129, 7),
+    (64, 118),
+    (16, 12),
+    (129, 99),
+    (16, 5),
+    (2, 5),
+    (131, 110),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (129, 7),
+    (129, 113),
+    (128, 104),
+    (129, 3),
+    (129, 99),
+    (64, 9),
+    (130, 12),
+    (1, 118),
+    (2, 9),
+    (32, 97),
+    (1, 8),
+    (32, 103),
+    (32, 112),
+    (2, 102),
+    (129, 117),
+];
+
+/// Chord policy a campaign draws region chords from, recorded in the
+/// stream header; the recorded variant binds only to region long draws.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbCampaignChordPolicy {
+    /// The frozen shape: every chord drawn uniformly from the vocabulary.
+    #[default]
+    Uniform,
+    /// C95 ruling: region long draws take each chord from the recorded
+    /// table at even odds with the uniform draw, so exploration mass stays
+    /// honest while the sampled shape follows the machine's own successes.
+    RecordedHalf,
+}
+
+/// Header identifier for a chord policy.
+#[must_use]
+pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> &'static str {
+    match policy {
+        SmbCampaignChordPolicy::Uniform => "chord_uniform",
+        SmbCampaignChordPolicy::RecordedHalf => "chord_draw_recorded_50",
+    }
+}
+
+/// Chord policy named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known chord policy.
+pub fn chord_policy_from_identifier(
+    identifier: &str,
+) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
+    match identifier {
+        "chord_uniform" => Ok(SmbCampaignChordPolicy::Uniform),
+        "chord_draw_recorded_50" => Ok(SmbCampaignChordPolicy::RecordedHalf),
+        _ => Err("campaign stream chord policy is not recognized".into()),
+    }
+}
+
+fn legacy_chord_policy_identifier() -> String {
+    "chord_uniform".to_owned()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_legacy_chord_policy_identifier(identifier: &String) -> bool {
+    identifier == "chord_uniform"
 }
 
 /// Length cap for region-conditional long suffixes, named in the policy
@@ -1306,6 +1721,7 @@ fn stream_header(
         waypoint_policy: waypoint_identifier(config.waypoint_policy),
         duration_policy: "stratified".to_owned(),
         suffix_policy: suffix_policy_identifier(config.suffix).to_owned(),
+        chord_policy: chord_policy_identifier(config.chord).to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
         parent_scheduler: selector_identifier(config.selector_policy),
         executor_mode: "snapshot_resume_archive".to_owned(),
@@ -1395,6 +1811,7 @@ fn build_report(
         waypoint_policy: header.waypoint_policy.clone(),
         duration_policy: header.duration_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
+        chord_policy: header.chord_policy.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
         executor_mode: header.executor_mode.clone(),
@@ -1607,7 +2024,8 @@ pub fn run_smb_campaign(
                         .entries
                         .get(parent_index)
                         .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
-                let suffix = derive_suffix_sized(mutation_seed, config.vocabulary, long)?;
+                let suffix =
+                    derive_suffix_sized(mutation_seed, config.vocabulary, long, config.chord)?;
                 if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                     && core.all_prefixes_archived(parent_index, &suffix)
                 {
@@ -1796,6 +2214,7 @@ pub fn replay_smb_campaign(
     let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
     let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
     let replay_suffix_policy = suffix_policy_from_identifier(&header.suffix_policy)?;
+    let replay_chord_policy = chord_policy_from_identifier(&header.chord_policy)?;
     let waypoint_policy = waypoint_from_identifier(&header.waypoint_policy)?;
     let mut core = CoordinatorCore::new(
         header.action_limit,
@@ -1827,7 +2246,12 @@ pub fn replay_smb_campaign(
                         .entries
                         .get(skip_parent)
                         .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
-                let suffix = derive_suffix_sized(skip.mutation_seed, vocabulary, skip_long)?;
+                let suffix = derive_suffix_sized(
+                    skip.mutation_seed,
+                    vocabulary,
+                    skip_long,
+                    replay_chord_policy,
+                )?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -1864,7 +2288,12 @@ pub fn replay_smb_campaign(
                         .entries
                         .get(parent_index)
                         .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
-                let suffix = derive_suffix_sized(job.mutation_seed, vocabulary, job_long)?;
+                let suffix = derive_suffix_sized(
+                    job.mutation_seed,
+                    vocabulary,
+                    job_long,
+                    replay_chord_policy,
+                )?;
                 let job_frames_before = target.frames_clocked();
                 let result = execute_job(
                     &mut target,
@@ -3318,6 +3747,7 @@ mod tests {
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3348,6 +3778,7 @@ mod tests {
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3384,6 +3815,7 @@ mod tests {
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -3409,6 +3841,7 @@ mod tests {
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -3445,6 +3878,7 @@ mod tests {
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3572,6 +4006,7 @@ mod tests {
                 band_high: u8::MAX,
             },
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3618,6 +4053,7 @@ mod tests {
             key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
         };
         let mut absent_stream = Vec::new();
         let absent = run_smb_campaign(

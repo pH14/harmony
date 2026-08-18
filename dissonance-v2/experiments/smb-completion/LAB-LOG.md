@@ -6182,6 +6182,51 @@ one variable of science only when a link stalls.
   the sampling distribution rather than the sample count; or the owner's
   strategic reframing. The chain holds; every stream is preserved.
 
+### Ruling on the final check — copy our own best moves
+
+- The program's owner ruled: bias the generation with what the search
+  itself discovered. **The principle line, recorded as given: the
+  distribution comes from the machine's own recorded successes, not from
+  outside knowledge — discovery feeding discovery.**
+- **The census**: C89's crossing lineages — 42 entries past the first
+  checkpoint — carry 328 post-resume chords, the only known sample of
+  maneuvers this castle's checks reward. Their shape against uniform
+  generation: jump-right at 27 percent against uniform's 10; leftward
+  chords at 9.5 percent — the lane changes; and hold lengths **bimodal**,
+  40 percent short precise taps under twelve frames and 53 percent
+  near-maximum commits of 96 to 119, where uniform generation spreads the
+  middle. Winners tap precisely or commit fully. The contrast is this
+  registration's motivation; both distributions are in the census
+  artifact, `target/smb-completion/d95-chords/c89-crossing-chords.json`.
+- **The build**: `chord_draw_recorded_50` — inside region long draws, each
+  chord comes from the recorded table at even odds with the uniform draw,
+  keeping honest exploration mass. The table is the 328 recorded chords
+  verbatim, drawn uniformly so duplicates carry the empirical
+  frequencies; provenance is in the code beside the table. Header-recorded
+  like every policy; legacy streams drew uniformly and replay that way.
+  Vocabulary rule satisfied by construction — chord, draw, recorded, and
+  the numeric mixture convention. Gates pass with 92 tests; the standing
+  inertness reference byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+## C95 — registered recorded-chord pilot, twenty-seventh link
+
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c01f`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:6,3,30,144,0,15`, suffix
+  `one_or_two_region_long_48`, chord `chord_draw_recorded_50` — **the
+  chord policy is the single variable changed from C94.** From the same
+  slimmed origin, SHA-256
+  `09042bbd38c7de18f5d41108db3347e9ae8813fedd74e359c9f0bde270bfc7b8`,
+  direct resume per the standing rule.
+- One live run, no retries; serial replay as a background audit.
+  **Preregistered question: does retention cross 137 to the axe?**
+  Escalation unchanged.
+- Raw destination: `target/smb-completion/c95-conquest/` on the ARM
+  machine, log `c95.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

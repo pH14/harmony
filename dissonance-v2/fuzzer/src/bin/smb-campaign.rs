@@ -8,9 +8,10 @@ use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 use fuzzer::{
     campaign::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, SmbCampaignVocabulary,
-        key_policy_from_identifier, replay_smb_campaign, retention_from_identifier,
-        run_smb_campaign, select_frontier_resume_input, selector_from_identifier,
-        suffix_policy_from_identifier, vocabulary_from_identifier, waypoint_from_identifier,
+        chord_policy_from_identifier, key_policy_from_identifier, replay_smb_campaign,
+        retention_from_identifier, run_smb_campaign, select_frontier_resume_input,
+        selector_from_identifier, suffix_policy_from_identifier, vocabulary_from_identifier,
+        waypoint_from_identifier,
     },
     phase4b::SmbInput,
     phase4c::{
@@ -101,6 +102,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut key_policy = fuzzer::phase4c::SmbArchiveKeyPolicy::Frozen;
     let mut waypoint_policy = fuzzer::phase4c::SmbArchiveWaypointPolicy::Absent;
     let mut suffix = fuzzer::campaign::SmbCampaignSuffixPolicy::OneOrTwo;
+    let mut chord = fuzzer::campaign::SmbCampaignChordPolicy::Uniform;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -142,6 +144,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --suffix value")?
                     .to_string_lossy(),
             )?;
+        } else if flag == "--chord" {
+            chord = chord_policy_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --chord value")?
+                    .to_string_lossy(),
+            )?;
         } else if flag == "--waypoint" {
             waypoint_policy = waypoint_from_identifier(
                 &args
@@ -173,6 +182,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         key_policy,
         waypoint_policy,
         suffix,
+        chord,
     };
 
     let stream_path = output.join("stream.jsonl");
