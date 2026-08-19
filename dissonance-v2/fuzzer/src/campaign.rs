@@ -96,6 +96,8 @@ pub struct SmbCampaignConfig {
     pub chord: SmbCampaignChordPolicy,
     /// Cell-replacement rule for this run, recorded in the header and report.
     pub replacement_policy: SmbArchiveReplacementPolicy,
+    /// Resume rule for this run, recorded in the header and report.
+    pub resume_policy: SmbCampaignResumePolicy,
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -184,6 +186,13 @@ pub struct SmbCampaignStreamHeader {
         skip_serializing_if = "is_legacy_replacement_identifier"
     )]
     pub replacement_policy: String,
+    /// Resume rule identifier; streams recorded before this field existed
+    /// resumed from the shortest deepest input and replay that way.
+    #[serde(
+        default = "legacy_resume_identifier",
+        skip_serializing_if = "is_legacy_resume_identifier"
+    )]
+    pub resume_policy: String,
     /// Promoted retention policy identifier.
     pub retention_policy: String,
     /// Frozen parent scheduler identifier.
@@ -353,6 +362,13 @@ pub struct SmbCampaignModeReport {
         skip_serializing_if = "is_legacy_replacement_identifier"
     )]
     pub replacement_policy: String,
+    /// Resume rule identifier; streams recorded before this field existed
+    /// resumed from the shortest deepest input and replay that way.
+    #[serde(
+        default = "legacy_resume_identifier",
+        skip_serializing_if = "is_legacy_resume_identifier"
+    )]
+    pub resume_policy: String,
     /// Promoted retention policy identifier.
     pub retention_policy: String,
     /// Frozen parent scheduler identifier.
@@ -406,20 +422,139 @@ pub struct SmbCampaignModeReport {
 /// # Errors
 ///
 /// Returns an error when the source archive has no retained entries.
-pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInput, Box<dyn Error>> {
+/// Buckets behind the frontier a clock-aware resume may reach back, named in
+/// the policy identifier per the numeric-constant convention. A campaign
+/// re-crosses this much ground routinely, so depth given up here is depth the
+/// next link buys back while carrying the cheaper route forward.
+const RESUME_FASTEST_BUCKET_REACH: u16 = 32;
+
+/// How a link chooses the one input it resumes from.
+///
+/// A campaign inherits exactly one lineage from its origin archive; every
+/// other entry is discarded at the boundary. Which lineage that is therefore
+/// decides what the chain can accumulate.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbCampaignResumePolicy {
+    /// Frozen behaviour: the shortest input among the entries at the deepest
+    /// recorded tuple. Depth, then brevity; cost is not consulted.
+    #[default]
+    FrontierShortest,
+    /// The fewest frames spent in the frontier pair, among entries standing no
+    /// more than [`RESUME_FASTEST_BUCKET_REACH`] buckets behind the frontier.
+    /// Ties fall back to the frozen rule's order, so the choice stays total.
+    FastestInLevelWithin32,
+}
+
+/// Identifier a run records for its resume rule.
+#[must_use]
+pub fn resume_identifier(policy: SmbCampaignResumePolicy) -> &'static str {
+    match policy {
+        SmbCampaignResumePolicy::FrontierShortest => "frontier_shortest",
+        SmbCampaignResumePolicy::FastestInLevelWithin32 => "fastest_in_level_32",
+    }
+}
+
+/// Recover a resume rule from its recorded identifier.
+///
+/// # Errors
+/// Returns an error when the identifier names no known rule.
+pub fn resume_from_identifier(identifier: &str) -> Result<SmbCampaignResumePolicy, Box<dyn Error>> {
+    match identifier {
+        "frontier_shortest" => Ok(SmbCampaignResumePolicy::FrontierShortest),
+        "fastest_in_level_32" => Ok(SmbCampaignResumePolicy::FastestInLevelWithin32),
+        _ => Err("unknown campaign resume policy identifier".into()),
+    }
+}
+
+/// Frames each recorded entry spent inside its own pair, in entry order.
+///
+/// Same derivation the archive's replacement rule uses, recomputed here from a
+/// serialized report: an entry extends its parent's input, so the frames it
+/// added are the held frames past the parent's length, and an entry whose
+/// parent stands in a different pair started the count there. Parents always
+/// carry lower identifiers than their children, so one forward pass suffices.
+fn report_frames_in_level(source: &SmbArchiveReport) -> Vec<u64> {
+    let frames_of = |actions: &[ButtonChord]| -> u64 {
+        actions
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum()
+    };
+    let mut index_of: std::collections::BTreeMap<u64, usize> = std::collections::BTreeMap::new();
+    for (index, entry) in source.entries.iter().enumerate() {
+        index_of.insert(entry.id, index);
+    }
+    let mut frames = vec![0_u64; source.entries.len()];
+    for (index, entry) in source.entries.iter().enumerate() {
+        let parent = entry
+            .parent_id
+            .and_then(|id| index_of.get(&id).copied())
+            .filter(|parent| *parent < index)
+            .map(|parent| &source.entries[parent]);
+        let Some(parent) = parent else {
+            frames[index] = frames_of(&entry.input.actions);
+            continue;
+        };
+        let added = frames_of(
+            entry
+                .input
+                .actions
+                .get(parent.input.actions.len()..)
+                .unwrap_or(&[]),
+        );
+        let same_pair = (parent.key.world, parent.key.level) == (entry.key.world, entry.key.level);
+        let parent_index = index_of[&parent.id];
+        frames[index] = if same_pair {
+            frames[parent_index].saturating_add(added)
+        } else {
+            added
+        };
+    }
+    frames
+}
+
+/// Choose the one input a link resumes from, under the recorded resume rule.
+///
+/// # Errors
+///
+/// Returns an error when the archive holds no retained entry.
+pub fn select_frontier_resume_input(
+    source: &SmbArchiveReport,
+    policy: SmbCampaignResumePolicy,
+) -> Result<SmbInput, Box<dyn Error>> {
     let frontier = source
         .entries
         .iter()
         .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
         .max()
         .ok_or("source archive contains no retained entries")?;
+    if policy == SmbCampaignResumePolicy::FrontierShortest {
+        return source
+            .entries
+            .iter()
+            .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
+            .min_by_key(|entry| (entry.input.actions.len(), entry.id))
+            .map(|entry| entry.input.clone())
+            .ok_or_else(|| "source archive contains no frontier entries".into());
+    }
+    // Clock-aware resume: the frontier pair only, no deeper than the frontier
+    // and no further back than the registered reach, cheapest in frames first.
+    let frames = report_frames_in_level(source);
+    let (world, level, progress) = frontier;
+    let floor = progress.saturating_sub(RESUME_FASTEST_BUCKET_REACH);
     source
         .entries
         .iter()
-        .filter(|entry| (entry.key.world, entry.key.level, entry.key.progress) == frontier)
-        .min_by_key(|entry| (entry.input.actions.len(), entry.id))
-        .map(|entry| entry.input.clone())
-        .ok_or_else(|| "source archive contains no frontier entries".into())
+        .enumerate()
+        .filter(|(_, entry)| {
+            (entry.key.world, entry.key.level) == (world, level)
+                && entry.key.progress >= floor
+                && entry.key.progress <= progress
+        })
+        .min_by_key(|(index, entry)| (frames[*index], entry.input.actions.len(), entry.id))
+        .map(|(_, entry)| entry.input.clone())
+        .ok_or_else(|| "source archive contains no resume candidate in the frontier pair".into())
 }
 
 /// Header identifier for a parent-selector policy.
@@ -1004,6 +1139,15 @@ fn legacy_chord_policy_identifier() -> String {
 #[allow(clippy::ptr_arg)]
 fn is_legacy_chord_policy_identifier(identifier: &String) -> bool {
     identifier == "chord_uniform"
+}
+
+fn legacy_resume_identifier() -> String {
+    "frontier_shortest".to_owned()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_legacy_resume_identifier(identifier: &String) -> bool {
+    identifier == "frontier_shortest"
 }
 
 fn legacy_replacement_identifier() -> String {
@@ -1725,7 +1869,10 @@ struct ResolvedOrigin {
     resume_input: SmbInput,
 }
 
-fn resolve_origin(origin: &SmbCampaignOrigin) -> Result<ResolvedOrigin, Box<dyn Error>> {
+fn resolve_origin(
+    origin: &SmbCampaignOrigin,
+    resume_policy: SmbCampaignResumePolicy,
+) -> Result<ResolvedOrigin, Box<dyn Error>> {
     let (kind, path, archive_sha256, resume_input) = match origin {
         SmbCampaignOrigin::Genesis => ("genesis".to_owned(), None, None, SmbInput::default()),
         SmbCampaignOrigin::Archive {
@@ -1736,7 +1883,7 @@ fn resolve_origin(origin: &SmbCampaignOrigin) -> Result<ResolvedOrigin, Box<dyn 
             "archive".to_owned(),
             Some(path.clone()),
             Some(file_sha256.clone()),
-            select_frontier_resume_input(report)?,
+            select_frontier_resume_input(report, resume_policy)?,
         ),
     };
     let resume_input_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&resume_input)?));
@@ -1778,6 +1925,7 @@ fn stream_header(
         suffix_policy: suffix_policy_identifier(config.suffix).to_owned(),
         chord_policy: chord_policy_identifier(config.chord).to_owned(),
         replacement_policy: replacement_identifier(config.replacement_policy).to_owned(),
+        resume_policy: resume_identifier(config.resume_policy).to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
         parent_scheduler: selector_identifier(config.selector_policy),
         executor_mode: "snapshot_resume_archive".to_owned(),
@@ -1870,6 +2018,7 @@ fn build_report(
         suffix_policy: header.suffix_policy.clone(),
         chord_policy: header.chord_policy.clone(),
         replacement_policy: header.replacement_policy.clone(),
+        resume_policy: header.resume_policy.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
         executor_mode: header.executor_mode.clone(),
@@ -1956,7 +2105,7 @@ pub fn run_smb_campaign(
     {
         return Err("campaign waypoint region declares an inverted window".into());
     }
-    let resolved = resolve_origin(origin)?;
+    let resolved = resolve_origin(origin, config.resume_policy)?;
     let header = stream_header(config, &resolved.record, rom);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
@@ -2258,7 +2407,7 @@ pub fn replay_smb_campaign(
         "archive" => {
             let source =
                 origin_report.ok_or("archive campaign replay requires the source archive")?;
-            select_frontier_resume_input(source)?
+            select_frontier_resume_input(source, resume_from_identifier(&header.resume_policy)?)?
         }
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
@@ -2888,7 +3037,10 @@ pub fn diagnose_x_transit(
     // The stream's recorded resume input comes from the run's ORIGIN archive,
     // which for derived-origin links is not the produced archive; the caller
     // passes it explicitly in that case.
-    let base = select_frontier_resume_input(origin.unwrap_or(source))?;
+    let base = select_frontier_resume_input(
+        origin.unwrap_or(source),
+        resume_from_identifier(&header.resume_policy)?,
+    )?;
     let base_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&base)?));
     if base_sha256 != header.resume_input_sha256 {
         return Err("x-transit base input does not match the recorded resume input".into());
@@ -3097,7 +3249,9 @@ pub fn diagnose_wram_diff(
         .map(|entry| (entry.key.world, entry.key.level))
         .max()
         .ok_or("source archive has no entries")?;
-    let base = select_frontier_resume_input(source)?;
+    // This diagnostic reads an archive with no stream beside it, so it names
+    // the frozen rule explicitly rather than inferring one.
+    let base = select_frontier_resume_input(source, SmbCampaignResumePolicy::FrontierShortest)?;
     let collect = |low: u16, high: u16| {
         let mut picks: Vec<&crate::phase4c::SmbArchiveEntryReport> = source
             .entries
@@ -3232,7 +3386,9 @@ pub fn diagnose_loop_differential(
         .map(|entry| (entry.key.world, entry.key.level))
         .max()
         .ok_or("source archive has no entries")?;
-    let base = select_frontier_resume_input(source)?;
+    // Archive-only diagnostic with no stream beside it: the frozen rule is
+    // named explicitly rather than inferred.
+    let base = select_frontier_resume_input(source, SmbCampaignResumePolicy::FrontierShortest)?;
     let mut sample: Vec<&crate::phase4c::SmbArchiveEntryReport> = source
         .entries
         .iter()
@@ -3527,7 +3683,8 @@ pub fn diagnose_down_census(
     // prefix is emulated once and each parent replays only its tail. Without
     // this the census re-emulates roughly 146,000 frames per parent — the
     // cost blowup that hung the first D73 launch.
-    let base = select_frontier_resume_input(source)?;
+    let base =
+        select_frontier_resume_input(source, resume_from_identifier(&header.resume_policy)?)?;
     let base_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&base)?));
     if base_sha256 != header.resume_input_sha256 {
         return Err("census base input does not match the recorded resume input".into());
@@ -3698,14 +3855,15 @@ mod tests {
     use super::{
         CoordinatorCore, SmbCampaignActionResult, SmbCampaignAdmissionDecision,
         SmbCampaignCandidate, SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin,
-        SmbCampaignStreamHeader, derive_suffix, derive_worker_seed, execute_job,
-        replacement_from_identifier, replacement_identifier, replay_smb_campaign, run_smb_campaign,
+        SmbCampaignResumePolicy, SmbCampaignStreamHeader, derive_suffix, derive_worker_seed,
+        execute_job, replacement_from_identifier, replacement_identifier, replay_smb_campaign,
+        resume_from_identifier, resume_identifier, run_smb_campaign, select_frontier_resume_input,
         waypoint_from_identifier, waypoint_identifier,
     };
     use crate::{
         phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
         phase4c::{
-            ArchiveCandidate, SmbArchiveKey, SmbArchiveReplacementPolicy,
+            ArchiveCandidate, SmbArchiveKey, SmbArchiveReplacementPolicy, SmbArchiveReport,
             SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy,
         },
         target::Target,
@@ -3812,6 +3970,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3844,6 +4003,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3882,6 +4042,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -3909,6 +4070,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -3947,6 +4109,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -4005,6 +4168,108 @@ mod tests {
     }
 
     #[test]
+    fn the_clock_aware_resume_prefers_a_faster_shallower_lineage() {
+        use crate::phase4c::{SmbArchiveEntryReport, SmbArchiveKey};
+        let key = |progress: u16| SmbArchiveKey {
+            world: 7,
+            level: 0,
+            progress,
+            player_y_bucket: 0,
+            player_engine_state: 0,
+            state_fingerprint: 0,
+            room_x_bucket: 0,
+        };
+        // Two lineages through one pair. The deep one walks further on long
+        // holds; the shallow one stops twenty buckets back having spent far
+        // fewer frames. This is C102's situation exactly.
+        let mut entries = Vec::new();
+        let mut push = |id: u64, parent: Option<u64>, progress: u16, actions: Vec<ButtonChord>| {
+            entries.push(SmbArchiveEntryReport {
+                id,
+                parent_id: parent,
+                created_execution: 0,
+                input: SmbInput { actions },
+                key: key(progress),
+                milestones: SmbMilestones::default(),
+                selector: None,
+            });
+        };
+        let slow: Vec<ButtonChord> = (0..8).map(|_| ButtonChord::new(0x01, 120)).collect();
+        let fast: Vec<ButtonChord> = (0..8).map(|_| ButtonChord::new(0x02, 20)).collect();
+        push(0, None, 0, Vec::new());
+        for step in 1..=8_usize {
+            push(
+                u64::try_from(step).expect("id"),
+                Some(u64::try_from(step - 1).expect("parent")),
+                u16::try_from(step * 40).expect("progress"),
+                slow[..step].to_vec(),
+            );
+        }
+        for step in 1..=7_usize {
+            let id = u64::try_from(8 + step).expect("id");
+            push(
+                id,
+                Some(if step == 1 { 0 } else { id - 1 }),
+                u16::try_from(step * 43).expect("progress"),
+                fast[..step].to_vec(),
+            );
+        }
+        let source = SmbArchiveReport {
+            seed: 0,
+            executions: 0,
+            milestones: SmbMilestones::default(),
+            progress_watermark: crate::phase4b::SmbProgressWatermark::default(),
+            first_reached: crate::phase4b::SmbMilestoneTimes::default(),
+            first_inputs: crate::phase4b::SmbMilestoneInputs::default(),
+            champion_input: SmbInput::default(),
+            entries,
+            progress_curve: Vec::new(),
+            retained: 0,
+            rejected: 0,
+            deaths: 0,
+            ranking: crate::phase4c::SmbRankingAccounting::default(),
+            generated_mutator: crate::phase4c::SmbGeneratedMutatorAccounting::default(),
+            ladder: crate::phase4c::SmbLadder::default(),
+            selector: crate::phase4c::SmbSelectorAccounting::default(),
+        };
+        // The frozen rule takes the deepest entry, bucket 320, 960 frames.
+        let frozen =
+            select_frontier_resume_input(&source, SmbCampaignResumePolicy::FrontierShortest)
+                .expect("frozen resume");
+        assert_eq!(frozen.actions.len(), 8);
+        assert_eq!(
+            frozen
+                .actions
+                .iter()
+                .map(|action| u64::from(action.bounded_hold_frames()))
+                .sum::<u64>(),
+            960
+        );
+        // The clock-aware rule reaches back within its registered thirty-two
+        // buckets to bucket 301 and takes the 140-frame route instead.
+        let fastest =
+            select_frontier_resume_input(&source, SmbCampaignResumePolicy::FastestInLevelWithin32)
+                .expect("clock-aware resume");
+        assert_eq!(
+            fastest
+                .actions
+                .iter()
+                .map(|action| u64::from(action.bounded_hold_frames()))
+                .sum::<u64>(),
+            140
+        );
+        assert_eq!(
+            resume_from_identifier("fastest_in_level_32").expect("parse"),
+            SmbCampaignResumePolicy::FastestInLevelWithin32
+        );
+        assert_eq!(
+            resume_identifier(SmbCampaignResumePolicy::FrontierShortest),
+            "frontier_shortest"
+        );
+        assert!(resume_from_identifier("fastest_in_level").is_err());
+    }
+
+    #[test]
     fn replacement_identifier_round_trips_and_defaults_stay_off_the_stream() {
         assert_eq!(
             replacement_identifier(SmbArchiveReplacementPolicy::FewestActions),
@@ -4038,6 +4303,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -4155,6 +4421,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -4203,6 +4470,7 @@ mod tests {
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut absent_stream = Vec::new();
         let absent = run_smb_campaign(

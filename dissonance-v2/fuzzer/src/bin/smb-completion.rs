@@ -1045,13 +1045,19 @@ fn run_derive_origin_pair_mode(
         return Err("unexpected extra argument".into());
     }
     let mut source: SmbArchiveReport = serde_json::from_slice(&fs::read(&source_path)?)?;
-    let resume_before = fuzzer::campaign::select_frontier_resume_input(&source)?;
+    let resume_before = fuzzer::campaign::select_frontier_resume_input(
+        &source,
+        fuzzer::campaign::SmbCampaignResumePolicy::FrontierShortest,
+    )?;
     let before = source.entries.len();
     source
         .entries
         .retain(|entry| (entry.key.world, entry.key.level) == (world, level));
     let after = source.entries.len();
-    let resume_after = fuzzer::campaign::select_frontier_resume_input(&source)?;
+    let resume_after = fuzzer::campaign::select_frontier_resume_input(
+        &source,
+        fuzzer::campaign::SmbCampaignResumePolicy::FrontierShortest,
+    )?;
     if resume_before != resume_after {
         return Err("origin slimming changed the resume input".into());
     }

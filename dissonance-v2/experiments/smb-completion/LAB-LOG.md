@@ -7236,6 +7236,97 @@ one variable of science only when a link stalls.
   shallower lineage — deliberately gives up recorded frontier depth, which no
   link has ever done.
 
+### The clock-aware resume rule — built on the ruling, byte-inert
+
+- Registered on the integrator's ruling against the C103 finding. Identifier
+  `fastest_in_level_32`; the frozen rule keeps its name, `frontier_shortest`.
+- **What it does.** Among the entries standing in the frontier pair, no deeper
+  than the frontier and no more than thirty-two buckets behind it, the link
+  resumes from the one that spent the fewest frames inside that level. Ties
+  fall back to the frozen rule's order — fewest actions, then lowest
+  identifier — so the choice stays a total order and cannot depend on
+  iteration order.
+- **Why thirty-two, since a constant in an identifier has to be defensible.**
+  It is ground a campaign re-crosses routinely: the chain's recent links have
+  gained ninety-five, fifteen and zero buckets, so thirty-two is inside the
+  ordinary reach of one run. Depth given up at the resume is depth the same
+  link buys back, while carrying the cheaper route forward — which is the whole
+  trade.
+- **Frames-in-level is recomputed from the serialized report**, by the same
+  derivation the archive's replacement rule uses live: an entry extends its
+  parent's input, so the frames it added are the held frames past the parent's
+  length, and an entry whose parent stands in another pair starts its count
+  there. Parents always carry lower identifiers than their children, so one
+  forward pass over the report suffices and no emulation is involved.
+- **Inertness, and it matters more here than anywhere.** Replay does not read
+  the resume input from the stream — it *re-derives* it from the origin archive
+  and checks it against the recorded hash. So the rule is recorded in the
+  header and replay selects under the recorded rule; the frozen rule writes no
+  field at all, and every stream recorded before this existed re-derives
+  exactly the input it always did. Archive-only diagnostics that have no stream
+  beside them name the frozen rule explicitly rather than inferring one.
+- A test builds the situation the rule exists for — a deep lineage on long
+  holds and a shallower one twenty buckets back at a seventh of the frame cost,
+  which is C102's archive in miniature — and asserts the frozen rule takes the
+  960-frame deep route while the registered rule takes the 140-frame shallow
+  one.
+- The four quality gates pass, 96 tests, and the standing inertness reference
+  re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+## C104 — registered clock-aware resume, thirty-sixth link
+
+- The arm against the C103 finding: the same stack C101 ran — promoted
+  policies plus the keep-the-fastest replacement rule, no region — with the
+  **clock-aware resume rule as its single registered change**. Sourced from
+  C102's archive rather than C103's, because C102 is where the fast route
+  lives.
+- **What this link is actually doing, stated plainly because it is a first for
+  the chain: it deliberately resumes from a shallower position.** C102's
+  archive holds a route that reaches bucket 304 having spent 6,482 frames in
+  the level, and the route that reaches bucket 327 having spent 7,281. Every
+  link until now took the second. This one takes the first: twenty-three
+  buckets of depth given up for **799 frames of clock**, about thirty-three
+  timer units.
+- **The recorded ladder is not affected.** C99 through C103 recorded
+  `(7,0,327)` and that record stands; what changes is which lineage the next
+  campaign extends. The risk is honest and worth naming: if this link fails to
+  re-cross those twenty-three buckets, its own ladder reads below 327 and the
+  chain's live frontier regresses for a link. Against that, the twenty-three
+  buckets cost about five hundred frames to re-cross at the fast route's own
+  rate, so the trade is positive by roughly three hundred frames even if
+  nothing else improves.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c028`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, no waypoint,
+  no chord bias, suffix `one_or_two`, replacement `fewest_frames_in_level`,
+  resume `fastest_in_level_32`. Sourced from C102's live archive, SHA-256
+  `302de3bda77a64c30734c150ce1ab0a00e711387149bc95491cb13224acf852f`.
+- **No region, and that is deliberate.** C102 needed one to generate speed over
+  crossed terrain. This link does not need to generate anything: the fast route
+  already exists and the job is to carry it forward, which is exactly what the
+  concentrated draw at the tip does well. Spreading draws now would take budget
+  away from the only thing that matters.
+- **Preregistered question: does the link's own frontier lineage reach bucket
+  327 or beyond having spent fewer than 7,279 frames in 8-1?** That is the
+  first time the chain has been able to ask its real question — cross the level
+  with clock left — as a single measurable event. A frontier below 327 with a
+  cheaper traverse is a partial and gets one more link; a frontier below 327
+  with no saving is a null and voids the resume trade.
+- Raw destination: `target/smb-completion/c104-conquest/` on the ARM machine,
+  log `c104.log`, sentinel discipline in force; per-link replay audits stay
+  dropped by ruling.
+- **Launch confirmed, and the header records the thing the whole link is
+  about: the resume input changed.** For the first time since C100 the
+  recorded `resume_input_sha256` is not `b1fe545d…` — it is
+  `711325b0538ca1eac19a897c035b7c6073961dfbf1b71eae757c2fb0fb23c388` at 3,349
+  actions, thirty-five fewer than the lineage the last four links all
+  inherited. Origin C102's archive at the registered hash, campaign seed
+  1,592,639,528, action limit 4096, entry bound 131,072, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, no waypoint or chord
+  field. Jobs were flowing before this entry was written.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
