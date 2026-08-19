@@ -6435,6 +6435,39 @@ one variable of science only when a link stalls.
   audit completed clean as well: both links replay byte-exact from
   their recorded streams. The C94 and C95 audits are still running.
 
+## C98 — registered recorded-chord conquest against the 8-1 gap, thirtieth link
+
+- The integrator ruled on the census: the wall is genuine, the deficit
+  is jump reach, and the cure is the C95 package re-aimed — the
+  recorded-chord bias with its enabling region, one steering change
+  from C97 and nothing else. The compiled chord table is **reused, not
+  re-mined**: it was machine-mined from recorded successes and its
+  content is exactly the long held-arc maneuvers a reach deficit needs,
+  while C97's own lineages contain no crossing of this gap and would
+  encode terrain already crossed; the fifty-percent uniform mass guards
+  against castle-provenance chords fitting 8-1 poorly, and re-mining is
+  the next rung if this link fails. The region is census-derived,
+  in-run evidence only: the rich near-edge class at buckets 210–217
+  and the execution watermark 222.
+- One live conquest campaign, 50,000 executions, twelve workers on the
+  ARM machine, campaign seed `0x5eed_c022`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:7,0,210,222,0,15`, suffix
+  `one_or_two_region_long_48`, chord `chord_draw_recorded_50` — **the
+  steering package is the single change from C97.** Sourced from C97's
+  live archive, SHA-256
+  `4744923c994cbf0ae44806da01ac6e865bcbe6c0e0a7bc89139c22670a41044c`,
+  direct resume from the full archive per the standing rule for
+  region-policy links (play 216 sits below recorded 217, but the
+  registered region keeps the full archive).
+- The refused-candidate grid stays at its 20-job sample by ruling:
+  twenty-for-twenty dead under six masks and four horizons, with the
+  transit corroboration, is decisive; the cores go to this link.
+- One live run, no retries; serial replay as a background audit.
+- Raw destination: `target/smb-completion/c98-conquest/` on the ARM
+  machine, log `c98.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
