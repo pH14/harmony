@@ -8349,6 +8349,85 @@ one variable of science only when a link stalls.
   cheap, it was registered as a probe, and it bought a boundary the chain did
   not have.
 
+### H76 replay verdict — passed, and recorded because a null does not waive it
+
+- The serial replay of H76's recorded stream completed all 50,000 executions
+  byte-identically: `replay_verified` true, stream SHA-256
+  `c96c169a16fa346ca77437e74e1f6287ac20364bb76dc58b007496de5c137c0a`, replayed
+  archive SHA-256
+  `20ef027c0d7575dfe35c9a12114c9bdc6534bce8c29150bd7ecbcdd800e43865`, report
+  SHA-256 `730c203b69341b8fc74ccbfb07d9c80592106f99dd46c3166da7d5ee5aacede5`.
+- **The fourth of the arm's four preregistered conditions therefore passes**,
+  and the arm's verdict is unchanged: it failed on cost-normalized yield and on
+  frontier regression, and a determinism check cannot rescue an arm that lost on
+  its primary measure.
+- Recorded because the integrator ruled explicitly that the null does not waive
+  it, and because the check is worth something on its own terms: this is the
+  first campaign recorded under two mechanisms registered the same day — the
+  frames-in-level replacement rule and the clock-aware resume — and its stream
+  replays exactly. Both mechanisms are now demonstrated determinism-safe on a
+  full-budget run rather than only on unit fixtures, including the resume rule's
+  awkward part, where replay does not read the resume input from the stream but
+  re-derives it from the origin archive under the recorded rule.
+
+### Per-stall verdict — all eleven are forced, and every one of them is a hundred-frame dwell
+
+- Each stall shortened **alone** to the vocabulary's shortest hold, every other
+  action left exactly as recorded, the whole input replayed from gameplay
+  genesis, and the stall counted as slack only if the run still reached
+  `(7,0,350)`. Eleven stalls, 1,728 frames, **recoverable: zero.**
+
+  | span | frames | slack | reached when shortened | recorded holds |
+  |---|---|---|---|---|
+  | 85 → 86 | 104 | forced | (7,0,100) | 104 |
+  | 96 → 97 | 218 | forced | (7,0,102) | 101, 117 |
+  | 107 → 108 | 145 | forced | (7,0,115) | 8, 9, 5, 4, 10, **109** |
+  | 229 → 231 | 119 | forced | (7,0,230) | 119 |
+  | 231 → 232 | 130 | forced | (7,0,238) | 2, **108**, 10, 10 |
+  | 234 → 235 | 103 | forced | (7,0,238) | 103 |
+  | 267 → 268 | 231 | forced | (7,0,290) | 10, **102**, **119** |
+  | 268 → 270 | 110 | forced | (7,0,287) | 110 |
+  | 270 → 271 | 250 | forced | (7,0,285) | 3, 2, 12, **116**, **117** |
+  | 279 → 280 | 117 | forced | (7,0,284) | 117 |
+  | 282 → 283 | 201 | forced | (7,0,291) | **104**, 97 |
+
+- **The shape is the same every time, and it is the castle's.** Strip out the
+  incidental short actions and every stall is one or two holds of ninety-seven
+  to a hundred and nineteen frames. The controller vocabulary's long stratum is
+  96 to 120 frames and its ceiling is 120, so these are near-maximal single
+  presses: the route stands, or holds one direction, for about two seconds at a
+  time, eleven times. The castle diagnostic found eight stand-stills of roughly
+  a hundred frames and read them as a check grading dwell time. This is eleven
+  more of the same, in a level with no castle in it, found by a different method
+  on a different lineage. **Dwell-graded waits are now a recognisable class
+  rather than a castle peculiarity.**
+- Every failure names itself: shortening the earliest stall costs the run two
+  hundred and fifty buckets of depth, and even the latest one still costs
+  fifty-nine. There is no stall whose removal is merely expensive; each is
+  load-bearing for everything after it.
+- **The caveat, and it is not small.** This test shortens each stall to the
+  *minimum* hold, so "forced" here means precisely **"cannot be cut to one
+  frame"**. It does not mean the wait cannot be shortened at all. A hold of 104
+  that must be at least 60 would show as forced here while hiding forty-four
+  recoverable frames, and eleven such stalls could hide hundreds. The honest
+  statement of this result is that **the waits are real and required, and their
+  minimum viable length is not yet measured.**
+- **The cheap follow-up that would measure it**, and it needs no campaign: a
+  per-stall bisection on hold length — for each stall, binary-search the
+  shortest hold that still reaches `(7,0,350)`. At roughly seven replays per
+  stall that is about eighty replays against the twelve this run used, hours
+  rather than days, and it converts "forced" into a number.
+- **What this settles for the chain right now.** Combined with C109's boundary —
+  three runs converging on bucket 351 at clock exhaustion — the current route
+  cannot finish this level: its frames are not editable, and a quarter of its
+  clock is spent in waits the game requires. **The frames have to come from a
+  different route, not from a cheaper rendering of this one.** That is exactly
+  what the splice proposes to test, and the stall verdict does not touch it: it
+  says *this* route's waits are load-bearing, not that another route through the
+  same terrain needs the same waits. The 100–149 band alone carries two of these
+  stalls worth 363 frames, and C106 produced a passage through that band at
+  17.5 frames per bucket against the others' 27 to 38.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
