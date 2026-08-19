@@ -8218,6 +8218,57 @@ one variable of science only when a link stalls.
   "act and report", and a change in how the chain is driven belongs in the log
   beside the results it produces.
 
+### The single-lineage curve — the expensive band is not terrain, it is four stand-stills
+
+- The measurement the band census could not give, built as a per-bucket curve
+  along **one lineage**: the frames that lineage had spent in the level the
+  first time it stood on each bucket. Its differences are one route's real
+  costs, and — the check that says the confound is gone — **not one of them is
+  negative**, where the cross-lineage minima produced negatives at eleven
+  buckets inside this band alone.
+- **The true cost of crossing the band is worse than the confounded estimate,
+  and its shape is completely different.** C108's winning lineage enters the
+  band at bucket 252 having spent 4,924 frames in the level and leaves at 292
+  having spent 6,392: **1,468 frames for 40 buckets, 36.7 per bucket**, against
+  the endpoint difference's 31.85.
+- **Five steps carry seventy-one percent of it, and four of those are single
+  buckets:**
+
+  | step | buckets crossed | frames |
+  |---|---|---|
+  | 270 → 271 | 1 | **250** |
+  | 252 → 260 | 8 | 240 |
+  | 267 → 268 | 1 | **231** |
+  | 282 → 283 | 1 | **201** |
+  | 279 → 280 | 1 | **117** |
+
+  Four single-bucket advances cost 250, 231, 201 and 117 frames — **799 frames
+  to move four buckets.** At the seven-frames-per-bucket rate this level
+  demonstrably supports elsewhere, those four buckets should cost about
+  twenty-eight. Roughly **770 frames are spent standing still at four specific
+  places**, and the rest of the band runs at ordinary cost.
+- **This is the castle's signature.** The inherited castle diagnostic found that
+  the reduction survivors there were eight stand-stills of roughly a hundred
+  frames each, and read them as a check grading dwell time. These are four
+  stand-stills of 117 to 250 frames. The same shape has now appeared twice, in
+  two different places, found by two different methods.
+- **What this does to the band prize.** It was taken off the board as a search
+  target and that ruling was right — C108 proved seven times the budget cannot
+  buy it, and now it is clear why: no amount of searching removes a wait that
+  the game requires. But measurement was named as the only thing that could put
+  it back, and this measurement puts it back **as a reduction target rather than
+  a search target**, larger than the original estimate and localised to four
+  buckets instead of fifty.
+- **The question that decides it is exactly the one the reducer answers**: are
+  those four waits forced, as the castle's were, or is there slack in them? That
+  run is next, and it is now precisely aimed — at buckets 267 through 283 rather
+  than at a fifty-bucket band.
+- Method note for whoever reads this later: the per-bucket curve is recorded per
+  segment in the lineage census, so any future claim about what a stretch of a
+  level costs should be read off a lineage's own curve. The per-bucket minima in
+  the frame-cost census answer a different question — the cheapest way to reach
+  a place — and the two must not be mixed.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

@@ -366,7 +366,7 @@ pub fn diagnose_smb_frame_slack(
 }
 
 /// One `(world, level)` segment of a single recorded lineage.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbLineageLevelSegment {
     /// Pair world.
     pub world: u8,
@@ -385,6 +385,15 @@ pub struct SmbLineageLevelSegment {
     /// Frames per progress bucket crossed, in thousandths, so the rate is an
     /// exact integer comparison rather than a rounded float.
     pub frames_per_bucket_milli: u64,
+    /// Frames this one lineage had spent in the pair when it first stood on
+    /// each progress bucket, in ascending bucket order.
+    ///
+    /// Every other frame figure this experiment records for a bucket is a
+    /// minimum over all retained entries, and those minima belong to different
+    /// lineages, so differencing them across buckets describes no route that
+    /// exists. This curve is one lineage's own, so its differences are real
+    /// costs and can only be non-negative.
+    pub bucket_frames: Vec<(u16, u64)>,
 }
 
 /// Per-level traverse speed of one recorded lineage.
@@ -462,6 +471,7 @@ pub fn census_smb_lineage_levels(
                 first_progress: state.progress,
                 last_progress: state.progress,
                 frames_per_bucket_milli: 0,
+                bucket_frames: Vec::new(),
             }),
         }
     }
@@ -479,6 +489,24 @@ pub fn census_smb_lineage_levels(
                 .saturating_sub(segments[position].first_progress),
         );
         let frames = frames_of(actions);
+        // The lineage's own cost at each bucket it first reaches: walk its
+        // states across the segment accumulating held frames, and record the
+        // running total the first time each bucket appears.
+        let mut curve: Vec<(u16, u64)> = Vec::new();
+        let mut spent = 0_u64;
+        let mut best: Option<u16> = None;
+        for offset in 0..=actions.len() {
+            if let Some(state) = states.get(start.saturating_add(offset))
+                && best.is_none_or(|seen| state.progress > seen)
+            {
+                best = Some(state.progress);
+                curve.push((state.progress, spent));
+            }
+            if let Some(action) = actions.get(offset) {
+                spent = spent.saturating_add(u64::from(action.bounded_hold_frames()));
+            }
+        }
+        segments[position].bucket_frames = curve;
         segments[position].actions = actions.len();
         segments[position].frames = frames;
         segments[position].frames_per_bucket_milli = if crossed == 0 {
