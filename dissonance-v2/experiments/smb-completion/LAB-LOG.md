@@ -6794,6 +6794,123 @@ one variable of science only when a link stalls.
   unnecessary variable. The gate mode crosses to that machine in a gap
   between links, not during one.
 
+### Frame-slack measurement — the standing holds are load-bearing, and squeezing the recorded route is dead
+
+- The frame-cost census named thirty-one percent of 8-1's clock as frames
+  spent in actions that gain no ground. The obvious next question is
+  whether those frames are simply removable: shorten every no-gain hold to
+  the vocabulary's minimum and see whether the route still arrives.
+  `smb-completion diagnose-frame-slack` asks it directly, replaying the
+  shortened input rather than reasoning about it, and the answer is no.
+- **Shortening all eighty-three no-gain actions at once destroys the
+  route.** The frontier lineage's 8-1 segment is 176 actions and 7,279
+  frames; eighty-three of those actions gain no bucket and cost 2,238
+  frames. Shortened together they save 2,155 frames — and the replay
+  reaches bucket **3**. Not a shorter arrival, not a slightly worse one:
+  the run dies at the level's mouth. The holds are not idling. They are
+  waits the rest of the input is timed against, and removing them removes
+  the thing the following actions were drawn to meet.
+- **Shortening them one at a time, keeping only the shortenings that
+  preserve the frontier, recovers 297 frames of 7,279.** Nineteen of the
+  eighty-three survive that test; the segment falls to 6,982 frames and
+  still reaches `(7,0,327)`. At the level's calibrated 24.0 frames per
+  timer unit that is twelve units against a deficit the census measures in
+  hundreds. Four percent.
+- **Recorded as a null, and it closes a cure class.** Mechanical squeezing
+  of the recorded route — any post-hoc rewriting of the winning input's
+  durations — cannot buy the clock. What little slack exists is already
+  near the noise, and the rest is structural: the route is slow because of
+  the moves it makes, not because of pauses bolted onto them. A faster 8-1
+  has to be *searched for*, not edited out of what the search already has.
+- Raw evidence: `target/smb-completion/c99-conquest/frame-slack-81.json` on
+  the ARM machine. The measurement is a replay of recorded inputs and adds
+  no policy; the four quality gates pass and the standing inertness
+  reference re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+### The cost curve's shape — the level is uniformly slow, and the archive's diversity is in the wrong hundred buckets
+
+- Read off the recorded frame-cost census with no new run, because the
+  question the next arm turns on is *where* the clock goes, and the
+  census already answered it.
+- **The waste is not concentrated anywhere.** The first forty-five buckets
+  of 8-1 already cost 20.8 frames each, the stretch to bucket 300 costs
+  22.6, and the whole traverse averages 22.3. Individual one-bucket
+  stretches run as high as 329 frames, but they are scattered through the
+  level and do not add up to a targetable region. There is no expensive
+  span to aim a cure at; the route is slow everywhere at once.
+- **And the archive knows almost nothing about the early level.** Of the
+  15,540 entries retained inside 8-1, **15,284 sit in the last hundred
+  buckets and 256 in the first two hundred and twenty-eight**. Bucket 229
+  onward averages over two hundred entries per bucket; buckets 0 to 228
+  average under four. The early seventy percent of the level is a single
+  thread one or two entries wide, laid down once by the lineage that
+  crossed it and never revisited, because the concentrated draw window
+  keeps the search at the tip.
+- The two facts have one cause and it is the archive key. A cell records
+  where the player stands and nothing about what standing there cost, so
+  two routes to one cell collide and the survivor is chosen on controller
+  actions. Speed is never preserved because nothing has ever preferred it,
+  and the terrain where speed would have to be found is terrain the search
+  no longer visits.
+
+### The keep-the-fastest replacement rule — registered, byte-inert, not yet armed
+
+- Built on the integrator's ruling. When two entries collide in one archive
+  cell the survivor is the one with fewer frames spent since entering the
+  current level. Identifier `fewest_frames_in_level`; the frozen rule keeps
+  its name, `fewest_actions`.
+- **Frames-in-level is derived, not observed.** No new game-memory hint
+  enters the search. An input's frame cost is the sum of its held frames,
+  and an entry extends its parent's input, so an entry whose parent already
+  stands in the same pair carries the parent's count plus the frames its own
+  actions held, and an entry whose parent stands in a different pair started
+  the level during those actions and begins the count there. Genesis, the
+  only entry with no parent, counts its whole input. The count is kept
+  beside the entries rather than inside the serialized report, so an archive
+  written under either rule is byte-identical.
+- **Inertness is structural, not asserted.** The rule is recorded in the
+  stream header and the report, and replay honours the recorded value — but
+  the frozen rule writes *no field at all*, so every stream recorded before
+  the rule existed is byte-identical to what it was and replays as itself
+  without depending on which binary runs the audit. A unit test asserts the
+  absence directly, and asserts that a run under the registered rule does
+  record itself and replays back from the record.
+- Two more tests pin the mechanism rather than its plumbing: one walks a
+  lineage across a pair transition and checks the count restarts at the
+  crossing action; one builds the collision the rule exists for — a route
+  that uses more actions and far fewer frames — and confirms the frozen rule
+  discards it while the registered rule retains it and reports the
+  displacement.
+- The four quality gates pass, 95 tests, and the standing inertness
+  reference re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
+### The per-level speed census — one lineage, measured end to end
+
+- The frame-cost census compares routes *within* one pair, and its per-bucket
+  minima may come from different lineages, so its totals cannot be
+  differenced across pairs to ask what each level cost. Attempting it
+  produces numbers that look decisive and are not: differenced that way, two
+  water levels appear to cost more frames than the whole 8-1 traverse, which
+  is an artifact of mixing lineages and not a measurement. Recorded here so
+  the mistake is not made twice.
+- `smb-completion census-lineage-levels <archive> <output>` measures one
+  lineage instead. It picks the archive's deepest by exactly the rule the
+  frontier film and the claim replay gate use — deepest tuple, then shortest
+  input, then lowest identifier, so all three speak about the same input —
+  replays it once from gameplay genesis, and segments it by the recorded
+  level transitions. Per segment it reports the action index where the
+  lineage enters the pair, the actions and frames it spends there, the
+  buckets it covers, and frames per bucket in thousandths so the rate is an
+  exact integer rather than a rounded float. A pair re-entered after being
+  left records as a second segment, because it is a second traverse under a
+  second clock.
+- Built to size the speed deficit before an arm is chosen: it says whether
+  8-1's 22.3 frames per bucket is this search's ordinary pace or unusually
+  slow, which is the difference between a cure that has to beat the search's
+  own norm and one that only has to restore it.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

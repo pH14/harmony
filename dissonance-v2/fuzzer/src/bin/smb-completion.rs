@@ -26,8 +26,8 @@ use fuzzer::{
         audit_smb_player_column_from_ids, audit_smb_player_column_separation,
         audit_smb_player_column_spread, audit_smb_player_column_verified,
         audit_smb_player_column_with_selection, audit_smb_terminal_death,
-        census_smb_control_authority, census_smb_frame_cost, derive_smb_ladder,
-        diagnose_smb_film_columns, diagnose_smb_film_measurements,
+        census_smb_control_authority, census_smb_frame_cost, census_smb_lineage_levels,
+        derive_smb_ladder, diagnose_smb_film_columns, diagnose_smb_film_measurements,
         diagnose_smb_film_measurements_derived, diagnose_smb_frame_slack,
         diagnose_smb_left_direction, diagnose_smb_player_column, diagnose_smb_span,
         gate_smb_live_control, measure_smb_viable_progress, readmit_smb_archive,
@@ -179,6 +179,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "census-frame-cost" {
         return run_frame_cost_mode(&mut args);
+    }
+    if mode == "census-lineage-levels" {
+        return run_lineage_level_mode(&mut args);
     }
     if mode == "diagnose-frame-slack" {
         return run_frame_slack_mode(&mut args);
@@ -1413,6 +1416,31 @@ fn run_frame_cost_mode(
         "buckets {} entries {}",
         report.buckets.len(),
         report.entries
+    );
+    Ok(())
+}
+
+fn run_lineage_level_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report = census_smb_lineage_levels(&rom, &source)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!(
+        "entry {} actions {} frames {} segments {}",
+        report.entry_id,
+        report.actions,
+        report.frames,
+        report.segments.len()
     );
     Ok(())
 }

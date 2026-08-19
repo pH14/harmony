@@ -8,10 +8,10 @@ use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 use fuzzer::{
     campaign::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, SmbCampaignVocabulary,
-        chord_policy_from_identifier, key_policy_from_identifier, replay_smb_campaign,
-        retention_from_identifier, run_smb_campaign, select_frontier_resume_input,
-        selector_from_identifier, suffix_policy_from_identifier, vocabulary_from_identifier,
-        waypoint_from_identifier,
+        chord_policy_from_identifier, key_policy_from_identifier, replacement_from_identifier,
+        replay_smb_campaign, retention_from_identifier, run_smb_campaign,
+        select_frontier_resume_input, selector_from_identifier, suffix_policy_from_identifier,
+        vocabulary_from_identifier, waypoint_from_identifier,
     },
     phase4b::SmbInput,
     phase4c::{
@@ -101,6 +101,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut vocabulary = SmbCampaignVocabulary::FrozenNineMask;
     let mut key_policy = fuzzer::phase4c::SmbArchiveKeyPolicy::Frozen;
     let mut waypoint_policy = fuzzer::phase4c::SmbArchiveWaypointPolicy::Absent;
+    let mut replacement_policy = fuzzer::phase4c::SmbArchiveReplacementPolicy::FewestActions;
     let mut suffix = fuzzer::campaign::SmbCampaignSuffixPolicy::OneOrTwo;
     let mut chord = fuzzer::campaign::SmbCampaignChordPolicy::Uniform;
     while let Some(flag) = args.next() {
@@ -158,6 +159,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --waypoint value")?
                     .to_string_lossy(),
             )?;
+        } else if flag == "--replacement" {
+            replacement_policy = replacement_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --replacement value")?
+                    .to_string_lossy(),
+            )?;
         } else {
             return Err("unexpected run argument".into());
         }
@@ -183,6 +191,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         waypoint_policy,
         suffix,
         chord,
+        replacement_policy,
     };
 
     let stream_path = output.join("stream.jsonl");

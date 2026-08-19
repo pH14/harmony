@@ -21,10 +21,11 @@ use crate::{
     phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
     phase4c::{
         Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
-        SmbArchiveProgressPoint, SmbArchiveReport, SmbArchiveRetentionPolicy,
-        SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy, SmbSelectorDraw, SmbSelectorPath,
-        admission_is_viable, archive_key, merge_action_milestones, merge_milestones,
-        merge_progress_watermark, milestone_key, update_first_inputs,
+        SmbArchiveProgressPoint, SmbArchiveReplacementPolicy, SmbArchiveReport,
+        SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy,
+        SmbSelectorDraw, SmbSelectorPath, admission_is_viable, archive_key,
+        merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
+        update_first_inputs,
     },
     target::Target,
 };
@@ -93,6 +94,8 @@ pub struct SmbCampaignConfig {
     pub suffix: SmbCampaignSuffixPolicy,
     /// Chord policy for this run, recorded in the header and report.
     pub chord: SmbCampaignChordPolicy,
+    /// Cell-replacement rule for this run, recorded in the header and report.
+    pub replacement_policy: SmbArchiveReplacementPolicy,
 }
 
 /// Archive entry bound of every stream recorded before the bound was a
@@ -174,6 +177,13 @@ pub struct SmbCampaignStreamHeader {
         skip_serializing_if = "is_legacy_chord_policy_identifier"
     )]
     pub chord_policy: String,
+    /// Cell-replacement rule identifier; streams recorded before this field
+    /// existed replaced on controller actions and replay that way.
+    #[serde(
+        default = "legacy_replacement_identifier",
+        skip_serializing_if = "is_legacy_replacement_identifier"
+    )]
+    pub replacement_policy: String,
     /// Promoted retention policy identifier.
     pub retention_policy: String,
     /// Frozen parent scheduler identifier.
@@ -336,6 +346,13 @@ pub struct SmbCampaignModeReport {
         skip_serializing_if = "is_legacy_chord_policy_identifier"
     )]
     pub chord_policy: String,
+    /// Cell-replacement rule identifier; streams recorded before this field
+    /// existed replaced on controller actions and replay that way.
+    #[serde(
+        default = "legacy_replacement_identifier",
+        skip_serializing_if = "is_legacy_replacement_identifier"
+    )]
+    pub replacement_policy: String,
     /// Promoted retention policy identifier.
     pub retention_policy: String,
     /// Frozen parent scheduler identifier.
@@ -366,6 +383,10 @@ pub struct SmbCampaignModeReport {
     /// omitted likewise.
     #[serde(default, skip_serializing_if = "waypoint_count_is_absent")]
     pub waypoint_snap_exempt: u64,
+    /// Cell collisions the frames-in-level replacement rule decided; zero
+    /// and omitted for runs replacing on controller actions.
+    #[serde(default, skip_serializing_if = "waypoint_count_is_absent")]
+    pub replacement_frames_displaced: u64,
     /// Executed jobs per worker index.
     pub jobs_per_worker: Vec<u64>,
     /// Pre-execution duplicate skips per worker index.
@@ -985,6 +1006,38 @@ fn is_legacy_chord_policy_identifier(identifier: &String) -> bool {
     identifier == "chord_uniform"
 }
 
+fn legacy_replacement_identifier() -> String {
+    "fewest_actions".to_owned()
+}
+
+#[allow(clippy::ptr_arg)]
+fn is_legacy_replacement_identifier(identifier: &String) -> bool {
+    identifier == "fewest_actions"
+}
+
+/// Identifier a run records for its cell-replacement rule.
+#[must_use]
+pub fn replacement_identifier(policy: SmbArchiveReplacementPolicy) -> &'static str {
+    match policy {
+        SmbArchiveReplacementPolicy::FewestActions => "fewest_actions",
+        SmbArchiveReplacementPolicy::FewestFramesInLevel => "fewest_frames_in_level",
+    }
+}
+
+/// Recover a replacement policy from its recorded identifier.
+///
+/// # Errors
+/// Returns an error when the identifier names no known policy.
+pub fn replacement_from_identifier(
+    identifier: &str,
+) -> Result<SmbArchiveReplacementPolicy, Box<dyn Error>> {
+    match identifier {
+        "fewest_actions" => Ok(SmbArchiveReplacementPolicy::FewestActions),
+        "fewest_frames_in_level" => Ok(SmbArchiveReplacementPolicy::FewestFramesInLevel),
+        _ => Err("unknown campaign replacement policy identifier".into()),
+    }
+}
+
 /// Length cap for region-conditional long suffixes, named in the policy
 /// identifier per the numeric-constant convention.
 const REGION_LONG_SUFFIX_CAP: usize = 48;
@@ -1372,11 +1425,13 @@ impl CoordinatorCore<'_> {
         archive_entry_limit: usize,
         key_policy: SmbArchiveKeyPolicy,
         waypoint_policy: SmbArchiveWaypointPolicy,
+        replacement_policy: SmbArchiveReplacementPolicy,
     ) -> Self {
         let mut archive = Archive::new(None);
         archive.max_entries = archive_entry_limit;
         archive.set_selector_policy(selector_policy);
         archive.set_waypoint_policy(waypoint_policy);
+        archive.set_replacement_policy(replacement_policy);
         Self {
             archive,
             aggregate: SmbMilestones::default(),
@@ -1722,6 +1777,7 @@ fn stream_header(
         duration_policy: "stratified".to_owned(),
         suffix_policy: suffix_policy_identifier(config.suffix).to_owned(),
         chord_policy: chord_policy_identifier(config.chord).to_owned(),
+        replacement_policy: replacement_identifier(config.replacement_policy).to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
         parent_scheduler: selector_identifier(config.selector_policy),
         executor_mode: "snapshot_resume_archive".to_owned(),
@@ -1792,6 +1848,7 @@ fn build_report(
     let probe_refused = core.probe_refused;
     let snap_refused = core.snap_refused;
     let waypoint_retained = core.archive.waypoint_retained();
+    let replacement_frames_displaced = core.archive.replacement_frames_displaced();
     let waypoint_snap_exempt = core.waypoint_snap_exempt;
     let archive = core.into_archive_report(header.campaign_seed);
     SmbCampaignModeReport {
@@ -1812,6 +1869,7 @@ fn build_report(
         duration_policy: header.duration_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
         chord_policy: header.chord_policy.clone(),
+        replacement_policy: header.replacement_policy.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
         executor_mode: header.executor_mode.clone(),
@@ -1826,6 +1884,7 @@ fn build_report(
         snap_refused,
         waypoint_retained,
         waypoint_snap_exempt,
+        replacement_frames_displaced,
         jobs_per_worker: counters.jobs_per_worker.clone(),
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
@@ -1909,6 +1968,7 @@ pub fn run_smb_campaign(
         config.archive_entry_limit,
         config.key_policy,
         config.waypoint_policy,
+        config.replacement_policy,
     );
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -2211,6 +2271,7 @@ pub fn replay_smb_campaign(
 
     let selector_policy = selector_from_identifier(&header.parent_scheduler)?;
     let retention_policy = retention_from_identifier(&header.retention_policy)?;
+    let replacement_policy = replacement_from_identifier(&header.replacement_policy)?;
     let vocabulary = vocabulary_from_identifier(&header.controller_vocabulary)?;
     let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
     let replay_suffix_policy = suffix_policy_from_identifier(&header.suffix_policy)?;
@@ -2223,6 +2284,7 @@ pub fn replay_smb_campaign(
         header.archive_entry_limit,
         replay_key_policy,
         waypoint_policy,
+        replacement_policy,
     );
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
@@ -3636,14 +3698,15 @@ mod tests {
     use super::{
         CoordinatorCore, SmbCampaignActionResult, SmbCampaignAdmissionDecision,
         SmbCampaignCandidate, SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin,
-        derive_suffix, derive_worker_seed, execute_job, replay_smb_campaign, run_smb_campaign,
+        SmbCampaignStreamHeader, derive_suffix, derive_worker_seed, execute_job,
+        replacement_from_identifier, replacement_identifier, replay_smb_campaign, run_smb_campaign,
         waypoint_from_identifier, waypoint_identifier,
     };
     use crate::{
         phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
         phase4c::{
-            ArchiveCandidate, SmbArchiveKey, SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy,
-            SmbArchiveWaypointPolicy,
+            ArchiveCandidate, SmbArchiveKey, SmbArchiveReplacementPolicy,
+            SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy,
         },
         target::Target,
     };
@@ -3748,6 +3811,7 @@ mod tests {
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3779,6 +3843,7 @@ mod tests {
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3816,6 +3881,7 @@ mod tests {
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
         };
         let mut seed_stream = Vec::new();
         let seed_campaign = run_smb_campaign(
@@ -3842,6 +3908,7 @@ mod tests {
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(
@@ -3879,6 +3946,7 @@ mod tests {
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -3934,6 +4002,85 @@ mod tests {
             concentration.draws_per_parent_milli,
             concentration.window_draws * 1000 / concentration.distinct_window_parents
         );
+    }
+
+    #[test]
+    fn replacement_identifier_round_trips_and_defaults_stay_off_the_stream() {
+        assert_eq!(
+            replacement_identifier(SmbArchiveReplacementPolicy::FewestActions),
+            "fewest_actions"
+        );
+        assert_eq!(
+            replacement_identifier(SmbArchiveReplacementPolicy::FewestFramesInLevel),
+            "fewest_frames_in_level"
+        );
+        assert_eq!(
+            replacement_from_identifier("fewest_frames_in_level").expect("parse frames rule"),
+            SmbArchiveReplacementPolicy::FewestFramesInLevel
+        );
+        assert!(replacement_from_identifier("fewest_frames").is_err());
+        // A run on the frozen rule writes no field, so every stream recorded
+        // before the rule existed stays byte-identical and replays as itself.
+        let rom = synthetic_nrom();
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca0c,
+            workers: 1,
+            execution_budget: 4,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: SmbArchiveReplacementPolicy::FewestActions,
+        };
+        let mut stream = Vec::new();
+        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("frozen-rule campaign");
+        let header_line = std::str::from_utf8(&stream)
+            .expect("stream is utf-8")
+            .lines()
+            .next()
+            .expect("stream header")
+            .to_owned();
+        assert!(
+            !header_line.contains("replacement_policy"),
+            "the frozen rule writes no header field"
+        );
+        let header: SmbCampaignStreamHeader =
+            serde_json::from_str(&header_line).expect("parse header");
+        assert_eq!(
+            replacement_from_identifier(&header.replacement_policy).expect("legacy default"),
+            SmbArchiveReplacementPolicy::FewestActions
+        );
+        // The registered rule does record itself, so replay reads it back.
+        let mut registered_stream = Vec::new();
+        run_smb_campaign(
+            &rom,
+            &SmbCampaignConfig {
+                replacement_policy: SmbArchiveReplacementPolicy::FewestFramesInLevel,
+                ..config
+            },
+            &SmbCampaignOrigin::Genesis,
+            &mut registered_stream,
+        )
+        .expect("registered-rule campaign");
+        assert!(
+            std::str::from_utf8(&registered_stream)
+                .expect("stream is utf-8")
+                .lines()
+                .next()
+                .expect("stream header")
+                .contains("fewest_frames_in_level")
+        );
+        let replayed = replay_smb_campaign(&rom, &registered_stream, None)
+            .expect("registered-rule campaign replays");
+        assert_eq!(replayed.replacement_policy, "fewest_frames_in_level");
     }
 
     #[test]
@@ -4007,6 +4154,7 @@ mod tests {
             },
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -4054,6 +4202,7 @@ mod tests {
             waypoint_policy,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
         };
         let mut absent_stream = Vec::new();
         let absent = run_smb_campaign(
@@ -4145,6 +4294,7 @@ mod tests {
                 32_768,
                 crate::phase4c::SmbArchiveKeyPolicy::Frozen,
                 waypoint_policy,
+                crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
             );
             core.archive
                 .insert(

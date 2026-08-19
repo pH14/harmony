@@ -364,6 +364,137 @@ pub fn diagnose_smb_frame_slack(
     })
 }
 
+/// One `(world, level)` segment of a single recorded lineage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLineageLevelSegment {
+    /// Pair world.
+    pub world: u8,
+    /// Pair level.
+    pub level: u8,
+    /// Action index at which the lineage first stands in this pair.
+    pub first_action: usize,
+    /// Actions the lineage spends in this pair.
+    pub actions: usize,
+    /// Frames the lineage spends in this pair.
+    pub frames: u64,
+    /// Lowest progress bucket the lineage stands on in this pair.
+    pub first_progress: u16,
+    /// Highest progress bucket the lineage reaches in this pair.
+    pub last_progress: u16,
+    /// Frames per progress bucket crossed, in thousandths, so the rate is an
+    /// exact integer comparison rather than a rounded float.
+    pub frames_per_bucket_milli: u64,
+}
+
+/// Per-level traverse speed of one recorded lineage.
+///
+/// The archive's frame-cost census compares routes within one pair, but its
+/// per-bucket minima may come from different lineages, so its totals cannot be
+/// differenced across pairs. This mode measures one lineage end to end
+/// instead: a single replay from gameplay genesis, segmented by the recorded
+/// level transitions, which is the only way to state what crossing a level
+/// costs the search in the currency the level clock is denominated in.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLineageLevelReport {
+    /// Archive identifier of the censused lineage.
+    pub entry_id: u64,
+    /// Actions in its input.
+    pub actions: usize,
+    /// Frames its whole input costs.
+    pub frames: u64,
+    /// Deepest tuple it reaches.
+    pub reached: Option<(u8, u8, u16)>,
+    /// Segments in the order the lineage walks them.
+    pub segments: Vec<SmbLineageLevelSegment>,
+}
+
+/// Measure what each level cost one recorded lineage, in actions and frames.
+///
+/// The lineage is the archive's deepest by exactly the rule the frontier film
+/// and the claim replay gate use — deepest tuple, then shortest input, then
+/// lowest identifier — so all three speak about the same input.
+///
+/// # Errors
+///
+/// Returns an error when the archive holds no retained entry or the replay
+/// fails.
+pub fn census_smb_lineage_levels(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<SmbLineageLevelReport, Box<dyn Error>> {
+    let entry = source
+        .entries
+        .iter()
+        .max_by_key(|entry| {
+            (
+                entry.key.world,
+                entry.key.level,
+                entry.key.progress,
+                Reverse(entry.input.actions.len()),
+                Reverse(entry.id),
+            )
+        })
+        .ok_or("source archive contains no retained entries")?;
+    let input = entry.input.clone();
+    let states = replay_smb_action_states(rom, &input)?;
+    let frames_of = |actions: &[ButtonChord]| -> u64 {
+        actions
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum()
+    };
+    let mut segments: Vec<SmbLineageLevelSegment> = Vec::new();
+    for (index, state) in states.iter().enumerate() {
+        match segments.last_mut() {
+            // A pair is a segment only while the lineage stays in it; a
+            // re-entry after leaving records as a second segment, because it
+            // is a second traverse with a second clock.
+            Some(last) if last.world == state.world && last.level == state.level => {
+                last.last_progress = last.last_progress.max(state.progress);
+            }
+            _ => segments.push(SmbLineageLevelSegment {
+                world: state.world,
+                level: state.level,
+                first_action: index,
+                actions: 0,
+                frames: 0,
+                first_progress: state.progress,
+                last_progress: state.progress,
+                frames_per_bucket_milli: 0,
+            }),
+        }
+    }
+    // A segment runs from its first state to the state before the next
+    // segment's first, so its actions are the actions between those indices.
+    for position in 0..segments.len() {
+        let start = segments[position].first_action;
+        let end = segments
+            .get(position.saturating_add(1))
+            .map_or(states.len().saturating_sub(1), |next| next.first_action);
+        let actions = input.actions.get(start..end).unwrap_or(&[]);
+        let crossed = u64::from(
+            segments[position]
+                .last_progress
+                .saturating_sub(segments[position].first_progress),
+        );
+        let frames = frames_of(actions);
+        segments[position].actions = actions.len();
+        segments[position].frames = frames;
+        segments[position].frames_per_bucket_milli = if crossed == 0 {
+            0
+        } else {
+            frames.saturating_mul(1_000) / crossed
+        };
+    }
+    Ok(SmbLineageLevelReport {
+        entry_id: entry.id,
+        actions: input.actions.len(),
+        frames: frames_of(&input.actions),
+        reached: smb_reached_tuple(&states),
+        segments,
+    })
+}
+
 /// Frame cost of the cheapest recorded route to one progress bucket.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbFrameCostBucket {
@@ -701,6 +832,30 @@ pub enum SmbArchiveRetentionPolicy {
     /// the same pair — loop traps starve instead of absorbing retention.
     #[serde(rename = "probe_at_admission_45_snapback_16")]
     ProbeAtAdmission45Snapback16,
+}
+
+/// Which of a full cell's entries a better candidate displaces.
+///
+/// The archive key locates a state; it says nothing about what reaching that
+/// state cost. Two routes to the same cell therefore collide, and the rule
+/// below decides which survives. The frozen rule counts controller actions,
+/// which is the currency the search has always ranked in. The level clock is
+/// denominated in frames, so a rule that counts frames is a different
+/// preference over the same collisions.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbArchiveReplacementPolicy {
+    /// Frozen behaviour: the candidate displaces the cell's costliest entry
+    /// when it uses strictly fewer controller actions.
+    #[default]
+    FewestActions,
+    /// The candidate displaces the cell's costliest entry when it spent
+    /// strictly fewer frames inside the current level. Frames-in-level is
+    /// derived from the recorded action durations and the recorded level
+    /// transitions alone: an entry whose parent shares its pair carries the
+    /// parent's count plus its own action's held frames, and an entry whose
+    /// parent sits in a different pair starts the count at its own action.
+    FewestFramesInLevel,
 }
 
 /// How the archive chooses expansion parents.
@@ -1137,6 +1292,12 @@ pub(crate) struct Archive<'a> {
     selector_accounting: SmbSelectorAccounting,
     waypoint_policy: SmbArchiveWaypointPolicy,
     waypoint_retained: u64,
+    replacement_policy: SmbArchiveReplacementPolicy,
+    /// Frames each retained entry spent inside its own pair, in entry-id
+    /// order. Carried alongside the entries rather than in the serialized
+    /// report, so an archive written under either policy is byte-identical.
+    frames_in_level: Vec<u64>,
+    replacement_frames_displaced: u64,
 }
 
 impl<'a> Archive<'a> {
@@ -1146,6 +1307,22 @@ impl<'a> Archive<'a> {
 
     pub(crate) fn set_waypoint_policy(&mut self, policy: SmbArchiveWaypointPolicy) {
         self.waypoint_policy = policy;
+    }
+
+    pub(crate) fn set_replacement_policy(&mut self, policy: SmbArchiveReplacementPolicy) {
+        self.replacement_policy = policy;
+    }
+
+    /// Cell collisions the frames-in-level rule decided, counted for the
+    /// report; the frozen rule never increments it.
+    pub(crate) fn replacement_frames_displaced(&self) -> u64 {
+        self.replacement_frames_displaced
+    }
+
+    /// Frames a retained entry spent inside its own pair.
+    #[cfg(test)]
+    pub(crate) fn entry_frames_in_level(&self, id: usize) -> u64 {
+        self.frames_in_level[id]
     }
 
     /// Report whether a key sits inside the registered waypoint region.
@@ -1189,6 +1366,46 @@ impl<'a> Archive<'a> {
             },
             waypoint_policy: SmbArchiveWaypointPolicy::Absent,
             waypoint_retained: 0,
+            replacement_policy: SmbArchiveReplacementPolicy::FewestActions,
+            frames_in_level: Vec::new(),
+            replacement_frames_displaced: 0,
+        }
+    }
+
+    /// Frames a candidate spent inside its own pair.
+    ///
+    /// An input extends its parent's, so the frames added since the parent are
+    /// the held frames of the actions past the parent's length. A candidate
+    /// whose parent already sits in the same pair inherits the parent's count;
+    /// one whose parent sits elsewhere entered the pair during those actions
+    /// and starts the count there. A candidate with no parent — genesis, and
+    /// only genesis — counts its whole input.
+    fn frames_in_level_of(
+        &self,
+        parent_id: Option<usize>,
+        input: &SmbInput,
+        key: SmbArchiveKey,
+    ) -> u64 {
+        let frames_of = |actions: &[ButtonChord]| -> u64 {
+            actions
+                .iter()
+                .map(|action| u64::from(action.bounded_hold_frames()))
+                .sum()
+        };
+        let Some(parent) = parent_id.and_then(|id| self.entries.get(id)) else {
+            return frames_of(&input.actions);
+        };
+        let parent_actions = parent.report.input.actions.len();
+        let added = frames_of(input.actions.get(parent_actions..).unwrap_or(&[]));
+        let parent_key = parent.report.key;
+        if (parent_key.world, parent_key.level) == (key.world, key.level) {
+            self.frames_in_level
+                .get(parent_id.unwrap_or_default())
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(added)
+        } else {
+            added
         }
     }
 
@@ -1208,6 +1425,11 @@ impl<'a> Archive<'a> {
         if let Some(existing) = self.input_ids.get(&input) {
             return Ok(Some(*existing));
         }
+        // Frames this candidate spent inside its own pair, derived from the
+        // recorded action durations and the parent's recorded pair alone. It
+        // is computed for every insertion under either policy so the counts
+        // stay aligned with entry ids, and read only by the frames rule.
+        let candidate_frames_in_level = self.frames_in_level_of(parent_id, &input, key);
         // Waypoint retention preference: cells inside the registered region
         // retain up to the auxiliary bound before the replacement rules
         // apply; every other cell keeps the base bound, so an absent policy
@@ -1220,6 +1442,7 @@ impl<'a> Archive<'a> {
         let cell = self.cells.entry(key).or_default();
         let new_cell = cell.is_empty();
         let mut ranking_replacement = false;
+        let mut frames_replacement = false;
         let replace = if cell.len() < entries_per_key {
             None
         } else if self.ranking_accounting.active {
@@ -1241,6 +1464,16 @@ impl<'a> Archive<'a> {
                     candidate_quality > existing_quality
                 })
                 .inspect(|_| ranking_replacement = true)
+        } else if self.replacement_policy == SmbArchiveReplacementPolicy::FewestFramesInLevel {
+            // The costliest entry in the level's own currency loses to a
+            // candidate that reached the same cell in strictly fewer frames.
+            // The entry id breaks ties exactly as the frozen rule's cost does,
+            // so the choice stays a total order over the cell.
+            cell.iter()
+                .copied()
+                .max_by_key(|id| (self.frames_in_level[*id], self.entries[*id].report.id))
+                .filter(|id| candidate_frames_in_level < self.frames_in_level[*id])
+                .inspect(|_| frames_replacement = true)
         } else {
             cell.iter()
                 .copied()
@@ -1271,6 +1504,9 @@ impl<'a> Archive<'a> {
                 self.ranking_accounting.replacements.saturating_add(1);
             self.first_ranking_replacement.get_or_insert(execution);
         }
+        if frames_replacement {
+            self.replacement_frames_displaced = self.replacement_frames_displaced.saturating_add(1);
+        }
         if new_cell && parent_ranking_lineage && execution > 0 {
             self.ranking_accounting.descendant_novelty =
                 self.ranking_accounting.descendant_novelty.saturating_add(1);
@@ -1293,6 +1529,7 @@ impl<'a> Archive<'a> {
             ranking_lineage,
         });
         self.active.push(true);
+        self.frames_in_level.push(candidate_frames_in_level);
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
@@ -5549,12 +5786,12 @@ mod tests {
     use super::{
         Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
         SELECTION_EXHAUSTION_THRESHOLD, SmbArchiveDurationPolicy, SmbArchiveKey,
-        SmbArchiveKeyPolicy, SmbArchiveLadderPolicy, SmbArchiveRetentionPolicy,
-        SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy, SmbArchiveWaypointPolicy, SmbDeathBytes,
-        SmbGeneratedMutatorAccounting, SmbProgressWatermark, SmbRanking, SmbRankingSearchConfig,
-        SmbSelectorDraw, SmbSelectorPath, analyze_player_column, merge_progress_watermark,
-        record_generated_mutator_result, run_smb_archive_search,
-        run_smb_archive_search_with_config_and_suffix,
+        SmbArchiveKeyPolicy, SmbArchiveLadderPolicy, SmbArchiveReplacementPolicy,
+        SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy,
+        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbGeneratedMutatorAccounting,
+        SmbProgressWatermark, SmbRanking, SmbRankingSearchConfig, SmbSelectorDraw, SmbSelectorPath,
+        analyze_player_column, merge_progress_watermark, record_generated_mutator_result,
+        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
         run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
         run_smb_archive_search_with_retention, run_smb_archive_search_with_selector,
     };
@@ -6472,6 +6709,159 @@ mod tests {
         assert!(insert(&mut archive, inside, 4).is_some());
         assert!(insert(&mut archive, inside, 5).is_none());
         assert_eq!(archive.waypoint_retained(), 2);
+    }
+
+    /// Insert one action onto a parent and report the new entry's identifier.
+    fn chain_insert(
+        archive: &mut Archive<'_>,
+        parent: Option<usize>,
+        prefix: &SmbInput,
+        buttons: u8,
+        hold: u8,
+        key: SmbArchiveKey,
+        snapshot: &SmbSnapshot,
+    ) -> (Option<usize>, SmbInput) {
+        let mut input = prefix.clone();
+        input.actions.push(ButtonChord::new(buttons, hold));
+        let id = archive
+            .insert(
+                parent,
+                0,
+                ArchiveCandidate {
+                    input: input.clone(),
+                    key,
+                    milestones: crate::phase4b::SmbMilestones::default(),
+                },
+                snapshot.clone(),
+                &[],
+            )
+            .expect("chained insert");
+        (id, input)
+    }
+
+    #[test]
+    fn frames_in_level_counts_from_the_recorded_pair_transition() {
+        let snapshot = selector_snapshot();
+        let mut archive = Archive::new(None);
+        let genesis = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    input: SmbInput::default(),
+                    key: waypoint_probe_key(0, 0, 0, 0),
+                    milestones: crate::phase4b::SmbMilestones::default(),
+                },
+                snapshot.clone(),
+                &[],
+            )
+            .expect("genesis insert")
+            .expect("genesis retained");
+        assert_eq!(archive.entry_frames_in_level(genesis), 0);
+        // Two actions inside the genesis pair accumulate their held frames.
+        let (first, input) = chain_insert(
+            &mut archive,
+            Some(genesis),
+            &SmbInput::default(),
+            0x01,
+            30,
+            waypoint_probe_key(0, 0, 4, 0),
+            &snapshot,
+        );
+        let first = first.expect("first retained");
+        assert_eq!(archive.entry_frames_in_level(first), 30);
+        let (second, input) = chain_insert(
+            &mut archive,
+            Some(first),
+            &input,
+            0x01,
+            20,
+            waypoint_probe_key(0, 0, 8, 0),
+            &snapshot,
+        );
+        let second = second.expect("second retained");
+        assert_eq!(archive.entry_frames_in_level(second), 50);
+        // Crossing into the next pair restarts the count at the crossing
+        // action, and the next action inside the new pair adds to that.
+        let (crossed, input) = chain_insert(
+            &mut archive,
+            Some(second),
+            &input,
+            0x01,
+            40,
+            waypoint_probe_key(0, 1, 2, 0),
+            &snapshot,
+        );
+        let crossed = crossed.expect("crossing retained");
+        assert_eq!(archive.entry_frames_in_level(crossed), 40);
+        let (after, _) = chain_insert(
+            &mut archive,
+            Some(crossed),
+            &input,
+            0x01,
+            10,
+            waypoint_probe_key(0, 1, 6, 0),
+            &snapshot,
+        );
+        assert_eq!(archive.entry_frames_in_level(after.expect("retained")), 50);
+    }
+
+    #[test]
+    fn the_frames_rule_displaces_a_slower_route_the_actions_rule_keeps() {
+        let snapshot = selector_snapshot();
+        let cell = waypoint_probe_key(0, 0, 16, 0);
+        // Three routes into one cell. The first two are short in actions and
+        // long in frames; the third is longer in actions and much shorter in
+        // frames, which is exactly the collision the level clock cares about
+        // and the frozen rule cannot see.
+        let fill = |archive: &mut Archive<'_>| {
+            let genesis = archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input: SmbInput::default(),
+                        key: waypoint_probe_key(0, 0, 0, 0),
+                        milestones: crate::phase4b::SmbMilestones::default(),
+                    },
+                    snapshot.clone(),
+                    &[],
+                )
+                .expect("genesis insert")
+                .expect("genesis retained");
+            for buttons in [0x01_u8, 0x02] {
+                chain_insert(
+                    archive,
+                    Some(genesis),
+                    &SmbInput::default(),
+                    buttons,
+                    120,
+                    cell,
+                    &snapshot,
+                );
+            }
+            let (fast, input) = chain_insert(
+                archive,
+                Some(genesis),
+                &SmbInput::default(),
+                0x04,
+                5,
+                waypoint_probe_key(0, 0, 8, 0),
+                &snapshot,
+            );
+            chain_insert(archive, fast, &input, 0x04, 6, cell, &snapshot).0
+        };
+        let mut frozen = Archive::new(None);
+        assert!(
+            fill(&mut frozen).is_none(),
+            "two actions never displace a one-action entry under the frozen rule"
+        );
+        let mut fastest = Archive::new(None);
+        fastest.set_replacement_policy(SmbArchiveReplacementPolicy::FewestFramesInLevel);
+        let admitted = fill(&mut fastest).expect("the eleven-frame route displaces a slower one");
+        assert_eq!(fastest.entry_frames_in_level(admitted), 11);
+        assert_eq!(fastest.replacement_frames_displaced(), 1);
+        assert_eq!(frozen.replacement_frames_displaced(), 0);
     }
 
     #[test]
