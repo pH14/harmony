@@ -7732,6 +7732,100 @@ one variable of science only when a link stalls.
   11.4 GB, and a campaign of this size writes about 24 GB. It does not fit.
   Smaller arms and every measurement can run locally, and will.
 
+### H76 result — null: the budgeted selector is slightly worse on both measures that decide
+
+- The arm completed all 50,000 executions against C107's own seed, origin and
+  resume input, differing only in its selector.
+- **Applying the four preregistered conditions exactly:**
+  - **Cost-normalized yield — FAIL.** C107 recorded 37,778 productive
+    selections over 5,660,378 emulated frames, **6,674,112 per billion**. H76
+    recorded 37,691 over 5,665,697, **6,652,491 per billion**. The challenger
+    is **0.32 percent lower**. The criterion demands strictly higher; it is
+    lower, and a tie would already have been a failure.
+  - **Frontier regression — FAIL.** C107 reached `(7,0,350)`; H76 reached
+    `(7,0,347)`. Three buckets short.
+  - **Exploration floor — pass.** No living parent was left at zero
+    opportunity. This one holds by construction rather than by luck: the budget
+    function returns the exploration floor for a parent with no success at all,
+    so four draws is the arithmetic minimum any parent can be assigned, and a
+    unit test pins it.
+  - **Byte-exact replay — reported separately below**; it cannot rescue an arm
+    that has already failed two conditions.
+- **Verdict: FAIL.** By the standing ruling, `concentrated_recency_128` remains
+  the promoted selector and the chord-tables arm registers immediately as the
+  next sibling.
+- **What the null actually says, because a 0.32 percent gap is not a
+  refutation of the idea.** The two selectors are, on this terrain, doing
+  almost exactly the same amount of good per frame spent: 12,489 uniform and
+  37,738 tie-class draws against C107's 12,466 and 37,735, and yields within a
+  third of a percent. Budgeting parents by measured yield did not hurt the
+  search and did not help it. What it did not do is what the arm existed to
+  test — beat the promoted selector — and the criteria were written in advance
+  precisely so that "almost the same" reads as a failure rather than as
+  encouragement.
+- One honest complication worth recording rather than burying: H76's own 8-1
+  traverse is **7,028 frames at 20.25 frames per bucket** against C107's 7,103
+  at 20.29 — marginally cheaper per bucket, at a frontier three buckets
+  shallower. Under this operator's first draft of the criteria, where depth was
+  a tiebreak, that could have been argued into a partial pass. Under the
+  adopted criteria it is a failure, and the adopted criteria are right: a
+  selector that reaches less far while spending the same budget has not earned
+  promotion on a four-hundredths-of-a-frame difference.
+
+## H77 — registered mined-chord arm, the second sibling of C107
+
+- The second registration the folded side lane earns, launched on the standing
+  ruling's FAIL branch. Same shape as H76: **a sibling of C107 from C106's
+  archive at C107's own seed and resume input, differing in exactly one
+  policy** — here the chord policy, in the folded continuous mode. The
+  selector stays `concentrated_recency_128`, which H76 left promoted.
+- **Registration by derivation rather than by a compiled blob**, which is the
+  point of the folded mechanism: the header records the source filter and the
+  derivation parameters, periodic table hashes go on stream records, and replay
+  re-folds the tables and verifies them against those hashes. Nothing about the
+  table is baked into the binary, so the run says what it drew from.
+- Chord policy `chord_draw_recorded_50:7,0,0,3365,128,3,1,64,1024`, read left
+  to right: fold successes from **zero-based pair (7,0)** — the eighth world's
+  first level, the level under attack — at any progress; skip the first
+  **3,365** actions of every retained sequence, which is exactly C107's
+  recorded resume length, so only this run's *own new* successes are folded and
+  the inherited prefix is not mistaken for discovery; keep a **128-success**
+  recent window; weight recent against all-history **3 to 1**; rebuild the
+  table every **64** records and checkpoint its hash every **1,024**.
+- **Provenance of each constant, since an identifier that carries constants has
+  to be able to defend them.** The 128-success window and the 3:1 mix are not
+  chosen here — they are what the C78/C79 water counterfactual measured and
+  ruled, where all-history alignment beat random by 5.93 percent and the recent
+  window by 8.30, confirming both that history transfers and that recency
+  predicts better. The 3,365-action prefix is C107's recorded resume length,
+  and taking the prefix from the run's own header is the same method that
+  measurement used. **The two cadence numbers are this operator's choice and
+  are flagged as such**: 64 records between rebuilds keeps the table near
+  continuous at a fraction of the rebuild cost, and 1,024 records between
+  hashes puts roughly forty-nine checkpoints in a fifty-thousand-record stream
+  — enough for replay to localize a divergence, few enough not to bloat it.
+  Neither is measured; both are declared before the run and are open to the
+  integrator's revision.
+- One live campaign, 50,000 executions, twelve workers on the ARM machine,
+  campaign seed `0x5eed_c02b` — C107's, verbatim — action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,347,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`.
+  Sourced from C106's live archive, SHA-256
+  `3c22247685263ed96998c3dd24ede6af430d78b19f44244121966522bea13328`.
+- **Preregistered criteria, identical to H76's so the two siblings are judged
+  on one standard:** cost-normalized yield strictly above C107's 6,674,112
+  productive selections per billion emulated frames; no regression from
+  `(7,0,350)`; and byte-exact stream and archive replay, which for this
+  mechanism also verifies the re-folded tables against their recorded
+  checkpoints. Any tie, shortfall, regression or mismatch is a failure.
+- **If this sibling also nulls, that is a genuine stall by the standing
+  ruling**, and the next step is a census of recorded artifacts before any arm
+  is invented.
+- Raw destination: `target/smb-completion/h77-chords/` on the ARM machine, log
+  `h77.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
