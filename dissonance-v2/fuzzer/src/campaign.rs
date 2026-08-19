@@ -4449,6 +4449,8 @@ mod tests {
             },
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwoRegionLong48,
             chord: derived_policy(),
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -4503,6 +4505,8 @@ mod tests {
             waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)

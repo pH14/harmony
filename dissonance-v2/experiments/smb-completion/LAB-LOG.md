@@ -7469,6 +7469,54 @@ one variable of science only when a link stalls.
   `waypoint_4_bucket_uniform:7,0,0,343,0,15`, replacement
   `fewest_frames_in_level`, resume `fastest_in_level_32`.
 
+### Folding in the reviewed side branch — three mechanisms land inert, none registered
+
+- Five reviewed commits from the side branch join the chain's line, rebased
+  onto the tip and folded in with their prefixes restored. Three mechanisms
+  arrive, and **all three are inert until a registration names them**:
+  - **A generic sequence reducer and a route-minimizer tool.** Reader-only; it
+    never writes to an archive. Route shortening is the post-claim deliverable
+    and this is its machinery, priced by segment replay cost.
+  - **Continuous mined chord tables**, registered by derivation rather than by
+    a compiled blob: the source archive's hash and the derivation parameters go
+    in the stream header, periodic table hashes go on stream records, and
+    replay re-folds the tables and verifies them. The legacy
+    `chord_draw_recorded_50` identifier is untouched and its streams replay
+    byte-exact.
+  - **Per-parent draw budgets**, identifier `yield_budgeted_128:16,4,64,256`,
+    with an exploration floor of four draws and cost-normalized yield.
+- **What the fold had to reconcile, recorded because it touched the two rules
+  registered today.** The side branch and this line both extended the stream
+  header and both changed how a campaign resolves its origin. The merged form
+  keeps every field — the chord-table provenance beside the replacement and
+  resume identifiers — and keeps the resume rule's policy argument through
+  `resolve_origin`, so the clock-aware resume and the derived chord tables
+  compose rather than displace each other.
+- **Only the five reviewed commits were taken.** An uncommitted change in the
+  side worktree, adding a single-segment manifest mode to the minimizer, was
+  left where it stands: it is work in progress that no review covered, and
+  folding unreviewed code in beside reviewed code is how a chain loses the
+  ability to say what it is running.
+- The four quality gates pass on the merged tree, **113 tests**, and the
+  standing inertness reference re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24` — which
+  is the check that matters here, since three new mechanisms just entered a
+  tree whose recorded streams must keep replaying exactly.
+
+### Registration queue — two arms, each alone, when a slot fits
+
+- **Next: `yield_budgeted_128:16,4,64,256` as the only change** from the
+  campaign it is compared against, sourced from that campaign's own origin
+  archive so the two are sibling arms from one origin. Success is a
+  selection-quality comparison, not a ladder advance.
+- **Later: the continuous mined chord tables as the only change**, on the same
+  shape.
+- **Never both in one arm.** The two touch different halves of the search — one
+  chooses parents, one chooses chords — and a run carrying both could not say
+  which produced its result.
+- The route minimizer is not a campaign and takes no slot; it runs against
+  recorded artifacts when the claim is in hand.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
