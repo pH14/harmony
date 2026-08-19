@@ -7825,6 +7825,18 @@ one variable of science only when a link stalls.
   is invented.
 - Raw destination: `target/smb-completion/h77-chords/` on the ARM machine, log
   `h77.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking: campaign
+  seed 1,592,639,531 — C107's — chord policy recorded verbatim as
+  `chord_draw_recorded_50:7,0,0,3365,128,3,1,64,1024`, and a `chord_table`
+  provenance block naming the source archive's SHA-256
+  `3c22247685263ed9…` beside the derivation. That block is the mechanism
+  working as designed: the stream says which archive the tables came from and
+  under what parameters, so replay can re-fold them rather than trust a blob.
+- Co-tenancy noted rather than glossed: H76's byte-exact replay was still
+  running when this launched. The replay is serial and single-threaded, and a
+  replay's determinism does not depend on machine load — it reproduces a
+  recorded stream or it does not — so the two share the machine without
+  either's result being in question.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
