@@ -7016,6 +7016,45 @@ one variable of science only when a link stalls.
   the header's way of recording that the promoted stack is otherwise untouched.
   Jobs were flowing and admitting before this entry was written.
 
+### C101 result — the mechanism works, and on its own it changes nothing
+
+- The run completed all 50,000 executions. Counters: 17,777 retained, 4,698
+  rejected, 23,646 deaths, 12 snapback refusals, stream SHA-256
+  `3b0944a8bad21098b9d39a242e5857094cf856869f9d396f43c515f2a9161402`.
+- **The rule fired 1,494 times.** That is the count of cell collisions decided
+  on frames instead of controller actions — a mechanism that had never
+  existed, live and doing exactly what it was built to do, 1,494 slower routes
+  displaced by faster ones over one campaign.
+- **And the ladder did not move: `(7,0,327)`, exactly C100's and C99's.**
+  More than that, the winning lineage is *unchanged*: the same archive entry,
+  3,384 actions, 158,590 frames, the same 176-action 8-1 segment costing 7,279
+  frames at 22.3 frames per bucket. Not one of the 1,494 displacements touched
+  the path the frontier actually walks.
+- **The preregistered readout, stated as measured.** Against C100's frame-cost
+  census on the same origin, of the 112 buckets both runs hold, 18 became
+  cheaper, 67 are identical and 27 became dearer. The savings are real but
+  small and scattered — 261 frames at bucket 73, 27 at bucket 0, 23 at bucket
+  201, and fourteen more in ones and tens, about 390 frames in total. At the
+  deep end where it would have mattered the curve is untouched: buckets 320
+  and 327 cost exactly what they cost in C100. The 27 dearer buckets are not
+  evidence the rule hurt anything — two runs retain different samples in a
+  two-entry cell — but they do say the net effect is inside the noise of
+  re-sampling, and the honest summary of the whole census is *no material
+  change*.
+- **This is the preregistered null, and it lands with its consequence already
+  agreed rather than invented now.** The rule can only act where two routes
+  collide, collisions only happen where draws land, and draws land at the tip.
+  So the savings appear where the archive is crowded and near the resume
+  entry, and the one substantial saving — 261 frames at bucket 73 — sits 254
+  buckets behind the frontier, with no draw budget to re-extend it. A saving
+  the search cannot carry forward is a saving it does not have.
+- What the link buys, and it is worth stating plainly because a null still
+  bought something: the mechanism is now built, registered, byte-inert, and
+  **measured live at 1,494 firings**, so the next arm does not have to
+  establish that keep-the-fastest works — only that pointing draws at crossed
+  terrain lets it matter. That is the composed region arm, which is where the
+  chain goes next.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
