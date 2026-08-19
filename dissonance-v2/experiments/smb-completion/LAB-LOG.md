@@ -7979,6 +7979,11 @@ one variable of science only when a link stalls.
   frontier progress, exactly as C102's whole-level region did.
 - Raw destination: `target/smb-completion/c108-conquest/` on the ARM machine, log
   `c108.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking: campaign
+  seed 1,592,639,533, origin C107's archive at the registered hash
+  `5e11a622…`, resume input SHA-256 `f190b71c…` — a sixth distinct lineage
+  since the resume rule landed — and the waypoint recorded as
+  `waypoint_4_bucket_uniform:7,0,250,299,0,15`, the narrowed band as ruled.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
