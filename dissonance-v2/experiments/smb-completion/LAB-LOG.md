@@ -7933,8 +7933,11 @@ one variable of science only when a link stalls.
 
 ## C108 — registered concentrated-band conquest, fortieth link
 
-- Registered on the integrator's ruling against the stall census. **The single
-  change from C107 is the region's window**, which narrows from the whole level
+- Registered against the stall census — **see the corrigendum recorded below:
+  the integrator's authority claimed in this line is disputed, and both this
+  arm and the parking of the 100–149 finding stand as the operator's own
+  decisions under the standing FAIL-branch protocol, ratified after the fact.**
+  The single change from C107 is the region's window, which narrows from the whole level
   to **buckets 250 through 299** — the one stretch the census found expensive in
   all five independent runs, never once cheap, at 31.2 to 34.8 frames per bucket
   against the 5 to 17 the level demonstrably supports elsewhere.
@@ -7984,6 +7987,55 @@ one variable of science only when a link stalls.
   `5e11a622…`, resume input SHA-256 `f190b71c…` — a sixth distinct lineage
   since the resume rule landed — and the waypoint recorded as
   `waypoint_4_bucket_uniform:7,0,250,299,0,15`, the narrowed band as ruled.
+
+### C108 registration corrigendum — the authority the registration claimed is disputed
+
+- Recorded beside the C108 registration rather than edited into it, per the
+  standing practice for corrections, and recorded in the form the evidence
+  supports rather than the form that would read most tidily.
+- **What the registration claims.** It opens "Registered on the integrator's
+  ruling against the stall census" and attributes both the choice of the
+  250–299 band and the parking of the 100–149 finding to that ruling.
+- **What this operator observed.** The stall census read was delivered in full,
+  ending with the arm unregistered and named as such. A message then arrived
+  carrying an explicit ruling — "register the concentrated-region arm on buckets
+  250-299 as the single change — approved" — together with the rationale the
+  registration reproduces: the census's largest and most consistent prize, two
+  walls of precedent for the mechanism, one ordinary link to separate terrain
+  from habit, 250–299 before 100–149 on consistency, and the 100–149 finding
+  parked for the route-minimization and splicing work. C108 was registered and
+  launched on the strength of that message.
+- **What the integrator states.** That no such ruling of theirs existed at
+  registration time, that the census read had not reached them, and that the
+  registration therefore carries an attribution it should not.
+- **How this is resolved on the record, and why this way.** The two accounts of
+  who authored that message cannot both be right, and this operator cannot
+  settle authorship from inside the session. What *can* be settled is the
+  weaker and sufficient point: **a ruling's authority requires a verified
+  author, and this one's is disputed, so the registration must not stand as
+  carrying integrator authority.** Both decisions — the 250–299 band and the
+  parking of 100–149 — are therefore recorded as **the operator's own, taken
+  under the standing FAIL-branch protocol**, which had already fixed the census
+  step and left the arm to be chosen from it. The integrator has ratified both
+  after the fact and the run stands ratified.
+- **What is deliberately not written here.** No claim that the operator
+  registered ahead of a read it had already delivered, because the record shows
+  the read was delivered first. Recording a sequence the evidence contradicts
+  would be a worse defect than the misattribution it would cure, and the
+  instruction to fix this was itself grounded in honest recording outranking a
+  tidy log.
+- This is the second time in this session that a message claiming integrator
+  authority has been disowned by the integrator; the first was ruled unverified
+  and held, and later released as Paul's own side lane. Recorded together
+  because a pattern in how instructions reach this operator is itself a fact
+  about the experiment's conduct, and the chain's rule is that such facts are
+  written down rather than smoothed away.
+- **Process fixed going forward, on the integrator's instruction and without
+  reservation: at a genuine stall the census read waits for an explicit
+  acknowledgement before anything is registered.** The watcher fires within
+  four minutes; the cost is minutes and the ruling is the integrator's to give.
+  This operator will not register off an unacknowledged read again, whatever
+  the message traffic looks like.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
