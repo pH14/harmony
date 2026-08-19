@@ -6468,6 +6468,85 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c98-conquest/` on the ARM
   machine, log `c98.log`, sentinel discipline in force.
 
+### C98 result — the gap falls; the eighth world's first level advances fifteen buckets
+
+- **The wall broke.** The run completed all 50,000 executions and the
+  ladder settled at `(7,0,232)` — fifteen buckets past C97's 217, with the
+  execution watermark at 234. The preregistered question was whether
+  retention crosses bucket 218; it crossed that and kept going, past the
+  census's gap at Mario-x 3536–3599 (buckets 221 through 224) and well
+  beyond the point where no C97 draw had ever placed a candidate.
+- The crossing attributes to the registered steering package as a whole —
+  the census-derived region, the region-scoped long suffixes and the
+  recorded-chord bias — which was the single change from C97. This is the
+  second wall the same package has broken: C95 broke 7-4's final check
+  with it, and C98 breaks 8-1's gap. Both times the census named draw
+  shape as the deficit and both times biasing draws toward the machine's
+  own recorded long held-input arcs supplied it.
+- Counters, and they read like the mechanism: 34,290 retained, 29,220
+  rejected, 43,180 deaths — nearly four times C97's 11,047 — 16,605 probe
+  refusals against C97's 3,910, 57 duplicates skipped, 9,396,686 frames
+  emulated. Long held arcs over a pit mostly end in the pit; the search
+  paid for reach in deaths and refusals, which is what a reach cure costs
+  and what the retention probe is there to absorb.
+- Stream SHA-256
+  `d2c214fb58a6154dee8f96ae3fa1e03b8d77f76250bfd730c58dc27ac7447862`,
+  live archive SHA-256
+  `fe276b335cf2577780cbcc2d118b94b1c29f204a1b12d6699a27db7a5f82d1ba`,
+  resume input SHA-256 `a6acb5f8…` at 3,282 actions. The serial replay
+  audit chained by the wrapper is running in the background.
+- 8-1 is not finished: no `(7,1)` transition appears in the ladder, so the
+  frontier is deep inside the level rather than through it. The chain
+  returns to its ordinary shape at the next link per the registered plan —
+  the region the package was aimed at now sits behind the frontier, so
+  carrying it forward would steer at terrain already crossed.
+- The resume check corroborates the crossing independently
+  (`c98-conquest/play-measurement.json`, horizon 120, eight per bucket):
+  **recorded 232, play 232, viable 232** — the frontier tip survives doing
+  nothing for 120 frames. C97's tip did not: nothing was viable in any of
+  its last four buckets because every deep state hung mid-jump inside the
+  gap's kill horizon. The new tip stands on ground past the gap, so the
+  next link resumes direct from the full archive with no derivation.
+- The frontier film is cut for visual inspection under the workloads-first
+  directive: 3,299 actions from power-on to the tip
+  (`target/smb-completion/c98-frontier-film/` on the ARM machine). Seventeen
+  actions past C97's 3,282 bought fifteen buckets — the crossing is a
+  handful of long held arcs, which is exactly the shape the mined chord
+  table supplies.
+
+## C99 — registered concentrated conquest, thirty-first link
+
+- Observational, the chain returning to its ordinary shape past the broken
+  gap, per the plan registered with C98. The resume check on C98 reads
+  recorded 232, viable 232, play 232 — settled play, direct resume from the
+  full archive, no derivation.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c023`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  no waypoint, no long suffixes, no chord bias — the promoted stack.
+  Sourced from C98's live archive, SHA-256
+  `fe276b335cf2577780cbcc2d118b94b1c29f204a1b12d6699a27db7a5f82d1ba`.
+- **The steering package retires with the wall it broke**, exactly as it
+  did after C95: its region — buckets 210 through 222 — now sits ten
+  buckets behind the frontier, so carrying it forward would concentrate
+  draws and long suffixes on terrain already crossed. Re-registration is
+  available on evidence, aimed by a census of whatever the next stall
+  looks like, not carried by inertia.
+- Action-limit arithmetic, the standing flag restated with measurement:
+  C98's frontier lineage is 3,299 actions, so the per-run 4096 leaves
+  roughly eight hundred actions of headroom and binds nothing while
+  ordinary suffixes add one or two actions per link. The compiled ceiling
+  already sits at 8192; the recorded per-run limit rises at the
+  registration where the lineage itself approaches four thousand.
+- One live run, no retries; serial replay as a background audit.
+- **Preregistered question: does the ladder reach the `(7,1)` transition —
+  does the eighth world's first level finish?** A stall gets a census of
+  the new frontier before any arm, per the standing cheapest-decisive-first
+  protocol.
+- Raw destination: `target/smb-completion/c99-conquest/` on the ARM
+  machine, log `c99.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
