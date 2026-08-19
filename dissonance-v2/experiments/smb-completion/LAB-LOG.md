@@ -8519,6 +8519,14 @@ one variable of science only when a link stalls.
   inherited lineage, so every archive contains variations on one route through
   the early level, not alternatives to it. A splice needs two genuinely
   different routes and the chain has only ever produced one.
+- **Confirmed directly, on the lineages themselves rather than by inference.**
+  C106's winning lineage and C107's are the **same route through bucket 311**:
+  82 of their 87 shared curve points carry identical costs, and the first
+  divergence is six frames at bucket 311. C106's supposed cheap passage is not
+  in C106's own winning lineage at all — it was a minimum contributed by some
+  other retained entry in its archive, which is precisely what a cross-lineage
+  minimum is. Three winning lineages now measured, C106, C107 and C108, are one
+  route to within a handful of frames.
 - **What this does and does not close.** It closes the 100–149 splice — there is
   no five-hundred-frame prize and the derived-origin proposal it was to support
   is withdrawn before it was written. It does not close route replacement in
