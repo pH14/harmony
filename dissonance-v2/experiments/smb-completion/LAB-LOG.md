@@ -6561,6 +6561,73 @@ one variable of science only when a link stalls.
   action limit 4096, entry bound 131,072, suffix `one_or_two`, and no
   waypoint or chord field — the promoted stack exactly as registered.
 
+### C99 result — ninety-five buckets on the ordinary stack; the gap was the whole obstacle
+
+- The run completed all 50,000 executions and the ladder settled at
+  `(7,0,327)` — **ninety-five buckets past C98's 232** — with the execution
+  watermark at 334. The promoted stack, with no waypoint, no long suffixes
+  and no chord bias, did that in one budget.
+- This is the census verdict's strongest corroboration and it is worth
+  stating plainly: **the deficit was never selection, admission or 8-1's
+  terrain in general — it was one gap that no ordinary draw could clear.**
+  C97 bought one bucket in fifty thousand executions against that gap. Put
+  the frontier on the far side of it and the same unmodified search walks
+  ninety-five buckets with the same budget.
+- Counters, and they read like a search that stopped paying for reach:
+  25,337 retained, 10,420 rejected, 19,802 deaths against C98's 43,180,
+  5,867 probe refusals against C98's 16,605, 83 duplicates skipped,
+  4,850,301 frames emulated against C98's 9,396,686. Retiring the long-arc
+  chord bias halved the frames and more than halved the deaths, exactly as
+  a package aimed at a gap that is no longer in front of the search should.
+- Stream SHA-256
+  `ab43bcbf3f37725ceae6045cbd5bbf4143731f780f33564995ca63e1cfb3bfcb`,
+  live archive SHA-256
+  `b07c220bf4f967962642cc1ca21c6f178388c65b0e352f0cf93af7ce5ea866ac`.
+  The serial replay audit chained by the wrapper is running in the
+  background.
+- **8-1 still does not finish**: no `(7,1)` transition appears in the
+  ladder. The level is long and the frontier is deep inside it, not through
+  it. The preregistered question therefore carries to the next link
+  unchanged.
+- The resume check (`c99-conquest/play-measurement.json`, horizon 120,
+  eight per bucket): **recorded 327, play 327, viable 316.** Play equals
+  recorded, so the next link resumes direct from the full archive with no
+  derivation. The viability probe finds no 120-frame no-input survivor in
+  any of the eleven buckets from 317 to 327 — the deepest states are
+  airborne or inside a hazard window. Recorded as an observation on the
+  terrain ahead, not as an obstacle: the honest power-on replay reaches
+  327, which is the C96 precedent exactly.
+- The frontier film is cut for the record: **3,384 actions** from power-on
+  to the tip (`target/smb-completion/c99-frontier-film/` on the ARM
+  machine). Eighty-six actions past C98's 3,298 for ninety-five buckets —
+  the cheapest stretch of terrain the chain has crossed per action.
+
+## C100 — registered concentrated conquest, thirty-second link
+
+- Observational, the chain in its ordinary shape, still inside the eighth
+  world's first level. One live conquest campaign, 50,000 executions,
+  twelve workers on the ARM machine, campaign seed `0x5eed_c024`, action
+  limit 4096, retention `probe_at_admission_45_snapback_16`, vocabulary
+  `down_ten_mask`, key policy `frozen_room_x_16:3,1,208`, selector
+  `concentrated_recency_128`, no waypoint, no long suffixes, no chord bias
+  — the promoted stack, unchanged from C99. Sourced from C99's live
+  archive, SHA-256
+  `b07c220bf4f967962642cc1ca21c6f178388c65b0e352f0cf93af7ce5ea866ac`,
+  direct resume at the settled play frontier 327.
+- **The action limit stays at 4096 and the arithmetic is restated rather
+  than assumed**, per the cheapest-first rule against changing what does
+  not need changing: the frontier lineage measures 3,384 actions, leaving
+  roughly seven hundred of headroom, and ordinary suffixes add one or two
+  actions per link. C99 grew the lineage by eighty-six actions. The rise to
+  the compiled 8192 comes at the registration where the lineage itself
+  approaches four thousand, which on this growth rate is several links out.
+- One live run, no retries; serial replay as a background audit.
+- **Preregistered question, carried unchanged from C99: does the ladder
+  reach the `(7,1)` transition — does the eighth world's first level
+  finish?** A stall gets a census of the new frontier before any arm.
+- Raw destination: `target/smb-completion/c100-conquest/` on the ARM
+  machine, log `c100.log`, sentinel discipline in force.
+
 ### The claim replay gate — built ahead of need, byte-inert
 
 - The registered completion protocol's replay gate has two halves. The
