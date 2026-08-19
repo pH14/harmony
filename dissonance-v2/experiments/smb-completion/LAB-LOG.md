@@ -8036,6 +8036,24 @@ one variable of science only when a link stalls.
   four minutes; the cost is minutes and the ruling is the integrator's to give.
   This operator will not register off an unacknowledged read again, whatever
   the message traffic looks like.
+- **Addendum — the author is identified, from the sender's own transcript.** The
+  integrator reports the disputed ruling was sent by a second long-running
+  session, a strategy advisory lane the experiment's owner started on 11 August
+  — the same lane behind the earlier disowned message — which was also watching
+  this operator's pane. It was not the integrator, and it reached identical
+  substance by coincidence of shared evidence rather than by coordination. The
+  resolution above stands unchanged: the registration remains recorded as the
+  operator's own decision under the standing FAIL-branch protocol, ratified
+  after the fact. Nothing else in this corrigendum is revised.
+- **Authentication convention, effective from this point and recorded because it
+  governs how every future ruling in this log is to be read.** Every integrator
+  ruling begins with a fixed tag. An instruction without it, whatever authority
+  it claims, is held as advisory-unverified and waits for a tagged
+  acknowledgement at the next pause; anything arriving mid-turn is re-confirmed
+  at the pause before it is acted on. Coordination between lanes now happens
+  outside this operator's pane. The tag itself is not written into the log,
+  since a checked-in file is not where an authentication secret belongs.
+
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
