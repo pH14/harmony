@@ -592,6 +592,13 @@ pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> String {
             low,
             high,
         } => format!("pinned_window_128:{world},{level},{low},{high}"),
+        SmbArchiveSelectorPolicy::YieldBudgeted(parameters) => format!(
+            "yield_budgeted_128:{},{},{},{}",
+            parameters.history_window,
+            parameters.exploration_floor,
+            parameters.maximum_draws,
+            parameters.success_cost_scale
+        ),
     }
 }
 
@@ -634,10 +641,38 @@ pub fn selector_from_identifier(
             high,
         });
     }
+    if let Some(configuration) = identifier.strip_prefix("yield_budgeted_128:") {
+        let mut parts = configuration.split(',');
+        let parameters = crate::draw_budget::DrawBudgetParameters {
+            history_window: parse_selector_field(&mut parts, "history window")?,
+            exploration_floor: parse_selector_field(&mut parts, "exploration floor")?,
+            maximum_draws: parse_selector_field(&mut parts, "maximum draws")?,
+            success_cost_scale: parse_selector_field(&mut parts, "success cost scale")?,
+        };
+        if parts.next().is_some() {
+            return Err("yield-budget selector identifier carries extra fields".into());
+        }
+        parameters.validate()?;
+        return Ok(SmbArchiveSelectorPolicy::YieldBudgeted(parameters));
+    }
     // The frozen and uncapped-corrected selectors were deleted on promotion.
     // A stream recorded under either replays only at the commit that
     // recorded it.
     Err("campaign stream parent scheduler is not recognized".into())
+}
+
+fn parse_selector_field<'a, T>(
+    fields: &mut impl Iterator<Item = &'a str>,
+    name: &str,
+) -> Result<T, Box<dyn Error>>
+where
+    T: std::str::FromStr,
+    T::Err: Error + 'static,
+{
+    Ok(fields
+        .next()
+        .ok_or_else(|| format!("yield-budget selector is missing {name}"))?
+        .parse()?)
 }
 
 /// Header identifier for an admission retention policy.
@@ -681,12 +716,14 @@ fn verify_selector_annotation(
     match (policy, annotation) {
         (
             SmbArchiveSelectorPolicy::ConcentratedRecency
-            | SmbArchiveSelectorPolicy::PinnedWindow { .. },
+            | SmbArchiveSelectorPolicy::PinnedWindow { .. }
+            | SmbArchiveSelectorPolicy::YieldBudgeted(_),
             None,
         ) => Err("concentrated-selector stream is missing a selector annotation".into()),
         (
             SmbArchiveSelectorPolicy::ConcentratedRecency
-            | SmbArchiveSelectorPolicy::PinnedWindow { .. },
+            | SmbArchiveSelectorPolicy::PinnedWindow { .. }
+            | SmbArchiveSelectorPolicy::YieldBudgeted(_),
             Some(draw),
         ) => {
             if draw.waypoint && waypoint_policy == SmbArchiveWaypointPolicy::Absent {
@@ -2608,7 +2645,8 @@ pub fn run_smb_campaign(
                     decisions.iter().any(|decision| {
                         matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
                     }),
-                );
+                    frames,
+                )?;
             }
             let chord_table_after =
                 finish_chord_stream_record(config.chord, &mut chord_tables, &core, &decisions)?;
@@ -2928,7 +2966,8 @@ pub fn replay_smb_campaign(
                         decisions.iter().any(|decision| {
                             matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
                         }),
-                    );
+                        job.frames,
+                    )?;
                 }
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {
@@ -4230,6 +4269,7 @@ mod tests {
     };
     use crate::{
         chord_table::ChordTableParameters,
+        draw_budget::DrawBudgetParameters,
         phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
         phase4c::{
             ArchiveCandidate, SmbArchiveKey, SmbArchiveReplacementPolicy, SmbArchiveReport,
@@ -4296,6 +4336,25 @@ mod tests {
                 hash_every_records: 2,
             },
         })
+    }
+
+    fn budgeted_selector() -> SmbArchiveSelectorPolicy {
+        SmbArchiveSelectorPolicy::YieldBudgeted(DrawBudgetParameters {
+            history_window: 16,
+            exploration_floor: 4,
+            maximum_draws: 64,
+            success_cost_scale: 256,
+        })
+    }
+
+    #[test]
+    fn budgeted_selector_identifier_round_trips() {
+        let policy = budgeted_selector();
+        let identifier = super::selector_identifier(policy);
+        assert_eq!(
+            super::selector_from_identifier(&identifier).expect("parse budget selector"),
+            policy
+        );
     }
 
     #[test]
@@ -4445,6 +4504,41 @@ mod tests {
         );
         let replayed =
             replay_smb_campaign(&rom, &stream, None).expect("replay continuous chord tables");
+        assert_eq!(live, replayed);
+    }
+
+    #[test]
+    fn yield_budgeted_campaign_replays_from_recorded_costs() {
+        let rom = synthetic_nrom();
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_b0d6,
+            workers: 2,
+            execution_budget: 8,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: budgeted_selector(),
+            retention_policy: SmbArchiveRetentionPolicy::Frozen,
+            archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
+        };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("yield-budgeted campaign");
+        assert!(
+            std::str::from_utf8(&stream)
+                .expect("stream text")
+                .lines()
+                .next()
+                .expect("stream header")
+                .contains("yield_budgeted_128:16,4,64,256")
+        );
+        let replayed =
+            replay_smb_campaign(&rom, &stream, None).expect("replay yield-budgeted campaign");
         assert_eq!(live, replayed);
     }
 

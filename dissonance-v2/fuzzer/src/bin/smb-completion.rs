@@ -1955,6 +1955,8 @@ fn run_archive_resume_mode(
                 // The serial modes never select the campaign pinned window;
                 // the identifier is recorded for completeness.
                 SmbArchiveSelectorPolicy::PinnedWindow { .. } => "pinned_window_128",
+                // The serial CLI likewise never selects campaign draw budgets.
+                SmbArchiveSelectorPolicy::YieldBudgeted(_) => "yield_budgeted_128",
             }
         } else if frozen_search {
             "frozen_frontier_128"

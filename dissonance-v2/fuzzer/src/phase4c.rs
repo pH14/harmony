@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    draw_budget::{DrawBudgetParameters, DrawBudgets},
     phase4b::{
         ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS,
         PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, SmbDeathBytes, SmbInput, SmbMacro,
@@ -869,6 +870,10 @@ pub enum SmbArchiveSelectorPolicy {
     /// campaign recorded under either reproduces only at its recording commit.
     #[default]
     ConcentratedRecency,
+    /// Cost-normalized per-parent budgets layered over the promoted selector.
+    ///
+    /// Every active parent receives the registered nonzero exploration floor.
+    YieldBudgeted(DrawBudgetParameters),
     /// C84 ruling: every draw is pinned to active entries of the registered
     /// pair inside the registered bucket window, with the concentrated
     /// recency draw applied within the pin; selection falls back to the
@@ -1288,6 +1293,8 @@ pub(crate) struct Archive<'a> {
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
+    budget_draws: Vec<u64>,
+    draw_budgets: DrawBudgets<usize>,
     in_window_ever: Vec<bool>,
     selector_accounting: SmbSelectorAccounting,
     waypoint_policy: SmbArchiveWaypointPolicy,
@@ -1355,6 +1362,8 @@ impl<'a> Archive<'a> {
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
+            budget_draws: Vec::new(),
+            draw_budgets: DrawBudgets::default(),
             in_window_ever: Vec::new(),
             selector_accounting: SmbSelectorAccounting {
                 policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
@@ -1533,6 +1542,7 @@ impl<'a> Archive<'a> {
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
+        self.budget_draws.push(0);
         self.in_window_ever.push(false);
         cell.push(id);
         self.input_ids.insert(input, id);
@@ -1564,6 +1574,19 @@ impl<'a> Archive<'a> {
             .collect()
     }
 
+    fn selector_unexhausted(&self, id: usize) -> bool {
+        match self.selector_accounting.policy {
+            SmbArchiveSelectorPolicy::YieldBudgeted(parameters) => self
+                .draw_budgets
+                .budget(&id, parameters)
+                .is_ok_and(|budget| self.budget_draws[id] < budget),
+            SmbArchiveSelectorPolicy::ConcentratedRecency
+            | SmbArchiveSelectorPolicy::PinnedWindow { .. } => {
+                self.since_retained[id] < SELECTION_EXHAUSTION_THRESHOLD
+            }
+        }
+    }
+
     /// Choose a parent. There is one selector, so every draw reports a record.
     pub(crate) fn select_parent(
         &mut self,
@@ -1586,9 +1609,13 @@ impl<'a> Archive<'a> {
         if active.is_empty() {
             return Err("SMB archive has no expandable entry".into());
         }
+        if let SmbArchiveSelectorPolicy::YieldBudgeted(parameters) = self.selector_accounting.policy
+        {
+            parameters.validate()?;
+        }
         // C84 ruling: under the pinned policy every draw narrows to the
         // registered window when it is populated.
-        let pool: Vec<usize> = match self.selector_accounting.policy {
+        let base_pool: Vec<usize> = match self.selector_accounting.policy {
             SmbArchiveSelectorPolicy::PinnedWindow {
                 world,
                 level,
@@ -1607,8 +1634,29 @@ impl<'a> Archive<'a> {
                     .collect();
                 if members.is_empty() { active } else { members }
             }
-            SmbArchiveSelectorPolicy::ConcentratedRecency => active,
+            SmbArchiveSelectorPolicy::ConcentratedRecency
+            | SmbArchiveSelectorPolicy::YieldBudgeted(_) => active,
         };
+        let mut counter_reset = false;
+        let pool =
+            if let SmbArchiveSelectorPolicy::YieldBudgeted(_) = self.selector_accounting.policy {
+                let living = base_pool
+                    .iter()
+                    .copied()
+                    .filter(|id| self.selector_unexhausted(*id))
+                    .collect::<Vec<_>>();
+                if living.is_empty() {
+                    for id in &base_pool {
+                        self.budget_draws[*id] = 0;
+                    }
+                    counter_reset = true;
+                    base_pool
+                } else {
+                    living
+                }
+            } else {
+                base_pool
+            };
         let use_frontier = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
         if !use_frontier {
             let id = pool[rand.below(NonZeroUsize::new(pool.len()).ok_or("empty archive")?)];
@@ -1617,14 +1665,13 @@ impl<'a> Archive<'a> {
                 SmbSelectorDraw {
                     path: SmbSelectorPath::Uniform,
                     classes_skipped: 0,
-                    counter_reset: false,
+                    counter_reset,
                     concentration: None,
                     waypoint: false,
                 },
             ));
         }
         let mut classes_skipped = 0_u64;
-        let mut counter_reset = false;
         loop {
             // Waypoint selection preference. While the region holds
             // unexhausted pool members, every tie-class draw samples them
@@ -1642,7 +1689,7 @@ impl<'a> Archive<'a> {
                     .copied()
                     .filter(|id| {
                         self.waypoint_policy.contains(&self.entries[*id].report.key)
-                            && self.since_retained[*id] < SELECTION_EXHAUSTION_THRESHOLD
+                            && self.selector_unexhausted(*id)
                     })
                     .collect();
                 if !members.is_empty() {
@@ -1698,7 +1745,15 @@ impl<'a> Archive<'a> {
             if counter_reset {
                 return Err("selection counter reset freed no entry".into());
             }
-            for counter in &mut self.since_retained {
+            let counters = if matches!(
+                self.selector_accounting.policy,
+                SmbArchiveSelectorPolicy::YieldBudgeted(_)
+            ) {
+                &mut self.budget_draws
+            } else {
+                &mut self.since_retained
+            };
+            for counter in counters {
                 *counter = 0;
             }
             counter_reset = true;
@@ -1740,7 +1795,7 @@ impl<'a> Archive<'a> {
                 let unexhausted = members[start..end]
                     .iter()
                     .copied()
-                    .filter(|id| self.since_retained[*id] < SELECTION_EXHAUSTION_THRESHOLD)
+                    .filter(|id| self.selector_unexhausted(*id))
                     .collect::<Vec<_>>();
                 if !unexhausted.is_empty() {
                     return Some(unexhausted);
@@ -1830,17 +1885,30 @@ impl<'a> Archive<'a> {
         }
     }
 
-    /// Account whether a recorded selection of `id` retained a descendant.
-    pub(crate) fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool) {
+    /// Account one selection's discovery outcome and deterministic execution cost.
+    pub(crate) fn record_selection_outcome(
+        &mut self,
+        id: usize,
+        retained_descendant: bool,
+        cost: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        if let SmbArchiveSelectorPolicy::YieldBudgeted(parameters) = self.selector_accounting.policy
+        {
+            self.budget_draws[id] = self.budget_draws[id].saturating_add(1);
+            self.draw_budgets
+                .record(id, retained_descendant, cost, parameters)?;
+        }
         if !retained_descendant {
-            return;
+            return Ok(());
         }
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
+        self.budget_draws[id] = 0;
         self.selector_accounting.productive_selections = self
             .selector_accounting
             .productive_selections
             .saturating_add(1);
+        Ok(())
     }
 
     /// The per-campaign selector accounting for the report.
@@ -5391,6 +5459,7 @@ fn run_smb_archive_search_internal(
         }
         let parent = archive.entries[parent_id].clone();
         target.restore(&parent.snapshot)?;
+        let execution_frames_before = target.frames_clocked();
         let mut input = parent.report.input.clone();
         let mut milestones = parent.report.milestones;
         let use_generated_mutator = generated_mutator_accounting.active
@@ -5506,7 +5575,13 @@ fn run_smb_archive_search_internal(
                 execution,
             );
         }
-        archive.record_selection_outcome(parent_id, archive.retained > retained_before);
+        archive.record_selection_outcome(
+            parent_id,
+            archive.retained > retained_before,
+            target
+                .frames_clocked()
+                .saturating_sub(execution_frames_before),
+        )?;
         archive.finish_execution(execution);
         if execution % 100 == 0 || execution == execution_budget {
             curve.push(SmbArchiveProgressPoint {
