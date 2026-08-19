@@ -74,6 +74,8 @@ pub enum ReductionError<E> {
     OriginalDidNotPass,
     /// The final power-on replay rejected the stitched reduction.
     FinalDidNotPass,
+    /// A segment's settled sequence did not reach its registered exit.
+    SegmentDidNotPass(usize),
     /// A candidate replay thread panicked.
     WorkerPanicked,
 }
@@ -84,6 +86,9 @@ impl<E: fmt::Display> fmt::Display for ReductionError<E> {
             Self::Replay(error) => write!(formatter, "sequence replay failed: {error}"),
             Self::OriginalDidNotPass => formatter.write_str("the original sequence did not pass"),
             Self::FinalDidNotPass => formatter.write_str("the stitched reduction did not pass"),
+            Self::SegmentDidNotPass(index) => {
+                write!(formatter, "reduced segment {index} did not reach its exit")
+            }
             Self::WorkerPanicked => formatter.write_str("a candidate replay worker panicked"),
         }
     }
@@ -93,7 +98,10 @@ impl<E: Error + 'static> Error for ReductionError<E> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Replay(error) => Some(error),
-            Self::OriginalDidNotPass | Self::FinalDidNotPass | Self::WorkerPanicked => None,
+            Self::OriginalDidNotPass
+            | Self::FinalDidNotPass
+            | Self::SegmentDidNotPass(_)
+            | Self::WorkerPanicked => None,
         }
     }
 }
@@ -199,6 +207,116 @@ where
         passes,
         false,
     )
+}
+
+/// Reduce each segment against its own exit oracle, then verify the stitched sequence.
+///
+/// Candidate cuts replay only the segment currently being reduced. After a
+/// segment settles, its exact endpoint becomes the next segment's entry
+/// snapshot. The final replay starts from the original snapshot and applies the
+/// caller's end-to-end oracle.
+///
+/// # Errors
+///
+/// Returns an error if replay fails, a worker panics, a settled segment misses
+/// its exit, or the final stitched replay fails.
+pub fn reduce_verified_segmented_sequence<Replay, Step, SegmentPasses, FinalPasses>(
+    replay: &Replay,
+    initial_snapshot: Replay::Snapshot,
+    steps: Vec<Step>,
+    snapshot_points: &[usize],
+    config: ReductionConfig,
+    segment_passes: SegmentPasses,
+    final_passes: FinalPasses,
+) -> Result<ReductionResult<Step>, ReductionError<Replay::Error>>
+where
+    Replay: SequenceReplay<Step>,
+    Step: Clone + Send + Sync,
+    SegmentPasses: Fn(usize, &Replay::Outcome) -> bool + Sync,
+    FinalPasses: Fn(&Replay::Outcome) -> bool + Sync,
+{
+    let mut boundaries = snapshot_points
+        .iter()
+        .copied()
+        .filter(|&point| point > 0 && point < steps.len())
+        .collect::<Vec<_>>();
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    boundaries.insert(0, 0);
+    boundaries.push(steps.len());
+
+    let tracked = steps
+        .into_iter()
+        .enumerate()
+        .map(|(original_index, step)| TrackedStep {
+            original_index,
+            step,
+        })
+        .collect::<Vec<_>>();
+    let mut segments = boundaries
+        .windows(2)
+        .map(|window| tracked[window[0]..window[1]].to_vec())
+        .collect::<Vec<_>>();
+    let mut entry = initial_snapshot.clone();
+    let mut reports = Vec::with_capacity(segments.len());
+    let mut candidate_replays = 0_u64;
+    let mut verification_replays = 0_u64;
+
+    for (segment_index, segment) in segments.iter_mut().enumerate() {
+        let original_steps = segment.len();
+        let local_passes = |outcome: &Replay::Outcome| segment_passes(segment_index, outcome);
+        let (reduced, replays) = reduce_segment(
+            replay,
+            &entry,
+            segment.clone(),
+            &[],
+            config.workers,
+            &local_passes,
+        )?;
+        candidate_replays = candidate_replays.saturating_add(replays);
+        *segment = reduced;
+
+        let segment_steps = segment
+            .iter()
+            .map(|tracked| tracked.step.clone())
+            .collect::<Vec<_>>();
+        let endpoint = replay
+            .replay(&entry, &segment_steps)
+            .map_err(ReductionError::Replay)?;
+        verification_replays = verification_replays.saturating_add(1);
+        if !segment_passes(segment_index, &endpoint.outcome) {
+            return Err(ReductionError::SegmentDidNotPass(segment_index));
+        }
+        entry = endpoint.snapshot;
+        reports.push(SegmentReduction {
+            index: segment_index,
+            original_steps,
+            reduced_steps: segment.len(),
+            candidate_replays: replays,
+        });
+    }
+
+    let stitched = flatten_steps(&segments);
+    let final_endpoint = replay
+        .replay(&initial_snapshot, &stitched)
+        .map_err(ReductionError::Replay)?;
+    verification_replays = verification_replays.saturating_add(1);
+    if !final_passes(&final_endpoint.outcome) {
+        return Err(ReductionError::FinalDidNotPass);
+    }
+
+    let original_indices = segments
+        .iter()
+        .flatten()
+        .map(|tracked| tracked.original_index)
+        .collect();
+    Ok(ReductionResult {
+        steps: stitched,
+        original_indices,
+        segments: reports,
+        candidate_replays,
+        verification_replays,
+    })
 }
 
 fn reduce_sequence_inner<Replay, Step, Passes>(
@@ -414,11 +532,15 @@ fn flatten_tracked<Step: Clone>(segments: &[Vec<TrackedStep<Step>>]) -> Vec<Trac
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, num::NonZeroUsize};
+    use std::{
+        convert::Infallible,
+        num::NonZeroUsize,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::{
         ReductionConfig, ReductionError, ReplayEndpoint, SequenceReplay,
-        projected_candidate_replays, reduce_sequence,
+        projected_candidate_replays, reduce_sequence, reduce_verified_segmented_sequence,
     };
 
     struct SumReplay;
@@ -517,5 +639,51 @@ mod tests {
     fn projection_is_zero_only_for_empty_segments() {
         assert_eq!(projected_candidate_replays(&[0, 0]), 0);
         assert!(projected_candidate_replays(&[1, 8, 64]) > 0);
+    }
+
+    #[test]
+    fn segment_local_candidates_do_not_replay_later_segments() {
+        struct BoundedReplay {
+            longest: AtomicUsize,
+        }
+        impl SequenceReplay<u8> for BoundedReplay {
+            type Snapshot = u64;
+            type Outcome = u64;
+            type Error = Infallible;
+
+            fn replay(
+                &self,
+                entry: &Self::Snapshot,
+                steps: &[u8],
+            ) -> Result<ReplayEndpoint<Self::Snapshot, Self::Outcome>, Self::Error> {
+                self.longest.fetch_max(steps.len(), Ordering::SeqCst);
+                let outcome = steps
+                    .iter()
+                    .fold(*entry, |sum, step| sum.saturating_add(u64::from(*step)));
+                Ok(ReplayEndpoint {
+                    snapshot: outcome,
+                    outcome,
+                })
+            }
+        }
+
+        let replay = BoundedReplay {
+            longest: AtomicUsize::new(0),
+        };
+        let reduced = reduce_verified_segmented_sequence(
+            &replay,
+            0,
+            vec![0, 4, 0, 0, 6, 0],
+            &[3],
+            config(),
+            |index, outcome| *outcome >= if index == 0 { 4 } else { 10 },
+            |outcome| *outcome >= 10,
+        )
+        .expect("segment-local reduction");
+        assert_eq!(reduced.steps, vec![4, 6]);
+        assert!(
+            replay.longest.load(Ordering::SeqCst) <= 3,
+            "candidate replay crossed a segment boundary"
+        );
     }
 }
