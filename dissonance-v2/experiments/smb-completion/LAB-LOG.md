@@ -7327,6 +7327,74 @@ one variable of science only when a link stalls.
   `fewest_frames_in_level`, resume `fastest_in_level_32`, no waypoint or chord
   field. Jobs were flowing before this entry was written.
 
+### C104 result — the plateau breaks: bucket 336, and the level is crossed for fewer frames than 327 used to cost
+
+- The run completed all 50,000 executions. Counters: 24,281 retained, 17,392
+  deaths, 6,296 collisions decided on frames, stream SHA-256
+  `d99c4d20a544fd110a4f55ec35b4baae5835306c1c05c9ecdcc4bfc826061b69`, live
+  archive SHA-256
+  `8fa8b33f3c4d48c2174c1544f8a1e1805e7291395a7350c8093d44044dad3798`.
+- **The ladder reads `(7,0,336)`.** C99 through C103 all read `(7,0,327)`; four
+  consecutive links, two hundred thousand executions, no movement. This link
+  gave up twenty-three buckets at the resume, bought them all back, and went
+  nine buckets further.
+- **And it did it for fewer frames than the old route needed to reach a
+  shallower place.** The winning lineage — a new archive entry, not the one
+  five links inherited — spends **7,270 frames crossing 336 buckets, against
+  7,279 for 327**. Nine more buckets for nine fewer frames. The traverse rate
+  falls from 22.26 to **21.64 frames per bucket**.
+- **Verdict against the preregistered question: pass.** It asked for bucket 327
+  or beyond at under 7,279 frames in the level, and the answer is 336 at 7,270.
+- The census says the same thing bucket by bucket where it matters: reaching
+  bucket 327 now costs 7,200 frames against C102's 7,281, and bucket 310 costs
+  6,840 against 7,160. Buckets 280 through 304 read dearer, which is the
+  expected shape — this link resumed from bucket 304 and never re-explored the
+  ground behind it, so those numbers are C102's savings not being re-found
+  rather than being lost.
+- **What actually changed, and it is the boundary rather than the search.** The
+  recorded resume input is `711325b0…` at 3,349 actions, the first time since
+  C100 that a link inherited anything but `b1fe545d…`. The search had been
+  producing speed for three links; nothing was carrying it. Now something does,
+  and the very first link to benefit broke a four-link plateau.
+- **The honest limit, restated with the new number.** At 21.64 frames per
+  bucket a clock of about 7,300 frames buys roughly 337 buckets, and the
+  lineage stands at 336 having spent 7,270. The chain is against the clock
+  again, one bucket further along than the arithmetic allows for. The link did
+  not solve the level; it built the machinery that lets speed accumulate across
+  links, and then demonstrated the first increment of that accumulation. More
+  increments are needed and they are now possible, which was not true this
+  morning.
+
+## C105 — registered generator-plus-carrier conquest, thirty-seventh link
+
+- The two halves of the speed program have now each been demonstrated apart:
+  C102's whole-level region **generates** cheaper routes over crossed terrain,
+  and C104's clock-aware resume **carries** a cheaper route across a link
+  boundary. Neither had ever met. This link runs them together.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c029`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,336,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`,
+  no chord bias — **the region is the single change from C104**, its window
+  extended to the new frontier. Sourced from C104's live archive, SHA-256
+  `8fa8b33f3c4d48c2174c1544f8a1e1805e7291395a7350c8093d44044dad3798`.
+- **Expected shape, recorded before the run so the reading is not fitted
+  afterwards.** The region takes budget away from the tip, so the frontier may
+  advance little or not at all; C102 spent its whole budget exploring and
+  gained no depth. What it should produce is a materially cheaper route
+  somewhere in the level, and unlike C102 that route now survives the boundary.
+  Depth is the next link's job; cheapness is this one's.
+- **Preregistered question: does the frontier lineage's traverse of 8-1 fall
+  below 7,270 frames?** Any fall is a pass and compounds into the next link. A
+  flat traverse with the region live would say the generator has exhausted what
+  it can find on this terrain, and the next arm would have to change what the
+  search draws rather than where it draws.
+- Raw destination: `target/smb-completion/c105-conquest/` on the ARM machine,
+  log `c105.log`, sentinel discipline in force; per-link replay audits stay
+  dropped by ruling.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
