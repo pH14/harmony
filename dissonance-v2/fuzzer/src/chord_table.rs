@@ -176,7 +176,7 @@ where
 
     /// Make every buffered success visible immediately.
     ///
-    /// Frozen source loading calls this once after folding the complete source.
+    /// Archive source loading calls this once after folding the complete source.
     ///
     /// # Errors
     ///

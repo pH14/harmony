@@ -1174,16 +1174,6 @@ const RECORDED_CHORD_TABLE: [(u8, u8); 328] = [
     (129, 117),
 ];
 
-/// When a recorded source is folded into a campaign's chord tables.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SmbChordTableMode {
-    /// Fold the resume archive once before the campaign starts.
-    Frozen,
-    /// Start from the same source and expose updates at the registered interval.
-    Continuous,
-}
-
 /// SMB-only filter preserving the existing deep-lineage extraction semantics.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordSourceFilter {
@@ -1198,8 +1188,6 @@ pub struct SmbChordSourceFilter {
 /// Complete registered derivation for one pair of mined chord tables.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordTableDerivation {
-    /// Frozen or continuous fold.
-    pub mode: SmbChordTableMode,
     /// Thin SMB source filter.
     pub source_filter: SmbChordSourceFilter,
     /// Game-neutral extraction, mixture, update, and hash parameters.
@@ -1240,14 +1228,10 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
         SmbCampaignChordPolicy::Uniform => "chord_uniform".to_owned(),
         SmbCampaignChordPolicy::RecordedHalf => "chord_draw_recorded_50".to_owned(),
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
-            let mode = match derivation.mode {
-                SmbChordTableMode::Frozen => "frozen",
-                SmbChordTableMode::Continuous => "continuous",
-            };
             let source = derivation.source_filter;
             let parameters = derivation.parameters;
             format!(
-                "chord_draw_recorded_50:{mode},{},{},{},{},{},{},{},{},{}",
+                "chord_draw_recorded_50:{},{},{},{},{},{},{},{},{}",
                 source.world,
                 source.level,
                 source.minimum_progress,
@@ -1278,11 +1262,6 @@ pub fn chord_policy_from_identifier(
     }
     if let Some(fields) = identifier.strip_prefix("chord_draw_recorded_50:") {
         let mut fields = fields.split(',');
-        let mode = match fields.next() {
-            Some("frozen") => SmbChordTableMode::Frozen,
-            Some("continuous") => SmbChordTableMode::Continuous,
-            _ => return Err("derived chord policy has an unknown mode".into()),
-        };
         let source_filter = SmbChordSourceFilter {
             world: parse_chord_field(&mut fields, "world")?,
             level: parse_chord_field(&mut fields, "level")?,
@@ -1302,7 +1281,6 @@ pub fn chord_policy_from_identifier(
         parameters.validate()?;
         return Ok(SmbCampaignChordPolicy::DerivedHalf(
             SmbChordTableDerivation {
-                mode,
                 source_filter,
                 parameters,
             },
@@ -2156,15 +2134,12 @@ fn finish_chord_stream_record(
     core: &CoordinatorCore<'_>,
     decisions: &[SmbCampaignAdmissionDecision],
 ) -> Result<Option<ChordTableCheckpoint>, Box<dyn Error>> {
-    let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy else {
+    let SmbCampaignChordPolicy::DerivedHalf(_) = policy else {
         return Ok(None);
     };
-    if derivation.mode == SmbChordTableMode::Frozen {
-        return Ok(None);
-    }
     let tables = tables
         .as_mut()
-        .ok_or("continuous chord policy has no folded tables")?;
+        .ok_or("derived chord policy has no folded tables")?;
     for decision in decisions {
         let SmbCampaignAdmissionDecision::Retained { id } = decision else {
             continue;
@@ -4319,9 +4294,8 @@ mod tests {
         }
     }
 
-    fn derived_policy(mode: super::SmbChordTableMode) -> super::SmbCampaignChordPolicy {
+    fn derived_policy() -> super::SmbCampaignChordPolicy {
         super::SmbCampaignChordPolicy::DerivedHalf(super::SmbChordTableDerivation {
-            mode,
             source_filter: super::SmbChordSourceFilter {
                 world: 0,
                 level: 0,
@@ -4359,17 +4333,21 @@ mod tests {
 
     #[test]
     fn derived_chord_policy_identifier_round_trips() {
-        for mode in [
-            super::SmbChordTableMode::Frozen,
-            super::SmbChordTableMode::Continuous,
-        ] {
-            let policy = derived_policy(mode);
-            let identifier = chord_policy_identifier(policy);
-            assert_eq!(
-                chord_policy_from_identifier(&identifier).expect("parse derived policy"),
-                policy
-            );
-        }
+        let policy = derived_policy();
+        let identifier = chord_policy_identifier(policy);
+        assert_eq!(
+            chord_policy_from_identifier(&identifier).expect("parse derived policy"),
+            policy
+        );
+        assert_eq!(
+            chord_policy_identifier(super::SmbCampaignChordPolicy::RecordedHalf),
+            "chord_draw_recorded_50"
+        );
+        assert_eq!(
+            chord_policy_from_identifier("chord_draw_recorded_50")
+                .expect("parse legacy constant-backed policy"),
+            super::SmbCampaignChordPolicy::RecordedHalf
+        );
     }
 
     #[test]
@@ -4470,7 +4448,7 @@ mod tests {
                 band_high: 15,
             },
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwoRegionLong48,
-            chord: derived_policy(super::SmbChordTableMode::Continuous),
+            chord: derived_policy(),
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
