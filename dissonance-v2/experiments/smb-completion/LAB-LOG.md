@@ -8269,6 +8269,55 @@ one variable of science only when a link stalls.
   the frame-cost census answer a different question — the cheapest way to reach
   a place — and the two must not be mixed.
 
+### The frozen prefix — a quarter of the level's clock sits in eleven waits no campaign has ever touched
+
+- Ran the same single-lineage curve on **two** winning lineages, C107's at
+  bucket 350 and C108's at 328, expecting the stand-stills to differ and to
+  learn something from how. They do not differ. They are identical: **eleven
+  stalls, the same eleven buckets, the same frames to the unit, 1,728 frames in
+  total.**
+- The two curves agree exactly at 83 of their 86 shared buckets and **first
+  diverge at bucket 313**. Everything from the level's entrance to bucket 313 is
+  one and the same route, carried by both.
+- **That is the whole plateau, stated in one sentence: the chain has been
+  extending a prefix it never rewrites.** A campaign resumes from a single
+  inherited lineage, spends its budget pushing the frontier forward, and returns
+  a lineage whose first three hundred buckets are the ones it started with. The
+  clock-aware resume changed *which* lineage is carried and the region changed
+  *where* draws land, and both bought real frames — the traverse rate fell from
+  22.26 to 20.28 — but neither has ever revisited the ground behind the tip.
+  These eleven waits have been paid, unchanged, by every link since they were
+  first laid down.
+- **The size of it, measured rather than estimated: 1,728 frames, twenty-four
+  percent of the 7,103-frame traverse, spread over eleven stalls between buckets
+  85 and 283.** For comparison, the entire speed program's gain across five
+  links was about 240 frames. The prefix holds seven times that, and it has
+  never been contested.
+
+  | stall | frames | | stall | frames |
+  |---|---|---|---|---|
+  | 85 → 86 | 104 | | 267 → 268 | 231 |
+  | 96 → 97 | 218 | | 268 → 270 | 110 |
+  | 107 → 108 | 145 | | 270 → 271 | 250 |
+  | 229 → 231 | 119 | | 279 → 280 | 117 |
+  | 231 → 232 | 130 | | 282 → 283 | 201 |
+  | 234 → 235 | 103 | | | |
+
+- **This makes the reduction and splice work the critical path, and enlarges
+  it.** The 100–149 splice was valued at roughly five hundred frames from a
+  cheap passage produced once and lost; the frozen prefix holds three times that
+  again in waits alone, and the two are the same class of cure — rewriting
+  inherited ground rather than searching beyond it. Note that the splice's own
+  target band contains two of these stalls, at 96→97 and 107→108, worth 363
+  frames between them.
+- **What is still unknown and decides everything: how many of the 1,728 are
+  forced.** The castle's stand-stills were forced — reduction could not remove
+  them, and they were read as a check grading dwell time. If these are the same,
+  the level's cost is what it is and the chain's remaining margin is what it
+  has. If they are slack, a quarter of the clock is recoverable without a single
+  additional campaign. The reducer answers exactly this, and it is the next run.
+- Recorded before that answer is known, so the finding cannot be reshaped by it.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
