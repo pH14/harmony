@@ -7403,6 +7403,66 @@ one variable of science only when a link stalls.
   `fewest_frames_in_level`, resume `fastest_in_level_32`. Jobs were flowing
   before this entry was written.
 
+### C105 result — generator and carrier together: bucket 343 at 20.8 frames a bucket
+
+- The run completed all 50,000 executions. Counters: 48,536 retained, 7,050
+  candidates through the region's auxiliary capacity, 2,536 collisions decided
+  on frames, stream SHA-256
+  `e60d0d8461871732a41215dcd7e593fd1c7a18d1b855ce995fd6151065e7b9e4`, live
+  archive SHA-256
+  `5006bd7741e8c78acafdf69998968b67650a4976c2413e3115b5cb6301d81dc9`.
+- **Both halves of the preregistered question pass, and the second one passes
+  by more than the first.** The ladder reads `(7,0,343)` — seven buckets past
+  C104 and sixteen past the plateau — and the winning lineage crosses 8-1 in
+  **7,138 frames for 343 buckets, 20.81 frames per bucket**, in 159 actions.
+- **The three-link progression is the finding, not any single number.** The
+  route the chain carried for five links cost 7,279 frames and reached 327, at
+  22.26 frames per bucket. C104 carried a cheaper one to 336 at 21.64. C105
+  reaches 343 at 20.81. Sixteen more buckets of level crossed for **141 fewer
+  frames**, and the rate has fallen every link since the resume rule landed.
+  Speed is compounding across boundaries, which is exactly what the C103
+  finding said was impossible before.
+- The action count fell too — 159 actions against the old route's 176 — so the
+  cheaper route is not buying frames by spending actions. It is simply a better
+  crossing.
+- **Clock position, stated because it is the only thing that matters.** Against
+  a clock of roughly 7,300 frames the lineage now stands at bucket 343 having
+  spent 7,138, so it holds on the order of a hundred and sixty frames — six or
+  seven timer units — where five links ago it held two. The margin is thin and
+  real. The level is still not finished and nothing here says how much further
+  it runs.
+- Recorded expectation from the registration, checked against outcome: the arm
+  was expected to buy cheapness and possibly no depth, on the grounds that the
+  region takes budget from the tip. It bought both. The region's draws found
+  faster ground *and* the frontier advanced, which suggests the two are less in
+  tension than C102 made them look — plausibly because the resume now starts
+  each link from a cheaper position, so the tip has clock left to work with.
+  Recorded as a plausible reading, not a measured one.
+
+## C106 — registered continuation of the compounding stack, thirty-eighth link
+
+- An ordinary link now: the C105 configuration unchanged but for the region
+  window following the frontier, which is what a census-derived region does by
+  construction. Nothing new is being tested; the chain is spending budget on a
+  mechanism that has advanced the ladder and lowered the traverse cost in each
+  of its two runs.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c02a`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,343,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`,
+  no chord bias. Sourced from C105's live archive, SHA-256
+  `5006bd7741e8c78acafdf69998968b67650a4976c2413e3115b5cb6301d81dc9`.
+- **Preregistered question, unchanged and now routine: does the ladder advance
+  and does the traverse fall below 7,138 frames?** Two consecutive links have
+  answered yes to both. A link that advances depth while the traverse rises is
+  the signature to watch for — it would mean the frontier is being bought on
+  the clock again rather than out of savings, and the next link would need the
+  region widened rather than followed.
+- Raw destination: `target/smb-completion/c106-conquest/` on the ARM machine,
+  log `c106.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
