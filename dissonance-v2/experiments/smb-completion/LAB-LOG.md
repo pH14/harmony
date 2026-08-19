@@ -6508,11 +6508,20 @@ one variable of science only when a link stalls.
   gap's kill horizon. The new tip stands on ground past the gap, so the
   next link resumes direct from the full archive with no derivation.
 - The frontier film is cut for visual inspection under the workloads-first
-  directive: 3,299 actions from power-on to the tip
-  (`target/smb-completion/c98-frontier-film/` on the ARM machine). Seventeen
-  actions past C97's 3,282 bought fifteen buckets — the crossing is a
-  handful of long held arcs, which is exactly the shape the mined chord
-  table supplies.
+  directive: 3,298 actions from power-on to the tip, filmed on the ARM
+  machine (`target/smb-completion/c98-frontier-film/`) and rendered to
+  real-time sixty-frame H.264 with sound on the workstation
+  (`c98-frontier.mp4`, 155,836 frames, 43 minutes, video manifest beside
+  it). Sixteen actions past C97's 3,282 bought fifteen buckets — the
+  crossing is a handful of long held arcs, exactly the shape the mined
+  chord table supplies.
+- What the film shows at the tip: C97's frontier stood on open ground
+  before a wide pit; C98's clears the pit and lands **on top of the first
+  of a row of tall pipes**, with further pipes and gaps ahead and a
+  piranha plant on the second. That is why the tip is viable where C97's
+  was not — a pipe top is ground, and doing nothing on it survives
+  indefinitely. It also names the terrain the next link faces: pipe-to-pipe
+  gaps, not open running.
 
 ## C99 — registered concentrated conquest, thirty-first link
 
@@ -6534,7 +6543,7 @@ one variable of science only when a link stalls.
   available on evidence, aimed by a census of whatever the next stall
   looks like, not carried by inertia.
 - Action-limit arithmetic, the standing flag restated with measurement:
-  C98's frontier lineage is 3,299 actions, so the per-run 4096 leaves
+  C98's frontier lineage is 3,298 actions, so the per-run 4096 leaves
   roughly eight hundred actions of headroom and binds nothing while
   ordinary suffixes add one or two actions per link. The compiled ceiling
   already sits at 8192; the recorded per-run limit rises at the
@@ -6546,6 +6555,11 @@ one variable of science only when a link stalls.
   protocol.
 - Raw destination: `target/smb-completion/c99-conquest/` on the ARM
   machine, log `c99.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking, per
+  the D83 checklist: origin C98's archive at the registered hash, resume
+  input SHA-256 `9374a9b2…` at 3,298 actions, campaign seed 1,592,639,523,
+  action limit 4096, entry bound 131,072, suffix `one_or_two`, and no
+  waypoint or chord field — the promoted stack exactly as registered.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
