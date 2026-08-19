@@ -7055,6 +7055,57 @@ one variable of science only when a link stalls.
   terrain lets it matter. That is the composed region arm, which is where the
   chain goes next.
 
+## C102 — registered composed speed conquest, thirty-fourth link
+
+- The preregistered consequence of C101's null, launched under the ruling that
+  already covered it: the keep-the-fastest replacement rule composed with a
+  census-derived region over the whole of 8-1, registered together as one
+  steering package on the C98 precedent. C101 settled the half of the question
+  the composition rests on — the rule fires, 1,494 times, and reaches nothing
+  the frontier walks — so this link tests only whether aiming draws at crossed
+  terrain lets those firings matter.
+- **The region is the whole traverse and the draw is bucket-uniform, and both
+  choices are consequences of measurement rather than taste.** The cost curve
+  is uniform, so no narrower span is supported by evidence; and the level's
+  entries are stacked 15,284-to-256 in favour of the last hundred buckets, so
+  a draw weighted by occupancy would go straight back to the tip. Bucket-uniform
+  allocation gives each occupied bucket equal turns, which is the only way the
+  early thread gets drawn on at all.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c026`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,327,0,15`, replacement
+  `fewest_frames_in_level`, suffix `one_or_two`, no chord bias — **the region
+  is the single change from C101.** Sourced from C101's live archive, SHA-256
+  `09191d74e3b092a613ec500d44449239f960abdea4e6466b12abbe1e3cc8fef2`, direct
+  resume from the full archive per the standing rule for region-policy links.
+- **The operator's expectation, recorded before the run.** Spreading the draw
+  across roughly a hundred and twenty occupied buckets gives the tip about a
+  hundred and twentieth of the budget, so the frontier is unlikely to advance
+  and may well be frozen by construction; that is a cost the arm accepts to buy
+  the measurement. The genuine risk is propagation rather than generation: a
+  faster route found at bucket 73 has to be re-extended two hundred and fifty
+  buckets to reach the frontier, and four hundred draws at one bucket will not
+  walk that far. If the census shows savings that appear and do not carry
+  forward, propagation is isolated as the obstacle, and the answer is a
+  campaign that re-crosses the level from its start with the speed rule live
+  rather than one that patches the middle of a route already laid.
+- **Preregistered question, unchanged from C101 because the readout is the
+  same: does any bucket of 8-1 become materially cheaper in frames than C101
+  recorded it, and does the frontier lineage's own 7,279-frame traverse fall?**
+  The second half is the one that matters. Savings that never reach the walked
+  path are the null this link exists to distinguish from a real gain.
+- Raw destination: `target/smb-completion/c102-conquest/` on the ARM machine,
+  log `c102.log`, sentinel discipline in force; per-link replay audits stay
+  dropped by ruling.
+- Launch confirmed from the run's own recorded header before parking: origin
+  C101's archive at the registered hash, resume input SHA-256 `b1fe545d…` at
+  3,384 actions, campaign seed 1,592,639,526, action limit 4096, entry bound
+  131,072, waypoint `waypoint_4_bucket_uniform:7,0,0,327,0,15` and replacement
+  `fewest_frames_in_level` both present in the header — the package as
+  registered. Jobs were flowing before this entry was written.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
