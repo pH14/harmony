@@ -8149,6 +8149,75 @@ one variable of science only when a link stalls.
   basis for calling the band terrain, and it is the read that should reach the
   integrator before anything registers.
 
+## C109 — registered depth probe, forty-first link
+
+- An ordinary promoted-stack link, registered and framed as a **depth probe**
+  rather than a speed arm. Nobody knows how long the eighth world's first level
+  is. The chain now holds roughly two hundred frames of clock margin at the
+  frontier, which at the current traverse rate is about ten buckets of headroom
+  — **so if the flag sits within ten buckets of bucket 350, the level completes
+  on this link.** That is a cheap question with a large answer and it has never
+  been asked directly.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c02e`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,350,0,15` — the window following the
+  frontier — replacement `fewest_frames_in_level`, resume `fastest_in_level_32`,
+  suffix `one_or_two`, no chord bias. Sourced from **C107's** live archive,
+  SHA-256 `5e11a622504d665c0c68fa97ad47b25b785cf0cc8d4ca5aafe4106d53b719dda`,
+  which is the mainline tip; C108 was a band arm and its shallower ladder is not
+  the line the chain continues from.
+- **Preregistered read, both halves: does the frontier advance, and does the
+  clock margin hold?** A frontier that advances while the margin holds is the
+  link doing its job. A frontier that advances while the margin collapses says
+  depth is being bought on the clock again and the level is longer than the
+  margin can cover. No advance at a held margin says the frontier is blocked by
+  something other than the clock, and that would be a new obstacle class.
+- **If the frontier crosses the flag, the level completes**, and the completion
+  is reported under the standing protocol before anything else is registered.
+- Co-tenant with H76's byte-exact replay, which is serial and single-threaded,
+  per the precedent recorded at H77's launch: a replay reproduces its recorded
+  stream or it does not, and machine load cannot change which.
+- Raw destination: `target/smb-completion/c109-conquest/` on the ARM machine,
+  log `c109.log`, sentinel discipline in force.
+
+### The pre-push hook was stale against the repository's own Miri ruling
+
+- Checked on the integrator's instruction and the hook was indeed stale, so it
+  is fixed rather than bypassed. The repository moved Miri out of the
+  per-change path into the nightly workflow — `quality.yml` records the reason
+  in its own words, that under pull-request concurrency the Miri run was
+  memory- and timeout-flaky — and `nightly.yml` describes itself as the
+  safety net "too slow to gate every PR on". The local pre-push hook had not
+  followed, and still ran Miri over four crates on every push.
+- The cost was not theoretical. Every push in this session took roughly ninety
+  minutes, nearly all of it Miri re-verifying crates the change never touched;
+  this operator's work is confined to `dissonance-v2/fuzzer`, which contains no
+  `unsafe` and is not among the Miri crates.
+- The fix removes the Miri stage and its configuration from the hook and says
+  in the header why it is absent and where the rule is enforced instead. The
+  hook's remaining gates are unchanged — format, clippy under deny-warnings,
+  and the test suite — which is what its charter calls fast feedback. The
+  unsafe-implies-Miri review-bar rule is untouched; only the place it runs is.
+- Recorded here rather than left as a silent infrastructure change because it
+  alters the gate every future commit on this branch passes through, and
+  because the honest alternative — pushing with the hook disabled — was
+  available all session and was correctly refused.
+
+## Standing speed rule — recorded on the integrator's directive
+
+- **A verdict that falls on a branch the integrator has already ruled is
+  registered and launched immediately, with no wait for acknowledgement.** The
+  ruling was given in advance; waiting to be told again is idle time the
+  experiment pays for.
+- Acknowledgement remains required, without exception, for three things: a new
+  mechanism, a genuine stall, and anything claim-adjacent. Those are the cases
+  where the next step is not already determined by a ruling on the record.
+- Recorded because it changes this operator's default from "pause and report" to
+  "act and report", and a change in how the chain is driven belongs in the log
+  beside the results it produces.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
