@@ -10,7 +10,15 @@
 //! is the campaign's identity, and replaying it serially must reproduce the
 //! final archive and report byte for byte.
 
-use std::{error::Error, io::Write, num::NonZeroUsize, sync::mpsc, thread, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    io::Write,
+    num::NonZeroUsize,
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 
 use libafl::executors::ExitKind;
 use libafl_bolts::rands::{Rand, StdRand};
@@ -18,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    chord_table::{ChordTableCheckpoint, ChordTableParameters, ChordTables},
     phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
     phase4c::{
         Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
@@ -193,6 +202,9 @@ pub struct SmbCampaignStreamHeader {
         skip_serializing_if = "is_legacy_resume_identifier"
     )]
     pub resume_policy: String,
+    /// Derived chord-table provenance; absent for uniform and legacy compiled tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord_table: Option<SmbChordTableHeader>,
     /// Promoted retention policy identifier.
     pub retention_policy: String,
     /// Frozen parent scheduler identifier.
@@ -248,6 +260,12 @@ pub struct SmbCampaignJobRecord {
     /// Selector draw record, present only under the corrected selector policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<SmbSelectorDraw>,
+    /// Derived table version used to draw this job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord_table_before: Option<ChordTableCheckpoint>,
+    /// Periodic derived table hash after admitting this stream record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord_table_after: Option<ChordTableCheckpoint>,
 }
 
 /// Stream record for one job skipped before execution as a known duplicate.
@@ -262,6 +280,12 @@ pub struct SmbCampaignSkipRecord {
     /// Selector draw record, present only under the corrected selector policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<SmbSelectorDraw>,
+    /// Derived table version used to draw this skipped job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord_table_before: Option<ChordTableCheckpoint>,
+    /// Periodic derived table hash after this stream record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord_table_after: Option<ChordTableCheckpoint>,
 }
 
 /// One line of the recorded stream after the header.
@@ -713,6 +737,7 @@ fn derive_suffix(
         vocabulary,
         false,
         SmbCampaignChordPolicy::Uniform,
+        None,
     )
 }
 
@@ -728,6 +753,7 @@ fn derive_suffix_sized(
     vocabulary: SmbCampaignVocabulary,
     long: bool,
     chord_policy: SmbCampaignChordPolicy,
+    chord_tables: Option<&ChordTables<ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = StdRand::with_seed(mutation_seed);
     let suffix_len = if long {
@@ -740,21 +766,37 @@ fn derive_suffix_sized(
     let mut suffix = Vec::with_capacity(suffix_len);
     for _ in 0..suffix_len {
         let recorded = long
-            && chord_policy == SmbCampaignChordPolicy::RecordedHalf
+            && chord_policy != SmbCampaignChordPolicy::Uniform
             && rand.below(NonZeroUsize::new(2).ok_or("invalid chord odds")?) == 0;
         if recorded {
-            let (buttons, hold) = RECORDED_CHORD_TABLE[rand.below(
-                NonZeroUsize::new(RECORDED_CHORD_TABLE.len())
-                    .ok_or("empty recorded chord table")?,
-            )];
-            suffix.push(ButtonChord::new(buttons, hold));
-        } else {
-            suffix.push(crate::phase4c::sample_chord_from_masks(
-                &mut rand,
-                SmbArchiveDurationPolicy::Stratified,
-                vocabulary.masks(),
-            )?);
+            let mined = match chord_policy {
+                SmbCampaignChordPolicy::Uniform => None,
+                SmbCampaignChordPolicy::RecordedHalf => {
+                    let index = rand.below(
+                        NonZeroUsize::new(RECORDED_CHORD_TABLE.len())
+                            .ok_or("empty recorded chord table")?,
+                    );
+                    let (buttons, hold) = RECORDED_CHORD_TABLE[index];
+                    Some(ButtonChord::new(buttons, hold))
+                }
+                SmbCampaignChordPolicy::DerivedHalf(_) => {
+                    let tables = chord_tables.ok_or("derived chord policy has no folded tables")?;
+                    let length = tables.mixed_len()?;
+                    NonZeroUsize::new(length)
+                        .and_then(|length| tables.mixed_step(rand.below(length)))
+                        .copied()
+                }
+            };
+            if let Some(chord) = mined {
+                suffix.push(chord);
+                continue;
+            }
         }
+        suffix.push(crate::phase4c::sample_chord_from_masks(
+            &mut rand,
+            SmbArchiveDurationPolicy::Stratified,
+            vocabulary.masks(),
+        )?);
     }
     Ok(suffix)
 }
@@ -1095,8 +1137,51 @@ const RECORDED_CHORD_TABLE: [(u8, u8); 328] = [
     (129, 117),
 ];
 
+/// When a recorded source is folded into a campaign's chord tables.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmbChordTableMode {
+    /// Fold the resume archive once before the campaign starts.
+    Frozen,
+    /// Start from the same source and expose updates at the registered interval.
+    Continuous,
+}
+
+/// SMB-only filter preserving the existing deep-lineage extraction semantics.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbChordSourceFilter {
+    /// Zero-based source world.
+    pub world: u8,
+    /// Zero-based source level.
+    pub level: u8,
+    /// Minimum retained source progress.
+    pub minimum_progress: u16,
+}
+
+/// Complete registered derivation for one pair of mined chord tables.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbChordTableDerivation {
+    /// Frozen or continuous fold.
+    pub mode: SmbChordTableMode,
+    /// Thin SMB source filter.
+    pub source_filter: SmbChordSourceFilter,
+    /// Game-neutral extraction, mixture, update, and hash parameters.
+    pub parameters: ChordTableParameters,
+}
+
+/// Header provenance for a derived chord-table policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbChordTableHeader {
+    /// SHA-256 of the named resume archive, or SHA-256 of empty bytes at genesis.
+    pub source_sha256: String,
+    /// Registered source filter and game-neutral fold parameters.
+    pub derivation: SmbChordTableDerivation,
+    /// Hash after folding the named source and before the first campaign draw.
+    pub initial: ChordTableCheckpoint,
+}
+
 /// Chord policy a campaign draws region chords from, recorded in the
-/// stream header; the recorded variant binds only to region long draws.
+/// stream header; recorded variants bind only to region long draws.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbCampaignChordPolicy {
     /// The frozen shape: every chord drawn uniformly from the vocabulary.
@@ -1106,14 +1191,37 @@ pub enum SmbCampaignChordPolicy {
     /// table at even odds with the uniform draw, so exploration mass stays
     /// honest while the sampled shape follows the machine's own successes.
     RecordedHalf,
+    /// Derive recent and all-history tables from the recorded source, mixing
+    /// their registered empirical weights into the biased half of each draw.
+    DerivedHalf(SmbChordTableDerivation),
 }
 
 /// Header identifier for a chord policy.
 #[must_use]
-pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> &'static str {
+pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
-        SmbCampaignChordPolicy::Uniform => "chord_uniform",
-        SmbCampaignChordPolicy::RecordedHalf => "chord_draw_recorded_50",
+        SmbCampaignChordPolicy::Uniform => "chord_uniform".to_owned(),
+        SmbCampaignChordPolicy::RecordedHalf => "chord_draw_recorded_50".to_owned(),
+        SmbCampaignChordPolicy::DerivedHalf(derivation) => {
+            let mode = match derivation.mode {
+                SmbChordTableMode::Frozen => "frozen",
+                SmbChordTableMode::Continuous => "continuous",
+            };
+            let source = derivation.source_filter;
+            let parameters = derivation.parameters;
+            format!(
+                "chord_draw_recorded_50:{mode},{},{},{},{},{},{},{},{},{}",
+                source.world,
+                source.level,
+                source.minimum_progress,
+                parameters.prefix_steps,
+                parameters.recent_successes,
+                parameters.recent_weight,
+                parameters.all_history_weight,
+                parameters.update_every_records,
+                parameters.hash_every_records
+            )
+        }
     }
 }
 
@@ -1125,11 +1233,59 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> &'static str {
 pub fn chord_policy_from_identifier(
     identifier: &str,
 ) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
-    match identifier {
-        "chord_uniform" => Ok(SmbCampaignChordPolicy::Uniform),
-        "chord_draw_recorded_50" => Ok(SmbCampaignChordPolicy::RecordedHalf),
-        _ => Err("campaign stream chord policy is not recognized".into()),
+    if identifier == "chord_uniform" {
+        return Ok(SmbCampaignChordPolicy::Uniform);
     }
+    if identifier == "chord_draw_recorded_50" {
+        return Ok(SmbCampaignChordPolicy::RecordedHalf);
+    }
+    if let Some(fields) = identifier.strip_prefix("chord_draw_recorded_50:") {
+        let mut fields = fields.split(',');
+        let mode = match fields.next() {
+            Some("frozen") => SmbChordTableMode::Frozen,
+            Some("continuous") => SmbChordTableMode::Continuous,
+            _ => return Err("derived chord policy has an unknown mode".into()),
+        };
+        let source_filter = SmbChordSourceFilter {
+            world: parse_chord_field(&mut fields, "world")?,
+            level: parse_chord_field(&mut fields, "level")?,
+            minimum_progress: parse_chord_field(&mut fields, "minimum progress")?,
+        };
+        let parameters = ChordTableParameters {
+            prefix_steps: parse_chord_field(&mut fields, "prefix steps")?,
+            recent_successes: parse_chord_field(&mut fields, "recent successes")?,
+            recent_weight: parse_chord_field(&mut fields, "recent weight")?,
+            all_history_weight: parse_chord_field(&mut fields, "all-history weight")?,
+            update_every_records: parse_chord_field(&mut fields, "update interval")?,
+            hash_every_records: parse_chord_field(&mut fields, "hash interval")?,
+        };
+        if fields.next().is_some() {
+            return Err("derived chord policy carries extra fields".into());
+        }
+        parameters.validate()?;
+        return Ok(SmbCampaignChordPolicy::DerivedHalf(
+            SmbChordTableDerivation {
+                mode,
+                source_filter,
+                parameters,
+            },
+        ));
+    }
+    Err("campaign stream chord policy is not recognized".into())
+}
+
+fn parse_chord_field<'a, T>(
+    fields: &mut impl Iterator<Item = &'a str>,
+    name: &str,
+) -> Result<T, Box<dyn Error>>
+where
+    T: std::str::FromStr,
+    T::Err: Error + 'static,
+{
+    Ok(fields
+        .next()
+        .ok_or_else(|| format!("derived chord policy is missing {name}"))?
+        .parse()?)
 }
 
 fn legacy_chord_policy_identifier() -> String {
@@ -1869,6 +2025,124 @@ struct ResolvedOrigin {
     resume_input: SmbInput,
 }
 
+type InitialChordTables = (
+    Option<ChordTables<ButtonChord>>,
+    Option<SmbChordTableHeader>,
+);
+
+fn initial_chord_tables(
+    policy: SmbCampaignChordPolicy,
+    origin: &SmbCampaignOrigin,
+) -> Result<InitialChordTables, Box<dyn Error>> {
+    let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy else {
+        return Ok((None, None));
+    };
+    let mut tables = ChordTables::new(derivation.parameters)?;
+    let source_sha256 = match origin {
+        SmbCampaignOrigin::Genesis => format!("{:x}", Sha256::digest([])),
+        SmbCampaignOrigin::Archive {
+            file_sha256,
+            report,
+            ..
+        } => {
+            for entry in &report.entries {
+                if source_filter_matches(derivation.source_filter, entry) {
+                    tables.fold_retained(&entry.input.actions)?;
+                }
+            }
+            file_sha256.clone()
+        }
+    };
+    tables.flush()?;
+    let initial = tables.checkpoint()?;
+    let header = SmbChordTableHeader {
+        source_sha256,
+        derivation,
+        initial,
+    };
+    Ok((Some(tables), Some(header)))
+}
+
+fn source_filter_matches(
+    filter: SmbChordSourceFilter,
+    entry: &crate::phase4c::SmbArchiveEntryReport,
+) -> bool {
+    (entry.key.world, entry.key.level) == (filter.world, filter.level)
+        && entry.key.progress >= filter.minimum_progress
+}
+
+fn current_chord_checkpoint(
+    tables: Option<&ChordTables<ButtonChord>>,
+) -> Result<Option<ChordTableCheckpoint>, Box<dyn Error>> {
+    tables
+        .map(ChordTables::checkpoint)
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn recorded_chord_tables<'a>(
+    policy: SmbCampaignChordPolicy,
+    before: Option<&ChordTableCheckpoint>,
+    versions: &'a BTreeMap<u64, ChordTables<ButtonChord>>,
+) -> Result<Option<&'a ChordTables<ButtonChord>>, Box<dyn Error>> {
+    let SmbCampaignChordPolicy::DerivedHalf(_) = policy else {
+        if before.is_some() {
+            return Err("non-derived chord draw carries a table version".into());
+        }
+        return Ok(None);
+    };
+    let before = before.ok_or("derived chord draw is missing its table version")?;
+    let tables = versions
+        .get(&before.records)
+        .ok_or("derived chord draw names an unknown table version")?;
+    if tables.checkpoint()? != *before {
+        return Err("derived chord draw table hash does not match replay".into());
+    }
+    Ok(Some(tables))
+}
+
+fn remember_chord_version(
+    tables: Option<&ChordTables<ButtonChord>>,
+    required: &BTreeSet<u64>,
+    versions: &mut BTreeMap<u64, ChordTables<ButtonChord>>,
+) {
+    if let Some(tables) = tables
+        && required.contains(&tables.records())
+    {
+        versions.insert(tables.records(), tables.clone());
+    }
+}
+
+fn finish_chord_stream_record(
+    policy: SmbCampaignChordPolicy,
+    tables: &mut Option<ChordTables<ButtonChord>>,
+    core: &CoordinatorCore<'_>,
+    decisions: &[SmbCampaignAdmissionDecision],
+) -> Result<Option<ChordTableCheckpoint>, Box<dyn Error>> {
+    let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy else {
+        return Ok(None);
+    };
+    if derivation.mode == SmbChordTableMode::Frozen {
+        return Ok(None);
+    }
+    let tables = tables
+        .as_mut()
+        .ok_or("continuous chord policy has no folded tables")?;
+    for decision in decisions {
+        let SmbCampaignAdmissionDecision::Retained { id } = decision else {
+            continue;
+        };
+        let index = usize::try_from(*id)?;
+        let entry = core
+            .archive
+            .entries
+            .get(index)
+            .ok_or("retained chord-table entry is missing from the run archive")?;
+        tables.fold_retained(&entry.report.input.actions)?;
+    }
+    Ok(tables.finish_record()?)
+}
+
 fn resolve_origin(
     origin: &SmbCampaignOrigin,
     resume_policy: SmbCampaignResumePolicy,
@@ -1902,6 +2176,7 @@ fn resolve_origin(
 fn stream_header(
     config: &SmbCampaignConfig,
     origin: &SmbCampaignOriginRecord,
+    chord_table: Option<SmbChordTableHeader>,
     rom: &[u8],
 ) -> SmbCampaignStreamHeader {
     SmbCampaignStreamHeader {
@@ -1923,7 +2198,8 @@ fn stream_header(
         waypoint_policy: waypoint_identifier(config.waypoint_policy),
         duration_policy: "stratified".to_owned(),
         suffix_policy: suffix_policy_identifier(config.suffix).to_owned(),
-        chord_policy: chord_policy_identifier(config.chord).to_owned(),
+        chord_policy: chord_policy_identifier(config.chord),
+        chord_table,
         replacement_policy: replacement_identifier(config.replacement_policy).to_owned(),
         resume_policy: resume_identifier(config.resume_policy).to_owned(),
         retention_policy: retention_identifier(config.retention_policy).to_owned(),
@@ -2058,6 +2334,7 @@ struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
     selector: Option<SmbSelectorDraw>,
+    chord_table_before: Option<ChordTableCheckpoint>,
 }
 
 struct WorkerReply {
@@ -2106,7 +2383,8 @@ pub fn run_smb_campaign(
         return Err("campaign waypoint region declares an inverted window".into());
     }
     let resolved = resolve_origin(origin, config.resume_policy)?;
-    let header = stream_header(config, &resolved.record, rom);
+    let (mut chord_tables, chord_table_header) = initial_chord_tables(config.chord, origin)?;
+    let header = stream_header(config, &resolved.record, chord_table_header, rom);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
@@ -2208,6 +2486,7 @@ pub fn run_smb_campaign(
         // Select one job for one worker, recording skips, or report exhaustion.
         let select = |core: &mut CoordinatorCore<'_>,
                       rands: &mut [StdRand],
+                      chord_tables: &mut Option<ChordTables<ButtonChord>>,
                       writer: &mut StreamWriter<'_>,
                       counters: &mut CampaignCounters,
                       reserved: &mut u64,
@@ -2233,16 +2512,26 @@ pub fn run_smb_campaign(
                         .entries
                         .get(parent_index)
                         .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
-                let suffix =
-                    derive_suffix_sized(mutation_seed, config.vocabulary, long, config.chord)?;
+                let chord_table_before = current_chord_checkpoint(chord_tables.as_ref())?;
+                let suffix = derive_suffix_sized(
+                    mutation_seed,
+                    config.vocabulary,
+                    long,
+                    config.chord,
+                    chord_tables.as_ref(),
+                )?;
                 if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                     && core.all_prefixes_archived(parent_index, &suffix)
                 {
+                    let chord_table_after =
+                        finish_chord_stream_record(config.chord, chord_tables, core, &[])?;
                     writer.write_line(&SmbCampaignStreamRecord::Skip(SmbCampaignSkipRecord {
                         worker,
                         parent_id: u64::try_from(parent_index)?,
                         mutation_seed,
                         selector,
+                        chord_table_before,
+                        chord_table_after,
                     }))?;
                     if let Some(draw) = &selector {
                         core.archive.record_selection(parent_index, draw);
@@ -2266,6 +2555,7 @@ pub fn run_smb_campaign(
                         parent_id: u64::try_from(parent_index)?,
                         mutation_seed,
                         selector,
+                        chord_table_before,
                     },
                 )));
             }
@@ -2276,6 +2566,7 @@ pub fn run_smb_campaign(
             match select(
                 &mut core,
                 &mut rands,
+                &mut chord_tables,
                 &mut writer,
                 &mut counters,
                 &mut reserved,
@@ -2319,6 +2610,8 @@ pub fn run_smb_campaign(
                     }),
                 );
             }
+            let chord_table_after =
+                finish_chord_stream_record(config.chord, &mut chord_tables, &core, &decisions)?;
             writer.write_line(&SmbCampaignStreamRecord::Job(SmbCampaignJobRecord {
                 sequence,
                 worker: reply.worker,
@@ -2328,6 +2621,8 @@ pub fn run_smb_campaign(
                 result_sha256: result_sha256(&result)?,
                 decisions,
                 selector: pending_job.selector,
+                chord_table_before: pending_job.chord_table_before,
+                chord_table_after,
             }))?;
             counters.jobs_per_worker[worker_index] =
                 counters.jobs_per_worker[worker_index].saturating_add(1);
@@ -2336,6 +2631,7 @@ pub fn run_smb_campaign(
             match select(
                 &mut core,
                 &mut rands,
+                &mut chord_tables,
                 &mut writer,
                 &mut counters,
                 &mut reserved,
@@ -2391,6 +2687,18 @@ pub fn replay_smb_campaign(
     let mut lines = text.lines();
     let header: SmbCampaignStreamHeader =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
+    let record_lines = lines.collect::<Vec<_>>();
+    let mut required_chord_versions = BTreeSet::new();
+    for line in &record_lines {
+        let record: SmbCampaignStreamRecord = serde_json::from_str(line)?;
+        let before = match record {
+            SmbCampaignStreamRecord::Job(job) => job.chord_table_before,
+            SmbCampaignStreamRecord::Skip(skip) => skip.chord_table_before,
+        };
+        if let Some(before) = before {
+            required_chord_versions.insert(before.records);
+        }
+    }
     if header.format != CAMPAIGN_STREAM_FORMAT {
         return Err("campaign stream format is not recognized".into());
     }
@@ -2425,6 +2733,25 @@ pub fn replay_smb_campaign(
     let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
     let replay_suffix_policy = suffix_policy_from_identifier(&header.suffix_policy)?;
     let replay_chord_policy = chord_policy_from_identifier(&header.chord_policy)?;
+    let chord_origin = match origin_report {
+        Some(report) => SmbCampaignOrigin::Archive {
+            path: header.origin_path.clone().unwrap_or_default(),
+            file_sha256: header.origin_archive_sha256.clone().unwrap_or_default(),
+            report: Box::new(report.clone()),
+        },
+        None => SmbCampaignOrigin::Genesis,
+    };
+    let (mut chord_tables, replay_chord_header) =
+        initial_chord_tables(replay_chord_policy, &chord_origin)?;
+    if replay_chord_header != header.chord_table {
+        return Err("re-derived chord table does not match the recorded header".into());
+    }
+    let mut chord_versions = BTreeMap::new();
+    remember_chord_version(
+        chord_tables.as_ref(),
+        &required_chord_versions,
+        &mut chord_versions,
+    );
     let waypoint_policy = waypoint_from_identifier(&header.waypoint_policy)?;
     let mut core = CoordinatorCore::new(
         header.action_limit,
@@ -2441,7 +2768,7 @@ pub fn replay_smb_campaign(
     core.bootstrap(&mut target, &[resume_input])?;
     counters.bootstrap_frames = target.frames_clocked().saturating_sub(frames_before);
 
-    for line in lines {
+    for line in record_lines {
         let record: SmbCampaignStreamRecord = serde_json::from_str(line)?;
         match record {
             SmbCampaignStreamRecord::Skip(skip) => {
@@ -2457,11 +2784,17 @@ pub fn replay_smb_campaign(
                         .entries
                         .get(skip_parent)
                         .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
+                let draw_tables = recorded_chord_tables(
+                    replay_chord_policy,
+                    skip.chord_table_before.as_ref(),
+                    &chord_versions,
+                )?;
                 let suffix = derive_suffix_sized(
                     skip.mutation_seed,
                     vocabulary,
                     skip_long,
                     replay_chord_policy,
+                    draw_tables,
                 )?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
@@ -2481,6 +2814,16 @@ pub fn replay_smb_campaign(
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
+                let chord_table_after =
+                    finish_chord_stream_record(replay_chord_policy, &mut chord_tables, &core, &[])?;
+                if chord_table_after != skip.chord_table_after {
+                    return Err("replayed skip chord-table checkpoint diverged".into());
+                }
+                remember_chord_version(
+                    chord_tables.as_ref(),
+                    &required_chord_versions,
+                    &mut chord_versions,
+                );
             }
             SmbCampaignStreamRecord::Job(job) => {
                 let parent_index = usize::try_from(job.parent_id)?;
@@ -2499,11 +2842,17 @@ pub fn replay_smb_campaign(
                         .entries
                         .get(parent_index)
                         .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
+                let draw_tables = recorded_chord_tables(
+                    replay_chord_policy,
+                    job.chord_table_before.as_ref(),
+                    &chord_versions,
+                )?;
                 let suffix = derive_suffix_sized(
                     job.mutation_seed,
                     vocabulary,
                     job_long,
                     replay_chord_policy,
+                    draw_tables,
                 )?;
                 let job_frames_before = target.frames_clocked();
                 let result = execute_job(
@@ -2549,6 +2898,24 @@ pub fn replay_smb_campaign(
                     )
                     .into());
                 }
+                let chord_table_after = finish_chord_stream_record(
+                    replay_chord_policy,
+                    &mut chord_tables,
+                    &core,
+                    &decisions,
+                )?;
+                if chord_table_after != job.chord_table_after {
+                    return Err(format!(
+                        "replayed job {} chord-table checkpoint diverged",
+                        job.sequence
+                    )
+                    .into());
+                }
+                remember_chord_version(
+                    chord_tables.as_ref(),
+                    &required_chord_versions,
+                    &mut chord_versions,
+                );
                 verify_selector_annotation(
                     selector_policy,
                     waypoint_policy,
@@ -3855,12 +4222,14 @@ mod tests {
     use super::{
         CoordinatorCore, SmbCampaignActionResult, SmbCampaignAdmissionDecision,
         SmbCampaignCandidate, SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin,
-        SmbCampaignResumePolicy, SmbCampaignStreamHeader, derive_suffix, derive_worker_seed,
-        execute_job, replacement_from_identifier, replacement_identifier, replay_smb_campaign,
+        SmbCampaignResumePolicy, SmbCampaignStreamHeader, chord_policy_from_identifier,
+        chord_policy_identifier, derive_suffix, derive_worker_seed, execute_job,
+        replacement_from_identifier, replacement_identifier, replay_smb_campaign,
         resume_from_identifier, resume_identifier, run_smb_campaign, select_frontier_resume_input,
         waypoint_from_identifier, waypoint_identifier,
     };
     use crate::{
+        chord_table::ChordTableParameters,
         phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
         phase4c::{
             ArchiveCandidate, SmbArchiveKey, SmbArchiveReplacementPolicy, SmbArchiveReport,
@@ -3906,6 +4275,40 @@ mod tests {
                 first
                     .iter()
                     .all(|chord| (1..=120).contains(&chord.hold_frames))
+            );
+        }
+    }
+
+    fn derived_policy(mode: super::SmbChordTableMode) -> super::SmbCampaignChordPolicy {
+        super::SmbCampaignChordPolicy::DerivedHalf(super::SmbChordTableDerivation {
+            mode,
+            source_filter: super::SmbChordSourceFilter {
+                world: 0,
+                level: 0,
+                minimum_progress: 0,
+            },
+            parameters: ChordTableParameters {
+                prefix_steps: 0,
+                recent_successes: 4,
+                recent_weight: 3,
+                all_history_weight: 1,
+                update_every_records: 2,
+                hash_every_records: 2,
+            },
+        })
+    }
+
+    #[test]
+    fn derived_chord_policy_identifier_round_trips() {
+        for mode in [
+            super::SmbChordTableMode::Frozen,
+            super::SmbChordTableMode::Continuous,
+        ] {
+            let policy = derived_policy(mode);
+            let identifier = chord_policy_identifier(policy);
+            assert_eq!(
+                chord_policy_from_identifier(&identifier).expect("parse derived policy"),
+                policy
             );
         }
     }
@@ -3982,6 +4385,67 @@ mod tests {
         let live_bytes = serde_json::to_vec_pretty(&live).expect("serialize live report");
         let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
         assert_eq!(live_bytes, replay_bytes);
+    }
+
+    #[test]
+    fn continuous_chord_tables_replay_with_recorded_versions() {
+        let rom = synthetic_nrom();
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca13,
+            workers: 3,
+            execution_budget: 12,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::Frozen,
+            archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Region {
+                world: 0,
+                level: 0,
+                low: 0,
+                high: 0,
+                band_low: 0,
+                band_high: 15,
+            },
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwoRegionLong48,
+            chord: derived_policy(super::SmbChordTableMode::Continuous),
+        };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("continuous chord-table campaign");
+        let text = std::str::from_utf8(&stream).expect("stream text");
+        assert!(
+            text.lines()
+                .next()
+                .expect("header")
+                .contains("\"chord_table\"")
+        );
+        assert!(text.contains("\"chord_table_before\""));
+        assert!(text.contains("\"chord_table_after\""));
+        let retained_successes = text
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<super::SmbCampaignStreamRecord>(line)
+                    .expect("parse campaign record")
+            })
+            .filter_map(|record| match record {
+                super::SmbCampaignStreamRecord::Job(job) => job.chord_table_before,
+                super::SmbCampaignStreamRecord::Skip(skip) => skip.chord_table_before,
+            })
+            .map(|checkpoint| checkpoint.retained_successes)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            retained_successes > 0,
+            "from-scratch continuous tables must grow from retained successes"
+        );
+        let replayed =
+            replay_smb_campaign(&rom, &stream, None).expect("replay continuous chord tables");
+        assert_eq!(live, replayed);
     }
 
     #[test]
