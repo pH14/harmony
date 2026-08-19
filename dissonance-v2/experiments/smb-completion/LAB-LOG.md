@@ -7642,11 +7642,31 @@ one variable of science only when a link stalls.
   no chord bias, selector **`yield_budgeted_128:16,4,64,256`** — **the selector
   is the single change from C107.** Sourced from C106's live archive, SHA-256
   `3c22247685263ed96998c3dd24ede6af430d78b19f44244121966522bea13328`.
-- **Preregistered comparison, and it is deliberately not the ladder.** Success
-  is selection quality against C107 on the same origin at the same budget:
-  fewer executions spent per bucket gained, and a cheaper traverse of 8-1 in
-  frames. Ladder depth is reported and is a tiebreak, not the test — a selector
-  can be better and still land a shallower frontier on one sample.
+- **Preregistered comparison, amended before any result existed to adopt the
+  slot request's sharper criteria, which are stricter than this operator's
+  first draft and better.** The primary measure is **retained productive
+  outcomes per billion emulated frames** — cost-normalized yield — and the arm
+  succeeds only if all four hold: that yield is *strictly* higher than C107's;
+  the deepest `(world, level, progress)` does not regress; the four-draw
+  exploration floor leaves no living parent at zero opportunity; and the run
+  passes byte-exact stream and archive replay. A tie, a lower yield, a frontier
+  regression, a floor violation, or a replay mismatch is a failure. The first
+  draft made frontier depth a tiebreak; the request makes a regression fatal,
+  and that is the more honest test of a selector that is meant to spend the
+  same budget better.
+- **The replay audit runs for this arm** even though per-link audits are
+  dropped by ruling. The ruling was about chain links, where bisection risk was
+  accepted to keep the mainline moving; this is a paired arm whose own pass
+  criteria name a byte-exact replay, and it is affordable at one extra slot.
+- **Corrigendum, recorded rather than edited away, and caught before a single
+  result existed.** The first launch of this arm used a fresh campaign seed,
+  `0x5eed_c02c`, which would have made it differ from C107 in *two* things —
+  the selector and the draw stream — and a quantitative yield comparison cannot
+  survive that confound. The run was killed at roughly nine thousand of fifty
+  thousand executions, its artifacts deleted, and the arm relaunched at
+  **C107's own seed `0x5eed_c02b`**, everything else verbatim, so the selector
+  is the only difference. The slot request's instruction to copy the previous
+  campaign's setup verbatim, seed included, is what surfaced it.
 - **Never composed with the mined chord tables.** The two touch different halves
   of the search, one choosing parents and one choosing chords, and a run
   carrying both could not say which produced its result. The tables register
@@ -7660,6 +7680,15 @@ one variable of science only when a link stalls.
   chain about thirty-five minutes.
 - Raw destination: `target/smb-completion/h76-yield/` on the ARM machine, log
   `h76.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking: campaign
+  seed 1,592,639,531 — C107's seed exactly — origin C106's archive at the
+  registered hash, resume input SHA-256 `f5a570c9…` byte-identical to C107's,
+  and `parent_scheduler` recorded as `yield_budgeted_128:16,4,64,256`. Same
+  origin, same seed, same resume, one different selector: the comparison is
+  controlled. The byte-exact replay its pass criteria require runs after the
+  live sentinel, as a separate step, because the wrapper was already executing
+  when the criteria were adopted and a running script is not edited underneath
+  itself.
 
 ### The side branch's sixth commit — the castle diagnostic and the water counterfactual
 
