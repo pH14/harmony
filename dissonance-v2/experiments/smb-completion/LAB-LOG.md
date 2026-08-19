@@ -7931,6 +7931,55 @@ one variable of science only when a link stalls.
   band about a seventh of the draw. Whether concentrated budget cracks them is
   exactly the untested question.
 
+## C108 — registered concentrated-band conquest, fortieth link
+
+- Registered on the integrator's ruling against the stall census. **The single
+  change from C107 is the region's window**, which narrows from the whole level
+  to **buckets 250 through 299** — the one stretch the census found expensive in
+  all five independent runs, never once cheap, at 31.2 to 34.8 frames per bucket
+  against the 5 to 17 the level demonstrably supports elsewhere.
+- **Why this band and why now, recorded so the choice is auditable.** It is the
+  census's largest and most consistent prize: roughly sixteen hundred frames
+  over forty-nine buckets, and about seven hundred and fifty of them recoverable
+  if the band merely reaches the rate its own neighbours already achieve. The
+  region mechanism has two walls of precedent. And one ordinary link answers the
+  question the census could not: **is that band expensive because it is hard
+  terrain, or because no run has ever aimed budget at it?** Every region since
+  C102 has been bucket-uniform across the whole level, which hands a
+  forty-nine-bucket band about a seventh of the draw; this one hands it all of it.
+- The bimodal 100–149 finding is **not** part of this arm. A cheap route through
+  that band was produced once, at C106, and lost at a link boundary — which is a
+  lesson about carrying lineages across links, a different mechanism entirely. It
+  is parked for the route-minimization and splicing work rather than folded in
+  here, on the integrator's ruling and on the standing rule that one arm carries
+  one change.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c02d`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  **`waypoint_4_bucket_uniform:7,0,250,299,0,15`**, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`, no
+  chord bias — the promoted stack with one window moved. Sourced from C107's live
+  archive, SHA-256
+  `5e11a622504d665c0c68fa97ad47b25b785cf0cc8d4ca5aafe4106d53b719dda`, direct
+  resume from the full archive per the standing rule for region-policy links.
+  Per-link replay audits stay dropped by ruling.
+- A fresh seed is used rather than the next in sequence: `0x5eed_c02c` appears in
+  the record as the seed of H76's killed first launch, and reusing it would make
+  two entries in the log share a number for different runs.
+- **Preregistered question, and it is about the band rather than the frontier:
+  does the cheapest recorded route through buckets 250 to 299 fall below 31.2
+  frames per bucket, the best of the five runs censused?** A fall is a pass and
+  says the band was habit. No fall, with the band having taken the entire draw
+  for fifty thousand executions, is the census's own caveat coming true — the
+  band is terrain — and by the standing ruling the next look is at what the
+  recorded deaths inside 250 to 299 say, before any further arm.
+- Ladder depth and the whole-level traverse are reported as usual but are not
+  this arm's test; concentrating the draw on a mid-level band is expected to cost
+  frontier progress, exactly as C102's whole-level region did.
+- Raw destination: `target/smb-completion/c108-conquest/` on the ARM machine, log
+  `c108.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
