@@ -6381,6 +6381,60 @@ one variable of science only when a link stalls.
   the pit and through the enemies — inside a single draw, and in 50,000
   executions no draw produced one.
 
+### Stream-census correction — the diagnostics were pointed at the wrong archive
+
+- The first launches of the two stream censuses (refused-candidate grid
+  and per-band transit) resolved the stream's parent identifiers against
+  the **origin** archive. That is wrong for a resumed run: resume
+  re-admits inherited entries into a fresh identifier space, so the
+  stream's parent identifiers reference the run's **own** archive, and
+  only 3,875 of the 23,432 shared identifiers agree between the two
+  files. The tools validate nothing here and silently resolve to wrong
+  entries; the transit run completed with plausible-looking but invalid
+  bands (discarded, never recorded), and the grid run was killed
+  mid-flight. Filed as issue #189, together with the grid tool's
+  unshared-prefix cost defect (each distinct parent replays its full
+  lineage from power-on, ~156k frames).
+- Both censuses were relaunched with the run's own archive as source
+  (the transit tool takes the origin archive separately for its
+  resume-input hash check, which passed). The grid sample was bounded
+  first, per the cheapest-decisive-first discipline: refusals from wall
+  parents (buckets 216–217) number 91 jobs over 35 distinct parents,
+  and a 20-job cap covers 9 parents — under two hours at the slowest
+  emulation rate measured that day.
+
+### Corrected census results — the wall is genuine and the deficit is jump reach
+
+- **Refused-candidate grid** (parents 216–217, candidates 214–223,
+  20 jobs, 24 refused candidates, derivation mismatches 0): probed
+  under six masks — still, held right, stroke right, stroke, stroke
+  left, and the alternating swim cadence — at horizons 45, 60, 90 and
+  120 frames, **zero candidates survive under any mask at any
+  horizon**. The admission probe's refusals at the wall are not false
+  negatives: every candidate the run refused there is genuinely doomed
+  within 45 frames under every expressible cadence.
+- **Per-band transit census** (parents 210–217, 5,000 jobs, 5,049
+  candidates): admission is healthy through Mario-x 3535 (355 retained
+  in 3520–3535 alone), then collapses — 16 retained in 3536–3551 and
+  **zero retained past 3551**, while refusals dominate (108, 88, 43, 42
+  across 3536–3599). No draw in the sample produced a candidate past
+  x 3599.
+- Combined verdict: a wide gap begins near Mario-x 3536 and no drawn
+  jump carries beyond x 3599 from the near edge. The frontier class at
+  the near edge is rich, the refusals there are correct, and nothing
+  about selection or admission is failing — **the deficit is draw
+  shape: in fifty thousand executions no suffix produced a jump with
+  enough carry to cross**. The registered cure that addresses reach is
+  the mined-chord bias (`chord_draw_recorded_50`), which draws half of
+  each suffix from recorded chords and so concentrates probability on
+  long held-input arcs.
+
+### Replay audits — C96 and C97 verified byte-exact
+
+- C96's chained serial replay audit completed clean, and C97's chained
+  audit completed clean as well: both links replay byte-exact from
+  their recorded streams. The C94 and C95 audits are still running.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
