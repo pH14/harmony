@@ -7106,6 +7106,97 @@ one variable of science only when a link stalls.
   `fewest_frames_in_level` both present in the header — the package as
   registered. Jobs were flowing before this entry was written.
 
+### C102 result — the composition works: the level's crossing gets 658 frames cheaper, and the chain buys clock for the first time
+
+- The run completed all 50,000 executions. Counters: 47,348 retained, 1,839
+  rejected, 6,805 candidates retained through the region's auxiliary cell
+  capacity, **2,400 collisions decided on frames**, stream SHA-256
+  `c533b244e38555038dce532213bce1ce51a0285e4dffa34fbe4154d820d77e66`, live
+  archive SHA-256
+  `302de3bda77a64c30734c150ce1ab0a00e711387149bc95491cb13224acf852f`.
+- **The region did what the census said it would.** 8-1 went from 123 occupied
+  buckets holding 4,152 entries to **308 buckets holding 40,542** — the early
+  two hundred buckets that had been a thread one or two entries wide are now
+  populated terrain the search has actually explored.
+- **And the exploration bought speed, which is the thing that has never
+  happened before.** Of the 123 buckets both runs hold, **114 became cheaper,
+  7 are identical and 2 are dearer.** The savings are not scattered ones and
+  twos this time: 634 frames at bucket 304, 627 at 305 and 306, 626 at 303,
+  611 at 307, 589 at 302, 571 at 287, 500 at 301, 473 at 300.
+- **Stated in the currency that binds**, measured from 8-1's own entry frame:
+  reaching bucket 304 cost 7,140 frames before and costs **6,482 now — 658
+  frames, about twenty-seven timer units**. Over that stretch the traverse rate
+  falls from 23.5 frames per bucket to **21.3**. For the first time the search
+  is crossing this level faster than it did.
+- **Where the saving stops is exactly as informative as where it starts.** At
+  buckets 315, 320 and 327 the improvement collapses to 28, 30 and 23 frames.
+  The fast route reaches about bucket 307 and no further, because it is twenty
+  buckets of unextended search short of the frontier; the deepest buckets are
+  still held by the old lineage, which is why the winning lineage is once again
+  unchanged at 3,384 actions and 158,590 frames. The mechanism generates speed
+  and propagates it forward; it has simply not had the budget to propagate it
+  all the way yet.
+- **What it would be worth if it did.** Carried at its own 21.3 frames per
+  bucket, the fast route reaches bucket 327 in roughly 6,959 frames against a
+  clock of about 7,300 — arriving with something like fifteen timer units in
+  hand, where the recorded route arrives with two. That is the first clock
+  headroom the chain has ever held in this level.
+- **And the honest limit of it.** Twenty-one frames per bucket carried to a
+  four-hundred-bucket level would cost about 8,500 frames, which the clock does
+  not allow. If 8-1 runs much past 350 buckets this rate is still not enough,
+  and a second speed improvement will be needed on top of this one. The arm has
+  bought margin, not the level.
+- Verdict against the preregistered question: **pass on the first half — buckets
+  became materially cheaper — and partial on the second**, since the frontier
+  lineage's own traverse has not yet fallen. The registered consequence of a
+  partial is more budget on the same mechanism, not a new one.
+
+## C103 — registered deep-span speed conquest, thirty-fifth link
+
+- The registered consequence of C102's partial: the same package, more budget
+  aimed where the measurement says the work is unfinished. C102 made the
+  crossing 658 frames cheaper as far as bucket 304 and left the last twenty
+  buckets untouched, so the fast route needs extending, not replacing.
+- **The one change is the region's window, and the census fixes it.** C102's
+  savings hold above three hundred frames through bucket 287, peak at 634 at
+  bucket 304, survive to 307, and collapse to under thirty at 315 and beyond.
+  The region narrows from the whole level to **buckets 280 through 327** — the
+  fast route's own tip plus a margin behind it — so that span takes the entire
+  draw instead of a ninth of it. At 308 occupied buckets the whole-level region
+  gave the deep end roughly four thousand five hundred executions; the narrowed
+  window gives it fifty thousand.
+- **What narrowing gives up, stated rather than glossed.** Exploration of the
+  early level stops, so no further savings accrue there. Those already found
+  are banked: they live in the resumed archive as retained entries, and the
+  fast route at the deep end descends from them, so extending it carries them
+  forward. The trade is future early savings against converting the savings
+  already held into frontier progress, and the second is what the clock needs.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c027`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,280,327,0,15`, replacement
+  `fewest_frames_in_level`, suffix `one_or_two`, no chord bias — **the region
+  window is the single change from C102.** Sourced from C102's live archive,
+  SHA-256
+  `302de3bda77a64c30734c150ce1ab0a00e711387149bc95491cb13224acf852f`, direct
+  resume from the full archive per the standing rule for region-policy links.
+- **Preregistered question: does the frontier lineage's own traverse of 8-1
+  fall below 7,279 frames?** That is the second half of C102's question, and
+  the half that has never yet passed. A fall of any size is a pass; the size
+  matters for what comes after, since carrying the current rate to a
+  four-hundred-bucket level would still overrun the clock. Frontier advance
+  past bucket 327 is reported and welcome but is not the test.
+- Raw destination: `target/smb-completion/c103-conquest/` on the ARM machine,
+  log `c103.log`, sentinel discipline in force; per-link replay audits stay
+  dropped by ruling.
+- Launch confirmed from the run's own recorded header before parking: origin
+  C102's archive at the registered hash, resume input SHA-256 `b1fe545d…` at
+  3,384 actions, campaign seed 1,592,639,527, action limit 4096, entry bound
+  131,072, waypoint `waypoint_4_bucket_uniform:7,0,280,327,0,15` and
+  replacement `fewest_frames_in_level` — the narrowed window as registered.
+  Jobs were flowing before this entry was written.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
