@@ -8537,6 +8537,79 @@ one variable of science only when a link stalls.
   proposition, and one the clock arithmetic now makes the only remaining
   candidate.
 
+## C110 — registered entrance search, forty-second link
+
+- Registered on the integrator's ruling after every alternative died by
+  measurement: resume-point selection by the archive sweep, mechanical cuts by
+  the reducer, budget by C108, and the splice by the single-route-family
+  finding. **The single change from C109 is the origin.** The promoted stack
+  runs verbatim, speed rule live, and the campaign begins at the eighth world's
+  first level's *entrance* instead of inheriting a route through it.
+- **Why the origin is the only lever left.** Three winning lineages measured are
+  one route to within a handful of frames through bucket 311; every archive the
+  chain holds contains variations on that route, never an alternative. The route
+  costs 1,728 frames in eleven waits its own suffix requires, its clock runs out
+  at bucket 351, and nothing cheaper exists anywhere. A different route cannot
+  be selected, spliced, or edited out of what exists — it has to be searched
+  for, and no campaign has ever searched this level, every one having resumed
+  past it.
+- **The derivation, stated exactly, per the D73 and D83 discipline.** From
+  C107's live archive, SHA-256 `5e11a622…`, retain only entries whose pair is
+  zero-based `(7,0)` and whose progress bucket is **0**; drop everything else,
+  the carried route included. Result: **219 of 48,464 entries kept, deepest
+  bucket 0**, written to `target/smb-completion/c110-origin/entrance.json`,
+  SHA-256 `72561637d5df3949d3c7b01b827b1348512d9ddad31143b1d36e5da2ed729b0d`.
+  **Resume-hash reconstruction verified before launch**: both resume rules
+  select the same input from this origin — 3,208 actions, SHA-256
+  `5d6fb7babb32340da660410531176f85a610b9f9370e3b8ba124dbe6eefb50b2` — which is
+  the lineage exactly as it stands at the level's threshold. Any census of this
+  run takes this origin explicitly rather than reconstructing it from the
+  produced archive.
+- **The C87 empty-region check, run before launch rather than after.** C87 was
+  voided because a mechanical derivation stripped the population its region
+  needed and the waypoint never engaged. Here the registered region is buckets
+  0 through 350 and the origin's 219 entries all stand at bucket 0 — *inside*
+  it. The region is occupied at execution one; it cannot start empty.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c02f`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,350,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`,
+  **no chord bias** — mined chords stay out of this arm by ruling and become the
+  follow-up sibling only if the entrance family shows promise.
+- **The question this link asks, written honestly: does searching from the
+  entrance produce a cheaper EARLY route?** One link will not re-cross the
+  level — C99 crossed ninety-five buckets in a full campaign and this one starts
+  from nothing — and a shallow ladder is therefore expected and is not the test.
+- **Preregistered pass bar, by single-lineage curves at equal depth**, which is
+  the only admissible comparison after this session's three artifacts. The new
+  family's own curve must be **materially below the carried route's at the same
+  bucket**. The carried route, measured on C107's lineage:
+
+  | bucket | carried route, frames in level | cumulative rate |
+  |---|---|---|
+  | 102 | 2,273 | 22.3 |
+  | 154 | 3,298 | 21.4 |
+  | 201 | 3,855 | 19.2 |
+
+  Whatever depth C110 reaches, its cheapest lineage at that bucket is compared
+  against the carried route at the same bucket. **The trajectory that would
+  actually solve the clock is about 18 frames per bucket** — a four-hundred
+  bucket level at 18 costs 7,200 against a ~7,300 clock — where the best rate
+  ever recorded over a full traverse is 20.06. Beating the carried curve is the
+  bar; approaching 18 is the goal.
+- **Secondary read, recorded because the phase correction predicts it:** the
+  number of near-maximal holds — 96 frames or more — the new family carries. A
+  route that arrives at hazards on the right phase without stopping should need
+  few of them, where the carried route needs eleven.
+- **The carried route and every archive behind it stay intact.** This is a fork
+  of origin, not a replacement; C107 remains the mainline tip and nothing is
+  promoted until the entrance family wins on the bar above.
+- Raw destination: `target/smb-completion/c110-conquest/` on the ARM machine,
+  log `c110.log`, sentinel discipline in force. Co-tenant with the phase
+  tolerance bisection, whose recoveries apply to the carried route only.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

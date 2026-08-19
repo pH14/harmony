@@ -168,6 +168,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "derive-origin-pair" {
         return run_derive_origin_pair_mode(&mut args);
     }
+    if mode == "derive-origin-entrance" {
+        return run_derive_origin_entrance_mode(&mut args);
+    }
     if mode == "census-suffix-chords" {
         return run_census_suffix_chords_mode(&mut args);
     }
@@ -1030,6 +1033,77 @@ fn run_census_suffix_chords_mode(
     println!("entries {} chords {}", entries_used, chords.len());
     println!("masks: {:?}", mask_hist);
     println!("holds/12: {:?}", hold_hist);
+    Ok(())
+}
+
+/// Derive an origin whose deepest entries stand at a level's entrance, so a
+/// campaign searches that level forward instead of inheriting a route through
+/// it. Retains only entries of the named pair at or below `max_progress`;
+/// everything deeper — including the carried route — is dropped, which is the
+/// point and is why the source archive is left untouched on disk.
+fn run_derive_origin_entrance_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let world = u8::try_from(parse_u64(
+        &args.next().ok_or("missing world")?.to_string_lossy(),
+    )?)?;
+    let level = u8::try_from(parse_u64(
+        &args.next().ok_or("missing level")?.to_string_lossy(),
+    )?)?;
+    let max_progress = u16::try_from(parse_u64(
+        &args
+            .next()
+            .ok_or("missing maximum progress")?
+            .to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let mut source: SmbArchiveReport = serde_json::from_slice(&fs::read(&source_path)?)?;
+    let before = source.entries.len();
+    source.entries.retain(|entry| {
+        (entry.key.world, entry.key.level) == (world, level) && entry.key.progress <= max_progress
+    });
+    let after = source.entries.len();
+    if after == 0 {
+        return Err("origin derivation kept no entries at the requested entrance".into());
+    }
+    // Report the resume input each policy would pick, so the registration can
+    // name the one it launches under and replay can be checked against it.
+    let frozen = fuzzer::campaign::select_frontier_resume_input(
+        &source,
+        fuzzer::campaign::SmbCampaignResumePolicy::FrontierShortest,
+    )?;
+    let fastest = fuzzer::campaign::select_frontier_resume_input(
+        &source,
+        fuzzer::campaign::SmbCampaignResumePolicy::FastestInLevelWithin32,
+    )?;
+    let digest = |input: &fuzzer::phase4b::SmbInput| -> Result<String, Box<dyn Error>> {
+        Ok(format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(input)?)
+        ))
+    };
+    let deepest = source
+        .entries
+        .iter()
+        .map(|entry| entry.key.progress)
+        .max()
+        .unwrap_or(0);
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec(&source)?)?;
+    println!(
+        "kept {after} of {before} entries; deepest bucket {deepest}; \
+frontier_shortest resume {} actions sha {}; fastest_in_level_32 resume {} actions sha {}",
+        frozen.actions.len(),
+        digest(&frozen)?,
+        fastest.actions.len(),
+        digest(&fastest)?
+    );
     Ok(())
 }
 
