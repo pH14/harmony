@@ -7197,6 +7197,45 @@ one variable of science only when a link stalls.
   replacement `fewest_frames_in_level` — the narrowed window as registered.
   Jobs were flowing before this entry was written.
 
+### C103 result — null, and the null exposes the real wall: a link boundary throws speed away
+
+- The run completed all 50,000 executions. Counters: 33,444 retained, **5,123
+  collisions decided on frames** — more than twice C102's — stream SHA-256
+  `76c790e5f7a8af33984c271377ec3875290b4bf9a5099b72d272fb358cd86d4a`.
+- **And every gain C102 made was gone before the run started.** Measured from
+  8-1's entry frame, reaching bucket 304 cost 6,482 frames at the end of C102
+  and costs 6,506 at the end of C103; bucket 280 went from 5,759 back to 6,085;
+  bucket 307 from 6,533 to 6,668. The narrowed region did not fail to find
+  speed — it started from a position 658 frames worse than the one C102 had
+  already reached, and clawed most of it back.
+- **Why, and it is structural rather than accidental.** A campaign does not
+  inherit its origin's archive. It reads that archive for exactly one thing:
+  `select_frontier_resume_input` takes the entries at the deepest recorded
+  tuple and returns the shortest input among them. Everything else — in C102's
+  case 40,542 entries and every faster route in them — is read only to compute
+  the file's hash and is then discarded. The next link bootstraps from that one
+  input and re-explores.
+- **The recorded headers prove it without a single new run.** C101, C102 and
+  C103 launched from three different origin archives and all three recorded the
+  *same* resume input, SHA-256 `b1fe545d…` at 3,384 actions. Three campaigns,
+  three archives, one lineage. Nothing the search has learned about speed since
+  C100 has crossed a link boundary.
+- **The rule that does this is depth-then-brevity, and it has no notion of
+  cost.** Among the deepest entries it prefers the fewest actions. C102's fast
+  route stops at bucket 304 while the old slow route reaches 327, so the slow
+  route is deeper and wins the resume, and 658 frames of hard-won clock are
+  dropped on the floor. The rule was correct for every obstacle the chain has
+  faced until now, because every one of them was a reach problem where depth
+  was the only currency. Against a clock it is exactly wrong.
+- **What this reframes.** C102 was not a lucky sample and C103 was not a bad
+  one; the mechanism works in both, firing 2,400 and 5,123 times. The chain
+  simply cannot accumulate speed across links, so no amount of budget spent
+  this way compounds. Every link starts the level over at 22.3 frames per
+  bucket. Recorded as the binding obstacle, ahead of any arm against it, and it
+  needs a ruling because the obvious cure — resuming from a faster but
+  shallower lineage — deliberately gives up recorded frontier depth, which no
+  link has ever done.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
