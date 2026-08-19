@@ -7577,6 +7577,47 @@ one variable of science only when a link stalls.
   `f5a570c9…` — a fifth distinct lineage since the resume rule landed — with
   the waypoint, replacement and resume identifiers as registered.
 
+## H76 — registered draw-budget arm, a sibling of C107 rather than a link
+
+- The first of the two registrations the folded side branch earns, run as a
+  **paired arm and not a chain link**: it resumes from C106's archive, which is
+  the same origin C107 resumes from, so the two runs differ in exactly one
+  policy and in nothing else. Sibling arms from one origin are the chain's
+  standard comparison shape; making this a link instead would fork the line for
+  a question that is not about depth.
+- **Falsifiable claim.** Budgeting each parent's draws by its measured yield —
+  identifier `yield_budgeted_128:16,4,64,256`, a sixteen-execution history
+  window, an exploration floor of four draws, a ceiling of sixty-four, and
+  costs normalized at 256 — selects better parents than the promoted
+  concentrated recency window, at equal budget on identical ground.
+- One live campaign, 50,000 executions, twelve workers on the ARM machine,
+  campaign seed `0x5eed_c02c`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,347,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`,
+  no chord bias, selector **`yield_budgeted_128:16,4,64,256`** — **the selector
+  is the single change from C107.** Sourced from C106's live archive, SHA-256
+  `3c22247685263ed96998c3dd24ede6af430d78b19f44244121966522bea13328`.
+- **Preregistered comparison, and it is deliberately not the ladder.** Success
+  is selection quality against C107 on the same origin at the same budget:
+  fewer executions spent per bucket gained, and a cheaper traverse of 8-1 in
+  frames. Ladder depth is reported and is a tiebreak, not the test — a selector
+  can be better and still land a shallower frontier on one sample.
+- **Never composed with the mined chord tables.** The two touch different halves
+  of the search, one choosing parents and one choosing chords, and a run
+  carrying both could not say which produced its result. The tables register
+  later, alone, on this same shape.
+- **Where it runs, and why not the workstation.** The suggestion to run this
+  arm locally at zero cost to the ARM machine was evaluated and declined on
+  measured grounds rather than preference: the workstation holds 32 GB free
+  after reclaiming replay duplicates, C106's origin archive is 11.4 GB, and a
+  campaign of this size writes about 24 GB of archive and report. The arm does
+  not fit. It takes one slot on the ARM machine after C107, which costs the
+  chain about thirty-five minutes.
+- Raw destination: `target/smb-completion/h76-yield/` on the ARM machine, log
+  `h76.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
