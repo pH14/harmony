@@ -8481,6 +8481,54 @@ one variable of science only when a link stalls.
   be reported as that. It does not measure a game-imposed minimum dwell, and no
   number it produces should be described that way.
 
+### The splice has no material — the "cheap passage" was the band-differencing artifact again
+
+- Checked before building anything, because the splice's whole value rested on
+  one number: C106 crossing buckets 100–149 at 17.5 frames per bucket where
+  every other run cost 27 to 38. **That number is real and it means nothing.**
+- **The two endpoints, in the currency that matters — frames spent inside the
+  level when the lineage first stands on each bucket:**
+
+  | | bucket 101 | bucket 149 | band difference | band "rate" |
+  |---|---|---|---|---|
+  | C106 | **2,393** | **3,233** | 840 | 17.5 |
+  | C107 | **1,827** | **3,146** | 1,319 | 27.5 |
+
+  C106's band looks cheap because it **arrives at bucket 101 already 566 frames
+  behind**, not because it crosses the band quickly. At the far end it is still
+  87 frames behind. C107 is cheaper at both ends. There is no passage to splice:
+  the "cheap route" is the more expensive route, differenced over a shorter
+  remaining distance.
+- Swept across every archive the chain holds — C102, C104, C105, C106, C107,
+  H76, H77, C108 — the best in-level cost at each mid-level bucket is C107's or
+  within tens of frames of it, and the apparent exceptions are single buckets
+  whose advantage evaporates a few buckets later. **The largest apparent gain
+  anywhere was 158 frames at bucket 120, held by a lineage that is 76 frames
+  behind by bucket 145.** Nothing in any archive is materially cheaper than the
+  route the chain already carries.
+- **This is the third finding in this session produced by the same confound**,
+  and the pattern is now the lesson: differencing cross-lineage per-bucket
+  minima invented a uniform cost curve, then a consistently expensive band, then
+  a cheap passage — and each survived until someone measured a single lineage.
+  The band-rate table should not be used for anything further. **A cost claim is
+  admissible only from a single lineage's own curve.** That method note was
+  recorded once already; it is repeated here because it has now cost three
+  conclusions.
+- **Why there is nothing to splice, structurally rather than statistically.**
+  The frozen-prefix finding already said it: every archive descends from one
+  inherited lineage, so every archive contains variations on one route through
+  the early level, not alternatives to it. A splice needs two genuinely
+  different routes and the chain has only ever produced one.
+- **What this does and does not close.** It closes the 100–149 splice — there is
+  no five-hundred-frame prize and the derived-origin proposal it was to support
+  is withdrawn before it was written. It does not close route replacement in
+  general: the reason no alternative exists is that no campaign has ever
+  *searched* the early level, having always inherited past it. Producing a
+  genuinely different early route means starting a campaign at the level's
+  entrance rather than at its frontier, which is a different and untested
+  proposition, and one the clock arithmetic now makes the only remaining
+  candidate.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

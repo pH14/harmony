@@ -418,6 +418,27 @@ pub struct SmbStallVerdict {
     /// Held frames of the stall's actions as recorded, so a forced stall's
     /// shape can be read rather than guessed.
     pub holds: Vec<u8>,
+    /// Shortest hold cap this stall's actions tolerate while the whole input
+    /// still reaches its recorded deepest tuple, found by bisection; `None`
+    /// when no cap below the recorded maximum works.
+    ///
+    /// This measures **the recorded suffix's phase tolerance**, not any minimum
+    /// the game imposes: capping a wait shifts the phase of everything after
+    /// it, and the recorded continuation either still meets its hazards in time
+    /// or does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerated_cap: Option<u8>,
+    /// Frames the stall costs at `tolerated_cap`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerated_frames: Option<u64>,
+    /// Replays the bisection spent on this stall.
+    #[serde(default, skip_serializing_if = "bisection_is_absent")]
+    pub bisection_replays: u64,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn bisection_is_absent(replays: &u64) -> bool {
+    *replays == 0
 }
 
 /// Per-stall forced-versus-slack verdict for one recorded lineage.
@@ -460,6 +481,7 @@ pub fn diagnose_smb_stall_slack(
     level: u8,
     minimum_frames: u64,
     maximum_buckets: u16,
+    bisect_tolerance: bool,
 ) -> Result<SmbStallSlackReport, Box<dyn Error>> {
     let entry = source
         .entries
@@ -523,6 +545,43 @@ pub fn diagnose_smb_stall_slack(
         }
         let trial_states = replay_smb_action_states(rom, &trial)?;
         let shortened_reached = smb_reached_tuple(&trial_states);
+        // Phase tolerance: the smallest cap on this stall's holds that the
+        // recorded suffix still survives. Bisect between one, which the trial
+        // above already refuted, and the stall's own longest hold, which it
+        // trivially tolerates because it changes nothing.
+        let recorded_cap = actions
+            .iter()
+            .map(|action| action.bounded_hold_frames())
+            .max()
+            .unwrap_or(1);
+        let mut bisection_replays = 0_u64;
+        let mut tolerated: Option<u8> = None;
+        if bisect_tolerance && shortened_reached != baseline_reached {
+            let (mut low, mut high) = (2_u8, recorded_cap);
+            while low < high {
+                let probe = low.saturating_add(high.saturating_sub(low) / 2);
+                let mut capped = input.clone();
+                for action in capped.actions.get_mut(start..end).unwrap_or(&mut []) {
+                    *action =
+                        ButtonChord::new(action.buttons, action.bounded_hold_frames().min(probe));
+                }
+                bisection_replays = bisection_replays.saturating_add(1);
+                if smb_reached_tuple(&replay_smb_action_states(rom, &capped)?) == baseline_reached {
+                    high = probe;
+                } else {
+                    low = probe.saturating_add(1);
+                }
+            }
+            if low < recorded_cap {
+                tolerated = Some(low);
+            }
+        }
+        let tolerated_frames = tolerated.map(|cap| {
+            actions
+                .iter()
+                .map(|action| u64::from(action.bounded_hold_frames().min(cap)))
+                .sum()
+        });
         stalls.push(SmbStallVerdict {
             from_progress,
             to_progress,
@@ -535,13 +594,22 @@ pub fn diagnose_smb_stall_slack(
                 .iter()
                 .map(|action| action.bounded_hold_frames())
                 .collect(),
+            tolerated_cap: tolerated,
+            tolerated_frames,
+            bisection_replays,
         });
     }
     let stall_frames = stalls.iter().map(|stall| stall.frames).sum();
     let recoverable_frames = stalls
         .iter()
-        .filter(|stall| stall.slack)
-        .map(|stall| stall.frames.saturating_sub(stall.shortened_frames))
+        .map(|stall| {
+            let floor = if stall.slack {
+                stall.shortened_frames
+            } else {
+                stall.tolerated_frames.unwrap_or(stall.frames)
+            };
+            stall.frames.saturating_sub(floor)
+        })
         .sum();
     Ok(SmbStallSlackReport {
         world,

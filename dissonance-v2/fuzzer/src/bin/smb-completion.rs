@@ -1457,8 +1457,15 @@ fn run_stall_slack_mode(
     }
     let rom = read_rom()?;
     let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
-    let report =
-        diagnose_smb_stall_slack(&rom, &source, world, level, minimum_frames, maximum_buckets)?;
+    let report = diagnose_smb_stall_slack(
+        &rom,
+        &source,
+        world,
+        level,
+        minimum_frames,
+        maximum_buckets,
+        true,
+    )?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
