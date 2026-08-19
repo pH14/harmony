@@ -7838,6 +7838,99 @@ one variable of science only when a link stalls.
   recorded stream or it does not — so the two share the machine without
   either's result being in question.
 
+### H77 result — null, and with it the genuine stall
+
+- The arm completed all 50,000 executions against C107's seed, origin and
+  resume input, differing only in its chord policy. Stream SHA-256
+  `ab6e8ff4db55ab44e90f65369df4efa13df89149504c5d42c013e93d93ab96a7`, live
+  archive SHA-256
+  `5d28c073c1f03e3ee7939fd7b8126d5ef07706b24bf1e1118347d0dec1cd3ebe`.
+- **Applying the same four conditions:**
+  - **Cost-normalized yield — FAIL.** 37,965 productive selections over
+    5,693,067 emulated frames, **6,668,637 per billion**, against C107's
+    **6,674,112**. Lower by 0.082 percent. A tie fails; this is below a tie.
+  - **Frontier — pass.** `(7,0,351)` against C107's `(7,0,350)`, one bucket
+    deeper, no regression.
+  - **Byte-exact replay** — not reached, the arm having already failed the
+    primary measure.
+- **Verdict: FAIL.** Both siblings of C107 have now nulled, which by the
+  standing ruling is a genuine stall. No arm is registered. The census below
+  precedes any invention, and its read goes to the integrator before anything
+  else is registered.
+- **The shape of this null is different from H76's and the difference matters.**
+  H76 was flat on yield and shallower. H77 is flat on yield and one bucket
+  *deeper* — and it bought that bucket expensively: its 8-1 traverse costs
+  **7,265 frames for 351 buckets, 20.70 frames per bucket**, against C107's
+  7,103 for 350 at 20.29. One more bucket for a hundred and sixty more frames,
+  at a rate four hundredths of a frame per bucket worse. Mined chords found a
+  little more ground and paid the clock for it.
+- Recorded as a null rather than argued into a partial: the criterion is
+  cost-normalized yield and the answer is below the incumbent. Neither of the
+  two mechanisms the folded lane brought — budgeted parents, mined chords —
+  improves this search on this terrain.
+
+### Stall census — the cost curve is no longer uniform, and one stretch is expensive in every run
+
+- Run on recorded artifacts before any arm, per the standing ruling. Nothing is
+  registered on the strength of it; the read goes to the integrator first.
+- **The plateau is real and it is four links long.** Cheapest recorded route to
+  each link's own deepest bucket, measured in frames spent inside 8-1:
+
+  | link | deepest | frames in level | rate | margin against a ~7,300-frame clock |
+  |---|---|---|---|---|
+  | C102 | 327 | 7,281 | 22.27 | 19 |
+  | C104 | 336 | 7,295 | 21.71 | 5 |
+  | C105 | 343 | 7,138 | 20.81 | 162 |
+  | C106 | 347 | 6,962 | 20.06 | 338 |
+  | C107 | 350 | 7,095 | 20.27 | 205 |
+  | H76 | 347 | 7,028 | 20.25 | 272 |
+  | H77 | 351 | 7,107 | 20.25 | 193 |
+
+  The rate fell hard through C106 and has sat at 20.1 to 20.3 for four
+  consecutive runs across three different policies. That is convergence, not
+  noise.
+- **And here is the finding that changes what to do about it. The level's cost
+  is no longer spread evenly.** Frames per bucket within fifty-bucket bands,
+  cheapest recorded route, across five independent runs:
+
+  | band | C105 | C106 | C107 | H76 | H77 |
+  |---|---|---|---|---|---|
+  | 0–49 | 18.2 | 16.9 | 18.4 | 18.0 | 19.1 |
+  | 50–99 | 19.8 | 23.8 | 26.4 | 23.8 | 19.2 |
+  | 100–149 | 38.2 | 17.5 | 27.5 | 27.5 | 28.2 |
+  | 150–199 | 0.1 | 11.6 | 12.8 | 9.5 | 16.6 |
+  | 200–249 | 21.6 | 16.7 | 18.5 | 22.2 | 15.8 |
+  | **250–299** | **33.6** | **34.8** | **31.2** | **33.1** | **31.8** |
+  | 300–349 | 8.8 | 5.2 | 13.0 | 11.4 | 13.1 |
+
+- **Buckets 250 through 299 are expensive in every single run** — 31.2 to 34.8
+  frames per bucket, never once cheap — while the level demonstrably supports
+  5 to 17 frames per bucket in three other bands. That stretch carries roughly
+  sixteen hundred frames over forty-nine buckets. Brought merely to 17, the
+  rate its neighbours already achieve, it would cost about eight hundred and
+  thirty: **a saving near seven hundred and fifty frames, about thirty-one
+  timer units.** It is the largest and by far the most consistent prize the
+  recorded artifacts show.
+- **Buckets 100 through 149 are bimodal, which is a different and cheaper
+  lesson.** Four runs cost 27 to 38 frames per bucket there; C106 cost **17.5**.
+  A cheap route through that stretch exists — the search found one — and then
+  lost it, because a link boundary carries a single lineage and the next link
+  re-explored the band from a different one. Roughly five hundred frames sit in
+  a solution the chain has already produced once.
+- **This supersedes the finding recorded at the 327 stall that the cost curve
+  was uniform and offered nothing to aim at.** That was true when it was
+  written — the first forty-five buckets then cost 20.8 against a 22.3 average.
+  It is no longer true, and the speed program is what made it false: making the
+  easy stretches fast left the hard ones standing. Recorded as a supersession
+  rather than a correction, because the earlier reading was sound on the
+  evidence it had.
+- **What the census does not show.** Nothing here says how long 8-1 is, and
+  nothing says the two expensive bands are terrain rather than habit — no run
+  has ever aimed budget at them specifically, because every region since C102
+  has been bucket-uniform over the whole level, which hands a forty-nine-bucket
+  band about a seventh of the draw. Whether concentrated budget cracks them is
+  exactly the untested question.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
