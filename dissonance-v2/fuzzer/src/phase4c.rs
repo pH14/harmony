@@ -156,6 +156,117 @@ impl SmbLadder {
     }
 }
 
+/// Frame cost of the cheapest recorded route to one progress bucket.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbFrameCostBucket {
+    /// Progress bucket within the censused pair.
+    pub progress: u16,
+    /// Entries retained at this bucket.
+    pub entries: u64,
+    /// Fewest emulated frames any retained entry here spent, summed over its
+    /// whole input from gameplay genesis.
+    pub min_frames: u64,
+    /// Identifier of the entry holding `min_frames`.
+    pub min_frames_id: u64,
+    /// Actions in that entry's input.
+    pub min_frames_actions: usize,
+    /// Fewest actions any retained entry here used, which is the quantity the
+    /// resume rule minimises.
+    pub min_actions: usize,
+    /// Frames used by the fewest-actions entry, for the comparison the census
+    /// exists to make.
+    pub min_actions_frames: u64,
+}
+
+/// Frame cost of every recorded route into one `(world, level)` pair.
+///
+/// The archive stores no clock and no frame count, but an input's frame cost is
+/// exactly the sum of its held frames, so this needs no emulation. Within one
+/// resumed run every entry descends from the same resume input, so differences
+/// in total frames are differences spent inside the censused pair.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbFrameCostReport {
+    /// Censused world.
+    pub world: u8,
+    /// Censused level.
+    pub level: u8,
+    /// Entries examined in this pair.
+    pub entries: u64,
+    /// Buckets in ascending progress order.
+    pub buckets: Vec<SmbFrameCostBucket>,
+}
+
+/// Census the frame cost of each recorded route depth in one `(world, level)`.
+#[must_use]
+pub fn census_smb_frame_cost(
+    source: &SmbArchiveReport,
+    world: u8,
+    level: u8,
+) -> SmbFrameCostReport {
+    let mut buckets = BTreeMap::<u16, (u64, u64, u64, usize, usize, u64)>::new();
+    let mut entries = 0_u64;
+    for entry in &source.entries {
+        if entry.key.world != world || entry.key.level != level {
+            continue;
+        }
+        entries += 1;
+        let frames: u64 = entry
+            .input
+            .actions
+            .iter()
+            .map(|action| u64::from(action.hold_frames))
+            .sum();
+        let actions = entry.input.actions.len();
+        let record = buckets.entry(entry.key.progress).or_insert((
+            0,
+            u64::MAX,
+            0,
+            actions,
+            usize::MAX,
+            u64::MAX,
+        ));
+        record.0 += 1;
+        if frames < record.1 {
+            record.1 = frames;
+            record.2 = entry.id;
+            record.3 = actions;
+        }
+        if actions < record.4 || (actions == record.4 && frames < record.5) {
+            record.4 = actions;
+            record.5 = frames;
+        }
+    }
+    SmbFrameCostReport {
+        world,
+        level,
+        entries,
+        buckets: buckets
+            .into_iter()
+            .map(
+                |(
+                    progress,
+                    (
+                        count,
+                        min_frames,
+                        min_frames_id,
+                        min_frames_actions,
+                        min_actions,
+                        min_actions_frames,
+                    ),
+                )| SmbFrameCostBucket {
+                    progress,
+                    entries: count,
+                    min_frames,
+                    min_frames_id,
+                    min_frames_actions,
+                    min_actions,
+                    min_actions_frames,
+                },
+            )
+            .collect(),
+    }
+}
+
 /// One rung of a single lineage's ladder, measured by replaying that lineage.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbLineageRung {

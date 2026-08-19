@@ -6633,6 +6633,81 @@ one variable of science only when a link stalls.
   4096, entry bound 131,072, suffix `one_or_two`, and no waypoint or chord
   field — the promoted stack exactly as registered.
 
+### C100 result — zero buckets on a full budget
+
+- The run completed all 50,000 executions and **the ladder did not move**:
+  `(7,0,327)`, exactly C99's, with the execution watermark also unchanged
+  at 334. Counters: 17,404 retained, 4,096 rejected, 23,469 deaths —
+  nearly half of all executions — 15,767 probe refusals, 86 duplicates
+  skipped, 4,693,159 frames emulated. Stream SHA-256
+  `80602e8b973f5e36f6e15c2da1818d1f991219f68b718d874ba0f3154be72494`,
+  live archive SHA-256
+  `8730b4194fb33db3a4f001fb11cf951144f740b4ce76cbdaaa7d2aa91af424d9`.
+  Zero buckets on a full budget is the hardest stall signature the chain
+  has recorded.
+
+### The 8-1 stall census — the wall is the level's clock, not its terrain
+
+- Per the standing cheapest-decisive-first protocol the response was a
+  census of recorded artifacts, and the decisive one turned out to be the
+  cheapest thing available: **read the frontier film's last frames.** They
+  show the on-screen timer at 002 at the tip, 041 forty-four actions
+  earlier, and 138 a hundred actions before that. The frontier does not
+  stop against an obstacle. It stops because the level's clock runs out.
+- Quantified from the recorded lineage with no emulation at all, because an
+  input's frame cost is exactly the sum of its held frames: C99's frontier
+  lineage enters 8-1 at action 3,208 having emulated 151,311 frames and
+  reaches bucket 327 at 158,590 — **7,279 frames spent inside 8-1**.
+  Against the three on-screen readings that calibrates the clock at 24.0
+  frames per timer unit (2,331 frames for 97 units across the first
+  interval, 946 for 39 across the last), so the level's three hundred units
+  are about 7,200 frames. **The lineage spends the entire clock reaching
+  bucket 327.**
+- Everything else the two runs recorded agrees with that and nothing
+  contradicts it. The viability probe found no 120-frame no-input survivor
+  anywhere from bucket 317 through 327 — with two units left, doing nothing
+  for two seconds is fatal by the clock alone, which is why the probe reads
+  as it does without any hazard being present. Half of C100's executions
+  died. And every C100 execution descends from that same exhausted anchor,
+  so no descendant of it could have advanced, which is exactly what a
+  ladder that did not move records.
+- **What the deficit is, stated in the currency that binds.** From 8-1's
+  start to bucket 327 the lineage covers 327 buckets in 7,279 frames: 22.3
+  frames per sixteen-pixel bucket, about seven tenths of a pixel per frame.
+  The controller vocabulary can hold a run for far longer than that. The
+  recorded route is roughly a third of the speed the vocabulary can
+  express. **The search has never measured frames — it measures actions,
+  and the resume rule minimises actions — so a lineage can be short in
+  actions and enormously expensive in frames, and the clock is denominated
+  in frames.**
+- This is a new obstacle class for the chain: the first that is not about
+  reach, admission or selection, and the first where the binding resource
+  is one no registered mechanism observes. Recorded here without an arm.
+
+### The frame-cost census tool — built to ask the cheapest question first
+
+- Before any cure is chosen there is one question that costs a single pass
+  over a recorded archive: **does the archive already hold a faster route
+  to a deep bucket than the one the resume rule picked?** If it does, the
+  chain unblocks with a resume-rule change and no new search at all.
+- `smb-completion census-frame-cost <archive> <world> <level> <output>`
+  answers it. For every progress bucket in the pair it reports how many
+  entries sit there, the fewest frames any of them spent, that entry's
+  identifier and action count, and — for the comparison the census exists
+  to make — the fewest actions and what that entry cost in frames. **No
+  emulation is involved**: an input's frame cost is the sum of its held
+  frames, and within one resumed run every entry descends from the same
+  resume input, so differences in total frames are differences spent inside
+  the censused pair.
+- Validated on C49's archive: 10,375 entries across 103 buckets of 1-1,
+  with the frontier entry at bucket 144 costing 17,376 frames over 351
+  actions — the same 351-action lineage the claim replay gate replays, and
+  the same 17,376 frames it reports, which is the cross-check that the
+  summed frame cost is the real one.
+- The four quality gates pass, 92 tests, and the standing inertness
+  reference re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+
 ### The claim replay gate — built ahead of need, byte-inert
 
 - The registered completion protocol's replay gate has two halves. The
