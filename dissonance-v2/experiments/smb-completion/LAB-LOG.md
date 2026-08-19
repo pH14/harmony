@@ -6708,6 +6708,44 @@ one variable of science only when a link stalls.
   reference re-verifies byte-identical,
   `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
 
+### Frame-cost census — no faster route exists in the archive, and the waste is nameable
+
+- **The cheapest cure is dead, and the census killed it in one pass.** The
+  question was whether the archive already holds a cheaper-in-frames route
+  to a deep bucket than the one the resume rule picked, in which case a
+  resume-rule change would have unblocked the chain with no new search.
+  It does not. Across C99's 15,540 entries in 8-1 and C100's 3,503, the
+  fewest-frames entry and the fewest-actions entry are the same entry or
+  within a few tens of frames of each other at every bucket: at bucket 320
+  the cheapest route costs 158,545 frames against the resume rule's
+  158,587, and at the frontier bucket 327 it is 158,589 against 158,590.
+  **The best saving available anywhere in the archive is under two timer
+  units against a deficit measured in hundreds.**
+- Why it is dead is worth recording, because it is the same fact from the
+  other side: the archive's diversity is in *where* the player is and never
+  in *how fast he got there*. A fast route and a slow route to the same
+  bucket land in the same cell, and the key cannot tell them apart, so one
+  displaces the other on grounds that have nothing to do with the clock.
+- The census also fixes the level's cost curve, entry to frontier: 8-1
+  begins at emulated frame 151,311 and bucket 327 costs 158,589, so the
+  cheapest recorded traverse is **7,278 frames for 327 buckets, 22.3 frames
+  per sixteen-pixel bucket**. The rate is not uniform — buckets 240 to 260
+  cost 19.7 frames each and buckets 280 to 300 cost 39.4 — so the route has
+  both efficient and very expensive stretches.
+- **Where the frames actually go**, measured on the frontier lineage's 8-1
+  segment, which is only 176 actions long: 7,279 frames, mean hold 41.4
+  frames, maximum 120. Sixty of those 176 actions hold for ninety frames or
+  more and account for roughly six thousand of the seven thousand frames —
+  **a third of the actions spend seven eighths of the clock**. And 2,238
+  frames, **thirty-one percent of the level's entire budget, are spent in
+  actions that gain no ground at all**, with not one frame spent moving
+  backwards. The waste is not backtracking. It is standing and hovering
+  under long holds.
+- The mechanism behind that is the promoted stack working exactly as
+  designed against a resource it was never told about: the duration policy
+  draws long holds, the retention rule admits whatever reaches a new cell,
+  and nothing anywhere prefers the cheaper of two routes to the same place.
+
 ### The claim replay gate — built ahead of need, byte-inert
 
 - The registered completion protocol's replay gate has two halves. The
