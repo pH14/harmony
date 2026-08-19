@@ -156,6 +156,214 @@ impl SmbLadder {
     }
 }
 
+/// One stage of the frame-slack measurement.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbFrameSlackStage {
+    /// What was tried.
+    pub stage: String,
+    /// Actions whose hold was shortened.
+    pub shortened_actions: usize,
+    /// Frames the whole input costs after shortening.
+    pub frames: u64,
+    /// Frames the censused segment costs after shortening.
+    pub segment_frames: u64,
+    /// Deepest tuple the shortened input reaches.
+    pub reached: Option<(u8, u8, u16)>,
+    /// Whether the shortened input still reaches the baseline tuple alive.
+    pub preserved: bool,
+}
+
+/// How many of a recorded lineage's frames inside one level are removable.
+///
+/// This is a measurement on a recorded artifact, not a search: it reports what
+/// the recorded route could have cost, and adopts nothing.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbFrameSlackReport {
+    /// Censused world.
+    pub world: u8,
+    /// Censused level.
+    pub level: u8,
+    /// Identifier of the replayed archive entry.
+    pub entry_id: u64,
+    /// Action index at which the censused pair is first observed.
+    pub segment_start: usize,
+    /// Actions in the censused segment.
+    pub segment_actions: usize,
+    /// Frames the segment costs as recorded.
+    pub baseline_segment_frames: u64,
+    /// Frames the whole input costs as recorded.
+    pub baseline_frames: u64,
+    /// Deepest tuple the recorded input reaches.
+    pub baseline_reached: Option<(u8, u8, u16)>,
+    /// Segment actions that gained no progress bucket as recorded.
+    pub no_gain_actions: usize,
+    /// Frames those actions cost.
+    pub no_gain_frames: u64,
+    /// Stages tried, cheapest first.
+    pub stages: Vec<SmbFrameSlackStage>,
+}
+
+/// Replay one input from genesis and report its per-action decoded states.
+fn replay_smb_action_states(
+    rom: &[u8],
+    input: &SmbInput,
+) -> Result<Vec<SmbMechanicalState>, Box<dyn Error>> {
+    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let mut states = Vec::with_capacity(input.actions.len().saturating_add(1));
+    let genesis = target.observe();
+    let wram: &[u8; 2_048] = genesis
+        .wram
+        .as_slice()
+        .try_into()
+        .map_err(|_| "replay observation WRAM is not exactly 2 KiB")?;
+    states.push(smb_mechanical_state_from_wram(wram));
+    for action in &input.actions {
+        target.apply(action);
+        if target.exit_kind() != ExitKind::Ok {
+            return Err("emulation failed during a frame-slack replay".into());
+        }
+        let observation = target.observe();
+        let wram: &[u8; 2_048] = observation
+            .wram
+            .as_slice()
+            .try_into()
+            .map_err(|_| "replay observation WRAM is not exactly 2 KiB")?;
+        states.push(smb_mechanical_state_from_wram(wram));
+        if target.is_dead() {
+            break;
+        }
+    }
+    Ok(states)
+}
+
+fn smb_reached_tuple(states: &[SmbMechanicalState]) -> Option<(u8, u8, u16)> {
+    states
+        .iter()
+        .map(|state| (state.world, state.level, state.progress))
+        .max()
+}
+
+/// Measure how many frames of a recorded lineage's traverse of one level are
+/// removable without giving up the depth it reached.
+pub fn diagnose_smb_frame_slack(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    world: u8,
+    level: u8,
+) -> Result<SmbFrameSlackReport, Box<dyn Error>> {
+    let entry = source
+        .entries
+        .iter()
+        .max_by_key(|entry| {
+            (
+                entry.key.world,
+                entry.key.level,
+                entry.key.progress,
+                Reverse(entry.input.actions.len()),
+                Reverse(entry.id),
+            )
+        })
+        .ok_or("source archive contains no retained entries")?;
+    let input = entry.input.clone();
+    let states = replay_smb_action_states(rom, &input)?;
+    let baseline_reached = smb_reached_tuple(&states);
+    let segment_start = states
+        .iter()
+        .position(|state| state.world == world && state.level == level)
+        .ok_or("the recorded lineage never enters the censused pair")?;
+    let frames_of = |actions: &[ButtonChord]| -> u64 {
+        actions
+            .iter()
+            .map(|action| u64::from(action.hold_frames))
+            .sum()
+    };
+    let baseline_frames = frames_of(&input.actions);
+    let baseline_segment_frames = frames_of(&input.actions[segment_start..]);
+    let mut no_gain = Vec::new();
+    for index in segment_start..input.actions.len() {
+        let before = states.get(index).map(|state| state.progress);
+        let after = states
+            .get(index.saturating_add(1))
+            .map(|state| state.progress);
+        if let (Some(before), Some(after)) = (before, after)
+            && after <= before
+            && input.actions[index].hold_frames > 1
+        {
+            no_gain.push(index);
+        }
+    }
+    let no_gain_frames: u64 = no_gain
+        .iter()
+        .map(|&index| u64::from(input.actions[index].hold_frames))
+        .sum();
+    let mut stages = Vec::new();
+    let shorten = |actions: &[ButtonChord], indices: &[usize]| -> Vec<ButtonChord> {
+        let mut out = actions.to_vec();
+        for &index in indices {
+            out[index] = ButtonChord::new(out[index].buttons, 1);
+        }
+        out
+    };
+    // Cheapest first: shorten every no-gain action at once and replay once.
+    let one_shot = SmbInput {
+        actions: shorten(&input.actions, &no_gain),
+    };
+    let one_shot_states = replay_smb_action_states(rom, &one_shot)?;
+    let one_shot_reached = smb_reached_tuple(&one_shot_states);
+    stages.push(SmbFrameSlackStage {
+        stage: "all_no_gain_actions_shortened".to_owned(),
+        shortened_actions: no_gain.len(),
+        frames: frames_of(&one_shot.actions),
+        segment_frames: frames_of(&one_shot.actions[segment_start..]),
+        reached: one_shot_reached,
+        preserved: one_shot_reached == baseline_reached,
+    });
+    // Then a greedy pass that keeps only the shortenings which hold.
+    let mut greedy = input.actions.clone();
+    let mut kept = 0_usize;
+    for &index in &no_gain {
+        let trial = shorten(&greedy, &[index]);
+        let trial_states = replay_smb_action_states(
+            rom,
+            &SmbInput {
+                actions: trial.clone(),
+            },
+        )?;
+        if smb_reached_tuple(&trial_states) == baseline_reached {
+            greedy = trial;
+            kept += 1;
+        }
+    }
+    let greedy_states = replay_smb_action_states(
+        rom,
+        &SmbInput {
+            actions: greedy.clone(),
+        },
+    )?;
+    let greedy_reached = smb_reached_tuple(&greedy_states);
+    stages.push(SmbFrameSlackStage {
+        stage: "greedy_per_action".to_owned(),
+        shortened_actions: kept,
+        frames: frames_of(&greedy),
+        segment_frames: frames_of(&greedy[segment_start..]),
+        reached: greedy_reached,
+        preserved: greedy_reached == baseline_reached,
+    });
+    Ok(SmbFrameSlackReport {
+        world,
+        level,
+        entry_id: entry.id,
+        segment_start,
+        segment_actions: input.actions.len().saturating_sub(segment_start),
+        baseline_segment_frames,
+        baseline_frames,
+        baseline_reached,
+        no_gain_actions: no_gain.len(),
+        no_gain_frames,
+        stages,
+    })
+}
+
 /// Frame cost of the cheapest recorded route to one progress bucket.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbFrameCostBucket {
