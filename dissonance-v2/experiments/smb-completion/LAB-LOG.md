@@ -8619,6 +8619,99 @@ one variable of science only when a link stalls.
   before this line was written, per the D83 rule that a launch is confirmed by
   its first progress and not by the absence of an error.
 
+### C110 result — the entrance search wins on every measure, and wins big
+
+- The run completed all 50,000 executions. Counters: 47,948 retained, 9,372
+  deaths, 4,493 collisions decided on frames, stream SHA-256
+  `ef6e0b58f280df81cdbc1167a0880b9e18fca671a00551fcbe4fc096eb79db3a`, live
+  archive SHA-256
+  `5a1c735e777c638b08c81ba56e49f246605d49d1357ab471f069a080904f817a`.
+- **One campaign from the level's entrance reached bucket 214 in 3,409 frames —
+  15.93 frames per bucket, in 62 actions.** The carried route needs 4,002
+  frames to stand at that same bucket.
+- **The preregistered bar was the new family's single-lineage curve materially
+  below the carried route's at equal depth. It is below at every common bucket,
+  and the lead grows:**
+
+  | bucket | entrance family | carried route | advantage |
+  |---|---|---|---|
+  | 21 | 456 | 572 | +116 |
+  | 55 | 899 | 1,046 | +147 |
+  | 74 | 1,236 | 1,477 | +241 |
+  | 96 | 1,723 | 1,836 | +113 |
+  | 132 | 2,067 | 2,887 | **+820** |
+  | 154 | 2,537 | 3,298 | +761 |
+  | 213 | 3,400 | 3,991 | +591 |
+  | **214** | **3,409** | **4,002** | **+593** |
+
+- **And the rate clears the bar that actually matters.** 15.93 frames per bucket
+  against a carried-route traverse of 20.29 and a best-ever full traverse of
+  20.06. The clock arithmetic the registration wrote down asked for about 18: a
+  four-hundred-bucket level at 15.93 costs **6,372 frames** against a clock near
+  7,300, and even four hundred and fifty buckets cost 7,169. **If the level runs
+  to roughly four hundred buckets, this route finishes it with frames to
+  spare** — the first time that sentence has been writable.
+- **The secondary read confirms the phase correction outright, and it is the
+  most satisfying number in the run.** Near-maximal stalls — a hundred frames or
+  more spent advancing at most two buckets — **entrance family: 3, costing 431
+  frames. Carried route: 11, costing 1,728.** The integrator's reading predicted
+  exactly this: the carried route's waits were a suffix holding its phase, not
+  the level demanding stillness, and a route searched fresh needs a third as
+  many. Nothing about the game changed; the search stopped inheriting somebody
+  else's timing.
+- Sixty-two actions against a hundred and seventy-three for the carried route's
+  traverse. The new family is not merely cheaper in frames; it is a
+  structurally simpler route.
+- **Verdict: PASS**, and by the standing ruling the next entrance link registers
+  immediately, same configuration, window following the new family's frontier.
+  The carried route and its archives remain intact and unpromoted, per the fork
+  discipline: C110's family has beaten it at equal depth but has not yet reached
+  its depth.
+- What is not yet known and must not be assumed: whether this rate survives the
+  ground beyond bucket 214, which is where the carried route's most expensive
+  stretches lie. The lead at 132 is eight hundred and twenty frames and at 214
+  it is five hundred and ninety-three, so the advantage narrowed over the last
+  eighty buckets. One link does not settle a level.
+
+## C111 — registered entrance continuation, forty-third link
+
+- Registered immediately on C110's pass under the standing speed rule: the
+  entrance family beat the carried route at every common bucket and cleared the
+  rate the clock arithmetic asks for, so the ruled branch is to continue it
+  unchanged with the window following the new frontier.
+- Same configuration as C110 in every registered particular; **the origin is
+  C110's own live archive and the region window follows its frontier to 214.**
+  One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c030`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,214,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`,
+  no chord bias. Sourced from C110's live archive, SHA-256
+  `5a1c735e777c638b08c81ba56e49f246605d49d1357ab471f069a080904f817a`.
+- Mined chords remain out. By ruling they become the follow-up sibling one link
+  later, and only if the family keeps its lead — one change at a time.
+- **Preregistered question: does the entrance family hold its rate on ground it
+  has not yet seen?** Its lead over the carried route was 820 frames at bucket
+  132 and 593 at 214, so the advantage narrowed across the last eighty buckets,
+  and everything past 214 includes the stretches that cost the carried route the
+  most. Pass is the family's curve still materially below the carried route's at
+  the new equal depth. A lead that keeps narrowing at the same slope would reach
+  parity somewhere near bucket 300 and is the signature to watch for.
+- Secondary read carried forward: near-maximal holds in the new family, 3 so far
+  against the carried route's 11 at full depth.
+- The carried route and its archives stay intact and unpromoted; the fork is not
+  a replacement until the family reaches and beats the carried route's depth.
+- Raw destination: `target/smb-completion/c111-conquest/` on the ARM machine,
+  log `c111.log`, sentinel discipline in force.
+- Wrapper note, recorded because it was caught before launch rather than after:
+  deriving this link's script from C110's by substitution also rewrote the
+  *census* input paths, which would have censused C110's archive again and
+  reported a stale result as this link's. Both were corrected and verified by
+  reading the wrapper back before the run started. The D83 lesson generalises —
+  a launch is confirmed by inspecting what it will actually do, not by the
+  absence of an error.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
