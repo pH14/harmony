@@ -7572,6 +7572,10 @@ one variable of science only when a link stalls.
   on: it would mean the frontier is being bought on the clock again.
 - Raw destination: `target/smb-completion/c107-conquest/` on the ARM machine,
   log `c107.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking: origin
+  C106's archive at the registered hash `3c222476…`, resume input SHA-256
+  `f5a570c9…` — a fifth distinct lineage since the resume rule landed — with
+  the waypoint, replacement and resume identifiers as registered.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
