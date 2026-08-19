@@ -7517,6 +7517,62 @@ one variable of science only when a link stalls.
 - The route minimizer is not a campaign and takes no slot; it runs against
   recorded artifacts when the claim is in hand.
 
+### C106 result — bucket 347 at 20.28 frames a bucket; four links of unbroken compounding
+
+- The run completed all 50,000 executions. Counters: 48,698 retained, 2,632
+  collisions decided on frames, stream SHA-256
+  `f4e4f91526232ebc037575f9ccdacdcedb99c079f1baa00a52d7b266184f8ee2`, live
+  archive SHA-256
+  `3c22247685263ed96998c3dd24ede6af430d78b19f44244121966522bea13328`.
+- Both halves pass again. The ladder reads `(7,0,347)` and the winning lineage
+  crosses 8-1 in **7,038 frames for 347 buckets, 20.28 frames per bucket**, in
+  160 actions.
+- **The progression, which is now the chain's most important number:**
+
+  | link | frontier | frames in 8-1 | frames per bucket |
+  |---|---|---|---|
+  | C100–C103 | 327 | 7,279 | 22.26 |
+  | C104 | 336 | 7,270 | 21.64 |
+  | C105 | 343 | 7,138 | 20.81 |
+  | C106 | 347 | 7,038 | 20.28 |
+
+  Twenty buckets deeper into the level for **241 fewer frames**, and the rate
+  has fallen at every link since the resume rule landed. Four for four.
+- **The clock reading, and it is the only one that decides anything.** Against
+  a clock of roughly 7,300 frames the lineage stands at bucket 347 having spent
+  7,038, so it holds on the order of two hundred and sixty frames — about
+  eleven timer units. That margin has grown at every link: two units, then six,
+  then eleven.
+- **What is not known, stated so the trend is not over-read.** Nobody knows how
+  long 8-1 is. The margin is growing but so is the distance still to cover, and
+  the depth gained per link is falling — nine buckets, then seven, then four —
+  while the frames saved per link holds near a hundred. If that pattern
+  continues the level ends in a race between a shrinking depth increment and a
+  growing clock margin, and which wins is not predictable from four points.
+
+## C107 — registered continuation of the compounding stack, thirty-ninth link
+
+- Ordinary link, C106's configuration with the region window following the
+  frontier to 347. Four consecutive links have advanced the ladder and lowered
+  the traverse cost; the chain spends another slot on the mechanism that is
+  working.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c02b`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,347,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, suffix `one_or_two`,
+  no chord bias. Sourced from C106's live archive, SHA-256
+  `3c22247685263ed96998c3dd24ede6af430d78b19f44244121966522bea13328`.
+- **Preregistered question: does the ladder advance and does the traverse fall
+  below 7,038 frames?** The depth increment has fallen at each of the last
+  three links, so a link that gains one or two buckets while still lowering the
+  traverse is a pass on the terms that matter and not a sign of exhaustion.
+  A link that gains depth while the traverse *rises* is the signature to stop
+  on: it would mean the frontier is being bought on the clock again.
+- Raw destination: `target/smb-completion/c107-conquest/` on the ARM machine,
+  log `c107.log`, sentinel discipline in force.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
