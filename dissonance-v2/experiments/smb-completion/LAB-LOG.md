@@ -6911,6 +6911,111 @@ one variable of science only when a link stalls.
   slow, which is the difference between a cure that has to beat the search's
   own norm and one that only has to restore it.
 
+### Per-level speed calibration — the search is not slow in 8-1; it is faster there than almost anywhere
+
+- Measured with the new per-level census on C100's archive: one lineage, one
+  replay from gameplay genesis, 3,384 actions and 158,590 frames, segmented by
+  its own recorded level transitions into twenty-seven traverses. **This
+  reverses the reading the frame-cost census invited and it is recorded before
+  the arm it bears on, not after.**
+- **8-1 is crossed at 22.3 frames per progress bucket, and only two of the
+  twenty-six other traverses are faster** — 1-1 at 15.1 and 2-3 at 20.2. The
+  middle of the distribution sits near 29, and the slow end is far slower:
+  7-2 at 55.2, 2-2 at 52.2, 6-2 at 47.4, 6-3 at 46.5. Measured against its own
+  history the search's pace through the eighth world's first level is close to
+  its best work.
+- So the deficit is not pace. **8-1 is simply much longer than anything the
+  chain has crossed**: every completed level tops out between 144 and 222
+  buckets, and 8-1 is at 327 and unfinished. At the search's median rate that
+  length would cost over nine thousand frames; at its 8-1 rate it costs 7,279,
+  and the level's clock is roughly 7,200. The level is long enough that even a
+  good traverse exhausts the clock.
+- **What the calibration does not settle, stated so it is not read as settled.**
+  The completed traverses include their unclocked flagpole and tally frames,
+  which inflates them by some hundreds each and therefore flatters 8-1's
+  standing a little; the correction is small against a seven-frame gap to the
+  median but it is real. And the totals are not directly comparable to a single
+  clock: 2-2 costs 10,177 frames and 7-2 costs 10,755, both above what a
+  three-hundred-unit clock would allow, so levels plainly do not all run the
+  same countdown. Nothing here supports a claim about any level's clock but
+  8-1's, which was read off its own film.
+- **The consequence for the cure, and it cuts both ways.** Asking the search to
+  cross 8-1 faster is asking it to beat its own third-best traverse, which is a
+  harder ask than the frame-cost census alone suggested. But the floor it has
+  already demonstrated is 15.1 frames per bucket in 1-1, and 327 buckets at
+  that rate cost 4,938 frames — nearly two thousand three hundred frames under
+  the clock, about ninety-seven timer units. The speed the level needs is speed
+  this search has already shown it can produce somewhere. That is the
+  difference between a cure that is hard and a cure that is impossible, and it
+  is why the keep-the-fastest link goes ahead as registered.
+
+## C101 — registered keep-the-fastest conquest, thirty-third link
+
+- The integrator ruled the clean single-change arm: the keep-the-fastest
+  replacement rule alone, no region, everything else the promoted stack.
+  C100 is the matched null — the same origin, the same budget, the same
+  policies, zero buckets — so this link is a controlled test of one
+  mechanism and nothing else.
+- **What the rule does.** When two entries collide in one archive cell the
+  survivor is the one that spent fewer frames inside the current level.
+  Frames-in-level is derived from the recorded action durations and the
+  recorded level transitions alone; no new game-memory hint enters the
+  search. Until now a cell recorded *where* the player stands and nothing
+  about what standing there cost, so a fast route and a slow route to the
+  same cell collided and the survivor was chosen on controller actions —
+  which is why the frame-cost census found the archive holds position
+  diversity and no speed diversity at all.
+- **The operator's expectation is recorded before the run, because a null
+  here is informative and should not be reinterpreted afterwards.** The
+  rule can only act where two routes collide, and collisions only happen
+  where draws land. Draws land at the tip under the concentrated window, so
+  the rule reaches roughly the last hundred buckets of 8-1 — where 15,284
+  of the level's 15,540 entries sit — and cannot reach the first two
+  hundred and twenty-eight, a thread one or two entries wide that no draw
+  has revisited since it was laid. A large frontier advance would be a
+  surprise. What the arm settles is whether the mechanism does anything
+  measurable on its own, which is the question that decides whether the
+  region has to be composed with it next.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c025`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, no
+  waypoint, no chord bias, suffix `one_or_two`, replacement
+  `fewest_frames_in_level` — **the replacement rule is the single change
+  from C100.** Sourced from C100's live archive, SHA-256
+  `8730b4194fb33db3a4f001fb11cf951144f740b4ce76cbdaaa7d2aa91af424d9`, direct
+  resume from the full archive; C100's play frontier and recorded frontier
+  agree at bucket 327, so no derived origin is called for.
+- **The primary readout is a census, not the ladder.** The wrapper chains
+  the frame-cost census of 8-1, which reports the fewest frames any retained
+  entry spent reaching each bucket, against the same census already recorded
+  for C100 on the same origin. Bucket by bucket that is a direct
+  before-and-after measurement of whether the archive got faster, and it
+  answers the arm's question whether or not the frontier moves. The
+  per-level speed census runs beside it, so the winning lineage's traverse
+  rate is stated in the same currency.
+- **Per-link replay audits are dropped by ruling**, so the wrapper chains
+  the ladder derivation and the two censuses and stops there. The
+  completion-claim gates are untouched: the byte-exact campaign replay of
+  the winning link and the from-power-on claim replay still gate the claim.
+  Bisection risk is accepted on the record.
+- **Preregistered question: does any bucket of 8-1 become cheaper in
+  frames than C100 recorded it?** Pass is a measurable reduction in the
+  fewest-frames curve. Frontier advance is reported but is not the test.
+  A flat curve is a null and is recorded as one, and it carries a specific
+  consequence already agreed: the mechanism needs draws aimed at crossed
+  terrain, which is the composed region arm.
+- Raw destination: `target/smb-completion/c101-conquest/` on the ARM machine,
+  log `c101.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking: origin
+  C100's archive at the registered hash, resume input SHA-256 `b1fe545d…` at
+  3,384 actions — byte-identical to C100's, as a direct full-archive resume
+  from the same origin must be — campaign seed 1,592,639,525, action limit
+  4096, entry bound 131,072, suffix `one_or_two`, replacement
+  `fewest_frames_in_level`, and **no waypoint or chord field at all**, which is
+  the header's way of recording that the promoted stack is otherwise untouched.
+  Jobs were flowing and admitting before this entry was written.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
