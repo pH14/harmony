@@ -7462,6 +7462,12 @@ one variable of science only when a link stalls.
   region widened rather than followed.
 - Raw destination: `target/smb-completion/c106-conquest/` on the ARM machine,
   log `c106.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking: origin
+  C105's archive at the registered hash `5006bd77…`, resume input SHA-256
+  `ef53ea79…` — a fourth distinct lineage, the resume rule reaching back inside
+  its thirty-two buckets again — campaign seed 1,592,639,530, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,343,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
