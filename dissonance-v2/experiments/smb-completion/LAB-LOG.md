@@ -8609,6 +8609,15 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c110-conquest/` on the ARM machine,
   log `c110.log`, sentinel discipline in force. Co-tenant with the phase
   tolerance bisection, whose recoveries apply to the carried route only.
+- **Launch confirmed from the run's own recorded header before parking, and the
+  derived-origin checklist closes on it.** Campaign seed 1,592,639,535; origin
+  SHA-256 `72561637…`, the derived entrance archive and not C107's; resume input
+  SHA-256 `5d6fb7ba…` at **3,208 actions** — byte-identical to the hash the
+  derivation reported before the run existed, which is the resume-hash
+  reconstruction check passing end to end rather than by assertion; waypoint
+  `waypoint_4_bucket_uniform:7,0,0,350,0,15`. Jobs were flowing and admitting
+  before this line was written, per the D83 rule that a launch is confirmed by
+  its first progress and not by the absence of an error.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
