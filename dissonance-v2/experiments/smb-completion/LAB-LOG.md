@@ -8055,6 +8055,100 @@ one variable of science only when a link stalls.
   since a checked-in file is not where an authentication secret belongs.
 
 
+### C108 result — the band does not yield to budget: 31.85 against a 31.16 target
+
+- The run completed all 50,000 executions. Counters: 42,730 retained, 9,053
+  deaths, 2,589 probe refusals, 5 snapback refusals, 8,182 candidates retained
+  through the region's auxiliary capacity, stream SHA-256
+  `a25872ce35656643d0f91753bf3ccebea5cdb65c8ef098c39b7a27ee676422dd`, live
+  archive SHA-256
+  `c257b564b0d2d71bc54422a5199d45d0e9b173ead3ff3a3d29f548a6df5af420`.
+- **The preregistered question was whether the cheapest recorded route through
+  buckets 250–299 falls below 31.16 frames per bucket, the best of the five
+  runs censused. It does not: 31.85.** The band, having received the entire
+  draw of a fifty-thousand-execution campaign instead of the seventh it used to
+  get, landed inside its own historical range and above its own best.
+
+  | run | band rate | draw share on the band |
+  |---|---|---|
+  | C105 | 33.61 | whole-level region |
+  | C106 | 34.82 | whole-level region |
+  | C107 | **31.16** | whole-level region |
+  | H76 | 33.08 | whole-level region |
+  | H77 | 31.82 | whole-level region |
+  | **C108** | **31.85** | **the entire budget** |
+
+- **Verdict: FAIL.** By the standing ruling this is the census's own caveat
+  coming true — the band may be terrain rather than habit — and nothing is
+  registered. The recorded-deaths read inside 250–299 goes to the integrator
+  before anything else.
+- **The arm is a clean test and its null is worth as much as a pass would have
+  been.** Concentrating the whole draw on forty-nine buckets is roughly a
+  sevenfold increase in budget per bucket over every previous run, and it moved
+  the band's cost by nothing. Two of the five whole-level runs did better on
+  this band by accident than this one did on purpose. Whatever makes buckets
+  250 to 299 cost thirty-two frames apiece is not a shortage of search.
+- Frontier and traverse, reported as registered and not as the test: the ladder
+  fell to `(7,0,328)`, which is exactly what concentrating the draw mid-level
+  was expected to cost, and the winning lineage crosses its 328 buckets in
+  6,725 frames at 20.50 frames per bucket. The whole-level rate is unchanged
+  within noise; the level's cost simply is where it is.
+- One measurement note for the record: bucket 250 is unoccupied in this run, so
+  the band rate is computed across 251 to 299. The comparison runs all occupied
+  250, and the one-bucket difference is far too small to explain a 0.69-frame
+  gap.
+
+### Correction to the band census — "frames per bucket" is an endpoint difference, not a route's rate
+
+- Surfaced while taking the recorded read inside 250–299 that C108's null calls
+  for, and recorded before any further arm because it changes what the band
+  numbers mean.
+- **The per-bucket steps inside the band go negative.** In C108's census bucket
+  255 is four frames *cheaper* than 254, 294 is five hundred and thirty-seven
+  cheaper than 293, 277 is three hundred and twenty-one cheaper than 276. A
+  route cannot reach a deeper bucket for fewer frames than it reached a
+  shallower one. The minima therefore belong to **different lineages**: the
+  cheapest entry at each bucket is not a descendant of the cheapest at the
+  bucket before.
+- **This is the same defect this operator recorded earlier in this very log and
+  then committed at a smaller scale.** When the per-level census was built, the
+  note read: the census's per-bucket minima may come from different lineages, so
+  its totals cannot be differenced across pairs — and a whole rate table was
+  discarded for exactly that reason. The band table then differenced the same
+  minima across *buckets within* a level. Same error, one scale down. Recorded
+  plainly because a defect caught once and repeated is worth more as a warning
+  than as a footnote.
+- **What survives and what does not.**
+  - **Does not survive:** any reading of the band figure as "the frames a route
+    spends crossing 250 to 299", and the per-bucket decomposition entirely. The
+    six costliest steps summing to a hundred and thirty-eight percent of the
+    band total is the arithmetic tell — the negatives cancel them.
+  - **Does survive:** the figure as an **endpoint difference** — the cheapest
+    route to bucket 299 costs about fifteen hundred and sixty frames more than
+    the cheapest route to bucket 250 — because the intermediate lineage-hopping
+    telescopes away between the two endpoints. That quantity was computed the
+    same way for every run compared, so **the comparison across runs is
+    like-for-like and the C108 verdict stands**: with roughly seven times the
+    per-bucket budget of any previous run, the band's endpoint difference landed
+    at 31.85 against its own best of 31.16.
+  - The stall census's band table is likewise a table of endpoint differences.
+    Its central claim — that this band is consistently the dearest stretch — is
+    unaffected, because every cell was computed alike.
+- **The strongest evidence about the band is not the rate at all; it is the
+  budget.** C108 built **35,457 entries inside 8-1, averaging 708 retained
+  entries per bucket across 250–299 against 8.1 per bucket everywhere else** —
+  and the band's cost did not move. Two of the five whole-level runs did better
+  on this band incidentally than this one did with the entire campaign aimed at
+  it. Whatever makes that stretch expensive is not answered by search.
+- **What is still not measured, and it is the thing the next read should get.**
+  No measurement here yet states what a *single lineage* pays to cross 250 to
+  299, because every figure in play is a cross-lineage minimum. That number is
+  derivable from recorded artifacts alone — walk the winning lineage's ancestors
+  in the run's own archive, reading each one's recorded bucket and its input's
+  frame cost — and it needs no emulation and no new campaign. It is the honest
+  basis for calling the band terrain, and it is the read that should reach the
+  integrator before anything registers.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
