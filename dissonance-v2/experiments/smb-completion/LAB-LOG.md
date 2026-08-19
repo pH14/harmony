@@ -7577,6 +7577,49 @@ one variable of science only when a link stalls.
   `f5a570c9…` — a fifth distinct lineage since the resume rule landed — with
   the waypoint, replacement and resume identifiers as registered.
 
+### C107 result — bucket 350, and the rate stops falling: the preregistered stop signal
+
+- The run completed all 50,000 executions. Counters: 48,464 retained, 2,588
+  collisions decided on frames, stream SHA-256
+  `cb3060c2265856cb6a415443ce1c464b9828557ff85d53b677150401f6250def`, live
+  archive SHA-256
+  `5e11a622504d665c0c68fa97ad47b25b785cf0cc8d4ca5aafe4106d53b719dda`.
+- The ladder reads `(7,0,350)` — three buckets past C106 — and the winning
+  lineage crosses 8-1 in **7,103 frames for 350 buckets, 20.29 frames per
+  bucket**, in 173 actions.
+- **The registration asked for depth *and* a traverse below 7,038 frames, and
+  the second half fails.** The rate is the fair comparison, since more ground
+  costs more frames: 20.28 at C106 against **20.29** here. Flat. After three
+  consecutive links of falling rate this is the signature the registration
+  named in advance as the one to stop on — depth is now bought at the current
+  rate rather than out of new savings.
+- **The five-link picture:**
+
+  | link | frontier | frames in 8-1 | frames per bucket |
+  |---|---|---|---|
+  | C100–C103 | 327 | 7,279 | 22.26 |
+  | C104 | 336 | 7,270 | 21.64 |
+  | C105 | 343 | 7,138 | 20.81 |
+  | C106 | 347 | 7,038 | 20.28 |
+  | C107 | 350 | 7,103 | **20.29** |
+
+  Twenty-three buckets gained in total and the rate improved by nine percent,
+  then stopped. The clock margin peaked at C106 near two hundred and sixty
+  frames and stands near two hundred now.
+- **What the plateau does and does not say.** It does not say the region and
+  the two new rules have failed — they took the level from 22.26 to 20.28 and
+  every one of those frames is still banked in the lineage that carries
+  forward. It says this *combination* has found what it can find on this
+  terrain: the generator keeps proposing, the archive keeps the cheapest, the
+  boundary carries them, and the result no longer improves. Continuing to spend
+  slots on an unchanged configuration would be spending against a measurement
+  that says it has converged.
+- **Consequence, and it was already queued rather than invented here.** The
+  next registration in the queue is a change of *selector* — which is exactly
+  the lever a converged search wants, since what has plateaued is which parents
+  the draw reaches. H76 runs next, as a sibling of this link from the same
+  origin, so the comparison is controlled.
+
 ## H76 — registered draw-budget arm, a sibling of C107 rather than a link
 
 - The first of the two registrations the folded side branch earns, run as a
@@ -7617,6 +7660,48 @@ one variable of science only when a link stalls.
   chain about thirty-five minutes.
 - Raw destination: `target/smb-completion/h76-yield/` on the ARM machine, log
   `h76.log`, sentinel discipline in force.
+
+### The side branch's sixth commit — the castle diagnostic and the water counterfactual
+
+- Folded in on the integrator's ruling, completing the side lane at its final
+  form. The five reviewed commits were already in; this adds the sixth and
+  brings two finished measurements with it, both read-only:
+  - **The castle segment shrinks, and what survives says what the check
+    graded.** The minimizer gains a single-segment mode that reports what one
+    level's traverse actually requires. Its result on the castle: the waits
+    that survive reduction are **eight stand-stills of roughly a hundred frames
+    each** — which is a maze check grading *dwell time*, not position or
+    sequence. That is a different shape of obstacle from anything the chain has
+    named, and it is recorded here as an inherited measurement rather than one
+    this operator reproduced.
+  - **A water counterfactual computed from the C78 and C79 era**, confirming
+    the three-to-one mix.
+- The commit's four-line change to the campaign tests was already present in
+  this tree: the side builder made the same repair to the two configurations
+  the replacement and resume rules had left incomplete, independently and
+  identically. Recorded because convergent repairs are the cheap evidence that
+  a fold is sound.
+- The four quality gates pass on the merged tree, **116 tests** — the count the
+  review reported — and the standing inertness reference re-verifies
+  byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+- **Operational note, recorded because it cost a run.** H76's first launch
+  failed in its first second with "campaign stream parent scheduler is not
+  recognized": the ARM machine's binary predated the fold, so the selector the
+  arm registers did not exist there. The launch sentinel caught it immediately
+  and the relaunch, after syncing the folded sources and rebuilding, records
+  `parent_scheduler` as `yield_budgeted_128:16,4,64,256` from C106's archive at
+  resume input `f5a570c9…` — the same origin and the same resume input C107
+  used, which is what makes the two runs siblings. The standing discipline that
+  the ARM binary is not rebuilt between a run and its chained audit is
+  unaffected; the rebuild happened in a gap between links, which is exactly
+  where it belongs.
+- **On where this arm runs.** The workstation is now cleared as campaign
+  hardware and its use is at this operator's discretion. This arm stays on the
+  ARM machine for a measured reason rather than a preference: the workstation
+  holds 32 GB free after reclaiming replay duplicates, C106's origin archive is
+  11.4 GB, and a campaign of this size writes about 24 GB. It does not fit.
+  Smaller arms and every measurement can run locally, and will.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 

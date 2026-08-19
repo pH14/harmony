@@ -456,10 +456,10 @@ where
             candidate.extend_from_slice(later);
             candidates.push(candidate);
         }
-        replay_count =
-            replay_count.saturating_add(u64::try_from(candidates.len()).unwrap_or(u64::MAX));
-        let accepted = evaluate_candidates(replay, entry, &candidates, workers, passes)?;
-        if let Some(index) = accepted.iter().position(|&passed| passed) {
+        let (accepted, evaluated) =
+            evaluate_candidates(replay, entry, &candidates, workers, passes)?;
+        replay_count = replay_count.saturating_add(evaluated);
+        if let Some(index) = accepted {
             let start = index.saturating_mul(segment.len()) / granularity;
             let end = (index.saturating_add(1)).saturating_mul(segment.len()) / granularity;
             segment.drain(start..end);
@@ -479,13 +479,13 @@ fn evaluate_candidates<Replay, Step, Passes>(
     candidates: &[Vec<TrackedStep<Step>>],
     workers: NonZeroUsize,
     passes: &Passes,
-) -> Result<Vec<bool>, ReductionError<Replay::Error>>
+) -> Result<(Option<usize>, u64), ReductionError<Replay::Error>>
 where
     Replay: SequenceReplay<Step>,
     Step: Clone + Send + Sync,
     Passes: Fn(&Replay::Outcome) -> bool + Sync,
 {
-    let mut accepted = Vec::with_capacity(candidates.len());
+    let mut offset = 0_usize;
     for wave in candidates.chunks(workers.get()) {
         let wave_results = thread::scope(|scope| {
             let handles = wave
@@ -507,6 +507,7 @@ where
                 .map(|handle| handle.join())
                 .collect::<Vec<_>>()
         });
+        let mut accepted = Vec::with_capacity(wave.len());
         for result in wave_results {
             match result {
                 Ok(Ok(passed)) => accepted.push(passed),
@@ -514,8 +515,16 @@ where
                 Err(_) => return Err(ReductionError::WorkerPanicked),
             }
         }
+        if let Some(index) = accepted.iter().position(|&passed| passed) {
+            let evaluated = offset.saturating_add(wave.len());
+            return Ok((
+                Some(offset.saturating_add(index)),
+                u64::try_from(evaluated).unwrap_or(u64::MAX),
+            ));
+        }
+        offset = offset.saturating_add(wave.len());
     }
-    Ok(accepted)
+    Ok((None, u64::try_from(candidates.len()).unwrap_or(u64::MAX)))
 }
 
 fn flatten_steps<Step: Clone>(segments: &[Vec<TrackedStep<Step>>]) -> Vec<Step> {
@@ -539,8 +548,9 @@ mod tests {
     };
 
     use super::{
-        ReductionConfig, ReductionError, ReplayEndpoint, SequenceReplay,
-        projected_candidate_replays, reduce_sequence, reduce_verified_segmented_sequence,
+        ReductionConfig, ReductionError, ReplayEndpoint, SequenceReplay, TrackedStep,
+        evaluate_candidates, projected_candidate_replays, reduce_sequence,
+        reduce_verified_segmented_sequence,
     };
 
     struct SumReplay;
@@ -639,6 +649,26 @@ mod tests {
     fn projection_is_zero_only_for_empty_segments() {
         assert_eq!(projected_candidate_replays(&[0, 0]), 0);
         assert!(projected_candidate_replays(&[1, 8, 64]) > 0);
+    }
+
+    #[test]
+    fn candidate_evaluation_stops_after_the_first_passing_wave() {
+        let candidates = (0..5)
+            .map(|value| {
+                vec![TrackedStep {
+                    original_index: value,
+                    step: u8::try_from(value).expect("small candidate"),
+                }]
+            })
+            .collect::<Vec<_>>();
+        let workers = NonZeroUsize::new(2).expect("two is nonzero");
+        let (accepted, evaluated) =
+            evaluate_candidates(&SumReplay, &0, &candidates, workers, &|outcome| {
+                *outcome == 0
+            })
+            .expect("candidate evaluation");
+        assert_eq!(accepted, Some(0));
+        assert_eq!(evaluated, 2);
     }
 
     #[test]

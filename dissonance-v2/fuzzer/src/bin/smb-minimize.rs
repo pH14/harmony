@@ -191,12 +191,35 @@ struct SurvivingWait {
     hold_frames: u8,
 }
 
+#[derive(Debug, Serialize)]
+struct SingleSegmentManifest {
+    source_manifest: PathBuf,
+    source_report: PathBuf,
+    milestone: String,
+    rom_sha256: String,
+    segment_index: usize,
+    entry_pair: (u8, u8),
+    exit_pair: (u8, u8),
+    original_range: (usize, usize),
+    original_state: SmbMechanicalState,
+    final_state: SmbMechanicalState,
+    original_actions: usize,
+    minimized_actions: usize,
+    removed_actions: usize,
+    original_frames: u64,
+    minimized_frames: u64,
+    workers: usize,
+    candidate_replays: u64,
+    verification_replays: u64,
+    surviving_waits: Vec<SurvivingWait>,
+    minimized_input: SmbInput,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let source_manifest = PathBuf::from(
-        args.next()
-            .ok_or("usage: smb-minimize <film-manifest.json> <output.json> [workers]")?,
-    );
+    let source_manifest = PathBuf::from(args.next().ok_or(
+        "usage: smb-minimize <film-manifest.json> <output.json> [workers] [segment-index]",
+    )?);
     let output = PathBuf::from(args.next().ok_or("missing output manifest")?);
     let workers = args
         .next()
@@ -204,6 +227,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .transpose()?
         .unwrap_or(std::thread::available_parallelism()?.get());
     let workers = NonZeroUsize::new(workers).ok_or("worker count must be nonzero")?;
+    let selected_segment = args
+        .next()
+        .map(|value| value.to_string_lossy().parse())
+        .transpose()?;
     if args.next().is_some() {
         return Err("unexpected extra argument".into());
     }
@@ -243,6 +270,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     let genesis = genesis_target
         .snapshot()
         .ok_or("failed to snapshot SMB gameplay genesis")?;
+
+    if let Some(segment_index) = selected_segment {
+        return minimize_single_segment(
+            &replay,
+            &genesis,
+            &film,
+            source_manifest,
+            output,
+            rom_sha256,
+            &snapshot_points,
+            &pairs,
+            segment_index,
+            workers,
+        );
+    }
 
     // Measurement-only wall time is printed before reduction and never enters replay state.
     #[allow(clippy::disallowed_methods)]
@@ -388,6 +430,103 @@ fn main() -> Result<(), Box<dyn Error>> {
         candidate_replays: reduced.candidate_replays,
         verification_replays: reduced.verification_replays.saturating_add(1),
         segments,
+        surviving_waits,
+        minimized_input: SmbInput {
+            actions: reduced.steps,
+        },
+    };
+    create_parent(&output)?;
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn minimize_single_segment(
+    replay: &SmbReplay,
+    genesis: &SmbSnapshot,
+    film: &FilmManifest,
+    source_manifest: PathBuf,
+    output: PathBuf,
+    rom_sha256: String,
+    snapshot_points: &[usize],
+    pairs: &[(LevelPair, LevelPair)],
+    segment_index: usize,
+    workers: NonZeroUsize,
+) -> Result<(), Box<dyn Error>> {
+    let mut boundaries = Vec::with_capacity(snapshot_points.len().saturating_add(2));
+    boundaries.push(0);
+    boundaries.extend_from_slice(snapshot_points);
+    boundaries.push(film.input.actions.len());
+    let range = boundaries
+        .get(segment_index..segment_index.saturating_add(2))
+        .ok_or("segment index is out of range")?;
+    let (&start, &end) = (
+        range.first().ok_or("missing segment start")?,
+        range.get(1).ok_or("missing segment end")?,
+    );
+    let &(entry_pair, exit_pair) = pairs
+        .get(segment_index)
+        .ok_or("segment index has no level pair")?;
+    let prefix = replay.replay(genesis, &film.input.actions[..start])?;
+    if prefix.outcome.dead || (prefix.outcome.state.world, prefix.outcome.state.level) != entry_pair
+    {
+        return Err("original prefix did not reproduce the selected segment entry".into());
+    }
+    let original_steps = film.input.actions[start..end].to_vec();
+    let original = replay.replay(&prefix.snapshot, &original_steps)?;
+    if original.outcome.dead
+        || (original.outcome.state.world, original.outcome.state.level) < exit_pair
+    {
+        return Err("original segment did not reach its recorded exit".into());
+    }
+    let passes = |outcome: &SmbReplayOutcome| {
+        !outcome.dead && (outcome.state.world, outcome.state.level) >= exit_pair
+    };
+    let reduced = reduce_verified_segmented_sequence(
+        replay,
+        prefix.snapshot.clone(),
+        original_steps.clone(),
+        &[],
+        ReductionConfig { workers },
+        |_, outcome| passes(outcome),
+        passes,
+    )?;
+    let final_endpoint = replay.replay(&prefix.snapshot, &reduced.steps)?;
+    if !passes(&final_endpoint.outcome) {
+        return Err("independent replay rejected the minimized segment".into());
+    }
+    let surviving_waits = reduced
+        .steps
+        .iter()
+        .zip(&reduced.original_indices)
+        .enumerate()
+        .filter(|(_, (step, _))| step.buttons == 0)
+        .map(|(minimized_index, (step, &original_index))| SurvivingWait {
+            minimized_index,
+            original_index: start.saturating_add(original_index),
+            hold_frames: step.hold_frames,
+        })
+        .collect::<Vec<_>>();
+    let report = SingleSegmentManifest {
+        source_manifest,
+        source_report: film.source_report.clone(),
+        milestone: film.milestone.clone(),
+        rom_sha256,
+        segment_index,
+        entry_pair,
+        exit_pair,
+        original_range: (start, end),
+        original_state: original.outcome.state,
+        final_state: final_endpoint.outcome.state,
+        original_actions: original_steps.len(),
+        minimized_actions: reduced.steps.len(),
+        removed_actions: original_steps.len().saturating_sub(reduced.steps.len()),
+        original_frames: original.outcome.frames,
+        minimized_frames: final_endpoint.outcome.frames,
+        workers: workers.get(),
+        candidate_replays: reduced.candidate_replays,
+        verification_replays: reduced.verification_replays.saturating_add(1),
         surviving_waits,
         minimized_input: SmbInput {
             actions: reduced.steps,
