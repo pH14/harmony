@@ -8704,6 +8704,14 @@ one variable of science only when a link stalls.
   a replacement until the family reaches and beats the carried route's depth.
 - Raw destination: `target/smb-completion/c111-conquest/` on the ARM machine,
   log `c111.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking: campaign
+  seed 1,592,639,536, origin C110's archive at the registered hash `5a1c735e…`,
+  waypoint `waypoint_4_bucket_uniform:7,0,0,214,0,15`, and resume input SHA-256
+  `f27f2c15…` at **3,259 actions** — fifty-one actions into the level rather
+  than at its tip, which is the clock-aware rule doing exactly its job: it
+  reached back inside its thirty-two buckets and took the cheapest arrival
+  rather than the deepest. Jobs were flowing and admitting before this line was
+  written.
 - Wrapper note, recorded because it was caught before launch rather than after:
   deriving this link's script from C110's by substitution also rewrote the
   *census* input paths, which would have censused C110's archive again and
