@@ -396,6 +396,165 @@ pub struct SmbLineageLevelSegment {
     pub bucket_frames: Vec<(u16, u64)>,
 }
 
+/// One stand-still in a lineage's traverse, and what shortening it costs.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbStallVerdict {
+    /// Progress bucket the lineage stood on entering the stall.
+    pub from_progress: u16,
+    /// Progress bucket it reached leaving it.
+    pub to_progress: u16,
+    /// Action index range of the stall within the whole input.
+    pub action_range: (usize, usize),
+    /// Frames the stall costs as recorded.
+    pub frames: u64,
+    /// Frames it costs with every action in it shortened to the vocabulary's
+    /// shortest hold.
+    pub shortened_frames: u64,
+    /// Whether the whole input still reaches its recorded deepest tuple with
+    /// this stall — and only this stall — shortened.
+    pub slack: bool,
+    /// Deepest tuple the shortened input reaches, for a failure to name itself.
+    pub shortened_reached: Option<(u8, u8, u16)>,
+    /// Held frames of the stall's actions as recorded, so a forced stall's
+    /// shape can be read rather than guessed.
+    pub holds: Vec<u8>,
+}
+
+/// Per-stall forced-versus-slack verdict for one recorded lineage.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbStallSlackReport {
+    /// Censused pair.
+    pub world: u8,
+    /// Censused pair level.
+    pub level: u8,
+    /// Archive identifier of the lineage examined.
+    pub entry_id: u64,
+    /// Deepest tuple the recorded input reaches.
+    pub baseline_reached: Option<(u8, u8, u16)>,
+    /// Frames the lineage spends in the pair as recorded.
+    pub baseline_frames: u64,
+    /// Frames the stalls cost between them.
+    pub stall_frames: u64,
+    /// Frames recoverable across the stalls that proved slack.
+    pub recoverable_frames: u64,
+    /// One verdict per stall, in traverse order.
+    pub stalls: Vec<SmbStallVerdict>,
+}
+
+/// Decide, stall by stall, whether a lineage's stand-stills are forced.
+///
+/// A stall is a run of actions that costs at least `minimum_frames` while
+/// advancing at most `maximum_buckets` progress buckets. Each is shortened
+/// alone — every other action left exactly as recorded — and the whole input is
+/// replayed from gameplay genesis, so a stall counts as slack only when the run
+/// still reaches the tuple it reached before. Judging them one at a time is the
+/// point: shortening them together cannot say which one mattered.
+///
+/// # Errors
+///
+/// Returns an error when the archive holds no retained entry or a replay fails.
+pub fn diagnose_smb_stall_slack(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+    world: u8,
+    level: u8,
+    minimum_frames: u64,
+    maximum_buckets: u16,
+) -> Result<SmbStallSlackReport, Box<dyn Error>> {
+    let entry = source
+        .entries
+        .iter()
+        .max_by_key(|entry| {
+            (
+                entry.key.world,
+                entry.key.level,
+                entry.key.progress,
+                Reverse(entry.input.actions.len()),
+                Reverse(entry.id),
+            )
+        })
+        .ok_or("source archive contains no retained entries")?;
+    let input = entry.input.clone();
+    let states = replay_smb_action_states(rom, &input)?;
+    let baseline_reached = smb_reached_tuple(&states);
+    let segment_start = states
+        .iter()
+        .position(|state| state.world == world && state.level == level)
+        .ok_or("the recorded lineage never enters the censused pair")?;
+    let frames_of = |actions: &[ButtonChord]| -> u64 {
+        actions
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum()
+    };
+    let baseline_frames = frames_of(input.actions.get(segment_start..).unwrap_or(&[]));
+    // Walk the segment cutting it at every action that sets a new progress
+    // high-water mark; the runs between those cuts are the candidate stalls.
+    let mut cuts: Vec<usize> = vec![segment_start];
+    let mut best: Option<u16> = None;
+    for (offset, state) in states.iter().enumerate().skip(segment_start) {
+        if best.is_none_or(|seen| state.progress > seen) {
+            best = Some(state.progress);
+            if offset > segment_start {
+                cuts.push(offset);
+            }
+        }
+    }
+    cuts.push(input.actions.len());
+    let mut stalls = Vec::new();
+    for pair in cuts.windows(2) {
+        let (start, end) = (pair[0], pair[1]);
+        let actions = match input.actions.get(start..end) {
+            Some(actions) if !actions.is_empty() => actions,
+            _ => continue,
+        };
+        let frames = frames_of(actions);
+        let from_progress = states.get(start).map_or(0, |state| state.progress);
+        let to_progress = states
+            .get(end)
+            .map_or(from_progress, |state| state.progress);
+        if frames < minimum_frames || to_progress.saturating_sub(from_progress) > maximum_buckets {
+            continue;
+        }
+        // Shorten this stall alone and replay the whole input.
+        let mut trial = input.clone();
+        for action in trial.actions.get_mut(start..end).unwrap_or(&mut []) {
+            *action = ButtonChord::new(action.buttons, 1);
+        }
+        let trial_states = replay_smb_action_states(rom, &trial)?;
+        let shortened_reached = smb_reached_tuple(&trial_states);
+        stalls.push(SmbStallVerdict {
+            from_progress,
+            to_progress,
+            action_range: (start, end),
+            frames,
+            shortened_frames: frames_of(trial.actions.get(start..end).unwrap_or(&[])),
+            slack: shortened_reached == baseline_reached,
+            shortened_reached,
+            holds: actions
+                .iter()
+                .map(|action| action.bounded_hold_frames())
+                .collect(),
+        });
+    }
+    let stall_frames = stalls.iter().map(|stall| stall.frames).sum();
+    let recoverable_frames = stalls
+        .iter()
+        .filter(|stall| stall.slack)
+        .map(|stall| stall.frames.saturating_sub(stall.shortened_frames))
+        .sum();
+    Ok(SmbStallSlackReport {
+        world,
+        level,
+        entry_id: entry.id,
+        baseline_reached,
+        baseline_frames,
+        stall_frames,
+        recoverable_frames,
+        stalls,
+    })
+}
+
 /// Per-level traverse speed of one recorded lineage.
 ///
 /// The archive's frame-cost census compares routes within one pair, but its

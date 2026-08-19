@@ -30,11 +30,11 @@ use fuzzer::{
         derive_smb_ladder, diagnose_smb_film_columns, diagnose_smb_film_measurements,
         diagnose_smb_film_measurements_derived, diagnose_smb_frame_slack,
         diagnose_smb_left_direction, diagnose_smb_player_column, diagnose_smb_span,
-        gate_smb_live_control, measure_smb_viable_progress, readmit_smb_archive,
-        replay_smb_claim_lineage, run_smb_archive_search, run_smb_archive_search_with_policies,
-        run_smb_archive_search_with_retention, run_smb_archive_search_with_selector,
-        select_smb_responsive_audit_ids, select_smb_span_audit_ids, select_smb_spread_audit_ids,
-        select_smb_steered_audit_ids,
+        diagnose_smb_stall_slack, gate_smb_live_control, measure_smb_viable_progress,
+        readmit_smb_archive, replay_smb_claim_lineage, run_smb_archive_search,
+        run_smb_archive_search_with_policies, run_smb_archive_search_with_retention,
+        run_smb_archive_search_with_selector, select_smb_responsive_audit_ids,
+        select_smb_span_audit_ids, select_smb_spread_audit_ids, select_smb_steered_audit_ids,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -182,6 +182,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if mode == "census-lineage-levels" {
         return run_lineage_level_mode(&mut args);
+    }
+    if mode == "diagnose-stall-slack" {
+        return run_stall_slack_mode(&mut args);
     }
     if mode == "diagnose-frame-slack" {
         return run_frame_slack_mode(&mut args);
@@ -1422,6 +1425,49 @@ fn run_frame_cost_mode(
         "buckets {} entries {}",
         report.buckets.len(),
         report.entries
+    );
+    Ok(())
+}
+
+fn run_stall_slack_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    let world = u8::try_from(parse_u64(
+        &args.next().ok_or("missing world")?.to_string_lossy(),
+    )?)?;
+    let level = u8::try_from(parse_u64(
+        &args.next().ok_or("missing level")?.to_string_lossy(),
+    )?)?;
+    let minimum_frames = parse_u64(
+        &args
+            .next()
+            .ok_or("missing minimum stall frames")?
+            .to_string_lossy(),
+    )?;
+    let maximum_buckets = u16::try_from(parse_u64(
+        &args
+            .next()
+            .ok_or("missing maximum stall buckets")?
+            .to_string_lossy(),
+    )?)?;
+    let output = PathBuf::from(args.next().ok_or("missing output file")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let rom = read_rom()?;
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(source_path)?)?;
+    let report =
+        diagnose_smb_stall_slack(&rom, &source, world, level, minimum_frames, maximum_buckets)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output, serde_json::to_vec_pretty(&report)?)?;
+    println!(
+        "stalls {} costing {} frames; recoverable {}",
+        report.stalls.len(),
+        report.stall_frames,
+        report.recoverable_frames
     );
     Ok(())
 }

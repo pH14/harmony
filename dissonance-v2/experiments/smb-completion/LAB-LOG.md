@@ -8318,6 +8318,37 @@ one variable of science only when a link stalls.
   additional campaign. The reducer answers exactly this, and it is the next run.
 - Recorded before that answer is known, so the finding cannot be reshaped by it.
 
+### C109 result — the depth probe answers: the flag is not within the margin, and 351 is where the clock stops
+
+- The run completed all 50,000 executions. The ladder reads `(7,0,351)` and the
+  winning lineage crosses 8-1 in **7,260 frames for 351 buckets, 20.68 frames
+  per bucket**, in 188 actions.
+- **Both halves of the preregistered read, answered.** The frontier advanced —
+  one bucket past C107. The margin did not hold: against a clock of roughly
+  7,300 frames the lineage arrives at 351 having spent 7,260, leaving on the
+  order of **forty frames**, where C107 held about two hundred. The
+  registration named that combination in advance: a frontier that advances
+  while the margin collapses says depth is being bought on the clock again.
+- **The level did not complete, and the probe's real answer is sharper than
+  that.** Three runs under three different policies now converge on the same
+  place: C107 at 350, H77 at 351, C109 at 351 — and the two that reached 351
+  did so at 7,265 and 7,260 frames. **Bucket 351 is not where the search
+  happens to stop; it is where this route's clock runs out**, reproducibly, and
+  the flag is somewhere beyond it.
+- **What that settles.** The question of how long 8-1 is has been open since the
+  clock wall was first recorded, and it is now bounded from one side by
+  measurement rather than left to guesswork: the level is longer than 351
+  buckets, and no policy tested — promoted stack, budgeted parents, mined
+  chords, whole-level region, concentrated band — reaches past it, because all
+  of them inherit the same route and the same clock.
+- **And it makes the prefix work the only path rather than merely the fastest
+  one.** No search can pass 351 while the traverse costs what it costs; the
+  frames have to come from somewhere, and the frozen prefix's eleven stalls hold
+  1,728 of them. Whether they are recoverable is the measurement now running.
+- Recorded as a null on completion and a pass on information: the probe was
+  cheap, it was registered as a probe, and it bought a boundary the chain did
+  not have.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
