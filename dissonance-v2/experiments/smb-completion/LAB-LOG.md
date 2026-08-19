@@ -6561,6 +6561,54 @@ one variable of science only when a link stalls.
   action limit 4096, entry bound 131,072, suffix `one_or_two`, and no
   waypoint or chord field — the promoted stack exactly as registered.
 
+### The claim replay gate — built ahead of need, byte-inert
+
+- The registered completion protocol's replay gate has two halves. The
+  first, a byte-exact campaign replay of the winning link, is chained by
+  every campaign wrapper already. The second — **a full from-power-on
+  serial replay of the completion lineage's input reproducing the ladder
+  and the final state hash** — had no tool. Built now, while the chain
+  runs, so the endgame does not wait on a builder.
+- `smb-completion gate-claim-replay <archive> <output>` picks the
+  archive's deepest lineage by exactly the rule the frontier film uses —
+  deepest tuple, then shortest input, then lowest identifier, so the gate
+  and the film replay the same input — and replays it through
+  `observe_smb_input` from gameplay genesis. No snapshot is restored
+  anywhere in that path, so nothing about the campaign's resume machinery
+  participates in the result. It reports the input hash, the
+  observation-trace hash in the convention the baseline reproduction
+  froze, the final work-RAM hash, the final decoded state, the ladder that
+  one lineage walks, and its disagreements with the archive's ladder.
+- **The predicate, stated because "identical ladder" needs a definition.**
+  The archive's ladder is a union over every retained entry, so one
+  lineage's ladder is a subset of it and literal equality is the wrong
+  test. The gate passes when the replayed lineage reaches the archive's
+  deepest tuple and every pair it walks appears in the archive's ladder
+  without exceeding the maximum recorded there. Disagreements are listed
+  in full rather than counted, so a failure names itself. This is the
+  operator's reading of the registered wording and is flagged for the
+  integrator at sign-off.
+- Validated on a recorded archive rather than a fixture, because the
+  replay needs the external ROM and the test suite has none: C49's archive
+  replays its 351-action frontier from power-on in 17,376 frames, walks
+  1-1, 1-2, 1-3 and 1-4 and into 2-1, reaches the archive's own deepest
+  tuple `(1,0,144)`, and reports no disagreements.
+- The four quality gates pass and the standing inertness reference
+  re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24` —
+  expected, since the mode is read-only and adds no policy.
+- The reference's exact invocation is recorded here because it never was:
+  `smb-completion archive-resume-frontier-viable-ladder <C49 conquest
+  archive> 0x5eed_ef00 256 4096 <output directory>`, and the reference hash
+  is the SHA-256 of the produced `archive-live.json`. Two minutes forty on
+  the workstation.
+- Discipline recorded with the build, because the mode has to reach the ARM
+  machine eventually: **the ARM machine's binary is not rebuilt between a
+  campaign run and the audit its wrapper chains.** Inertness makes a
+  rebuild harmless in principle, but a chained audit should not carry an
+  unnecessary variable. The gate mode crosses to that machine in a gap
+  between links, not during one.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

@@ -19,8 +19,8 @@ use crate::{
         ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS,
         PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, SmbDeathBytes, SmbInput, SmbMacro,
         SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
-        SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels, smb_death_bytes,
-        smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        SmbProgressWatermark, SmbSnapshot, SmbTarget, observe_smb_input, smb_camera_pixels,
+        smb_death_bytes, smb_mechanical_state_from_wram, smb_milestones_from_wram,
     },
     target::Target,
 };
@@ -154,6 +154,159 @@ impl SmbLadder {
     pub fn is_absent(&self) -> bool {
         self.version == 0 && self.max_tuple.is_none() && self.transitions.is_empty()
     }
+}
+
+/// One rung of a single lineage's ladder, measured by replaying that lineage.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbLineageRung {
+    /// Decoded world number.
+    pub world: u8,
+    /// Decoded level number.
+    pub level: u8,
+    /// Emulated frame count at which this pair was first observed.
+    pub first_frame: u64,
+    /// Deepest progress bucket the lineage reached in this pair.
+    pub max_progress: u16,
+}
+
+/// What one from-power-on serial replay of a recorded lineage observed.
+///
+/// This is the claim-gate measurement. It replays the input from gameplay
+/// genesis through `observe_smb_input`, the same entry point the baseline
+/// reproduction used, so no snapshot restore and none of the campaign's resume
+/// machinery participates in the result.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbClaimReplayReport {
+    /// Identifier of the replayed archive entry.
+    pub entry_id: u64,
+    /// Actions in the replayed input.
+    pub actions: usize,
+    /// Frames emulated by the replay.
+    pub frames: u64,
+    /// SHA-256 of the serialized input.
+    pub input_sha256: String,
+    /// SHA-256 of the serialized observation trace, the convention the
+    /// baseline reproduction used for champion observations.
+    pub trace_sha256: String,
+    /// SHA-256 of the final work RAM.
+    pub final_wram_sha256: String,
+    /// Final decoded mechanical state.
+    pub final_state: SmbMechanicalState,
+    /// Whether the replay ended in the target's death state.
+    pub died: bool,
+    /// The ladder this one lineage walks.
+    pub lineage_ladder: Vec<SmbLineageRung>,
+    /// Deepest tuple the lineage reached.
+    pub lineage_max_tuple: Option<(u8, u8, u16)>,
+    /// Deepest tuple the source archive recorded, over every entry.
+    pub archive_max_tuple: Option<(u8, u8, u16)>,
+    /// Whether the replayed lineage reaches the archive's deepest tuple.
+    pub max_tuple_matches: bool,
+    /// Pairs the lineage walks that the archive's ladder does not carry, or
+    /// where the lineage outruns the archive's recorded maximum. Empty is the
+    /// passing case.
+    pub ladder_disagreements: Vec<String>,
+}
+
+/// Replay one recorded lineage from gameplay genesis and report what it walks.
+///
+/// The lineage is chosen by the same rule the frontier film uses: the deepest
+/// `(world, level, progress)` tuple, then the shortest input, then the lowest
+/// entry identifier — so the gate and the film replay the same input.
+pub fn replay_smb_claim_lineage(
+    rom: &[u8],
+    source: &SmbArchiveReport,
+) -> Result<SmbClaimReplayReport, Box<dyn Error>> {
+    let entry = source
+        .entries
+        .iter()
+        .max_by_key(|entry| {
+            (
+                entry.key.world,
+                entry.key.level,
+                entry.key.progress,
+                Reverse(entry.input.actions.len()),
+                Reverse(entry.id),
+            )
+        })
+        .ok_or("source archive contains no retained entries")?;
+    let observations = observe_smb_input(rom, &entry.input)?;
+    let mut rungs = BTreeMap::<(u8, u8), (u64, u16)>::new();
+    let mut frames = 0_u64;
+    let mut died = false;
+    for observation in &observations {
+        let wram: &[u8; 2_048] = observation
+            .wram
+            .as_slice()
+            .try_into()
+            .map_err(|_| "claim replay observation WRAM is not exactly 2 KiB")?;
+        let state = smb_mechanical_state_from_wram(wram);
+        frames = frames.max(observation.frame_count);
+        died |= state.dead;
+        let rung = rungs
+            .entry((state.world, state.level))
+            .or_insert((observation.frame_count, 0));
+        rung.1 = rung.1.max(state.progress);
+    }
+    let final_observation = observations
+        .last()
+        .ok_or("claim replay produced no observations")?;
+    let final_wram: &[u8; 2_048] = final_observation
+        .wram
+        .as_slice()
+        .try_into()
+        .map_err(|_| "claim replay final WRAM is not exactly 2 KiB")?;
+    let lineage_ladder: Vec<SmbLineageRung> = rungs
+        .iter()
+        .map(
+            |(&(world, level), &(first_frame, max_progress))| SmbLineageRung {
+                world,
+                level,
+                first_frame,
+                max_progress,
+            },
+        )
+        .collect();
+    let lineage_max_tuple = lineage_ladder
+        .iter()
+        .map(|rung| (rung.world, rung.level, rung.max_progress))
+        .max();
+    let archive_ladder = derive_smb_ladder(source);
+    let mut ladder_disagreements = Vec::new();
+    for rung in &lineage_ladder {
+        match archive_ladder
+            .transitions
+            .iter()
+            .find(|transition| transition.world == rung.world && transition.level == rung.level)
+        {
+            None => ladder_disagreements.push(format!(
+                "pair ({}, {}) walked by the lineage is absent from the archive ladder",
+                rung.world, rung.level
+            )),
+            Some(transition) if rung.max_progress > transition.max_progress => {
+                ladder_disagreements.push(format!(
+                    "pair ({}, {}) reaches {} on replay but the archive ladder records {}",
+                    rung.world, rung.level, rung.max_progress, transition.max_progress
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(SmbClaimReplayReport {
+        entry_id: entry.id,
+        actions: entry.input.actions.len(),
+        frames,
+        input_sha256: format!("{:x}", Sha256::digest(serde_json::to_vec(&entry.input)?)),
+        trace_sha256: format!("{:x}", Sha256::digest(serde_json::to_vec(&observations)?)),
+        final_wram_sha256: format!("{:x}", Sha256::digest(final_wram)),
+        final_state: smb_mechanical_state_from_wram(final_wram),
+        died,
+        lineage_ladder,
+        lineage_max_tuple,
+        archive_max_tuple: archive_ladder.max_tuple,
+        max_tuple_matches: lineage_max_tuple == archive_ladder.max_tuple,
+        ladder_disagreements,
+    })
 }
 
 /// Derive the extended ladder from a recorded archive without emulating anything.
