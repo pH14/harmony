@@ -10,4 +10,5 @@ pub mod phase3;
 pub mod phase4a;
 pub mod phase4b;
 pub mod phase4c;
+pub mod sequence_reducer;
 pub mod target;
