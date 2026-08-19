@@ -7394,6 +7394,14 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c105-conquest/` on the ARM machine,
   log `c105.log`, sentinel discipline in force; per-link replay audits stay
   dropped by ruling.
+- Launch confirmed from the run's own recorded header before parking: origin
+  C104's archive at the registered hash, resume input SHA-256 `da7bcfba…` at
+  3,349 actions — a third distinct lineage, the resume rule again reaching
+  back inside its thirty-two buckets rather than taking the deepest entry —
+  campaign seed 1,592,639,529, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,336,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`. Jobs were flowing
+  before this entry was written.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
