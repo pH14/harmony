@@ -8391,6 +8391,9 @@ one variable of science only when a link stalls.
   | 279 → 280 | 117 | forced | (7,0,284) | 117 |
   | 282 → 283 | 201 | forced | (7,0,291) | **104**, 97 |
 
+- **CORRECTED BELOW — see the correction recorded after this entry: the
+  failures land downstream of the stalls, which is a phase signature rather
+  than a dwell-graded check, and the paragraph that follows overreaches.**
 - **The shape is the same every time, and it is the castle's.** Strip out the
   incidental short actions and every stall is one or two holds of ninety-seven
   to a hundred and nineteen frames. The controller vocabulary's long stratum is
@@ -8427,6 +8430,56 @@ one variable of science only when a link stalls.
   same terrain needs the same waits. The 100–149 band alone carries two of these
   stalls worth 363 frames, and C106 produced a passage through that band at
   17.5 frames per bucket against the others' 27 to 38.
+
+### Correction to the stall verdict — the failures are downstream, so this is phase, not a dwell check
+
+- Recorded beside the per-stall verdict on the integrator's correction, before
+  the reading hardened into the log, and confirmed against that verdict's own
+  numbers rather than accepted on authority.
+- **Where each shortened run actually fails, measured from the table's own
+  `shortened_reached` column:** the run survives the stall and dies between one
+  and twenty-two buckets *past* it. Ten of eleven fail strictly downstream; the
+  eleventh fails one bucket short of its stall's end.
+
+  | stall ends at | fails at | buckets downstream |
+  |---|---|---|
+  | 86 | 100 | +14 |
+  | 97 | 102 | +5 |
+  | 108 | 115 | +7 |
+  | 231 | 230 | −1 |
+  | 232 | 238 | +6 |
+  | 235 | 238 | +3 |
+  | 268 | 290 | **+22** |
+  | 270 | 287 | +17 |
+  | 271 | 285 | +14 |
+  | 280 | 284 | +4 |
+  | 283 | 291 | +8 |
+
+- **That is the wrong signature for the claim this operator made.** A check that
+  grades stillness fails *at* the check — which is what the castle's stand-stills
+  did, and which is why they read as dwell-graded. Failure displaced ten,
+  fourteen, twenty-two buckets downstream is the signature of **a suffix tuned
+  to world timing**: remove the wait, shift the phase of everything after it,
+  and the recorded actions meet moving hazards on the wrong cycle. The hold
+  *shapes* matched the castle's and this operator generalised from shape alone
+  without checking where the runs died. The table contained the disconfirming
+  evidence the whole time.
+- **What the verdict therefore means, restated precisely.** Forced means **the
+  recorded suffix requires the wait**. It does not mean the game grades
+  stillness at that spot, and it does not mean the wait is intrinsic to crossing
+  that ground. The dwell-graded-check class needs failure-at-the-spot evidence,
+  and this data does not supply it; the castle's does, and the two should not be
+  pooled.
+- **This raises the recoverable ceiling rather than lowering it.** Nothing
+  measured excludes a route that arrives at each hazard on the correct phase
+  *without stopping*. The 1,728 frames are not a floor the level imposes; they
+  are what this particular suffix costs to stay in time. A different suffix
+  through the same terrain is untested and unexcluded.
+- **The hold bisection is reframed accordingly and stands approved**: it measures
+  **the fixed suffix's phase tolerance at each stall** — how much of each wait
+  the recorded continuation can absorb before it falls out of time — and it will
+  be reported as that. It does not measure a game-imposed minimum dwell, and no
+  number it produces should be described that way.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
