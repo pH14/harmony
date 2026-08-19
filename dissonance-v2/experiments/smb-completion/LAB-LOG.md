@@ -6627,6 +6627,11 @@ one variable of science only when a link stalls.
   finish?** A stall gets a census of the new frontier before any arm.
 - Raw destination: `target/smb-completion/c100-conquest/` on the ARM
   machine, log `c100.log`, sentinel discipline in force.
+- Launch confirmed from the run's own recorded header before parking:
+  origin C99's archive at the registered hash, resume input SHA-256
+  `b1fe545d…` at 3,384 actions, campaign seed 1,592,639,524, action limit
+  4096, entry bound 131,072, suffix `one_or_two`, and no waypoint or chord
+  field — the promoted stack exactly as registered.
 
 ### The claim replay gate — built ahead of need, byte-inert
 
