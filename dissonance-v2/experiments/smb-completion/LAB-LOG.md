@@ -9029,6 +9029,50 @@ one variable of science only when a link stalls.
   "cheapest_frames_in_level":3537,"retained":3263}`. The run's state is now
   readable a minute at a time instead of only at its sentinel.
 
+### C114 result — tip 216, and the resume carried C113's tip exactly
+
+- The run completed all 50,000 executions. Ladder `(7,0,216)`, one bucket past
+  C113. Winning lineage: **216 buckets in 3,555 frames, 16.46 frames per
+  bucket.** Live archive SHA-256
+  `736fb87414d731e410b2e84c666f90d8e68e969cfb588ef0ee4b23f7c4245b09`. The
+  sidecar wrote 23 lines.
+- **The promoted resume rule did what it was promoted to do.** C114's recorded
+  resume input is 3,270 actions, which is C113's winning lineage exactly. The
+  tip crossed the boundary byte-for-byte, which is the failure C111 showed and
+  the reason the rule was changed.
+- **One number here differs from the integrator's reading and is recorded as
+  measured.** The integrator reported that C114 holds C113 exactly at bucket
+  215, delta zero. That is true of the **resume input** — both are the same
+  3,270-action lineage totalling 154,728 frames. It is not true of **C114's own
+  winning lineage**, which reaches bucket 215 at 3,547 frames in level against
+  C113's 3,417: **130 frames dearer**. The link's winner is a different lineage
+  from the one it resumed, and it took a dearer path to 215 before extending.
+  Its own extension from 215 to 216 costs 8 frames.
+- **Against the promoted bar — tip depth and cost at the deepest common bucket —
+  the two halves split again.** Depth passes: 216 against 215. Cost at the
+  deepest common bucket fails: 130 frames dearer at 215. Recorded without a
+  verdict; the bar's resolution is the integrator's under the narrowed autonomy.
+- Frontier pace across the entrance family, for the record: 214, 215, 215, 216
+  across C110, C111, C113 and C114. About one bucket per fifty-thousand-execution
+  link. The mechanism question that raises is with the integrator and no policy
+  is changed here over it.
+
+## C115 — registered entrance continuation
+
+- Ordinary link on the integrator's order. One live conquest campaign, 50,000
+  executions, twelve workers, campaign seed `0x5eed_c033`, action limit 4096,
+  retention `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:7,0,0,216,0,15`, replacement
+  `fewest_frames_in_level`, resume `frontier_shortest`, suffix `one_or_two`, no
+  chord bias, sidecar on. Sourced from C114's full live archive, SHA-256
+  `736fb87414d731e410b2e84c666f90d8e68e969cfb588ef0ee4b23f7c4245b09`.
+- Co-tenant with the C113 replay audit by ruling; the pace cost is accepted.
+- **Preregistered bar: tip depth and cost at the deepest common bucket**, against
+  C114's 216 buckets for 3,555 frames.
+- Raw destination: `target/smb-completion/c115-conquest/`, log `c115.log`,
+  bounded waiter armed at launch.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
