@@ -9302,6 +9302,38 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c118-conquest/`, log `c118.log`,
   waiter armed as a tracked command so its completion resumes work.
 
+### Rolling compression at audit completion
+
+- Registered on the integrator's rule and applied retroactively to the one case
+  that already qualified. When link N's audit verifies green, three files
+  become redundant and compress: N's `archive-replay.json` and
+  `campaign-report-replay.json`, which restate what the live run recorded, and
+  the origin archive N consumed — link N−1's `archive-live.json` — which that
+  audit has now exercised end to end. All three regenerate byte-exact by replay,
+  and each gets the same manifest recording its sha256 and byte count before
+  compression.
+- **The two newest archives are never touched.** They are the running link's
+  origin and its predecessor. The script computes this from the link number and
+  refuses rather than trusting the caller.
+- The script also refuses outright unless the named link's `replay-verdict.json`
+  reports `"replay_verified": true`, so a compression cannot precede the verdict
+  that justifies it.
+- **Applied to C113's green audit: 37 GB recovered.** Its replay archive went
+  12,140 MB to 30 MB, its replay report 13,323 MB to 33 MB, and C110's archive
+  11,842 MB to 29 MB. Free space rose from 277 GB to 312 GB and usage fell to 66
+  percent, during a link and an audit both running.
+- Confirmed before compressing that nothing pending reads C110's archive: the
+  running audit consumes C113's archive as its origin, and the running link
+  consumes C117's.
+- **One dependency recorded rather than assumed away.** C111 and C112 both used
+  C110 as their origin. Neither has been audited. If either is audited later,
+  C110's archive is needed and must be decompressed first, which zstd does
+  losslessly. The manifest carries the hash to check the restoration against.
+- Streams, campaign reports, censuses and verdicts stay uncompressed.
+- C111's and C112's own archives are left alone. They are neither old-run
+  eligible nor covered by this rule, and extending a compression rule past what
+  was ruled is how evidence goes missing.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
