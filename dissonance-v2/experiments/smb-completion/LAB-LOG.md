@@ -9155,6 +9155,39 @@ one variable of science only when a link stalls.
   composed locally, transferred, and syntax-checked on the box before running.
   Scripts of any length go over as files.
 
+## C116 — registered entrance continuation
+
+- Launched under the standing rule for an ordinary link that records PASS: the
+  next link follows without further acknowledgement.
+- One live conquest campaign, 50,000 executions, twelve workers, campaign seed
+  `0x5eed_c034`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,219,0,15`, replacement
+  `fewest_frames_in_level`, resume `frontier_shortest`, suffix `one_or_two`, no
+  chord bias, sidecar on. Sourced from C115's full live archive, SHA-256
+  `645e51541efc3a2a794e4261469e2014a236750f9b694a38f45cc812e7b976c0`.
+- The disk gate ran first and reported 348 GB free. A link that starts without
+  room to finish loses its slot and its output, so the check precedes the build.
+- **Bar: strictly deeper tip than 219 with the archive minimum at bucket 219 no
+  worse than C115's, or equal tip with a strictly cheaper minimum there.**
+  Carried-lineage cost at 219 recorded alongside as drift.
+- Raw destination: `target/smb-completion/c116-conquest/`, log `c116.log`,
+  bounded waiter armed at 90 minutes.
+
+### Standing rule for ordinary links
+
+- When an ordinary link ends and records PASS under the two-part bar, the next
+  ordinary link launches without further acknowledgement: origin the
+  just-passed link's full archive, `frontier_shortest`, promoted stack
+  unchanged, next unused seed, sidecar on, disk gate enforced, bounded waiter
+  armed.
+- Everything else stops for the integrator first: a FAIL on either clause, any
+  cure arm or policy change, a mechanism anomaly, an audit failure, and **the
+  first entry into a new level** — a level transition is recorded and the chain
+  pauses for acknowledgement before the next launch, because bars get restated
+  at level boundaries.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
