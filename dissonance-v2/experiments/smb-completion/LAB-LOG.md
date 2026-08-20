@@ -8984,6 +8984,51 @@ one variable of science only when a link stalls.
   Against the entrance family's own numbers it is small: C113 beats the carried
   route by a wider margin at every bucket than the whole 127 frames.
 
+### Ruling recorded — the resume rule is promoted on the tip clause
+
+- The integrator ruled the split verdict. **The everywhere-clause is missed and
+  the tip clause is passed**, and promotion follows the tip clause:
+  `frontier_shortest` is the resume rule for the entrance family.
+- Rationale as given, recorded because it changes how future bars are written:
+  the clock bills only the total at the tip, the chain resumes from the tip, and
+  the everywhere-clause re-imported the cross-lineage bucket comparison this
+  session already retired. **Future pass bars score tip depth and cost at the
+  deepest common bucket only.**
+- Promotion is provisional until C113's replay audit lands green. The audit was
+  launched by the integrator and is running; a failure means quarantine and
+  re-derivation.
+- **The carried route is closed as a chain candidate.** Its 127 recoverable
+  frames cannot catch a route that beats it by more than that at every bucket.
+  No further work on it.
+
+## C114 — registered entrance continuation under the promoted resume rule
+
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c032` — the next unused value in the sequence —
+  action limit 4096, retention `probe_at_admission_45_snapback_16`, vocabulary
+  `down_ten_mask`, key policy `frozen_room_x_16:3,1,208`, selector
+  `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,215,0,15`, replacement
+  `fewest_frames_in_level`, resume **`frontier_shortest`**, suffix `one_or_two`,
+  no chord bias. Sourced from C113's full live archive, SHA-256
+  `a2234c93256df5c3ef8305b865bc83f3d5feb9d08e8bfcac2ec1512116f3d9a9`.
+- The progress sidecar is on for the first time. The ARM machine's binary was
+  rebuilt in this gap; the running C113 audit is unaffected because it holds its
+  own loaded binary and never re-invokes one.
+- **Preregistered bar, under the retired everywhere-clause: tip depth and cost
+  at the deepest common bucket.** C113 stands at bucket 215 for 3,417 frames,
+  15.89 per bucket. Pass is a deeper tip at a cost at or below C113's curve
+  where the two meet.
+- Raw destination: `target/smb-completion/c114-conquest/`, log `c114.log`,
+  bounded waiter armed at launch.
+- Launch confirmed from the run's own recorded header before parking. Campaign
+  seed 1,592,639,538, origin C113's archive at the registered hash `a2234c93…`,
+  resume input SHA-256 `0fdbacb9…` at 3,270 actions.
+- The sidecar wrote its first line and the file works as intended:
+  `{"unix_time":1787196190,"executions":1,"world":7,"level":0,"progress":215,
+  "cheapest_frames_in_level":3537,"retained":3263}`. The run's state is now
+  readable a minute at a time instead of only at its sentinel.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
