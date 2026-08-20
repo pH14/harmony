@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Campaign mode: asynchronous shared-archive search with a recorded job stream.
+//! SMB adapter for asynchronous shared-archive search with a recorded job stream.
 //!
 //! A campaign runs W workers on one machine against one shared archive built
 //! from the promoted SMB completion stack. A job is a pure function of
@@ -15,8 +15,6 @@ use std::{
     error::Error,
     io::Write,
     num::NonZeroUsize,
-    sync::mpsc,
-    thread,
     time::Duration,
 };
 
@@ -26,9 +24,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    chord_table::{ChordTableCheckpoint, ChordTableParameters, ChordTables},
-    phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
-    phase4c::{
+    search::empirical_steps::{
+        EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTables,
+    },
+    search::parallel::with_worker_pool,
+    smb::archive::{
         Archive, ArchiveCandidate, SmbArchiveDurationPolicy, SmbArchiveKey, SmbArchiveKeyPolicy,
         SmbArchiveProgressPoint, SmbArchiveReplacementPolicy, SmbArchiveReport,
         SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy,
@@ -36,6 +36,7 @@ use crate::{
         merge_action_milestones, merge_milestones, merge_progress_watermark, milestone_key,
         update_first_inputs,
     },
+    smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
     target::Target,
 };
 
@@ -52,7 +53,7 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable
 /// cannot livelock selection.
 const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 
-/// Curve sampling interval in admitted executions, matching the serial engine.
+/// Curve sampling interval in admitted executions.
 const CURVE_INTERVAL: u64 = 100;
 
 /// Where a campaign starts: clean genesis or a recorded source archive.
@@ -262,10 +263,10 @@ pub struct SmbCampaignJobRecord {
     pub selector: Option<SmbSelectorDraw>,
     /// Derived table version used to draw this job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_before: Option<ChordTableCheckpoint>,
+    pub chord_table_before: Option<EmpiricalStepCheckpoint>,
     /// Periodic derived table hash after admitting this stream record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_after: Option<ChordTableCheckpoint>,
+    pub chord_table_after: Option<EmpiricalStepCheckpoint>,
 }
 
 /// Stream record for one job skipped before execution as a known duplicate.
@@ -282,10 +283,10 @@ pub struct SmbCampaignSkipRecord {
     pub selector: Option<SmbSelectorDraw>,
     /// Derived table version used to draw this skipped job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_before: Option<ChordTableCheckpoint>,
+    pub chord_table_before: Option<EmpiricalStepCheckpoint>,
     /// Periodic derived table hash after this stream record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_after: Option<ChordTableCheckpoint>,
+    pub chord_table_after: Option<EmpiricalStepCheckpoint>,
 }
 
 /// One line of the recorded stream after the header.
@@ -671,7 +672,7 @@ pub fn selector_from_identifier(
     }
     if let Some(configuration) = identifier.strip_prefix("yield_budgeted_128:") {
         let mut parts = configuration.split(',');
-        let parameters = crate::draw_budget::DrawBudgetParameters {
+        let parameters = crate::search::draw_budget::DrawBudgetParameters {
             history_window: parse_selector_field(&mut parts, "history window")?,
             exploration_floor: parse_selector_field(&mut parts, "exploration floor")?,
             maximum_draws: parse_selector_field(&mut parts, "maximum draws")?,
@@ -790,7 +791,7 @@ fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, Box<
 /// Expand one mutation seed into its complete suffix.
 ///
 /// The frozen one-or-two suffix policy and stratified duration policy are
-/// sampled by the same shared code the serial engine uses, from a fresh RNG
+/// sampled by the same shared code every worker count uses, from a fresh RNG
 /// seeded with the mutation seed alone. This is what makes a job a pure
 /// function of (parent snapshot, mutation seed).
 fn derive_suffix(
@@ -818,7 +819,7 @@ fn derive_suffix_sized(
     vocabulary: SmbCampaignVocabulary,
     long: bool,
     chord_policy: SmbCampaignChordPolicy,
-    chord_tables: Option<&ChordTables<ButtonChord>>,
+    chord_tables: Option<&EmpiricalStepTables<ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = StdRand::with_seed(mutation_seed);
     let suffix_len = if long {
@@ -857,7 +858,7 @@ fn derive_suffix_sized(
                 continue;
             }
         }
-        suffix.push(crate::phase4c::sample_chord_from_masks(
+        suffix.push(crate::smb::archive::sample_chord_from_masks(
             &mut rand,
             SmbArchiveDurationPolicy::Stratified,
             vocabulary.masks(),
@@ -1219,7 +1220,7 @@ pub struct SmbChordTableDerivation {
     /// Thin SMB source filter.
     pub source_filter: SmbChordSourceFilter,
     /// Game-neutral extraction, mixture, update, and hash parameters.
-    pub parameters: ChordTableParameters,
+    pub parameters: EmpiricalStepParameters,
 }
 
 /// Header provenance for a derived chord-table policy.
@@ -1230,7 +1231,7 @@ pub struct SmbChordTableHeader {
     /// Registered source filter and game-neutral fold parameters.
     pub derivation: SmbChordTableDerivation,
     /// Hash after folding the named source and before the first campaign draw.
-    pub initial: ChordTableCheckpoint,
+    pub initial: EmpiricalStepCheckpoint,
 }
 
 /// Chord policy a campaign draws region chords from, recorded in the
@@ -1295,7 +1296,7 @@ pub fn chord_policy_from_identifier(
             level: parse_chord_field(&mut fields, "level")?,
             minimum_progress: parse_chord_field(&mut fields, "minimum progress")?,
         };
-        let parameters = ChordTableParameters {
+        let parameters = EmpiricalStepParameters {
             prefix_steps: parse_chord_field(&mut fields, "prefix steps")?,
             recent_successes: parse_chord_field(&mut fields, "recent successes")?,
             recent_weight: parse_chord_field(&mut fields, "recent weight")?,
@@ -1438,8 +1439,8 @@ pub enum SmbCampaignVocabulary {
 impl SmbCampaignVocabulary {
     fn masks(self) -> &'static [u8] {
         match self {
-            Self::FrozenNineMask => &crate::phase4c::FROZEN_BUTTON_MASKS,
-            Self::DownTenMask => &crate::phase4c::DOWN_TEN_BUTTON_MASKS,
+            Self::FrozenNineMask => &crate::smb::archive::FROZEN_BUTTON_MASKS,
+            Self::DownTenMask => &crate::smb::archive::DOWN_TEN_BUTTON_MASKS,
         }
     }
 }
@@ -1675,7 +1676,7 @@ struct SmbCampaignJobResult {
 }
 
 /// Execute one job: restore the parent snapshot and apply the suffix exactly as
-/// the serial engine's suffix loop does, collecting per-boundary candidates
+/// the campaign suffix loop does, collecting per-boundary candidates
 /// with worker-side probe verdicts.
 /// Per-run execution policies a worker applies to every job.
 #[derive(Clone, Copy, Debug)]
@@ -1740,12 +1741,12 @@ fn execute_job(
 /// replay. Admission through this struct is the single admission lock: every
 /// archive mutation happens here, in stream order, so the archive state at any
 /// stream position is identical in the live run and in replay.
-struct CoordinatorCore<'a> {
-    archive: Archive<'a>,
+struct CoordinatorCore {
+    archive: Archive,
     aggregate: SmbMilestones,
-    watermark: crate::phase4b::SmbProgressWatermark,
-    first_reached: crate::phase4b::SmbMilestoneTimes,
-    first_inputs: crate::phase4b::SmbMilestoneInputs,
+    watermark: crate::smb::target::SmbProgressWatermark,
+    first_reached: crate::smb::target::SmbMilestoneTimes,
+    first_inputs: crate::smb::target::SmbMilestoneInputs,
     champion_input: SmbInput,
     champion_milestones: SmbMilestones,
     curve: Vec<SmbArchiveProgressPoint>,
@@ -1760,7 +1761,7 @@ struct CoordinatorCore<'a> {
     waypoint_snap_exempt: u64,
 }
 
-impl CoordinatorCore<'_> {
+impl CoordinatorCore {
     fn new(
         max_actions: usize,
         selector_policy: SmbArchiveSelectorPolicy,
@@ -1770,7 +1771,7 @@ impl CoordinatorCore<'_> {
         waypoint_policy: SmbArchiveWaypointPolicy,
         replacement_policy: SmbArchiveReplacementPolicy,
     ) -> Self {
-        let mut archive = Archive::new(None);
+        let mut archive = Archive::new();
         archive.max_entries = archive_entry_limit;
         archive.set_selector_policy(selector_policy);
         archive.set_waypoint_policy(waypoint_policy);
@@ -1778,9 +1779,9 @@ impl CoordinatorCore<'_> {
         Self {
             archive,
             aggregate: SmbMilestones::default(),
-            watermark: crate::phase4b::SmbProgressWatermark::default(),
-            first_reached: crate::phase4b::SmbMilestoneTimes::default(),
-            first_inputs: crate::phase4b::SmbMilestoneInputs::default(),
+            watermark: crate::smb::target::SmbProgressWatermark::default(),
+            first_reached: crate::smb::target::SmbMilestoneTimes::default(),
+            first_inputs: crate::smb::target::SmbMilestoneInputs::default(),
             champion_input: SmbInput::default(),
             champion_milestones: SmbMilestones::default(),
             curve: Vec::new(),
@@ -1796,7 +1797,7 @@ impl CoordinatorCore<'_> {
         }
     }
 
-    /// Walk the origin exactly as the serial engine's bootstrap does: retain
+    /// Walk the origin through the campaign bootstrap: retain
     /// genesis, then every viable action boundary of each initial input, all at
     /// execution zero and with the promoted admission probe.
     fn bootstrap(
@@ -1829,7 +1830,6 @@ impl CoordinatorCore<'_> {
                     milestones: SmbMilestones::default(),
                 },
                 genesis_snapshot,
-                &[],
             )?
             .ok_or("failed to retain campaign genesis")?;
         for input in initial_inputs {
@@ -1863,7 +1863,6 @@ impl CoordinatorCore<'_> {
                 let snapshot = target
                     .snapshot()
                     .ok_or("failed to snapshot campaign bootstrap prefix")?;
-                let observations = target.last_action_observations().to_vec();
                 let key = archive_key(target.wram(), self.key_policy);
                 if !admission_is_viable(target, &snapshot, self.retention_policy)? {
                     continue;
@@ -1877,7 +1876,6 @@ impl CoordinatorCore<'_> {
                         milestones,
                     },
                     snapshot,
-                    &observations,
                 )? {
                     parent_id = id;
                 }
@@ -1888,7 +1886,7 @@ impl CoordinatorCore<'_> {
 
     /// Admit one executed job at the next sequence position, merging its
     /// per-action evidence in order and applying the promoted retention rules
-    /// through the same archive the serial engine uses.
+    /// through the campaign's sole archive implementation.
     fn admit_job(
         &mut self,
         parent_id: u64,
@@ -1973,7 +1971,6 @@ impl CoordinatorCore<'_> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot.clone(),
-                    &action.observations,
                 )? {
                     Some(id) if id == inserted_before => {
                         decisions.push(SmbCampaignAdmissionDecision::Retained {
@@ -2007,7 +2004,7 @@ impl CoordinatorCore<'_> {
         });
     }
 
-    /// Push the final curve point exactly as the serial engine does at its
+    /// Push the final curve point at the campaign's
     /// last execution, without duplicating an interval point.
     fn finish_curve(&mut self) {
         if self.sequence > 0 && !self.sequence.is_multiple_of(CURVE_INTERVAL) {
@@ -2051,8 +2048,6 @@ impl CoordinatorCore<'_> {
             retained: self.archive.retained,
             rejected: self.archive.rejected,
             deaths: self.deaths,
-            ranking: Default::default(),
-            generated_mutator: Default::default(),
             // Frozen ladder policy: absent, so campaign archives keep their
             // recorded byte shape.
             ladder: Default::default(),
@@ -2069,7 +2064,7 @@ struct ResolvedOrigin {
 }
 
 type InitialChordTables = (
-    Option<ChordTables<ButtonChord>>,
+    Option<EmpiricalStepTables<ButtonChord>>,
     Option<SmbChordTableHeader>,
 );
 
@@ -2080,7 +2075,7 @@ fn initial_chord_tables(
     let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy else {
         return Ok((None, None));
     };
-    let mut tables = ChordTables::new(derivation.parameters)?;
+    let mut tables = EmpiricalStepTables::new(derivation.parameters)?;
     let source_sha256 = match origin {
         SmbCampaignOrigin::Genesis => format!("{:x}", Sha256::digest([])),
         SmbCampaignOrigin::Archive {
@@ -2108,26 +2103,26 @@ fn initial_chord_tables(
 
 fn source_filter_matches(
     filter: SmbChordSourceFilter,
-    entry: &crate::phase4c::SmbArchiveEntryReport,
+    entry: &crate::smb::archive::SmbArchiveEntryReport,
 ) -> bool {
     (entry.key.world, entry.key.level) == (filter.world, filter.level)
         && entry.key.progress >= filter.minimum_progress
 }
 
 fn current_chord_checkpoint(
-    tables: Option<&ChordTables<ButtonChord>>,
-) -> Result<Option<ChordTableCheckpoint>, Box<dyn Error>> {
+    tables: Option<&EmpiricalStepTables<ButtonChord>>,
+) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
     tables
-        .map(ChordTables::checkpoint)
+        .map(EmpiricalStepTables::checkpoint)
         .transpose()
         .map_err(Into::into)
 }
 
 fn recorded_chord_tables<'a>(
     policy: SmbCampaignChordPolicy,
-    before: Option<&ChordTableCheckpoint>,
-    versions: &'a BTreeMap<u64, ChordTables<ButtonChord>>,
-) -> Result<Option<&'a ChordTables<ButtonChord>>, Box<dyn Error>> {
+    before: Option<&EmpiricalStepCheckpoint>,
+    versions: &'a BTreeMap<u64, EmpiricalStepTables<ButtonChord>>,
+) -> Result<Option<&'a EmpiricalStepTables<ButtonChord>>, Box<dyn Error>> {
     let SmbCampaignChordPolicy::DerivedHalf(_) = policy else {
         if before.is_some() {
             return Err("non-derived chord draw carries a table version".into());
@@ -2145,9 +2140,9 @@ fn recorded_chord_tables<'a>(
 }
 
 fn remember_chord_version(
-    tables: Option<&ChordTables<ButtonChord>>,
+    tables: Option<&EmpiricalStepTables<ButtonChord>>,
     required: &BTreeSet<u64>,
-    versions: &mut BTreeMap<u64, ChordTables<ButtonChord>>,
+    versions: &mut BTreeMap<u64, EmpiricalStepTables<ButtonChord>>,
 ) {
     if let Some(tables) = tables
         && required.contains(&tables.records())
@@ -2158,10 +2153,10 @@ fn remember_chord_version(
 
 fn finish_chord_stream_record(
     policy: SmbCampaignChordPolicy,
-    tables: &mut Option<ChordTables<ButtonChord>>,
-    core: &CoordinatorCore<'_>,
+    tables: &mut Option<EmpiricalStepTables<ButtonChord>>,
+    core: &CoordinatorCore,
     decisions: &[SmbCampaignAdmissionDecision],
-) -> Result<Option<ChordTableCheckpoint>, Box<dyn Error>> {
+) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
     let SmbCampaignChordPolicy::DerivedHalf(_) = policy else {
         return Ok(None);
     };
@@ -2304,7 +2299,7 @@ impl CampaignCounters {
 fn build_report(
     header: &SmbCampaignStreamHeader,
     origin: SmbCampaignOriginRecord,
-    core: CoordinatorCore<'_>,
+    core: CoordinatorCore,
     counters: &CampaignCounters,
     stream_sha256: String,
 ) -> SmbCampaignModeReport {
@@ -2374,12 +2369,7 @@ struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
     selector: Option<SmbSelectorDraw>,
-    chord_table_before: Option<ChordTableCheckpoint>,
-}
-
-struct WorkerReply {
-    worker: u32,
-    outcome: Result<(SmbCampaignJobResult, u64), String>,
+    chord_table_before: Option<EmpiricalStepCheckpoint>,
 }
 
 /// Run one live campaign, writing the stream as it goes.
@@ -2449,12 +2439,13 @@ pub fn run_smb_campaign_with_progress(
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
     }
-    if config.action_limit == 0 || config.action_limit > crate::phase4c::MAX_SMB_COMPLETION_ACTIONS
+    if config.action_limit == 0
+        || config.action_limit > crate::smb::archive::MAX_SMB_COMPLETION_ACTIONS
     {
         return Err("campaign action limit is outside its bounded range".into());
     }
     if config.archive_entry_limit == 0
-        || config.archive_entry_limit > crate::phase4c::MAX_ARCHIVE_ENTRIES
+        || config.archive_entry_limit > crate::smb::archive::MAX_ARCHIVE_ENTRIES
     {
         return Err("campaign archive entry limit is outside its bounded range".into());
     }
@@ -2519,263 +2510,225 @@ pub fn run_smb_campaign_with_progress(
     let mut pending: Vec<Option<PendingJob>> = Vec::new();
     pending.resize_with(workers, || None);
 
-    thread::scope(|scope| -> Result<(), Box<dyn Error>> {
-        let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply>();
-        let mut job_senders = Vec::with_capacity(workers);
-        for index in 0..config.workers {
-            let (job_sender, job_receiver) = mpsc::channel::<JobSpec>();
-            let reply_sender = reply_sender.clone();
-            let worker_policies = SmbJobPolicies {
-                max_actions: config.action_limit,
-                retention_policy: config.retention_policy,
-                key_policy: config.key_policy,
-            };
-            scope.spawn(move || {
-                let mut target = match SmbTarget::from_smb_rom_bytes_headless(rom) {
-                    Ok(target) => target,
-                    Err(error) => {
-                        let _ = reply_sender.send(WorkerReply {
-                            worker: index,
-                            outcome: Err(error.to_string()),
-                        });
-                        return;
-                    }
-                };
-                while let Ok(spec) = job_receiver.recv() {
-                    let frames_before = target.frames_clocked();
-                    let outcome = execute_job(
-                        &mut target,
-                        &spec.snapshot,
-                        spec.parent_actions,
-                        spec.parent_milestones,
-                        &spec.suffix,
-                        worker_policies,
-                    )
-                    .map(|result| {
-                        (
-                            result,
-                            target.frames_clocked().saturating_sub(frames_before),
-                        )
-                    })
-                    .map_err(|error| error.to_string());
-                    let failed = outcome.is_err();
-                    if reply_sender
-                        .send(WorkerReply {
-                            worker: index,
-                            outcome,
-                        })
-                        .is_err()
-                        || failed
-                    {
-                        break;
-                    }
+    let worker_policies = SmbJobPolicies {
+        max_actions: config.action_limit,
+        retention_policy: config.retention_policy,
+        key_policy: config.key_policy,
+    };
+    with_worker_pool(
+        config.workers,
+        |_| SmbTarget::from_smb_rom_bytes_headless(rom).map_err(|error| error.to_string()),
+        |target, spec: JobSpec| {
+            let frames_before = target.frames_clocked();
+            execute_job(
+                target,
+                &spec.snapshot,
+                spec.parent_actions,
+                spec.parent_milestones,
+                &spec.suffix,
+                worker_policies,
+            )
+            .map(|result| {
+                (
+                    result,
+                    target.frames_clocked().saturating_sub(frames_before),
+                )
+            })
+            .map_err(|error| error.to_string())
+        },
+        |pool| -> Result<(), Box<dyn Error>> {
+            // Select one job for one worker, recording skips, or report exhaustion.
+            let select = |core: &mut CoordinatorCore,
+                          rands: &mut [StdRand],
+                          chord_tables: &mut Option<EmpiricalStepTables<ButtonChord>>,
+                          writer: &mut StreamWriter<'_>,
+                          counters: &mut CampaignCounters,
+                          reserved: &mut u64,
+                          worker: u32|
+             -> Result<Option<(JobSpec, PendingJob)>, Box<dyn Error>> {
+                if *reserved >= config.execution_budget {
+                    return Ok(None);
                 }
-            });
-            job_senders.push(Some(job_sender));
-        }
-        drop(reply_sender);
-
-        // Select one job for one worker, recording skips, or report exhaustion.
-        let select = |core: &mut CoordinatorCore<'_>,
-                      rands: &mut [StdRand],
-                      chord_tables: &mut Option<ChordTables<ButtonChord>>,
-                      writer: &mut StreamWriter<'_>,
-                      counters: &mut CampaignCounters,
-                      reserved: &mut u64,
-                      worker: u32|
-         -> Result<Option<(JobSpec, PendingJob)>, Box<dyn Error>> {
-            if *reserved >= config.execution_budget {
-                return Ok(None);
-            }
-            if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
-                && started.elapsed() >= wall_budget
-            {
-                return Ok(None);
-            }
-            let rand = &mut rands[worker as usize];
-            let max_actions = core.max_actions;
-            let mut consecutive_skips = 0_u64;
-            loop {
-                let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
-                let mutation_seed = rand.next();
-                let long = config.suffix == SmbCampaignSuffixPolicy::OneOrTwoRegionLong48
-                    && core
-                        .archive
-                        .entries
-                        .get(parent_index)
-                        .is_some_and(|entry| core.archive.waypoint_contains(&entry.report.key));
-                let chord_table_before = current_chord_checkpoint(chord_tables.as_ref())?;
-                let suffix = derive_suffix_sized(
-                    mutation_seed,
-                    config.vocabulary,
-                    long,
-                    config.chord,
-                    chord_tables.as_ref(),
-                )?;
-                if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
-                    && core.all_prefixes_archived(parent_index, &suffix)
+                if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
+                    && started.elapsed() >= wall_budget
                 {
-                    let chord_table_after =
-                        finish_chord_stream_record(config.chord, chord_tables, core, &[])?;
-                    writer.write_line(&SmbCampaignStreamRecord::Skip(SmbCampaignSkipRecord {
-                        worker,
-                        parent_id: u64::try_from(parent_index)?,
+                    return Ok(None);
+                }
+                let rand = &mut rands[worker as usize];
+                let max_actions = core.max_actions;
+                let mut consecutive_skips = 0_u64;
+                loop {
+                    let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
+                    let mutation_seed = rand.next();
+                    let long =
+                        config.suffix == SmbCampaignSuffixPolicy::OneOrTwoRegionLong48
+                            && core.archive.entries.get(parent_index).is_some_and(|entry| {
+                                core.archive.waypoint_contains(&entry.report.key)
+                            });
+                    let chord_table_before = current_chord_checkpoint(chord_tables.as_ref())?;
+                    let suffix = derive_suffix_sized(
                         mutation_seed,
-                        selector,
-                        chord_table_before,
-                        chord_table_after,
-                    }))?;
-                    if let Some(draw) = &selector {
-                        core.archive.record_selection(parent_index, draw);
+                        config.vocabulary,
+                        long,
+                        config.chord,
+                        chord_tables.as_ref(),
+                    )?;
+                    if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
+                        && core.all_prefixes_archived(parent_index, &suffix)
+                    {
+                        let chord_table_after =
+                            finish_chord_stream_record(config.chord, chord_tables, core, &[])?;
+                        writer.write_line(&SmbCampaignStreamRecord::Skip(
+                            SmbCampaignSkipRecord {
+                                worker,
+                                parent_id: u64::try_from(parent_index)?,
+                                mutation_seed,
+                                selector,
+                                chord_table_before,
+                                chord_table_after,
+                            },
+                        ))?;
+                        if let Some(draw) = &selector {
+                            core.archive.record_selection(parent_index, draw);
+                        }
+                        counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
+                        counters.skips_per_worker[worker as usize] =
+                            counters.skips_per_worker[worker as usize].saturating_add(1);
+                        consecutive_skips = consecutive_skips.saturating_add(1);
+                        continue;
                     }
-                    counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
-                    counters.skips_per_worker[worker as usize] =
-                        counters.skips_per_worker[worker as usize].saturating_add(1);
-                    consecutive_skips = consecutive_skips.saturating_add(1);
-                    continue;
+                    *reserved = reserved.saturating_add(1);
+                    let entry = &core.archive.entries[parent_index];
+                    return Ok(Some((
+                        JobSpec {
+                            snapshot: entry.snapshot.clone(),
+                            parent_actions: entry.report.input.actions.len(),
+                            parent_milestones: entry.report.milestones,
+                            suffix,
+                        },
+                        PendingJob {
+                            parent_id: u64::try_from(parent_index)?,
+                            mutation_seed,
+                            selector,
+                            chord_table_before,
+                        },
+                    )));
                 }
-                *reserved = reserved.saturating_add(1);
-                let entry = &core.archive.entries[parent_index];
-                return Ok(Some((
-                    JobSpec {
-                        snapshot: entry.snapshot.clone(),
-                        parent_actions: entry.report.input.actions.len(),
-                        parent_milestones: entry.report.milestones,
-                        suffix,
-                    },
-                    PendingJob {
-                        parent_id: u64::try_from(parent_index)?,
-                        mutation_seed,
-                        selector,
-                        chord_table_before,
-                    },
-                )));
-            }
-        };
+            };
 
-        let mut in_flight = 0_usize;
-        for worker in 0..config.workers {
-            match select(
-                &mut core,
-                &mut rands,
-                &mut chord_tables,
-                &mut writer,
-                &mut counters,
-                &mut reserved,
-                worker,
-            )? {
-                Some((spec, pending_job)) => {
-                    pending[worker as usize] = Some(pending_job);
-                    let sender = job_senders[worker as usize]
-                        .as_ref()
-                        .ok_or("campaign worker channel closed early")?;
-                    sender
-                        .send(spec)
-                        .map_err(|_| "campaign worker exited before its first job")?;
-                    in_flight += 1;
-                }
-                None => {
-                    job_senders[worker as usize] = None;
+            let mut in_flight = 0_usize;
+            for worker in 0..config.workers {
+                match select(
+                    &mut core,
+                    &mut rands,
+                    &mut chord_tables,
+                    &mut writer,
+                    &mut counters,
+                    &mut reserved,
+                    worker,
+                )? {
+                    Some((spec, pending_job)) => {
+                        pending[worker as usize] = Some(pending_job);
+                        pool.send(worker, spec)?;
+                        in_flight += 1;
+                    }
+                    None => {
+                        pool.close(worker)?;
+                    }
                 }
             }
-        }
 
-        while in_flight > 0 {
-            let reply = reply_receiver
-                .recv()
-                .map_err(|_| "every campaign worker exited while jobs were in flight")?;
-            let worker_index = reply.worker as usize;
-            let (result, frames) = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                format!("campaign worker {} failed: {error}", reply.worker).into()
-            })?;
-            let pending_job = pending[worker_index]
-                .take()
-                .ok_or("campaign worker replied without a pending job")?;
-            let (sequence, decisions) = core.admit_job(pending_job.parent_id, &result)?;
-            if let Some(draw) = &pending_job.selector {
-                let parent_index = usize::try_from(pending_job.parent_id)?;
-                core.archive.record_selection(parent_index, draw);
-                core.archive.record_selection_outcome(
-                    parent_index,
-                    decisions.iter().any(|decision| {
-                        matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
-                    }),
+            while in_flight > 0 {
+                let reply = pool.receive()?;
+                let worker_index = reply.worker as usize;
+                let (result, frames) = reply.outcome.map_err(|error| -> Box<dyn Error> {
+                    format!("campaign worker {} failed: {error}", reply.worker).into()
+                })?;
+                let pending_job = pending[worker_index]
+                    .take()
+                    .ok_or("campaign worker replied without a pending job")?;
+                let (sequence, decisions) = core.admit_job(pending_job.parent_id, &result)?;
+                if let Some(draw) = &pending_job.selector {
+                    let parent_index = usize::try_from(pending_job.parent_id)?;
+                    core.archive.record_selection(parent_index, draw);
+                    core.archive.record_selection_outcome(
+                        parent_index,
+                        decisions.iter().any(|decision| {
+                            matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
+                        }),
+                        frames,
+                    )?;
+                }
+                let chord_table_after =
+                    finish_chord_stream_record(config.chord, &mut chord_tables, &core, &decisions)?;
+                writer.write_line(&SmbCampaignStreamRecord::Job(SmbCampaignJobRecord {
+                    sequence,
+                    worker: reply.worker,
+                    parent_id: pending_job.parent_id,
+                    mutation_seed: pending_job.mutation_seed,
                     frames,
-                )?;
-            }
-            let chord_table_after =
-                finish_chord_stream_record(config.chord, &mut chord_tables, &core, &decisions)?;
-            writer.write_line(&SmbCampaignStreamRecord::Job(SmbCampaignJobRecord {
-                sequence,
-                worker: reply.worker,
-                parent_id: pending_job.parent_id,
-                mutation_seed: pending_job.mutation_seed,
-                frames,
-                result_sha256: result_sha256(&result)?,
-                decisions,
-                selector: pending_job.selector,
-                chord_table_before: pending_job.chord_table_before,
-                chord_table_after,
-            }))?;
-            counters.jobs_per_worker[worker_index] =
-                counters.jobs_per_worker[worker_index].saturating_add(1);
-            counters.job_frames = counters.job_frames.saturating_add(frames);
-            in_flight -= 1;
-            if let Some(sink) = progress.as_deref_mut() {
-                // Wall-clock gates the sidecar only. It selects nothing and
-                // enters no recorded artifact, so its nondeterminism cannot
-                // reach the stream.
-                #[allow(clippy::disallowed_methods)]
-                let elapsed = progress_started.elapsed().as_secs();
-                if elapsed >= next_progress {
-                    next_progress = elapsed
-                        .saturating_add(PROGRESS_INTERVAL_SECONDS)
-                        .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+                    result_sha256: result_sha256(&result)?,
+                    decisions,
+                    selector: pending_job.selector,
+                    chord_table_before: pending_job.chord_table_before,
+                    chord_table_after,
+                }))?;
+                counters.jobs_per_worker[worker_index] =
+                    counters.jobs_per_worker[worker_index].saturating_add(1);
+                counters.job_frames = counters.job_frames.saturating_add(frames);
+                in_flight -= 1;
+                if let Some(sink) = progress.as_deref_mut() {
+                    // Wall-clock gates the sidecar only. It selects nothing and
+                    // enters no recorded artifact, so its nondeterminism cannot
+                    // reach the stream.
                     #[allow(clippy::disallowed_methods)]
-                    let unix_time = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |since| since.as_secs());
-                    let (world, level, bucket, cheapest, retained) = core.archive.live_progress();
-                    let line = serde_json::to_string(&SmbCampaignProgressRecord {
-                        unix_time,
-                        executions: sequence,
-                        world,
-                        level,
-                        progress: bucket,
-                        cheapest_frames_in_level: cheapest,
-                        retained,
-                    })?;
-                    sink.write_all(line.as_bytes())?;
-                    sink.write_all(b"\n")?;
-                    sink.flush()?;
+                    let elapsed = progress_started.elapsed().as_secs();
+                    if elapsed >= next_progress {
+                        next_progress = elapsed
+                            .saturating_add(PROGRESS_INTERVAL_SECONDS)
+                            .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+                        #[allow(clippy::disallowed_methods)]
+                        let unix_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |since| since.as_secs());
+                        let (world, level, bucket, cheapest, retained) =
+                            core.archive.live_progress();
+                        let line = serde_json::to_string(&SmbCampaignProgressRecord {
+                            unix_time,
+                            executions: sequence,
+                            world,
+                            level,
+                            progress: bucket,
+                            cheapest_frames_in_level: cheapest,
+                            retained,
+                        })?;
+                        sink.write_all(line.as_bytes())?;
+                        sink.write_all(b"\n")?;
+                        sink.flush()?;
+                    }
+                }
+                match select(
+                    &mut core,
+                    &mut rands,
+                    &mut chord_tables,
+                    &mut writer,
+                    &mut counters,
+                    &mut reserved,
+                    reply.worker,
+                )? {
+                    Some((spec, pending_job)) => {
+                        pending[worker_index] = Some(pending_job);
+                        pool.send(reply.worker, spec)?;
+                        in_flight += 1;
+                    }
+                    None => {
+                        pool.close(reply.worker)?;
+                    }
                 }
             }
-            match select(
-                &mut core,
-                &mut rands,
-                &mut chord_tables,
-                &mut writer,
-                &mut counters,
-                &mut reserved,
-                reply.worker,
-            )? {
-                Some((spec, pending_job)) => {
-                    pending[worker_index] = Some(pending_job);
-                    let sender = job_senders[worker_index]
-                        .as_ref()
-                        .ok_or("campaign worker channel closed early")?;
-                    sender
-                        .send(spec)
-                        .map_err(|_| "campaign worker exited before its next job")?;
-                    in_flight += 1;
-                }
-                None => {
-                    job_senders[worker_index] = None;
-                }
-            }
-        }
-        Ok(())
-    })?;
+            Ok(())
+        },
+    )?;
 
     core.finish_curve();
     let stream_sha256 = writer.finish()?;
@@ -3184,7 +3137,7 @@ pub struct SmbRefusedGridReport {
 
 /// Run one grid mask schedule from the current target state.
 fn grid_probe(target: &mut SmbTarget, mask_for_frame: fn(u16) -> u8) -> (u16, String) {
-    use crate::phase4b::{PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, smb_death_bytes};
+    use crate::smb::target::{PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, smb_death_bytes};
     for frame in 0..GRID_PROBE_FRAMES {
         target.apply(&ButtonChord::new(mask_for_frame(frame), 1));
         if target.exit_kind() != ExitKind::Ok {
@@ -3227,9 +3180,9 @@ pub fn diagnose_refused_grid(
     candidate_range: (u16, u16),
     sample_cap: usize,
 ) -> Result<SmbRefusedGridReport, Box<dyn Error>> {
-    use crate::phase4b::smb_camera_pixels;
+    use crate::smb::target::smb_camera_pixels;
     use std::collections::BTreeMap;
-    type EntryIndex<'a> = BTreeMap<u64, &'a crate::phase4c::SmbArchiveEntryReport>;
+    type EntryIndex<'a> = BTreeMap<u64, &'a crate::smb::archive::SmbArchiveEntryReport>;
     let mut lines = stream_text.lines();
     let header: SmbCampaignStreamHeader =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
@@ -3352,7 +3305,7 @@ pub fn diagnose_refused_grid(
                     && key.progress <= candidate_range.1
                 {
                     let camera = smb_camera_pixels(target.wram());
-                    let death_bytes = crate::phase4b::smb_death_bytes(target.wram());
+                    let death_bytes = crate::smb::target::smb_death_bytes(target.wram());
                     let resume = target
                         .snapshot()
                         .ok_or("failed to snapshot a refused candidate")?;
@@ -3472,7 +3425,7 @@ pub fn diagnose_x_transit(
     vertical_bands: bool,
 ) -> Result<SmbXTransitReport, Box<dyn Error>> {
     use std::collections::BTreeMap;
-    type EntryIndex<'a> = BTreeMap<u64, &'a crate::phase4c::SmbArchiveEntryReport>;
+    type EntryIndex<'a> = BTreeMap<u64, &'a crate::smb::archive::SmbArchiveEntryReport>;
     let mut lines = stream_text.lines();
     let header: SmbCampaignStreamHeader =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
@@ -3600,7 +3553,7 @@ pub fn diagnose_x_transit(
             }
             let wram = target.wram();
             let band = if vertical_bands {
-                let state = crate::phase4b::smb_mechanical_state_from_wram(wram);
+                let state = crate::smb::target::smb_mechanical_state_from_wram(wram);
                 u32::from(state.progress) * 100 + u32::from(state.player_y_bucket)
             } else {
                 let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
@@ -3732,7 +3685,7 @@ pub fn diagnose_wram_diff(
     cap_per_group: usize,
     output_bytes: usize,
 ) -> Result<SmbWramDiffReport, Box<dyn Error>> {
-    use crate::phase4b::WRAM_SIZE;
+    use crate::smb::target::WRAM_SIZE;
     let frontier_pair = source
         .entries
         .iter()
@@ -3743,7 +3696,7 @@ pub fn diagnose_wram_diff(
     // the frozen rule explicitly rather than inferring one.
     let base = select_frontier_resume_input(source, SmbCampaignResumePolicy::FrontierShortest)?;
     let collect = |low: u16, high: u16| {
-        let mut picks: Vec<&crate::phase4c::SmbArchiveEntryReport> = source
+        let mut picks: Vec<&crate::smb::archive::SmbArchiveEntryReport> = source
             .entries
             .iter()
             .filter(|entry| {
@@ -3778,7 +3731,7 @@ pub fn diagnose_wram_diff(
                 .ok_or("failed to snapshot a wram-diff boundary")?,
         );
     }
-    let mut replay_group = |picks: &[&crate::phase4c::SmbArchiveEntryReport],
+    let mut replay_group = |picks: &[&crate::smb::archive::SmbArchiveEntryReport],
                             tag: &str|
      -> Result<Vec<[u8; WRAM_SIZE]>, Box<dyn Error>> {
         let mut wrams = Vec::with_capacity(picks.len());
@@ -3869,7 +3822,7 @@ pub fn diagnose_loop_differential(
     probe_chords: u16,
     output_discriminators: usize,
 ) -> Result<SmbLoopDifferentialReport, Box<dyn Error>> {
-    use crate::phase4b::WRAM_SIZE;
+    use crate::smb::target::WRAM_SIZE;
     let frontier_pair = source
         .entries
         .iter()
@@ -3879,7 +3832,7 @@ pub fn diagnose_loop_differential(
     // Archive-only diagnostic with no stream beside it: the frozen rule is
     // named explicitly rather than inferred.
     let base = select_frontier_resume_input(source, SmbCampaignResumePolicy::FrontierShortest)?;
-    let mut sample: Vec<&crate::phase4c::SmbArchiveEntryReport> = source
+    let mut sample: Vec<&crate::smb::archive::SmbArchiveEntryReport> = source
         .entries
         .iter()
         .filter(|entry| {
@@ -3944,7 +3897,7 @@ pub fn diagnose_loop_differential(
         let mut died = false;
         for _ in 0..probe_chords {
             target.apply(&ButtonChord::new(0x80, 60));
-            let state = crate::phase4b::smb_mechanical_state_from_wram(target.wram());
+            let state = crate::smb::target::smb_mechanical_state_from_wram(target.wram());
             if (state.world, state.level) == frontier_pair {
                 max_progress = max_progress.max(state.progress);
                 min_progress = min_progress.min(state.progress);
@@ -4111,9 +4064,9 @@ pub fn diagnose_down_census(
     parent_range: (u16, u16),
     sample_cap: usize,
 ) -> Result<SmbDownCensusReport, Box<dyn Error>> {
-    use crate::phase4b::smb_camera_pixels;
+    use crate::smb::target::smb_camera_pixels;
     use std::collections::BTreeMap;
-    type EntryIndex<'a> = BTreeMap<u64, &'a crate::phase4c::SmbArchiveEntryReport>;
+    type EntryIndex<'a> = BTreeMap<u64, &'a crate::smb::archive::SmbArchiveEntryReport>;
     let mut lines = stream_text.lines();
     let header: SmbCampaignStreamHeader =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
@@ -4286,7 +4239,7 @@ pub fn diagnose_down_census(
                 let x = u32::from(wram[PLAYER_HORIZONTAL_PAGE_OFFSET]) * 256
                     + u32::from(wram[PLAYER_HORIZONTAL_LOW_OFFSET]);
                 let camera = i64::from(smb_camera_pixels(wram));
-                let bytes = crate::phase4b::smb_death_bytes(wram);
+                let bytes = crate::smb::target::smb_death_bytes(wram);
                 (
                     x,
                     i64::from(x) - camera,
@@ -4300,7 +4253,7 @@ pub fn diagnose_down_census(
             target.apply(chord);
             if is_down {
                 let wram = target.wram();
-                let bytes = crate::phase4b::smb_death_bytes(wram);
+                let bytes = crate::smb::target::smb_death_bytes(wram);
                 presses.push(SmbDownPressRecord {
                     sequence: job.sequence,
                     parent_id: job.parent_id,
@@ -4353,13 +4306,13 @@ mod tests {
         waypoint_identifier,
     };
     use crate::{
-        chord_table::ChordTableParameters,
-        draw_budget::DrawBudgetParameters,
-        phase4b::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
-        phase4c::{
+        search::draw_budget::DrawBudgetParameters,
+        search::empirical_steps::EmpiricalStepParameters,
+        smb::archive::{
             ArchiveCandidate, SmbArchiveKey, SmbArchiveReplacementPolicy, SmbArchiveReport,
             SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy,
         },
+        smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
         target::Target,
     };
 
@@ -4411,7 +4364,7 @@ mod tests {
                 level: 0,
                 minimum_progress: 0,
             },
-            parameters: ChordTableParameters {
+            parameters: EmpiricalStepParameters {
                 prefix_steps: 0,
                 recent_successes: 4,
                 recent_weight: 3,
@@ -4481,7 +4434,7 @@ mod tests {
             super::SmbJobPolicies {
                 max_actions: 96,
                 retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
-                key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+                key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
             },
         )
         .expect("execute job on first instance");
@@ -4494,7 +4447,7 @@ mod tests {
             super::SmbJobPolicies {
                 max_actions: 96,
                 retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
-                key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+                key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
             },
         )
         .expect("execute job on second instance");
@@ -4515,11 +4468,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
@@ -4548,8 +4501,8 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::Frozen,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Region {
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Region {
                 world: 0,
                 level: 0,
                 low: 0,
@@ -4559,7 +4512,7 @@ mod tests {
             },
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwoRegionLong48,
             chord: derived_policy(),
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
@@ -4611,11 +4564,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::Frozen,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
@@ -4648,11 +4601,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
@@ -4687,11 +4640,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut seed_stream = Vec::new();
@@ -4715,11 +4668,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
@@ -4754,11 +4707,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
@@ -4819,7 +4772,7 @@ mod tests {
 
     #[test]
     fn the_clock_aware_resume_prefers_a_faster_shallower_lineage() {
-        use crate::phase4c::{SmbArchiveEntryReport, SmbArchiveKey};
+        use crate::smb::archive::{SmbArchiveEntryReport, SmbArchiveKey};
         let key = |progress: u16| SmbArchiveKey {
             world: 7,
             level: 0,
@@ -4868,19 +4821,17 @@ mod tests {
             seed: 0,
             executions: 0,
             milestones: SmbMilestones::default(),
-            progress_watermark: crate::phase4b::SmbProgressWatermark::default(),
-            first_reached: crate::phase4b::SmbMilestoneTimes::default(),
-            first_inputs: crate::phase4b::SmbMilestoneInputs::default(),
+            progress_watermark: crate::smb::target::SmbProgressWatermark::default(),
+            first_reached: crate::smb::target::SmbMilestoneTimes::default(),
+            first_inputs: crate::smb::target::SmbMilestoneInputs::default(),
             champion_input: SmbInput::default(),
             entries,
             progress_curve: Vec::new(),
             retained: 0,
             rejected: 0,
             deaths: 0,
-            ranking: crate::phase4c::SmbRankingAccounting::default(),
-            generated_mutator: crate::phase4c::SmbGeneratedMutatorAccounting::default(),
-            ladder: crate::phase4c::SmbLadder::default(),
-            selector: crate::phase4c::SmbSelectorAccounting::default(),
+            ladder: crate::smb::archive::SmbLadder::default(),
+            selector: crate::smb::archive::SmbSelectorAccounting::default(),
         };
         // The frozen rule takes the deepest entry, bucket 320, 960 frames.
         let frozen =
@@ -4933,11 +4884,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut without = Vec::new();
@@ -4973,7 +4924,7 @@ mod tests {
 
     #[test]
     fn the_depth_charged_resume_refuses_a_cheap_but_shallow_entry() {
-        use crate::phase4c::{SmbArchiveEntryReport, SmbArchiveKey};
+        use crate::smb::archive::{SmbArchiveEntryReport, SmbArchiveKey};
         let key = |progress: u16| SmbArchiveKey {
             world: 7,
             level: 0,
@@ -5013,19 +4964,17 @@ mod tests {
             seed: 0,
             executions: 0,
             milestones: SmbMilestones::default(),
-            progress_watermark: crate::phase4b::SmbProgressWatermark::default(),
-            first_reached: crate::phase4b::SmbMilestoneTimes::default(),
-            first_inputs: crate::phase4b::SmbMilestoneInputs::default(),
+            progress_watermark: crate::smb::target::SmbProgressWatermark::default(),
+            first_reached: crate::smb::target::SmbMilestoneTimes::default(),
+            first_inputs: crate::smb::target::SmbMilestoneInputs::default(),
             champion_input: SmbInput::default(),
             entries,
             progress_curve: Vec::new(),
             retained: 0,
             rejected: 0,
             deaths: 0,
-            ranking: crate::phase4c::SmbRankingAccounting::default(),
-            generated_mutator: crate::phase4c::SmbGeneratedMutatorAccounting::default(),
-            ladder: crate::phase4c::SmbLadder::default(),
-            selector: crate::phase4c::SmbSelectorAccounting::default(),
+            ladder: crate::smb::archive::SmbLadder::default(),
+            selector: crate::smb::archive::SmbSelectorAccounting::default(),
         };
         let frames = |input: &SmbInput| -> u64 {
             input
@@ -5081,8 +5030,8 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
-            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
             replacement_policy: SmbArchiveReplacementPolicy::FewestActions,
@@ -5167,7 +5116,10 @@ mod tests {
         let rom = synthetic_nrom();
         let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load genesis target");
         target.reset();
-        crate::phase4c::archive_key(target.wram(), crate::phase4c::SmbArchiveKeyPolicy::Frozen)
+        crate::smb::archive::archive_key(
+            target.wram(),
+            crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+        )
     }
 
     #[test]
@@ -5192,7 +5144,7 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy: SmbArchiveWaypointPolicy::Region {
                 world: genesis.world,
                 level: genesis.level,
@@ -5203,7 +5155,7 @@ mod tests {
             },
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut stream = Vec::new();
@@ -5248,11 +5200,11 @@ mod tests {
             retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
             archive_entry_limit: 32_768,
             vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
-            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            key_policy: crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
             waypoint_policy,
             suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
             chord: super::SmbCampaignChordPolicy::Uniform,
-            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            replacement_policy: crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut absent_stream = Vec::new();
@@ -5343,9 +5295,9 @@ mod tests {
                 SmbArchiveSelectorPolicy::ConcentratedRecency,
                 SmbArchiveRetentionPolicy::ProbeAtAdmission45Snapback16,
                 32_768,
-                crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+                crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
                 waypoint_policy,
-                crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+                crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
             );
             core.archive
                 .insert(
@@ -5357,7 +5309,6 @@ mod tests {
                         milestones: SmbMilestones::default(),
                     },
                     snapshot.clone(),
-                    &[],
                 )
                 .expect("insert snapback parent")
                 .expect("retain snapback parent");

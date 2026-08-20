@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral draw budgets derived from recent success per unit cost.
+//! Game-neutral search draw budgets derived from recent success per unit cost.
 
 use std::collections::{BTreeMap, VecDeque};
 

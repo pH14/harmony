@@ -11,9 +11,11 @@ use std::{
 };
 
 use fuzzer::{
-    campaign::{SmbCampaignAdmissionDecision, SmbCampaignStreamRecord},
-    phase4c::SmbSelectorPath,
-    yield_measurement::{YieldMeasurementParameters, YieldObservation, measure_parent_yield},
+    search::yield_measurement::{
+        YieldMeasurementParameters, YieldObservation, measure_parent_yield,
+    },
+    smb::archive::SmbSelectorPath,
+    smb::campaign::{SmbCampaignAdmissionDecision, SmbCampaignStreamRecord},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -53,7 +55,7 @@ struct SmbParentYieldReport {
     class_projection: &'static str,
     non_tie_class_jobs_excluded: u64,
     skipped_records_excluded: u64,
-    measurement: fuzzer::yield_measurement::YieldMeasurementReport,
+    measurement: fuzzer::search::yield_measurement::YieldMeasurementReport,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

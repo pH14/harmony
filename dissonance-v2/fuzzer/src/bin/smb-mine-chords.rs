@@ -11,9 +11,11 @@ use std::{
 };
 
 use fuzzer::{
-    chord_table::{ChordTableCheckpoint, ChordTableParameters, ChordTables},
-    phase4b::ButtonChord,
-    phase4c::SmbArchiveReport,
+    search::empirical_steps::{
+        EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTables,
+    },
+    smb::archive::SmbArchiveReport,
+    smb::target::ButtonChord,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -30,10 +32,10 @@ struct MiningReport {
     source: PathBuf,
     source_sha256: String,
     filter: SmbSourceFilter,
-    parameters: ChordTableParameters,
+    parameters: EmpiricalStepParameters,
     entries_examined: u64,
     entries_used: u64,
-    checkpoint: ChordTableCheckpoint,
+    checkpoint: EmpiricalStepCheckpoint,
     first_success_execution: Option<u64>,
     recent_window_start_execution: Option<u64>,
     last_success_execution: Option<u64>,
@@ -54,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         level: parse_next(&mut args, "level")?,
         minimum_progress: parse_next(&mut args, "minimum progress")?,
     };
-    let parameters = ChordTableParameters {
+    let parameters = EmpiricalStepParameters {
         prefix_steps: parse_next(&mut args, "prefix steps")?,
         recent_successes: parse_next(&mut args, "recent successes")?,
         recent_weight: parse_next(&mut args, "recent weight")?,
@@ -69,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let source_bytes = fs::read(&source)?;
     let archive: SmbArchiveReport = serde_json::from_slice(&source_bytes)?;
-    let mut tables = ChordTables::new(parameters)?;
+    let mut tables = EmpiricalStepTables::new(parameters)?;
     let mut entries_used = 0_u64;
     let mut success_executions = Vec::new();
     for entry in &archive.entries {

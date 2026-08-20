@@ -10,7 +10,6 @@ use fuzzer::{
         AdventureExecutionWork, AdventureExecutorMode, SearchArm, TriageArm,
         run_adventure_campaign_with_executor,
     },
-    phase4b::{SmbExecutionWork, SmbExecutorMode, run_smb_ratchet_with_executor},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,8 +34,6 @@ struct IdentityGateReport {
     execution_budget: u64,
     maze: TargetGate<MazeExecutionWork>,
     adventure: TargetGate<AdventureExecutionWork>,
-    smb: TargetGate<SmbExecutionWork>,
-    smb_frame_reduction_at_least_tenfold: bool,
     accepted: bool,
 }
 
@@ -124,73 +121,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         gate
     };
 
-    let rom_path = PathBuf::from(
-        env::var_os("HARMONY_SMB_ROM")
-            .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
-    );
-    let rom = fs::read(rom_path)?;
-    let old_report_path = output.join("smb-old.json");
-    let (mut smb_old, smb_old_wall) = if old_report_path.exists() {
-        let report = serde_json::from_slice(&fs::read(&old_report_path)?)?;
-        let wall: u128 = fs::read_to_string(output.join("smb-old-wall-nanos.txt"))?.parse()?;
-        (report, wall)
-    } else {
-        let started = Instant::now();
-        let report =
-            run_smb_ratchet_with_executor(&rom, SEED, EXECUTION_BUDGET, SmbExecutorMode::Legacy)?;
-        let wall = started.elapsed().as_nanos();
-        fs::write(&old_report_path, serde_json::to_vec_pretty(&report)?)?;
-        fs::write(output.join("smb-old-wall-nanos.txt"), wall.to_string())?;
-        (report, wall)
-    };
-    let new_report_path = output.join("smb-new.json");
-    let (mut smb_new, smb_new_wall) = if new_report_path.exists() {
-        let report = serde_json::from_slice(&fs::read(&new_report_path)?)?;
-        let wall: u128 = fs::read_to_string(output.join("smb-new-wall-nanos.txt"))?.parse()?;
-        (report, wall)
-    } else {
-        let started = Instant::now();
-        let report = run_smb_ratchet_with_executor(
-            &rom,
-            SEED,
-            EXECUTION_BUDGET,
-            SmbExecutorMode::SnapshotResume,
-        )?;
-        let wall = started.elapsed().as_nanos();
-        fs::write(&new_report_path, serde_json::to_vec_pretty(&report)?)?;
-        fs::write(output.join("smb-new-wall-nanos.txt"), wall.to_string())?;
-        (report, wall)
-    };
-    let smb_old_work = smb_old.executor_work;
-    let smb_new_work = smb_new.executor_work;
-    normalize_smb(&mut smb_old);
-    normalize_smb(&mut smb_new);
-    let smb = TargetGate {
-        identity: smb_old == smb_new,
-        semantic_sha256: semantic_sha(&smb_new)?,
-        old_work: smb_old_work,
-        new_work: smb_new_work,
-        old_wall_nanos: smb_old_wall,
-        new_wall_nanos: smb_new_wall,
-        wall_ratio: ratio(smb_old_wall, smb_new_wall),
-    };
-    let smb_frame_reduction_at_least_tenfold =
-        smb.new_work.emulated_frames.saturating_mul(10) <= smb.old_work.emulated_frames;
-
     let report = IdentityGateReport {
         seed: SEED,
         execution_budget: EXECUTION_BUDGET,
         maze,
         adventure,
-        smb,
-        smb_frame_reduction_at_least_tenfold,
         accepted: false,
     };
     let mut report = report;
-    report.accepted = report.maze.identity
-        && report.adventure.identity
-        && report.smb.identity
-        && report.smb_frame_reduction_at_least_tenfold;
+    report.accepted = report.maze.identity && report.adventure.identity;
     fs::write(
         output.join("executor-identity-report.json"),
         serde_json::to_vec_pretty(&report)?,
@@ -210,11 +149,6 @@ fn normalize_maze(report: &mut fuzzer::phase1::CampaignReport) {
 fn normalize_adventure(report: &mut fuzzer::phase4a::AdventureRunReport) {
     report.executor_mode = AdventureExecutorMode::SnapshotResume;
     report.executor_work = AdventureExecutionWork::default();
-}
-
-fn normalize_smb(report: &mut fuzzer::phase4b::SmbCampaignReport) {
-    report.executor_mode = SmbExecutorMode::SnapshotResume;
-    report.executor_work = SmbExecutionWork::default();
 }
 
 fn semantic_sha<T: Serialize>(value: &T) -> Result<String, Box<dyn Error>> {

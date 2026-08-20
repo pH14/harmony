@@ -15,13 +15,13 @@ use std::{
 };
 
 use fuzzer::{
-    phase4b::{
-        ButtonChord, SmbInput, SmbMechanicalState, SmbSnapshot, SmbTarget,
-        smb_mechanical_state_from_wram,
-    },
-    sequence_reducer::{
+    search::sequence_reducer::{
         ReductionConfig, ReplayEndpoint, SequenceReplay, projected_candidate_replays,
         reduce_verified_segmented_sequence,
+    },
+    smb::target::{
+        ButtonChord, SmbInput, SmbMechanicalState, SmbSnapshot, SmbTarget,
+        smb_mechanical_state_from_wram,
     },
     target::Target,
 };
@@ -737,7 +737,7 @@ fn create_parent(path: &Path) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::{FilmBoundary, level_transition_points, segment_lengths};
-    use fuzzer::phase4b::SmbMechanicalState;
+    use fuzzer::smb::target::SmbMechanicalState;
 
     fn boundary(action_count: usize, world: u8, level: u8) -> FilmBoundary {
         FilmBoundary {

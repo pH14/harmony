@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral chord tables folded deterministically from retained sequences.
+//! Game-neutral empirical step tables folded deterministically from retained sequences.
 
 use std::{collections::VecDeque, error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Registered parameters for one deterministic chord-table fold.
+/// Registered parameters for one deterministic empirical-step fold.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ChordTableParameters {
+pub struct EmpiricalStepParameters {
     /// Ignore this many leading steps in every retained sequence.
     pub prefix_steps: usize,
     /// Number of most recent retained successes contributing to the recent table.
@@ -24,27 +24,27 @@ pub struct ChordTableParameters {
     pub hash_every_records: u64,
 }
 
-impl ChordTableParameters {
+impl EmpiricalStepParameters {
     /// Validate the bounded, non-vacuous table configuration.
     ///
     /// # Errors
     ///
     /// Returns an error for a zero recent window, zero checkpoint interval, or
     /// a mixture in which both weights are zero.
-    pub fn validate(self) -> Result<(), ChordTableError> {
+    pub fn validate(self) -> Result<(), EmpiricalStepError> {
         if self.recent_successes == 0 {
-            return Err(ChordTableError::InvalidParameters(
+            return Err(EmpiricalStepError::InvalidParameters(
                 "recent success window must be nonzero",
             ));
         }
         if self.update_every_records == 0 || self.hash_every_records == 0 {
-            return Err(ChordTableError::InvalidParameters(
+            return Err(EmpiricalStepError::InvalidParameters(
                 "table update and hash intervals must be nonzero",
             ));
         }
         if self.recent_weight == 0 && self.all_history_weight == 0 {
-            return Err(ChordTableError::InvalidParameters(
-                "at least one chord table weight must be nonzero",
+            return Err(EmpiricalStepError::InvalidParameters(
+                "at least one empirical step table weight must be nonzero",
             ));
         }
         Ok(())
@@ -53,7 +53,7 @@ impl ChordTableParameters {
 
 /// One reproducible table checkpoint.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ChordTableCheckpoint {
+pub struct EmpiricalStepCheckpoint {
     /// Recorded stream records folded through this checkpoint.
     pub records: u64,
     /// Retained success sequences folded through this checkpoint.
@@ -62,9 +62,9 @@ pub struct ChordTableCheckpoint {
     pub table_sha256: String,
 }
 
-/// Deterministic chord-table fold failure.
+/// Deterministic empirical-step fold failure.
 #[derive(Debug)]
-pub enum ChordTableError {
+pub enum EmpiricalStepError {
     /// Registered parameters are vacuous or out of bounds.
     InvalidParameters(&'static str),
     /// Weighted table length overflowed.
@@ -75,22 +75,27 @@ pub enum ChordTableError {
     RecentWindowDiverged,
 }
 
-impl fmt::Display for ChordTableError {
+impl fmt::Display for EmpiricalStepError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidParameters(message) => formatter.write_str(message),
-            Self::TableLengthOverflow => formatter.write_str("weighted chord table is too large"),
+            Self::TableLengthOverflow => {
+                formatter.write_str("weighted empirical step table is too large")
+            }
             Self::Serialization(error) => {
-                write!(formatter, "chord table serialization failed: {error}")
+                write!(
+                    formatter,
+                    "empirical step table serialization failed: {error}"
+                )
             }
             Self::RecentWindowDiverged => {
-                formatter.write_str("recent chord table window accounting diverged")
+                formatter.write_str("recent empirical step window accounting diverged")
             }
         }
     }
 }
 
-impl Error for ChordTableError {
+impl Error for EmpiricalStepError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Serialization(error) => Some(error),
@@ -103,18 +108,19 @@ impl Error for ChordTableError {
 
 /// Recent and all-history tables derived only from stream-ordered successes.
 #[derive(Clone, Debug)]
-pub struct ChordTables<Step> {
-    parameters: ChordTableParameters,
+pub struct EmpiricalStepTables<Step> {
+    parameters: EmpiricalStepParameters,
     pending: Vec<Vec<Step>>,
     recent_sequences: VecDeque<Vec<Step>>,
     recent: Vec<Step>,
     all_history: Vec<Step>,
+    table_sha256: String,
     records: u64,
     retained_successes: u64,
-    checkpoints: Vec<ChordTableCheckpoint>,
+    checkpoints: Vec<EmpiricalStepCheckpoint>,
 }
 
-impl<Step> ChordTables<Step>
+impl<Step> EmpiricalStepTables<Step>
 where
     Step: Clone + Serialize,
 {
@@ -123,14 +129,18 @@ where
     /// # Errors
     ///
     /// Returns an error when the parameters are invalid.
-    pub fn new(parameters: ChordTableParameters) -> Result<Self, ChordTableError> {
+    pub fn new(parameters: EmpiricalStepParameters) -> Result<Self, EmpiricalStepError> {
         parameters.validate()?;
+        let recent = Vec::new();
+        let all_history = Vec::new();
+        let table_sha256 = hash_tables(&recent, &all_history)?;
         Ok(Self {
             parameters,
             pending: Vec::new(),
             recent_sequences: VecDeque::new(),
-            recent: Vec::new(),
-            all_history: Vec::new(),
+            recent,
+            all_history,
+            table_sha256,
             records: 0,
             retained_successes: 0,
             checkpoints: Vec::new(),
@@ -139,13 +149,13 @@ where
 
     /// Fold one retained success sequence in stream order.
     ///
-    /// A sequence at or before the registered prefix contributes no chords and
+    /// A sequence at or before the registered prefix contributes no steps and
     /// is not counted as a useful retained success.
     ///
     /// # Errors
     ///
     /// Returns an error only if internal recent-window accounting diverges.
-    pub fn fold_retained(&mut self, sequence: &[Step]) -> Result<(), ChordTableError> {
+    pub fn fold_retained(&mut self, sequence: &[Step]) -> Result<(), EmpiricalStepError> {
         let Some(suffix) = sequence.get(self.parameters.prefix_steps..) else {
             return Ok(());
         };
@@ -157,7 +167,7 @@ where
         Ok(())
     }
 
-    fn apply_contribution(&mut self, contribution: Vec<Step>) -> Result<(), ChordTableError> {
+    fn apply_contribution(&mut self, contribution: Vec<Step>) -> Result<(), EmpiricalStepError> {
         self.all_history.extend_from_slice(&contribution);
         self.recent.extend_from_slice(&contribution);
         self.recent_sequences.push_back(contribution);
@@ -165,9 +175,9 @@ where
             let removed = self
                 .recent_sequences
                 .pop_front()
-                .ok_or(ChordTableError::RecentWindowDiverged)?;
+                .ok_or(EmpiricalStepError::RecentWindowDiverged)?;
             if removed.len() > self.recent.len() {
-                return Err(ChordTableError::RecentWindowDiverged);
+                return Err(EmpiricalStepError::RecentWindowDiverged);
             }
             self.recent.drain(..removed.len());
         }
@@ -180,12 +190,17 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error only if internal recent-window accounting diverges.
-    pub fn flush(&mut self) -> Result<(), ChordTableError> {
+    /// Returns an error if internal recent-window accounting diverges or the
+    /// updated ordered tables cannot be serialized for their cached hash.
+    pub fn flush(&mut self) -> Result<(), EmpiricalStepError> {
         let pending = std::mem::take(&mut self.pending);
+        if pending.is_empty() {
+            return Ok(());
+        }
         for contribution in pending {
             self.apply_contribution(contribution)?;
         }
+        self.table_sha256 = hash_tables(&self.recent, &self.all_history)?;
         Ok(())
     }
 
@@ -194,7 +209,7 @@ where
     /// # Errors
     ///
     /// Returns an error when table serialization fails.
-    pub fn finish_record(&mut self) -> Result<Option<ChordTableCheckpoint>, ChordTableError> {
+    pub fn finish_record(&mut self) -> Result<Option<EmpiricalStepCheckpoint>, EmpiricalStepError> {
         self.records = self.records.saturating_add(1);
         if self
             .records
@@ -217,20 +232,19 @@ where
     ///
     /// # Errors
     ///
-    /// Returns an error when table serialization fails.
-    pub fn checkpoint(&self) -> Result<ChordTableCheckpoint, ChordTableError> {
-        let bytes = serde_json::to_vec(&(&self.recent, &self.all_history))
-            .map_err(ChordTableError::Serialization)?;
-        Ok(ChordTableCheckpoint {
+    /// The result remains fallible for API compatibility. Serialization
+    /// failures are reported when a visible generation is created or updated.
+    pub fn checkpoint(&self) -> Result<EmpiricalStepCheckpoint, EmpiricalStepError> {
+        Ok(EmpiricalStepCheckpoint {
             records: self.records,
             retained_successes: self.retained_successes,
-            table_sha256: format!("{:x}", Sha256::digest(bytes)),
+            table_sha256: self.table_sha256.clone(),
         })
     }
 
     /// Registered fold parameters.
     #[must_use]
-    pub fn parameters(&self) -> ChordTableParameters {
+    pub fn parameters(&self) -> EmpiricalStepParameters {
         self.parameters
     }
 
@@ -240,19 +254,19 @@ where
         self.records
     }
 
-    /// Retained success sequences that contributed at least one chord.
+    /// Retained success sequences that contributed at least one step.
     #[must_use]
     pub fn retained_successes(&self) -> u64 {
         self.retained_successes
     }
 
-    /// Ordered chords from the registered recent-success window.
+    /// Ordered steps from the registered recent-success window.
     #[must_use]
     pub fn recent(&self) -> &[Step] {
         &self.recent
     }
 
-    /// Ordered chords from every success ever folded.
+    /// Ordered steps from every success ever folded.
     #[must_use]
     pub fn all_history(&self) -> &[Step] {
         &self.all_history
@@ -260,7 +274,7 @@ where
 
     /// Periodic checkpoints emitted so far.
     #[must_use]
-    pub fn checkpoints(&self) -> &[ChordTableCheckpoint] {
+    pub fn checkpoints(&self) -> &[EmpiricalStepCheckpoint] {
         &self.checkpoints
     }
 
@@ -269,7 +283,7 @@ where
     /// # Errors
     ///
     /// Returns an error if the registered weighted length overflows.
-    pub fn mixed_len(&self) -> Result<usize, ChordTableError> {
+    pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
         self.recent
             .len()
             .checked_mul(self.parameters.recent_weight)
@@ -279,7 +293,7 @@ where
                     .checked_mul(self.parameters.all_history_weight)
                     .and_then(|history| recent.checked_add(history))
             })
-            .ok_or(ChordTableError::TableLengthOverflow)
+            .ok_or(EmpiricalStepError::TableLengthOverflow)
     }
 
     /// Resolve one frequency-weighted mixed-table index.
@@ -302,12 +316,42 @@ where
     }
 }
 
+fn hash_tables<Step>(recent: &[Step], all_history: &[Step]) -> Result<String, EmpiricalStepError>
+where
+    Step: Serialize,
+{
+    let bytes =
+        serde_json::to_vec(&(recent, all_history)).map_err(EmpiricalStepError::Serialization)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ChordTableParameters, ChordTables};
+    use std::{cell::Cell, rc::Rc};
 
-    fn parameters() -> ChordTableParameters {
-        ChordTableParameters {
+    use serde::Serializer;
+
+    use super::{EmpiricalStepParameters, EmpiricalStepTables};
+
+    #[derive(Clone)]
+    struct CountingStep {
+        value: u8,
+        serializations: Rc<Cell<usize>>,
+    }
+
+    impl serde::Serialize for CountingStep {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            self.serializations
+                .set(self.serializations.get().saturating_add(1));
+            serializer.serialize_u8(self.value)
+        }
+    }
+
+    fn parameters() -> EmpiricalStepParameters {
+        EmpiricalStepParameters {
             prefix_steps: 1,
             recent_successes: 2,
             recent_weight: 2,
@@ -319,7 +363,7 @@ mod tests {
 
     #[test]
     fn fold_keeps_recent_and_never_deletes_history() {
-        let mut tables = ChordTables::new(parameters()).expect("valid parameters");
+        let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
         tables.fold_retained(&[0, 1, 2]).expect("first success");
         assert!(tables.finish_record().expect("first record").is_none());
         tables.fold_retained(&[0, 3]).expect("second success");
@@ -334,7 +378,7 @@ mod tests {
 
     #[test]
     fn mixed_index_repeats_each_empirical_table_by_weight() {
-        let mut tables = ChordTables::new(parameters()).expect("valid parameters");
+        let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
         tables.fold_retained(&[0, 7]).expect("success");
         tables.flush().expect("make buffered success visible");
         assert_eq!(tables.mixed_len().expect("mixed length"), 3);
@@ -347,7 +391,7 @@ mod tests {
     #[test]
     fn checkpoints_are_reproducible() {
         let run = || {
-            let mut tables = ChordTables::new(parameters()).expect("valid parameters");
+            let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
             for sequence in [vec![0, 1], vec![0, 2], vec![0, 3]] {
                 tables.fold_retained(&sequence).expect("fold success");
                 let _ = tables.finish_record().expect("finish record");
@@ -355,5 +399,26 @@ mod tests {
             tables.checkpoint().expect("final checkpoint")
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn checkpoint_reuses_hash_until_visible_tables_change() {
+        let serializations = Rc::new(Cell::new(0));
+        let step = |value| CountingStep {
+            value,
+            serializations: Rc::clone(&serializations),
+        };
+        let mut tables = EmpiricalStepTables::new(parameters()).expect("valid parameters");
+        tables
+            .fold_retained(&[step(0), step(1)])
+            .expect("fold success");
+        tables.flush().expect("make buffered success visible");
+        let after_flush = serializations.get();
+        assert!(after_flush > 0);
+
+        let first = tables.checkpoint().expect("first checkpoint");
+        let second = tables.checkpoint().expect("second checkpoint");
+        assert_eq!(first, second);
+        assert_eq!(serializations.get(), after_flush);
     }
 }

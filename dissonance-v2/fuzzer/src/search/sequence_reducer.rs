@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Deterministic, snapshot-aware delta debugging for replayable step sequences.
+//! Game-neutral, snapshot-aware delta debugging for replayable step sequences.
 
 use std::{error::Error, fmt, num::NonZeroUsize, thread};
 

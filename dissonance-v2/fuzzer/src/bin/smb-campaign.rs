@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Recorded campaign-mode conquest runs, their exact replays, and the serial
-//! throughput arm.
+//! Recorded campaign-mode conquest runs and their exact replays.
 
 use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 
 use fuzzer::{
-    campaign::{
+    smb::archive::{
+        MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, SmbArchiveRetentionPolicy,
+        SmbArchiveSelectorPolicy,
+    },
+    smb::campaign::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, SmbCampaignVocabulary,
         chord_policy_from_identifier, key_policy_from_identifier, replacement_from_identifier,
         replay_smb_campaign, resume_from_identifier, retention_from_identifier,
-        run_smb_campaign_with_progress, select_frontier_resume_input, selector_from_identifier,
-        suffix_policy_from_identifier, vocabulary_from_identifier, waypoint_from_identifier,
-    },
-    phase4b::SmbInput,
-    phase4c::{
-        MAX_SMB_COMPLETION_ACTIONS, SmbArchiveDurationPolicy, SmbArchiveReport,
-        SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy,
-        run_smb_archive_search_with_retention_and_work,
+        run_smb_campaign_with_progress, selector_from_identifier, suffix_policy_from_identifier,
+        vocabulary_from_identifier, waypoint_from_identifier,
     },
 };
 use serde::Serialize;
@@ -25,17 +22,12 @@ use sha2::{Digest, Sha256};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let mode = args
-        .next()
-        .ok_or("usage: smb-campaign <run|replay|serial-arm> ...")?;
+    let mode = args.next().ok_or("usage: smb-campaign <run|replay> ...")?;
     if mode == "run" {
         return run_mode(&mut args);
     }
     if mode == "replay" {
         return replay_mode(&mut args);
-    }
-    if mode == "serial-arm" {
-        return serial_arm_mode(&mut args);
     }
     Err("unknown smb-campaign mode".into())
 }
@@ -48,22 +40,6 @@ struct LiveThroughput {
     frames_emulated: u64,
     executions_per_second: f64,
     frames_per_second: f64,
-}
-
-/// Serial throughput arm: the frozen serial engine on the same origin.
-#[derive(Debug, Serialize)]
-struct SerialArmReport {
-    seed: u64,
-    execution_budget: u64,
-    executions_completed: u64,
-    frames_emulated: u64,
-    progress_watermark: fuzzer::phase4b::SmbProgressWatermark,
-    milestones: fuzzer::phase4b::SmbMilestones,
-    entries: usize,
-    retained: u64,
-    rejected: u64,
-    deaths: u64,
-    wall_seconds: f64,
 }
 
 #[allow(clippy::disallowed_methods)] // not order-observable: wall time is live throughput evidence only.
@@ -99,12 +75,12 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut selector_policy = SmbArchiveSelectorPolicy::ConcentratedRecency;
     let mut retention_policy = SmbArchiveRetentionPolicy::ProbeAtAdmission;
     let mut vocabulary = SmbCampaignVocabulary::FrozenNineMask;
-    let mut key_policy = fuzzer::phase4c::SmbArchiveKeyPolicy::Frozen;
-    let mut waypoint_policy = fuzzer::phase4c::SmbArchiveWaypointPolicy::Absent;
-    let mut replacement_policy = fuzzer::phase4c::SmbArchiveReplacementPolicy::FewestActions;
-    let mut resume_policy = fuzzer::campaign::SmbCampaignResumePolicy::FrontierShortest;
-    let mut suffix = fuzzer::campaign::SmbCampaignSuffixPolicy::OneOrTwo;
-    let mut chord = fuzzer::campaign::SmbCampaignChordPolicy::Uniform;
+    let mut key_policy = fuzzer::smb::archive::SmbArchiveKeyPolicy::Frozen;
+    let mut waypoint_policy = fuzzer::smb::archive::SmbArchiveWaypointPolicy::Absent;
+    let mut replacement_policy = fuzzer::smb::archive::SmbArchiveReplacementPolicy::FewestActions;
+    let mut resume_policy = fuzzer::smb::campaign::SmbCampaignResumePolicy::FrontierShortest;
+    let mut suffix = fuzzer::smb::campaign::SmbCampaignSuffixPolicy::OneOrTwo;
+    let mut chord = fuzzer::smb::campaign::SmbCampaignChordPolicy::Uniform;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -193,7 +169,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         wall_budget,
         selector_policy,
         retention_policy,
-        archive_entry_limit: fuzzer::phase4c::MAX_ARCHIVE_ENTRIES,
+        archive_entry_limit: fuzzer::smb::archive::MAX_ARCHIVE_ENTRIES,
         vocabulary,
         key_policy,
         waypoint_policy,
@@ -280,73 +256,6 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     if !replay_verified {
         return Err("campaign replay diverged from the recorded run".into());
     }
-    Ok(())
-}
-
-#[allow(clippy::disallowed_methods)] // not order-observable: wall time is live throughput evidence only.
-fn serial_arm_mode(
-    args: &mut impl Iterator<Item = std::ffi::OsString>,
-) -> Result<(), Box<dyn Error>> {
-    let origin_arg = args
-        .next()
-        .ok_or("missing origin (genesis or a source archive path)")?;
-    let seed = parse_u64(&args.next().ok_or("missing seed")?.to_string_lossy())?;
-    let execution_budget = parse_u64(
-        &args
-            .next()
-            .ok_or("missing execution budget")?
-            .to_string_lossy(),
-    )?;
-    let action_limit = usize::try_from(parse_u64(
-        &args.next().ok_or("missing action limit")?.to_string_lossy(),
-    )?)?;
-    let output = PathBuf::from(args.next().ok_or("missing output directory")?);
-    if args.next().is_some() {
-        return Err("unexpected extra serial-arm argument".into());
-    }
-    fs::create_dir_all(&output)?;
-    let rom = read_rom()?;
-    let initial = match load_origin(&origin_arg.to_string_lossy())? {
-        SmbCampaignOrigin::Genesis => SmbInput::default(),
-        SmbCampaignOrigin::Archive { report, .. } => select_frontier_resume_input(
-            &report,
-            fuzzer::campaign::SmbCampaignResumePolicy::FrontierShortest,
-        )?,
-    };
-    let started = std::time::Instant::now();
-    let (report, frames_emulated) = run_smb_archive_search_with_retention_and_work(
-        &rom,
-        std::slice::from_ref(&initial),
-        seed,
-        execution_budget,
-        action_limit,
-        SmbArchiveDurationPolicy::Stratified,
-        SmbArchiveSuffixPolicy::OneOrTwo,
-        SmbArchiveRetentionPolicy::ProbeAtAdmission,
-    )?;
-    let wall_seconds = started.elapsed().as_secs_f64();
-    fs::write(
-        output.join("serial-archive-live.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
-    let arm = SerialArmReport {
-        seed,
-        execution_budget,
-        executions_completed: report.executions,
-        frames_emulated,
-        progress_watermark: report.progress_watermark,
-        milestones: report.milestones,
-        entries: report.entries.len(),
-        retained: report.retained,
-        rejected: report.rejected,
-        deaths: report.deaths,
-        wall_seconds,
-    };
-    fs::write(
-        output.join("serial-arm.json"),
-        serde_json::to_vec_pretty(&arm)?,
-    )?;
-    println!("{}", serde_json::to_string_pretty(&arm)?);
     Ok(())
 }
 

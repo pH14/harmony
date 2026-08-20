@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuzzer::phase4b::{ButtonChord, SmbInput};
+use fuzzer::smb::target::{ButtonChord, SmbInput};
 use serde::{
     Deserialize, Deserializer, Serialize,
     de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor},
@@ -393,7 +393,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::{MinimalKey, RANDOM_COMMON_DENOMINATOR, random_weight, scan_reader};
-    use fuzzer::phase4b::ButtonChord;
+    use fuzzer::smb::target::ButtonChord;
 
     #[test]
     fn stratified_random_weights_form_one_distribution() {

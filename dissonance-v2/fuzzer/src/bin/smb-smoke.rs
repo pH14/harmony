@@ -5,7 +5,9 @@
 use std::{collections::BTreeSet, env, error::Error, fs, path::PathBuf};
 
 use fuzzer::{
-    phase4b::{ButtonChord, SmbMilestones, SmbObservations, SmbTarget, smb_milestones_from_wram},
+    smb::target::{
+        ButtonChord, SmbMilestones, SmbObservations, SmbTarget, smb_milestones_from_wram,
+    },
     target::{Target, execute_actions},
 };
 use serde::Serialize;

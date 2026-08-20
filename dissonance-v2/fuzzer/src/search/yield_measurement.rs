@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Game-neutral, post-run measurement of per-parent discovery yield.
+//! Game-neutral post-run measurement of per-parent search yield.
 
 use std::collections::{BTreeMap, VecDeque};
 

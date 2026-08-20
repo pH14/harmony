@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Deterministic snapshot-backed quality-diversity search for SMB completion.
+//! SMB archive policy, retention, selection, and diagnostic tooling.
 
 use std::{
     cmp::Reverse,
@@ -15,13 +15,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    draw_budget::{DrawBudgetParameters, DrawBudgets},
-    phase4b::{
-        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, MAX_SMB_ACTIONS,
-        PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE, SmbDeathBytes, SmbInput, SmbMacro,
-        SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
-        SmbProgressWatermark, SmbSnapshot, SmbTarget, observe_smb_input, smb_camera_pixels,
-        smb_death_bytes, smb_mechanical_state_from_wram, smb_milestones_from_wram,
+    search::draw_budget::{DrawBudgetParameters, DrawBudgets},
+    smb::target::{
+        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, PLAYER_BELOW_PLAY_AREA_PAGE, PLAYER_KILLED_STATE,
+        SmbDeathBytes, SmbInput, SmbMechanicalState, SmbMilestoneInputs, SmbMilestoneTimes,
+        SmbMilestones, SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
+        observe_smb_input, smb_camera_pixels, smb_death_bytes, smb_mechanical_state_from_wram,
+        smb_milestones_from_wram,
     },
     target::Target,
 };
@@ -37,9 +37,6 @@ const MAX_ENTRIES_PER_KEY: usize = 2;
 /// region holds finitely many cells, each capped here, so waypoint states
 /// cannot flood the archive.
 const WAYPOINT_ENTRIES_PER_KEY: usize = 4;
-const RANKING_REBUILD_INTERVAL: u64 = 512;
-const RANKING_STALE_EXECUTIONS: u64 = 1_024;
-const GENERATED_MUTATOR_RETIRE_AFTER: u64 = 128;
 const FRONTIER_PROGRESS_BAND: u16 = 8;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 pub(crate) const FROZEN_BUTTON_MASKS: [u8; 9] =
@@ -51,46 +48,6 @@ pub(crate) const FROZEN_BUTTON_MASKS: [u8; 9] =
 /// explicit per-run action limit that replay retains and validates under.
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
-/// Pure generated score used only to choose a replacement inside a full archive cell.
-pub trait SmbRanking {
-    /// Return one comparable deterministic score from one state's recorded observations.
-    fn score(&self, observations: &[SmbObservations]) -> i64;
-}
-
-/// Mechanical accounting for one installed generated ranking.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SmbRankingAccounting {
-    /// Whether this campaign installed a ranking.
-    pub installed: bool,
-    /// Whether the ranking remained active at campaign end.
-    pub active: bool,
-    /// Full-cell replacements selected while the ranking was active.
-    pub replacements: u64,
-    /// New archive cells reached by descendants of ranking-selected replacements.
-    pub descendant_novelty: u64,
-    /// Execution-count rebuild at which an ineffective ranking was retired.
-    pub retired_at_execution: Option<u64>,
-}
-
-/// Mechanical accounting for one installed generated archive mutator.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SmbGeneratedMutatorAccounting {
-    /// Whether this campaign installed a generated mutator.
-    pub installed: bool,
-    /// Whether the mutator remained active at campaign end.
-    pub active: bool,
-    /// Times the host selected and invoked the generated mutator.
-    pub attempts: u64,
-    /// Changed, bounded candidates emitted by the generated mutator.
-    pub offspring: u64,
-    /// Emitted candidates that retained at least one archive state.
-    pub retained_offspring: u64,
-    /// Consecutive emitted candidates that retained no archive state.
-    pub consecutive_nonretained: u64,
-    /// Execution at which mechanical retirement occurred.
-    pub retired_at_execution: Option<u64>,
-}
-
 /// Duration distribution used by completion suffix mutation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbArchiveDurationPolicy {
@@ -100,27 +57,8 @@ pub enum SmbArchiveDurationPolicy {
     Stratified,
 }
 
-/// Number of adjacent chords sampled for one archive expansion.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum SmbArchiveSuffixPolicy {
-    /// Frozen H1 behavior: one chord with probability 3/4, otherwise two.
-    OneOrTwo,
-    /// Bounded temporal burst: lengths one through four with geometric tail probabilities.
-    BurstUpToFour,
-}
-
 /// Version stamped into every extended ladder record.
 pub const SMB_LADDER_VERSION: u32 = 2;
-
-/// Whether a campaign records the extended, non-saturating ladder.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub enum SmbArchiveLadderPolicy {
-    /// Frozen behaviour: only the four named rungs, and no extended record at all.
-    #[default]
-    Frozen,
-    /// M52: additionally record the maximum tuple and every observed transition.
-    Extended,
-}
 
 /// One observed `(world, level)` pair and what was reached inside it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1353,17 +1291,6 @@ const VIABILITY_PROBE_FRAMES: u16 = 120;
 /// D68 corridor ruling: the shortened admission-probe horizon in frames.
 const VIABILITY_PROBE_FRAMES_SHORT: u16 = 45;
 
-/// Frozen search parameters used by a generated-ranking archive campaign.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SmbRankingSearchConfig {
-    /// Maximum clean-reset action count.
-    pub max_actions: usize,
-    /// Seeded hold-duration distribution.
-    pub duration_policy: SmbArchiveDurationPolicy,
-    /// Seeded adjacent-chord distribution.
-    pub suffix_policy: SmbArchiveSuffixPolicy,
-}
-
 /// One bounded quality-diversity cell for an action-boundary snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SmbArchiveKey {
@@ -1453,12 +1380,6 @@ pub struct SmbArchiveReport {
     pub rejected: u64,
     /// Terminal death transitions observed.
     pub deaths: u64,
-    /// Execution-count accounting for the optional generated ranking.
-    #[serde(default)]
-    pub ranking: SmbRankingAccounting,
-    /// Execution-count accounting for the optional generated archive mutator.
-    #[serde(default)]
-    pub generated_mutator: SmbGeneratedMutatorAccounting,
     /// Extended ladder record, omitted entirely under the frozen ladder policy.
     #[serde(default, skip_serializing_if = "SmbLadder::is_absent")]
     pub ladder: SmbLadder,
@@ -1521,8 +1442,6 @@ pub struct SmbFrontierViabilityReport {
 pub(crate) struct ArchiveEntry {
     pub(crate) report: SmbArchiveEntryReport,
     pub(crate) snapshot: SmbSnapshot,
-    pub(crate) observations: Vec<SmbObservations>,
-    ranking_lineage: bool,
 }
 
 pub(crate) struct ArchiveCandidate {
@@ -1531,7 +1450,7 @@ pub(crate) struct ArchiveCandidate {
     pub(crate) milestones: SmbMilestones,
 }
 
-pub(crate) struct Archive<'a> {
+pub(crate) struct Archive {
     /// Retention stops when the entry count reaches this bound; campaign
     /// runs record their bound in the stream header and replay under it.
     pub(crate) max_entries: usize,
@@ -1541,10 +1460,6 @@ pub(crate) struct Archive<'a> {
     pub(crate) input_ids: BTreeMap<SmbInput, usize>,
     pub(crate) retained: u64,
     pub(crate) rejected: u64,
-    ranking: Option<&'a dyn SmbRanking>,
-    ranking_accounting: SmbRankingAccounting,
-    first_ranking_replacement: Option<u64>,
-    last_descendant_novelty: Option<u64>,
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
@@ -1562,7 +1477,7 @@ pub(crate) struct Archive<'a> {
     replacement_frames_displaced: u64,
 }
 
-impl<'a> Archive<'a> {
+impl Archive {
     pub(crate) fn set_selector_policy(&mut self, policy: SmbArchiveSelectorPolicy) {
         self.selector_accounting.policy = policy;
     }
@@ -1632,7 +1547,7 @@ impl<'a> Archive<'a> {
         self.waypoint_retained
     }
 
-    pub(crate) fn new(ranking: Option<&'a dyn SmbRanking>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
             entries: Vec::new(),
@@ -1641,14 +1556,6 @@ impl<'a> Archive<'a> {
             input_ids: BTreeMap::new(),
             retained: 0,
             rejected: 0,
-            ranking,
-            ranking_accounting: SmbRankingAccounting {
-                installed: ranking.is_some(),
-                active: ranking.is_some(),
-                ..SmbRankingAccounting::default()
-            },
-            first_ranking_replacement: None,
-            last_descendant_novelty: None,
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
@@ -1714,7 +1621,6 @@ impl<'a> Archive<'a> {
         execution: u64,
         candidate: ArchiveCandidate,
         snapshot: SmbSnapshot,
-        observations: &[SmbObservations],
     ) -> Result<Option<usize>, Box<dyn Error>> {
         let ArchiveCandidate {
             input,
@@ -1739,30 +1645,9 @@ impl<'a> Archive<'a> {
             MAX_ENTRIES_PER_KEY
         };
         let cell = self.cells.entry(key).or_default();
-        let new_cell = cell.is_empty();
-        let mut ranking_replacement = false;
         let mut frames_replacement = false;
         let replace = if cell.len() < entries_per_key {
             None
-        } else if self.ranking_accounting.active {
-            let ranking = self.ranking.ok_or("active SMB ranking is missing")?;
-            let candidate_quality = (ranking.score(observations), Reverse(input.actions.len()));
-            cell.iter()
-                .copied()
-                .min_by_key(|id| {
-                    (
-                        ranking.score(&self.entries[*id].observations),
-                        Reverse(self.entries[*id].report.input.actions.len()),
-                    )
-                })
-                .filter(|id| {
-                    let existing_quality = (
-                        ranking.score(&self.entries[*id].observations),
-                        Reverse(self.entries[*id].report.input.actions.len()),
-                    );
-                    candidate_quality > existing_quality
-                })
-                .inspect(|_| ranking_replacement = true)
         } else if self.replacement_policy == SmbArchiveReplacementPolicy::FewestFramesInLevel {
             // The costliest entry in the level's own currency loses to a
             // candidate that reached the same cell in strictly fewer frames.
@@ -1794,22 +1679,8 @@ impl<'a> Archive<'a> {
             self.active[replaced] = false;
             cell.retain(|id| *id != replaced);
         }
-        let parent_ranking_lineage = parent_id
-            .and_then(|id| self.entries.get(id))
-            .is_some_and(|entry| entry.ranking_lineage);
-        let ranking_lineage = parent_ranking_lineage || ranking_replacement;
-        if ranking_replacement {
-            self.ranking_accounting.replacements =
-                self.ranking_accounting.replacements.saturating_add(1);
-            self.first_ranking_replacement.get_or_insert(execution);
-        }
         if frames_replacement {
             self.replacement_frames_displaced = self.replacement_frames_displaced.saturating_add(1);
-        }
-        if new_cell && parent_ranking_lineage && execution > 0 {
-            self.ranking_accounting.descendant_novelty =
-                self.ranking_accounting.descendant_novelty.saturating_add(1);
-            self.last_descendant_novelty = Some(execution);
         }
         let id = self.entries.len();
         let report = SmbArchiveEntryReport {
@@ -1821,12 +1692,7 @@ impl<'a> Archive<'a> {
             milestones,
             selector: None,
         };
-        self.entries.push(ArchiveEntry {
-            report,
-            snapshot,
-            observations: observations.to_vec(),
-            ranking_lineage,
-        });
+        self.entries.push(ArchiveEntry { report, snapshot });
         self.active.push(true);
         self.frames_in_level.push(candidate_frames_in_level);
         self.selected.push(0);
@@ -1838,20 +1704,6 @@ impl<'a> Archive<'a> {
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
         Ok(Some(id))
-    }
-
-    fn finish_execution(&mut self, execution: u64) {
-        if !self.ranking_accounting.active || !execution.is_multiple_of(RANKING_REBUILD_INTERVAL) {
-            return;
-        }
-        let Some(first_replacement) = self.first_ranking_replacement else {
-            return;
-        };
-        let last_gain = self.last_descendant_novelty.unwrap_or(first_replacement);
-        if execution.saturating_sub(last_gain) >= RANKING_STALE_EXECUTIONS {
-            self.ranking_accounting.active = false;
-            self.ranking_accounting.retired_at_execution = Some(execution);
-        }
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -2227,21 +2079,6 @@ impl<'a> Archive<'a> {
 }
 
 /// Run deterministic snapshot-backed short-horizon suffix search.
-pub fn run_smb_archive_search(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_with_action_limit(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        MAX_SMB_ACTIONS,
-    )
-}
-
 /// Audit whether active frontier and approach-band representatives can recover.
 pub fn audit_smb_frontier_viability(
     rom: &[u8],
@@ -4907,8 +4744,6 @@ pub fn readmit_smb_archive(
         deaths: 0,
         entries: survivors,
         progress_curve: Vec::new(),
-        ranking: SmbRankingAccounting::default(),
-        generated_mutator: SmbGeneratedMutatorAccounting::default(),
         ladder: SmbLadder::default(),
         selector: SmbSelectorAccounting::default(),
     };
@@ -5300,634 +5135,6 @@ fn active_source_entries(source: &SmbArchiveReport) -> Vec<&SmbArchiveEntryRepor
 }
 
 /// Run completion search with an explicit bounded completion-only action horizon.
-pub fn run_smb_archive_search_with_action_limit(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_with_config(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        max_actions,
-        SmbArchiveDurationPolicy::Legacy,
-    )
-}
-
-/// Run completion search with explicit bounded horizon and duration policy.
-pub fn run_smb_archive_search_with_config(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-    duration_policy: SmbArchiveDurationPolicy,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_with_config_and_suffix(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        max_actions,
-        duration_policy,
-        SmbArchiveSuffixPolicy::OneOrTwo,
-    )
-}
-
-/// Run frozen completion search with explicit bounded duration and suffix policies.
-pub fn run_smb_archive_search_with_config_and_suffix(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-    duration_policy: SmbArchiveDurationPolicy,
-    suffix_policy: SmbArchiveSuffixPolicy,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        max_actions,
-        duration_policy,
-        suffix_policy,
-        None,
-        None,
-        false,
-        SmbArchiveRetentionPolicy::Frozen,
-        SmbArchiveKeyPolicy::Frozen,
-        SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::ConcentratedRecency,
-    )
-    .map(|(report, _)| report)
-}
-
-/// Run completion search with explicit bounded duration and suffix policies.
-pub fn run_smb_archive_search_with_policies(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-    duration_policy: SmbArchiveDurationPolicy,
-    suffix_policy: SmbArchiveSuffixPolicy,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        max_actions,
-        duration_policy,
-        suffix_policy,
-        None,
-        None,
-        true,
-        SmbArchiveRetentionPolicy::Frozen,
-        SmbArchiveKeyPolicy::Frozen,
-        SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::ConcentratedRecency,
-    )
-    .map(|(report, _)| report)
-}
-
-/// Run frozen completion search with an explicit admission retention policy.
-///
-/// # Errors
-///
-/// Returns an error when the initial corpus is empty, when an input exceeds the
-/// action bound, or when emulation or snapshotting fails.
-#[allow(clippy::too_many_arguments)]
-pub fn run_smb_archive_search_with_retention(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-    duration_policy: SmbArchiveDurationPolicy,
-    suffix_policy: SmbArchiveSuffixPolicy,
-    retention_policy: SmbArchiveRetentionPolicy,
-    key_policy: SmbArchiveKeyPolicy,
-    ladder_policy: SmbArchiveLadderPolicy,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        max_actions,
-        duration_policy,
-        suffix_policy,
-        None,
-        None,
-        false,
-        retention_policy,
-        key_policy,
-        ladder_policy,
-        SmbArchiveSelectorPolicy::ConcentratedRecency,
-    )
-    .map(|(report, _)| report)
-}
-
-/// Run completion search with an explicit parent-selector policy.
-///
-/// At [`SmbArchiveSelectorPolicy::ConcentratedRecency`] this is byte-identical to
-/// [`run_smb_archive_search_with_retention`] at the same arguments.
-///
-/// # Errors
-///
-/// Returns an error when the initial corpus is empty, when an input exceeds the
-/// action bound, or when emulation or snapshotting fails.
-#[allow(clippy::too_many_arguments)]
-pub fn run_smb_archive_search_with_selector(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-    duration_policy: SmbArchiveDurationPolicy,
-    suffix_policy: SmbArchiveSuffixPolicy,
-    retention_policy: SmbArchiveRetentionPolicy,
-    key_policy: SmbArchiveKeyPolicy,
-    ladder_policy: SmbArchiveLadderPolicy,
-    selector_policy: SmbArchiveSelectorPolicy,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        max_actions,
-        duration_policy,
-        suffix_policy,
-        None,
-        None,
-        false,
-        retention_policy,
-        key_policy,
-        ladder_policy,
-        selector_policy,
-    )
-    .map(|(report, _)| report)
-}
-
-/// Run completion search with a generated ranking and an explicit retention policy.
-///
-/// # Errors
-///
-/// Returns an error when the initial corpus is empty, when an input exceeds the
-/// action bound, or when emulation or snapshotting fails.
-pub fn run_smb_archive_search_with_ranking_and_retention<R: SmbRanking>(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    config: SmbRankingSearchConfig,
-    ranking: &R,
-    retention_policy: SmbArchiveRetentionPolicy,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        config.max_actions,
-        config.duration_policy,
-        config.suffix_policy,
-        Some(ranking),
-        None,
-        false,
-        retention_policy,
-        SmbArchiveKeyPolicy::Frozen,
-        SmbArchiveLadderPolicy::Extended,
-        SmbArchiveSelectorPolicy::ConcentratedRecency,
-    )
-    .map(|(report, _)| report)
-}
-
-/// Run the retention-policy search and additionally report its emulated frames.
-///
-/// The report is byte-identical to [`run_smb_archive_search_with_retention`]
-/// at the same arguments. The second value is the target's deterministic
-/// lifetime frame total — bootstrap, execution, and admission probes included —
-/// recorded as throughput evidence and never part of the report.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as
-/// [`run_smb_archive_search_with_retention`].
-#[allow(clippy::too_many_arguments)]
-pub fn run_smb_archive_search_with_retention_and_work(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-    duration_policy: SmbArchiveDurationPolicy,
-    suffix_policy: SmbArchiveSuffixPolicy,
-    retention_policy: SmbArchiveRetentionPolicy,
-) -> Result<(SmbArchiveReport, u64), Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        max_actions,
-        duration_policy,
-        suffix_policy,
-        None,
-        None,
-        false,
-        retention_policy,
-        SmbArchiveKeyPolicy::Frozen,
-        SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::ConcentratedRecency,
-    )
-}
-
-/// Run completion search with a generated ranking confined to full-cell replacement.
-pub fn run_smb_archive_search_with_ranking<R: SmbRanking>(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    config: SmbRankingSearchConfig,
-    ranking: &R,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        config.max_actions,
-        config.duration_policy,
-        config.suffix_policy,
-        Some(ranking),
-        None,
-        false,
-        SmbArchiveRetentionPolicy::Frozen,
-        SmbArchiveKeyPolicy::Frozen,
-        SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::ConcentratedRecency,
-    )
-    .map(|(report, _)| report)
-}
-
-/// Run frozen completion search with one bounded generated semantic mutator choice.
-pub fn run_smb_archive_search_with_generated_mutator<M: SmbMacro>(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    config: SmbRankingSearchConfig,
-    generated_mutator: &M,
-) -> Result<SmbArchiveReport, Box<dyn Error>> {
-    run_smb_archive_search_internal(
-        rom,
-        initial_inputs,
-        seed,
-        execution_budget,
-        config.max_actions,
-        config.duration_policy,
-        config.suffix_policy,
-        None,
-        Some(generated_mutator),
-        false,
-        SmbArchiveRetentionPolicy::Frozen,
-        SmbArchiveKeyPolicy::Frozen,
-        SmbArchiveLadderPolicy::Frozen,
-        SmbArchiveSelectorPolicy::ConcentratedRecency,
-    )
-    .map(|(report, _)| report)
-}
-
-fn record_generated_mutator_result(
-    accounting: &mut SmbGeneratedMutatorAccounting,
-    retained: bool,
-    execution: u64,
-) {
-    if retained {
-        accounting.retained_offspring = accounting.retained_offspring.saturating_add(1);
-        accounting.consecutive_nonretained = 0;
-    } else {
-        accounting.consecutive_nonretained = accounting.consecutive_nonretained.saturating_add(1);
-        if accounting.consecutive_nonretained >= GENERATED_MUTATOR_RETIRE_AFTER {
-            accounting.active = false;
-            accounting.retired_at_execution = Some(execution);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_smb_archive_search_internal(
-    rom: &[u8],
-    initial_inputs: &[SmbInput],
-    seed: u64,
-    execution_budget: u64,
-    max_actions: usize,
-    duration_policy: SmbArchiveDurationPolicy,
-    suffix_policy: SmbArchiveSuffixPolicy,
-    ranking: Option<&dyn SmbRanking>,
-    generated_mutator: Option<&dyn SmbMacro>,
-    experimental_search: bool,
-    retention_policy: SmbArchiveRetentionPolicy,
-    key_policy: SmbArchiveKeyPolicy,
-    ladder_policy: SmbArchiveLadderPolicy,
-    selector_policy: SmbArchiveSelectorPolicy,
-) -> Result<(SmbArchiveReport, u64), Box<dyn Error>> {
-    if initial_inputs.is_empty() {
-        return Err("SMB archive search requires a nonempty initial corpus".into());
-    }
-    if experimental_search && selector_policy != SmbArchiveSelectorPolicy::ConcentratedRecency {
-        return Err("the experimental scheduler does not take a selector policy".into());
-    }
-    if !(1..=MAX_SMB_COMPLETION_ACTIONS).contains(&max_actions) {
-        return Err("SMB completion action limit is outside its bounded range".into());
-    }
-    if initial_inputs
-        .iter()
-        .any(|input| input.actions.len() > max_actions)
-    {
-        return Err("SMB archive input exceeds the configured action limit".into());
-    }
-    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
-    let mut archive = Archive::new(ranking);
-    let mut aggregate = SmbMilestones::default();
-    let mut progress_watermark = SmbProgressWatermark::default();
-    let mut first_reached = SmbMilestoneTimes::default();
-    let mut first_inputs = SmbMilestoneInputs::default();
-    let mut champion_input = SmbInput::default();
-    let mut champion_milestones = SmbMilestones::default();
-    let mut ladder_max: Option<(u8, u8, u16)> = None;
-    let mut ladder_observed = BTreeMap::<(u8, u8), (u64, u16)>::new();
-
-    target.reset();
-    let genesis_key = archive_key(target.wram(), key_policy);
-    let genesis_snapshot = target.snapshot().ok_or("failed to snapshot SMB genesis")?;
-    let genesis_id = archive
-        .insert(
-            None,
-            0,
-            ArchiveCandidate {
-                input: SmbInput::default(),
-                key: genesis_key,
-                milestones: SmbMilestones::default(),
-            },
-            genesis_snapshot,
-            &[],
-        )?
-        .ok_or("failed to retain SMB genesis")?;
-    for input in initial_inputs {
-        target.reset();
-        let mut prefix = SmbInput::default();
-        let mut milestones = SmbMilestones::default();
-        let mut parent_id = genesis_id;
-        for action in &input.actions {
-            if target.is_dead() {
-                break;
-            }
-            prefix.actions.push(*action);
-            target.apply(action);
-            merge_progress_watermark(&mut progress_watermark, target.last_action_observations());
-            merge_action_milestones(&mut milestones, &target)?;
-            merge_milestones(&mut aggregate, milestones);
-            update_first_inputs(
-                &mut first_reached,
-                &mut first_inputs,
-                milestones,
-                0,
-                &prefix,
-            );
-            if milestone_key(milestones) > milestone_key(champion_milestones) {
-                champion_milestones = milestones;
-                champion_input = prefix.clone();
-            }
-            if target.is_dead() || target.exit_kind() != ExitKind::Ok {
-                break;
-            }
-            let snapshot = target
-                .snapshot()
-                .ok_or("failed to snapshot SMB bootstrap prefix")?;
-            let observations = target.last_action_observations().to_vec();
-            let key = archive_key(target.wram(), key_policy);
-            if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
-                continue;
-            }
-            record_ladder(&mut ladder_max, &mut ladder_observed, target.wram(), 0);
-            if let Some(id) = archive.insert(
-                Some(parent_id),
-                0,
-                ArchiveCandidate {
-                    input: prefix.clone(),
-                    key,
-                    milestones,
-                },
-                snapshot,
-                &observations,
-            )? {
-                parent_id = id;
-            }
-        }
-    }
-
-    let mut rand = StdRand::with_seed(seed);
-    let mut curve = Vec::new();
-    let mut deaths = 0_u64;
-    let mut generated_mutator_accounting = SmbGeneratedMutatorAccounting {
-        installed: generated_mutator.is_some(),
-        active: generated_mutator.is_some(),
-        ..SmbGeneratedMutatorAccounting::default()
-    };
-    for execution in 1..=execution_budget {
-        let (parent_id, selector_draw) = archive.select_parent(&mut rand, max_actions)?;
-        if let Some(draw) = &selector_draw {
-            archive.record_selection(parent_id, draw);
-        }
-        let parent = archive.entries[parent_id].clone();
-        target.restore(&parent.snapshot)?;
-        let execution_frames_before = target.frames_clocked();
-        let mut input = parent.report.input.clone();
-        let mut milestones = parent.report.milestones;
-        let use_generated_mutator = generated_mutator_accounting.active
-            && rand.below(NonZeroUsize::new(5).ok_or("invalid generated mutator odds")?) == 0;
-        let (suffix, generated_emitted) = if use_generated_mutator {
-            generated_mutator_accounting.attempts =
-                generated_mutator_accounting.attempts.saturating_add(1);
-            let candidate = generated_mutator
-                .ok_or("active generated SMB mutator is missing")?
-                .mutate(&input, rand.next());
-            if candidate.actions.len() > max_actions
-                || !candidate.actions.starts_with(&input.actions)
-                || candidate
-                    .actions
-                    .iter()
-                    .any(|action| action.hold_frames == 0 || action.hold_frames > MAX_HOLD_FRAMES)
-            {
-                return Err("generated SMB archive mutator violated deterministic bounds".into());
-            }
-            let emitted = candidate.actions.len() > input.actions.len();
-            if emitted {
-                generated_mutator_accounting.offspring =
-                    generated_mutator_accounting.offspring.saturating_add(1);
-            }
-            (candidate.actions[input.actions.len()..].to_vec(), emitted)
-        } else {
-            let suffix_len = match suffix_policy {
-                SmbArchiveSuffixPolicy::OneOrTwo => {
-                    if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
-                        2
-                    } else {
-                        1
-                    }
-                }
-                SmbArchiveSuffixPolicy::BurstUpToFour => {
-                    match rand.below(NonZeroUsize::new(8).ok_or("invalid burst odds")?) {
-                        0 => 4,
-                        1 => 3,
-                        2 | 3 => 2,
-                        _ => 1,
-                    }
-                }
-            };
-            let mut suffix = Vec::with_capacity(suffix_len);
-            for _ in 0..suffix_len {
-                suffix.push(sample_chord(
-                    &mut rand,
-                    duration_policy,
-                    experimental_search,
-                )?);
-            }
-            (suffix, false)
-        };
-        let mut current_parent = parent_id;
-        let retained_before = archive.retained;
-        for action in suffix {
-            if target.is_dead() || input.actions.len() >= max_actions {
-                break;
-            }
-            input.actions.push(action);
-            target.apply(&action);
-            merge_progress_watermark(&mut progress_watermark, target.last_action_observations());
-            merge_action_milestones(&mut milestones, &target)?;
-            merge_milestones(&mut aggregate, milestones);
-            update_first_inputs(
-                &mut first_reached,
-                &mut first_inputs,
-                milestones,
-                execution,
-                &input,
-            );
-            if milestone_key(milestones) > milestone_key(champion_milestones) {
-                champion_milestones = milestones;
-                champion_input = input.clone();
-            }
-            if target.is_dead() {
-                deaths = deaths.saturating_add(1);
-                break;
-            }
-            if target.exit_kind() != ExitKind::Ok {
-                break;
-            }
-            let snapshot = target.snapshot().ok_or("failed to snapshot SMB suffix")?;
-            let observations = target.last_action_observations().to_vec();
-            let key = archive_key(target.wram(), key_policy);
-            if !admission_is_viable(&mut target, &snapshot, retention_policy)? {
-                continue;
-            }
-            record_ladder(
-                &mut ladder_max,
-                &mut ladder_observed,
-                target.wram(),
-                execution,
-            );
-            if let Some(id) = archive.insert(
-                Some(current_parent),
-                execution,
-                ArchiveCandidate {
-                    input: input.clone(),
-                    key,
-                    milestones,
-                },
-                snapshot,
-                &observations,
-            )? {
-                current_parent = id;
-            }
-        }
-        if generated_emitted {
-            record_generated_mutator_result(
-                &mut generated_mutator_accounting,
-                archive.retained > retained_before,
-                execution,
-            );
-        }
-        archive.record_selection_outcome(
-            parent_id,
-            archive.retained > retained_before,
-            target
-                .frames_clocked()
-                .saturating_sub(execution_frames_before),
-        )?;
-        archive.finish_execution(execution);
-        if execution % 100 == 0 || execution == execution_budget {
-            curve.push(SmbArchiveProgressPoint {
-                executions: execution,
-                milestones: aggregate,
-                active_entries: archive.active.iter().filter(|active| **active).count(),
-                occupied_cells: archive.cells.len(),
-                deaths,
-            });
-        }
-    }
-
-    let entries = archive.take_entry_reports();
-    let report = SmbArchiveReport {
-        seed,
-        executions: execution_budget,
-        milestones: aggregate,
-        progress_watermark,
-        first_reached,
-        first_inputs,
-        champion_input,
-        entries,
-        progress_curve: curve,
-        retained: archive.retained,
-        rejected: archive.rejected,
-        deaths,
-        ranking: archive.ranking_accounting,
-        generated_mutator: generated_mutator_accounting,
-        ladder: match ladder_policy {
-            SmbArchiveLadderPolicy::Frozen => SmbLadder::default(),
-            SmbArchiveLadderPolicy::Extended => SmbLadder {
-                version: SMB_LADDER_VERSION,
-                max_tuple: ladder_max,
-                transitions: ladder_observed
-                    .into_iter()
-                    .map(
-                        |((world, level), (first_execution, max_progress))| SmbLadderTransition {
-                            world,
-                            level,
-                            first_execution,
-                            max_progress,
-                        },
-                    )
-                    .collect(),
-            },
-        },
-        selector: archive.selector_report(),
-    };
-    Ok((report, target.frames_clocked()))
-}
-
-/// Report whether some fixed probe mask keeps this candidate alive for the horizon.
-///
-/// The target is restored to `snapshot` exactly before returning, so execution
-/// continues as if the probe had not run. The probe emits no observer events and
-/// consumes no randomness.
 pub(crate) fn admission_is_viable(
     target: &mut SmbTarget,
     snapshot: &SmbSnapshot,
@@ -5949,25 +5156,6 @@ pub(crate) fn admission_is_viable(
     }
     target.restore(snapshot)?;
     Ok(viable)
-}
-
-/// Accumulate the extended ladder from one admitted state.
-fn record_ladder(
-    max_tuple: &mut Option<(u8, u8, u16)>,
-    observed: &mut BTreeMap<(u8, u8), (u64, u16)>,
-    wram: &[u8; 2_048],
-    execution: u64,
-) {
-    let state = smb_mechanical_state_from_wram(wram);
-    let tuple = (state.world, state.level, state.progress);
-    if max_tuple.is_none_or(|recorded| tuple > recorded) {
-        *max_tuple = Some(tuple);
-    }
-    let record = observed
-        .entry((state.world, state.level))
-        .or_insert((execution, 0));
-    record.0 = record.0.min(execution);
-    record.1 = record.1.max(state.progress);
 }
 
 pub(crate) fn merge_progress_watermark(
@@ -6033,22 +5221,6 @@ const PLAYER_ROOM_X_LOW_OFFSET: usize = 0x0086;
 /// derived suffix, so campaigns record their vocabulary in the header.
 pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x20];
-
-pub(crate) fn sample_chord(
-    rand: &mut StdRand,
-    duration_policy: SmbArchiveDurationPolicy,
-    experimental_search: bool,
-) -> Result<ButtonChord, Box<dyn Error>> {
-    let masks: &[u8] = if experimental_search {
-        const EXPERIMENTAL_BUTTON_MASKS: [u8; 14] = [
-            0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x41, 0x42, 0xc0, 0xc1, 0xc2,
-        ];
-        &EXPERIMENTAL_BUTTON_MASKS
-    } else {
-        &FROZEN_BUTTON_MASKS
-    };
-    sample_chord_from_masks(rand, duration_policy, masks)
-}
 
 pub(crate) fn sample_chord_from_masks(
     rand: &mut StdRand,
@@ -6150,21 +5322,13 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 mod tests {
     use super::{
         Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
-        SELECTION_EXHAUSTION_THRESHOLD, SmbArchiveDurationPolicy, SmbArchiveKey,
-        SmbArchiveKeyPolicy, SmbArchiveLadderPolicy, SmbArchiveReplacementPolicy,
-        SmbArchiveRetentionPolicy, SmbArchiveSelectorPolicy, SmbArchiveSuffixPolicy,
-        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbGeneratedMutatorAccounting,
-        SmbProgressWatermark, SmbRanking, SmbRankingSearchConfig, SmbSelectorDraw, SmbSelectorPath,
-        analyze_player_column, merge_progress_watermark, record_generated_mutator_result,
-        run_smb_archive_search, run_smb_archive_search_with_config_and_suffix,
-        run_smb_archive_search_with_generated_mutator, run_smb_archive_search_with_ranking,
-        run_smb_archive_search_with_retention, run_smb_archive_search_with_selector,
+        MAX_SMB_COMPLETION_ACTIONS, SELECTION_EXHAUSTION_THRESHOLD, SmbArchiveKey,
+        SmbArchiveReplacementPolicy, SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy,
+        SmbDeathBytes, SmbProgressWatermark, SmbSelectorDraw, SmbSelectorPath,
+        analyze_player_column, merge_progress_watermark,
     };
     use crate::{
-        phase4b::{
-            ButtonChord, MAX_SMB_ACTIONS, SmbInput, SmbMacro, SmbObservations, SmbSnapshot,
-            SmbTarget,
-        },
+        smb::target::{ButtonChord, SmbInput, SmbObservations, SmbSnapshot, SmbTarget},
         target::Target,
     };
     use libafl_bolts::rands::StdRand;
@@ -6431,30 +5595,6 @@ mod tests {
         assert_eq!(super::adopt_death_candidate(&candidates[..1]), None);
     }
 
-    struct ScriptedFrameRanking;
-
-    impl SmbRanking for ScriptedFrameRanking {
-        fn score(&self, observations: &[SmbObservations]) -> i64 {
-            observations.last().map_or(0, |observation| {
-                i64::try_from(observation.frame_count).unwrap_or(i64::MAX)
-            })
-        }
-    }
-
-    struct ScriptedArchiveMutator;
-
-    impl SmbMacro for ScriptedArchiveMutator {
-        fn mutate(&self, input: &SmbInput, seed: u64) -> SmbInput {
-            let mut candidate = input.clone();
-            if candidate.actions.len() < MAX_SMB_ACTIONS {
-                candidate
-                    .actions
-                    .push(ButtonChord::new(if seed & 1 == 0 { 0x81 } else { 0x82 }, 8));
-            }
-            candidate
-        }
-    }
-
     fn synthetic_nrom() -> Vec<u8> {
         let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
         rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -6489,193 +5629,6 @@ mod tests {
         assert_eq!(watermark.progress, 41);
     }
 
-    #[test]
-    fn admission_probe_is_deterministic_and_inert_where_nothing_dies() {
-        let rom = synthetic_nrom();
-        let initial = vec![SmbInput::default()];
-        let frozen = run_smb_archive_search_with_retention(
-            &rom,
-            &initial,
-            0x5eed_e000,
-            12,
-            MAX_SMB_ACTIONS,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::OneOrTwo,
-            super::SmbArchiveRetentionPolicy::Frozen,
-            super::SmbArchiveKeyPolicy::Frozen,
-            super::SmbArchiveLadderPolicy::Frozen,
-        )
-        .expect("frozen retention campaign");
-        let probed = run_smb_archive_search_with_retention(
-            &rom,
-            &initial,
-            0x5eed_e000,
-            12,
-            MAX_SMB_ACTIONS,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::OneOrTwo,
-            super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
-            super::SmbArchiveKeyPolicy::Frozen,
-            super::SmbArchiveLadderPolicy::Frozen,
-        )
-        .expect("probed retention campaign");
-        // On a target whose terminal condition never fires, every candidate is
-        // viable, so the probe may not change one byte of the recorded report.
-        assert_eq!(frozen.deaths, 0);
-        assert_eq!(frozen, probed);
-        let repeated = run_smb_archive_search_with_retention(
-            &rom,
-            &initial,
-            0x5eed_e000,
-            12,
-            MAX_SMB_ACTIONS,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::OneOrTwo,
-            super::SmbArchiveRetentionPolicy::ProbeAtAdmission,
-            super::SmbArchiveKeyPolicy::Frozen,
-            super::SmbArchiveLadderPolicy::Frozen,
-        )
-        .expect("repeated probed retention campaign");
-        assert_eq!(probed, repeated);
-    }
-
-    #[test]
-    fn same_seed_archive_reports_match_and_stay_bounded() {
-        let rom = synthetic_nrom();
-        let initial = vec![SmbInput::default()];
-        let first = run_smb_archive_search(&rom, &initial, 0x5eed_e000, 32)
-            .expect("first archive campaign");
-        let second = run_smb_archive_search(&rom, &initial, 0x5eed_e000, 32)
-            .expect("second archive campaign");
-        assert_eq!(first, second);
-        assert_eq!(first.executions, 32);
-        assert!(
-            first
-                .entries
-                .iter()
-                .all(|entry| entry.input.actions.len() <= MAX_SMB_ACTIONS)
-        );
-        let burst_first = run_smb_archive_search_with_config_and_suffix(
-            &rom,
-            &initial,
-            0x5eed_e000,
-            32,
-            MAX_SMB_ACTIONS,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::BurstUpToFour,
-        )
-        .expect("first frozen burst campaign");
-        let burst_second = run_smb_archive_search_with_config_and_suffix(
-            &rom,
-            &initial,
-            0x5eed_e000,
-            32,
-            MAX_SMB_ACTIONS,
-            SmbArchiveDurationPolicy::Stratified,
-            SmbArchiveSuffixPolicy::BurstUpToFour,
-        )
-        .expect("replayed frozen burst campaign");
-        assert_eq!(burst_first, burst_second);
-    }
-
-    #[test]
-    fn scripted_ranking_replays_and_retirement_uses_execution_rebuilds() {
-        let rom = synthetic_nrom();
-        let initial = vec![SmbInput::default()];
-        let first = run_smb_archive_search_with_ranking(
-            &rom,
-            &initial,
-            0x5eed_e000,
-            32,
-            SmbRankingSearchConfig {
-                max_actions: MAX_SMB_ACTIONS,
-                duration_policy: SmbArchiveDurationPolicy::Legacy,
-                suffix_policy: SmbArchiveSuffixPolicy::OneOrTwo,
-            },
-            &ScriptedFrameRanking,
-        )
-        .expect("first ranked archive campaign");
-        let second = run_smb_archive_search_with_ranking(
-            &rom,
-            &initial,
-            0x5eed_e000,
-            32,
-            SmbRankingSearchConfig {
-                max_actions: MAX_SMB_ACTIONS,
-                duration_policy: SmbArchiveDurationPolicy::Legacy,
-                suffix_policy: SmbArchiveSuffixPolicy::OneOrTwo,
-            },
-            &ScriptedFrameRanking,
-        )
-        .expect("replayed ranked archive campaign");
-        assert_eq!(first, second);
-        assert!(first.ranking.installed);
-        let mut archive = Archive::new(Some(&ScriptedFrameRanking));
-        archive.ranking_accounting.replacements = 1;
-        archive.first_ranking_replacement = Some(1);
-        archive.finish_execution(1_024);
-        assert!(archive.ranking_accounting.active);
-        archive.finish_execution(1_536);
-        assert_eq!(archive.ranking_accounting.retired_at_execution, Some(1_536));
-        assert!(!archive.ranking_accounting.active);
-    }
-
-    #[test]
-    fn generated_mutator_retirement_counts_emitted_offspring_not_time() {
-        let mut accounting = SmbGeneratedMutatorAccounting {
-            installed: true,
-            active: true,
-            ..SmbGeneratedMutatorAccounting::default()
-        };
-        for execution in 1..128 {
-            record_generated_mutator_result(&mut accounting, false, execution);
-        }
-        assert!(accounting.active);
-        assert_eq!(accounting.consecutive_nonretained, 127);
-        record_generated_mutator_result(&mut accounting, true, 128);
-        assert!(accounting.active);
-        assert_eq!(accounting.retained_offspring, 1);
-        assert_eq!(accounting.consecutive_nonretained, 0);
-        for execution in 129..=256 {
-            record_generated_mutator_result(&mut accounting, false, execution);
-        }
-        assert!(!accounting.active);
-        assert_eq!(accounting.retired_at_execution, Some(256));
-    }
-
-    #[test]
-    fn scripted_generated_archive_mutator_replays_exactly() {
-        let rom = synthetic_nrom();
-        let initial = vec![SmbInput::default()];
-        let config = SmbRankingSearchConfig {
-            max_actions: MAX_SMB_ACTIONS,
-            duration_policy: SmbArchiveDurationPolicy::Legacy,
-            suffix_policy: SmbArchiveSuffixPolicy::OneOrTwo,
-        };
-        let first = run_smb_archive_search_with_generated_mutator(
-            &rom,
-            &initial,
-            0x5eed_ef14,
-            64,
-            config,
-            &ScriptedArchiveMutator,
-        )
-        .expect("first generated-mutator archive campaign");
-        let replay = run_smb_archive_search_with_generated_mutator(
-            &rom,
-            &initial,
-            0x5eed_ef14,
-            64,
-            config,
-            &ScriptedArchiveMutator,
-        )
-        .expect("replayed generated-mutator archive campaign");
-        assert_eq!(first, replay);
-        assert!(first.generated_mutator.installed);
-        assert!(first.generated_mutator.attempts > 0);
-        assert!(first.generated_mutator.offspring > 0);
-    }
-
     fn selector_snapshot() -> SmbSnapshot {
         let rom = synthetic_nrom();
         let mut target =
@@ -6684,9 +5637,9 @@ mod tests {
         target.snapshot().expect("snapshot selector genesis")
     }
 
-    fn selector_archive(keys: &[(u8, u8, u16)]) -> Archive<'static> {
+    fn selector_archive(keys: &[(u8, u8, u16)]) -> Archive {
         let snapshot = selector_snapshot();
-        let mut archive = Archive::new(None);
+        let mut archive = Archive::new();
         for (index, (world, level, progress)) in keys.iter().enumerate() {
             let input = SmbInput {
                 actions: vec![ButtonChord::new(
@@ -6710,10 +5663,9 @@ mod tests {
                     ArchiveCandidate {
                         input,
                         key,
-                        milestones: crate::phase4b::SmbMilestones::default(),
+                        milestones: crate::smb::target::SmbMilestones::default(),
                     },
                     snapshot.clone(),
-                    &[],
                 )
                 .expect("insert selector entry")
                 .expect("retain selector entry");
@@ -6731,7 +5683,7 @@ mod tests {
         let mut tie_class_draws = 0;
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("corrected selection");
             let draw = draw.expect("corrected draw record");
             if draw.path == SmbSelectorPath::TieClass {
@@ -6765,7 +5717,7 @@ mod tests {
         let mut fell_through = 0;
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("corrected selection");
             let draw = draw.expect("corrected draw record");
             if draw.path == SmbSelectorPath::TieClass {
@@ -6805,7 +5757,7 @@ mod tests {
         let mut reset_seen = false;
         for _ in 0..256 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("corrected selection");
             let draw = draw.expect("corrected draw record");
             if draw.path == SmbSelectorPath::TieClass {
@@ -6833,7 +5785,7 @@ mod tests {
         let mut tie_class_draws = 0;
         for _ in 0..256 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
             let draw = draw.expect("concentrated draw record");
             match draw.path {
@@ -6877,7 +5829,7 @@ mod tests {
         let mut slid = false;
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
             let draw = draw.expect("concentrated draw record");
             if draw.path == SmbSelectorPath::TieClass {
@@ -6890,102 +5842,6 @@ mod tests {
             }
         }
         assert!(slid);
-    }
-
-    #[test]
-    fn concentrated_selector_search_replays_and_reports_accounting() {
-        let rom = synthetic_nrom();
-        let initial = vec![SmbInput::default()];
-        let run = || {
-            run_smb_archive_search_with_selector(
-                &rom,
-                &initial,
-                0x5eed_ef23,
-                64,
-                MAX_SMB_ACTIONS,
-                SmbArchiveDurationPolicy::Stratified,
-                SmbArchiveSuffixPolicy::OneOrTwo,
-                SmbArchiveRetentionPolicy::Frozen,
-                SmbArchiveKeyPolicy::Frozen,
-                SmbArchiveLadderPolicy::Frozen,
-                SmbArchiveSelectorPolicy::ConcentratedRecency,
-            )
-        };
-        let first = run().expect("concentrated search");
-        let replay = run().expect("concentrated replay");
-        assert_eq!(first, replay);
-        let accounting = first.selector;
-        assert_eq!(
-            accounting.policy,
-            SmbArchiveSelectorPolicy::ConcentratedRecency
-        );
-        assert_eq!(
-            accounting
-                .uniform_selections
-                .checked_add(accounting.tie_class_selections),
-            Some(64)
-        );
-        let concentration = accounting.concentration.expect("concentration accounting");
-        assert_eq!(concentration.window_cap, 128);
-        assert_eq!(concentration.window_draws, accounting.tie_class_selections);
-        assert!(concentration.distinct_window_parents > 0);
-        assert!(concentration.final_window_size > 0);
-        assert_eq!(
-            concentration.draws_per_parent_milli,
-            concentration.window_draws * 1000 / concentration.distinct_window_parents
-        );
-        assert!(first.entries.iter().all(|entry| entry.selector.is_some()));
-        let serialized = serde_json::to_string(&first).expect("serialize concentrated report");
-        assert!(serialized.contains("concentrated_recency"));
-        assert!(serialized.contains("draws_per_parent_milli"));
-    }
-
-    #[test]
-    fn the_selector_search_replays_and_reports_accounting() {
-        let rom = synthetic_nrom();
-        let initial = vec![SmbInput::default()];
-        let run = || {
-            run_smb_archive_search_with_selector(
-                &rom,
-                &initial,
-                0x5eed_ef22,
-                64,
-                MAX_SMB_ACTIONS,
-                SmbArchiveDurationPolicy::Stratified,
-                SmbArchiveSuffixPolicy::OneOrTwo,
-                SmbArchiveRetentionPolicy::Frozen,
-                SmbArchiveKeyPolicy::Frozen,
-                SmbArchiveLadderPolicy::Frozen,
-                SmbArchiveSelectorPolicy::ConcentratedRecency,
-            )
-        };
-        let first = run().expect("selector search");
-        let replay = run().expect("selector replay");
-        assert_eq!(first, replay);
-        let accounting = first.selector;
-        assert_eq!(
-            accounting.policy,
-            SmbArchiveSelectorPolicy::ConcentratedRecency
-        );
-        assert_eq!(
-            accounting
-                .uniform_selections
-                .checked_add(accounting.tie_class_selections),
-            Some(64)
-        );
-        assert!(first.entries.iter().all(|entry| entry.selector.is_some()));
-        let selected_total: u64 = first
-            .entries
-            .iter()
-            .map(|entry| entry.selector.expect("entry counters").selected)
-            .sum();
-        assert_eq!(selected_total, 64);
-        let serialized = serde_json::to_string(&first).expect("serialize selector report");
-        assert!(serialized.contains("concentrated_recency"));
-        assert!(
-            serialized.contains("concentration"),
-            "the sole selector reports its concentration accounting"
-        );
     }
 
     fn waypoint_probe_key(world: u8, level: u8, progress: u16, vertical: u8) -> SmbArchiveKey {
@@ -7033,9 +5889,9 @@ mod tests {
             band_low: 0,
             band_high: 15,
         };
-        let mut archive = Archive::new(None);
+        let mut archive = Archive::new();
         archive.set_waypoint_policy(waypoint);
-        let insert = |archive: &mut Archive<'_>, key: SmbArchiveKey, actions: usize| {
+        let insert = |archive: &mut Archive, key: SmbArchiveKey, actions: usize| {
             // Distinct masks per cell keep the inputs distinct, so the
             // input-hash duplicate check never short-circuits the bound.
             let mask = if key.progress == 30 { 0x02 } else { 0x01 };
@@ -7052,10 +5908,9 @@ mod tests {
                     ArchiveCandidate {
                         input,
                         key,
-                        milestones: crate::phase4b::SmbMilestones::default(),
+                        milestones: crate::smb::target::SmbMilestones::default(),
                     },
                     snapshot.clone(),
-                    &[],
                 )
                 .expect("insert waypoint candidate")
         };
@@ -7078,7 +5933,7 @@ mod tests {
 
     /// Insert one action onto a parent and report the new entry's identifier.
     fn chain_insert(
-        archive: &mut Archive<'_>,
+        archive: &mut Archive,
         parent: Option<usize>,
         prefix: &SmbInput,
         buttons: u8,
@@ -7095,10 +5950,9 @@ mod tests {
                 ArchiveCandidate {
                     input: input.clone(),
                     key,
-                    milestones: crate::phase4b::SmbMilestones::default(),
+                    milestones: crate::smb::target::SmbMilestones::default(),
                 },
                 snapshot.clone(),
-                &[],
             )
             .expect("chained insert");
         (id, input)
@@ -7107,7 +5961,7 @@ mod tests {
     #[test]
     fn frames_in_level_counts_from_the_recorded_pair_transition() {
         let snapshot = selector_snapshot();
-        let mut archive = Archive::new(None);
+        let mut archive = Archive::new();
         let genesis = archive
             .insert(
                 None,
@@ -7115,10 +5969,9 @@ mod tests {
                 ArchiveCandidate {
                     input: SmbInput::default(),
                     key: waypoint_probe_key(0, 0, 0, 0),
-                    milestones: crate::phase4b::SmbMilestones::default(),
+                    milestones: crate::smb::target::SmbMilestones::default(),
                 },
                 snapshot.clone(),
-                &[],
             )
             .expect("genesis insert")
             .expect("genesis retained");
@@ -7179,7 +6032,7 @@ mod tests {
         // long in frames; the third is longer in actions and much shorter in
         // frames, which is exactly the collision the level clock cares about
         // and the frozen rule cannot see.
-        let fill = |archive: &mut Archive<'_>| {
+        let fill = |archive: &mut Archive| {
             let genesis = archive
                 .insert(
                     None,
@@ -7187,10 +6040,9 @@ mod tests {
                     ArchiveCandidate {
                         input: SmbInput::default(),
                         key: waypoint_probe_key(0, 0, 0, 0),
-                        milestones: crate::phase4b::SmbMilestones::default(),
+                        milestones: crate::smb::target::SmbMilestones::default(),
                     },
                     snapshot.clone(),
-                    &[],
                 )
                 .expect("genesis insert")
                 .expect("genesis retained");
@@ -7216,12 +6068,12 @@ mod tests {
             );
             chain_insert(archive, fast, &input, 0x04, 6, cell, &snapshot).0
         };
-        let mut frozen = Archive::new(None);
+        let mut frozen = Archive::new();
         assert!(
             fill(&mut frozen).is_none(),
             "two actions never displace a one-action entry under the frozen rule"
         );
-        let mut fastest = Archive::new(None);
+        let mut fastest = Archive::new();
         fastest.set_replacement_policy(SmbArchiveReplacementPolicy::FewestFramesInLevel);
         let admitted = fill(&mut fastest).expect("the eleven-frame route displaces a slower one");
         assert_eq!(fastest.entry_frames_in_level(admitted), 11);
@@ -7245,7 +6097,7 @@ mod tests {
         let mut waypoint_draws = 0;
         for _ in 0..32 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("waypoint preference draw");
             let draw = draw.expect("selector annotation");
             if draw.path == SmbSelectorPath::TieClass {
@@ -7275,7 +6127,7 @@ mod tests {
         let mut fell_through = 0;
         for _ in 0..32 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("post-exhaustion draw");
             let draw = draw.expect("selector annotation");
             if draw.path == SmbSelectorPath::TieClass {
@@ -7308,7 +6160,7 @@ mod tests {
         let mut rand = StdRand::with_seed(0x5eed_3a11);
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_ACTIONS)
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("pinned draw");
             let draw = draw.expect("selector annotation");
             assert!(
