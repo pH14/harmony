@@ -9553,6 +9553,13 @@ one variable of science only when a link stalls.
   gets a draw-performance fix before the standing rule resumes with it.
 - Load reads 2.71 with both jobs live, against twelve cores. The machine has
   room; the mined-table draw is coordinator-bound rather than core-bound.
+- The bounded waiter did its job on C120 and is worth recording once. Armed at
+  55 minutes against a run that needs about five hours, it hit its ceiling and
+  exited with `WAITER_TIMEOUT` and an instruction to check the box rather than
+  assume the job still ran. The check found C120 alive at 2 hours 11 minutes and
+  20,962 executions, so the waiter was re-armed at 300 minutes to match the
+  measured rate. A waiter whose ceiling is shorter than the run reports a
+  timeout, which is the correct outcome and not a failure of the run.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
