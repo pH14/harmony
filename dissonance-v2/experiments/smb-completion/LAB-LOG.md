@@ -9358,7 +9358,10 @@ one variable of science only when a link stalls.
   the deepest tuple, so the dearer lineage is what carries forward, which is the
   C111 pattern in milder form.
 - Drift series: −1, +130, 0, +2, 0, **+238**. Not monotone, so not a trend on
-  this evidence, and none is claimed. Flagged to the integrator as a candidate
+  this evidence, and none is claimed. **Superseded in part by the wash-out
+  census recorded below: the drift figures are measured at a different bucket
+  each link, so they do not show whether an earlier penalty was ever
+  recovered.** Flagged to the integrator as a candidate
   mechanism finding: the two largest drifts both arise when the deepest lineage
   is not the cheapest, and the promoted resume rule selects on depth first.
 - The chain continues under the standing rule because both clauses passed. The
@@ -9381,6 +9384,53 @@ one variable of science only when a link stalls.
   at 234 recorded alongside, with particular attention after C118's +238.
 - Raw destination: `target/smb-completion/c119-conquest/`, log `c119.log`,
   waiter armed as a tracked command.
+
+### Wash-out census — rough carries do not wash out, and the escalation condition is met
+
+- Run on recorded artifacts alongside C119. Pure read; no policy changed.
+- **C114's rough carry has persisted four links unrecovered.** Its carried
+  lineage stood at bucket 215 for 3,547 frames against C113's 3,417. Every link
+  since carries the same 3,547:
+
+  | link | carried cost at bucket 215 | against C113 |
+  |---|---|---|
+  | C113 | 3,417 | — |
+  | C114 | 3,547 | +130 |
+  | C115 | 3,547 | +130 |
+  | C116 | 3,547 | +130 |
+  | C117 | 3,547 | +130 |
+  | C118 | 3,547 | +130 |
+
+- **The earlier reading that C115 washed it out was wrong, and the error is
+  worth naming.** C115's drift of 0 was measured at bucket 216, which is C114's
+  tip and the bucket the metric asks about. It says nothing about 215. Each
+  link's drift is measured at a different bucket, so a series of small drifts
+  can sit on top of an inherited penalty that no single measurement revisits.
+- **A second finding the census turned up, unasked.** The archive's cheapest
+  route to bucket 215 also decayed, and the guard cannot see it because the
+  guard only ever checks the immediately preceding tip:
+
+  | link | archive cheapest at 215 | against C113 |
+  |---|---|---|
+  | C113 | 154,728 | — |
+  | C114 | 154,728 | +0 |
+  | C115 | 154,830 | +102 |
+  | C116 | 154,854 | +126 |
+  | C117 | 154,853 | +125 |
+  | C118 | 154,853 | +125 |
+
+  By contrast bucket 219, checked while it was the recent tip, held and improved
+  slightly: 154,884 then 154,881, 154,880, 154,881.
+- **Norm or exception: on the evidence available, persistence is the norm.** One
+  rough carry has been observed long enough to test, and it persisted for every
+  link measured. C118's +238 at bucket 232 has one link of history and cannot
+  yet be classed.
+- **Escalation condition two is met**: rough carries persisting two or more
+  links unrecovered. Under the pre-registered rule the chain **holds after
+  C119**, and these numbers go to the integrator with the census. C119 was
+  already running when the census completed and runs out its budget.
+- For the record beside it, condition three is one link from firing on its own:
+  tip advance reads +10, +3, +2 across C116, C117, C118.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
