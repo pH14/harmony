@@ -9432,6 +9432,64 @@ one variable of science only when a link stalls.
 - For the record beside it, condition three is one link from firing on its own:
   tip advance reads +10, +3, +2 across C116, C117, C118.
 
+### C119 result — tip 236, and it recovered most of C118's cost
+
+- The run completed all 50,000 executions. Ladder `(7,0,236)`, two buckets past
+  C118, still inside 8-1. Winning lineage: **236 buckets in 3,837 frames, 16.26
+  frames per bucket.** Live archive SHA-256
+  `d9038c97f5a818f7c58e828e3621e1327a62d981f17d4a9246cd3238c3021c81`.
+- **PASS on both clauses.** Depth 236 over 234. The archive minimum at the old
+  tip, bucket 234, moves from 155,570 to **155,041 — 529 frames cheaper**, by
+  far the largest guard improvement recorded.
+- **The tip rate returned to where it was before C118**: 18.20 back down to
+  16.26, which is C117's 16.25 within a frame. C118's expensive extension did
+  not survive as the carried route; C119 found a cheaper way to the same ground
+  and past it.
+- Drift at bucket 234 is not measurable for this link. C119's winning lineage
+  sets no high-water mark there, so no comparison is made rather than
+  interpolated.
+- Tip advance +2, so the series across C116 to C119 reads +10, +3, +2, +2. The
+  pre-registered third condition needs three consecutive advances of two or
+  fewer; this is the second.
+- The hold stands. Nothing launches on C119's account.
+
+### Chord mining — two cuts measured, the whole-in-level cut registered
+
+- Mined from C118's archive, the origin C119 and C120 share, so the table
+  carries no information the control lacked.
+- **Post-resume cut, prefix 3,299**: 19 entries, **28 chords**, 28 in the recent
+  window, 112 mixed. Table SHA-256 `a4a3c258…`.
+- **Whole-in-level cut, prefix 3,208**: 42,189 entries, **1,691,338 chords**,
+  5,706 recent, 1,708,456 mixed. Table SHA-256 `f933272592512df22ff1950bc7bff5e78eaa4862d30d5cb0307e06e9b6dbd1e7`.
+- The integrator ruled the whole-in-level cut, and the reasoning is recorded: a
+  null from a 28-chord sample could not be attributed to the mechanism, and the
+  whole-level fold stays inside this family's own 8-1 terrain, so it is still
+  machine-discovered from its own recordings. Both sizes are recorded here so
+  the choice is auditable.
+
+## C120 — registered mined-chord sibling of C119
+
+- A sibling, not a link: **same origin as C119, C118's archive, and C119's exact
+  seed**, with the recorded-chord bias as the single change. C119 is the control
+  at no extra cost.
+- One live conquest campaign, 50,000 executions, twelve workers, campaign seed
+  `0x5eed_c037`, action limit 4096, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key policy
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,234,0,15`, replacement
+  `fewest_frames_in_level`, resume `frontier_shortest`, suffix `one_or_two`,
+  chord **`chord_draw_recorded_50:7,0,0,3208,128,3,1,64,1024`**, sidecar on,
+  disk gate enforced. Sourced from C118's live archive, SHA-256
+  `415f366092ce23c7e3898a7afe52d677ce2641a743407a16df5661cc3e2e433f`.
+- **Pre-registered bar, recorded before launch: a strictly deeper tip than
+  C119's 236, or an equal tip with the archive minimum there materially
+  cheaper.** The archive guard is unchanged.
+- PASS promotes the table for this family and the standing rule resumes with it.
+  FAIL records the null, the table goes off, and the hold returns to the
+  integrator with both arms measured.
+- Raw destination: `target/smb-completion/c120-conquest/`, log `c120.log`,
+  waiter armed as a tracked command.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
