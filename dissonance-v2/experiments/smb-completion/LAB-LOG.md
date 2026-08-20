@@ -9040,18 +9040,47 @@ one variable of science only when a link stalls.
   resume input is 3,270 actions, which is C113's winning lineage exactly. The
   tip crossed the boundary byte-for-byte, which is the failure C111 showed and
   the reason the rule was changed.
-- **One number here differs from the integrator's reading and is recorded as
-  measured.** The integrator reported that C114 holds C113 exactly at bucket
-  215, delta zero. That is true of the **resume input** — both are the same
-  3,270-action lineage totalling 154,728 frames. It is not true of **C114's own
-  winning lineage**, which reaches bucket 215 at 3,547 frames in level against
-  C113's 3,417: **130 frames dearer**. The link's winner is a different lineage
-  from the one it resumed, and it took a dearer path to 215 before extending.
-  Its own extension from 215 to 216 costs 8 frames.
-- **Against the promoted bar — tip depth and cost at the deepest common bucket —
-  the two halves split again.** Depth passes: 216 against 215. Cost at the
-  deepest common bucket fails: 130 frames dearer at 215. Recorded without a
-  verdict; the bar's resolution is the integrator's under the narrowed autonomy.
+- **Verdict: PASS**, on the bar the integrator settled after both readings were
+  put side by side. Depth 216 over 215, and the archive minimum at the old tip
+  survives at no worse cost.
+- **Two artifacts measure two different things here, and both are recorded
+  because each answers a question the other cannot.**
+  - **Regression guard, from `frame-cost-81.json`**: the cheapest route the
+    archive holds to bucket 215 is **154,728 in the origin and 154,728 in this
+    link — delta zero.** This is set containment, not a cost claim: it asks
+    whether a route the family already owned survived into the new archive. That
+    is the failure C111 exhibited, and it is why this clause gates.
+  - **Drift, from `lineage-levels.json`**: the cost the link's own winning
+    lineage paid at that bucket, **3,547 against the origin's 3,417 — plus
+    130.** The winner is a different lineage from the one resumed and took a
+    dearer path before extending. Recorded, not gated.
+- **The guard, checked against the link it exists for.** Applied to C111 it
+  reports the archive minimum at bucket 214 rising from 154,717 to **155,086, a
+  369-frame loss — FAIL**. Applied to C113 and C114 it reports delta zero and
+  passes both. The clause separates the case it was written for from the cases
+  it should admit.
+
+  | step | old tip | archive minimum | verdict | carried-lineage drift |
+  |---|---|---|---|---|
+  | C110 → C111 | 214 | 154,717 → 155,086 | **FAIL** | +477 |
+  | C110 → C113 | 214 | 154,717 → 154,717 | PASS | −1 |
+  | C113 → C114 | 215 | 154,728 → 154,728 | PASS | +130 |
+
+- **Open question carried forward, not a finding yet.** Extensions arrive rough.
+  Whether later links re-cheapen the frontier or the drag compounds is what the
+  drift column will show. The sidecar's cheapest-frames trace makes it readable
+  during a run. A compounding trend escalates as a mechanism finding.
+
+### Pass bar for ordinary links — settled text
+
+- **PASS = a strictly deeper tip and an archive minimum at the old tip no worse
+  than the origin's, or an equal tip and a strictly cheaper archive minimum
+  there.** Carried-lineage cost at the old tip is recorded alongside as drift
+  and does not gate.
+- The earlier everywhere-clause is retired. It compared cross-lineage bucket
+  minima across a whole curve, which this session showed produces false
+  conclusions, and it would auto-fail every extending link because a deeper tip
+  always costs more total frames.
 - Frontier pace across the entrance family, for the record: 214, 215, 215, 216
   across C110, C111, C113 and C114. About one bucket per fifty-thousand-execution
   link. The mechanism question that raises is with the integrator and no policy
