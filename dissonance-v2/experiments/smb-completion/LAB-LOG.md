@@ -8819,6 +8819,44 @@ one variable of science only when a link stalls.
   confirmation. This is the D83 lesson — a blind waiter hid a dead launch for
   hours — arriving on the operator's side of the connection.
 
+### The cost-to-depth rule fails its pre-launch pick check — no run spent
+
+- The registration ruling required the new rule's pick to be stated and checked
+  **before** launch, on the grounds that a rule which picks wrongly is wrong
+  without a campaign to prove it. The check was run against C110's live archive
+  and the rule fails it.
+- **What each rule selects from C110's archive** (frontier `(7,0,214)`, 47,948
+  entries):
+
+  | rule | bucket | actions | total frames | |
+  |---|---|---|---|---|
+  | `frontier_shortest` (frozen) | **214** | 3,270 | **154,720** | C110's own winning tip route |
+  | `fastest_in_level_32` (promoted) | 182 | 3,259 | 154,167 | the handicapped pick C111 and C112 both got |
+  | `fastest_to_depth_32_16` (new) | **195** | 3,260 | 154,279 | better, still not the tip |
+
+- **The arithmetic of the failure, which also says what would fix it.** The
+  bucket-195 candidate is 441 frames cheaper in total and 19 buckets behind. The
+  registered charge of sixteen frames per bucket prices that ground at 304, so
+  the candidate wins by 137. For the tip to win the charge would have to exceed
+  **23.2 frames per bucket**. Sixteen was taken from the entrance family's
+  whole-traverse average of 15.93 — which is the right number for average ground
+  and the wrong one for the ground just behind a frontier, where the family's
+  own curve is steeper. The constant was defensible and is simply too low.
+- **The finding that matters more than the failure: the frozen rule already
+  picks the tip.** `frontier_shortest` — deepest bucket, then shortest input —
+  selects exactly C110's 3,409-frame winning lineage. **For the entrance family
+  the frozen resume rule outperforms the clock-aware one that was promoted to
+  replace it**, and the clock-aware rule is precisely what threw C110's best
+  route away at the C111 boundary. The clock-aware rule earned its promotion on
+  the carried route, where reaching back bought real frames at C104; on this
+  family it is a liability.
+- **No campaign was spent to learn this**, which is what the pre-launch check
+  was for. The sibling launch is not made and the rule is not registered live.
+- C112 finished while this was checked: ladder `(7,0,215)`, 215 buckets in 3,519
+  frames, 16.37 frames per bucket. It is recorded as archive material with no
+  interpretive weight, per the ruling that a link handed a known-handicapped
+  start proves nothing about the rule that handed it.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
