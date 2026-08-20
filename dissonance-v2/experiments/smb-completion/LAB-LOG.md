@@ -8994,9 +8994,8 @@ one variable of science only when a link stalls.
   the everywhere-clause re-imported the cross-lineage bucket comparison this
   session already retired. **Future pass bars score tip depth and cost at the
   deepest common bucket only.**
-- Promotion is provisional until C113's replay audit lands green. The audit was
-  launched by the integrator and is running; a failure means quarantine and
-  re-derivation.
+- Promotion was provisional pending C113's replay audit. **The audit passed and
+  the promotion is unconditional**; the verdict is recorded below.
 - **The carried route is closed as a chain candidate.** Its 127 recoverable
   frames cannot catch a route that beats it by more than that at every bucket.
   No further work on it.
@@ -9245,6 +9244,24 @@ one variable of science only when a link stalls.
   class named a missing waiter as the cause and this is a second, different
   cause with the same symptom: a launch is not covered until something that can
   act is waiting on it.
+
+### C113 audit verdict — passed, and the resume-rule promotion is unconditional
+
+- The serial replay of C113's recorded stream completed all 50,000 executions
+  byte-identically. `replay_verified` true, stream SHA-256
+  `7d4b20007622e8c2fbe99274a39e4a930db5702ec8b6860cdb59fa2595b63c91`, replayed
+  archive SHA-256
+  `a2234c93256df5c3ef8305b865bc83f3d5feb9d08e8bfcac2ec1512116f3d9a9`, report
+  SHA-256 `d653bba0b33423f8a0144786f53b1735275d49ca33d97139f1e2aab2a07faba5`.
+- Cross-checked against the run's own artifacts rather than the verdict alone:
+  the stream hash matches the one C113's live report recorded, and the archive
+  hash matches both the archive on disk and the origin hash C114's header cites.
+- **`frontier_shortest` is promoted unconditionally for the entrance family.**
+  The promotion was provisional pending this audit and the condition is
+  discharged.
+- The C114 audit follows immediately, co-resident with C117. C114 already
+  demonstrated that a link and a replay share the machine without either
+  result being in question.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
