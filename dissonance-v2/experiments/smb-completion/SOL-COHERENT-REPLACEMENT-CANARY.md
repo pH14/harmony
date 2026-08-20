@@ -169,3 +169,30 @@ at equal tuple are diagnostic only and cannot rescue a failed GO condition.
 
 The canary never promotes code or policy, never continues C119, and never adds
 draws after seeing the result.
+
+## Result (2026-08-20)
+
+STOP. The fixed-ordinal implementation was committed as `1090d699`; its Linux
+release binary had SHA-256
+`71e5d8619c529c899bdb791fddfab33c81fa878f619bd755e0f06940d9ab2ce6`.
+The completed report contains exactly 202 records and has SHA-256
+`8ecc3459fa7c9ab683b9db34af912fa9f1ead5e8bde820f2b5ad14d171ff6acd`.
+Its internally recorded pre-summary body digest is
+`abdaac4dc06b0dfa347e354e6087c4befc5b0e71b00a47e9d5e6e4725f72f5cd`.
+The report is preserved on `msr1` at
+`/root/harmony-smb-sol-restart/results/c119-coherent-100-parallel-v2.jsonl`.
+
+Both treatments produced zero useful results. The coherent arm had 99 deaths,
+one nonterminal new mechanical cell, and no cost improvement across 100
+evaluations. The shuffled control had the same totals. The sole nonterminal
+coherent result used length 32 and regressed to `(7,0,88)` at 155,258 absolute
+frames. The sole nonterminal control used length 8 and regressed to
+`(7,0,229)` at 155,136 frames. Every other candidate died. No arm had a useful
+result, so the conditional exact rerun was not authorized and was not run.
+
+The evidence rejects blind, same-input contiguous replacement over this
+256-action horizon at this scale. Preserving donor order did not overcome the
+disruption caused by applying a chunk in an unrelated state. The generic
+replacement primitive remains isolated experiment infrastructure; it is not a
+campaign policy and this null result does not justify integrating it into the
+searcher.
