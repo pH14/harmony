@@ -9533,6 +9533,27 @@ one variable of science only when a link stalls.
   wins on search quality and runs an order of magnitude slower is not a
   promotion. If C120 fails, the null records as ruled and the slowness is moot.
 
+### Audit queue — spare capacity goes to the owed replays
+
+- Registered on the integrator's ruling. C120 stays running to completion: the
+  seed-matched pairing with C119 is the arm's whole value, and voiding it would
+  re-buy the same wall time after any fix. No ordinary link is starved because
+  the chain is held on the tripped condition regardless.
+- The idle worker capacity goes to the audits the chain owes. **C115's
+  byte-exact replay is running**, nice-d, same recipe as C113 and C114: replay
+  mode on the C115 run directory with C114's archive as its origin. Wall time is
+  not identity, so co-running with C120 changes neither result.
+- **C116 through C119 queue behind it, strictly one at a time.** Two replays at
+  once would contend for the same starved capacity and finish later than two in
+  sequence.
+- On a green verdict the rolling rule applies as written: manifest and compress
+  C115's replay artifacts and C114's `archive-live.json`, which is the origin
+  that audit consumes. The two newest archives are never touched.
+- None of this changes C120's bar or the conditional order that a passing table
+  gets a draw-performance fix before the standing rule resumes with it.
+- Load reads 2.71 with both jobs live, against twelve cores. The machine has
+  room; the mined-table draw is coordinator-bound rather than core-bound.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
