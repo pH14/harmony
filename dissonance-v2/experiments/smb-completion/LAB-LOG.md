@@ -8904,6 +8904,31 @@ one variable of science only when a link stalls.
   what the run loaded are the same input. Jobs were flowing before this line was
   written.
 
+### Live progress sidecar — built and gated
+
+- Built on the integrator's directive. A running campaign now appends one JSON
+  line per minute to `progress-live.jsonl` in its run directory: Unix time,
+  executions admitted, deepest world, level and progress bucket reached, the
+  fewest frames any entry at that bucket spent inside its pair, and entries
+  retained. An operator can watch a run advance instead of waiting for its
+  sentinel.
+- **Hash neutrality is structural, not asserted.** The sidecar writes to a sink
+  separate from the recorded stream. It reads archive state that is already
+  settled, consumes no randomness, and mutates nothing. Wall-clock gates only
+  the emit interval, so its nondeterminism cannot reach the stream. The existing
+  entry point keeps its signature and delegates with no sink, so every call site
+  and every recorded artifact is unchanged by default.
+- A test runs the same campaign with and without the sidecar and asserts the
+  sidecar run replays byte-exact — stream hash and archive both — and that no
+  sidecar field appears anywhere in the recorded stream.
+- The four quality gates pass, 118 tests, and the standing inertness reference
+  re-verifies byte-identical,
+  `fa1f9aaf0279523ec46c3fe68022a1c5eb5da0aeb0268afef843fc4b4f04ea24`.
+- Not yet on the ARM machine. C113 is mid-run under the previous binary, and the
+  standing rule is that the machine's binary is not rebuilt during a run. The
+  sidecar reaches the box in the gap after C113's sentinel and rides the next
+  launch.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream

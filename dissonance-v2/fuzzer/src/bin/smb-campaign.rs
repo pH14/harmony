@@ -9,9 +9,9 @@ use fuzzer::{
     campaign::{
         SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, SmbCampaignVocabulary,
         chord_policy_from_identifier, key_policy_from_identifier, replacement_from_identifier,
-        replay_smb_campaign, resume_from_identifier, retention_from_identifier, run_smb_campaign,
-        select_frontier_resume_input, selector_from_identifier, suffix_policy_from_identifier,
-        vocabulary_from_identifier, waypoint_from_identifier,
+        replay_smb_campaign, resume_from_identifier, retention_from_identifier,
+        run_smb_campaign_with_progress, select_frontier_resume_input, selector_from_identifier,
+        suffix_policy_from_identifier, vocabulary_from_identifier, waypoint_from_identifier,
     },
     phase4b::SmbInput,
     phase4c::{
@@ -206,8 +206,12 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let stream_path = output.join("stream.jsonl");
     let stream_file = fs::File::create(&stream_path)?;
     let mut stream = BufWriter::new(stream_file);
+    // Sidecar for live observation; separate file so the recorded stream is
+    // untouched by it.
+    let mut progress = BufWriter::new(fs::File::create(output.join("progress-live.jsonl"))?);
     let started = std::time::Instant::now();
-    let report = run_smb_campaign(&rom, &config, &origin, &mut stream)?;
+    let report =
+        run_smb_campaign_with_progress(&rom, &config, &origin, &mut stream, Some(&mut progress))?;
     let wall_seconds = started.elapsed().as_secs_f64();
     drop(stream);
 

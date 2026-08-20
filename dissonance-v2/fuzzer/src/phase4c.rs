@@ -1587,6 +1587,41 @@ impl<'a> Archive<'a> {
         self.frames_in_level[id]
     }
 
+    /// Deepest recorded tuple, the fewest frames any entry there spent inside
+    /// its pair, and the retained total.
+    ///
+    /// Read-only. Nothing here consumes randomness or mutates archive state, so
+    /// calling it cannot change what a run records.
+    pub(crate) fn live_progress(&self) -> (u8, u8, u16, u64, u64) {
+        let deepest = self
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.report.key.world,
+                    entry.report.key.level,
+                    entry.report.key.progress,
+                )
+            })
+            .max()
+            .unwrap_or((0, 0, 0));
+        let cheapest = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                (
+                    entry.report.key.world,
+                    entry.report.key.level,
+                    entry.report.key.progress,
+                ) == deepest
+            })
+            .map(|(index, _)| self.frames_in_level.get(index).copied().unwrap_or(0))
+            .min()
+            .unwrap_or(0);
+        (deepest.0, deepest.1, deepest.2, cheapest, self.retained)
+    }
+
     /// Report whether a key sits inside the registered waypoint region.
     pub(crate) fn waypoint_contains(&self, key: &SmbArchiveKey) -> bool {
         self.waypoint_policy.contains(key)

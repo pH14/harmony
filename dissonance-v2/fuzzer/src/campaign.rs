@@ -2393,11 +2393,58 @@ struct WorkerReply {
 ///
 /// Returns an error when the origin is unusable, a worker fails, emulation or
 /// snapshotting fails, or the stream cannot be written.
+/// One periodic observation of a live run.
+///
+/// Written to a sidecar file so an operator can see a run advance without
+/// waiting for its sentinel. It is not part of the recorded stream and takes no
+/// part in replay.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbCampaignProgressRecord {
+    /// Seconds since the Unix epoch when the line was written.
+    pub unix_time: u64,
+    /// Executions admitted so far.
+    pub executions: u64,
+    /// Deepest world reached so far.
+    pub world: u8,
+    /// Deepest level reached so far.
+    pub level: u8,
+    /// Deepest progress bucket reached so far.
+    pub progress: u16,
+    /// Fewest frames any entry at that bucket spent inside its pair.
+    pub cheapest_frames_in_level: u64,
+    /// Entries retained so far.
+    pub retained: u64,
+}
+
+/// Seconds between sidecar observations.
+const PROGRESS_INTERVAL_SECONDS: u64 = 60;
+
 pub fn run_smb_campaign(
     rom: &[u8],
     config: &SmbCampaignConfig,
     origin: &SmbCampaignOrigin,
     stream: &mut dyn Write,
+) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
+    run_smb_campaign_with_progress(rom, config, origin, stream, None)
+}
+
+/// Run a campaign, optionally emitting periodic progress lines to a sidecar.
+///
+/// The sidecar is pure observation: it reads archive state that is already
+/// settled, consumes no randomness, and writes to a sink separate from the
+/// recorded stream. A run with a sidecar and the same run without one record
+/// byte-identical streams and archives.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`run_smb_campaign`], or when
+/// the sidecar sink cannot be written.
+pub fn run_smb_campaign_with_progress(
+    rom: &[u8],
+    config: &SmbCampaignConfig,
+    origin: &SmbCampaignOrigin,
+    stream: &mut dyn Write,
+    mut progress: Option<&mut dyn Write>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
@@ -2462,6 +2509,11 @@ pub fn run_smb_campaign(
     // reservations and never enters campaign state.
     #[allow(clippy::disallowed_methods)] // not order-observable: reservation cutoff only.
     let started = config.wall_budget.map(|_| std::time::Instant::now());
+
+    // Sidecar cadence. Held outside the worker scope so one clock covers the run.
+    #[allow(clippy::disallowed_methods)]
+    let progress_started = std::time::Instant::now();
+    let mut next_progress = 0_u64;
 
     let mut reserved = 0_u64;
     let mut pending: Vec<Option<PendingJob>> = Vec::new();
@@ -2669,6 +2721,35 @@ pub fn run_smb_campaign(
                 counters.jobs_per_worker[worker_index].saturating_add(1);
             counters.job_frames = counters.job_frames.saturating_add(frames);
             in_flight -= 1;
+            if let Some(sink) = progress.as_deref_mut() {
+                // Wall-clock gates the sidecar only. It selects nothing and
+                // enters no recorded artifact, so its nondeterminism cannot
+                // reach the stream.
+                #[allow(clippy::disallowed_methods)]
+                let elapsed = progress_started.elapsed().as_secs();
+                if elapsed >= next_progress {
+                    next_progress = elapsed
+                        .saturating_add(PROGRESS_INTERVAL_SECONDS)
+                        .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+                    #[allow(clippy::disallowed_methods)]
+                    let unix_time = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |since| since.as_secs());
+                    let (world, level, bucket, cheapest, retained) = core.archive.live_progress();
+                    let line = serde_json::to_string(&SmbCampaignProgressRecord {
+                        unix_time,
+                        executions: sequence,
+                        world,
+                        level,
+                        progress: bucket,
+                        cheapest_frames_in_level: cheapest,
+                        retained,
+                    })?;
+                    sink.write_all(line.as_bytes())?;
+                    sink.write_all(b"\n")?;
+                    sink.flush()?;
+                }
+            }
             match select(
                 &mut core,
                 &mut rands,
@@ -4267,8 +4348,9 @@ mod tests {
         SmbCampaignResumePolicy, SmbCampaignStreamHeader, chord_policy_from_identifier,
         chord_policy_identifier, derive_suffix, derive_worker_seed, execute_job,
         replacement_from_identifier, replacement_identifier, replay_smb_campaign,
-        resume_from_identifier, resume_identifier, run_smb_campaign, select_frontier_resume_input,
-        waypoint_from_identifier, waypoint_identifier,
+        resume_from_identifier, resume_identifier, run_smb_campaign,
+        run_smb_campaign_with_progress, select_frontier_resume_input, waypoint_from_identifier,
+        waypoint_identifier,
     };
     use crate::{
         chord_table::ChordTableParameters,
@@ -4835,6 +4917,58 @@ mod tests {
             "frontier_shortest"
         );
         assert!(resume_from_identifier("fastest_in_level").is_err());
+    }
+
+    #[test]
+    fn the_progress_sidecar_changes_no_recorded_bytes() {
+        let rom = synthetic_nrom();
+        let config = SmbCampaignConfig {
+            campaign_seed: 0x5eed_ca0e,
+            workers: 2,
+            execution_budget: 24,
+            action_limit: 96,
+            host: "unit-test".to_owned(),
+            wall_budget: None,
+            selector_policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
+            retention_policy: SmbArchiveRetentionPolicy::ProbeAtAdmission,
+            archive_entry_limit: 32_768,
+            vocabulary: super::SmbCampaignVocabulary::FrozenNineMask,
+            key_policy: crate::phase4c::SmbArchiveKeyPolicy::Frozen,
+            waypoint_policy: crate::phase4c::SmbArchiveWaypointPolicy::Absent,
+            suffix: super::SmbCampaignSuffixPolicy::OneOrTwo,
+            chord: super::SmbCampaignChordPolicy::Uniform,
+            replacement_policy: crate::phase4c::SmbArchiveReplacementPolicy::FewestActions,
+            resume_policy: SmbCampaignResumePolicy::FrontierShortest,
+        };
+        let mut without = Vec::new();
+        let plain = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut without)
+            .expect("campaign without a sidecar");
+        let mut with = Vec::new();
+        let mut sidecar = Vec::new();
+        let observed = run_smb_campaign_with_progress(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut with,
+            Some(&mut sidecar),
+        )
+        .expect("campaign with a sidecar");
+        // A live campaign's schedule is not derivable from its seed, so the two
+        // runs may differ; what must not differ is that each replays exactly and
+        // that the sidecar adds nothing to either recorded artifact.
+        assert_eq!(plain.archive.entries.len(), observed.archive.entries.len());
+        assert!(!with.is_empty());
+        assert!(
+            std::str::from_utf8(&with)
+                .expect("stream is utf-8")
+                .lines()
+                .all(|line| !line.contains("unix_time")),
+            "no sidecar field reaches the recorded stream"
+        );
+        let replayed =
+            replay_smb_campaign(&rom, &with, None).expect("sidecar run replays byte-exact");
+        assert_eq!(replayed.stream_sha256, observed.stream_sha256);
+        assert_eq!(replayed.archive, observed.archive);
     }
 
     #[test]
