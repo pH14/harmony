@@ -8857,6 +8857,53 @@ one variable of science only when a link stalls.
   interpretive weight, per the ruling that a link handed a known-handicapped
   start proves nothing about the rule that handed it.
 
+## C113 — registered resume-rule sibling of C111
+
+- Registered on the integrator's ack. An exact sibling of C111: same origin,
+  same seed, **the resume rule is the single change**, from
+  `fastest_in_level_32` back to the frozen `frontier_shortest`.
+- **Pre-launch pick check, stated before the run exists, as the ack required.**
+  From C110's live archive, frontier `(7,0,214)`, `frontier_shortest` selects
+  the entry with **3,270 actions and 154,720 total frames**, which is C110's
+  winning lineage: **62 actions and 3,409 frames inside 8-1**. That is the tip
+  route the ack named, so the condition is met.
+- One qualification, recorded because the ack raised it. `frontier_shortest`
+  ranks by fewest actions, and fewest actions need not be fewest frames. At
+  bucket 214 the archive holds 7 entries; the cheapest costs 154,717 frames over
+  3,271 actions, which is **3 frames cheaper** than the pick. The rule therefore
+  selects a tip route that is three frames off the best available there. The ack
+  admits the 3,409-frame route explicitly, and three frames is immaterial
+  against the 477 the promoted rule gave away, so this link proceeds. The gap is
+  on the record because a rule that ranks by actions can in principle give away
+  more than three frames on another archive.
+- One live conquest campaign, 50,000 executions, twelve workers on the ARM
+  machine, campaign seed `0x5eed_c030` — C111's, verbatim — action limit 4096,
+  retention `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  policy `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`,
+  waypoint `waypoint_4_bucket_uniform:7,0,0,214,0,15`, replacement
+  `fewest_frames_in_level`, resume **`frontier_shortest`**, suffix `one_or_two`,
+  no chord bias. Sourced from C110's live archive, SHA-256
+  `5a1c735e777c638b08c81ba56e49f246605d49d1357ab471f069a080904f817a`.
+- **Preregistered bar: the winning lineage's single-lineage curve at or below
+  C111's at every common bucket, and materially below it at the tip.** C111 for
+  comparison: 215 buckets, 3,898 frames, 18.13 per bucket, with 3,867 frames at
+  bucket 213 and 3,886 at 214 against C110's 3,400 and 3,409.
+- Pass promotes `frontier_shortest` for the entrance family and the chain
+  continues under it. Fail leaves both resume rules measured and sends the
+  question of carrying more than one lineage across a boundary to the
+  integrator.
+- The cost-to-depth rule stays built and unregistered. It failed its pick check
+  at a charge of sixteen frames per bucket and would need more than 23.2; it is
+  not deleted because the arithmetic that would fix it is recorded beside it.
+- Raw destination: `target/smb-completion/c113-conquest/`, log `c113.log`,
+  sentinel discipline in force, bounded waiter armed at launch.
+- Launch confirmed from the run's own recorded header before parking. Campaign
+  seed 1,592,639,536, which is C111's. Origin C110's archive at the registered
+  hash `5a1c735e…`. Resume input SHA-256 `ebbdcc36…` at **3,270 actions** —
+  the entry the pre-launch check named, so what the registration promised and
+  what the run loaded are the same input. Jobs were flowing before this line was
+  written.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
