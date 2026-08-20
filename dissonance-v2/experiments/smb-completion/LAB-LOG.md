@@ -9510,6 +9510,29 @@ one variable of science only when a link stalls.
 - The two newest archives, C118 and C119, were untouched, and the script
   confirmed the verdict before compressing anything.
 
+### C120 throughput — the chord draw costs an order of magnitude per attempt
+
+- Measured on the box rather than estimated: 325 executions in 120 seconds,
+  **2.7 per second**. The controls recorded 26.35 for C119 and 26.05 for C118,
+  both over full 50,000-execution runs. **The mined-table draw is roughly ten
+  times more expensive per attempt.**
+- Load average 1.66 against twelve workers, so the workers are starved rather
+  than the machine saturated. The cost sits in drawing from a 1,691,338-chord
+  table, and the coordinator does that work.
+- **Revised finish estimate: about 289 minutes from 09:16, so mid-afternoon.**
+  The earlier estimate of 08:30 is superseded; at the measured rate the run has
+  roughly five hours left, not one.
+- **The arm stays valid and runs out its budget untouched.** Wall time is not
+  part of run identity: the recorded stream is what the run is, and it replays
+  byte-exact regardless of how long it took to produce.
+- **Conditional order, pre-registered now so it is not argued afterwards.** If
+  C120 passes its bar, the table draw gets a performance fix **before** the
+  standing rule resumes with it. The fix must preserve draw semantics and
+  randomness consumption byte-exactly, and the proof is C120's own recorded
+  stream: it must replay byte-exact under the optimized code. A policy that
+  wins on search quality and runs an order of magnitude slower is not a
+  promotion. If C120 fails, the null records as ruled and the slowness is moot.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
