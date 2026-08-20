@@ -9102,6 +9102,25 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c115-conquest/`, log `c115.log`,
   bounded waiter armed at launch.
 
+### C115 result — tip 219, and the carry is exact
+
+- The run completed all 50,000 executions. Ladder `(7,0,219)`, three buckets
+  past C114. Winning lineage: **219 buckets in 3,573 frames, 16.32 frames per
+  bucket**. Live archive SHA-256 begins `645e5154`.
+- **PASS on the settled bar.** Depth 219 over 216. The archive minimum at the
+  old tip, bucket 216, moves from 154,862 to **154,860 — two frames cheaper**,
+  so the regression guard passes with room.
+- **Drift is zero.** The carried lineage's cost at bucket 216 is 3,555 in both
+  runs. C115 extended from C114's tip without paying anything extra to stand
+  where C114 stood.
+- Three buckets in one link, against roughly one for each of the four links
+  before it. The drift series now reads −1, +130, 0 across C113, C114 and C115.
+  Two of three are zero or better, which is the opposite of a compounding drag.
+  Three points still do not make a trend and none is claimed.
+- The sidecar ran for the second time and tracked the frontier live: bucket 219
+  with its cheapest route at 3,694 frames in level by execution 23,378, and
+  3,693 at 49,763.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
