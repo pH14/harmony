@@ -9263,6 +9263,45 @@ one variable of science only when a link stalls.
   demonstrated that a link and a replay share the machine without either
   result being in question.
 
+### C117 result — tip 232, guard passes by 31 frames
+
+- The run completed all 50,000 executions. Ladder `(7,0,232)`, three buckets
+  past C116, still inside the eighth world's first level. Winning lineage:
+  **232 buckets in 3,771 frames, 16.25 frames per bucket.** Live archive
+  SHA-256 `074521e7488931262cada30e93122c9c611e236de74a4c1273fd7e517a61137d`.
+- **PASS on both clauses.** Depth 232 over 229. The archive minimum at the old
+  tip, bucket 229, moves from 154,982 to **154,951, thirty-one frames
+  cheaper** — the largest guard improvement the family has recorded.
+- **Drift at the old tip is not measurable for this link, and the reason is
+  recorded rather than filled in.** C117's winning lineage sets no progress
+  high-water mark at bucket 229; its curve runs 227 then 232. The deepest bucket
+  both curves hold is 219, where drift is **0**. A drift figure at 229 would
+  require interpolating a point the lineage never stood on.
+- The curve is also denser than C116's through the new ground: C117 records
+  points at 220 through 227 where C116 jumped 219 straight to 229.
+- Frontier by link: 214, 215, 215, 216, 219, 229, 232.
+- Drift series: −1, +130, 0, +2, 0.
+- No level transition. The chain remains in 8-1, so the standing rule's pause
+  for a new level does not apply.
+
+## C118 — registered entrance continuation
+
+- Launched under the standing rule on C117's PASS. One live conquest campaign,
+  50,000 executions, twelve workers, campaign seed `0x5eed_c036`, action limit
+  4096, retention `probe_at_admission_45_snapback_16`, vocabulary
+  `down_ten_mask`, key policy `frozen_room_x_16:3,1,208`, selector
+  `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,232,0,15`, replacement
+  `fewest_frames_in_level`, resume `frontier_shortest`, suffix `one_or_two`, no
+  chord bias, sidecar on, disk gate enforced. Sourced from C117's full live
+  archive, SHA-256
+  `074521e7488931262cada30e93122c9c611e236de74a4c1273fd7e517a61137d`.
+- **Bar: strictly deeper tip than 232 with the archive minimum at bucket 232 no
+  worse than C117's, or equal tip with a strictly cheaper minimum there.**
+- Co-resident with the C114 replay audit.
+- Raw destination: `target/smb-completion/c118-conquest/`, log `c118.log`,
+  waiter armed as a tracked command so its completion resumes work.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
