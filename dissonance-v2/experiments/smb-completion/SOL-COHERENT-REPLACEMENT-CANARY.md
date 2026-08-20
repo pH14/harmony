@@ -49,6 +49,25 @@ the first eight bytes of SHA-256(`sol-restart-c119-coherent-replacement-v1`),
 whose full digest is
 `2fa5334cbc5b6988ea891c37bf0e4f64933b96e6c89f0cd3b585766155b4df32`.
 
+## Abandoned serial execution
+
+The first exact binary, SHA-256
+`232ef6f389880a5e5c1f385bcf21c71bb70fb994d9acb57041365a8033a4158b`,
+was stopped after its serial execution shape proved too slow. Its preserved
+partial report contains eight newline-delimited records and has SHA-256
+`0ea855f5045c341cba74f7360cde5d77c630c667f9855d5da3a6f3769ca3a3fb`.
+Only process state, byte hash, and line count were inspected; no candidate
+outcome field was read. This incomplete run makes no search-quality claim and
+is never extended or reused as a result.
+
+The registered replacement is a 12-worker fixed-ordinal execution of the same
+100 recipes. Each batch contains six complete draw pairs. Jobs are assigned by
+`candidate_ordinal mod 12`, where coherent is ordinal `draw * 2` and shuffled
+is `draw * 2 + 1`. Each worker owns one persistent target. Completion order is
+buffered; state updates and report records are consumed only in ascending
+candidate ordinal, so worker timing cannot affect any byte or later decision.
+The source replay and snapshot construction remain one exact serial preflight.
+
 ## Frozen paired construction
 
 Replay the selected input from gameplay genesis once and verify the frozen
@@ -81,7 +100,8 @@ current upper index.
    source input byte-identical. More than 256 retries is an integrity failure.
 4. Preserve the exact prefix and tail. Both candidates remain 3,297 actions.
    Restore the same nearest-at-or-before-recipient snapshot for both arms and
-   evaluate the coherent arm first, then the shuffled arm.
+   consume and record the coherent arm first, then the shuffled arm. Physical
+   execution may be concurrent only under the fixed-ordinal schedule above.
 
 All 100 recipes are functions only of the frozen input, seed, draw index, and
 retry. No outcome may affect a later recipe. A feedback-dependent recipe is
@@ -109,6 +129,9 @@ claim if any of these fail:
   not claim to have reread it.
 - Host entropy, wall time, completion order, an unrecorded seed, or floating
   point reaches candidate construction, evaluation, ordering, or output.
+- The worker count is not 12, a batch contains anything other than six complete
+  pairs (except the final shorter batch), a job is assigned to the wrong fixed
+  worker, or results are consumed in completion rather than candidate order.
 - A pair differs in recipient, length, donor action multiset, or total donor
   hold frames; a candidate changes total action count; an arm does not restore
   the nearest cadence snapshot; an absolute frame count cannot be reconciled
