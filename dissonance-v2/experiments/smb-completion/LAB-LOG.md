@@ -9334,6 +9334,54 @@ one variable of science only when a link stalls.
   eligible nor covered by this rule, and extending a compression rule past what
   was ruled is how evidence goes missing.
 
+### C118 result — passes both clauses, and the drift is the largest yet
+
+- The run completed all 50,000 executions. Ladder `(7,0,234)`, two buckets past
+  C117, still inside 8-1. Winning lineage: **234 buckets in 4,259 frames, 18.20
+  frames per bucket.** Live archive SHA-256
+  `415f366092ce23c7e3898a7afe52d677ce2641a743407a16df5661cc3e2e433f`.
+- **PASS on both clauses.** Depth 234 over 232. The archive minimum at the old
+  tip, bucket 232, moves from 155,082 to **155,021, sixty-one frames cheaper**.
+- **Drift is +238 at bucket 232**, from 3,771 to 4,009. That is the largest in
+  the series and the second time a link's winner has taken a dearer path to
+  ground its origin already held cheaply.
+- **The tip rate worsened from 16.25 to 18.20 frames per bucket.** Two buckets
+  of depth cost 488 frames, about 244 each, against a level that supports 6 to
+  16 on ordinary ground.
+- **Why this matters against the clock, stated as arithmetic rather than
+  alarm.** Carried to four hundred buckets, C117's rate projects to about 6,500
+  frames and C118's to about 7,280 against a clock near 7,300. One link moved
+  the projection from comfortable to marginal.
+- **What the two clauses disagreeing means here.** The guard passed because the
+  archive still holds a cheap route to 232 — nothing was lost. The winner is
+  simply not that route. Under `frontier_shortest` the next link resumes from
+  the deepest tuple, so the dearer lineage is what carries forward, which is the
+  C111 pattern in milder form.
+- Drift series: −1, +130, 0, +2, 0, **+238**. Not monotone, so not a trend on
+  this evidence, and none is claimed. Flagged to the integrator as a candidate
+  mechanism finding: the two largest drifts both arise when the deepest lineage
+  is not the cheapest, and the promoted resume rule selects on depth first.
+- The chain continues under the standing rule because both clauses passed. The
+  flag is a report, not a pause.
+
+## C119 — registered entrance continuation
+
+- Launched under the standing rule on C118's PASS. One live conquest campaign,
+  50,000 executions, twelve workers, campaign seed `0x5eed_c037`, action limit
+  4096, retention `probe_at_admission_45_snapback_16`, vocabulary
+  `down_ten_mask`, key policy `frozen_room_x_16:3,1,208`, selector
+  `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,234,0,15`, replacement
+  `fewest_frames_in_level`, resume `frontier_shortest`, suffix `one_or_two`, no
+  chord bias, sidecar on, disk gate enforced. Sourced from C118's full live
+  archive, SHA-256
+  `415f366092ce23c7e3898a7afe52d677ce2641a743407a16df5661cc3e2e433f`.
+- **Bar: strictly deeper tip than 234 with the archive minimum at bucket 234 no
+  worse than C118's, or equal tip with a strictly cheaper minimum there.** Drift
+  at 234 recorded alongside, with particular attention after C118's +238.
+- Raw destination: `target/smb-completion/c119-conquest/`, log `c119.log`,
+  waiter armed as a tracked command.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
