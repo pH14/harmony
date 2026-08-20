@@ -26,6 +26,13 @@ The only source is the recovered C119 artifact on `msr1`:
   execution `49709`; semantic input SHA-256
   `584de68aba576f0b20ebbfa8c03e520553dda308a1c0d6a2e876c924840d6fa1`;
   3,297 actions and 155,148 total frames; recorded key begins `(7,0,236)`.
+  The live canary reads the newline-terminated compact extraction at
+  `target/smb-completion/sol-restart/c119-entry-48076-input.json`, 105,830
+  bytes, SHA-256
+  `5ae42e26a438ff03cbab449480ad4c26c929d6be7fbcee6787cd641601ed3159`.
+  Its byte and semantic hashes are mandatory runtime checks. The 11.9 GB
+  archive hash above is immutable preregistered provenance and is not reread
+  or rehashed by each canary execution.
 - Its final mechanically observed segment is `[3208,3297)`: 89 opaque actions,
   3,837 frames, nonterminal, reaching `(7,0,236)`. These numbers are integrity
   and outcome context only. The known boundary and segment cost may not steer a
@@ -70,8 +77,8 @@ current upper index.
 3. The control replaces the identical recipient with the identical multiset of
    donor action values, permuted by deterministic Fisher-Yates draws from the
    `shuffle` domain. Retry the construction if the serialized shuffled chunk
-   equals the coherent chunk, or if the coherent replacement leaves the source
-   input byte-identical. More than 256 retries is an integrity failure.
+   equals the coherent chunk, or if either materialized candidate leaves the
+   source input byte-identical. More than 256 retries is an integrity failure.
 4. Preserve the exact prefix and tail. Both candidates remain 3,297 actions.
    Restore the same nearest-at-or-before-recipient snapshot for both arms and
    evaluate the coherent arm first, then the shuffled arm.
@@ -95,9 +102,11 @@ must be exactly equivalent to a from-genesis count.
 Stop immediately, preserve the partial report, and make no search-quality
 claim if any of these fail:
 
-- Any frozen archive, ROM, selected-input identity, action count, segment
-  context, baseline outcome, or absolute baseline count of 155,148 frames
-  mismatches.
+- Any compact source bytes, ROM, selected-input identity, action count,
+  segment context, baseline outcome, or absolute baseline count of 155,148
+  frames mismatches. The historical archive identity was verified during
+  recovery and extraction; the live binary must describe it as provenance,
+  not claim to have reread it.
 - Host entropy, wall time, completion order, an unrecorded seed, or floating
   point reaches candidate construction, evaluation, ordering, or output.
 - A pair differs in recipient, length, donor action multiset, or total donor
