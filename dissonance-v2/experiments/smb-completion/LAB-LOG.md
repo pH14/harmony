@@ -8720,6 +8720,98 @@ one variable of science only when a link stalls.
   a launch is confirmed by inspecting what it will actually do, not by the
   absence of an error.
 
+### C111 result — the family kept its lead but lost its best route at the boundary
+
+- The run completed all 50,000 executions. Ladder `(7,0,215)`, one bucket past
+  C110. Winning lineage: **215 buckets in 3,898 frames, 18.13 frames per
+  bucket**, 67 actions; 49,317 retained; stream SHA-256 `50893e9f…`, live
+  archive SHA-256 `c13aa258…`.
+- **Against the carried route the family is still ahead everywhere, and at the
+  tip the lead has collapsed.** At bucket 215 the family costs 3,898 against the
+  carried route's 4,005: **+107 frames**, where one link earlier at bucket 214
+  the lead was **+593**.
+- **The cause is not the terrain and not the search. C111 lost C110's own best
+  route at the link boundary.** The two lineages are identical through bucket
+  154; from bucket 213 onward C111 costs **477 frames more than C110 at the same
+  bucket**:
+
+  | bucket | C110 | C111 | C111 vs C110 | vs carried |
+  |---|---|---|---|---|
+  | 154 | 2,537 | 2,537 | 0 | +761 |
+  | 164 | 2,847 | 2,739 | **−108** | +785 |
+  | 213 | 3,400 | 3,867 | **+467** | +124 |
+  | 214 | 3,409 | 3,886 | **+477** | +116 |
+  | 215 | — | 3,898 | — | +107 |
+
+- **The mechanism that did it, stated exactly, because it is registered
+  behaviour working as written.** The resume rule takes the entry with the
+  fewest frames-in-level among those within thirty-two buckets of the frontier.
+  C111's recorded resume input was 3,259 actions — fifty-one actions into the
+  level, well behind C110's tip — because that entry was the cheapest *at its
+  own bucket*. It was not the entry that led anywhere cheaply. **The rule
+  optimises cost-at-a-bucket and the chain needs cost-to-depth**, and those came
+  apart for the first time here.
+- **This is the frozen-prefix lesson recurring inside the new family**, one
+  level down: a link boundary carries a single lineage, so a route that is best
+  at the frontier can be dropped in favour of one that is cheapest a few buckets
+  back. C110's 3,409-frame route to bucket 214 still exists — it is in C110's
+  archive, intact — but the chain stopped carrying it.
+- **Verdict, stated honestly rather than forced onto a branch.** On the letter
+  of the preregistered bar the family's curve is still materially below the
+  carried route's at equal depth, which is a pass. On the parity-slope read the
+  registration also asked for, the signature fired hard: a lead of 593 became
+  107 in one link, and not because the family met harder ground but because it
+  was handed a worse starting point. Recorded as **a pass on the bar and a
+  regression on the mechanism**, which are different things and should not be
+  averaged into one word.
+- **Action taken under the standing practice for a regressed link**, the same
+  one applied when C108 regressed and C109 resumed from C107 rather than from
+  it: the next link takes **C110's archive** as its origin, not C111's, because
+  a regressed link is not the line the chain continues from. C112 is registered
+  and running on that basis. The resume rule itself is untouched — changing it
+  is a mechanism question and goes to the integrator.
+
+## C112 — registered entrance continuation from the family's best link
+
+- Registered under the standing speed rule on C111's pass, with the origin taken
+  from **C110** rather than C111 per the standing practice for a regressed link.
+  Same configuration in every other registered particular: 50,000 executions,
+  twelve workers, campaign seed `0x5eed_c031`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,214,0,15`, replacement
+  `fewest_frames_in_level`, resume `fastest_in_level_32`, retention
+  `probe_at_admission_45_snapback_16`, vocabulary `down_ten_mask`, key
+  `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, suffix
+  `one_or_two`, no chord bias. Sourced from C110's live archive, SHA-256
+  `5a1c735e777c638b08c81ba56e49f246605d49d1357ab471f069a080904f817a`.
+- **Preregistered question, unchanged: does the family hold its rate past bucket
+  214?** With the caveat this link now carries: it starts from the same archive
+  C111 did, so if the resume rule again selects a cheap-but-unpromising entry
+  the result will repeat, and that repetition would itself be the evidence that
+  the rule — not the terrain — is the binding problem.
+- Raw destination: `target/smb-completion/c112-conquest/`, log `c112.log`.
+
+### Operator defect — a launch with no waiter, and the fix
+
+- **C111's sentinel fired at 22:27 and was not processed until 00:13. The ARM
+  machine sat idle for a hundred and six minutes**, which on a night whose whole
+  directive was faster results is the most expensive mistake of the session.
+- **The cause, stated precisely rather than softened: there was no waiter.**
+  After confirming C111's launch header this operator committed, pushed, and
+  reported — and never started a wait on its completion sentinel at all. The
+  earlier waiters in the session were bounded loops that ended and were checked;
+  this launch simply had nothing watching it.
+- Fixed as a class rather than an instance:
+  `experiments/smb-completion/waiter.sh` takes a log, a sentinel and a ceiling
+  in minutes, and **has exactly two exits** — `SENTINEL_SEEN` and zero, or
+  `WAITER_TIMEOUT` and two, the latter printing an explicit instruction to check
+  the box directly rather than assume the job still runs. It cannot end quietly
+  and it cannot sleep forever. Its first use timed out loudly on a wrong
+  sentinel pattern within minutes, which is the behaviour that was missing.
+- The standing rule this leaves behind: **no launch is complete until a bounded
+  waiter is watching it**, and a launch confirmation without one is not a
+  confirmation. This is the D83 lesson — a blind waiter hid a dead launch for
+  hours — arriving on the operator's side of the connection.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
