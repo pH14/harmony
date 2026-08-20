@@ -70,7 +70,8 @@ current upper index.
 3. The control replaces the identical recipient with the identical multiset of
    donor action values, permuted by deterministic Fisher-Yates draws from the
    `shuffle` domain. Retry the construction if the serialized shuffled chunk
-   equals the coherent chunk. More than 256 retries is an integrity failure.
+   equals the coherent chunk, or if the coherent replacement leaves the source
+   input byte-identical. More than 256 retries is an integrity failure.
 4. Preserve the exact prefix and tail. Both candidates remain 3,297 actions.
    Restore the same nearest-at-or-before-recipient snapshot for both arms and
    evaluate the coherent arm first, then the shuffled arm.
