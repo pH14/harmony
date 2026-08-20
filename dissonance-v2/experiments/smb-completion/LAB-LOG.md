@@ -9121,6 +9121,40 @@ one variable of science only when a link stalls.
   with its cheapest route at 3,694 frames in level by execution 23,378, and
   3,693 at 49,763.
 
+### Disk — 298 GB recovered by compressing derived archives
+
+- The box was at 90 percent with 94 GB free, then 70 GB after C115 wrote its
+  output. Each link adds 13 to 15 GB, so the margin was under two links.
+- **42 archives compressed, 0 failures, 298 GB recovered. Free space went from
+  70 GB to 348 GB, and usage from 93 percent to 62 percent.**
+- Compression ratios are extreme because these files are pretty-printed JSON
+  holding snapshot byte arrays: C105's 12,119 MB archive became 33 MB, C99's
+  5,572 MB became 31 MB. Roughly 370 to one.
+- **Identity is preserved without depending on the file.** Each run directory
+  gained an `archive-manifest.json` recording the original sha256 and byte
+  count before compression. C99's reads
+  `b07c220bf4f967962642cc1ca21c6f178388c65b0e352f0cf93af7ce5ea866ac` at
+  5,572,128,463 bytes, which is the hash its registration cites. The archive is
+  a derived artifact: replaying the run stream regenerates it byte-exact, and
+  zstd is lossless, so two independent routes back to the original exist.
+- **Scope held.** Only `archive-live.json` in run directories older than the
+  entrance family was touched. Streams, campaign reports and censuses are
+  untouched — C99 still holds its 17 MB stream and its 6.1 GB report. The
+  entrance family C110 through C115 is untouched, all six archives at full
+  size, as are the two sibling arms the audits may read.
+- **A pre-launch disk gate is now in the wrapper pattern.** It refuses to launch
+  under 30 GB free, prints the shortfall and exits non-zero. A link that starts
+  without room to finish loses its slot and its output.
+- **The line holds at the current cadence.** 348 GB free against 13 to 15 GB per
+  link is more than twenty links of headroom, and the entrance family's own
+  archives become eligible for the same treatment once they age out of use. No
+  deletion policy is needed and none is proposed.
+- One operator error worth recording: the first version of the compression
+  script was written through a nested here-document over ssh and arrived as a
+  single corrupt line, which failed immediately and harmlessly. The rewrite was
+  composed locally, transferred, and syntax-checked on the box before running.
+  Scripts of any length go over as files.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
