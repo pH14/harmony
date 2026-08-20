@@ -9188,6 +9188,64 @@ one variable of science only when a link stalls.
   pauses for acknowledgement before the next launch, because bars get restated
   at level boundaries.
 
+### C116 result — tip 229, ten buckets in one link
+
+- The run completed all 50,000 executions. Ladder `(7,0,229)`, ten buckets past
+  C115. Winning lineage: **229 buckets in 3,683 frames, 16.08 frames per
+  bucket.** Live archive SHA-256
+  `e74f40c0252b6818e545d262bd1162a34195cfea1b070d610e8d90addcc06603`.
+- **PASS on both clauses.** Depth 229 over 219. The archive minimum at the old
+  tip, bucket 219, moves from 154,884 to **154,881, three frames cheaper**.
+- **Drift +2** at bucket 219, from 3,573 to 3,575.
+- The rate improved as the tip advanced: 16.32 frames per bucket at C115, 16.08
+  here.
+- Frontier by link across the entrance family: 214, 215, 215, 216, 219, 229.
+  The last two links moved 3 and 10 buckets against about 1 for each of the
+  first four.
+- Drift series: −1, +130, 0, +2. Three of four are within two frames of zero.
+
+## C117 — registered entrance continuation
+
+- Launched under the standing rule on C116's PASS. One live conquest campaign,
+  50,000 executions, twelve workers, campaign seed `0x5eed_c035`, action limit
+  4096, retention `probe_at_admission_45_snapback_16`, vocabulary
+  `down_ten_mask`, key policy `frozen_room_x_16:3,1,208`, selector
+  `concentrated_recency_128`, waypoint
+  `waypoint_4_bucket_uniform:7,0,0,229,0,15`, replacement
+  `fewest_frames_in_level`, resume `frontier_shortest`, suffix `one_or_two`, no
+  chord bias, sidecar on, disk gate enforced. Sourced from C116's full live
+  archive, SHA-256
+  `e74f40c0252b6818e545d262bd1162a34195cfea1b070d610e8d90addcc06603`.
+- **Bar: strictly deeper tip than 229 with the archive minimum at bucket 229 no
+  worse than C116's 154,881-equivalent, or equal tip with a strictly cheaper
+  minimum there.** Drift at 229 recorded alongside.
+- The waiter runs in the foreground for this link, per the correction below.
+
+### Waiter defect — the match works; a background waiter cannot resume a turn
+
+- The integrator reported the waiter sleeping through three consecutive
+  sentinels. **Checked before changing anything, and the match is not the
+  defect.** Run against the C115 and C116 logs where the sentinel provably
+  exists, `grep -q` matches and exits zero for both, and the waiter run fresh
+  against C116's finished log prints `SENTINEL_SEEN` and exits zero
+  immediately. Every waiter log on disk holds a `SENTINEL_SEEN` line: C113 at
+  21:42:41, C114 at 23:53:19, C115 at 00:37:59, C116 at 01:34:44. The waiters
+  detected all four.
+- **The defect is that detection went nowhere.** The waiter runs in the
+  background and writes to a file. Nothing about a file being written resumes
+  this operator's turn. When a turn ends with a run in flight, the waiter fires
+  into a file that is read at the next turn, which is why the integrator's
+  watcher reported every sentinel first.
+- **The fix is in how the waiter is used, not in the waiter.** A bounded wait
+  runs in the foreground as the last action before a turn would end, so the turn
+  continues into processing the result instead of ending beside it. The
+  background form stays only for work that genuinely does not gate the next
+  step.
+- Recorded rather than corrected silently, because the earlier entry for this
+  class named a missing waiter as the cause and this is a second, different
+  cause with the same symptom: a launch is not covered until something that can
+  act is waiting on it.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
