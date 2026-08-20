@@ -8783,11 +8783,18 @@ one variable of science only when a link stalls.
   `frozen_room_x_16:3,1,208`, selector `concentrated_recency_128`, suffix
   `one_or_two`, no chord bias. Sourced from C110's live archive, SHA-256
   `5a1c735e777c638b08c81ba56e49f246605d49d1357ab471f069a080904f817a`.
-- **Preregistered question, unchanged: does the family hold its rate past bucket
-  214?** With the caveat this link now carries: it starts from the same archive
-  C111 did, so if the resume rule again selects a cheap-but-unpromising entry
-  the result will repeat, and that repetition would itself be the evidence that
-  the rule — not the terrain — is the binding problem.
+- **Correction to this registration, recorded on the integrator's point and
+  verified rather than assumed: the resume pick is seed-independent, so this
+  link's handicap was known before it launched.** `select_frontier_resume_input`
+  is a pure function of the archive and the policy — no seed enters it — and the
+  recorded headers prove it: C111 at seed 1,592,639,536 and C112 at
+  1,592,639,537 both resume from input SHA-256 `f27f2c15…` at 3,259 actions,
+  the identical entry. **C112 was handed the same handicapped start C111 got.**
+  Its repetition therefore proves nothing about the resume rule that C111 has
+  not already measured, and this registration should not have offered it as a
+  test of one. Its value is the search it does from that start, nothing more.
+- **Preregistered question, restated accordingly: does the family hold its rate
+  past bucket 214 from this given start?**
 - Raw destination: `target/smb-completion/c112-conquest/`, log `c112.log`.
 
 ### Operator defect — a launch with no waiter, and the fix

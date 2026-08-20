@@ -468,7 +468,25 @@ pub enum SmbCampaignResumePolicy {
     /// more than [`RESUME_FASTEST_BUCKET_REACH`] buckets behind the frontier.
     /// Ties fall back to the frozen rule's order, so the choice stays total.
     FastestInLevelWithin32,
+    /// The same reach, ranked by **cost to depth** rather than cost at a
+    /// bucket: an entry standing behind the frontier is charged
+    /// [`RESUME_DEPTH_CHARGE`] frames for every bucket it gives up, which is
+    /// what re-crossing that ground actually costs, so a cheap-but-shallow
+    /// entry only wins when it is cheap by more than the ground is worth.
+    ///
+    /// C111 is why this exists: the plain-cost rule reached fifty-one actions
+    /// back for an entry that was cheapest where it stood and led nowhere
+    /// cheaply, and the link finished 477 frames worse at the same bucket than
+    /// the one it started from.
+    FastestToDepth32,
 }
+
+/// Frames charged per bucket of ground an entry gives up by standing behind the
+/// frontier, named in the policy identifier per the numeric-constant
+/// convention. Sixteen is the rate the entrance family demonstrably crosses
+/// fresh ground at — 15.93 frames per bucket over its whole traverse — so the
+/// charge is the measured cost of the re-crossing, not a tuning knob.
+const RESUME_DEPTH_CHARGE: u64 = 16;
 
 /// Identifier a run records for its resume rule.
 #[must_use]
@@ -476,6 +494,7 @@ pub fn resume_identifier(policy: SmbCampaignResumePolicy) -> &'static str {
     match policy {
         SmbCampaignResumePolicy::FrontierShortest => "frontier_shortest",
         SmbCampaignResumePolicy::FastestInLevelWithin32 => "fastest_in_level_32",
+        SmbCampaignResumePolicy::FastestToDepth32 => "fastest_to_depth_32_16",
     }
 }
 
@@ -487,6 +506,7 @@ pub fn resume_from_identifier(identifier: &str) -> Result<SmbCampaignResumePolic
     match identifier {
         "frontier_shortest" => Ok(SmbCampaignResumePolicy::FrontierShortest),
         "fastest_in_level_32" => Ok(SmbCampaignResumePolicy::FastestInLevelWithin32),
+        "fastest_to_depth_32_16" => Ok(SmbCampaignResumePolicy::FastestToDepth32),
         _ => Err("unknown campaign resume policy identifier".into()),
     }
 }
@@ -563,10 +583,13 @@ pub fn select_frontier_resume_input(
             .ok_or_else(|| "source archive contains no frontier entries".into());
     }
     // Clock-aware resume: the frontier pair only, no deeper than the frontier
-    // and no further back than the registered reach, cheapest in frames first.
+    // and no further back than the registered reach. The two clock-aware rules
+    // differ only in what they rank by — cost where the entry stands, or that
+    // cost plus the measured price of the ground it stands behind.
     let frames = report_frames_in_level(source);
     let (world, level, progress) = frontier;
     let floor = progress.saturating_sub(RESUME_FASTEST_BUCKET_REACH);
+    let charge = u64::from(policy == SmbCampaignResumePolicy::FastestToDepth32);
     source
         .entries
         .iter()
@@ -576,7 +599,12 @@ pub fn select_frontier_resume_input(
                 && entry.key.progress >= floor
                 && entry.key.progress <= progress
         })
-        .min_by_key(|(index, entry)| (frames[*index], entry.input.actions.len(), entry.id))
+        .min_by_key(|(index, entry)| {
+            let behind = u64::from(progress.saturating_sub(entry.key.progress));
+            let cost =
+                frames[*index].saturating_add(charge.saturating_mul(behind) * RESUME_DEPTH_CHARGE);
+            (cost, entry.input.actions.len(), entry.id)
+        })
         .map(|(_, entry)| entry.input.clone())
         .ok_or_else(|| "source archive contains no resume candidate in the frontier pair".into())
 }
@@ -4807,6 +4835,87 @@ mod tests {
             "frontier_shortest"
         );
         assert!(resume_from_identifier("fastest_in_level").is_err());
+    }
+
+    #[test]
+    fn the_depth_charged_resume_refuses_a_cheap_but_shallow_entry() {
+        use crate::phase4c::{SmbArchiveEntryReport, SmbArchiveKey};
+        let key = |progress: u16| SmbArchiveKey {
+            world: 7,
+            level: 0,
+            progress,
+            player_y_bucket: 0,
+            player_engine_state: 0,
+            state_fingerprint: 0,
+            room_x_bucket: 0,
+        };
+        // C111's situation in miniature: a tip entry at the frontier, and a
+        // shallower entry twenty buckets back that is cheaper where it stands
+        // but not cheaper by more than that ground is worth. Twenty buckets at
+        // the registered sixteen frames each is 320; the shallow entry is only
+        // 200 cheaper, so cost-to-depth must refuse it and plain cost must take
+        // it.
+        let mut entries = Vec::new();
+        let mut push = |id: u64, progress: u16, holds: &[u8]| {
+            entries.push(SmbArchiveEntryReport {
+                id,
+                parent_id: if id == 0 { None } else { Some(0) },
+                created_execution: 0,
+                input: SmbInput {
+                    actions: holds
+                        .iter()
+                        .map(|hold| ButtonChord::new(0x01, *hold))
+                        .collect(),
+                },
+                key: key(progress),
+                milestones: SmbMilestones::default(),
+                selector: None,
+            });
+        };
+        push(0, 0, &[]);
+        push(1, 100, &[120, 120, 120, 120, 120, 120, 120, 120, 40]); // 1000 frames at the tip
+        push(2, 80, &[120, 120, 120, 120, 120, 120, 80]); // 800 frames, twenty back
+        let source = SmbArchiveReport {
+            seed: 0,
+            executions: 0,
+            milestones: SmbMilestones::default(),
+            progress_watermark: crate::phase4b::SmbProgressWatermark::default(),
+            first_reached: crate::phase4b::SmbMilestoneTimes::default(),
+            first_inputs: crate::phase4b::SmbMilestoneInputs::default(),
+            champion_input: SmbInput::default(),
+            entries,
+            progress_curve: Vec::new(),
+            retained: 0,
+            rejected: 0,
+            deaths: 0,
+            ranking: crate::phase4c::SmbRankingAccounting::default(),
+            generated_mutator: crate::phase4c::SmbGeneratedMutatorAccounting::default(),
+            ladder: crate::phase4c::SmbLadder::default(),
+            selector: crate::phase4c::SmbSelectorAccounting::default(),
+        };
+        let frames = |input: &SmbInput| -> u64 {
+            input
+                .actions
+                .iter()
+                .map(|action| u64::from(action.bounded_hold_frames()))
+                .sum()
+        };
+        let plain =
+            select_frontier_resume_input(&source, SmbCampaignResumePolicy::FastestInLevelWithin32)
+                .expect("plain-cost resume");
+        assert_eq!(frames(&plain), 800, "plain cost takes the shallow entry");
+        let depth =
+            select_frontier_resume_input(&source, SmbCampaignResumePolicy::FastestToDepth32)
+                .expect("cost-to-depth resume");
+        assert_eq!(frames(&depth), 1000, "cost to depth keeps the tip");
+        assert_eq!(
+            resume_identifier(SmbCampaignResumePolicy::FastestToDepth32),
+            "fastest_to_depth_32_16"
+        );
+        assert_eq!(
+            resume_from_identifier("fastest_to_depth_32_16").expect("parse"),
+            SmbCampaignResumePolicy::FastestToDepth32
+        );
     }
 
     #[test]

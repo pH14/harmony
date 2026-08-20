@@ -171,6 +171,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if mode == "derive-origin-entrance" {
         return run_derive_origin_entrance_mode(&mut args);
     }
+    if mode == "report-resume-pick" {
+        return run_resume_pick_mode(&mut args);
+    }
     if mode == "census-suffix-chords" {
         return run_census_suffix_chords_mode(&mut args);
     }
@@ -1041,6 +1044,51 @@ fn run_census_suffix_chords_mode(
 /// it. Retains only entries of the named pair at or below `max_progress`;
 /// everything deeper — including the carried route — is dropped, which is the
 /// point and is why the source archive is left untouched on disk.
+/// Report which entry each resume rule would select from an archive, so a
+/// registration can state its resume entry before the run exists — and so a
+/// rule that picks wrongly is caught without spending a campaign on it.
+fn run_resume_pick_mode(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn Error>> {
+    let source_path = PathBuf::from(args.next().ok_or("missing source archive report")?);
+    if args.next().is_some() {
+        return Err("unexpected extra argument".into());
+    }
+    let source: SmbArchiveReport = serde_json::from_slice(&fs::read(&source_path)?)?;
+    let frontier = source
+        .entries
+        .iter()
+        .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
+        .max()
+        .ok_or("source archive contains no retained entries")?;
+    println!("frontier {:?}; entries {}", frontier, source.entries.len());
+    for policy in [
+        fuzzer::campaign::SmbCampaignResumePolicy::FrontierShortest,
+        fuzzer::campaign::SmbCampaignResumePolicy::FastestInLevelWithin32,
+        fuzzer::campaign::SmbCampaignResumePolicy::FastestToDepth32,
+    ] {
+        let input = fuzzer::campaign::select_frontier_resume_input(&source, policy)?;
+        let sha = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&input)?));
+        // Name the entry the picked input belongs to, so the bucket it stands
+        // on is on the record beside the hash.
+        let entry = source.entries.iter().find(|entry| entry.input == input);
+        let frames: u64 = input
+            .actions
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum();
+        println!(
+            "  {:24} bucket {:>4} actions {:>5} total_frames {:>7} sha {}",
+            fuzzer::campaign::resume_identifier(policy),
+            entry.map_or(-1_i32, |entry| i32::from(entry.key.progress)),
+            input.actions.len(),
+            frames,
+            sha
+        );
+    }
+    Ok(())
+}
+
 fn run_derive_origin_entrance_mode(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(), Box<dyn Error>> {
