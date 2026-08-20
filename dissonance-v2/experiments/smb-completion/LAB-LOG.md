@@ -9571,6 +9571,53 @@ one variable of science only when a link stalls.
   time rather than from its log. Recorded because an empty audit log looks
   identical to a dead one.
 
+### Replay audits dropped from the chain
+
+- Ordered by the experiment's owner. **Replay audits are removed at every
+  position in the chain.** The deferred-audit ruling that sent them to spare
+  capacity is void, and no audit runs again unless a new ruling brings them
+  back.
+- **Kill confirmed.** The running C115 replay was killed by exact process
+  identifier rather than a pattern match, and the process table afterwards shows
+  a single campaign process, C120's run at 3 hours 36 minutes. C120 was
+  untouched. Its local waiter was disarmed; the only waiter still armed watches
+  C120.
+- **Queue cancelled.** C116 through C119 audits were never launched and are not
+  queued. Nothing pending.
+- C113's and C114's audits stand as recorded — both passed byte-exact before the
+  drop, and those verdicts remain evidence. C115's audit was killed partway and
+  produced no verdict; it is recorded as cancelled rather than failed, because it
+  reported nothing either way.
+- **What the chain loses and keeps, stated plainly.** It loses per-link
+  byte-exact verification and accepts bisection risk in exchange for wall time.
+  It keeps the completion-claim gates, which are separate and unchanged: the
+  byte-exact campaign replay of the winning link and the from-power-on claim
+  replay still gate any claim.
+
+### Compression sweep — 123 GB recovered, no audit precondition
+
+- Compression no longer waits on a verdict, so every derived archive except the
+  two newest was swept along with every replay artifact.
+- **16 files, 123 GB recovered. Free space 391 GB, usage 57 percent.** The
+  entrance family's C111, C112, C114, C115, C116 and C117 archives each went
+  from about 12 GB to about 30 MB. C118 and C119 were skipped as the two
+  protected newest, and the script names each skip in its output.
+- The two sibling arms and the older reference runs went with them, including
+  H76's replay artifacts left over from the audit era.
+- Every compressed file carries a manifest recording its original sha256 and
+  byte count. Archives regenerate byte-exact by replaying their run stream, and
+  zstd is lossless, so two routes back to the original remain.
+- Streams, campaign reports, censuses, verdicts and the sidecar traces are
+  untouched.
+
+### C120's conditional order, amended
+
+- If C120 passes its bar, the table draw still gets a performance fix before the
+  standing rule resumes with it, and the fix must still preserve draw semantics
+  and randomness consumption byte-exactly. **The proof is now the existing
+  identity test suite rather than a replay of C120's stream**, since replay
+  audits are dropped.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
