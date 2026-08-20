@@ -9490,6 +9490,26 @@ one variable of science only when a link stalls.
 - Raw destination: `target/smb-completion/c120-conquest/`, log `c120.log`,
   waiter armed as a tracked command.
 
+### C114 audit verdict — passed
+
+- The serial replay of C114's recorded stream completed all 50,000 executions
+  byte-identically. `replay_verified` true, stream SHA-256
+  `67e7cc12bcbdbdb92890e74d503534cae2a3f1887b42ed5caf66568ed3148c08`, replayed
+  archive SHA-256
+  `736fb87414d731e410b2e84c666f90d8e68e969cfb588ef0ee4b23f7c4245b09`, report
+  SHA-256 `1e4ded5f358def7d799ea06c3f29995e6f34e22f98ad8f64d0d23a4ab32428bf`.
+- Cross-checked against the run's own artifacts: the stream hash matches C114's
+  live report, the archive hash matches the archive on disk, and it matches the
+  origin hash C115's header cites.
+- Two links of the entrance family are now audited green, C113 and C114, and
+  both were recorded under the promoted resume rule.
+- **Rolling compression applied on the green verdict: 37 GB recovered.** C114's
+  replay archive went 12,120 MB to 30 MB, its replay report 13,301 MB to 33 MB,
+  and C113's archive — the origin that audit consumed — 12,140 MB to 30 MB.
+  Free space held at 276 GB with a link running.
+- The two newest archives, C118 and C119, were untouched, and the script
+  confirmed the verdict before compressing anything.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
