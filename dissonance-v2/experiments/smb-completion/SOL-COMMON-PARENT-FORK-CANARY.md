@@ -175,3 +175,24 @@ scale. A GO authorizes one exact same-binary rerun; its canonical report must
 be byte-identical before a separately preregistered campaign experiment is
 allowed. A mismatch is an integrity stop. This canary never directly promotes
 a policy.
+
+## Census result (2026-08-20)
+
+STOP before emulation. The exact read-only census binary had SHA-256
+`77f986d05389c0884201b5beb5f105a3ccae7a9ce9a9ea0a2666ebd9b865c865`.
+The first execution correctly stopped at the cardinality gate but omitted the
+failing arm from its error. A reporting-only correction was made; the same
+planner and artifacts then reported:
+
+`fork census cannot fill length 8 slot 4: 4 distinct, 4 nonvacuous, 4 selected`
+
+Because arms are processed in registered order, length 4 filled all 20 slots.
+Length 8 supplied only four distinct, nonvacuous, control-valid paths and could
+not fill its fifth slot. No ROM was loaded, no candidate was emulated, later
+arms were not inspected, and no recipe or outcome report was created.
+
+The preregistered census gate therefore failed. The arm is not relaxed to the
+one length that happened to fit, and no common-parent fork canary is run. The
+structural learning is that C119's retained sibling graph is too shallow to
+provide a balanced multi-horizon crossover corpus; retained action-boundary
+ancestry is not by itself a sufficient store of coherent trajectories.
