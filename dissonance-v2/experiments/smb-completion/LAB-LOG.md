@@ -9560,6 +9560,16 @@ one variable of science only when a link stalls.
   20,962 executions, so the waiter was re-armed at 300 minutes to match the
   measured rate. A waiter whose ceiling is shorter than the run reports a
   timeout, which is the correct outcome and not a failure of the run.
+- **The same happened to the C115 audit waiter, and twice is a practice
+  problem rather than an accident.** Armed at 90 minutes, it timed out while the
+  replay was alive and working at 1 hour 34 minutes of CPU. Both ceilings were
+  sized by habit from the 35-minute link, and neither run is a 35-minute link:
+  C120 draws from a 1.7-million-chord table and the audits are serial replays
+  running under its contention. Ceilings are now set from measured throughput,
+  and both waiters are re-armed at 300 minutes.
+- A replay writes nothing until it finishes, so its progress is read from CPU
+  time rather than from its log. Recorded because an empty audit log looks
+  identical to a dead one.
 
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
