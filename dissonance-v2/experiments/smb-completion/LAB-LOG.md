@@ -8929,6 +8929,61 @@ one variable of science only when a link stalls.
   sidecar reaches the box in the gap after C113's sentinel and rides the next
   launch.
 
+### C113 result — the frozen resume rule recovers 481 frames at the tip; the bar splits
+
+- The run completed all 50,000 executions. Ladder `(7,0,215)`, the same depth as
+  C111. Winning lineage: **215 buckets in 3,417 frames, 15.89 frames per bucket,
+  62 actions.** C111 under the promoted rule: 3,898 frames, 18.13 per bucket, 67
+  actions.
+- **The single change recovered 481 frames at the tip.** C113 also lands within
+  8 frames of C110's rate, so the family's cost curve is restored to where it
+  stood before the C111 boundary lost it.
+
+  | bucket | C111 | C113 | C113 advantage |
+  |---|---|---|---|
+  | 164 | 2,739 | 2,847 | −108 |
+  | 180 | 2,841 | 3,059 | −218 |
+  | 195 | 3,087 | 3,173 | −86 |
+  | 213 | 3,867 | 3,396 | +471 |
+  | 214 | 3,886 | 3,408 | +478 |
+  | **215** | **3,898** | **3,417** | **+481** |
+
+- **The preregistered bar had two halves and they disagree.** "Materially below
+  at the tip" passes by 481 frames. "At or below C111 everywhere" fails at three
+  of the thirty-three shared buckets — 164, 180 and 195 — where C113 is 86 to
+  218 frames dearer.
+- **What those three buckets are.** C113 follows C110's route, which is dearer
+  in the middle of the level and much cheaper at the end; C111 followed a route
+  that was cheaper in the middle and expensive to finish. That is the same
+  distinction the resume rules encode: cost where a route stands against cost to
+  the depth it reaches. Reading the everywhere-clause strictly would reject a
+  route for being temporarily dearer on ground the clock does not bill
+  separately — only the total at the tip is billed.
+- Recorded without a verdict. The split is a judgment the integrator holds under
+  the narrowed autonomy, and this operator declines to resolve it by choosing
+  which half of its own bar to weight.
+
+### Phase-tolerance bisection — 127 frames of 1,728 are recoverable
+
+- Each of the carried route's eleven stalls was bisected for the shortest hold
+  cap its recorded suffix still survives. **Recoverable: 127 frames, 7.3 percent
+  of the 1,728.**
+
+  | span | frames | tolerated cap | frames at cap | saved |
+  |---|---|---|---|---|
+  | 268 → 270 | 110 | 103 | 103 | 7 |
+  | 270 → 271 | 250 | 103 | 223 | 27 |
+  | 279 → 280 | 117 | 24 | **24** | **93** |
+  | the other eight | 1,251 | none | — | 0 |
+
+- Eight of eleven stalls tolerate no reduction at all. One, at bucket 279, gives
+  up 93 of its 117 frames, so its recorded hold was nearly four times longer
+  than its suffix needs.
+- **The result stands as reported and applies to the carried route only.** It
+  measures what the recorded suffix tolerates, not a minimum the game imposes.
+  Against the entrance family's own numbers it is small: C113 beats the carried
+  route by a wider margin at every bucket than the whole 127 frames.
+
 ### H75 registration corrigendum — the pilot's origin was C72's archive
 
 - Surfaced while freezing the stall fixtures, from the recorded stream
