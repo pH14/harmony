@@ -13,6 +13,7 @@ use std::{
 };
 
 use fuzzer::{
+    search::parallel::with_worker_pool,
     search::sequence_edit::{ReplacementParameters, ReplacementRecipe, apply_replacement},
     smb::{
         archive::MAX_SMB_COMPLETION_ACTIONS,
@@ -36,11 +37,13 @@ const MAX_INPUT_JSON_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
 const MAX_RECIPE_RETRIES: u64 = 256;
+const WORKERS: u32 = 12;
+const PAIRS_PER_BATCH: usize = 6;
 
 const REGISTERED_SEED: u64 = 9_829_488_526_003_250_479;
 const REGISTERED_PAIRED_DRAWS: usize = 100;
 const REGISTERED_PREREGISTRATION: &str =
-    "experiments/smb-completion/SOL-COHERENT-REPLACEMENT-CANARY.md@363c3728";
+    "experiments/smb-completion/SOL-COHERENT-REPLACEMENT-CANARY.md@51f8c8ea";
 const REGISTERED_SOURCE_ARCHIVE_SHA256: &str =
     "d9038c97f5a818f7c58e828e3621e1327a62d981f17d4a9246cd3238c3021c81";
 const REGISTERED_SOURCE_ENTRY_ID: u64 = 48_076;
@@ -67,6 +70,9 @@ struct CanaryConfig {
     trailing_edit_horizon: usize,
     snapshot_interval: usize,
     length_arms: [usize; LENGTH_ARMS.len()],
+    workers: u32,
+    pairs_per_batch: usize,
+    execution_schedule: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -216,6 +222,26 @@ struct CandidateEvaluation {
     summary: EvaluationSummary,
 }
 
+struct EvaluationJob {
+    ordinal: usize,
+    candidate: Vec<ButtonChord>,
+    edit_start: usize,
+}
+
+enum EvaluationWorker {
+    Ready(Box<SmbTarget>),
+    Failed(String),
+}
+
+struct EvaluationReply {
+    ordinal: usize,
+    evaluation: Result<CandidateEvaluation, String>,
+}
+
+struct PlannedPair {
+    recipe: PairRecipe,
+}
+
 #[derive(Default)]
 struct TreatmentState {
     best_frames: BTreeMap<SmbMechanicalState, u64>,
@@ -363,6 +389,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         trailing_edit_horizon,
         snapshot_interval: SNAPSHOT_INTERVAL,
         length_arms: LENGTH_ARMS,
+        workers: WORKERS,
+        pairs_per_batch: PAIRS_PER_BATCH,
+        execution_schedule: "fixed_candidate_ordinal_mod_workers_batch_ordered_v1",
     };
     let config_sha256 = sha256_json(&config)?;
     let executable_path = env::current_exe()?;
@@ -427,81 +456,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     write_record(&mut output, &header)?;
 
-    for draw in 0..paired_draws {
-        let arm_index = draw % arms.len();
-        let arm = arms
-            .get_mut(arm_index)
-            .ok_or("paired draw selected an unknown length arm")?;
-        let recipe = draw_recipe(&input.actions, seed, draw, horizon_start, arm.length)?;
-        let donor = checked_slice(&input.actions, recipe.donor_range)?.to_vec();
-        let control_replacement = permute(&donor, &recipe.control_permutation)?;
-        let challenger_input = apply_replacement(
-            &input.actions,
-            &[&input.actions],
-            &ReplacementRecipe {
-                length_index: arm_index,
-                input_start: recipe.recipient_range.0,
-                donor_index: 0,
-                donor_start: recipe.donor_range.0,
-            },
-            &replacement_parameters,
-        )?;
-        let control_input = apply_replacement(
-            &input.actions,
-            &[&control_replacement],
-            &ReplacementRecipe {
-                length_index: arm_index,
-                input_start: recipe.recipient_range.0,
-                donor_index: 0,
-                donor_start: 0,
-            },
-            &replacement_parameters,
-        )?;
-        validate_pair_materialization(
-            &input.actions,
-            &donor,
-            &control_replacement,
-            &recipe,
-            &challenger_input,
-            &control_input,
-        )?;
-
-        let challenger_evaluation = evaluate_candidate(
-            &mut target,
-            &baseline.checkpoints,
-            &input.actions,
-            &challenger_input,
-            recipe.recipient_range.0,
-            &baseline.summary,
-        )?;
-        let challenger_discovery = arm.challenger.observe(&challenger_evaluation);
-        let challenger_record = ArmRecord {
-            record: "candidate",
-            draw_index: draw,
-            arm: "coherent",
-            recipe: &recipe,
-            candidate: candidate_record(challenger_evaluation, challenger_discovery),
-        };
-        write_record(&mut output, &challenger_record)?;
-
-        let control_evaluation = evaluate_candidate(
-            &mut target,
-            &baseline.checkpoints,
-            &input.actions,
-            &control_input,
-            recipe.recipient_range.0,
-            &baseline.summary,
-        )?;
-        let control_discovery = arm.control.observe(&control_evaluation);
-        let control_record = ArmRecord {
-            record: "candidate",
-            draw_index: draw,
-            arm: "shuffled_control",
-            recipe: &recipe,
-            candidate: candidate_record(control_evaluation, control_discovery),
-        };
-        write_record(&mut output, &control_record)?;
-    }
+    run_pairs_parallel(
+        &rom,
+        &input,
+        &baseline,
+        horizon_start,
+        &replacement_parameters,
+        seed,
+        paired_draws,
+        &mut arms,
+        &mut output,
+    )?;
 
     let summary = SummaryRecord {
         record: "summary",
@@ -520,6 +485,225 @@ fn main() -> Result<(), Box<dyn Error>> {
     let report_sha256 = output.finish()?;
     println!("{{\"report_sha256\":\"{report_sha256}\"}}");
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_pairs_parallel(
+    rom: &[u8],
+    input: &SmbInput,
+    baseline: &Baseline,
+    horizon_start: usize,
+    replacement_parameters: &ReplacementParameters,
+    seed: u64,
+    paired_draws: usize,
+    arms: &mut [ArmState],
+    output: &mut NdjsonOutput,
+) -> Result<(), Box<dyn Error>> {
+    with_worker_pool(
+        WORKERS,
+        |_| {
+            Ok(match SmbTarget::from_smb_rom_bytes_headless(rom) {
+                Ok(target) => EvaluationWorker::Ready(Box::new(target)),
+                Err(error) => EvaluationWorker::Failed(error.to_string()),
+            })
+        },
+        |worker, job: EvaluationJob| {
+            let evaluation = match worker {
+                EvaluationWorker::Ready(target) => evaluate_candidate(
+                    target,
+                    &baseline.checkpoints,
+                    &input.actions,
+                    &job.candidate,
+                    job.edit_start,
+                    &baseline.summary,
+                )
+                .map_err(|error| error.to_string()),
+                EvaluationWorker::Failed(error) => Err(error.clone()),
+            };
+            Ok(EvaluationReply {
+                ordinal: job.ordinal,
+                evaluation,
+            })
+        },
+        |pool| -> Result<(), Box<dyn Error>> {
+            for batch_start in (0..paired_draws).step_by(PAIRS_PER_BATCH) {
+                let batch_end = batch_start
+                    .saturating_add(PAIRS_PER_BATCH)
+                    .min(paired_draws);
+                let batch_pairs = batch_end
+                    .checked_sub(batch_start)
+                    .ok_or("parallel batch range moved backwards")?;
+                let mut plans = Vec::with_capacity(batch_pairs);
+                for draw in batch_start..batch_end {
+                    let arm_index = draw % arms.len();
+                    let length = arms
+                        .get(arm_index)
+                        .ok_or("paired draw selected an unknown length arm")?
+                        .length;
+                    let recipe = draw_recipe(&input.actions, seed, draw, horizon_start, length)?;
+                    let donor = checked_slice(&input.actions, recipe.donor_range)?.to_vec();
+                    let control_replacement = permute(&donor, &recipe.control_permutation)?;
+                    let challenger_input = apply_replacement(
+                        &input.actions,
+                        &[&input.actions],
+                        &ReplacementRecipe {
+                            length_index: arm_index,
+                            input_start: recipe.recipient_range.0,
+                            donor_index: 0,
+                            donor_start: recipe.donor_range.0,
+                        },
+                        replacement_parameters,
+                    )?;
+                    let control_input = apply_replacement(
+                        &input.actions,
+                        &[&control_replacement],
+                        &ReplacementRecipe {
+                            length_index: arm_index,
+                            input_start: recipe.recipient_range.0,
+                            donor_index: 0,
+                            donor_start: 0,
+                        },
+                        replacement_parameters,
+                    )?;
+                    validate_pair_materialization(
+                        &input.actions,
+                        &donor,
+                        &control_replacement,
+                        &recipe,
+                        &challenger_input,
+                        &control_input,
+                    )?;
+
+                    let coherent_ordinal = draw
+                        .checked_mul(2)
+                        .ok_or("coherent candidate ordinal overflow")?;
+                    let control_ordinal = coherent_ordinal
+                        .checked_add(1)
+                        .ok_or("control candidate ordinal overflow")?;
+                    send_evaluation_job(
+                        pool,
+                        EvaluationJob {
+                            ordinal: coherent_ordinal,
+                            candidate: challenger_input,
+                            edit_start: recipe.recipient_range.0,
+                        },
+                    )?;
+                    send_evaluation_job(
+                        pool,
+                        EvaluationJob {
+                            ordinal: control_ordinal,
+                            candidate: control_input,
+                            edit_start: recipe.recipient_range.0,
+                        },
+                    )?;
+                    plans.push(PlannedPair { recipe });
+                }
+
+                let batch_first_ordinal = batch_start
+                    .checked_mul(2)
+                    .ok_or("parallel batch ordinal overflow")?;
+                let batch_jobs = batch_pairs
+                    .checked_mul(2)
+                    .ok_or("parallel batch job count overflow")?;
+                let mut completed = (0..batch_jobs)
+                    .map(|_| None)
+                    .collect::<Vec<Option<Result<CandidateEvaluation, String>>>>();
+                for _ in 0..batch_jobs {
+                    let worker_reply = pool.receive()?;
+                    let reply = worker_reply
+                        .outcome
+                        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                    let expected_worker = worker_for_ordinal(reply.ordinal)?;
+                    if worker_reply.worker != expected_worker {
+                        return Err("candidate completed on the wrong fixed worker".into());
+                    }
+                    let local = reply
+                        .ordinal
+                        .checked_sub(batch_first_ordinal)
+                        .filter(|index| *index < batch_jobs)
+                        .ok_or("worker returned an ordinal outside its active batch")?;
+                    let slot = completed
+                        .get_mut(local)
+                        .ok_or("worker result slot is out of bounds")?;
+                    if slot.replace(reply.evaluation).is_some() {
+                        return Err("worker returned a duplicate candidate ordinal".into());
+                    }
+                }
+
+                for (pair_offset, plan) in plans.into_iter().enumerate() {
+                    let draw = batch_start
+                        .checked_add(pair_offset)
+                        .ok_or("draw index overflow while consuming a batch")?;
+                    let arm_index = draw % arms.len();
+                    let arm = arms
+                        .get_mut(arm_index)
+                        .ok_or("completed draw selected an unknown length arm")?;
+                    let local_coherent = pair_offset
+                        .checked_mul(2)
+                        .ok_or("coherent result index overflow")?;
+                    let local_control = local_coherent
+                        .checked_add(1)
+                        .ok_or("control result index overflow")?;
+                    let challenger_evaluation = completed
+                        .get_mut(local_coherent)
+                        .and_then(Option::take)
+                        .ok_or("coherent result is missing from its fixed batch")?
+                        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                    let challenger_discovery = arm.challenger.observe(&challenger_evaluation);
+                    write_record(
+                        output,
+                        &ArmRecord {
+                            record: "candidate",
+                            draw_index: draw,
+                            arm: "coherent",
+                            recipe: &plan.recipe,
+                            candidate: candidate_record(
+                                challenger_evaluation,
+                                challenger_discovery,
+                            ),
+                        },
+                    )?;
+                    let control_evaluation = completed
+                        .get_mut(local_control)
+                        .and_then(Option::take)
+                        .ok_or("control result is missing from its fixed batch")?
+                        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                    let control_discovery = arm.control.observe(&control_evaluation);
+                    write_record(
+                        output,
+                        &ArmRecord {
+                            record: "candidate",
+                            draw_index: draw,
+                            arm: "shuffled_control",
+                            recipe: &plan.recipe,
+                            candidate: candidate_record(control_evaluation, control_discovery),
+                        },
+                    )?;
+                }
+                if completed.into_iter().any(|result| result.is_some()) {
+                    return Err("parallel batch left an unconsumed result".into());
+                }
+            }
+            for worker in 0..WORKERS {
+                pool.close(worker)?;
+            }
+            Ok(())
+        },
+    )
+}
+
+fn send_evaluation_job(
+    pool: &fuzzer::search::parallel::WorkerPool<EvaluationJob, EvaluationReply>,
+    job: EvaluationJob,
+) -> Result<(), Box<dyn Error>> {
+    let worker = worker_for_ordinal(job.ordinal)?;
+    pool.send(worker, job)?;
+    Ok(())
+}
+
+fn worker_for_ordinal(ordinal: usize) -> Result<u32, Box<dyn Error>> {
+    let worker_count = usize::try_from(WORKERS)?;
+    Ok(u32::try_from(ordinal % worker_count)?)
 }
 
 fn validate_input(input: &SmbInput, horizon: usize) -> Result<(), Box<dyn Error>> {
@@ -1098,6 +1282,7 @@ mod tests {
     use super::{
         ButtonChord, EvaluationSummary, PairRecipe, SmbProgressWatermark, derived_modulo,
         draw_recipe, is_useful, permute, ranges_overlap, validate_pair_materialization,
+        worker_for_ordinal,
     };
 
     #[test]
@@ -1173,6 +1358,16 @@ mod tests {
     fn range_overlap_treats_touching_windows_as_disjoint() {
         assert!(!ranges_overlap((4, 8), (8, 12)));
         assert!(ranges_overlap((4, 9), (8, 12)));
+    }
+
+    #[test]
+    fn candidate_ordinals_have_a_fixed_twelve_worker_assignment() {
+        for ordinal in 0..200 {
+            assert_eq!(
+                worker_for_ordinal(ordinal).expect("assign worker"),
+                u32::try_from(ordinal % 12).expect("test worker fits")
+            );
+        }
     }
 
     #[test]
