@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the C119 normal-endpoint frontier harvest.
+//! Temporary sealed runner for the p270 normal-endpoint frontier harvest.
 
 use std::{
     collections::BTreeMap,
@@ -35,56 +35,75 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-endpoint-frontier-harvest-v1";
-const PREREGISTRATION_COMMIT: &str = "e3ca732b774fe2134dc4541e5ac8dca4c0b74669";
+const FORMAT: &str = "smb-p270-endpoint-frontier-harvest-v2";
+const PREREGISTRATION_COMMIT: &str = "fc85a115e4b360c8f9c4090ba2c0d1ff49c4599a";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "2d8688fde7ebc5b8b8c295c95f111a388a82b860b6d2e2a0edd3c3f457a56a32";
-const CODE_BASE: &str = "2e2ec0bf";
-const SOURCE_ARCHIVE_SHA256: &str =
-    "d9038c97f5a818f7c58e828e3621e1327a62d981f17d4a9246cd3238c3021c81";
-const SOURCE_STREAM_SHA256: &str =
-    "ab869286a526dab104f7846ae0313745de7087e3733e99016218defb42e90201";
-const SOURCE_FILE_SHA256: &str = "5ae42e26a438ff03cbab449480ad4c26c929d6be7fbcee6787cd641601ed3159";
+    "af26c9a5aa80f2b6682520672999b12e3cf6ddce5b2ec47aedd1191c1765e297";
+const CODE_BASE: &str = "3408c883";
+const AUTHORIZING_V1_PREREGISTRATION: &str = "e3ca732b";
+const AUTHORIZING_V1_IMPLEMENTATION: &str = "fe5e2c75";
+const AUTHORIZING_V1_RESULT: &str = "3408c883";
+const SOURCE_FILE_SHA256: &str = "9a71c1ab63f1f16eb9f34b38f66047e3cbfa8d0623a1219eda839393dab01921";
 const SOURCE_INPUT_SHA256: &str =
-    "584de68aba576f0b20ebbfa8c03e520553dda308a1c0d6a2e876c924840d6fa1";
-const SOURCE_TRACE_SHA256: &str =
-    "9245f6d42f684a1fcd0a33a762519a51270d1ece2b695ea5a575d83ff64149a1";
-const SOURCE_WRAM_SHA256: &str = "936ac08d4c48a2968bec111324fd7ed28628ea89b35baa049b1b5abfffc896ea";
+    "9a71c1ab63f1f16eb9f34b38f66047e3cbfa8d0623a1219eda839393dab01921";
+const SOURCE_WRAM_SHA256: &str = "37aca14a7115b7f9cc700e8754b1b1243f2635c205d4696242782aaa9e354908";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "107bab5a4691ca0e43586b3c95849031782d40f2a3013856161ae4f1d997ae66";
+    "382434bfb1bc83c70c2c074272a0e641238d48e4c3a5a9aa9efc0649e9d9877d";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-c119-normal-endpoint-frontier-harvest-v1";
-const SEED_LABEL_SHA256: &str = "242760c7685790c3abe44aeea30523b8a5a3af7a07d7fdbdff6c6d0145e706f1";
-const MASTER_SEED: u64 = 14_091_859_341_575_464_740;
-const SOURCE_ACTIONS: usize = 3_297;
-const SOURCE_FRAMES: u64 = 155_148;
+const SEED_LABEL: &str = "sol-restart-p270-normal-endpoint-frontier-harvest-v2";
+const SEED_LABEL_SHA256: &str = "4e9ac2b9f6b21240453025245299f1470c5edfcc5545c0ce9a067117ec2e3524";
+const MASTER_SEED: u64 = 4_616_949_340_756_417_102;
+const EXPECTED_RECIPE_SHA256: &str =
+    "20eb7679b8a19c9d79b82d5ee9e435e37f62c6c8030ea30c88ec3d37a677fc87";
+const SOURCE_ACTIONS: usize = 3_309;
+const SOURCE_FRAMES: u64 = 155_855;
 const LANES: usize = 12;
-const DRAWS: usize = 256;
+const DRAWS: usize = 512;
 const ACTION_LIMIT: usize = 4_096;
-const ARCHIVE_LIMIT: usize = 257;
+const ARCHIVE_LIMIT: usize = 513;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
-const MAX_ACTION_FRAMES: u64 = 368_640;
-const MAX_PROBE_FRAMES: u64 = 414_720;
-const MAX_TOTAL_FRAMES: u64 = 943_201;
+const MAX_ACTION_FRAMES: u64 = 737_280;
+const MAX_PROBE_FRAMES: u64 = 829_440;
+const SOURCE_PROBE_FRAMES: u64 = 45;
+const MAX_TOTAL_FRAMES: u64 = 1_727_313;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const PROBE_FRAMES: u16 = 45;
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 0,
-    progress: 236,
+    progress: 270,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 0,
-    progress: 236,
-    player_y_bucket: 7,
+    progress: 270,
+    player_y_bucket: 8,
     player_engine_state: 8,
     dead: false,
     flag_active: false,
+};
+const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
+    world: 7,
+    level: 0,
+    progress: 270,
+    player_y_bucket: 8,
+    player_engine_state: 8,
+    state_fingerprint: 55,
+    room_x_bucket: 0,
+};
+const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
+    max_1_1_scroll_bucket: 195,
+    reached_1_1_flag: true,
+    reached_1_2: true,
+    reached_onward: true,
+};
+const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
+    buttons: 16,
+    hold_frames: 108,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -114,6 +133,8 @@ struct Config {
     assignment: &'static str,
     probe_masks: [u8; 3],
     probe_frames: u16,
+    source_probe_mask: u8,
+    source_probe_frames: u16,
     max_action_frames: u64,
     max_probe_frames: u64,
     max_total_frames: u64,
@@ -133,6 +154,8 @@ struct BaselineRecord {
     snapshot_sha256: String,
     key: SmbArchiveKey,
     milestones: SmbMilestones,
+    final_action: ButtonChord,
+    source_probe: ProbeAttempt,
 }
 
 #[derive(Clone)]
@@ -310,6 +333,7 @@ struct SummaryRecord {
     lane_setup_frames: Vec<u64>,
     setup_frames: u64,
     source_replay_frames: u64,
+    source_probe_frames: u64,
     action_frames: u64,
     probe_frames: u64,
     experimental_frames: u64,
@@ -323,13 +347,13 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    source_archive_sha256: &'static str,
-    source_stream_sha256: &'static str,
+    authorizing_v1_preregistration: &'static str,
+    authorizing_v1_implementation: &'static str,
+    authorizing_v1_result: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
-    source_entry_id: u64,
-    source_parent_id: u64,
-    source_created_execution: u64,
+    source_v1_lane: u64,
+    source_v1_entry_id: u64,
     rom_sha256: &'a str,
     executable_sha256: &'a str,
     bin_source_sha256: &'a str,
@@ -388,7 +412,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path = PathBuf::from(
         args.next()
-            .ok_or("usage: smb-endpoint-frontier-harvest <input.json> <output.jsonl>")?,
+            .ok_or("usage: smb-p270-endpoint-frontier-harvest <input.json> <output.jsonl>")?,
     );
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -408,8 +432,6 @@ pub fn run_from_process(
         return Err("semantic source input does not match the preregistration".into());
     }
 
-    let recipes = derive_recipes(&source)?;
-    let recipe_sha256 = recipe_sha256(&recipes)?;
     let config = Config {
         lanes: LANES,
         draws_per_lane: DRAWS,
@@ -427,6 +449,8 @@ pub fn run_from_process(
         assignment: "one_lane_per_persistent_worker_buffered_ascending_v1",
         probe_masks: PROBE_MASKS,
         probe_frames: PROBE_FRAMES,
+        source_probe_mask: 0,
+        source_probe_frames: PROBE_FRAMES,
         max_action_frames: MAX_ACTION_FRAMES,
         max_probe_frames: MAX_PROBE_FRAMES,
         max_total_frames: MAX_TOTAL_FRAMES,
@@ -453,9 +477,18 @@ pub fn run_from_process(
 
     let mut baseline_target = SmbTarget::from_smb_rom_bytes_headless(&rom)?;
     let baseline = build_baseline(&mut baseline_target, &source)?;
+    let recipes = derive_recipes(&source)?;
+    let recipe_sha256 = recipe_sha256(&recipes)?;
+    if recipe_sha256 != EXPECTED_RECIPE_SHA256 {
+        return Err("frozen recipe identity does not match the sealed oracle".into());
+    }
     let lanes = evaluate_parallel(&rom, &source, &recipes, &baseline)?;
     let classification = classify(&lanes)?;
-    let work = summarize_work(&lanes, baseline.record.setup_frames)?;
+    let work = summarize_work(
+        &lanes,
+        baseline.record.setup_frames,
+        baseline.record.source_probe.work_frames,
+    )?;
 
     let mut output = NdjsonOutput::new(output_file);
     output.write(&HeaderRecord {
@@ -464,13 +497,13 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        source_archive_sha256: SOURCE_ARCHIVE_SHA256,
-        source_stream_sha256: SOURCE_STREAM_SHA256,
+        authorizing_v1_preregistration: AUTHORIZING_V1_PREREGISTRATION,
+        authorizing_v1_implementation: AUTHORIZING_V1_IMPLEMENTATION,
+        authorizing_v1_result: AUTHORIZING_V1_RESULT,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
-        source_entry_id: 48_076,
-        source_parent_id: 29_805,
-        source_created_execution: 49_709,
+        source_v1_lane: 8,
+        source_v1_entry_id: 186,
         rom_sha256: &rom_sha256,
         executable_sha256: &executable_sha256,
         bin_source_sha256: &bin_source_sha256,
@@ -505,6 +538,7 @@ pub fn run_from_process(
         lane_setup_frames: lanes.iter().map(|lane| lane.setup_frames).collect(),
         setup_frames: work.setup,
         source_replay_frames: baseline.record.replay_frames,
+        source_probe_frames: work.source_probe,
         action_frames: work.action,
         probe_frames: work.probe,
         experimental_frames: work.experimental,
@@ -544,6 +578,9 @@ fn validate_source(source: &SmbInput) -> Result<(), Box<dyn Error>> {
         .any(|action| !(2..=MAX_HOLD_FRAMES).contains(&action.hold_frames))
     {
         return Err("source action duration is outside the registered 2..=120 range".into());
+    }
+    if source.actions.last() != Some(&BASELINE_FINAL_ACTION) {
+        return Err("source final action does not match the preregistration".into());
     }
     Ok(())
 }
@@ -659,6 +696,38 @@ fn build_baseline(target: &mut SmbTarget, source: &SmbInput) -> Result<Baseline,
     let snapshot = target
         .snapshot()
         .ok_or("failed to snapshot source endpoint")?;
+    let wram_sha256 = sha256_bytes(target.wram());
+    let snapshot_sha256 = sha256_json(&snapshot)?;
+    let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+    if replay_frames != SOURCE_FRAMES
+        || endpoint_observation.frame_count != SOURCE_FRAMES
+        || endpoint != BASELINE_ENDPOINT
+        || watermark != BASELINE_WATERMARK
+        || wram_sha256 != SOURCE_WRAM_SHA256
+        || snapshot_sha256 != SOURCE_SNAPSHOT_SHA256
+        || key != BASELINE_KEY
+        || milestones != BASELINE_MILESTONES
+        || source.actions.last() != Some(&BASELINE_FINAL_ACTION)
+    {
+        return Err("source replay evidence does not match the preregistration".into());
+    }
+    let source_probe = run_source_probe(
+        target,
+        &snapshot,
+        wram_sha256.as_str(),
+        snapshot_sha256.as_str(),
+    )?;
+    let baseline_delta = target
+        .frames_clocked()
+        .checked_sub(replay_before)
+        .ok_or("baseline total work counter moved backwards")?;
+    if baseline_delta
+        != replay_frames
+            .checked_add(source_probe.work_frames)
+            .ok_or("baseline component work overflow")?
+    {
+        return Err("baseline work does not reconcile with replay and source probe".into());
+    }
     let record = BaselineRecord {
         record: "baseline",
         setup_frames,
@@ -668,22 +737,53 @@ fn build_baseline(target: &mut SmbTarget, source: &SmbInput) -> Result<Baseline,
         endpoint,
         watermark,
         trace_sha256: finish_sha256(trace),
-        wram_sha256: sha256_bytes(target.wram()),
-        snapshot_sha256: sha256_json(&snapshot)?,
-        key: archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen),
+        wram_sha256,
+        snapshot_sha256,
+        key,
         milestones,
+        final_action: BASELINE_FINAL_ACTION,
+        source_probe,
     };
-    if replay_frames != SOURCE_FRAMES
-        || record.endpoint_observation.frame_count != SOURCE_FRAMES
-        || record.endpoint != BASELINE_ENDPOINT
-        || record.watermark != BASELINE_WATERMARK
-        || record.trace_sha256 != SOURCE_TRACE_SHA256
-        || record.wram_sha256 != SOURCE_WRAM_SHA256
-        || record.snapshot_sha256 != SOURCE_SNAPSHOT_SHA256
-    {
-        return Err("source replay evidence does not match the preregistration".into());
-    }
     Ok(Baseline { record, snapshot })
+}
+
+fn run_source_probe(
+    target: &mut SmbTarget,
+    snapshot: &SmbSnapshot,
+    expected_wram_sha256: &str,
+    expected_snapshot_sha256: &str,
+) -> Result<ProbeAttempt, Box<dyn Error>> {
+    target.restore(snapshot)?;
+    verify_snapshot(target, snapshot)?;
+    let before = target.frames_clocked();
+    let survived = target.survives_probe(0, PROBE_FRAMES);
+    let work_frames = target
+        .frames_clocked()
+        .checked_sub(before)
+        .ok_or("source-probe work counter moved backwards")?;
+    if target.exit_kind() != ExitKind::Ok
+        || target.is_dead()
+        || !survived
+        || work_frames != SOURCE_PROBE_FRAMES
+    {
+        return Err("source evidence probe did not survive exactly as registered".into());
+    }
+    target.restore(snapshot)?;
+    verify_snapshot(target, snapshot)?;
+    let restored_snapshot = target
+        .snapshot()
+        .ok_or("failed to snapshot restored source after probe")?;
+    if sha256_bytes(target.wram()) != expected_wram_sha256
+        || sha256_json(&restored_snapshot)? != expected_snapshot_sha256
+    {
+        return Err("source evidence probe did not restore exact source state".into());
+    }
+    Ok(ProbeAttempt {
+        mask: 0,
+        work_frames,
+        dead: false,
+        survived,
+    })
 }
 
 fn evaluate_parallel(
@@ -1312,6 +1412,7 @@ fn verdict_for(champion: Option<&ChampionRecord>) -> Verdict {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorkSummary {
     setup: u64,
+    source_probe: u64,
     action: u64,
     probe: u64,
     experimental: u64,
@@ -1321,8 +1422,12 @@ struct WorkSummary {
 fn summarize_work(
     lanes: &[LaneRecord],
     baseline_setup: u64,
+    source_probe: u64,
 ) -> Result<WorkSummary, Box<dyn Error>> {
-    if baseline_setup != EXPECTED_SETUP_FRAMES || lanes.len() != LANES {
+    if baseline_setup != EXPECTED_SETUP_FRAMES
+        || source_probe != SOURCE_PROBE_FRAMES
+        || lanes.len() != LANES
+    {
         return Err("setup evidence does not match the preregistration".into());
     }
     let mut setup = baseline_setup;
@@ -1363,6 +1468,7 @@ fn summarize_work(
         .ok_or("experimental work overflow")?;
     let total = setup
         .checked_add(SOURCE_FRAMES)
+        .and_then(|value| value.checked_add(source_probe))
         .and_then(|value| value.checked_add(experimental))
         .ok_or("total work overflow")?;
     if total > MAX_TOTAL_FRAMES {
@@ -1370,6 +1476,7 @@ fn summarize_work(
     }
     Ok(WorkSummary {
         setup,
+        source_probe,
         action,
         probe,
         experimental,
@@ -1618,57 +1725,70 @@ mod tests {
     #[test]
     fn seed_and_frozen_recipe_bytes_are_exact() {
         verify_seed().expect("sealed seed is self-consistent");
+        assert_eq!(
+            EXPECTED_RECIPE_SHA256,
+            "20eb7679b8a19c9d79b82d5ee9e435e37f62c6c8030ea30c88ec3d37a677fc87"
+        );
         let source = synthetic_source();
         let recipes = derive_recipes(&source).expect("derive recipes");
         assert_eq!(recipes.len(), 12);
-        assert!(recipes.iter().all(|lane| lane.len() == 256));
+        assert!(recipes.iter().all(|lane| lane.len() == 512));
         assert_eq!(
             (recipes[0][0].source_index, recipes[0][0].selector_seed),
-            (127, 12_015_827_676_806_535_492)
+            (794, 12_424_716_711_394_903_029)
         );
         assert_eq!(
             (recipes[0][1].source_index, recipes[0][1].selector_seed),
-            (2_603, 4_402_188_943_835_787_418)
+            (569, 7_333_752_405_742_044_105)
         );
         assert_eq!(
             (
-                recipes[11][255].source_index,
-                recipes[11][255].selector_seed,
+                recipes[11][511].source_index,
+                recipes[11][511].selector_seed,
             ),
-            (2_668, 13_928_061_742_304_753_808)
+            (2_895, 9_430_516_941_562_448_688)
         );
         assert_eq!(
             serde_json::to_vec(&(
                 0_u64,
                 0_u64,
-                127_u64,
+                794_u64,
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ))
             .expect("serialize first recipe"),
-            br#"[0,0,127,{"buttons":127,"hold_frames":10},12015827676806535492]"#
+            br#"[0,0,794,{"buttons":26,"hold_frames":82},12424716711394903029]"#
         );
         assert_eq!(
             recipe_sha256(&recipes).expect("hash recipes"),
-            "2bcd6decf16d697fa058ea932a93362f41780f2246b6a94bbb56e3ddb2255d0c"
+            "0a773e8378ab5dbd5958e7ccc329b715cab961c2f55e426432065365397ec6c9"
         );
+    }
+
+    #[test]
+    fn source_shape_requires_the_registered_final_action() {
+        let mut source = synthetic_source();
+        *source.actions.last_mut().expect("source has actions") = BASELINE_FINAL_ACTION;
+        validate_source(&source).expect("registered source shape is accepted");
+        *source.actions.last_mut().expect("source has actions") = ButtonChord::new(0, 2);
+        assert!(validate_source(&source).is_err());
     }
 
     #[test]
     fn champion_ranking_is_total_and_verdict_is_strict() {
         let ranked = rank_champion(vec![
-            candidate(0, 9, 240, 8, 0x10),
-            candidate(1, 8, 241, 12, 0xff),
-            candidate(2, 7, 241, 10, 0xff),
-            candidate(3, 6, 241, 10, 0x20),
-            candidate(4, 5, 241, 10, 0x20),
-            candidate(4, 4, 241, 10, 0x20),
+            candidate(0, 9, 271, 8, 0x10),
+            candidate(1, 8, 272, 12, 0xff),
+            candidate(2, 7, 272, 10, 0xff),
+            candidate(3, 6, 272, 10, 0x20),
+            candidate(4, 5, 272, 10, 0x20),
+            candidate(4, 4, 272, 10, 0x20),
         ])
         .expect("champion exists");
         assert_eq!((ranked.lane, ranked.id), (3, 6));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
 
-        let equal = rank_champion(vec![candidate(0, 1, 236, 1, 0)]).expect("candidate exists");
+        let equal = rank_champion(vec![candidate(0, 1, 270, 1, 0)]).expect("candidate exists");
         assert_eq!(verdict_for(Some(&equal)), Verdict::Stop);
         assert_eq!(verdict_for(None), Verdict::Stop);
     }
@@ -1898,15 +2018,18 @@ mod tests {
         let lanes = (0..LANES)
             .map(|lane| minimal_lane(lane, per_lane_action, per_lane_probe))
             .collect::<Vec<_>>();
-        let summary = summarize_work(&lanes, EXPECTED_SETUP_FRAMES).expect("cap reconciles");
+        let summary = summarize_work(&lanes, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES)
+            .expect("cap reconciles");
         assert_eq!(summary.action, MAX_ACTION_FRAMES);
         assert_eq!(summary.probe, MAX_PROBE_FRAMES);
+        assert_eq!(summary.source_probe, SOURCE_PROBE_FRAMES);
         assert_eq!(summary.total, MAX_TOTAL_FRAMES);
+        assert!(summarize_work(&lanes, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES - 1).is_err());
 
         let mut over = lanes;
         over[0].action_frames += 1;
         over[0].total_work_frames += 1;
-        assert!(summarize_work(&over, EXPECTED_SETUP_FRAMES).is_err());
+        assert!(summarize_work(&over, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES).is_err());
     }
 
     #[test]
