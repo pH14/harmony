@@ -161,3 +161,47 @@ adoptable; the next structural test may only be a separately preregistered
 midpoint-compaction canary. Any integrity mismatch authorizes nothing. There
 is one registered run, no routine replay audit, rerun, or post-hoc candidate
 choice.
+
+## Result
+
+The one registered run completed successfully on `msr1` with verdict
+**ADOPT**. The implementation was sealed at commit `4a09d824`, with
+binary-source SHA-256
+`dd11b7777ce129c9e23bc07492c2765fd9e594d7cf8f6e1a353afb53c00ccfe3`,
+module-source SHA-256
+`9b61aa26e3aeed5e0e3a0158997fc84f7dd435329b915e1e1a13ca159254de73`,
+and release-executable SHA-256
+`b53ed04ea55f02e68b417e763ab6da2808efbae3460ff9a6940e559f1f6297cc`.
+The frozen 99,034-byte recipe SHA-256 was
+`19f31b474eda59357014a185fa2803e66be083851dafe8683661091228ca81a5`.
+
+The canonical 17-line, 194,736,779-byte report is stored at
+`/root/harmony-smb-sol-w8-2-p213-transition-646a14cc/results/w8-2-p213-normal-endpoint-transition-12x128.jsonl`.
+Its body SHA-256 is
+`e873a055d55d7a8ade5f4305d5bba3a7c4614b9abe202cb8cafe27190d61bcf7`
+and whole-file SHA-256 is
+`d38e331e8815e9c0d20adf4a1e0becbf440467f9b957ab50958cf8370e70d5fe`.
+Realized work was 305,960 frames: 161,449 source replay, 45 source evidence
+probe, 4,693 setup, 71,409 live action, and 68,364 live probe frames.
+
+The ordinary full-source B1 policy crossed the full lexicographic watermark
+from World 8-2 `(7,1,213)` to World 8-3 `(7,2,54)` without using the source
+flag bit in proposal, ranking, or adoption. The independent adoption order
+selected lane 9, entry 95, created at draw 103, with lineage
+`[0,1,19,32,37,39,41,42,46,57,58,59,63,69,70,72,77,84,91,95]`.
+
+The champion is a live, probe-surviving, normally retained endpoint after
+3,469 actions and 163,227 absolute frames. Its mechanical state is
+`(7,2,54,y=11,engine=8,dead=false,flag=false)`, raw-WRAM SHA-256 is
+`1e6b30b702f29098605b16abed7ebcc9a618b7525009c192b5f19b86c9cdf9a4`,
+and snapshot SHA-256 is
+`e42a2f69123518ab95813429fbc312553b4af205ff0053915de1be52a6125189`.
+Its frozen key fingerprint is 30, final chord is
+`ButtonChord { buttons: 16, hold_frames: 112 }`, and its admission probe
+survived mask `0x00` for all 45 frames.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-w8-2-p213-transition-646a14cc/results/adopted-world-8-3-progress-54-input.json`;
+its 111,392-byte compact-file and semantic SHA-256 is
+`1544342bd57911b92fd4beefd2eebc9e7db15fa0077c37338d9b7c12048e8d99`.
+No next experiment is authorized by this result note alone.
