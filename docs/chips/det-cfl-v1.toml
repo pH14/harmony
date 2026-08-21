@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# det-cfl-v1 — the measured-constants pack for the Coffee Lake-S baseline.
+#
+# Transcribed from the constants already in this repository and the ratified
+# contract; no measurement run stands behind it. Every value names the file it
+# came from. A field with no recorded source in this repository carries an
+# `absent` marker and the reason, so a consumer that needs it refuses rather than
+# substituting a default.
+#
+# `pack_hash` is the SHA-256 of the pack's canonical serialization with that field
+# emptied, recomputed by `cpu-qualification` on load. Editing any value without
+# resealing makes the pack fail to load.
+
+[pack]
+schema = "cpu-qualification-pack-v1"
+baseline = "det-cfl-v1"
+pack_hash = "d9b6f911d8731b780fc175b6f510ff595833bbd2ae01736e38b1d9c6f2c6513a"
+
+[chip.vendor]
+source = "docs/cpu-msr-contract.toml [contract] vendor"
+value = "GenuineIntel"
+
+[chip.identity]
+source = "docs/cpu-msr-contract.toml [host-assert] family-model-stepping"
+value = "06_9e_0c"
+
+[chip.microcode_rev]
+source = "docs/cpu-msr-contract.toml [host-assert] host-microcode-rev"
+value = "0x00000000000000f8"
+
+[work_clock.event_config]
+source = "consonance/vmm-backend/src/arch/x86/mod.rs RAW_BR_COND"
+value = "0x1c4"
+
+[work_clock.event_name]
+source = "consonance/vmm-backend/src/pmu.rs branch_counter_attr"
+value = "BR_INST_RETIRED.CONDITIONAL"
+
+[work_clock.counting_scope]
+source = "consonance/vmm-backend/src/pmu.rs ATTR_FLAGS"
+value = "PERF_TYPE_RAW, pinned, guest-only (exclude_host), sampling mode"
+
+[skid.observed_max]
+absent = "no recorded skid measurement for this chip in this repository; the margin below was derived elsewhere and only its acceptance bound was carried into the code"
+
+[skid.margin]
+source = "consonance/vmm-backend/src/run_until.rs SKID_MARGIN"
+value = 256
+
+[skid.derivation]
+source = "consonance/vmm-backend/src/run_until.rs SKID_MARGIN doc comment"
+value = "twice the acceptance bound of 128 recorded there, so a skid at the full bound still leaves 128 work units of headroom"
+
+[skid.overshoot]
+source = "consonance/vmm-backend/src/run_until.rs"
+value = "an overflow that stops at or past the deadline raises SkidExceeded, which surfaces as a loud backend error rather than a clamped landing"
+
+[count_offsets]
+absent = "no recorded per-exit-class count offsets for this chip in this repository"
+
+[event_density]
+absent = "no recorded per-payload-class event density for this chip in this repository"
+
+[single_step.mechanism]
+source = "consonance/vmm-backend/src/kvm_sys.rs enable_single_step"
+value = "KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP on the stock module; the patched module additionally exposes a monitor-trap-facility ioctl"
+
+[single_step.work_per_step]
+absent = "no recorded work-unit contribution per single step for this chip in this repository"
+
+[host_conditions]
+absent = "no recorded expected states for this chip's standing host conditions in this repository; stage 0 reports what it reads and refuses to confirm it against nothing"

@@ -104,6 +104,13 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
       - name: miri — vmm-backend
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
+      # cpu-qualification's unsafe is the overflow-ring walk (`perf.rs`), which
+      # Miri runs against a test-owned buffer, plus the `perf_event_open` FFI and
+      # the inline-asm payload bodies, which it cannot execute. The syscall half
+      # has no tests that reach a syscall and the asm test is cfg_attr(miri,
+      # ignore)d, so this step is the UB net over the ring walk.
+      - name: miri — cpu-qualification
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p cpu-qualification --all-features --lib
       # snapshot-store (task 95 M1 merge-time item, PR #91): --lib only — the
       # mapping/materialize tests need real file-backed mmap, which Miri cannot
       # execute (they are cfg(not(miri))). The lib tests need disable-isolation

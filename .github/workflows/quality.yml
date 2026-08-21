@@ -208,7 +208,10 @@ jobs:
       # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds:
       # it is the acceptance runner's real-VMM composition root and needs a
       # real `/dev/kvm`, the patched modules, and built payloads, so no portable test can
-      # reach it. The
+      # reach it. `consonance/cpu-qualification/src/perf_sys.rs` and `…/src/stage0_sys.rs`
+      # are the same category: the suite's `perf_event_open` orchestration and its
+      # `/proc`, `/sys`, and MSR reader, both needing a real Linux host and root. Their
+      # pure halves (`perf.rs`, `stage0.rs`) stay covered. The
       # coverage-gated set is the portable, platform-agnostic logic the splits
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
       # (`mock`/`run_loop`), and vmm-core's `work::WorkSource`/`ScriptedWork` + V-time
@@ -216,7 +219,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|consonance/acceptance-suite/src/realvmm\.rs|consonance/cpu-qualification/src/(perf_sys|stage0_sys)\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
@@ -405,7 +408,7 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto -p acceptance-suite \
+            -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto -p acceptance-suite -p cpu-qualification \
             --test public_api -- --ignored --nocapture
           # harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.

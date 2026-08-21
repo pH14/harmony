@@ -18,6 +18,22 @@ use sha2::{Digest, Sha256};
 /// The `[pack] schema` token this crate reads and writes.
 pub const PACK_SCHEMA: &str = "cpu-qualification-pack-v1";
 
+/// The `det-cfl-v1` pack, embedded at compile time. The path is relative to this
+/// source file; moving the pack breaks the build loudly.
+pub const DET_CFL_V1: &str = include_str!("../../../docs/chips/det-cfl-v1.toml");
+
+/// The checked-in packs this build carries, by baseline name.
+pub const BUILTIN_PACKS: &[(&str, &str)] = &[("det-cfl-v1", DET_CFL_V1)];
+
+/// The embedded pack text for `baseline`, if this build carries one.
+#[must_use]
+pub fn builtin_pack(baseline: &str) -> Option<&'static str> {
+    BUILTIN_PACKS
+        .iter()
+        .find(|(name, _)| *name == baseline)
+        .map(|(_, text)| *text)
+}
+
 /// A refusal from loading or checking a pack.
 #[derive(Debug, thiserror::Error)]
 pub enum PackError {
@@ -43,6 +59,9 @@ pub enum PackError {
         /// The hash the file's own content produces.
         computed: String,
     },
+    /// No pack is checked in for the requested baseline.
+    #[error("no pack for baseline {0:?}")]
+    UnknownBaseline(String),
     /// A field the caller needs carries no value.
     #[error("pack field {field} is absent: {reason}")]
     FieldAbsent {
@@ -295,6 +314,17 @@ impl Pack {
             });
         }
         Ok(pack)
+    }
+
+    /// Load the checked-in pack for `baseline`.
+    ///
+    /// # Errors
+    /// [`PackError::UnknownBaseline`] when no pack is embedded for that name, or
+    /// any [`Pack::parse`] refusal.
+    pub fn builtin(baseline: &str) -> Result<Pack, PackError> {
+        let text = builtin_pack(baseline)
+            .ok_or_else(|| PackError::UnknownBaseline(baseline.to_string()))?;
+        Pack::parse(text)
     }
 
     /// The canonical serialization: this pack with `pack_hash` emptied. Field
@@ -561,5 +591,74 @@ mod tests {
     fn hex_is_lowercase_and_two_digits_per_byte() {
         assert_eq!(hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
         assert_eq!(hex(&[]), "");
+    }
+
+    #[test]
+    fn the_embedded_det_cfl_v1_pack_loads_and_its_hash_holds() {
+        let pack = Pack::builtin("det-cfl-v1").expect("the embedded pack must load");
+        assert_eq!(pack.pack.baseline, "det-cfl-v1");
+        assert_eq!(pack.pack.schema, PACK_SCHEMA);
+        assert_eq!(
+            pack.compute_hash().expect("hashes"),
+            pack.pack.pack_hash,
+            "the checked-in pack_hash must match the pack's own bytes"
+        );
+    }
+
+    #[test]
+    fn the_det_cfl_v1_pack_carries_the_transcribed_constants() {
+        let pack = Pack::builtin("det-cfl-v1").expect("the embedded pack must load");
+        assert_eq!(pack.work_clock.config().expect("recorded"), 0x1c4);
+        assert_eq!(pack.skid.margin.value(), Some(&256));
+        assert_eq!(
+            pack.chip.identity.value().map(String::as_str),
+            Some("06_9e_0c")
+        );
+        assert_eq!(
+            pack.chip.vendor.value().map(String::as_str),
+            Some("GenuineIntel")
+        );
+        // Every recorded value names the file it was transcribed from.
+        for (field, source) in [
+            ("chip.vendor", &pack.chip.vendor),
+            ("chip.identity", &pack.chip.identity),
+            ("chip.microcode_rev", &pack.chip.microcode_rev),
+        ] {
+            if let Field::Recorded { source, .. } = source {
+                assert!(source.contains('/'), "{field} source is {source:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_det_cfl_v1_pack_marks_the_unmeasured_fields_absent_with_reasons() {
+        let pack = Pack::builtin("det-cfl-v1").expect("the embedded pack must load");
+        let absent: Vec<&str> = pack.absent_fields().iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            absent,
+            vec![
+                "count_offsets",
+                "event_density",
+                "host_conditions",
+                "single_step.work_per_step",
+                "skid.observed_max",
+            ],
+            "a field with no recorded source must be absent, not guessed"
+        );
+        for (name, reason) in pack.absent_fields() {
+            assert!(
+                reason.len() > 20,
+                "{name} must say why it has no value, got {reason:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_baseline_has_no_embedded_pack() {
+        assert!(builtin_pack("no-such-chip").is_none());
+        match Pack::builtin("no-such-chip") {
+            Err(PackError::UnknownBaseline(name)) => assert_eq!(name, "no-such-chip"),
+            other => panic!("an unknown baseline must refuse, got {other:?}"),
+        }
     }
 }

@@ -1,0 +1,589 @@
+pub mod cpu_qualification
+pub mod cpu_qualification::chips
+pub enum cpu_qualification::chips::HostConditionKind
+pub cpu_qualification::chips::HostConditionKind::AvicOff
+pub cpu_qualification::chips::HostConditionKind::CorePinning
+pub cpu_qualification::chips::HostConditionKind::GovernorPinned
+pub cpu_qualification::chips::HostConditionKind::KvmModuleIdentity
+pub cpu_qualification::chips::HostConditionKind::KvmPresent
+pub cpu_qualification::chips::HostConditionKind::NmiWatchdogOff
+pub cpu_qualification::chips::HostConditionKind::SmtPolicy
+pub cpu_qualification::chips::HostConditionKind::SpecLockMapDisabled
+pub cpu_qualification::chips::HostConditionKind::SsbMitigationPinned
+impl cpu_qualification::chips::HostConditionKind
+pub fn cpu_qualification::chips::HostConditionKind::token(self) -> &'static str
+pub enum cpu_qualification::chips::MatchRule
+pub cpu_qualification::chips::MatchRule::Midr
+pub cpu_qualification::chips::MatchRule::Midr::implementer: cpu_qualification::chips::TableValue<u32>
+pub cpu_qualification::chips::MatchRule::Midr::part: cpu_qualification::chips::TableValue<u32>
+pub cpu_qualification::chips::MatchRule::X86FamilyModels
+pub cpu_qualification::chips::MatchRule::X86FamilyModels::family: u32
+pub cpu_qualification::chips::MatchRule::X86FamilyModels::models: &'static [u32]
+pub cpu_qualification::chips::MatchRule::X86FamilyRange
+pub cpu_qualification::chips::MatchRule::X86FamilyRange::hi: u32
+pub cpu_qualification::chips::MatchRule::X86FamilyRange::lo: u32
+pub enum cpu_qualification::chips::PmuShape
+pub cpu_qualification::chips::PmuShape::AmdCore
+pub cpu_qualification::chips::PmuShape::ArmPmuV3
+pub cpu_qualification::chips::PmuShape::ArmPmuV3::event_id_register: &'static str
+pub cpu_qualification::chips::PmuShape::IntelArchPerfmon
+pub cpu_qualification::chips::PmuShape::IntelArchPerfmon::version: u32
+pub enum cpu_qualification::chips::TableValue<T: 'static>
+pub cpu_qualification::chips::TableValue::Absent
+pub cpu_qualification::chips::TableValue::Absent::reason: &'static str
+pub cpu_qualification::chips::TableValue::Recorded
+pub cpu_qualification::chips::TableValue::Recorded::source: &'static str
+pub cpu_qualification::chips::TableValue::Recorded::value: T
+impl<T: core::marker::Copy> cpu_qualification::chips::TableValue<T>
+pub fn cpu_qualification::chips::TableValue<T>::absent_reason(self) -> core::option::Option<&'static str>
+pub fn cpu_qualification::chips::TableValue<T>::value(self) -> core::option::Option<T>
+pub enum cpu_qualification::chips::Vendor
+pub cpu_qualification::chips::Vendor::Aarch64
+pub cpu_qualification::chips::Vendor::AuthenticAMD
+pub cpu_qualification::chips::Vendor::GenuineIntel
+impl cpu_qualification::chips::Vendor
+pub fn cpu_qualification::chips::Vendor::cpuid_string(self) -> core::option::Option<&'static str>
+pub struct cpu_qualification::chips::ChipEntry
+pub cpu_qualification::chips::ChipEntry::contract: core::option::Option<&'static str>
+pub cpu_qualification::chips::ChipEntry::departure: core::option::Option<&'static str>
+pub cpu_qualification::chips::ChipEntry::host_conditions: &'static [cpu_qualification::chips::HostConditionKind]
+pub cpu_qualification::chips::ChipEntry::lock_probe_event: core::option::Option<cpu_qualification::chips::TableValue<u64>>
+pub cpu_qualification::chips::ChipEntry::match_rule: cpu_qualification::chips::MatchRule
+pub cpu_qualification::chips::ChipEntry::name: &'static str
+pub cpu_qualification::chips::ChipEntry::pmu_shape: cpu_qualification::chips::PmuShape
+pub cpu_qualification::chips::ChipEntry::rr_reference: core::option::Option<&'static str>
+pub cpu_qualification::chips::ChipEntry::vendor: cpu_qualification::chips::Vendor
+pub cpu_qualification::chips::ChipEntry::work_clock_config: cpu_qualification::chips::TableValue<u64>
+pub cpu_qualification::chips::ChipEntry::work_clock_event: &'static str
+pub struct cpu_qualification::chips::ChipIdentity
+pub cpu_qualification::chips::ChipIdentity::family: u32
+pub cpu_qualification::chips::ChipIdentity::microcode_rev: core::option::Option<alloc::string::String>
+pub cpu_qualification::chips::ChipIdentity::midr: u64
+pub cpu_qualification::chips::ChipIdentity::model: u32
+pub cpu_qualification::chips::ChipIdentity::stepping: u32
+pub cpu_qualification::chips::ChipIdentity::vendor: cpu_qualification::chips::Vendor
+impl cpu_qualification::chips::ChipIdentity
+pub fn cpu_qualification::chips::ChipIdentity::family_model_stepping(&self) -> alloc::string::String
+pub fn cpu_qualification::chips::ChipIdentity::midr_implementer(&self) -> u32
+pub fn cpu_qualification::chips::ChipIdentity::midr_part(&self) -> u32
+pub struct cpu_qualification::chips::Refusal
+pub cpu_qualification::chips::Refusal::found: cpu_qualification::chips::ChipIdentity
+pub cpu_qualification::chips::Refusal::unmatchable: alloc::vec::Vec<alloc::string::String>
+impl core::convert::From<cpu_qualification::chips::Refusal> for cpu_qualification::stage0::Stage0Error
+pub fn cpu_qualification::stage0::Stage0Error::from(cpu_qualification::chips::Refusal) -> cpu_qualification::stage0::Stage0Error
+pub const cpu_qualification::chips::KNOWN_CHIPS: &[cpu_qualification::chips::ChipEntry]
+pub fn cpu_qualification::chips::match_chip(&cpu_qualification::chips::ChipIdentity) -> core::result::Result<&'static cpu_qualification::chips::ChipEntry, cpu_qualification::chips::Refusal>
+pub mod cpu_qualification::pack
+pub enum cpu_qualification::pack::Field<T>
+pub cpu_qualification::pack::Field::Absent
+pub cpu_qualification::pack::Field::Absent::absent: alloc::string::String
+pub cpu_qualification::pack::Field::Recorded
+pub cpu_qualification::pack::Field::Recorded::source: alloc::string::String
+pub cpu_qualification::pack::Field::Recorded::value: T
+impl<T> cpu_qualification::pack::Field<T>
+pub fn cpu_qualification::pack::Field<T>::absent(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cpu_qualification::pack::Field<T>::absent_reason(&self) -> core::option::Option<&str>
+pub fn cpu_qualification::pack::Field<T>::is_absent(&self) -> bool
+pub fn cpu_qualification::pack::Field<T>::recorded(impl core::convert::Into<alloc::string::String>, T) -> Self
+pub fn cpu_qualification::pack::Field<T>::require(&self, &'static str) -> core::result::Result<&T, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Field<T>::value(&self) -> core::option::Option<&T>
+pub enum cpu_qualification::pack::PackError
+pub cpu_qualification::pack::PackError::FieldAbsent
+pub cpu_qualification::pack::PackError::FieldAbsent::field: &'static str
+pub cpu_qualification::pack::PackError::FieldAbsent::reason: alloc::string::String
+pub cpu_qualification::pack::PackError::FieldMalformed
+pub cpu_qualification::pack::PackError::FieldMalformed::expected: &'static str
+pub cpu_qualification::pack::PackError::FieldMalformed::field: &'static str
+pub cpu_qualification::pack::PackError::FieldMalformed::value: alloc::string::String
+pub cpu_qualification::pack::PackError::HashMismatch
+pub cpu_qualification::pack::PackError::HashMismatch::computed: alloc::string::String
+pub cpu_qualification::pack::PackError::HashMismatch::recorded: alloc::string::String
+pub cpu_qualification::pack::PackError::Parse(toml::de::Error)
+pub cpu_qualification::pack::PackError::Schema
+pub cpu_qualification::pack::PackError::Schema::expected: &'static str
+pub cpu_qualification::pack::PackError::Schema::found: alloc::string::String
+pub cpu_qualification::pack::PackError::Serialize(toml::ser::Error)
+pub cpu_qualification::pack::PackError::UnknownBaseline(alloc::string::String)
+pub struct cpu_qualification::pack::ChipSection
+pub cpu_qualification::pack::ChipSection::identity: cpu_qualification::pack::Field<alloc::string::String>
+pub cpu_qualification::pack::ChipSection::microcode_rev: cpu_qualification::pack::Field<alloc::string::String>
+pub cpu_qualification::pack::ChipSection::vendor: cpu_qualification::pack::Field<alloc::string::String>
+pub struct cpu_qualification::pack::CountOffset
+pub cpu_qualification::pack::CountOffset::exit_class: alloc::string::String
+pub cpu_qualification::pack::CountOffset::offset: i64
+pub struct cpu_qualification::pack::EventDensity
+pub cpu_qualification::pack::EventDensity::events_per_iteration: u64
+pub cpu_qualification::pack::EventDensity::payload_class: alloc::string::String
+pub struct cpu_qualification::pack::HostConditionExpectation
+pub cpu_qualification::pack::HostConditionExpectation::condition: alloc::string::String
+pub cpu_qualification::pack::HostConditionExpectation::expect: alloc::string::String
+pub cpu_qualification::pack::HostConditionExpectation::scope: alloc::string::String
+pub struct cpu_qualification::pack::Pack
+pub cpu_qualification::pack::Pack::chip: cpu_qualification::pack::ChipSection
+pub cpu_qualification::pack::Pack::count_offsets: cpu_qualification::pack::Field<alloc::vec::Vec<cpu_qualification::pack::CountOffset>>
+pub cpu_qualification::pack::Pack::event_density: cpu_qualification::pack::Field<alloc::vec::Vec<cpu_qualification::pack::EventDensity>>
+pub cpu_qualification::pack::Pack::host_conditions: cpu_qualification::pack::Field<alloc::vec::Vec<cpu_qualification::pack::HostConditionExpectation>>
+pub cpu_qualification::pack::Pack::pack: cpu_qualification::pack::PackHeader
+pub cpu_qualification::pack::Pack::single_step: cpu_qualification::pack::SingleStepSection
+pub cpu_qualification::pack::Pack::skid: cpu_qualification::pack::SkidSection
+pub cpu_qualification::pack::Pack::work_clock: cpu_qualification::pack::WorkClockSection
+impl cpu_qualification::pack::Pack
+pub fn cpu_qualification::pack::Pack::absent_fields(&self) -> alloc::vec::Vec<(&'static str, &str)>
+pub fn cpu_qualification::pack::Pack::builtin(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::canonical(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::compute_hash(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::parse(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::seal(&mut self) -> core::result::Result<(), cpu_qualification::pack::PackError>
+pub struct cpu_qualification::pack::PackHeader
+pub cpu_qualification::pack::PackHeader::baseline: alloc::string::String
+pub cpu_qualification::pack::PackHeader::pack_hash: alloc::string::String
+pub cpu_qualification::pack::PackHeader::schema: alloc::string::String
+pub struct cpu_qualification::pack::SingleStepSection
+pub cpu_qualification::pack::SingleStepSection::mechanism: cpu_qualification::pack::Field<alloc::string::String>
+pub cpu_qualification::pack::SingleStepSection::work_per_step: cpu_qualification::pack::Field<u64>
+pub struct cpu_qualification::pack::SkidSection
+pub cpu_qualification::pack::SkidSection::derivation: cpu_qualification::pack::Field<alloc::string::String>
+pub cpu_qualification::pack::SkidSection::margin: cpu_qualification::pack::Field<u64>
+pub cpu_qualification::pack::SkidSection::observed_max: cpu_qualification::pack::Field<u64>
+pub cpu_qualification::pack::SkidSection::overshoot: cpu_qualification::pack::Field<alloc::string::String>
+pub struct cpu_qualification::pack::WorkClockSection
+pub cpu_qualification::pack::WorkClockSection::counting_scope: cpu_qualification::pack::Field<alloc::string::String>
+pub cpu_qualification::pack::WorkClockSection::event_config: cpu_qualification::pack::Field<alloc::string::String>
+pub cpu_qualification::pack::WorkClockSection::event_name: cpu_qualification::pack::Field<alloc::string::String>
+impl cpu_qualification::pack::WorkClockSection
+pub fn cpu_qualification::pack::WorkClockSection::config(&self) -> core::result::Result<u64, cpu_qualification::pack::PackError>
+pub const cpu_qualification::pack::BUILTIN_PACKS: &[(&str, &str)]
+pub const cpu_qualification::pack::DET_CFL_V1: &str
+pub const cpu_qualification::pack::PACK_SCHEMA: &str
+pub fn cpu_qualification::pack::builtin_pack(&str) -> core::option::Option<&'static str>
+pub mod cpu_qualification::payload
+pub struct cpu_qualification::payload::PayloadSpec
+pub cpu_qualification::payload::PayloadSpec::derivation: &'static str
+pub cpu_qualification::payload::PayloadSpec::events_per_iteration: u64
+pub cpu_qualification::payload::PayloadSpec::name: &'static str
+pub cpu_qualification::payload::PayloadSpec::x86_only: bool
+pub const cpu_qualification::payload::BRANCH_DENSE: cpu_qualification::payload::PayloadSpec
+pub const cpu_qualification::payload::CALL_RET: cpu_qualification::payload::PayloadSpec
+pub const cpu_qualification::payload::LOCKED: cpu_qualification::payload::PayloadSpec
+pub const cpu_qualification::payload::LOOP_BACKEDGE: cpu_qualification::payload::PayloadSpec
+pub const cpu_qualification::payload::PAYLOADS: &[cpu_qualification::payload::PayloadSpec]
+pub const cpu_qualification::payload::STRAIGHT_LINE: cpu_qualification::payload::PayloadSpec
+pub fn cpu_qualification::payload::by_name(&str) -> core::option::Option<&'static cpu_qualification::payload::PayloadSpec>
+pub fn cpu_qualification::payload::run(&cpu_qualification::payload::PayloadSpec, u64) -> core::option::Option<u64>
+pub fn cpu_qualification::payload::runnable() -> alloc::vec::Vec<&'static cpu_qualification::payload::PayloadSpec>
+pub mod cpu_qualification::perf
+pub enum cpu_qualification::perf::Scope
+pub cpu_qualification::perf::Scope::GuestOnly
+pub cpu_qualification::perf::Scope::HostUser
+#[repr(C)] pub struct cpu_qualification::perf::PerfEventAttr
+pub struct cpu_qualification::perf::RingScan
+pub cpu_qualification::perf::RingScan::last_value: u64
+pub cpu_qualification::perf::RingScan::lost: u64
+pub cpu_qualification::perf::RingScan::other: u64
+pub cpu_qualification::perf::RingScan::samples: u64
+pub cpu_qualification::perf::RingScan::throttle: u64
+pub const cpu_qualification::perf::ATTR_SIZE_VER5: u32
+pub const cpu_qualification::perf::DATA_HEAD_OFF: usize
+pub const cpu_qualification::perf::DATA_TAIL_OFF: usize
+pub const cpu_qualification::perf::PERF_RECORD_LOST: u32
+pub const cpu_qualification::perf::PERF_RECORD_SAMPLE: u32
+pub const cpu_qualification::perf::PERF_RECORD_THROTTLE: u32
+pub const cpu_qualification::perf::PERF_RECORD_UNTHROTTLE: u32
+pub const cpu_qualification::perf::PERF_SAMPLE_READ: u64
+pub const cpu_qualification::perf::PERF_TYPE_RAW: u32
+pub const cpu_qualification::perf::READ_FORMAT_TIMED: u64
+pub fn cpu_qualification::perf::counting_attr(u64, cpu_qualification::perf::Scope) -> cpu_qualification::perf::PerfEventAttr
+pub fn cpu_qualification::perf::sampling_attr(u64, cpu_qualification::perf::Scope, u64) -> cpu_qualification::perf::PerfEventAttr
+pub unsafe fn cpu_qualification::perf::scan_ring_at(*mut u8, usize, usize) -> cpu_qualification::perf::RingScan
+pub mod cpu_qualification::perf_sys
+pub enum cpu_qualification::perf_sys::PerfError
+pub cpu_qualification::perf_sys::PerfError::Ioctl
+pub cpu_qualification::perf_sys::PerfError::Ioctl::source: std::io::error::Error
+pub cpu_qualification::perf_sys::PerfError::Ioctl::what: &'static str
+pub cpu_qualification::perf_sys::PerfError::Mmap(std::io::error::Error)
+pub cpu_qualification::perf_sys::PerfError::Open
+pub cpu_qualification::perf_sys::PerfError::Open::config: u64
+pub cpu_qualification::perf_sys::PerfError::Open::source: std::io::error::Error
+pub cpu_qualification::perf_sys::PerfError::Pin
+pub cpu_qualification::perf_sys::PerfError::Pin::core: usize
+pub cpu_qualification::perf_sys::PerfError::Pin::source: std::io::error::Error
+pub cpu_qualification::perf_sys::PerfError::PinVerify
+pub cpu_qualification::perf_sys::PerfError::PinVerify::got: i32
+pub cpu_qualification::perf_sys::PerfError::PinVerify::want: usize
+pub cpu_qualification::perf_sys::PerfError::Read(alloc::string::String)
+pub struct cpu_qualification::perf_sys::PerfCounter
+impl cpu_qualification::perf_sys::PerfCounter
+pub fn cpu_qualification::perf_sys::PerfCounter::disable(&self) -> core::result::Result<(), cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::PerfCounter::enable(&self) -> core::result::Result<(), cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::PerfCounter::open_counting(u64, cpu_qualification::perf::Scope) -> core::result::Result<cpu_qualification::perf_sys::PerfCounter, cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::PerfCounter::open_sampling(u64, cpu_qualification::perf::Scope, u64) -> core::result::Result<cpu_qualification::perf_sys::PerfCounter, cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::PerfCounter::read_timed(&self) -> core::result::Result<cpu_qualification::perf_sys::TimedRead, cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::PerfCounter::refresh(&self, i32) -> core::result::Result<(), cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::PerfCounter::reset(&self) -> core::result::Result<(), cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::PerfCounter::scan_ring(&self) -> cpu_qualification::perf::RingScan
+pub fn cpu_qualification::perf_sys::PerfCounter::set_period(&self, u64) -> core::result::Result<(), cpu_qualification::perf_sys::PerfError>
+impl core::ops::drop::Drop for cpu_qualification::perf_sys::PerfCounter
+pub fn cpu_qualification::perf_sys::PerfCounter::drop(&mut self)
+pub struct cpu_qualification::perf_sys::TimedRead
+pub cpu_qualification::perf_sys::TimedRead::time_enabled: u64
+pub cpu_qualification::perf_sys::TimedRead::time_running: u64
+pub cpu_qualification::perf_sys::TimedRead::value: u64
+impl cpu_qualification::perf_sys::TimedRead
+pub fn cpu_qualification::perf_sys::TimedRead::multiplexed(&self) -> bool
+pub fn cpu_qualification::perf_sys::allowed_core_count() -> core::result::Result<usize, cpu_qualification::perf_sys::PerfError>
+pub fn cpu_qualification::perf_sys::current_core() -> i32
+pub fn cpu_qualification::perf_sys::pin_to_core(usize) -> core::result::Result<(), cpu_qualification::perf_sys::PerfError>
+pub mod cpu_qualification::report
+pub enum cpu_qualification::report::Record
+pub cpu_qualification::report::Record::ChipIdentity
+pub cpu_qualification::report::Record::ChipIdentity::identity: alloc::string::String
+pub cpu_qualification::report::Record::ChipIdentity::microcode_rev: core::option::Option<alloc::string::String>
+pub cpu_qualification::report::Record::ChipIdentity::table_entry: alloc::string::String
+pub cpu_qualification::report::Record::ChipIdentity::vendor: alloc::string::String
+pub cpu_qualification::report::Record::End
+pub cpu_qualification::report::Record::End::rc: i32
+pub cpu_qualification::report::Record::End::stage: u8
+pub cpu_qualification::report::Record::Exactness
+pub cpu_qualification::report::Record::Exactness::condition: alloc::string::String
+pub cpu_qualification::report::Record::Exactness::count_n1: u64
+pub cpu_qualification::report::Record::Exactness::count_n2: u64
+pub cpu_qualification::report::Record::Exactness::events_per_iteration: u64
+pub cpu_qualification::report::Record::Exactness::irqs_n1: u64
+pub cpu_qualification::report::Record::Exactness::irqs_n2: u64
+pub cpu_qualification::report::Record::Exactness::multiplexed: bool
+pub cpu_qualification::report::Record::Exactness::n1: u64
+pub cpu_qualification::report::Record::Exactness::n2: u64
+pub cpu_qualification::report::Record::Exactness::oracle_delta: u64
+pub cpu_qualification::report::Record::Exactness::payload: alloc::string::String
+pub cpu_qualification::report::Record::Exactness::rep: u64
+pub cpu_qualification::report::Record::HostRow
+pub cpu_qualification::report::Record::HostRow::condition: alloc::string::String
+pub cpu_qualification::report::Record::HostRow::confirmed: bool
+pub cpu_qualification::report::Record::HostRow::disposition: core::option::Option<alloc::string::String>
+pub cpu_qualification::report::Record::HostRow::expect: alloc::string::String
+pub cpu_qualification::report::Record::HostRow::found: alloc::string::String
+pub cpu_qualification::report::Record::HostRow::scope: alloc::string::String
+pub cpu_qualification::report::Record::OverflowArm
+pub cpu_qualification::report::Record::OverflowArm::idx: u64
+pub cpu_qualification::report::Record::OverflowArm::payload: alloc::string::String
+pub cpu_qualification::report::Record::OverflowArm::period: u64
+pub cpu_qualification::report::Record::OverflowArm::samples: u64
+pub cpu_qualification::report::Record::OverflowArm::value_at_interrupt: u64
+pub cpu_qualification::report::Record::OverflowSummary
+pub cpu_qualification::report::Record::OverflowSummary::arms_total: u64
+pub cpu_qualification::report::Record::OverflowSummary::delivered_once: u64
+pub cpu_qualification::report::Record::OverflowSummary::duplicated: u64
+pub cpu_qualification::report::Record::OverflowSummary::lost: u64
+pub cpu_qualification::report::Record::OverflowSummary::payload: alloc::string::String
+pub cpu_qualification::report::Record::OverflowSummary::skid_max: u64
+pub cpu_qualification::report::Record::Plan
+pub cpu_qualification::report::Record::Plan::baseline: alloc::string::String
+pub cpu_qualification::report::Record::Plan::floors: cpu_qualification::report::Floors
+pub cpu_qualification::report::Record::Plan::stage: u8
+pub cpu_qualification::report::Record::Projection
+pub cpu_qualification::report::Record::Projection::campaign: alloc::string::String
+pub cpu_qualification::report::Record::Projection::projected_millis: u64
+pub cpu_qualification::report::Record::Projection::slice_millis: u64
+pub cpu_qualification::report::Record::Projection::slice_units: u64
+pub cpu_qualification::report::Record::Projection::total_units: u64
+pub struct cpu_qualification::report::Check
+pub cpu_qualification::report::Check::detail: alloc::string::String
+pub cpu_qualification::report::Check::name: alloc::string::String
+pub cpu_qualification::report::Check::passed: bool
+pub struct cpu_qualification::report::Floors
+pub cpu_qualification::report::Floors::min_clean_reps: u64
+pub cpu_qualification::report::Floors::min_overflow_arms: u64
+pub cpu_qualification::report::Floors::skid_margin: u64
+pub struct cpu_qualification::report::Verdict
+pub cpu_qualification::report::Verdict::baseline: core::option::Option<alloc::string::String>
+pub cpu_qualification::report::Verdict::checks: alloc::vec::Vec<cpu_qualification::report::Check>
+pub cpu_qualification::report::Verdict::floors: core::option::Option<cpu_qualification::report::Floors>
+pub cpu_qualification::report::Verdict::passed: bool
+pub fn cpu_qualification::report::parse_records(&str) -> core::result::Result<alloc::vec::Vec<cpu_qualification::report::Record>, alloc::string::String>
+pub fn cpu_qualification::report::project_millis(u64, u64, u64) -> u64
+pub fn cpu_qualification::report::recompute(&[cpu_qualification::report::Record]) -> cpu_qualification::report::Verdict
+pub fn cpu_qualification::report::record_line(&cpu_qualification::report::Record) -> core::result::Result<alloc::string::String, serde_json::error::Error>
+pub mod cpu_qualification::stage0
+pub enum cpu_qualification::stage0::Stage0Error
+pub cpu_qualification::stage0::Stage0Error::NoExpectation
+pub cpu_qualification::stage0::Stage0Error::NoExpectation::condition: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::NoReading
+pub cpu_qualification::stage0::Stage0Error::NoReading::condition: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::Pack(cpu_qualification::pack::PackError)
+pub cpu_qualification::stage0::Stage0Error::ProbeUnavailable
+pub cpu_qualification::stage0::Stage0Error::ProbeUnavailable::probe: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::ProbeUnavailable::reason: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::Read
+pub cpu_qualification::stage0::Stage0Error::Read::detail: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::Read::what: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::UnknownChip
+pub cpu_qualification::stage0::Stage0Error::UnknownChip::identity: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::UnknownChip::unmatchable: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::stage0::Stage0Error::UnknownChip::vendor: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::WorkClock
+pub cpu_qualification::stage0::Stage0Error::WorkClock::config: u64
+pub cpu_qualification::stage0::Stage0Error::WorkClock::detail: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::WrongChip
+pub cpu_qualification::stage0::Stage0Error::WrongChip::baseline: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::WrongChip::expect: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::WrongChip::found: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::WrongPlatform
+pub cpu_qualification::stage0::Stage0Error::WrongPlatform::target: &'static str
+impl core::convert::From<cpu_qualification::chips::Refusal> for cpu_qualification::stage0::Stage0Error
+pub fn cpu_qualification::stage0::Stage0Error::from(cpu_qualification::chips::Refusal) -> cpu_qualification::stage0::Stage0Error
+pub struct cpu_qualification::stage0::Reading
+pub cpu_qualification::stage0::Reading::condition: cpu_qualification::chips::HostConditionKind
+pub cpu_qualification::stage0::Reading::found: alloc::string::String
+pub cpu_qualification::stage0::Reading::scope: alloc::string::String
+impl cpu_qualification::stage0::Reading
+pub fn cpu_qualification::stage0::Reading::new(cpu_qualification::chips::HostConditionKind, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> cpu_qualification::stage0::Reading
+pub struct cpu_qualification::stage0::Row
+pub cpu_qualification::stage0::Row::condition: alloc::string::String
+pub cpu_qualification::stage0::Row::confirmed: bool
+pub cpu_qualification::stage0::Row::disposition: core::option::Option<alloc::string::String>
+pub cpu_qualification::stage0::Row::expect: alloc::string::String
+pub cpu_qualification::stage0::Row::found: alloc::string::String
+pub cpu_qualification::stage0::Row::scope: alloc::string::String
+impl cpu_qualification::stage0::Row
+pub fn cpu_qualification::stage0::Row::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> cpu_qualification::stage0::Row
+pub fn cpu_qualification::stage0::Row::to_record(&self) -> cpu_qualification::report::Record
+pub struct cpu_qualification::stage0::Stage0Outcome
+pub cpu_qualification::stage0::Stage0Outcome::chip: cpu_qualification::chips::ChipIdentity
+pub cpu_qualification::stage0::Stage0Outcome::entry_name: alloc::string::String
+pub cpu_qualification::stage0::Stage0Outcome::rows: alloc::vec::Vec<cpu_qualification::stage0::Row>
+impl cpu_qualification::stage0::Stage0Outcome
+pub fn cpu_qualification::stage0::Stage0Outcome::add_rows(&mut self, impl core::iter::traits::collect::IntoIterator<Item = cpu_qualification::stage0::Row>)
+pub fn cpu_qualification::stage0::Stage0Outcome::deviations(&self) -> alloc::vec::Vec<&cpu_qualification::stage0::Row>
+pub fn cpu_qualification::stage0::Stage0Outcome::identity_text(&self) -> alloc::string::String
+pub fn cpu_qualification::stage0::Stage0Outcome::to_records(&self) -> alloc::vec::Vec<cpu_qualification::report::Record>
+pub struct cpu_qualification::stage0::WorkClockProbe
+pub cpu_qualification::stage0::WorkClockProbe::config: u64
+pub cpu_qualification::stage0::WorkClockProbe::count: u64
+pub cpu_qualification::stage0::WorkClockProbe::guest_only_opened: bool
+pub cpu_qualification::stage0::WorkClockProbe::multiplexed: bool
+pub fn cpu_qualification::stage0::build_rows(&cpu_qualification::chips::ChipEntry, &cpu_qualification::pack::Pack, &cpu_qualification::chips::ChipIdentity, &[cpu_qualification::stage0::Reading], &cpu_qualification::stage0::WorkClockProbe) -> core::result::Result<cpu_qualification::stage0::Stage0Outcome, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0::cpuinfo_field<'a>(&'a [(alloc::string::String, alloc::string::String)], &str) -> core::option::Option<&'a str>
+pub fn cpu_qualification::stage0::cpuinfo_first_stanza(&str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn cpu_qualification::stage0::identity_text(&cpu_qualification::chips::ChipIdentity) -> alloc::string::String
+pub fn cpu_qualification::stage0::normalize_bool(&str) -> alloc::string::String
+pub fn cpu_qualification::stage0::normalize_revision(&str) -> core::option::Option<alloc::string::String>
+pub fn cpu_qualification::stage0::parse_cpu_list(&str) -> alloc::vec::Vec<usize>
+pub fn cpu_qualification::stage0::rows_differ(&[cpu_qualification::stage0::Row], &[cpu_qualification::stage0::Row]) -> alloc::vec::Vec<alloc::string::String>
+pub fn cpu_qualification::stage0::work_clock_rows(&cpu_qualification::pack::Pack, &cpu_qualification::stage0::WorkClockProbe) -> core::result::Result<alloc::vec::Vec<cpu_qualification::stage0::Row>, cpu_qualification::stage0::Stage0Error>
+pub mod cpu_qualification::stage0_sys
+pub fn cpu_qualification::stage0_sys::lock_probe_row(&cpu_qualification::chips::ChipEntry) -> core::result::Result<core::option::Option<cpu_qualification::stage0::Row>, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0_sys::online_cpus() -> core::result::Result<alloc::vec::Vec<usize>, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0_sys::pmu_shape_row(&cpu_qualification::chips::ChipEntry) -> core::result::Result<core::option::Option<cpu_qualification::stage0::Row>, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0_sys::probe_work_clock(&cpu_qualification::chips::ChipEntry) -> core::result::Result<cpu_qualification::stage0::WorkClockProbe, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0_sys::read_chip_identity() -> core::result::Result<cpu_qualification::chips::ChipIdentity, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0_sys::read_conditions(&cpu_qualification::chips::ChipEntry, &[usize]) -> core::result::Result<alloc::vec::Vec<cpu_qualification::stage0::Reading>, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0_sys::run(&cpu_qualification::pack::Pack) -> core::result::Result<cpu_qualification::stage0::Stage0Outcome, cpu_qualification::stage0::Stage0Error>
+pub enum cpu_qualification::Field<T>
+pub cpu_qualification::Field::Absent
+pub cpu_qualification::Field::Absent::absent: alloc::string::String
+pub cpu_qualification::Field::Recorded
+pub cpu_qualification::Field::Recorded::source: alloc::string::String
+pub cpu_qualification::Field::Recorded::value: T
+impl<T> cpu_qualification::pack::Field<T>
+pub fn cpu_qualification::pack::Field<T>::absent(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cpu_qualification::pack::Field<T>::absent_reason(&self) -> core::option::Option<&str>
+pub fn cpu_qualification::pack::Field<T>::is_absent(&self) -> bool
+pub fn cpu_qualification::pack::Field<T>::recorded(impl core::convert::Into<alloc::string::String>, T) -> Self
+pub fn cpu_qualification::pack::Field<T>::require(&self, &'static str) -> core::result::Result<&T, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Field<T>::value(&self) -> core::option::Option<&T>
+pub enum cpu_qualification::HostConditionKind
+pub cpu_qualification::HostConditionKind::AvicOff
+pub cpu_qualification::HostConditionKind::CorePinning
+pub cpu_qualification::HostConditionKind::GovernorPinned
+pub cpu_qualification::HostConditionKind::KvmModuleIdentity
+pub cpu_qualification::HostConditionKind::KvmPresent
+pub cpu_qualification::HostConditionKind::NmiWatchdogOff
+pub cpu_qualification::HostConditionKind::SmtPolicy
+pub cpu_qualification::HostConditionKind::SpecLockMapDisabled
+pub cpu_qualification::HostConditionKind::SsbMitigationPinned
+impl cpu_qualification::chips::HostConditionKind
+pub fn cpu_qualification::chips::HostConditionKind::token(self) -> &'static str
+pub enum cpu_qualification::PackError
+pub cpu_qualification::PackError::FieldAbsent
+pub cpu_qualification::PackError::FieldAbsent::field: &'static str
+pub cpu_qualification::PackError::FieldAbsent::reason: alloc::string::String
+pub cpu_qualification::PackError::FieldMalformed
+pub cpu_qualification::PackError::FieldMalformed::expected: &'static str
+pub cpu_qualification::PackError::FieldMalformed::field: &'static str
+pub cpu_qualification::PackError::FieldMalformed::value: alloc::string::String
+pub cpu_qualification::PackError::HashMismatch
+pub cpu_qualification::PackError::HashMismatch::computed: alloc::string::String
+pub cpu_qualification::PackError::HashMismatch::recorded: alloc::string::String
+pub cpu_qualification::PackError::Parse(toml::de::Error)
+pub cpu_qualification::PackError::Schema
+pub cpu_qualification::PackError::Schema::expected: &'static str
+pub cpu_qualification::PackError::Schema::found: alloc::string::String
+pub cpu_qualification::PackError::Serialize(toml::ser::Error)
+pub cpu_qualification::PackError::UnknownBaseline(alloc::string::String)
+pub enum cpu_qualification::Record
+pub cpu_qualification::Record::ChipIdentity
+pub cpu_qualification::Record::ChipIdentity::identity: alloc::string::String
+pub cpu_qualification::Record::ChipIdentity::microcode_rev: core::option::Option<alloc::string::String>
+pub cpu_qualification::Record::ChipIdentity::table_entry: alloc::string::String
+pub cpu_qualification::Record::ChipIdentity::vendor: alloc::string::String
+pub cpu_qualification::Record::End
+pub cpu_qualification::Record::End::rc: i32
+pub cpu_qualification::Record::End::stage: u8
+pub cpu_qualification::Record::Exactness
+pub cpu_qualification::Record::Exactness::condition: alloc::string::String
+pub cpu_qualification::Record::Exactness::count_n1: u64
+pub cpu_qualification::Record::Exactness::count_n2: u64
+pub cpu_qualification::Record::Exactness::events_per_iteration: u64
+pub cpu_qualification::Record::Exactness::irqs_n1: u64
+pub cpu_qualification::Record::Exactness::irqs_n2: u64
+pub cpu_qualification::Record::Exactness::multiplexed: bool
+pub cpu_qualification::Record::Exactness::n1: u64
+pub cpu_qualification::Record::Exactness::n2: u64
+pub cpu_qualification::Record::Exactness::oracle_delta: u64
+pub cpu_qualification::Record::Exactness::payload: alloc::string::String
+pub cpu_qualification::Record::Exactness::rep: u64
+pub cpu_qualification::Record::HostRow
+pub cpu_qualification::Record::HostRow::condition: alloc::string::String
+pub cpu_qualification::Record::HostRow::confirmed: bool
+pub cpu_qualification::Record::HostRow::disposition: core::option::Option<alloc::string::String>
+pub cpu_qualification::Record::HostRow::expect: alloc::string::String
+pub cpu_qualification::Record::HostRow::found: alloc::string::String
+pub cpu_qualification::Record::HostRow::scope: alloc::string::String
+pub cpu_qualification::Record::OverflowArm
+pub cpu_qualification::Record::OverflowArm::idx: u64
+pub cpu_qualification::Record::OverflowArm::payload: alloc::string::String
+pub cpu_qualification::Record::OverflowArm::period: u64
+pub cpu_qualification::Record::OverflowArm::samples: u64
+pub cpu_qualification::Record::OverflowArm::value_at_interrupt: u64
+pub cpu_qualification::Record::OverflowSummary
+pub cpu_qualification::Record::OverflowSummary::arms_total: u64
+pub cpu_qualification::Record::OverflowSummary::delivered_once: u64
+pub cpu_qualification::Record::OverflowSummary::duplicated: u64
+pub cpu_qualification::Record::OverflowSummary::lost: u64
+pub cpu_qualification::Record::OverflowSummary::payload: alloc::string::String
+pub cpu_qualification::Record::OverflowSummary::skid_max: u64
+pub cpu_qualification::Record::Plan
+pub cpu_qualification::Record::Plan::baseline: alloc::string::String
+pub cpu_qualification::Record::Plan::floors: cpu_qualification::report::Floors
+pub cpu_qualification::Record::Plan::stage: u8
+pub cpu_qualification::Record::Projection
+pub cpu_qualification::Record::Projection::campaign: alloc::string::String
+pub cpu_qualification::Record::Projection::projected_millis: u64
+pub cpu_qualification::Record::Projection::slice_millis: u64
+pub cpu_qualification::Record::Projection::slice_units: u64
+pub cpu_qualification::Record::Projection::total_units: u64
+pub enum cpu_qualification::Stage0Error
+pub cpu_qualification::Stage0Error::NoExpectation
+pub cpu_qualification::Stage0Error::NoExpectation::condition: alloc::string::String
+pub cpu_qualification::Stage0Error::NoReading
+pub cpu_qualification::Stage0Error::NoReading::condition: alloc::string::String
+pub cpu_qualification::Stage0Error::Pack(cpu_qualification::pack::PackError)
+pub cpu_qualification::Stage0Error::ProbeUnavailable
+pub cpu_qualification::Stage0Error::ProbeUnavailable::probe: alloc::string::String
+pub cpu_qualification::Stage0Error::ProbeUnavailable::reason: alloc::string::String
+pub cpu_qualification::Stage0Error::Read
+pub cpu_qualification::Stage0Error::Read::detail: alloc::string::String
+pub cpu_qualification::Stage0Error::Read::what: alloc::string::String
+pub cpu_qualification::Stage0Error::UnknownChip
+pub cpu_qualification::Stage0Error::UnknownChip::identity: alloc::string::String
+pub cpu_qualification::Stage0Error::UnknownChip::unmatchable: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::Stage0Error::UnknownChip::vendor: alloc::string::String
+pub cpu_qualification::Stage0Error::WorkClock
+pub cpu_qualification::Stage0Error::WorkClock::config: u64
+pub cpu_qualification::Stage0Error::WorkClock::detail: alloc::string::String
+pub cpu_qualification::Stage0Error::WrongChip
+pub cpu_qualification::Stage0Error::WrongChip::baseline: alloc::string::String
+pub cpu_qualification::Stage0Error::WrongChip::expect: alloc::string::String
+pub cpu_qualification::Stage0Error::WrongChip::found: alloc::string::String
+pub cpu_qualification::Stage0Error::WrongPlatform
+pub cpu_qualification::Stage0Error::WrongPlatform::target: &'static str
+impl core::convert::From<cpu_qualification::chips::Refusal> for cpu_qualification::stage0::Stage0Error
+pub fn cpu_qualification::stage0::Stage0Error::from(cpu_qualification::chips::Refusal) -> cpu_qualification::stage0::Stage0Error
+pub struct cpu_qualification::Check
+pub cpu_qualification::Check::detail: alloc::string::String
+pub cpu_qualification::Check::name: alloc::string::String
+pub cpu_qualification::Check::passed: bool
+pub struct cpu_qualification::ChipEntry
+pub cpu_qualification::ChipEntry::contract: core::option::Option<&'static str>
+pub cpu_qualification::ChipEntry::departure: core::option::Option<&'static str>
+pub cpu_qualification::ChipEntry::host_conditions: &'static [cpu_qualification::chips::HostConditionKind]
+pub cpu_qualification::ChipEntry::lock_probe_event: core::option::Option<cpu_qualification::chips::TableValue<u64>>
+pub cpu_qualification::ChipEntry::match_rule: cpu_qualification::chips::MatchRule
+pub cpu_qualification::ChipEntry::name: &'static str
+pub cpu_qualification::ChipEntry::pmu_shape: cpu_qualification::chips::PmuShape
+pub cpu_qualification::ChipEntry::rr_reference: core::option::Option<&'static str>
+pub cpu_qualification::ChipEntry::vendor: cpu_qualification::chips::Vendor
+pub cpu_qualification::ChipEntry::work_clock_config: cpu_qualification::chips::TableValue<u64>
+pub cpu_qualification::ChipEntry::work_clock_event: &'static str
+pub struct cpu_qualification::ChipIdentity
+pub cpu_qualification::ChipIdentity::family: u32
+pub cpu_qualification::ChipIdentity::microcode_rev: core::option::Option<alloc::string::String>
+pub cpu_qualification::ChipIdentity::midr: u64
+pub cpu_qualification::ChipIdentity::model: u32
+pub cpu_qualification::ChipIdentity::stepping: u32
+pub cpu_qualification::ChipIdentity::vendor: cpu_qualification::chips::Vendor
+impl cpu_qualification::chips::ChipIdentity
+pub fn cpu_qualification::chips::ChipIdentity::family_model_stepping(&self) -> alloc::string::String
+pub fn cpu_qualification::chips::ChipIdentity::midr_implementer(&self) -> u32
+pub fn cpu_qualification::chips::ChipIdentity::midr_part(&self) -> u32
+pub struct cpu_qualification::Floors
+pub cpu_qualification::Floors::min_clean_reps: u64
+pub cpu_qualification::Floors::min_overflow_arms: u64
+pub cpu_qualification::Floors::skid_margin: u64
+pub struct cpu_qualification::Pack
+pub cpu_qualification::Pack::chip: cpu_qualification::pack::ChipSection
+pub cpu_qualification::Pack::count_offsets: cpu_qualification::pack::Field<alloc::vec::Vec<cpu_qualification::pack::CountOffset>>
+pub cpu_qualification::Pack::event_density: cpu_qualification::pack::Field<alloc::vec::Vec<cpu_qualification::pack::EventDensity>>
+pub cpu_qualification::Pack::host_conditions: cpu_qualification::pack::Field<alloc::vec::Vec<cpu_qualification::pack::HostConditionExpectation>>
+pub cpu_qualification::Pack::pack: cpu_qualification::pack::PackHeader
+pub cpu_qualification::Pack::single_step: cpu_qualification::pack::SingleStepSection
+pub cpu_qualification::Pack::skid: cpu_qualification::pack::SkidSection
+pub cpu_qualification::Pack::work_clock: cpu_qualification::pack::WorkClockSection
+impl cpu_qualification::pack::Pack
+pub fn cpu_qualification::pack::Pack::absent_fields(&self) -> alloc::vec::Vec<(&'static str, &str)>
+pub fn cpu_qualification::pack::Pack::builtin(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::canonical(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::compute_hash(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::parse(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::seal(&mut self) -> core::result::Result<(), cpu_qualification::pack::PackError>
+pub struct cpu_qualification::Reading
+pub cpu_qualification::Reading::condition: cpu_qualification::chips::HostConditionKind
+pub cpu_qualification::Reading::found: alloc::string::String
+pub cpu_qualification::Reading::scope: alloc::string::String
+impl cpu_qualification::stage0::Reading
+pub fn cpu_qualification::stage0::Reading::new(cpu_qualification::chips::HostConditionKind, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> cpu_qualification::stage0::Reading
+pub struct cpu_qualification::Refusal
+pub cpu_qualification::Refusal::found: cpu_qualification::chips::ChipIdentity
+pub cpu_qualification::Refusal::unmatchable: alloc::vec::Vec<alloc::string::String>
+impl core::convert::From<cpu_qualification::chips::Refusal> for cpu_qualification::stage0::Stage0Error
+pub fn cpu_qualification::stage0::Stage0Error::from(cpu_qualification::chips::Refusal) -> cpu_qualification::stage0::Stage0Error
+pub struct cpu_qualification::Row
+pub cpu_qualification::Row::condition: alloc::string::String
+pub cpu_qualification::Row::confirmed: bool
+pub cpu_qualification::Row::disposition: core::option::Option<alloc::string::String>
+pub cpu_qualification::Row::expect: alloc::string::String
+pub cpu_qualification::Row::found: alloc::string::String
+pub cpu_qualification::Row::scope: alloc::string::String
+impl cpu_qualification::stage0::Row
+pub fn cpu_qualification::stage0::Row::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> cpu_qualification::stage0::Row
+pub fn cpu_qualification::stage0::Row::to_record(&self) -> cpu_qualification::report::Record
+pub struct cpu_qualification::Stage0Outcome
+pub cpu_qualification::Stage0Outcome::chip: cpu_qualification::chips::ChipIdentity
+pub cpu_qualification::Stage0Outcome::entry_name: alloc::string::String
+pub cpu_qualification::Stage0Outcome::rows: alloc::vec::Vec<cpu_qualification::stage0::Row>
+impl cpu_qualification::stage0::Stage0Outcome
+pub fn cpu_qualification::stage0::Stage0Outcome::add_rows(&mut self, impl core::iter::traits::collect::IntoIterator<Item = cpu_qualification::stage0::Row>)
+pub fn cpu_qualification::stage0::Stage0Outcome::deviations(&self) -> alloc::vec::Vec<&cpu_qualification::stage0::Row>
+pub fn cpu_qualification::stage0::Stage0Outcome::identity_text(&self) -> alloc::string::String
+pub fn cpu_qualification::stage0::Stage0Outcome::to_records(&self) -> alloc::vec::Vec<cpu_qualification::report::Record>
+pub struct cpu_qualification::Verdict
+pub cpu_qualification::Verdict::baseline: core::option::Option<alloc::string::String>
+pub cpu_qualification::Verdict::checks: alloc::vec::Vec<cpu_qualification::report::Check>
+pub cpu_qualification::Verdict::floors: core::option::Option<cpu_qualification::report::Floors>
+pub cpu_qualification::Verdict::passed: bool
+pub const cpu_qualification::KNOWN_CHIPS: &[cpu_qualification::chips::ChipEntry]
+pub fn cpu_qualification::build_rows(&cpu_qualification::chips::ChipEntry, &cpu_qualification::pack::Pack, &cpu_qualification::chips::ChipIdentity, &[cpu_qualification::stage0::Reading], &cpu_qualification::stage0::WorkClockProbe) -> core::result::Result<cpu_qualification::stage0::Stage0Outcome, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::match_chip(&cpu_qualification::chips::ChipIdentity) -> core::result::Result<&'static cpu_qualification::chips::ChipEntry, cpu_qualification::chips::Refusal>
+pub fn cpu_qualification::parse_records(&str) -> core::result::Result<alloc::vec::Vec<cpu_qualification::report::Record>, alloc::string::String>
+pub fn cpu_qualification::recompute(&[cpu_qualification::report::Record]) -> cpu_qualification::report::Verdict
+pub fn cpu_qualification::rows_differ(&[cpu_qualification::stage0::Row], &[cpu_qualification::stage0::Row]) -> alloc::vec::Vec<alloc::string::String>

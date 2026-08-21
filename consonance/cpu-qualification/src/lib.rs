@@ -20,8 +20,20 @@
 
 pub mod chips;
 pub mod pack;
+pub mod payload;
+pub mod perf;
 pub mod report;
+pub mod stage0;
+
+// The measurement halves: Linux-only, because everything in them is a
+// `perf_event_open`, a `/proc` or `/sys` read, or an MSR read. Absent everywhere
+// else, where the stages refuse loudly rather than reporting an empty pass.
+#[cfg(target_os = "linux")]
+pub mod perf_sys;
+#[cfg(target_os = "linux")]
+pub mod stage0_sys;
 
 pub use chips::{ChipEntry, ChipIdentity, HostConditionKind, KNOWN_CHIPS, Refusal, match_chip};
 pub use pack::{Field, Pack, PackError};
 pub use report::{Check, Floors, Record, Verdict, parse_records, recompute};
+pub use stage0::{Reading, Row, Stage0Error, Stage0Outcome, build_rows, rows_differ};

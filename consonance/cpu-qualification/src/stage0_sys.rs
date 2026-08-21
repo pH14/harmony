@@ -1,0 +1,494 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Stage 0 — the Linux half: reading the chip and the host.
+//!
+//! Everything here is a `/proc` read, a `/sys` read, an MSR read, or a
+//! `perf_event_open`. The portable half in [`crate::stage0`] turns what this
+//! produces into expect-versus-found rows.
+//!
+//! A read that fails is a refusal, never a missing row. A condition the chip's
+//! entry requires and this module cannot read stops the stage.
+
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
+
+#[cfg(target_arch = "x86_64")]
+use crate::chips::PmuShape;
+use crate::chips::{ChipEntry, ChipIdentity, HostConditionKind, TableValue, Vendor, match_chip};
+use crate::pack::Pack;
+use crate::payload;
+use crate::perf::Scope;
+use crate::perf_sys::{PerfCounter, allowed_core_count, current_core};
+use crate::stage0::{
+    Reading, Row, Stage0Error, Stage0Outcome, WorkClockProbe, build_rows, normalize_bool,
+    parse_cpu_list,
+};
+#[cfg(target_arch = "x86_64")]
+use crate::stage0::{cpuinfo_field, cpuinfo_first_stanza, normalize_revision};
+
+/// The MSR holding AMD's load-store configuration, including the speculative
+/// lock-mapping bit rr's Zen workaround sets.
+const LS_CFG: u64 = 0xC001_1020;
+
+/// The speculative lock-mapping bit in [`LS_CFG`]. Set means the speculative
+/// mapping is disabled.
+const LS_CFG_SPEC_LOCK_MAP_BIT: u32 = 54;
+
+/// Iterations the work-clock probe runs. Large enough that a counter that is
+/// merely noisy still reads far from zero, small enough to finish instantly.
+const WORK_CLOCK_PROBE_ITERATIONS: u64 = 1_000_000;
+
+fn read_file(what: &str, path: impl AsRef<Path>) -> Result<String, Stage0Error> {
+    let path = path.as_ref();
+    fs::read_to_string(path).map_err(|e| Stage0Error::Read {
+        what: format!("{what} ({})", path.display()),
+        detail: e.to_string(),
+    })
+}
+
+fn read_optional(path: impl AsRef<Path>) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Read the chip's identity: vendor, family, model, stepping, and the microcode
+/// or firmware revision the kernel records.
+///
+/// # Errors
+/// [`Stage0Error::Read`] when a source the identity needs cannot be read or
+/// cannot be parsed.
+#[cfg(target_arch = "x86_64")]
+pub fn read_chip_identity() -> Result<ChipIdentity, Stage0Error> {
+    let text = read_file("chip identity", "/proc/cpuinfo")?;
+    let fields = cpuinfo_first_stanza(&text);
+    let unparsed = |what: &str| Stage0Error::Read {
+        what: format!("{what} in /proc/cpuinfo"),
+        detail: "field is absent or not a number".to_string(),
+    };
+
+    let vendor_id = cpuinfo_field(&fields, "vendor_id").ok_or_else(|| unparsed("vendor_id"))?;
+    let vendor = match vendor_id {
+        "GenuineIntel" => Vendor::GenuineIntel,
+        "AuthenticAMD" => Vendor::AuthenticAMD,
+        other => {
+            return Err(Stage0Error::Read {
+                what: "vendor_id in /proc/cpuinfo".to_string(),
+                detail: format!("{other:?} is neither GenuineIntel nor AuthenticAMD"),
+            });
+        }
+    };
+    let number = |key: &str| -> Result<u32, Stage0Error> {
+        cpuinfo_field(&fields, key)
+            .and_then(|v| v.parse::<u32>().ok())
+            .ok_or_else(|| unparsed(key))
+    };
+
+    // The kernel prints family and model already folded with their extended
+    // fields, which is the spelling the known-chip table's match rules use.
+    Ok(ChipIdentity {
+        vendor,
+        family: number("cpu family")?,
+        model: number("model")?,
+        stepping: number("stepping")?,
+        midr: 0,
+        microcode_rev: read_optional("/sys/devices/system/cpu/cpu0/microcode/version")
+            .or_else(|| cpuinfo_field(&fields, "microcode").map(str::to_string))
+            .and_then(|raw| normalize_revision(&raw)),
+    })
+}
+
+/// Read the chip's identity from `MIDR_EL1`.
+///
+/// # Errors
+/// [`Stage0Error::Read`] when `MIDR_EL1` cannot be read or parsed.
+#[cfg(target_arch = "aarch64")]
+pub fn read_chip_identity() -> Result<ChipIdentity, Stage0Error> {
+    const MIDR: &str = "/sys/devices/system/cpu/cpu0/regs/identification/midr_el1";
+    let raw = read_file("MIDR_EL1", MIDR)?;
+    let trimmed = raw.trim();
+    let digits = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let midr = u64::from_str_radix(digits, 16).map_err(|e| Stage0Error::Read {
+        what: format!("MIDR_EL1 ({MIDR})"),
+        detail: format!("{trimmed:?} is not hexadecimal: {e}"),
+    })?;
+    Ok(ChipIdentity {
+        vendor: Vendor::Aarch64,
+        family: 0,
+        model: 0,
+        stepping: 0,
+        midr,
+        // No firmware-revision source on aarch64 corresponds to the x86
+        // microcode revision, so nothing is claimed for it.
+        microcode_rev: None,
+    })
+}
+
+/// The online CPUs, from `/sys/devices/system/cpu/online`.
+///
+/// # Errors
+/// [`Stage0Error::Read`] when the list cannot be read or parses to nothing.
+pub fn online_cpus() -> Result<Vec<usize>, Stage0Error> {
+    const ONLINE: &str = "/sys/devices/system/cpu/online";
+    let text = read_file("online CPU list", ONLINE)?;
+    let cpus = parse_cpu_list(&text);
+    if cpus.is_empty() {
+        return Err(Stage0Error::Read {
+            what: format!("online CPU list ({ONLINE})"),
+            detail: format!("{:?} names no CPU", text.trim()),
+        });
+    }
+    Ok(cpus)
+}
+
+/// Read one MSR on one CPU through `/dev/cpu/N/msr`.
+fn read_msr(cpu: usize, msr: u64) -> Result<u64, Stage0Error> {
+    let path = format!("/dev/cpu/{cpu}/msr");
+    let open_failed = |detail: String| Stage0Error::Read {
+        what: format!("MSR {msr:#x} on cpu{cpu} ({path})"),
+        detail,
+    };
+    let mut file = fs::File::open(&path).map_err(|e| open_failed(e.to_string()))?;
+    file.seek(SeekFrom::Start(msr))
+        .map_err(|e| open_failed(e.to_string()))?;
+    let mut bytes = [0u8; 8];
+    file.read_exact(&mut bytes)
+        .map_err(|e| open_failed(e.to_string()))?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+/// The KVM modules whose identity stage 0 records, in the order they are looked
+/// for. The vendor module comes first because it is the one the machinery
+/// patches.
+fn kvm_modules(vendor: Vendor) -> &'static [&'static str] {
+    match vendor {
+        Vendor::GenuineIntel => &["kvm_intel", "kvm"],
+        Vendor::AuthenticAMD => &["kvm_amd", "kvm"],
+        Vendor::Aarch64 => &["kvm"],
+    }
+}
+
+/// Read every condition the chip's entry requires.
+///
+/// # Errors
+/// [`Stage0Error::Read`] when a required source cannot be read.
+pub fn read_conditions(entry: &ChipEntry, cpus: &[usize]) -> Result<Vec<Reading>, Stage0Error> {
+    let mut readings = Vec::new();
+    for kind in entry.host_conditions {
+        match kind {
+            HostConditionKind::NmiWatchdogOff => {
+                let raw = read_file("NMI watchdog", "/proc/sys/kernel/nmi_watchdog")?;
+                let found = if raw.trim() == "0" { "off" } else { "on" };
+                readings.push(Reading::new(*kind, "host", found));
+            }
+            HostConditionKind::GovernorPinned => {
+                for cpu in cpus {
+                    let path = format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_governor");
+                    let found = read_optional(&path).unwrap_or_else(|| "unreadable".to_string());
+                    readings.push(Reading::new(*kind, format!("cpu{cpu}"), found));
+                }
+            }
+            HostConditionKind::SmtPolicy => {
+                let found = read_optional("/sys/devices/system/cpu/smt/control")
+                    .unwrap_or_else(|| "unreadable".to_string());
+                readings.push(Reading::new(*kind, "host", found));
+            }
+            HostConditionKind::KvmPresent => {
+                readings.push(Reading::new(*kind, "host", dev_kvm_state()));
+            }
+            HostConditionKind::KvmModuleIdentity => {
+                for module in kvm_modules(entry.vendor) {
+                    readings.push(Reading::new(*kind, *module, kvm_module_identity(module)));
+                }
+            }
+            HostConditionKind::CorePinning => {
+                let allowed = allowed_core_count().map_err(|e| Stage0Error::Read {
+                    what: "the thread's CPU affinity".to_string(),
+                    detail: e.to_string(),
+                })?;
+                let found = if allowed == 1 {
+                    format!("pinned to cpu{}", current_core())
+                } else {
+                    format!("{allowed} cores allowed")
+                };
+                readings.push(Reading::new(*kind, "host", found));
+            }
+            HostConditionKind::SpecLockMapDisabled => {
+                for cpu in cpus {
+                    let value = read_msr(*cpu, LS_CFG)?;
+                    let set = (value >> LS_CFG_SPEC_LOCK_MAP_BIT) & 1 == 1;
+                    let found = if set { "disabled" } else { "enabled" };
+                    readings.push(Reading::new(*kind, format!("cpu{cpu}"), found));
+                }
+            }
+            HostConditionKind::SsbMitigationPinned => {
+                // The kernel's speculative-store-bypass mitigation writes the same
+                // register as the speculative lock-mapping workaround, so the
+                // mode has to be fixed on the command line rather than left for
+                // the kernel to choose per task.
+                let cmdline = read_file("kernel command line", "/proc/cmdline")?;
+                let found = cmdline
+                    .split_whitespace()
+                    .find_map(|word| word.strip_prefix("spec_store_bypass_disable="))
+                    .map_or_else(|| "unset".to_string(), str::to_string);
+                readings.push(Reading::new(*kind, "host", found));
+            }
+            HostConditionKind::AvicOff => {
+                let found = read_optional("/sys/module/kvm_amd/parameters/avic")
+                    .map_or_else(|| "unreadable".to_string(), |v| normalize_bool(&v));
+                readings.push(Reading::new(*kind, "host", found));
+            }
+        }
+    }
+    Ok(readings)
+}
+
+/// Whether `/dev/kvm` exists and opens read-write.
+fn dev_kvm_state() -> String {
+    if !Path::new("/dev/kvm").exists() {
+        return "absent".to_string();
+    }
+    match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+    {
+        Ok(_) => "present, read-write".to_string(),
+        Err(e) => format!("present, not usable: {e}"),
+    }
+}
+
+/// A loaded KVM module's identity, by the content-derived source version the
+/// kernel records for it.
+fn kvm_module_identity(module: &str) -> String {
+    let sys = format!("/sys/module/{module}");
+    if !Path::new(&sys).exists() {
+        return "not loaded".to_string();
+    }
+    read_optional(format!("{sys}/srcversion")).map_or_else(
+        || "loaded, no srcversion".to_string(),
+        |v| format!("srcversion {v}"),
+    )
+}
+
+/// Open the work-clock event and see how it behaves.
+///
+/// # Errors
+/// [`Stage0Error::ProbeUnavailable`] when the table records no config for the
+/// chip, [`Stage0Error::WorkClock`] when the event will not open at all.
+pub fn probe_work_clock(entry: &ChipEntry) -> Result<WorkClockProbe, Stage0Error> {
+    let config = match entry.work_clock_config {
+        TableValue::Recorded { value, .. } => value,
+        TableValue::Absent { reason } => {
+            return Err(Stage0Error::ProbeUnavailable {
+                probe: format!("the work-clock event on {}", entry.name),
+                reason: reason.to_string(),
+            });
+        }
+    };
+
+    // Host-user scope for the probe itself: the payload runs in this process, so
+    // this is the only scope that can count it. Whether the guest-only scope
+    // opens at all is a separate question, asked below.
+    let counter = PerfCounter::open_counting(config, Scope::HostUser).map_err(|e| {
+        Stage0Error::WorkClock {
+            config,
+            detail: e.to_string(),
+        }
+    })?;
+    let spec = &payload::LOOP_BACKEDGE;
+
+    counter
+        .reset()
+        .and_then(|()| counter.enable())
+        .map_err(|e| Stage0Error::WorkClock {
+            config,
+            detail: e.to_string(),
+        })?;
+    let ran = payload::run(spec, WORK_CLOCK_PROBE_ITERATIONS);
+    counter.disable().map_err(|e| Stage0Error::WorkClock {
+        config,
+        detail: e.to_string(),
+    })?;
+    if ran.is_none() {
+        return Err(Stage0Error::ProbeUnavailable {
+            probe: "the work-clock event probe".to_string(),
+            reason: format!("payload {} did not run on this architecture", spec.name),
+        });
+    }
+    let read = counter.read_timed().map_err(|e| Stage0Error::WorkClock {
+        config,
+        detail: e.to_string(),
+    })?;
+
+    Ok(WorkClockProbe {
+        config,
+        count: read.value,
+        multiplexed: read.multiplexed(),
+        guest_only_opened: PerfCounter::open_counting(config, Scope::GuestOnly).is_ok(),
+    })
+}
+
+/// The row comparing the chip's performance-monitoring shape against the table.
+///
+/// # Errors
+/// [`Stage0Error::Read`] when a source that should report the shape cannot be
+/// read.
+#[cfg(target_arch = "x86_64")]
+pub fn pmu_shape_row(entry: &ChipEntry) -> Result<Option<Row>, Stage0Error> {
+    let row = match entry.pmu_shape {
+        PmuShape::IntelArchPerfmon { version } => Row::new(
+            "pmu-shape",
+            "host",
+            format!("architectural performance monitoring version {version}"),
+            format!(
+                "architectural performance monitoring version {}",
+                arch_perfmon_version()
+            ),
+        ),
+        PmuShape::AmdCore => Row::new(
+            "pmu-shape",
+            "host",
+            "AMD core performance monitoring",
+            if amd_perfmon_v2() {
+                "AMD core performance monitoring, PerfMonV2"
+            } else {
+                "AMD core performance monitoring"
+            },
+        ),
+        PmuShape::ArmPmuV3 { .. } => return Ok(None),
+    };
+    Ok(Some(row))
+}
+
+/// The row comparing the chip's performance-monitoring shape against the table.
+///
+/// `PMCEID0_EL1` advertises the work-clock event and EL0 cannot read it, so on
+/// aarch64 there is no shape to compare and the work-clock probe carries the
+/// weight instead.
+///
+/// # Errors
+/// Never on this architecture.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn pmu_shape_row(_entry: &ChipEntry) -> Result<Option<Row>, Stage0Error> {
+    Ok(None)
+}
+
+/// The architectural performance-monitoring version from CPUID leaf 0xA.
+#[cfg(target_arch = "x86_64")]
+fn arch_perfmon_version() -> u32 {
+    core::arch::x86_64::__cpuid(0xA).eax & 0xff
+}
+
+/// Whether the chip advertises AMD PerfMonV2, from CPUID leaf 0x8000_0022.
+#[cfg(target_arch = "x86_64")]
+fn amd_perfmon_v2() -> bool {
+    // Extended leaves above the reported maximum return the maximum leaf's
+    // contents rather than zero, so the maximum is checked first.
+    if core::arch::x86_64::__cpuid(0x8000_0000).eax < 0x8000_0022 {
+        return false;
+    }
+    core::arch::x86_64::__cpuid(0x8000_0022).eax & 1 == 1
+}
+
+/// The row proving AMD's speculative lock-mapping workaround is actually in
+/// force: a `lock add` loop must move the retired lock-instructions counter.
+///
+/// Returns nothing for chips whose entry names no such probe.
+///
+/// # Errors
+/// [`Stage0Error::ProbeUnavailable`] when the entry names the probe but the
+/// table records no event for it, [`Stage0Error::WorkClock`] when the event will
+/// not open.
+pub fn lock_probe_row(entry: &ChipEntry) -> Result<Option<Row>, Stage0Error> {
+    let Some(event) = entry.lock_probe_event else {
+        return Ok(None);
+    };
+    let config = match event {
+        TableValue::Recorded { value, .. } => value,
+        TableValue::Absent { reason } => {
+            return Err(Stage0Error::ProbeUnavailable {
+                probe: format!("the retired-lock-instructions probe on {}", entry.name),
+                reason: reason.to_string(),
+            });
+        }
+    };
+    let spec = &payload::LOCKED;
+    let counter = PerfCounter::open_counting(config, Scope::HostUser).map_err(|e| {
+        Stage0Error::WorkClock {
+            config,
+            detail: e.to_string(),
+        }
+    })?;
+    counter
+        .reset()
+        .and_then(|()| counter.enable())
+        .map_err(|e| Stage0Error::WorkClock {
+            config,
+            detail: e.to_string(),
+        })?;
+    let ran = payload::run(spec, WORK_CLOCK_PROBE_ITERATIONS);
+    counter.disable().map_err(|e| Stage0Error::WorkClock {
+        config,
+        detail: e.to_string(),
+    })?;
+    if ran.is_none() {
+        return Err(Stage0Error::ProbeUnavailable {
+            probe: "the retired-lock-instructions probe".to_string(),
+            reason: format!("payload {} did not run on this architecture", spec.name),
+        });
+    }
+    let read = counter.read_timed().map_err(|e| Stage0Error::WorkClock {
+        config,
+        detail: e.to_string(),
+    })?;
+    Ok(Some(Row::new(
+        "retired-lock-instructions",
+        "host",
+        "nonzero",
+        if read.value > 0 { "nonzero" } else { "zero" },
+    )))
+}
+
+/// Run stage 0 against a pack: read the chip, match it, probe the work clock,
+/// read every required host condition, and produce the rows.
+///
+/// # Errors
+/// Any [`Stage0Error`] the reads, the match, or the comparison produce.
+pub fn run(pack: &Pack) -> Result<Stage0Outcome, Stage0Error> {
+    let chip = read_chip_identity()?;
+    let entry = match_chip(&chip)?;
+    let cpus = online_cpus()?;
+    let work_clock = probe_work_clock(entry)?;
+    let readings = read_conditions(entry, &cpus)?;
+    let mut outcome = build_rows(entry, pack, &chip, &readings, &work_clock)?;
+    outcome.add_rows(pmu_shape_row(entry)?);
+    outcome.add_rows(lock_probe_row(entry)?);
+    Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_vendor_module_is_read_before_the_shared_one() {
+        assert_eq!(kvm_modules(Vendor::AuthenticAMD), &["kvm_amd", "kvm"]);
+        assert_eq!(kvm_modules(Vendor::GenuineIntel), &["kvm_intel", "kvm"]);
+        assert_eq!(kvm_modules(Vendor::Aarch64), &["kvm"]);
+    }
+
+    #[test]
+    fn an_absent_lock_probe_event_refuses_rather_than_passing() {
+        let amd = crate::chips::KNOWN_CHIPS
+            .iter()
+            .find(|e| e.vendor == Vendor::AuthenticAMD)
+            .expect("the table carries an AMD entry");
+        let error = lock_probe_row(amd).expect_err("the event has no recorded value");
+        assert!(matches!(error, Stage0Error::ProbeUnavailable { .. }));
+    }
+}
