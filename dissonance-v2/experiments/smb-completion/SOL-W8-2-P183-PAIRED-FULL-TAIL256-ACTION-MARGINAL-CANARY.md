@@ -210,3 +210,52 @@ source regardless of structural classification. Otherwise verdict is
 **STOP** and nothing is adoptable. Any integrity mismatch authorizes nothing.
 There is one registered run, no routine replay audit, rerun, or post-hoc
 candidate choice.
+
+## Result
+
+The one registered run completed successfully on `msr1` with structural
+verdict **RETAIN_FULL** and adoption verdict **ADOPT**. The implementation was
+sealed at commit `5a4635f9`, with binary-source SHA-256
+`8e17361aebd0929413ef61c3ee8e596eaaa68ca50bc42041d2a012e3f5905ff5`,
+module-source SHA-256
+`9d5f88db3bfadf966f4e6149a0e4ddb0b0a3a584b20088b3e6a1ab3d16780d76`,
+and release-executable SHA-256
+`b21c690f7b7320fdde5600bf3f9d79a9603ddd4044f1d2ba2b57f5bb5b559456`.
+The frozen 250,741-byte recipe SHA-256 was
+`039cfd75d3aee68251b3a20dae93b467dac3b5d794ec12b9ca69b8081f4933e0`.
+
+The canonical 38-line, 564,361,594-byte report is stored at
+`/root/harmony-smb-sol-w8-2-p183-full-tail256-d8ef4322/results/w8-2-p183-paired-full-tail256-16x128.jsonl`.
+Its body SHA-256 is
+`e5b1868bf824904c7cc421b88514eea359c84c1ac960c12f2b77eb6103193e2e`
+and whole-file SHA-256 is
+`7014812f683986c83f246eebd78e8efe9b98ff1576e5760e2fd1e9f269d88203`.
+Realized work was 462,655 frames: 160,902 source replay, 71 source evidence
+probes, 4,693 setup, 142,456 live action, and 154,533 live probe frames.
+
+There were thirteen non-ties: TAIL256 won seven, FULL won six, and three pairs
+tied. Thus `n=13`, `w=7`, and the exact one-sided sign tail was
+`4,096/8,192`. Ninety-three strict TAIL256 witnesses existed, but the sealed
+sign gate did not pass. Trailing-256 action-marginal sampling is not promoted;
+the generic full-source marginal remains the registered policy, with no repeat
+of this comparison.
+
+The independent adoption order selected pair 5, arm FULL, entry 58, created at
+slot 105, with lineage `[0,1,2,3,34,58]`. It is a live, probe-surviving,
+normally retained endpoint at full watermark `(world=7, level=1,
+progress=196)` after 3,445 actions and 161,116 absolute frames. Its mechanical
+state is `(7,1,196,y=6,engine=8,dead=false,flag=false)`, raw-WRAM SHA-256 is
+`49b2721d7533f4c45249d60ce9ec715e2ef2d5d2c1e19776bd6e2ef75d4c2e80`,
+and snapshot SHA-256 is
+`0627939cc2ca87cbdeea4e74705a09145150f22b7b6d88543a63e4365b201c83`.
+Its frozen key fingerprint is 9, final chord is
+`ButtonChord { buttons: 131, hold_frames: 74 }`, and its admission probe
+survived mask `0x00` for all 45 frames.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-w8-2-p183-full-tail256-d8ef4322/results/adopted-world-8-2-progress-196-input.json`;
+its 110,605-byte compact-file and semantic SHA-256 is
+`72f6dc1ed54ef824c73c794e03410b9d64502ede032fc8b787d4ac67763b403d`.
+This source is adoptable independently of the rejected structural treatment.
+No TAIL256 promotion or next experiment is authorized by this result note
+alone.
