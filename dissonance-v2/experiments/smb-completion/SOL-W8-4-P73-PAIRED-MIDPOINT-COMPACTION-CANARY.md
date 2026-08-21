@@ -132,3 +132,36 @@ baseline, recipes, arms, pair classification, structural verdict, adoption,
 summary, and all identity/config/recipe/trace/body/file hashes without paths or
 timestamps. Terminal-like evidence remains diagnostic pending a separately
 frozen mechanical credits predicate and artifact-only confirmation.
+
+## Registered result
+
+Executed once on msr1 from implementation commit `c95685a7` with executable
+SHA `26513cc76a2d39ccf317530b51c0f824654c6ee39c197c690c288899985f8735`.
+The create-new report is
+`/root/harmony-smb-sol-w8-4-p73-compaction-c95685a7/results/w8-4-p73-midpoint-compaction-12x128.jsonl`,
+420,885,447 bytes, 30 NDJSON records, whole-file SHA
+`11022df88222eedb1802467645624f7705b6e4100f4ddc5919c82efbe29ee094`,
+and body SHA
+`308048a02c2e7f02562c00e81ce481db88bf2eae0c987bd89d5d884898028f4d`.
+Stdout named the same report SHA and exact terminal verdicts; stderr was empty.
+
+All 3,072 scheduled candidates and selector events completed. Every pair tied:
+both `FULL` and `COMPACT` finished at the immutable source floor `(7,3,73)`, so
+`n=0`, `w=0`, `N/D=1/1`, there were no structural witnesses, and the frozen
+structural verdict is **INCONCLUSIVE_SPARSE**. Every paired midpoint champion
+was the exact source state `(7,3,73)`; compaction correctly rebuilt singleton
+archives and reset their selector accounting, but it did not expose progress.
+The result does not promote compaction and this canary cannot be repeated or
+relaxed.
+
+There were 1,917 eligible final-active newly allocated endpoints, but none was
+strictly above the source. The deterministic diagnostic champion was pair 8
+`COMPACT`, id 15, slot 78, input SHA
+`1684e2699524b4e533ca1f1f8fba8f3437888607e8ed52c81deeaefda55620b1`,
+at `(7,3,26)`; the adoption verdict is **NO_ADOPT**. Work reconciled to 144,496
+action frames, 136,962 candidate-probe frames, 281,458 experimental frames,
+167,340 source-replay frames, 45 source-probe frames, 4,693 setup frames, and
+453,536 total frames, all below the sealed caps. This closes selector/archive
+dilution as the immediate p73 explanation; any next experiment must change the
+proposal surface under a separate preregistration rather than enlarge or rerun
+this comparison.
