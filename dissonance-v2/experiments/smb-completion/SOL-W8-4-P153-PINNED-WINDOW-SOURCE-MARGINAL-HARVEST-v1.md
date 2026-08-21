@@ -163,3 +163,48 @@ Emit create-new canonical NDJSON with header, baseline, recipes, 12 lane
 records, classification, and summary, binding prereg/source/ROM/executable/bin/
 module/config/recipe/trace/body/whole-file hashes. Paths, timestamps, and
 completion order must not enter canonical bytes.
+
+## Registered result
+
+Preregistration commit `e7bb0c0b7fe1c412894b997079ee954e1a6bcbc5` (document
+SHA-256 `925893bf4af0d1a38f93d9a25667ddf0e3bb669253521ca4b879a0d1d4197219`)
+and implementation commit `26f14912c7c261ae2bac348e7fe483d2cb44cc2e` used
+module SHA-256
+`510e964493d3bedd153f1cf9c462b210bf4ff3f69917064c667a8897caf2cb56`,
+bin-source SHA-256
+`f2b4a36f00380280b68a589eedc5b447923175de40455f45473402a583a1c88b`,
+and release-executable SHA-256
+`000a57cd1ba677016c5499104af92d2b21661b2030920a54073078ab2f4204a2`,
+built once offline and locked from sealed source archive SHA-256
+`f4febddf8cb41db553b43a49fbd87139539c9c3e79a09c0c5de9dd332063bd1a`
+under `/root/harmony-smb-sol-w8-4-p153-pinned-marginal-26f14912`. The sealed
+recipe was 400,277 bytes with SHA-256
+`151be9a984c635e367bedfc41e8ae899fddc0170878c8b113c76f5c64061acdf`. The sole
+run (systemd unit `harmony-smb-sol-w8-4-p153-pinned-marginal-26f14912`,
+`Restart=no`) completed successfully and produced 17 NDJSON lines in
+registered order, 816,600,046 bytes, whole-file SHA-256
+`fcf8a0aaddb339f72b9e7da0ffb3c5b40be59188aaac670a483b2f9f840f6ee3`,
+and body SHA-256
+`8dfe62749764f70ca1f35657812eaf4250aa879b1a0f805fe392187cffe585a6`.
+Standard error was empty and standard output bound the same report hash. The
+baseline reproduced every registered source datum.
+
+The registered verdict is **STOP**. All 6,144 scheduled candidates executed
+and were selected and accounted exactly once; 5,290 final-active ordinary
+entries were eligible and none exceeded `(7,3,153)`. The best eligible entry
+is lane 10 id 431 at exactly `(7,3,153)`, 21 actions below the source in its
+lineage; equality is not adoptable. Checked work was 4,693 setup + 168,594
+source replay + 45 source probe + 263,951 action + 263,562 probe =
+**700,845 frames**, below the 1,740,052-frame cap.
+
+Diagnostic only. With the source marginal restored, every lane's archive
+climbed from the four-page regression back to 152 or 153: 1,575 endpoints
+ended at 145 through 153, at vertical buckets 5 through 11. Of the draws whose
+parent stood at 145 or above, 768 ended back at 88 through 101, so the same
+regression fired again on every second approach regardless of the action
+held, including Left or no input held for a few frames from 152. No endpoint
+showed an engine state other than 8 or 11 (dead, 351 draws), and no endpoint
+progress fell below 88, so no draw entered a pipe or any other area. The
+p153 source remains the best verified retained position. This closes the
+pinned-window source-marginal continuation from p153 without rerun or
+enlargement.
