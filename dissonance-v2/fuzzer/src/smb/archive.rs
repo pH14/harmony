@@ -1009,7 +1009,7 @@ pub enum SmbArchiveKeyPolicy {
     },
     /// The frozen key plus `rooms`: the count of distinct room identities a
     /// lineage has visited inside its current level. The room identity is
-    /// the byte pair at `ROOM_IDENTITY_BYTES`, read from the candidate's own
+    /// the bytes at `ROOM_IDENTITY_BYTES`, read from the candidate's own
     /// snapshot at insertion; a child in the same `(world, level)` as its
     /// parent inherits the parent's room set, any other child starts a new
     /// set. The search learns only that a value is new, never which value is
@@ -1017,9 +1017,16 @@ pub enum SmbArchiveKeyPolicy {
     FrozenRooms,
 }
 
-/// Work RAM addresses whose byte pair identifies the current room (area
-/// type and area data offset).
-pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
+/// Work RAM addresses whose bytes identify the current room: area type, area
+/// data offset, and the entrance mode the game sets when the player arrives
+/// through a pipe or vine rather than from the level start. The entrance mode
+/// is part of the identity because the game keeps it for the rest of the
+/// room, so a room re-entered through a warp is a different room to the
+/// search from the same room walked into from its start.
+pub const ROOM_IDENTITY_BYTES: [usize; 3] = [0x074e, 0x074f, 0x0752];
+
+/// One room identity: the bytes at `ROOM_IDENTITY_BYTES`, in order.
+pub type SmbRoomIdentity = [u8; ROOM_IDENTITY_BYTES.len()];
 
 /// Whether admission probes a candidate for viability before retaining it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1511,7 +1518,7 @@ pub(crate) struct Archive {
     /// Sorted distinct room identities per entry, filled only under
     /// `SmbArchiveKeyPolicy::FrozenRooms`; otherwise every entry holds an
     /// empty set.
-    room_sets: Vec<Vec<(u8, u8)>>,
+    room_sets: Vec<Vec<SmbRoomIdentity>>,
 }
 
 impl Archive {
@@ -1522,7 +1529,7 @@ impl Archive {
     /// Distinct room identities a retained entry's lineage visited inside
     /// its level, sorted; empty unless the rooms key policy is active.
     #[must_use]
-    pub fn room_set(&self, id: usize) -> &[(u8, u8)] {
+    pub fn room_set(&self, id: usize) -> &[SmbRoomIdentity] {
         self.room_sets.get(id).map_or(&[], Vec::as_slice)
     }
 
@@ -1772,14 +1779,13 @@ impl Archive {
         parent_id: Option<usize>,
         key: SmbArchiveKey,
         wram: &[u8],
-    ) -> Result<Vec<(u8, u8)>, Box<dyn Error>> {
-        let first = *wram
-            .get(ROOM_IDENTITY_BYTES[0])
-            .ok_or("room identity byte outside work RAM")?;
-        let second = *wram
-            .get(ROOM_IDENTITY_BYTES[1])
-            .ok_or("room identity byte outside work RAM")?;
-        let room = (first, second);
+    ) -> Result<Vec<SmbRoomIdentity>, Box<dyn Error>> {
+        let mut room = SmbRoomIdentity::default();
+        for (slot, offset) in room.iter_mut().zip(ROOM_IDENTITY_BYTES) {
+            *slot = *wram
+                .get(offset)
+                .ok_or("room identity byte outside work RAM")?;
+        }
         let mut set = match parent_id {
             Some(parent) => {
                 let parent_key = self
@@ -5472,8 +5478,8 @@ mod tests {
         Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
         MAX_SMB_COMPLETION_ACTIONS, ROOM_IDENTITY_BYTES, SELECTION_EXHAUSTION_THRESHOLD,
         SmbArchiveKey, SmbArchiveKeyPolicy, SmbArchiveReplacementPolicy, SmbArchiveSelectorPolicy,
-        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbProgressWatermark, SmbSelectorDraw,
-        SmbSelectorPath, analyze_player_column, merge_progress_watermark,
+        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbProgressWatermark, SmbRoomIdentity,
+        SmbSelectorDraw, SmbSelectorPath, analyze_player_column, merge_progress_watermark,
     };
     use crate::{
         smb::target::{ButtonChord, SmbInput, SmbObservations, SmbSnapshot, SmbTarget},
@@ -5908,13 +5914,14 @@ mod tests {
         let mut archive = Archive::new();
         archive.set_key_policy(SmbArchiveKeyPolicy::FrozenRooms);
         let genesis = selector_snapshot();
-        let room_snapshot = |room: (u8, u8)| -> SmbSnapshot {
+        let room_snapshot = |room: SmbRoomIdentity| -> SmbSnapshot {
             let mut value = serde_json::to_value(&genesis).expect("serialize snapshot");
             let wram = value["observation"]["wram"]
                 .as_array_mut()
                 .expect("snapshot work RAM");
-            wram[ROOM_IDENTITY_BYTES[0]] = serde_json::json!(room.0);
-            wram[ROOM_IDENTITY_BYTES[1]] = serde_json::json!(room.1);
+            for (offset, byte) in ROOM_IDENTITY_BYTES.into_iter().zip(room) {
+                wram[offset] = serde_json::json!(byte);
+            }
             serde_json::from_value(value).expect("rebuild snapshot")
         };
         let key = |world: u8, level: u8, progress: u16| SmbArchiveKey {
@@ -5940,21 +5947,28 @@ mod tests {
                 .expect("insert")
                 .expect("retain")
         };
-        let root = insert(&mut archive, None, 1, key(7, 3, 10), (3, 5));
+        let root = insert(&mut archive, None, 1, key(7, 3, 10), [3, 5, 0]);
         assert_eq!(archive.entries[root].report.key.rooms, 1);
-        let same = insert(&mut archive, Some(root), 2, key(7, 3, 20), (3, 5));
+        let same = insert(&mut archive, Some(root), 2, key(7, 3, 20), [3, 5, 0]);
         assert_eq!(archive.entries[same].report.key.rooms, 1);
-        let pipe = insert(&mut archive, Some(same), 3, key(7, 3, 2), (2, 0));
+        let pipe = insert(&mut archive, Some(same), 3, key(7, 3, 2), [2, 0, 0]);
         assert_eq!(archive.entries[pipe].report.key.rooms, 2);
-        assert_eq!(archive.room_set(pipe), &[(2, 0), (3, 5)]);
-        let back = insert(&mut archive, Some(pipe), 4, key(7, 3, 30), (3, 5));
+        assert_eq!(archive.room_set(pipe), &[[2, 0, 0], [3, 5, 0]]);
+        let back = insert(&mut archive, Some(pipe), 4, key(7, 3, 30), [3, 5, 0]);
         assert_eq!(archive.entries[back].report.key.rooms, 2);
-        let next_level = insert(&mut archive, Some(back), 5, key(8, 0, 0), (1, 1));
+        // The same area re-entered through a warp carries the entrance mode
+        // and counts as a third room; looping through it again adds nothing.
+        let warped = insert(&mut archive, Some(back), 5, key(7, 3, 1), [3, 5, 2]);
+        assert_eq!(archive.entries[warped].report.key.rooms, 3);
+        let looped = insert(&mut archive, Some(warped), 6, key(7, 3, 1), [3, 5, 2]);
+        assert_eq!(archive.entries[looped].report.key.rooms, 3);
+        let back = looped;
+        let next_level = insert(&mut archive, Some(back), 7, key(8, 0, 0), [1, 1, 0]);
         assert_eq!(archive.entries[next_level].report.key.rooms, 1);
-        assert_eq!(archive.room_set(next_level), &[(1, 1)]);
+        assert_eq!(archive.room_set(next_level), &[[1, 1, 0]]);
 
         let mut frozen = Archive::new();
-        let plain = insert(&mut frozen, None, 1, key(7, 3, 10), (3, 5));
+        let plain = insert(&mut frozen, None, 1, key(7, 3, 10), [3, 5, 0]);
         assert_eq!(frozen.entries[plain].report.key.rooms, 0);
         assert!(frozen.room_set(plain).is_empty());
     }
