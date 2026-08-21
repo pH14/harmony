@@ -130,3 +130,31 @@ is strictly greater than `(7,2,187)`; later level/world values qualify by the
 same lexicographic rule. Embed the exact winning input and full evidence as the
 sole authorized next source. Otherwise **STOP** with no adoption. There is one
 run, no routine replay audit, rerun, relaxation, or post-hoc candidate choice.
+
+## Registered result
+
+The registered run completed successfully under implementation `cae526e4`
+and executable SHA-256
+`71ce7a3e85f7affa90f3d9e35aab50890e6399a645e80fa9ddaea5653e7a7605`.
+The 789,924,354-byte report at
+`/root/harmony-smb-sol-w8-3-p187-harvest-e80b6971/results/w8-3-p187-normal-endpoint-harvest-12x512.jsonl`
+has whole-file SHA-256
+`7939f1fbe24a16241fde1ab95d637839f9a2f3aa29d2365374ba18f9d0c9b3ad`
+and body SHA-256
+`f71b4e570e282ea18472308997c769ce959ebc7b9f763fa33a35ba762221d1b1`.
+The service exited successfully with empty stderr; all 6,144 candidates and
+selections executed. Work was 4,693 setup, 164,661 replay, 45 source probe,
+254,658 action, and 243,518 candidate probe frames: 667,575 total.
+
+The verdict is **ADOPT**. Lane 0 entry 319 at draw 423, parent 60, is the
+champion with lineage `[0,1,4,14,34,60,319]`. Its 3,513-action input advances
+the full watermark from `(7,2,187)` to **`(7,2,191)`** at frame 164,814 and is
+alive and probe-surviving. Mechanical state is
+`(world=7,level=2,progress=191,y_bucket=9,engine_state=8,dead=false,flag_active=false)`.
+Input, WRAM, and snapshot SHA-256 values are respectively
+`db39971b3ee10119d0d14224f8fc4fea79ac65c5a2f14b7cfc6785a57df08836`,
+`9e64d29a26b9570c2d6129f1cd0f80a3139b5d15fe3da5b45bbf453212ff1e5f`,
+and `73729a4c2a49ea44b138a2ff66b63a49bdb53c9e363c2ac97336d45543295dc9`.
+The sole authorized next-source file is
+`/root/harmony-smb-sol-w8-3-p187-harvest-e80b6971/results/adopted-world-8-3-progress-191-input.json`,
+112,798 bytes with the same input SHA-256.
