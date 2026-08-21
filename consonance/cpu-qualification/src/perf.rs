@@ -76,7 +76,7 @@ impl Scope {
     const fn flags(self) -> u64 {
         match self {
             Scope::HostUser => F_EXCLUDE_KERNEL + F_EXCLUDE_HV,
-            Scope::GuestOnly => F_EXCLUDE_HOST,
+            Scope::GuestOnly => F_EXCLUDE_HOST + F_EXCLUDE_HV,
         }
     }
 }
@@ -278,7 +278,10 @@ mod tests {
 
         let guest = counting_attr(0x0051_00d1, Scope::GuestOnly);
         assert_eq!(guest.config, 0x0051_00d1);
-        assert_eq!(guest.flags, 0x8_0005, "disabled | pinned | exclude_host");
+        assert_eq!(
+            guest.flags, 0x8_0045,
+            "disabled | pinned | exclude_hv | exclude_host"
+        );
     }
 
     #[test]

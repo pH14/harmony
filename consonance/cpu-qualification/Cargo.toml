@@ -36,5 +36,14 @@ clap = { version = "4", features = ["derive"], optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# The guest window's VM, vCPU, and state ioctls. Same reviewed whitelist
+# exception, and the same versions, as `vmm-backend`'s Linux-only frontier deps;
+# hand-laying out `kvm_sregs` or `kvm_vcpu_events` here would duplicate a uapi
+# these already track. Gated on x86-64 as well as Linux because the guest
+# payload is real-mode x86 and the state components are the x86 set.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+kvm-ioctls = "0.25"
+kvm-bindings = { version = "0.14", features = ["fam-wrappers"] }
+
 [lints]
 workspace = true

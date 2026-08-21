@@ -209,10 +209,11 @@ jobs:
       # it is the acceptance runner's real-VMM composition root and needs a
       # real `/dev/kvm`, the patched modules, and built payloads, so no portable test can
       # reach it. `consonance/cpu-qualification/src/perf_sys.rs`, `…/src/stage0_sys.rs`,
-      # and `…/src/stage1_sys.rs` are the same category: the suite's `perf_event_open`
-      # orchestration, its `/proc`, `/sys`, and MSR reader, and its counter
-      # measurement, all needing a real Linux host and root. Their pure halves
-      # (`perf.rs`, `stage0.rs`, `stage1.rs`) stay covered. The
+      # `…/src/stage1_sys.rs`, and `…/src/guest_sys.rs` are the same category: the
+      # suite's `perf_event_open` orchestration, its `/proc`, `/sys`, and MSR
+      # reader, its counter measurement, and its KVM guest window, all needing a
+      # real Linux host with root and `/dev/kvm`. Their pure halves
+      # (`perf.rs`, `stage0.rs`, `stage1.rs`, `guest.rs`) stay covered. The
       # coverage-gated set is the portable, platform-agnostic logic the splits
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
       # (`mock`/`run_loop`), and vmm-core's `work::WorkSource`/`ScriptedWork` + V-time
@@ -220,7 +221,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|consonance/acceptance-suite/src/realvmm\.rs|consonance/cpu-qualification/src/(perf_sys|stage0_sys|stage1_sys)\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|consonance/acceptance-suite/src/realvmm\.rs|consonance/cpu-qualification/src/(perf_sys|stage0_sys|stage1_sys|guest_sys)\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()

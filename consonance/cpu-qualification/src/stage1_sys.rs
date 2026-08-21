@@ -374,14 +374,50 @@ pub fn run(config: u64, plan: &MeasurementPlan) -> Result<Stage1Outcome, Stage1E
         }
     }
 
+    let (guest_records, unmeasured) = guest_half(config, plan)?;
+    records.extend(guest_records);
+
     Ok(Stage1Outcome {
         records,
         skid,
-        unmeasured: crate::stage1::NEEDS_A_VCPU
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect(),
+        unmeasured,
     })
+}
+
+/// The guest half: count exactness read through a vCPU, then the save/restore
+/// fixpoint over that vCPU's state. Returns its records and whatever it could
+/// not measure.
+#[cfg(target_arch = "x86_64")]
+fn guest_half(
+    config: u64,
+    plan: &MeasurementPlan,
+) -> Result<(Vec<Record>, Vec<String>), Stage1Error> {
+    let slice = plan.slice(1, 32);
+    let slice_millis = timed(|| {
+        let _ = crate::guest_sys::measure_guest_exactness(config, &slice);
+    });
+    let mut records = vec![projection(
+        "guest_exactness",
+        slice.reps,
+        slice_millis,
+        plan.reps,
+    )];
+    records.extend(crate::guest_sys::measure_guest_exactness(config, plan)?);
+    records.push(crate::guest_sys::measure_fixpoint()?);
+    Ok((records, Vec::new()))
+}
+
+/// The guest half is built for x86-64, so elsewhere it is reported unmeasured
+/// rather than skipped.
+#[cfg(not(target_arch = "x86_64"))]
+fn guest_half(
+    _config: u64,
+    _plan: &MeasurementPlan,
+) -> Result<(Vec<Record>, Vec<String>), Stage1Error> {
+    Ok((
+        Vec::new(),
+        vec![crate::stage1::GUEST_WINDOW_NOT_BUILT.to_string()],
+    ))
 }
 
 /// How long `body` took, in milliseconds.
@@ -406,6 +442,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the load thread pins itself, and Miri has no sched_getcpu"
+    )]
     fn a_spinning_load_stops_when_its_guard_drops() {
         let load = Load::spinning_on(0);
         let stop = Arc::clone(&load.stop);

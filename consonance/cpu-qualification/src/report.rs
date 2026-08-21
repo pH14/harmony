@@ -130,6 +130,20 @@ pub enum Record {
         /// The largest skid seen.
         skid_max: u64,
     },
+    /// One save → restore → save round trip over a vCPU's state.
+    Fixpoint {
+        /// The state components the save captured, in the order they were read.
+        components: Vec<String>,
+        /// Required components the save did not capture. A partial capture
+        /// cannot demonstrate a fixpoint over a full state.
+        missing: Vec<String>,
+        /// Bytes in the first save.
+        first_bytes: u64,
+        /// Bytes in the second save.
+        second_bytes: u64,
+        /// Components whose bytes moved across the round trip.
+        differing: Vec<String>,
+    },
     /// A duration projection from a short slice, written before a long campaign.
     Projection {
         /// What the projection is for.
@@ -216,12 +230,17 @@ pub fn recompute(records: &[Record]) -> Verdict {
     check_terminal(records, &mut checks);
     check_host_rows(records, &mut checks);
 
+    let stage = records.iter().find_map(|r| match r {
+        Record::Plan { stage, .. } => Some(*stage),
+        _ => None,
+    });
     let floors = plan.as_ref().map(|(_, f)| *f);
     match floors {
         Some(floors) => {
             check_exactness(records, floors, &mut checks);
             check_interference(records, &mut checks);
             check_overflow(records, floors, &mut checks);
+            check_fixpoint(records, stage.unwrap_or(0), &mut checks);
         }
         None => checks.push(Check::new(
             "floors",
@@ -439,6 +458,52 @@ fn check_interference(records: &[Record], checks: &mut Vec<Check>) {
             format!(
                 "conditions {conditions:?} produced clean deltas {all:?}; \
                  a count that moves under interference is a failure"
+            ),
+        ));
+    }
+}
+
+/// The save/restore fixpoint, recomputed from its record.
+fn check_fixpoint(records: &[Record], stage: u8, checks: &mut Vec<Check>) {
+    let rounds: Vec<&Record> = records
+        .iter()
+        .filter(|r| matches!(r, Record::Fixpoint { .. }))
+        .collect();
+    if rounds.is_empty() {
+        // Stage 1 names the fixpoint among its measurements, so a stage-1 run
+        // that retained none did not make it.
+        if stage >= 1 {
+            checks.push(Check::new(
+                "fixpoint",
+                false,
+                "no save/restore round trip was retained, and stage 1 requires one",
+            ));
+        }
+        return;
+    }
+    for (index, record) in rounds.iter().enumerate() {
+        let Record::Fixpoint {
+            components,
+            missing,
+            first_bytes,
+            second_bytes,
+            differing,
+        } = record
+        else {
+            continue;
+        };
+        // A round trip over nothing is not a fixpoint, so a capture of zero
+        // bytes fails whatever the comparison says about it.
+        let passed = missing.is_empty()
+            && differing.is_empty()
+            && *first_bytes == *second_bytes
+            && *first_bytes > 0;
+        checks.push(Check::new(
+            format!("fixpoint[{index}]"),
+            passed,
+            format!(
+                "components={components:?} missing={missing:?} first_bytes={first_bytes} \
+                 second_bytes={second_bytes} differing={differing:?}"
             ),
         ));
     }
@@ -713,6 +778,19 @@ mod tests {
         }
     }
 
+    fn fixpoint() -> Record {
+        Record::Fixpoint {
+            components: crate::guest::REQUIRED_COMPONENTS
+                .iter()
+                .map(|n| (*n).to_string())
+                .collect(),
+            missing: Vec::new(),
+            first_bytes: 4096,
+            second_bytes: 4096,
+            differing: Vec::new(),
+        }
+    }
+
     fn passing_run() -> Vec<Record> {
         vec![
             plan(),
@@ -721,6 +799,7 @@ mod tests {
             arm(0, 1, 1000),
             arm(1, 1, 1050),
             arm(2, 1, 1100),
+            fixpoint(),
             end(0),
         ]
     }
@@ -1033,6 +1112,86 @@ mod tests {
                 .expect("the payload is checked");
             assert!(check.detail.contains("unaccounted=1"), "{}", check.detail);
         }
+    }
+
+    #[test]
+    fn a_stage_one_run_with_no_round_trip_fails_the_fixpoint() {
+        let mut records = passing_run();
+        records.retain(|r| !matches!(r, Record::Fixpoint { .. }));
+        let verdict = recompute(&records);
+        assert!(!verdict.passed);
+        let check = verdict
+            .checks
+            .iter()
+            .find(|c| c.name == "fixpoint")
+            .expect("stage 1 requires the round trip");
+        assert!(!check.passed, "{}", check.detail);
+    }
+
+    #[test]
+    fn a_partial_state_capture_cannot_read_as_a_full_fixpoint() {
+        let mut records = passing_run();
+        records.retain(|r| !matches!(r, Record::Fixpoint { .. }));
+        records.push(Record::Fixpoint {
+            components: vec!["regs".to_string()],
+            missing: vec!["xsave".to_string()],
+            first_bytes: 144,
+            second_bytes: 144,
+            differing: Vec::new(),
+        });
+        let verdict = recompute(&records);
+        assert!(!verdict.passed);
+        let check = verdict
+            .checks
+            .iter()
+            .find(|c| c.name == "fixpoint[0]")
+            .expect("the round trip is checked");
+        assert!(check.detail.contains("xsave"), "{}", check.detail);
+    }
+
+    #[test]
+    fn a_round_trip_over_no_bytes_is_not_a_fixpoint() {
+        let mut records = passing_run();
+        records.retain(|r| !matches!(r, Record::Fixpoint { .. }));
+        records.push(Record::Fixpoint {
+            components: Vec::new(),
+            missing: Vec::new(),
+            first_bytes: 0,
+            second_bytes: 0,
+            differing: Vec::new(),
+        });
+        let verdict = recompute(&records);
+        assert!(!verdict.passed);
+        let check = verdict
+            .checks
+            .iter()
+            .find(|c| c.name == "fixpoint[0]")
+            .expect("the round trip is checked");
+        assert!(!check.passed, "{}", check.detail);
+    }
+
+    #[test]
+    fn a_state_component_that_moved_across_the_round_trip_fails() {
+        let mut records = passing_run();
+        records.retain(|r| !matches!(r, Record::Fixpoint { .. }));
+        records.push(Record::Fixpoint {
+            components: crate::guest::REQUIRED_COMPONENTS
+                .iter()
+                .map(|n| (*n).to_string())
+                .collect(),
+            missing: Vec::new(),
+            first_bytes: 4096,
+            second_bytes: 4096,
+            differing: vec!["xsave: contents differ".to_string()],
+        });
+        let verdict = recompute(&records);
+        assert!(!verdict.passed);
+        let check = verdict
+            .checks
+            .iter()
+            .find(|c| c.name == "fixpoint[0]")
+            .expect("the round trip is checked");
+        assert!(check.detail.contains("xsave"), "{}", check.detail);
     }
 
     #[test]

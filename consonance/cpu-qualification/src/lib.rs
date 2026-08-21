@@ -19,6 +19,7 @@
 #![deny(missing_docs)]
 
 pub mod chips;
+pub mod guest;
 pub mod pack;
 pub mod payload;
 pub mod perf;
@@ -27,8 +28,12 @@ pub mod stage0;
 pub mod stage1;
 
 // The measurement halves: Linux-only, because everything in them is a
-// `perf_event_open`, a `/proc` or `/sys` read, or an MSR read. Absent everywhere
-// else, where the stages refuse loudly rather than reporting an empty pass.
+// `perf_event_open`, a `/proc` or `/sys` read, an MSR read, or a KVM ioctl.
+// Absent everywhere else, where the stages refuse loudly rather than reporting
+// an empty pass. The guest window narrows further to x86-64: its payload is
+// real-mode x86 and its state components are the x86 set.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub mod guest_sys;
 #[cfg(target_os = "linux")]
 pub mod perf_sys;
 #[cfg(target_os = "linux")]

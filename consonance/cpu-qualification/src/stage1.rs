@@ -186,15 +186,11 @@ pub struct Stage1Outcome {
     pub unmeasured: Vec<String>,
 }
 
-/// The stage-1 measurements that need a running vCPU. The suite measures the
-/// counter from userspace; these two read it from inside a guest and across a
-/// vCPU state round trip, so they belong to whoever holds the vCPU.
-pub const NEEDS_A_VCPU: [&str; 2] = [
-    "count exactness inside a guest: needs a vCPU with the work clock filtered \
-     to guest execution",
-    "save/restore fixpoint of the full vCPU state including the extended-state \
-     image: needs a vCPU",
-];
+/// The guest window's payload is real-mode x86 and its state components are the
+/// x86 set, so the guest half of stage 1 runs on x86-64 and reports itself
+/// unmeasured elsewhere.
+pub const GUEST_WINDOW_NOT_BUILT: &str = "the guest half of stage 1 (guest-side count exactness and the save/restore \
+     fixpoint): the guest window is built for x86-64 and this host is not";
 
 /// The analytical count for the difference between two scales, from the
 /// per-iteration event count alone.

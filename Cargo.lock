@@ -218,6 +218,8 @@ name = "cpu-qualification"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "kvm-bindings",
+ "kvm-ioctls",
  "libc",
  "serde",
  "serde_json",
