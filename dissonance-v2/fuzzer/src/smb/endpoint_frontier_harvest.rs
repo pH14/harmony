@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the World 8-4 p73 paired midpoint-compaction canary.
+//! Temporary sealed runner for the World 8-4 p113 normal-endpoint harvest.
 
 use std::{
     collections::BTreeMap,
@@ -35,81 +35,78 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-4-p73-paired-midpoint-compaction-canary-v1";
-const PREREGISTRATION_COMMIT: &str = "9dee8815d228ed9e9c399645b587105cf1e29b14";
+const FORMAT: &str = "smb-w8-4-p113-normal-endpoint-harvest-v1";
+const PREREGISTRATION_COMMIT: &str = "d0092d77a2e2c7121ba53bf09d31e975dc7d9146";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "f6b4874570b2d81656fd1927608106c46d5de39e3b30d6506fddd69cd6841d2c";
-const CODE_BASE: &str = "fc62d470395bfaa84a89e0b03ce22f503630be07";
-const AUTHORIZING_P73_PREREGISTRATION: &str = "fbf2afb1";
-const AUTHORIZING_P73_IMPLEMENTATION: &str = "c3902b4a";
-const AUTHORIZING_P73_RESULT: &str = "fc62d470";
-const AUTHORIZING_P73_REPORT_SHA256: &str =
-    "5fc888c8fcb522b9b1216de9649223cebbddbf87709e68d1236a4e2031ff2e90";
-const SOURCE_FILE_SHA256: &str = "d222d9ebc0126c52473a121e4143889ec92ee584cd53837a3461b0c6c2648a7c";
+    "36c6ac1a79320434b98001475d926832153595a380358cf96426cab75e7c7c40";
+const CODE_BASE: &str = "4d3440d4ff2265fb9869e8ab3cceff8277963b31";
+const AUTHORIZING_BRIDGE_PREREGISTRATION: &str = "ca7a7b2239a6fa6b44e1e0cb87d75a405b3c109b";
+const AUTHORIZING_BRIDGE_IMPLEMENTATION: &str = "a8ba2346cc99c8ae78a8a419d2574c97c87dfe32";
+const AUTHORIZING_BRIDGE_RESULT: &str = "4d3440d4ff2265fb9869e8ab3cceff8277963b31";
+const AUTHORIZING_BRIDGE_REPORT_SHA256: &str =
+    "b33441042225e4a047178f708acc7b97e396e003b6212c065c21b314ed979abd";
+const AUTHORIZING_BRIDGE_RESULT_DOC_SHA256: &str =
+    "6d79ffaea623cc835f617a044495840bc8b259d488da90bf4a4dbefa88fb0e45";
+const SOURCE_FILE_SHA256: &str = "0b72eafdf81670fdf40ef80dab9226ddbee7c855728661f893816789fb24239f";
 const SOURCE_INPUT_SHA256: &str =
-    "d222d9ebc0126c52473a121e4143889ec92ee584cd53837a3461b0c6c2648a7c";
-const SOURCE_BYTES: usize = 114_128;
-const SOURCE_WRAM_SHA256: &str = "bc051f742198e95efeb2e0392fc2c7cb72f0fd38dc4449247a0082eebe60e734";
+    "0b72eafdf81670fdf40ef80dab9226ddbee7c855728661f893816789fb24239f";
+const SOURCE_BYTES: usize = 114_388;
+const SOURCE_WRAM_SHA256: &str = "3bcdfbb5291fdfbf94ed016a77783e6bbb4b400c3ae24dc8d73f5d3ea844a24c";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "3620e6ed58f4853cc059b4daf7f2bc493ee61480abbdf84fb6dff5d26e670927";
+    "0e87a78fc87df608fb466cd94154e814e095dad9eb2956edfaebba7b34080f00";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-4-p73-paired-midpoint-compaction-v1";
-const SEED_LABEL_SHA256: &str = "83234f699265b0c82ff967e63e9410bd2e9c0f35ce75a2bafe5c7e006475509f";
-const MASTER_SEED: u64 = 14_461_170_082_993_087_363;
+const SEED_LABEL: &str = "sol-restart-w8-4-p113-normal-endpoint-harvest-v1";
+const SEED_LABEL_SHA256: &str = "063eb12ff0a5d06af90cc088f21ba22ff47db6949b5ae16a189a93b095ffa9c1";
+const MASTER_SEED: u64 = 7_696_834_214_187_056_646;
 const EXPECTED_RECIPE_SHA256: &str =
-    "499af01b7d1f28389bb5c357e8efdede320ea9fde3cf1c782a13918b943dd730";
-const EXPECTED_RECIPE_BYTES: usize = 98_990;
+    "8a0d66a2f13be9fdaa2e15bbe97c1239e7a4def8e95f93ffefdeb125ea839dfd";
+const EXPECTED_RECIPE_BYTES: usize = 400_322;
 const EXPECTED_PROJECTION_SHA256: [&str; 12] = [
-    "9bc89b9020d4a47594870622515033a9750951118f32a29701c080dc5bc5f8fd",
-    "e6f9b8a1aa6e94498557fa0939986fc56f797f59fba55b197b972d12b270360e",
-    "1a7cc872b14eebe2ea0e93fe4f70a929f8fbe958003e0967d936b9c280c08fd4",
-    "ddd5ce6583a11ce5574f3b7ee53b78879eb62ab01005d92f4882b38b1dd51251",
-    "3fbd68040b0812cede13b3489efc01cef24748c8c76a0c0b2c5f59312203966f",
-    "0506104a0a636cee2659b021fadefa861ae9df5517f3bb539305de25053f1a51",
-    "fdb8975b7f5f27bbefb03673879177092846d2cdf661b7255644bd0d216c7f7f",
-    "6d65614e5ed13b669c60d66f8330b663fe0d0a8bff9134fb6397e0fda35909a8",
-    "e2d752a7e2470cb6e90e897e7a82b1172edbe187f2c44f038a0caeefac8d69aa",
-    "0e9943b9722039687664601e4f8f0eee6508a8a54caf52db737f49823397f3b6",
-    "d34732f45399fdcf741a721a24c99856929bae04e9fc5dc3c416d097a973b2c9",
-    "2daf9ed62dc40984375bc5e5f12b9a7e22be7f751e670fa1f88cf55fc36233f1",
+    "d28b07f53dadd7b87f31efac816d9f1c4984e0ae8a5082b5f3fe58d2cec84ec9",
+    "07e792ecc558728252fce79614096b4ce9ef08a22483f159d075b693af3c26d5",
+    "c9186304ed12324e13a111340aa1226c69dcc0c31210aa84d61a6e541404e11a",
+    "4243d937660ceda0c35912ccc1645d3baa0ccc6e5acbc8bf370bd4795aee3e2e",
+    "8bc2a5533d2d618959434f23a50c7f3a961ed7d222e1dd152cf44980c3589249",
+    "ef2e7bc8aa86b65e83b0c53fc9f4471109515732f48fbb38bcae9d7730cba83c",
+    "41af6b4e49d72cc5248b4ebe01011fe14b74f5dba5e0fb582960a7a245922318",
+    "d9ade5d6ba4d2377f1d166f1507c14fd3873ecfd2d54762fb68d1d4d094a24b1",
+    "ad7fedb65bdbec4eb9f7bb230e9592555d0c06a4a185197c58a9200af33460a4",
+    "4de73f5190a5c379c009788079fcda6720cdcee6a9dd845aff1a78f7e48ddcc1",
+    "4ce01d9c3fcbe668787dc1adf075274c3c3af42456959c790f97caa4abc64748",
+    "8d538ca8ae3a7f6dfe14a6934064bea3d5c204f96378f46f9295f9e5a6819e41",
 ];
 const EXPECTED_PROJECTION_BYTES: [usize; 12] = [
-    7_981, 7_960, 7_949, 7_975, 7_975, 7_981, 8_000, 7_972, 7_992, 7_964, 7_948, 7_976,
+    32_195, 32_279, 32_268, 32_247, 32_245, 32_208, 32_262, 32_226, 32_237, 32_279, 32_304, 32_271,
 ];
-const SOURCE_ACTIONS: usize = 3_554;
-const SOURCE_FRAMES: u64 = 167_340;
-const PAIRS: usize = 12;
-const ARMS: usize = 24;
-const WORKERS: usize = 12;
-const SLOTS: usize = 128;
-const MIDPOINT: usize = 64;
+const SOURCE_ACTIONS: usize = 3_562;
+const SOURCE_FRAMES: u64 = 167_705;
+const LANES: usize = 12;
+const DRAWS: usize = 512;
 const ACTION_LIMIT: usize = 4_096;
-const ARCHIVE_LIMIT: usize = 129;
-const MAX_LINEAGE_ACTIONS: usize = 3_682;
+const ARCHIVE_LIMIT: usize = 513;
+const MAX_LINEAGE_ACTIONS: usize = 4_074;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
-const MAX_ACTION_FRAMES: u64 = 368_640;
-const MAX_PROBE_FRAMES: u64 = 414_720;
+const MAX_ACTION_FRAMES: u64 = 737_280;
+const MAX_PROBE_FRAMES: u64 = 829_440;
 const SOURCE_PROBE_FRAMES: u64 = 45;
-const MAX_TOTAL_FRAMES: u64 = 955_438;
-const EXPECTED_SELECTIONS: usize = 3_072;
+const MAX_TOTAL_FRAMES: u64 = 1_739_163;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
-const SOURCE_PROBE_MASKS: [u8; 1] = [0x00];
 const PROBE_FRAMES: u16 = 45;
 const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 1] = [(0x00, 45, false, true)];
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 3,
-    progress: 73,
+    progress: 113,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 3,
-    progress: 73,
-    player_y_bucket: 8,
+    progress: 113,
+    player_y_bucket: 11,
     player_engine_state: 8,
     dead: false,
     flag_active: false,
@@ -117,10 +114,10 @@ const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
     level: 3,
-    progress: 73,
-    player_y_bucket: 8,
+    progress: 113,
+    player_y_bucket: 11,
     player_engine_state: 8,
-    state_fingerprint: 60,
+    state_fingerprint: 59,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -130,488 +127,23 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 0,
-    hold_frames: 3,
+    buttons: 128,
+    hold_frames: 114,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct Recipe {
-    pair: usize,
-    slot: usize,
+    lane: usize,
+    draw: usize,
     source_index: usize,
     action: ButtonChord,
     selector_seed: u64,
 }
 
-#[cfg(test)]
-mod midpoint_tests {
-    use super::*;
-    use crate::smb::archive::SmbSelectorPath;
-
-    fn synthetic_source() -> SmbInput {
-        SmbInput {
-            actions: (0..SOURCE_ACTIONS)
-                .map(|index| {
-                    ButtonChord::new(
-                        u8::try_from(index % 256).expect("button fits"),
-                        u8::try_from(2 + index % 119).expect("duration fits"),
-                    )
-                })
-                .collect(),
-        }
-    }
-
-    fn synthetic_nrom() -> Vec<u8> {
-        let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
-        rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        let prg = &mut rom[16..16 + (16 * 1024)];
-        prg.fill(0xea);
-        prg[..3].copy_from_slice(&[0x4c, 0x00, 0x80]);
-        for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
-            prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
-        }
-        rom
-    }
-
-    fn synthetic_snapshot() -> SmbSnapshot {
-        let mut target =
-            SmbTarget::from_smb_rom_bytes_headless(&synthetic_nrom()).expect("synthetic target");
-        target.reset();
-        target.snapshot().expect("synthetic snapshot")
-    }
-
-    fn archive_for_midpoint() -> (Archive, Vec<Option<RetainedEvidence>>) {
-        let snapshot = synthetic_snapshot();
-        let mut archive = Archive::new();
-        archive.max_entries = ARCHIVE_LIMIT;
-        archive.set_selector_policy(SmbArchiveSelectorPolicy::ConcentratedRecency);
-        archive.set_waypoint_policy(SmbArchiveWaypointPolicy::Absent);
-        archive.set_replacement_policy(SmbArchiveReplacementPolicy::FewestActions);
-        for (id, (progress, actions, fingerprint)) in
-            [(73, 4, 0), (80, 3, 1), (80, 2, 2)].into_iter().enumerate()
-        {
-            let input = SmbInput {
-                actions: vec![ButtonChord::new(u8::try_from(id).expect("id"), 2); actions],
-            };
-            let key = SmbArchiveKey {
-                progress,
-                state_fingerprint: fingerprint,
-                ..BASELINE_KEY
-            };
-            assert_eq!(
-                archive
-                    .insert(
-                        None,
-                        u64::try_from(id).expect("execution"),
-                        ArchiveCandidate {
-                            input,
-                            key,
-                            milestones: BASELINE_MILESTONES,
-                        },
-                        snapshot.clone(),
-                    )
-                    .expect("insert"),
-                Some(id)
-            );
-        }
-        let retained = (0..archive.entries.len()).map(|_| None).collect();
-        (archive, retained)
-    }
-
-    fn observation(mechanical: SmbMechanicalState) -> SmbObservations {
-        SmbObservations {
-            frame_count: 0,
-            wram: Vec::new(),
-            decoded: mechanical,
-            milestones: BASELINE_MILESTONES,
-            changed_indices: Vec::new(),
-            dead: false,
-            log_line: String::new(),
-        }
-    }
-
-    fn accounting(selections: usize) -> SmbSelectorAccounting {
-        SmbSelectorAccounting {
-            policy: SmbArchiveSelectorPolicy::ConcentratedRecency,
-            uniform_selections: u64::try_from(selections).expect("selections"),
-            ..SmbSelectorAccounting::default()
-        }
-    }
-
-    fn synthetic_candidate(
-        pair: usize,
-        arm: ArmKind,
-        slot: usize,
-        watermark: SmbProgressWatermark,
-    ) -> ChampionCandidate {
-        let mechanical = SmbMechanicalState {
-            world: watermark.world,
-            level: watermark.level,
-            progress: watermark.progress,
-            ..SmbMechanicalState::default()
-        };
-        let id = slot + 1;
-        let input = SmbInput {
-            actions: vec![ButtonChord::new(0, 2); SOURCE_ACTIONS + 1],
-        };
-        ChampionCandidate {
-            pair,
-            arm,
-            id,
-            slot,
-            source_index: slot,
-            action: ButtonChord::new(1, 2),
-            input,
-            input_sha256: "11".repeat(32),
-            input_sha256_bytes: [0x11; 32],
-            parent_lineage: vec![0, u64::try_from(id).expect("id")],
-            endpoint: EndpointEvidence {
-                action: ButtonChord::new(1, 2),
-                input_actions: SOURCE_ACTIONS + 1,
-                input_sha256: "11".repeat(32),
-                observation: observation(mechanical),
-                mechanical,
-                watermark,
-                wram_sha256: "22".repeat(32),
-                snapshot_sha256: Some("33".repeat(32)),
-                key: Some(SmbArchiveKey {
-                    world: watermark.world,
-                    level: watermark.level,
-                    progress: watermark.progress,
-                    ..BASELINE_KEY
-                }),
-                milestones: BASELINE_MILESTONES,
-                action_frames: 2,
-                dead: false,
-                failed: false,
-                probe: Vec::new(),
-                probe_survived: true,
-                probe_frames: 0,
-                admission: AdmissionOutcome::Retained {
-                    id,
-                    displaced: false,
-                },
-            },
-            work_frames: 2,
-        }
-    }
-
-    fn synthetic_slot(pair: usize, arm: ArmKind, slot: usize) -> SlotRecord {
-        let action = ButtonChord::new(1, 2);
-        let mechanical = BASELINE_ENDPOINT;
-        let start = StartEvidence {
-            observation: observation(mechanical),
-            mechanical,
-            wram_sha256: String::new(),
-            snapshot_sha256: String::new(),
-            dead: false,
-            failed: false,
-            milestones: BASELINE_MILESTONES,
-        };
-        let input = SmbInput {
-            actions: vec![action],
-        };
-        let input_sha256 = sha256_json(&input).expect("input hash");
-        let endpoint = EndpointEvidence {
-            action,
-            input_actions: 1,
-            input_sha256,
-            observation: observation(mechanical),
-            mechanical,
-            watermark: BASELINE_WATERMARK,
-            wram_sha256: String::new(),
-            snapshot_sha256: None,
-            key: None,
-            milestones: BASELINE_MILESTONES,
-            action_frames: 2,
-            dead: false,
-            failed: false,
-            probe: Vec::new(),
-            probe_survived: false,
-            probe_frames: 0,
-            admission: AdmissionOutcome::Rejected,
-        };
-        let selection_count = match arm {
-            ArmKind::Full => slot + 1,
-            ArmKind::Compact if slot < MIDPOINT => slot + 1,
-            ArmKind::Compact => slot - MIDPOINT + 1,
-        };
-        SlotRecord {
-            pair,
-            arm,
-            slot,
-            selector_seed: u64::try_from(slot).expect("slot"),
-            selector: SmbSelectorDraw {
-                path: SmbSelectorPath::Uniform,
-                classes_skipped: 0,
-                counter_reset: false,
-                concentration: None,
-                waypoint: false,
-            },
-            parent_id: 0,
-            parent_input_sha256: String::new(),
-            parent_snapshot_sha256: String::new(),
-            start: start.clone(),
-            candidate: CandidateRecord {
-                pair,
-                arm,
-                slot,
-                source_index: slot,
-                action,
-                selector_seed: u64::try_from(slot).expect("slot"),
-                parent_id: 0,
-                start,
-                input,
-                endpoint,
-                productive: false,
-                active_ids: vec![0],
-                active_maximum: ActiveMaximum {
-                    watermark: BASELINE_WATERMARK,
-                    ids: vec![0],
-                },
-                total_work_frames: 2,
-            },
-            productive: false,
-            selector_accounting: accounting(selection_count),
-            total_work_frames: 2,
-        }
-    }
-
-    fn synthetic_arm(
-        pair: usize,
-        arm: ArmKind,
-        maximum: SmbProgressWatermark,
-        candidates: Vec<ChampionCandidate>,
-    ) -> ArmRecord {
-        let ordinal = pair * 2 + usize::from(arm == ArmKind::Compact);
-        ArmRecord {
-            record: "arm",
-            ordinal,
-            pair,
-            arm,
-            worker: ordinal % WORKERS,
-            worker_setup_frames: (ordinal < WORKERS).then_some(EXPECTED_SETUP_FRAMES),
-            initial_archive_sha256: format!("initial-{pair}"),
-            slots: (0..SLOTS)
-                .map(|slot| synthetic_slot(pair, arm, slot))
-                .collect(),
-            midpoint: MidpointRecord {
-                slot: MIDPOINT,
-                champion_original_id: 7,
-                champion_input_sha256: format!("input-{pair}"),
-                champion_snapshot_sha256: format!("snapshot-{pair}"),
-                champion_key: BASELINE_KEY,
-                champion_milestones: BASELINE_MILESTONES,
-                before_archive_sha256: format!("before-{pair}"),
-                after_archive_sha256: if arm == ArmKind::Compact {
-                    format!("after-{pair}")
-                } else {
-                    format!("before-{pair}")
-                },
-                compacted: arm == ArmKind::Compact,
-            },
-            final_active_entries: Vec::new(),
-            final_maximum: ActiveMaximum {
-                watermark: maximum,
-                ids: vec![0],
-            },
-            maximum_lineage_actions: SOURCE_ACTIONS,
-            scheduled_slots: SLOTS,
-            executed_slots: SLOTS,
-            selections: SLOTS,
-            selector_accounting: accounting(if arm == ArmKind::Full {
-                SLOTS
-            } else {
-                SLOTS - MIDPOINT
-            }),
-            action_frames: u64::try_from(SLOTS * 2).expect("work"),
-            probe_frames: 0,
-            total_work_frames: u64::try_from(SLOTS * 2).expect("work"),
-            champion_candidates: candidates,
-        }
-    }
-
-    fn passing_arms() -> Vec<ArmRecord> {
-        let full_maximum = SmbProgressWatermark {
-            progress: 74,
-            ..BASELINE_WATERMARK
-        };
-        let compact_maximum = SmbProgressWatermark {
-            progress: 75,
-            ..BASELINE_WATERMARK
-        };
-        let mut arms = Vec::with_capacity(ARMS);
-        for pair in 0..PAIRS {
-            arms.push(synthetic_arm(pair, ArmKind::Full, full_maximum, Vec::new()));
-            arms.push(synthetic_arm(
-                pair,
-                ArmKind::Compact,
-                compact_maximum,
-                vec![synthetic_candidate(
-                    pair,
-                    ArmKind::Compact,
-                    MIDPOINT,
-                    compact_maximum,
-                )],
-            ));
-        }
-        arms
-    }
-
-    #[test]
-    fn recipe_domains_and_registered_oracle_are_exact() {
-        verify_seed().expect("seed");
-        let recipes = derive_recipes(&synthetic_source()).expect("recipes");
-        assert_eq!(recipe_sha256(&recipes).expect("synthetic recipe").len(), 64);
-        assert_eq!(recipes[0][0].source_index, 2_717);
-        assert_eq!(recipes[0][0].selector_seed, 7_340_618_344_576_568_066);
-        assert_eq!(recipes[11][127].source_index, 708);
-        assert_eq!(recipes[11][127].selector_seed, 16_500_506_706_104_702_120);
-        assert_eq!(EXPECTED_RECIPE_BYTES, 98_990);
-        assert_eq!(
-            EXPECTED_RECIPE_SHA256,
-            "499af01b7d1f28389bb5c357e8efdede320ea9fde3cf1c782a13918b943dd730"
-        );
-        let mut projections = projection_bytes(&recipes).expect("projections");
-        projections.sort();
-        assert!(projections.windows(2).all(|window| window[0] != window[1]));
-    }
-
-    #[test]
-    fn midpoint_selects_registered_order_and_resets_only_compact() {
-        let (mut full, mut full_retained) = archive_for_midpoint();
-        let (mut compact, mut compact_retained) = archive_for_midpoint();
-        let full_record =
-            apply_midpoint(&mut full, &mut full_retained, ArmKind::Full).expect("full midpoint");
-        let compact_record = apply_midpoint(&mut compact, &mut compact_retained, ArmKind::Compact)
-            .expect("compact midpoint");
-        assert_eq!(full_record.champion_original_id, 2);
-        assert_eq!(compact_record.champion_original_id, 2);
-        assert_eq!(
-            full_record.before_archive_sha256,
-            compact_record.before_archive_sha256
-        );
-        assert_eq!(
-            full_record.before_archive_sha256,
-            full_record.after_archive_sha256
-        );
-        assert_ne!(
-            compact_record.before_archive_sha256,
-            compact_record.after_archive_sha256
-        );
-        assert_eq!(compact.entries.len(), 1);
-        assert_eq!(compact.entries[0].report.input.actions.len(), 2);
-        assert_eq!(compact_retained.len(), 1);
-        assert_eq!(
-            selector_selections(compact.selector_report()).expect("accounting"),
-            0
-        );
-    }
-
-    #[test]
-    fn paired_classifier_requires_exact_tail_witness_and_direction() {
-        let arms = passing_arms();
-        let classified = classify_paired(&arms).expect("paired classification");
-        assert_eq!(classified.non_ties, PAIRS);
-        assert_eq!(classified.compact_wins, PAIRS);
-        assert_eq!(classified.verdict, StructuralVerdict::PromoteCompaction);
-        assert_eq!(classified.witnesses.len(), PAIRS);
-
-        let mut missing_witness = arms.clone();
-        for pair in 0..PAIRS {
-            missing_witness[pair * 2 + 1].champion_candidates.clear();
-        }
-        assert_eq!(
-            classify_paired(&missing_witness)
-                .expect("no witness")
-                .verdict,
-            StructuralVerdict::RetainFull
-        );
-    }
-
-    #[test]
-    fn structural_boundaries_and_post_midpoint_witness_are_exact() {
-        assert_eq!(
-            structural_verdict(8, 7, 9, 256, true).expect("7/8"),
-            StructuralVerdict::RetainFull
-        );
-        assert_eq!(
-            structural_verdict(8, 8, 1, 256, true).expect("8/8"),
-            StructuralVerdict::PromoteCompaction
-        );
-        assert_eq!(
-            structural_verdict(7, 7, 1, 128, true).expect("sparse"),
-            StructuralVerdict::InconclusiveSparse
-        );
-        let strict = SmbProgressWatermark {
-            progress: 75,
-            ..BASELINE_WATERMARK
-        };
-        let mut witness = synthetic_candidate(0, ArmKind::Compact, MIDPOINT, strict);
-        assert!(is_compact_witness(&witness, BASELINE_WATERMARK));
-        witness.slot = MIDPOINT - 1;
-        assert!(!is_compact_witness(&witness, BASELINE_WATERMARK));
-        witness.slot = MIDPOINT;
-        witness.endpoint.admission = AdmissionOutcome::Duplicate { id: witness.id };
-        assert!(!is_compact_witness(&witness, BASELINE_WATERMARK));
-    }
-
-    #[test]
-    fn pre_midpoint_drift_is_an_integrity_error() {
-        let mut arms = passing_arms();
-        arms[1].slots[7].candidate.endpoint.action = ButtonChord::new(2, 2);
-        assert!(classify_paired(&arms).is_err());
-    }
-
-    #[test]
-    fn verdict_bytes_ranking_and_work_cap_are_frozen() {
-        assert_eq!(
-            serde_json::to_string(&ArmKind::Compact).expect("arm"),
-            r#""COMPACT""#
-        );
-        assert_eq!(
-            serde_json::to_string(&StructuralVerdict::PromoteCompaction).expect("structural"),
-            r#""PROMOTE_COMPACTION""#
-        );
-        assert_eq!(
-            serde_json::to_string(&Verdict::NoAdopt).expect("adoption"),
-            r#""NO_ADOPT""#
-        );
-        assert_eq!(
-            MAX_ACTION_FRAMES
-                + MAX_PROBE_FRAMES
-                + SOURCE_FRAMES
-                + SOURCE_PROBE_FRAMES
-                + EXPECTED_SETUP_FRAMES * u64::try_from(WORKERS + 1).expect("targets"),
-            MAX_TOTAL_FRAMES
-        );
-        let later = SmbProgressWatermark {
-            world: 8,
-            level: 0,
-            progress: 0,
-        };
-        let champion = rank_champion(vec![
-            synthetic_candidate(0, ArmKind::Compact, MIDPOINT, BASELINE_WATERMARK),
-            synthetic_candidate(1, ArmKind::Full, 1, later),
-        ])
-        .expect("champion");
-        assert_eq!(champion.endpoint.watermark, later);
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum ArmKind {
-    Full,
-    Compact,
-}
-
 #[derive(Debug, Serialize)]
 struct Config {
-    pairs: usize,
-    arms: usize,
-    slots_per_arm: usize,
-    midpoint: usize,
+    lanes: usize,
+    draws_per_lane: usize,
     workers: usize,
     action_limit: usize,
     archive_limit: usize,
@@ -724,60 +256,32 @@ struct ActiveMaximum {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct CandidateRecord {
-    pair: usize,
-    arm: ArmKind,
-    slot: usize,
+struct DrawRecord {
+    draw: usize,
+    recipe: Recipe,
     source_index: usize,
-    action: ButtonChord,
-    selector_seed: u64,
-    parent_id: usize,
-    start: StartEvidence,
-    input: SmbInput,
-    endpoint: EndpointEvidence,
-    productive: bool,
-    active_ids: Vec<usize>,
-    active_maximum: ActiveMaximum,
-    total_work_frames: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct SlotRecord {
-    pair: usize,
-    arm: ArmKind,
-    slot: usize,
     selector_seed: u64,
     selector: SmbSelectorDraw,
     parent_id: usize,
     parent_input_sha256: String,
     parent_snapshot_sha256: String,
     start: StartEvidence,
-    candidate: CandidateRecord,
+    input: SmbInput,
+    endpoint: EndpointEvidence,
     productive: bool,
+    active_ids: Vec<usize>,
+    active_maximum: ActiveMaximum,
     selector_accounting: SmbSelectorAccounting,
     total_work_frames: u64,
 }
 
 #[derive(Clone, Debug)]
 struct RetainedEvidence {
+    draw: usize,
+    recipe: Recipe,
+    parent_id: usize,
     endpoint: EndpointEvidence,
     work_frames: u64,
-    slot: usize,
-    source_index: usize,
-    action: ButtonChord,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct MidpointRecord {
-    slot: usize,
-    champion_original_id: usize,
-    champion_input_sha256: String,
-    champion_snapshot_sha256: String,
-    champion_key: SmbArchiveKey,
-    champion_milestones: SmbMilestones,
-    before_archive_sha256: String,
-    after_archive_sha256: String,
-    compacted: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -785,6 +289,8 @@ struct FinalEntryRecord {
     id: usize,
     parent_id: Option<u64>,
     created_execution: u64,
+    draw: usize,
+    recipe: Recipe,
     actions: usize,
     input_sha256: String,
     key: SmbArchiveKey,
@@ -793,26 +299,21 @@ struct FinalEntryRecord {
     snapshot_sha256: String,
     probe_survived: bool,
     work_frames: u64,
-    slot: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct ArmRecord {
+struct LaneRecord {
     record: &'static str,
-    ordinal: usize,
-    pair: usize,
-    arm: ArmKind,
+    lane: usize,
     worker: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    worker_setup_frames: Option<u64>,
+    setup_frames: u64,
     initial_archive_sha256: String,
-    slots: Vec<SlotRecord>,
-    midpoint: MidpointRecord,
+    draws: Vec<DrawRecord>,
     final_active_entries: Vec<FinalEntryRecord>,
     final_maximum: ActiveMaximum,
     maximum_lineage_actions: usize,
-    scheduled_slots: usize,
-    executed_slots: usize,
+    scheduled_draws: usize,
+    executed_draws: usize,
     selections: usize,
     selector_accounting: SmbSelectorAccounting,
     action_frames: u64,
@@ -824,12 +325,11 @@ struct ArmRecord {
 
 #[derive(Clone, Debug)]
 struct ChampionCandidate {
-    pair: usize,
-    arm: ArmKind,
+    lane: usize,
     id: usize,
-    slot: usize,
-    source_index: usize,
-    action: ButtonChord,
+    draw: usize,
+    recipe: Recipe,
+    parent_id: usize,
     input: SmbInput,
     input_sha256: String,
     input_sha256_bytes: [u8; 32],
@@ -840,12 +340,11 @@ struct ChampionCandidate {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct ChampionRecord {
-    pair: usize,
-    arm: ArmKind,
+    lane: usize,
     id: usize,
-    slot: usize,
-    source_index: usize,
-    action: ButtonChord,
+    draw: usize,
+    recipe: Recipe,
+    parent_id: usize,
     parent_lineage: Vec<u64>,
     input: SmbInput,
     input_sha256: String,
@@ -854,10 +353,10 @@ struct ChampionRecord {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(rename_all = "UPPERCASE")]
 enum Verdict {
     Adopt,
-    NoAdopt,
+    Stop,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -868,51 +367,15 @@ struct ClassificationRecord {
     champion: Option<ChampionRecord>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum StructuralVerdict {
-    InconclusiveSparse,
-    PromoteCompaction,
-    RetainFull,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct PairOutcomeRecord {
-    pair: usize,
-    full_maximum: SmbProgressWatermark,
-    compact_maximum: SmbProgressWatermark,
-    outcome: &'static str,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct StructuralWitness {
-    pair: usize,
-    full_maximum: SmbProgressWatermark,
-    champion: ChampionRecord,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct PairedClassificationRecord {
-    record: &'static str,
-    pairs: Vec<PairOutcomeRecord>,
-    non_ties: usize,
-    compact_wins: usize,
-    tail_numerator: u128,
-    tail_denominator: u128,
-    witnesses: Vec<StructuralWitness>,
-    verdict: StructuralVerdict,
-}
-
 #[derive(Debug, Serialize)]
 struct SummaryRecord {
     record: &'static str,
     body_sha256: String,
-    structural_verdict: StructuralVerdict,
-    adoption_verdict: Verdict,
+    verdict: Verdict,
     champion: Option<ChampionRecord>,
-    worker_setup_frames: Vec<u64>,
-    scheduled_slots: usize,
-    executed_slots: usize,
+    lane_setup_frames: Vec<u64>,
+    scheduled_candidates: usize,
+    executed_candidates: usize,
     selections: usize,
     setup_frames: u64,
     source_replay_frames: u64,
@@ -930,10 +393,11 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_p73_preregistration: &'static str,
-    authorizing_p73_implementation: &'static str,
-    authorizing_p73_result: &'static str,
-    authorizing_p73_report_sha256: &'static str,
+    authorizing_bridge_preregistration: &'static str,
+    authorizing_bridge_implementation: &'static str,
+    authorizing_bridge_result: &'static str,
+    authorizing_bridge_report_sha256: &'static str,
+    authorizing_bridge_result_doc_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
     rom_sha256: &'a str,
@@ -944,7 +408,7 @@ struct HeaderRecord<'a> {
     seed_label_sha256: &'static str,
     recipe_bytes: usize,
     recipe_sha256: &'a str,
-    projection_bytes: &'static [usize; PAIRS],
+    projection_bytes: &'static [usize; LANES],
     projection_sha256: &'a [String],
     trace_sha256: &'a str,
     config_sha256: &'a str,
@@ -984,13 +448,13 @@ impl NdjsonOutput {
 }
 
 #[derive(Debug)]
-struct ArmReply {
-    ordinal: usize,
+struct LaneReply {
+    lane: usize,
     worker: usize,
-    result: Result<ArmRecord, String>,
+    result: Result<LaneRecord, String>,
 }
 
-/// Run the sealed paired FULL/COMPACT canary from process arguments and environment.
+/// Run the sealed World 8-4 p113 endpoint harvest from process arguments and environment.
 pub fn run_from_process(
     bin_source: &'static [u8],
     module_source: &'static [u8],
@@ -998,7 +462,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path = PathBuf::from(
         args.next()
-            .ok_or("usage: smb-w8-4-p73-midpoint-compaction-canary <input.json> <output.jsonl>")?,
+            .ok_or("usage: smb-w8-4-p113-normal-endpoint-harvest <input.json> <output.jsonl>")?,
     );
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -1019,26 +483,24 @@ pub fn run_from_process(
     }
 
     let config = Config {
-        pairs: PAIRS,
-        arms: ARMS,
-        slots_per_arm: SLOTS,
-        midpoint: MIDPOINT,
-        workers: WORKERS,
+        lanes: LANES,
+        draws_per_lane: DRAWS,
+        workers: LANES,
         action_limit: ACTION_LIMIT,
         archive_limit: ARCHIVE_LIMIT,
         max_lineage_actions: MAX_LINEAGE_ACTIONS,
-        selector: "concentrated_recency_fresh_seed_per_slot_v1",
+        selector: "concentrated_recency_fresh_seed_per_draw_v1",
         retention: "probe_at_admission_45",
         replacement: "fewest_actions",
         key: "frozen",
         waypoint: "absent",
         snapback: "absent",
         pinned_window: "absent",
-        empirical_chord_update: "absent_midpoint_compaction_bundle_v1",
-        assignment: "ordinal_modulo_12_persistent_buffered_ascending_v1",
+        empirical_chord_update: "absent",
+        assignment: "one_lane_per_persistent_worker_buffered_ascending_v1",
         probe_masks: PROBE_MASKS,
         probe_frames: PROBE_FRAMES,
-        source_probe_masks: SOURCE_PROBE_MASKS,
+        source_probe_masks: [0x00],
         source_probe_frames: SOURCE_PROBE_FRAMES,
         max_action_frames: MAX_ACTION_FRAMES,
         max_probe_frames: MAX_PROBE_FRAMES,
@@ -1073,11 +535,10 @@ pub fn run_from_process(
         return Err("frozen recipe identity does not match the sealed oracle".into());
     }
     let projection_sha256 = projection_sha256(&recipes)?;
-    let arms = evaluate_parallel(&rom, &source, &recipes, &baseline)?;
-    let paired = classify_paired(&arms)?;
-    let adoption = classify_adoption(&arms)?;
+    let lanes = evaluate_parallel(&rom, &source, &recipes, &baseline)?;
+    let classification = classify(&lanes)?;
     let work = summarize_work(
-        &arms,
+        &lanes,
         baseline.record.setup_frames,
         source_probe_frames(&baseline.record.source_probes)?,
     )?;
@@ -1089,10 +550,11 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_p73_preregistration: AUTHORIZING_P73_PREREGISTRATION,
-        authorizing_p73_implementation: AUTHORIZING_P73_IMPLEMENTATION,
-        authorizing_p73_result: AUTHORIZING_P73_RESULT,
-        authorizing_p73_report_sha256: AUTHORIZING_P73_REPORT_SHA256,
+        authorizing_bridge_preregistration: AUTHORIZING_BRIDGE_PREREGISTRATION,
+        authorizing_bridge_implementation: AUTHORIZING_BRIDGE_IMPLEMENTATION,
+        authorizing_bridge_result: AUTHORIZING_BRIDGE_RESULT,
+        authorizing_bridge_report_sha256: AUTHORIZING_BRIDGE_REPORT_SHA256,
+        authorizing_bridge_result_doc_sha256: AUTHORIZING_BRIDGE_RESULT_DOC_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
         rom_sha256: &rom_sha256,
@@ -1115,7 +577,7 @@ pub fn run_from_process(
         record: &'static str,
         recipe_bytes: usize,
         recipe_sha256: &'a str,
-        projection_bytes: &'static [usize; PAIRS],
+        projection_bytes: &'static [usize; LANES],
         projection_sha256: &'a [String],
         recipes: &'a [Vec<Recipe>],
     }
@@ -1127,20 +589,18 @@ pub fn run_from_process(
         projection_sha256: &projection_sha256,
         recipes: &recipes,
     })?;
-    for arm in &arms {
-        output.write(arm)?;
+    for lane in &lanes {
+        output.write(lane)?;
     }
-    output.write(&paired)?;
-    output.write(&adoption)?;
+    output.write(&classification)?;
     let summary = SummaryRecord {
         record: "summary",
         body_sha256: output.digest(),
-        structural_verdict: paired.verdict,
-        adoption_verdict: adoption.verdict,
-        champion: adoption.champion.clone(),
-        worker_setup_frames: work.worker_setup_frames.clone(),
-        scheduled_slots: work.scheduled,
-        executed_slots: work.executed,
+        verdict: classification.verdict,
+        champion: classification.champion.clone(),
+        lane_setup_frames: lanes.iter().map(|lane| lane.setup_frames).collect(),
+        scheduled_candidates: work.scheduled,
+        executed_candidates: work.executed,
         selections: work.selections,
         setup_frames: work.setup,
         source_replay_frames: baseline.record.replay_frames,
@@ -1153,9 +613,8 @@ pub fn run_from_process(
     output.write(&summary)?;
     let report_sha256 = output.finish()?;
     println!(
-        "{{\"report_sha256\":\"{report_sha256}\",\"structural_verdict\":{},\"adoption_verdict\":{}}}",
-        serde_json::to_string(&summary.structural_verdict)?,
-        serde_json::to_string(&summary.adoption_verdict)?
+        "{{\"report_sha256\":\"{report_sha256}\",\"verdict\":{}}}",
+        serde_json::to_string(&summary.verdict)?
     );
     Ok(())
 }
@@ -1194,21 +653,24 @@ fn validate_source(source: &SmbInput) -> Result<(), Box<dyn Error>> {
 
 fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>> {
     let source_len = u64::try_from(source.actions.len())?;
-    let mut pairs = Vec::with_capacity(PAIRS);
-    for pair in 0..PAIRS {
-        let pair_u64 = u64::try_from(pair)?;
-        let pair_seed = digest_word(&[
+    if source_len == 0 {
+        return Err("cannot derive recipes from an empty source".into());
+    }
+    let mut lanes = Vec::with_capacity(LANES);
+    for lane in 0..LANES {
+        let lane_u64 = u64::try_from(lane)?;
+        let lane_seed = digest_word(&[
             &MASTER_SEED.to_le_bytes(),
-            b"w8-4-p73-compact-v1-pair",
-            &pair_u64.to_le_bytes(),
+            b"normal-endpoint-lane",
+            &lane_u64.to_le_bytes(),
         ])?;
-        let mut slots = Vec::with_capacity(SLOTS);
-        for slot in 0..SLOTS {
-            let slot_u64 = u64::try_from(slot)?;
+        let mut draws = Vec::with_capacity(DRAWS);
+        for draw in 0..DRAWS {
+            let draw_u64 = u64::try_from(draw)?;
             let source_word = digest_word(&[
-                &pair_seed.to_le_bytes(),
-                b"w8-4-p73-compact-v1-action",
-                &slot_u64.to_le_bytes(),
+                &lane_seed.to_le_bytes(),
+                b"normal-endpoint-action",
+                &draw_u64.to_le_bytes(),
             ])?;
             let source_index = usize::try_from(source_word % source_len)?;
             let action = *source
@@ -1216,36 +678,31 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
                 .get(source_index)
                 .ok_or("derived source index is out of bounds")?;
             let selector_seed = digest_word(&[
-                &pair_seed.to_le_bytes(),
-                b"w8-4-p73-compact-v1-parent",
-                &slot_u64.to_le_bytes(),
+                &lane_seed.to_le_bytes(),
+                b"normal-endpoint-parent",
+                &draw_u64.to_le_bytes(),
             ])?;
-            slots.push(Recipe {
-                pair,
-                slot,
+            draws.push(Recipe {
+                lane,
+                draw,
                 source_index,
                 action,
                 selector_seed,
             });
         }
-        pairs.push(slots);
+        lanes.push(draws);
     }
-    Ok(pairs)
-}
-
-#[cfg(test)]
-fn recipe_sha256(recipes: &[Vec<Recipe>]) -> Result<String, Box<dyn Error>> {
-    Ok(sha256_bytes(&recipe_identity_bytes(recipes)?))
+    Ok(lanes)
 }
 
 fn recipe_identity_bytes(recipes: &[Vec<Recipe>]) -> Result<Vec<u8>, Box<dyn Error>> {
     let identity = recipes
         .iter()
-        .flat_map(|pair| pair.iter())
+        .flat_map(|lane| lane.iter())
         .map(|recipe| {
             Ok((
-                u64::try_from(recipe.pair)?,
-                u64::try_from(recipe.slot)?,
+                u64::try_from(recipe.lane)?,
+                u64::try_from(recipe.draw)?,
                 u64::try_from(recipe.source_index)?,
                 recipe.action,
                 recipe.selector_seed,
@@ -1255,61 +712,52 @@ fn recipe_identity_bytes(recipes: &[Vec<Recipe>]) -> Result<Vec<u8>, Box<dyn Err
     Ok(serde_json::to_vec(&identity)?)
 }
 
+fn projection_bytes(recipes: &[Vec<Recipe>]) -> Result<Vec<Vec<u8>>, Box<dyn Error>> {
+    if recipes.len() != LANES || recipes.iter().any(|lane| lane.len() != DRAWS) {
+        return Err("recipe projection shape does not match the preregistration".into());
+    }
+    recipes
+        .iter()
+        .map(|lane| {
+            let projection = lane
+                .iter()
+                .map(|recipe| {
+                    Ok((
+                        u64::try_from(recipe.draw)?,
+                        u64::try_from(recipe.source_index)?,
+                        recipe.action,
+                        recipe.selector_seed,
+                    ))
+                })
+                .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+            Ok(serde_json::to_vec(&projection)?)
+        })
+        .collect()
+}
+
 fn projection_sha256(recipes: &[Vec<Recipe>]) -> Result<Vec<String>, Box<dyn Error>> {
-    let identities = projection_bytes(recipes)?;
-    if identities
-        .iter()
-        .map(Vec::len)
-        .ne(EXPECTED_PROJECTION_BYTES)
-    {
-        return Err("pair recipe projection byte lengths do not match the sealed oracle".into());
+    let projections = projection_bytes(recipes)?;
+    let lengths = projections.iter().map(Vec::len).collect::<Vec<_>>();
+    if lengths.as_slice() != EXPECTED_PROJECTION_BYTES {
+        return Err("lane recipe projection byte lengths do not match the sealed oracle".into());
     }
-    let hashes = identities
+    let mut ordered = projections.clone();
+    ordered.sort();
+    if ordered.windows(2).any(|window| window[0] == window[1]) {
+        return Err("lane recipe projections are not pairwise distinct".into());
+    }
+    let hashes = projections
         .iter()
-        .map(|bytes| sha256_bytes(bytes))
+        .map(|projection| sha256_bytes(projection))
         .collect::<Vec<_>>();
-    let mut sorted = identities;
-    sorted.sort();
-    if sorted.windows(2).any(|window| window[0] == window[1]) {
-        return Err("pair recipe projections are not pairwise distinct".into());
-    }
     if hashes
         .iter()
         .map(String::as_str)
         .ne(EXPECTED_PROJECTION_SHA256)
     {
-        return Err("pair recipe projection hashes do not match the sealed oracle".into());
+        return Err("lane recipe projection hashes do not match the sealed oracle".into());
     }
     Ok(hashes)
-}
-
-fn projection_bytes(recipes: &[Vec<Recipe>]) -> Result<Vec<Vec<u8>>, Box<dyn Error>> {
-    if recipes.len() != PAIRS {
-        return Err("recipe pair count does not match the preregistration".into());
-    }
-    let mut identities = Vec::with_capacity(PAIRS);
-    for (pair, recipes) in recipes.iter().enumerate() {
-        if recipes.len() != SLOTS {
-            return Err("recipe slot count does not match the preregistration".into());
-        }
-        let identity = recipes
-            .iter()
-            .map(|recipe| {
-                if recipe.pair != pair {
-                    return Err("recipe pair identity is not canonical".into());
-                }
-                Ok((
-                    u64::try_from(recipe.slot)?,
-                    u64::try_from(recipe.source_index)?,
-                    recipe.action,
-                    recipe.selector_seed,
-                ))
-            })
-            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-        let bytes = serde_json::to_vec(&identity)?;
-        identities.push(bytes);
-    }
-    Ok(identities)
 }
 
 fn digest_word(parts: &[&[u8]]) -> Result<u64, Box<dyn Error>> {
@@ -1492,130 +940,93 @@ fn evaluate_parallel(
     source: &SmbInput,
     recipes: &[Vec<Recipe>],
     baseline: &Baseline,
-) -> Result<Vec<ArmRecord>, Box<dyn Error>> {
-    if recipes.len() != PAIRS || recipes.iter().any(|pair| pair.len() != SLOTS) {
+) -> Result<Vec<LaneRecord>, Box<dyn Error>> {
+    if recipes.len() != LANES || recipes.iter().any(|lane| lane.len() != DRAWS) {
         return Err("recipe shape does not match the preregistration".into());
     }
     let (sender, receiver) = mpsc::channel();
     thread::scope(|scope| -> Result<(), Box<dyn Error>> {
-        let mut handles = Vec::with_capacity(WORKERS);
-        for worker in 0..WORKERS {
+        let mut handles = Vec::with_capacity(LANES);
+        for lane in 0..LANES {
             let sender = sender.clone();
             let source = source.clone();
-            let recipes = recipes.to_vec();
+            let lane_recipes = recipes.get(lane).ok_or("missing lane recipes")?.clone();
             let baseline = baseline.clone();
             let handle = thread::Builder::new()
-                .name(format!("paired-action-{worker}"))
+                .name(format!("endpoint-harvest-{lane}"))
                 .spawn_scoped(scope, move || {
-                    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)
-                        .map_err(|error| error.to_string());
-                    let mut prior_error = target
-                        .as_ref()
-                        .ok()
-                        .and_then(|target| {
-                            (target.frames_clocked() != EXPECTED_SETUP_FRAMES).then(|| {
-                                format!(
-                                    "worker {worker} setup frames: expected {EXPECTED_SETUP_FRAMES}, got {}",
-                                    target.frames_clocked()
-                                )
-                            })
+                    let result = SmbTarget::from_smb_rom_bytes_headless(rom)
+                        .map_err(|error| error.to_string())
+                        .and_then(|mut target| {
+                            run_lane(&mut target, &source, &lane_recipes, &baseline, lane)
+                                .map_err(|error| error.to_string())
                         });
-                    for ordinal in (worker..ARMS).step_by(WORKERS) {
-                        let result = if let Some(error) = prior_error.as_ref() {
-                            Err(format!("worker unavailable after prior error: {error}"))
-                        } else {
-                            match target.as_mut() {
-                                Ok(target) => {
-                                    let pair = ordinal / 2;
-                                    let pair_recipes = recipes
-                                        .get(pair)
-                                        .ok_or_else(|| "missing pair recipes".to_string());
-                                    pair_recipes.and_then(|pair_recipes| {
-                                        run_arm(
-                                            target,
-                                            &source,
-                                            pair_recipes,
-                                            &baseline,
-                                            ordinal,
-                                            worker,
-                                        )
-                                        .map_err(|error| error.to_string())
-                                    })
-                                }
-                                Err(error) => Err(error.clone()),
-                            }
-                        };
-                        if let Err(error) = &result {
-                            prior_error = Some(error.clone());
-                        }
-                        let _ = sender.send(ArmReply {
-                            ordinal,
-                            worker,
-                            result,
-                        });
-                    }
+                    let _ = sender.send(LaneReply {
+                        lane,
+                        worker: lane,
+                        result,
+                    });
                 })?;
             handles.push(handle);
         }
         drop(sender);
         for handle in handles {
-            handle.join().map_err(|_| "paired-action worker panicked")?;
+            handle
+                .join()
+                .map_err(|_| "endpoint-harvest worker panicked")?;
         }
         Ok(())
     })?;
-    consume_arm_replies(receiver.into_iter().collect())
+    consume_lane_replies(receiver.into_iter().collect())
 }
 
-fn consume_arm_replies(replies: Vec<ArmReply>) -> Result<Vec<ArmRecord>, Box<dyn Error>> {
+fn consume_lane_replies(replies: Vec<LaneReply>) -> Result<Vec<LaneRecord>, Box<dyn Error>> {
     let mut buffered = BTreeMap::new();
     let mut metadata_errors = Vec::new();
     for reply in replies {
-        if reply.ordinal >= ARMS || reply.worker != reply.ordinal % WORKERS {
-            metadata_errors.push((0_u8, reply.ordinal, reply.worker, "invalid"));
+        if reply.lane >= LANES || reply.worker != reply.lane {
+            metadata_errors.push((0_u8, reply.lane, reply.worker, "invalid"));
             continue;
         }
-        if buffered.insert(reply.ordinal, reply.result).is_some() {
-            metadata_errors.push((1_u8, reply.ordinal, reply.worker, "duplicate"));
+        if buffered.insert(reply.lane, reply.result).is_some() {
+            metadata_errors.push((1_u8, reply.lane, reply.worker, "duplicate"));
         }
     }
-    for ordinal in 0..ARMS {
-        if !buffered.contains_key(&ordinal) {
-            metadata_errors.push((2_u8, ordinal, ordinal % WORKERS, "missing"));
+    for lane in 0..LANES {
+        if !buffered.contains_key(&lane) {
+            metadata_errors.push((2_u8, lane, lane, "missing"));
         }
     }
     metadata_errors.sort_unstable();
-    if let Some((_, ordinal, worker, kind)) = metadata_errors.first() {
-        return Err(format!("{kind} arm reply: ordinal={ordinal}, worker={worker}").into());
+    if let Some((_, lane, worker, kind)) = metadata_errors.first() {
+        return Err(format!("{kind} lane reply: lane={lane}, worker={worker}").into());
     }
-    let mut arms = Vec::with_capacity(ARMS);
-    for ordinal in 0..ARMS {
-        arms.push(
+    let mut lanes = Vec::with_capacity(LANES);
+    for lane in 0..LANES {
+        lanes.push(
             buffered
-                .remove(&ordinal)
-                .ok_or("missing arm reply")?
-                .map_err(|error| format!("arm {ordinal}: {error}"))?,
+                .remove(&lane)
+                .ok_or("missing lane reply")?
+                .map_err(|error| format!("lane {lane}: {error}"))?,
         );
     }
-    Ok(arms)
+    Ok(lanes)
 }
 
-fn run_arm(
+fn run_lane(
     target: &mut SmbTarget,
     source: &SmbInput,
     recipes: &[Recipe],
     baseline: &Baseline,
-    ordinal: usize,
-    worker: usize,
-) -> Result<ArmRecord, Box<dyn Error>> {
-    if ordinal >= ARMS || worker != ordinal % WORKERS || recipes.len() != SLOTS {
-        return Err("arm identity or recipe count does not match the preregistration".into());
+    lane: usize,
+) -> Result<LaneRecord, Box<dyn Error>> {
+    let setup_frames = target.frames_clocked();
+    if setup_frames != EXPECTED_SETUP_FRAMES {
+        return Err("worker target setup work does not match the sealed value".into());
     }
-    let pair = ordinal / 2;
-    let arm = if ordinal.is_multiple_of(2) {
-        ArmKind::Full
-    } else {
-        ArmKind::Compact
-    };
+    if recipes.len() != DRAWS {
+        return Err("lane recipe count does not match the preregistration".into());
+    }
     let mut archive = Archive::new();
     archive.max_entries = ARCHIVE_LIMIT;
     archive.set_selector_policy(SmbArchiveSelectorPolicy::ConcentratedRecency);
@@ -1636,7 +1047,7 @@ fn run_arm(
         || archive.active.as_slice() != [true]
         || archive.input_ids.get(source) != Some(&0)
     {
-        return Err("arm origin archive did not initialize exactly".into());
+        return Err("lane origin archive did not initialize exactly".into());
     }
     let initial_archive_sha256 = sha256_json(&(
         &archive.entries[0].report,
@@ -1647,23 +1058,17 @@ fn run_arm(
         "fewest_actions",
         "absent_waypoint",
     ))?;
-    let arm_work_before = target.frames_clocked();
-    let mut slots = Vec::with_capacity(SLOTS);
+    let lane_work_before = target.frames_clocked();
+    let mut draws = Vec::with_capacity(DRAWS);
     let mut retained: Vec<Option<RetainedEvidence>> = vec![None];
     let mut action_total = 0_u64;
     let mut probe_total = 0_u64;
     let mut maximum_lineage_actions = SOURCE_ACTIONS;
-    let mut midpoint = None;
 
-    for slot in 0..SLOTS {
-        if slot == MIDPOINT {
-            midpoint = Some(apply_midpoint(&mut archive, &mut retained, arm)?);
+    for recipe in recipes {
+        if recipe.lane != lane || recipe.draw != draws.len() {
+            return Err("lane recipe order is not canonical".into());
         }
-        let recipe = recipes.get(slot).ok_or("missing slot recipe")?;
-        if recipe.pair != pair || recipe.slot != slot {
-            return Err("slot recipe order is not canonical".into());
-        }
-        let action = recipe.action;
         let mut rand = StdRand::with_seed(recipe.selector_seed);
         let (parent_id, selector) = archive.select_parent(&mut rand, ACTION_LIMIT)?;
         let selector = selector.ok_or("normal selector omitted its draw record")?;
@@ -1690,74 +1095,78 @@ fn run_arm(
         if start.dead || start.failed {
             return Err("selector returned a terminal or failed parent".into());
         }
-
-        let slot_before = target.frames_clocked();
-        target.apply(&action);
+        let draw_before = target.frames_clocked();
+        let action_before = target.frames_clocked();
+        target.apply(&recipe.action);
         let action_frames = target
             .frames_clocked()
-            .checked_sub(slot_before)
+            .checked_sub(action_before)
             .ok_or("action work counter moved backwards")?;
-        if target.exit_kind() != ExitKind::Ok {
+        let failed = target.exit_kind() != ExitKind::Ok;
+        if failed {
             return Err("emulator failed during a full action".into());
         }
         let dead = target.is_dead();
-        if action_frames > u64::from(action.bounded_hold_frames())
-            || (!dead && action_frames != u64::from(action.bounded_hold_frames()))
-        {
-            return Err("full action work does not match its bounded duration".into());
+        if action_frames > u64::from(recipe.action.bounded_hold_frames()) {
+            return Err("full action exceeded its bounded duration".into());
+        }
+        if !dead && action_frames != u64::from(recipe.action.bounded_hold_frames()) {
+            return Err("live full action did not execute its requested duration".into());
         }
         let observation = target.observe();
         let mechanical = smb_mechanical_state_from_wram(target.wram());
         let mut milestones = parent_report.milestones;
         merge_action_milestones(&mut milestones, target)?;
-        let candidate_input = appended_input(&parent_report.input, action)?;
-        record_lineage_actions(&mut maximum_lineage_actions, candidate_input.actions.len())?;
-        let input_sha256 = sha256_json(&candidate_input)?;
+        let input = appended_input(&parent_report.input, recipe.action)?;
+        record_lineage_actions(&mut maximum_lineage_actions, input.actions.len())?;
+        let input_sha256 = sha256_json(&input)?;
         let wram_sha256 = sha256_bytes(target.wram());
+
         let mut snapshot_sha256 = None;
         let mut key = None;
         let mut probe = Vec::new();
         let mut probe_survived = false;
         let mut probe_frames = 0_u64;
-        let admission = if dead {
-            AdmissionOutcome::Terminal
+        let admission;
+        let mut retained_snapshot = None;
+        if dead {
+            admission = AdmissionOutcome::Terminal;
         } else {
             let snapshot = target
                 .snapshot()
-                .ok_or("failed to snapshot ordinary slot endpoint")?;
+                .ok_or("failed to snapshot ordinary endpoint")?;
             let candidate_snapshot_sha256 = sha256_json(&snapshot)?;
             let candidate_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
             let (attempts, survived, work) = run_probe(target, &snapshot)?;
             probe = attempts;
             probe_survived = survived;
             probe_frames = work;
-            snapshot_sha256 = Some(candidate_snapshot_sha256);
+            snapshot_sha256 = Some(candidate_snapshot_sha256.clone());
             key = Some(candidate_key);
-            if survived {
-                insert_candidate(
+            admission = if survived {
+                let outcome = insert_candidate(
                     &mut archive,
                     Some(parent_id),
-                    u64::try_from(slot.checked_add(1).ok_or("execution overflow")?)?,
+                    u64::try_from(recipe.draw.checked_add(1).ok_or("execution overflow")?)?,
                     ArchiveCandidate {
-                        input: candidate_input.clone(),
+                        input: input.clone(),
                         key: candidate_key,
                         milestones,
                     },
-                    snapshot,
-                )?
+                    snapshot.clone(),
+                )?;
+                if outcome.newly_retained_id().is_some() {
+                    retained_snapshot = Some(snapshot);
+                }
+                outcome
             } else {
                 AdmissionOutcome::ProbeRefused
-            }
-        };
+            };
+        }
         let endpoint = EndpointEvidence {
-            action,
-            input_actions: parent_report
-                .input
-                .actions
-                .len()
-                .checked_add(1)
-                .ok_or("candidate action count overflow")?,
-            input_sha256,
+            action: recipe.action,
+            input_actions: input.actions.len(),
+            input_sha256: input_sha256.clone(),
             observation,
             mechanical,
             watermark: watermark(mechanical),
@@ -1767,223 +1176,98 @@ fn run_arm(
             milestones,
             action_frames,
             dead,
-            failed: false,
+            failed,
             probe,
             probe_survived,
             probe_frames,
             admission,
         };
-        let productive = endpoint.admission.newly_retained_id().is_some();
         if let Some(id) = endpoint.admission.newly_retained_id() {
-            if id != retained.len() {
+            if id != retained.len() || retained_snapshot.is_none() {
                 return Err("retained evidence is not insertion-order aligned".into());
             }
             retained.push(Some(RetainedEvidence {
+                draw: recipe.draw,
+                recipe: *recipe,
+                parent_id,
                 endpoint: endpoint.clone(),
                 work_frames: action_frames
                     .checked_add(probe_frames)
                     .ok_or("retained work overflow")?,
-                slot,
-                source_index: recipe.source_index,
-                action: recipe.action,
             }));
         } else if archive.entries.len() != retained.len() {
             return Err("nonallocating admission changed archive length".into());
         }
-        let slot_work = target
+        let productive = endpoint.admission.newly_retained_id().is_some();
+        let draw_work = target
             .frames_clocked()
-            .checked_sub(slot_before)
-            .ok_or("slot work counter moved backwards")?;
-        if slot_work
+            .checked_sub(draw_before)
+            .ok_or("draw work counter moved backwards")?;
+        if draw_work
             != action_frames
                 .checked_add(probe_frames)
-                .ok_or("slot component work overflow")?
+                .ok_or("draw component work overflow")?
         {
-            return Err("slot work does not reconcile with components".into());
+            return Err("draw work does not reconcile with components".into());
         }
+        archive.record_selection(parent_id, &selector);
+        archive.record_selection_outcome(parent_id, productive, draw_work)?;
         action_total = action_total
             .checked_add(action_frames)
-            .ok_or("arm action work overflow")?;
+            .ok_or("lane action work overflow")?;
         probe_total = probe_total
             .checked_add(probe_frames)
-            .ok_or("arm probe work overflow")?;
-        archive.record_selection(parent_id, &selector);
-        archive.record_selection_outcome(parent_id, productive, slot_work)?;
-        slots.push(SlotRecord {
-            pair,
-            arm,
-            slot,
+            .ok_or("lane probe work overflow")?;
+        let active_ids = active_ids(&archive)?;
+        let active_maximum = active_maximum(&archive)?;
+        draws.push(DrawRecord {
+            draw: recipe.draw,
+            recipe: *recipe,
+            source_index: recipe.source_index,
             selector_seed: recipe.selector_seed,
             selector,
             parent_id,
             parent_input_sha256,
             parent_snapshot_sha256,
-            start: start.clone(),
-            candidate: CandidateRecord {
-                pair,
-                arm,
-                slot,
-                source_index: recipe.source_index,
-                action: recipe.action,
-                selector_seed: recipe.selector_seed,
-                parent_id,
-                start,
-                input: candidate_input,
-                endpoint,
-                productive,
-                active_ids: active_ids(&archive)?,
-                active_maximum: active_maximum(&archive)?,
-                total_work_frames: slot_work,
-            },
+            start,
+            input,
+            endpoint,
             productive,
+            active_ids,
+            active_maximum,
             selector_accounting: archive.selector_report(),
-            total_work_frames: slot_work,
+            total_work_frames: draw_work,
         });
     }
-
     let total_work_frames = action_total
         .checked_add(probe_total)
-        .ok_or("arm work overflow")?;
-    let arm_delta = target
+        .ok_or("lane work overflow")?;
+    let lane_delta = target
         .frames_clocked()
-        .checked_sub(arm_work_before)
-        .ok_or("arm work counter moved backwards")?;
-    if arm_delta != total_work_frames || slots.len() != SLOTS {
-        return Err("arm work or slot counts do not reconcile".into());
+        .checked_sub(lane_work_before)
+        .ok_or("lane work counter moved backwards")?;
+    if lane_delta != total_work_frames {
+        return Err("lane work does not reconcile".into());
     }
-    let (final_active_entries, champion_candidates) =
-        final_entries(pair, arm, &archive, &retained)?;
-    Ok(ArmRecord {
-        record: "arm",
-        ordinal,
-        pair,
-        arm,
-        worker,
-        worker_setup_frames: (ordinal == worker).then_some(EXPECTED_SETUP_FRAMES),
+    let (final_active_entries, champion_candidates) = final_entries(lane, &archive, &retained)?;
+    Ok(LaneRecord {
+        record: "lane",
+        lane,
+        worker: lane,
+        setup_frames,
         initial_archive_sha256,
-        slots,
-        midpoint: midpoint.ok_or("arm omitted its registered midpoint operation")?,
+        draws,
         final_active_entries,
         final_maximum: active_maximum(&archive)?,
         maximum_lineage_actions,
-        scheduled_slots: SLOTS,
-        executed_slots: SLOTS,
-        selections: SLOTS,
+        scheduled_draws: DRAWS,
+        executed_draws: DRAWS,
+        selections: DRAWS,
         selector_accounting: archive.selector_report(),
         action_frames: action_total,
         probe_frames: probe_total,
         total_work_frames,
         champion_candidates,
-    })
-}
-
-fn archive_digest(archive: &Archive) -> Result<String, Box<dyn Error>> {
-    let entries = archive
-        .entries
-        .iter()
-        .map(|entry| (&entry.report, &entry.snapshot))
-        .collect::<Vec<_>>();
-    sha256_json(&(
-        entries,
-        &archive.active,
-        archive.max_entries,
-        archive.retained,
-        archive.rejected,
-        archive.selector_report(),
-    ))
-}
-
-fn midpoint_champion_id(archive: &Archive) -> Result<usize, Box<dyn Error>> {
-    let mut candidates = active_ids(archive)?
-        .into_iter()
-        .map(|id| {
-            let report = &archive
-                .entries
-                .get(id)
-                .ok_or("midpoint entry is missing")?
-                .report;
-            Ok((
-                id,
-                watermark_from_key(report.key),
-                report.input.actions.len(),
-                hex_to_array(&sha256_json(&report.input)?)?,
-            ))
-        })
-        .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-    candidates.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| left.2.cmp(&right.2))
-            .then_with(|| left.3.cmp(&right.3))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    candidates
-        .first()
-        .map(|candidate| candidate.0)
-        .ok_or_else(|| "midpoint archive has no active champion".into())
-}
-
-fn apply_midpoint(
-    archive: &mut Archive,
-    retained: &mut Vec<Option<RetainedEvidence>>,
-    arm: ArmKind,
-) -> Result<MidpointRecord, Box<dyn Error>> {
-    let champion_original_id = midpoint_champion_id(archive)?;
-    let champion = archive
-        .entries
-        .get(champion_original_id)
-        .ok_or("midpoint champion is missing")?
-        .clone();
-    let champion_input_sha256 = sha256_json(&champion.report.input)?;
-    let champion_snapshot_sha256 = sha256_json(&champion.snapshot)?;
-    let before_archive_sha256 = archive_digest(archive)?;
-    let compacted = arm == ArmKind::Compact;
-    if compacted {
-        let mut compact = Archive::new();
-        compact.max_entries = ARCHIVE_LIMIT;
-        compact.set_selector_policy(SmbArchiveSelectorPolicy::ConcentratedRecency);
-        compact.set_waypoint_policy(SmbArchiveWaypointPolicy::Absent);
-        compact.set_replacement_policy(SmbArchiveReplacementPolicy::FewestActions);
-        let origin = compact.insert(
-            None,
-            0,
-            ArchiveCandidate {
-                input: champion.report.input.clone(),
-                key: champion.report.key,
-                milestones: champion.report.milestones,
-            },
-            champion.snapshot.clone(),
-        )?;
-        let accounting = compact.selector_report();
-        if origin != Some(0)
-            || compact.entries.len() != 1
-            || compact.active.as_slice() != [true]
-            || compact.input_ids.get(&champion.report.input) != Some(&0)
-            || accounting.uniform_selections != 0
-            || accounting.tie_class_selections != 0
-        {
-            return Err("midpoint compact archive did not reset exactly".into());
-        }
-        *archive = compact;
-        *retained = vec![None];
-    }
-    let after_archive_sha256 = archive_digest(archive)?;
-    if (!compacted && after_archive_sha256 != before_archive_sha256)
-        || (compacted && archive.entries.len() != 1)
-    {
-        return Err("midpoint archive transition is not canonical".into());
-    }
-    Ok(MidpointRecord {
-        slot: MIDPOINT,
-        champion_original_id,
-        champion_input_sha256,
-        champion_snapshot_sha256,
-        champion_key: champion.report.key,
-        champion_milestones: champion.report.milestones,
-        before_archive_sha256,
-        after_archive_sha256,
-        compacted,
     })
 }
 
@@ -2151,8 +1435,7 @@ fn active_maximum(archive: &Archive) -> Result<ActiveMaximum, Box<dyn Error>> {
 }
 
 fn final_entries(
-    pair: usize,
-    arm: ArmKind,
+    lane: usize,
     archive: &Archive,
     retained: &[Option<RetainedEvidence>],
 ) -> Result<(Vec<FinalEntryRecord>, Vec<ChampionCandidate>), Box<dyn Error>> {
@@ -2175,6 +1458,12 @@ fn final_entries(
             || evidence.endpoint.failed
             || !evidence.endpoint.probe_survived
             || evidence.endpoint.key != Some(entry.report.key)
+            || evidence.recipe.lane != lane
+            || evidence.recipe.draw != evidence.draw
+            || evidence.recipe.action != evidence.endpoint.action
+            || entry.report.parent_id != Some(u64::try_from(evidence.parent_id)?)
+            || entry.report.created_execution
+                != u64::try_from(evidence.draw.checked_add(1).ok_or("draw overflow")?)?
         {
             return Err("active entry disagrees with its normal admission evidence".into());
         }
@@ -2191,6 +1480,8 @@ fn final_entries(
             id,
             parent_id: entry.report.parent_id,
             created_execution: entry.report.created_execution,
+            draw: evidence.draw,
+            recipe: evidence.recipe,
             actions: entry.report.input.actions.len(),
             input_sha256: input_sha256.clone(),
             key: entry.report.key,
@@ -2199,15 +1490,13 @@ fn final_entries(
             snapshot_sha256,
             probe_survived: evidence.endpoint.probe_survived,
             work_frames: evidence.work_frames,
-            slot: evidence.slot,
         });
         candidates.push(ChampionCandidate {
-            pair,
-            arm,
+            lane,
             id,
-            slot: evidence.slot,
-            source_index: evidence.source_index,
-            action: evidence.action,
+            draw: evidence.draw,
+            recipe: evidence.recipe,
+            parent_id: evidence.parent_id,
             input: entry.report.input.clone(),
             input_sha256_bytes: hex_to_array(&input_sha256)?,
             input_sha256,
@@ -2243,135 +1532,31 @@ fn parent_lineage(archive: &Archive, id: usize) -> Result<Vec<u64>, Box<dyn Erro
     Ok(lineage)
 }
 
-fn validate_arms(arms: &[ArmRecord]) -> Result<(), Box<dyn Error>> {
-    if arms.len() != ARMS {
-        return Err("arm count does not match the preregistration".into());
+fn classify(lanes: &[LaneRecord]) -> Result<ClassificationRecord, Box<dyn Error>> {
+    if lanes.len() != LANES {
+        return Err("lane count does not match the preregistration".into());
     }
-    for (ordinal, record) in arms.iter().enumerate() {
-        let expected_arm = if ordinal.is_multiple_of(2) {
-            ArmKind::Full
-        } else {
-            ArmKind::Compact
-        };
-        let accounted_selections = selector_selections(record.selector_accounting)?;
-        let expected_accounted = match expected_arm {
-            ArmKind::Full => SLOTS,
-            ArmKind::Compact => SLOTS - MIDPOINT,
-        };
-        if record.ordinal != ordinal
-            || record.pair != ordinal / 2
-            || record.arm != expected_arm
-            || record.worker != ordinal % WORKERS
-            || record.worker_setup_frames != (ordinal < WORKERS).then_some(EXPECTED_SETUP_FRAMES)
-            || record.slots.len() != SLOTS
-            || record.selections != SLOTS
-            || accounted_selections != u64::try_from(expected_accounted)?
-            || record.selector_accounting.policy != SmbArchiveSelectorPolicy::ConcentratedRecency
-            || record.selector_accounting.waypoint_selections != 0
-            || record.scheduled_slots != SLOTS
-            || record.executed_slots != SLOTS
+    for (lane, record) in lanes.iter().enumerate() {
+        if record.lane != lane
+            || record.worker != lane
+            || record.draws.len() != DRAWS
+            || record.scheduled_draws != DRAWS
+            || record.executed_draws != DRAWS
+            || record.selections != DRAWS
             || !(SOURCE_ACTIONS..=MAX_LINEAGE_ACTIONS).contains(&record.maximum_lineage_actions)
         {
-            return Err("arm record order or shape is not canonical".into());
-        }
-        for (slot, slot_record) in record.slots.iter().enumerate() {
-            let expected_action = slot_record.candidate.action;
-            let expected_slot_selections = match expected_arm {
-                ArmKind::Full => slot.checked_add(1).ok_or("slot count overflow")?,
-                ArmKind::Compact if slot < MIDPOINT => {
-                    slot.checked_add(1).ok_or("slot count overflow")?
-                }
-                ArmKind::Compact => slot
-                    .checked_sub(MIDPOINT)
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or("post-midpoint slot count overflow")?,
-            };
-            let candidate_input_sha256 = sha256_json(&slot_record.candidate.input)?;
-            if slot_record.pair != record.pair
-                || slot_record.arm != record.arm
-                || slot_record.slot != slot
-                || slot_record.candidate.pair != record.pair
-                || slot_record.candidate.arm != record.arm
-                || slot_record.candidate.slot != slot
-                || slot_record.candidate.selector_seed != slot_record.selector_seed
-                || slot_record.candidate.parent_id != slot_record.parent_id
-                || slot_record.candidate.start != slot_record.start
-                || slot_record.candidate.input.actions.last() != Some(&expected_action)
-                || slot_record.candidate.input.actions.len()
-                    != slot_record.candidate.endpoint.input_actions
-                || candidate_input_sha256 != slot_record.candidate.endpoint.input_sha256
-                || slot_record.candidate.endpoint.action != expected_action
-                || slot_record.candidate.productive != slot_record.productive
-                || slot_record.total_work_frames != slot_record.candidate.total_work_frames
-                || selector_selections(slot_record.selector_accounting)?
-                    != u64::try_from(expected_slot_selections)?
-                || slot_record
-                    .candidate
-                    .endpoint
-                    .admission
-                    .newly_retained_id()
-                    .is_some()
-                    != slot_record.productive
-            {
-                return Err("slot record order or accounting is not canonical".into());
-            }
-        }
-        if record.midpoint.slot != MIDPOINT
-            || record.midpoint.compacted != (expected_arm == ArmKind::Compact)
-            || (!record.midpoint.compacted
-                && record.midpoint.before_archive_sha256 != record.midpoint.after_archive_sha256)
-        {
-            return Err("midpoint record is not canonical".into());
+            return Err("lane record order or shape is not canonical".into());
         }
     }
-    for pair in 0..PAIRS {
-        let full = arms.get(pair * 2).ok_or("missing FULL arm")?;
-        let compact = arms.get(pair * 2 + 1).ok_or("missing COMPACT arm")?;
-        if full.initial_archive_sha256 != compact.initial_archive_sha256
-            || full.midpoint.champion_original_id != compact.midpoint.champion_original_id
-            || full.midpoint.champion_input_sha256 != compact.midpoint.champion_input_sha256
-            || full.midpoint.champion_snapshot_sha256 != compact.midpoint.champion_snapshot_sha256
-            || full.midpoint.champion_key != compact.midpoint.champion_key
-            || full.midpoint.champion_milestones != compact.midpoint.champion_milestones
-            || full.midpoint.before_archive_sha256 != compact.midpoint.before_archive_sha256
-        {
-            return Err("paired midpoint evidence differs before the intervention".into());
-        }
-        for slot in 0..MIDPOINT {
-            let left = full.slots.get(slot).ok_or("missing FULL prefix slot")?;
-            let mut right = compact
-                .slots
-                .get(slot)
-                .ok_or("missing COMPACT prefix slot")?
-                .clone();
-            right.arm = ArmKind::Full;
-            right.candidate.arm = ArmKind::Full;
-            if left != &right {
-                return Err("paired pre-midpoint slot evidence is not byte-identical".into());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn selector_selections(accounting: SmbSelectorAccounting) -> Result<u64, Box<dyn Error>> {
-    accounting
-        .uniform_selections
-        .checked_add(accounting.tie_class_selections)
-        .ok_or_else(|| "selector selection count overflow".into())
-}
-
-fn classify_adoption(arms: &[ArmRecord]) -> Result<ClassificationRecord, Box<dyn Error>> {
-    validate_arms(arms)?;
-    let candidates = arms
+    let candidates = lanes
         .iter()
-        .flat_map(|arm| arm.champion_candidates.iter().cloned())
+        .flat_map(|lane| lane.champion_candidates.iter().cloned())
         .collect::<Vec<_>>();
     let eligible_entries = candidates.len();
     let champion = rank_champion(candidates);
     let verdict = verdict_for(champion.as_ref());
     Ok(ClassificationRecord {
-        record: "adoption_classification",
+        record: "classification",
         verdict,
         eligible_entries,
         champion,
@@ -2386,27 +1571,21 @@ fn rank_champion(mut candidates: Vec<ChampionCandidate>) -> Option<ChampionRecor
             .cmp(&left.endpoint.watermark)
             .then_with(|| left.input.actions.len().cmp(&right.input.actions.len()))
             .then_with(|| left.input_sha256_bytes.cmp(&right.input_sha256_bytes))
-            .then_with(|| left.pair.cmp(&right.pair))
-            .then_with(|| left.arm.cmp(&right.arm))
+            .then_with(|| left.lane.cmp(&right.lane))
             .then_with(|| left.id.cmp(&right.id))
     });
-    candidates.first().map(champion_record)
-}
-
-fn champion_record(candidate: &ChampionCandidate) -> ChampionRecord {
-    ChampionRecord {
-        pair: candidate.pair,
-        arm: candidate.arm,
+    candidates.first().map(|candidate| ChampionRecord {
+        lane: candidate.lane,
         id: candidate.id,
-        slot: candidate.slot,
-        source_index: candidate.source_index,
-        action: candidate.action,
+        draw: candidate.draw,
+        recipe: candidate.recipe,
+        parent_id: candidate.parent_id,
         parent_lineage: candidate.parent_lineage.clone(),
         input: candidate.input.clone(),
         input_sha256: candidate.input_sha256.clone(),
         endpoint: candidate.endpoint.clone(),
         work_frames: candidate.work_frames,
-    }
+    })
 }
 
 fn verdict_for(champion: Option<&ChampionRecord>) -> Verdict {
@@ -2418,156 +1597,12 @@ fn verdict_for(champion: Option<&ChampionRecord>) -> Verdict {
     }) {
         Verdict::Adopt
     } else {
-        Verdict::NoAdopt
+        Verdict::Stop
     }
 }
 
-fn classify_paired(arms: &[ArmRecord]) -> Result<PairedClassificationRecord, Box<dyn Error>> {
-    validate_arms(arms)?;
-    let mut pairs = Vec::with_capacity(PAIRS);
-    let mut non_ties = 0_usize;
-    let mut compact_wins = 0_usize;
-    let mut witnesses = Vec::new();
-    for pair in 0..PAIRS {
-        let full = arms.get(pair * 2).ok_or("missing FULL arm")?;
-        let compact = arms
-            .get(
-                pair.checked_mul(2)
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or("arm index overflow")?,
-            )
-            .ok_or("missing COMPACT arm")?;
-        let outcome = match compact
-            .final_maximum
-            .watermark
-            .cmp(&full.final_maximum.watermark)
-        {
-            std::cmp::Ordering::Greater => {
-                non_ties = non_ties.checked_add(1).ok_or("non-tie count overflow")?;
-                compact_wins = compact_wins
-                    .checked_add(1)
-                    .ok_or("COMPACT win count overflow")?;
-                "COMPACT_WIN"
-            }
-            std::cmp::Ordering::Less => {
-                non_ties = non_ties.checked_add(1).ok_or("non-tie count overflow")?;
-                "FULL_WIN"
-            }
-            std::cmp::Ordering::Equal => "TIE",
-        };
-        pairs.push(PairOutcomeRecord {
-            pair,
-            full_maximum: full.final_maximum.watermark,
-            compact_maximum: compact.final_maximum.watermark,
-            outcome,
-        });
-        witnesses.extend(structural_witnesses(pair, full, compact));
-    }
-    witnesses.sort_by_key(|witness| (witness.pair, witness.champion.id));
-    let tail_numerator = sign_tail_numerator(non_ties, compact_wins)?;
-    let shift = u32::try_from(non_ties)?;
-    let tail_denominator = 1_u128
-        .checked_shl(shift)
-        .ok_or("sign denominator overflow")?;
-    let verdict = structural_verdict(
-        non_ties,
-        compact_wins,
-        tail_numerator,
-        tail_denominator,
-        !witnesses.is_empty(),
-    )?;
-    Ok(PairedClassificationRecord {
-        record: "paired_classification",
-        pairs,
-        non_ties,
-        compact_wins,
-        tail_numerator,
-        tail_denominator,
-        witnesses,
-        verdict,
-    })
-}
-
-fn structural_witnesses(
-    pair: usize,
-    full: &ArmRecord,
-    compact: &ArmRecord,
-) -> Vec<StructuralWitness> {
-    compact
-        .champion_candidates
-        .iter()
-        .filter(|candidate| is_compact_witness(candidate, full.final_maximum.watermark))
-        .map(|candidate| StructuralWitness {
-            pair,
-            full_maximum: full.final_maximum.watermark,
-            champion: champion_record(candidate),
-        })
-        .collect()
-}
-
-fn is_compact_witness(candidate: &ChampionCandidate, full_maximum: SmbProgressWatermark) -> bool {
-    candidate.arm == ArmKind::Compact
-        && candidate.slot >= MIDPOINT
-        && candidate.endpoint.admission.newly_retained_id() == Some(candidate.id)
-        && !candidate.endpoint.dead
-        && !candidate.endpoint.failed
-        && candidate.endpoint.probe_survived
-        && candidate.endpoint.watermark > BASELINE_WATERMARK
-        && candidate.endpoint.watermark > full_maximum
-}
-
-fn structural_verdict(
-    non_ties: usize,
-    compact_wins: usize,
-    tail_numerator: u128,
-    tail_denominator: u128,
-    has_witness: bool,
-) -> Result<StructuralVerdict, Box<dyn Error>> {
-    let sign = tail_numerator
-        .checked_mul(80)
-        .ok_or("sign-tail comparison overflow")?
-        <= tail_denominator;
-    Ok(if non_ties < 8 {
-        StructuralVerdict::InconclusiveSparse
-    } else if compact_wins > non_ties.saturating_sub(compact_wins) && sign && has_witness {
-        StructuralVerdict::PromoteCompaction
-    } else {
-        StructuralVerdict::RetainFull
-    })
-}
-
-fn sign_tail_numerator(n: usize, wins: usize) -> Result<u128, Box<dyn Error>> {
-    if wins > n {
-        return Err("sign-tail wins exceed non-ties".into());
-    }
-    let mut numerator = 0_u128;
-    for k in wins..=n {
-        numerator = numerator
-            .checked_add(choose(n, k)?)
-            .ok_or("sign-tail numerator overflow")?;
-    }
-    Ok(numerator)
-}
-
-fn choose(n: usize, k: usize) -> Result<u128, Box<dyn Error>> {
-    if k > n {
-        return Err("binomial index exceeds population".into());
-    }
-    let k = k.min(n - k);
-    let mut value = 1_u128;
-    for index in 0..k {
-        value = value
-            .checked_mul(u128::try_from(n - index)?)
-            .ok_or("binomial multiplication overflow")?
-            .checked_div(u128::try_from(index + 1)?)
-            .ok_or("binomial division by zero")?;
-    }
-    Ok(value)
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorkSummary {
-    worker_setup_frames: Vec<u64>,
     scheduled: usize,
     executed: usize,
     selections: usize,
@@ -2580,24 +1615,43 @@ struct WorkSummary {
 }
 
 fn summarize_work(
-    arms: &[ArmRecord],
+    lanes: &[LaneRecord],
     baseline_setup: u64,
     source_probe: u64,
 ) -> Result<WorkSummary, Box<dyn Error>> {
     if baseline_setup != EXPECTED_SETUP_FRAMES
         || source_probe != SOURCE_PROBE_FRAMES
-        || arms.len() != ARMS
+        || lanes.len() != LANES
     {
         return Err("setup evidence does not match the preregistration".into());
     }
-    validate_arms(arms)?;
     let mut setup = baseline_setup;
-    let mut action = 0_u64;
-    let mut probe = 0_u64;
     let mut scheduled = 0_usize;
     let mut executed = 0_usize;
     let mut selections = 0_usize;
-    for record in arms {
+    let mut action = 0_u64;
+    let mut probe = 0_u64;
+    for (lane, record) in lanes.iter().enumerate() {
+        if record.lane != lane
+            || record.setup_frames != EXPECTED_SETUP_FRAMES
+            || record.scheduled_draws != DRAWS
+            || record.executed_draws != DRAWS
+            || record.selections != DRAWS
+        {
+            return Err("lane setup evidence is not canonical".into());
+        }
+        scheduled = scheduled
+            .checked_add(record.scheduled_draws)
+            .ok_or("scheduled candidate count overflow")?;
+        executed = executed
+            .checked_add(record.executed_draws)
+            .ok_or("executed candidate count overflow")?;
+        selections = selections
+            .checked_add(record.selections)
+            .ok_or("selection count overflow")?;
+        setup = setup
+            .checked_add(record.setup_frames)
+            .ok_or("setup work overflow")?;
         action = action
             .checked_add(record.action_frames)
             .ok_or("action work overflow")?;
@@ -2610,38 +1664,21 @@ fn summarize_work(
                 .checked_add(record.probe_frames)
                 .ok_or("lane component work overflow")?
         {
-            return Err("arm work does not reconcile in summary".into());
+            return Err("lane work does not reconcile in summary".into());
         }
-        scheduled = scheduled
-            .checked_add(record.scheduled_slots)
-            .ok_or("scheduled slot count overflow")?;
-        executed = executed
-            .checked_add(record.executed_slots)
-            .ok_or("executed slot count overflow")?;
-        selections = selections
-            .checked_add(record.selections)
-            .ok_or("selection count overflow")?;
     }
-    setup = setup
-        .checked_add(
-            EXPECTED_SETUP_FRAMES
-                .checked_mul(u64::try_from(WORKERS)?)
-                .ok_or("worker setup work overflow")?,
-        )
-        .ok_or("setup work overflow")?;
     let expected_setup = EXPECTED_SETUP_FRAMES
         .checked_mul(u64::try_from(
-            WORKERS.checked_add(1).ok_or("target count overflow")?,
+            LANES.checked_add(1).ok_or("target count overflow")?,
         )?)
         .ok_or("expected setup work overflow")?;
-    if setup != expected_setup
-        || scheduled
-            != PAIRS
-                .checked_mul(2)
-                .and_then(|value| value.checked_mul(SLOTS))
-                .ok_or("scheduled slot bound overflow")?
-        || executed != scheduled
-        || selections != EXPECTED_SELECTIONS
+    let expected_candidates = LANES
+        .checked_mul(DRAWS)
+        .ok_or("expected candidate count overflow")?;
+    if scheduled != expected_candidates
+        || executed != expected_candidates
+        || selections != expected_candidates
+        || setup != expected_setup
         || action > MAX_ACTION_FRAMES
         || probe > MAX_PROBE_FRAMES
     {
@@ -2659,10 +1696,6 @@ fn summarize_work(
         return Err("total work exceeds the preregistered bound".into());
     }
     Ok(WorkSummary {
-        worker_setup_frames: arms
-            .iter()
-            .filter_map(|record| record.worker_setup_frames)
-            .collect(),
         scheduled,
         executed,
         selections,
@@ -2745,5 +1778,634 @@ fn hex_nibble(value: u8) -> Option<u8> {
         b'0'..=b'9' => Some(value - b'0'),
         b'a'..=b'f' => Some(value - b'a' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read as _;
+
+    use super::*;
+
+    fn synthetic_source() -> SmbInput {
+        SmbInput {
+            actions: (0..SOURCE_ACTIONS)
+                .map(|index| {
+                    ButtonChord::new(
+                        u8::try_from(index % 256).expect("synthetic button fits u8"),
+                        u8::try_from(2 + index % 119).expect("synthetic duration fits u8"),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn observation(progress: u16) -> SmbObservations {
+        let decoded = SmbMechanicalState {
+            world: 7,
+            level: 0,
+            progress,
+            ..SmbMechanicalState::default()
+        };
+        SmbObservations {
+            frame_count: 1,
+            wram: Vec::new(),
+            decoded,
+            milestones: SmbMilestones::default(),
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: String::new(),
+        }
+    }
+
+    fn candidate(
+        lane: usize,
+        id: usize,
+        progress: u16,
+        actions: usize,
+        hash_byte: u8,
+    ) -> ChampionCandidate {
+        candidate_at(lane, id, 7, 3, progress, actions, hash_byte)
+    }
+
+    fn candidate_at(
+        lane: usize,
+        id: usize,
+        world: u8,
+        level: u8,
+        progress: u16,
+        actions: usize,
+        hash_byte: u8,
+    ) -> ChampionCandidate {
+        let input = SmbInput {
+            actions: vec![ButtonChord::new(0, 2); actions],
+        };
+        let input_sha256_bytes = [hash_byte; 32];
+        let input_sha256 = input_sha256_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut candidate_observation = observation(progress);
+        candidate_observation.decoded.world = world;
+        candidate_observation.decoded.level = level;
+        let mechanical = candidate_observation.decoded;
+        let recipe = Recipe {
+            lane,
+            draw: id,
+            source_index: 0,
+            action: ButtonChord::new(0, 2),
+            selector_seed: 0,
+        };
+        ChampionCandidate {
+            lane,
+            id,
+            draw: id,
+            recipe,
+            parent_id: 0,
+            input,
+            input_sha256,
+            input_sha256_bytes,
+            parent_lineage: vec![0, u64::try_from(id).expect("id fits u64")],
+            endpoint: EndpointEvidence {
+                action: ButtonChord::new(0, 2),
+                input_actions: actions,
+                input_sha256: String::new(),
+                observation: candidate_observation,
+                mechanical,
+                watermark: watermark(mechanical),
+                wram_sha256: String::new(),
+                snapshot_sha256: Some(String::new()),
+                key: None,
+                milestones: SmbMilestones::default(),
+                action_frames: 2,
+                dead: false,
+                failed: false,
+                probe: Vec::new(),
+                probe_survived: true,
+                probe_frames: 0,
+                admission: AdmissionOutcome::Retained {
+                    id,
+                    displaced: false,
+                },
+            },
+            work_frames: 2,
+        }
+    }
+
+    fn key(progress: u16) -> SmbArchiveKey {
+        SmbArchiveKey {
+            world: 7,
+            level: 0,
+            progress,
+            player_y_bucket: 1,
+            player_engine_state: 8,
+            state_fingerprint: u8::try_from(progress % 64).expect("fingerprint fits u8"),
+            room_x_bucket: 0,
+        }
+    }
+
+    fn fake_snapshot(progress: u16) -> SmbSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "emulator_state": [],
+            "observation": observation(progress),
+            "dead": false,
+            "failed": false
+        }))
+        .expect("deserialize synthetic snapshot")
+    }
+
+    fn retained_evidence(
+        input: &SmbInput,
+        key: SmbArchiveKey,
+        snapshot: &SmbSnapshot,
+        admission: AdmissionOutcome,
+    ) -> RetainedEvidence {
+        let mechanical = observation(key.progress).decoded;
+        let action = *input.actions.last().expect("candidate has an action");
+        let draw = admission
+            .newly_retained_id()
+            .expect("retained evidence has allocated id")
+            .checked_sub(1)
+            .expect("source is not retained evidence");
+        RetainedEvidence {
+            draw,
+            recipe: Recipe {
+                lane: 5,
+                draw,
+                source_index: 0,
+                action,
+                selector_seed: 0,
+            },
+            parent_id: 0,
+            endpoint: EndpointEvidence {
+                action,
+                input_actions: input.actions.len(),
+                input_sha256: sha256_json(input).expect("hash candidate input"),
+                observation: observation(key.progress),
+                mechanical,
+                watermark: watermark_from_key(key),
+                wram_sha256: sha256_bytes(&[]),
+                snapshot_sha256: Some(sha256_json(snapshot).expect("hash candidate snapshot")),
+                key: Some(key),
+                milestones: SmbMilestones::default(),
+                action_frames: 2,
+                dead: false,
+                failed: false,
+                probe: vec![ProbeAttempt {
+                    mask: 0,
+                    work_frames: 45,
+                    dead: false,
+                    survived: true,
+                }],
+                probe_survived: true,
+                probe_frames: 45,
+                admission,
+            },
+            work_frames: 47,
+        }
+    }
+
+    fn minimal_lane(lane: usize, action_frames: u64, probe_frames: u64) -> LaneRecord {
+        LaneRecord {
+            record: "lane",
+            lane,
+            worker: lane,
+            setup_frames: EXPECTED_SETUP_FRAMES,
+            initial_archive_sha256: String::new(),
+            draws: Vec::new(),
+            final_active_entries: Vec::new(),
+            final_maximum: ActiveMaximum {
+                watermark: BASELINE_WATERMARK,
+                ids: vec![0],
+            },
+            maximum_lineage_actions: SOURCE_ACTIONS,
+            scheduled_draws: DRAWS,
+            executed_draws: DRAWS,
+            selections: DRAWS,
+            selector_accounting: SmbSelectorAccounting::default(),
+            action_frames,
+            probe_frames,
+            total_work_frames: action_frames + probe_frames,
+            champion_candidates: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn seed_and_frozen_recipe_bytes_are_exact() {
+        verify_seed().expect("sealed seed is self-consistent");
+        assert_eq!(
+            EXPECTED_RECIPE_SHA256,
+            "8a0d66a2f13be9fdaa2e15bbe97c1239e7a4def8e95f93ffefdeb125ea839dfd"
+        );
+        assert_eq!(EXPECTED_RECIPE_BYTES, 400_322);
+        let mut source = synthetic_source();
+        source.actions[502] = ButtonChord::new(16, 100);
+        source.actions[328] = ButtonChord::new(130, 96);
+        let recipes = derive_recipes(&source).expect("derive recipes");
+        assert_eq!(recipes.len(), LANES);
+        assert!(recipes.iter().all(|lane| lane.len() == DRAWS));
+        assert_eq!(
+            (
+                recipes[0][0].source_index,
+                recipes[0][0].action,
+                recipes[0][0].selector_seed,
+            ),
+            (502, ButtonChord::new(16, 100), 17_743_222_062_959_608_690)
+        );
+        assert_eq!(
+            (
+                recipes[11][511].source_index,
+                recipes[11][511].action,
+                recipes[11][511].selector_seed,
+            ),
+            (328, ButtonChord::new(130, 96), 17_729_466_421_451_079_620)
+        );
+        assert_eq!(
+            serde_json::to_vec(&(
+                0_u64,
+                0_u64,
+                502_u64,
+                recipes[0][0].action,
+                recipes[0][0].selector_seed,
+            ))
+            .expect("serialize first recipe"),
+            br#"[0,0,502,{"buttons":16,"hold_frames":100},17743222062959608690]"#
+        );
+        let identity = recipe_identity_bytes(&recipes).expect("serialize recipes");
+        assert_eq!(identity.iter().filter(|&&byte| byte == b'[').count(), 6_145);
+        assert_eq!(
+            sha256_bytes(&identity),
+            "504d1baa572a9f1b56f5ba3807559a4f0674d2fa7c40833ebba660f90903e7a6"
+        );
+        let mut projections = projection_bytes(&recipes).expect("serialize projections");
+        assert_eq!(projections.len(), LANES);
+        projections.sort();
+        assert!(projections.windows(2).all(|window| window[0] != window[1]));
+        assert!(projection_sha256(&recipes).is_err());
+    }
+
+    #[test]
+    fn maximum_lineage_actions_are_bounded_and_reported() {
+        assert_eq!(SOURCE_ACTIONS.checked_add(DRAWS), Some(MAX_LINEAGE_ACTIONS));
+        assert!(MAX_LINEAGE_ACTIONS < ACTION_LIMIT);
+        let mut maximum = SOURCE_ACTIONS;
+        record_lineage_actions(&mut maximum, MAX_LINEAGE_ACTIONS)
+            .expect("registered maximum is allowed");
+        assert_eq!(maximum, MAX_LINEAGE_ACTIONS);
+        assert!(record_lineage_actions(&mut maximum, MAX_LINEAGE_ACTIONS + 1).is_err());
+        assert_eq!(maximum, MAX_LINEAGE_ACTIONS);
+    }
+
+    #[test]
+    fn source_probe_transcript_and_work_are_exact() {
+        let attempts = SOURCE_PROBE_TRANSCRIPT
+            .into_iter()
+            .map(|(mask, work_frames, dead, survived)| ProbeAttempt {
+                mask,
+                work_frames,
+                dead,
+                survived,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_probe_frames(&attempts).expect("registered transcript"),
+            45
+        );
+        let mut malformed = attempts;
+        malformed[0].work_frames = 44;
+        assert!(source_probe_frames(&malformed).is_err());
+    }
+
+    #[test]
+    fn source_shape_requires_the_registered_final_action() {
+        let mut source = synthetic_source();
+        *source.actions.last_mut().expect("source has actions") = BASELINE_FINAL_ACTION;
+        validate_source(&source).expect("registered source shape is accepted");
+        *source.actions.last_mut().expect("source has actions") = ButtonChord::new(0, 2);
+        assert!(validate_source(&source).is_err());
+    }
+
+    #[test]
+    fn champion_ranking_is_total_and_verdict_is_strict() {
+        let ranked = rank_champion(vec![
+            candidate(0, 9, 113, 8, 0x10),
+            candidate(1, 8, 114, 12, 0xff),
+            candidate(2, 7, 114, 10, 0xff),
+            candidate(3, 6, 114, 10, 0x20),
+            candidate(4, 5, 114, 10, 0x20),
+            candidate(4, 4, 114, 10, 0x20),
+        ])
+        .expect("champion exists");
+        assert_eq!((ranked.lane, ranked.id), (3, 6));
+        assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
+
+        let equal = rank_champion(vec![candidate(0, 1, 113, 1, 0)]).expect("candidate exists");
+        assert_eq!(verdict_for(Some(&equal)), Verdict::Stop);
+        assert_eq!(verdict_for(None), Verdict::Stop);
+    }
+
+    #[test]
+    fn full_watermark_ranking_dominates_cross_level_progress() {
+        let old_level = candidate_at(0, 1, 7, 2, u16::MAX, 1, 0x00);
+        assert_eq!(
+            verdict_for(Some(
+                &rank_champion(vec![old_level.clone()]).expect("candidate")
+            )),
+            Verdict::Stop
+        );
+        let current_level = candidate_at(1, 2, 7, 3, 114, 1, 0xff);
+        let later_world = candidate_at(2, 3, 8, 0, 0, 1, 0xff);
+        let ranked = rank_champion(vec![later_world, current_level, old_level])
+            .expect("cross-level candidate exists");
+        assert_eq!((ranked.lane, ranked.id), (2, 3));
+        assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
+    }
+
+    #[test]
+    fn real_archive_final_active_eligibility_excludes_nonallocations() {
+        let archive_key = key(237);
+        let source = SmbInput {
+            actions: vec![ButtonChord::new(1, 2); 2],
+        };
+        let mut archive = Archive::new();
+        archive.max_entries = 4;
+        archive.set_selector_policy(SmbArchiveSelectorPolicy::ConcentratedRecency);
+        archive.set_waypoint_policy(SmbArchiveWaypointPolicy::Absent);
+        archive.set_replacement_policy(SmbArchiveReplacementPolicy::FewestActions);
+        assert_eq!(
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input: source.clone(),
+                        key: archive_key,
+                        milestones: SmbMilestones::default(),
+                    },
+                    fake_snapshot(237),
+                )
+                .expect("insert source"),
+            Some(0)
+        );
+        let mut retained = vec![None];
+
+        let displaced_input = SmbInput {
+            actions: vec![ButtonChord::new(2, 2); 3],
+        };
+        let displaced_snapshot = fake_snapshot(237);
+        let displaced_outcome = insert_candidate(
+            &mut archive,
+            Some(0),
+            1,
+            ArchiveCandidate {
+                input: displaced_input.clone(),
+                key: archive_key,
+                milestones: SmbMilestones::default(),
+            },
+            displaced_snapshot.clone(),
+        )
+        .expect("insert first endpoint");
+        assert_eq!(
+            displaced_outcome,
+            AdmissionOutcome::Retained {
+                id: 1,
+                displaced: false
+            }
+        );
+        retained.push(Some(retained_evidence(
+            &displaced_input,
+            archive_key,
+            &displaced_snapshot,
+            displaced_outcome,
+        )));
+
+        let winning_input = SmbInput {
+            actions: vec![ButtonChord::new(3, 2)],
+        };
+        let winning_snapshot = fake_snapshot(237);
+        let winning_outcome = insert_candidate(
+            &mut archive,
+            Some(0),
+            2,
+            ArchiveCandidate {
+                input: winning_input.clone(),
+                key: archive_key,
+                milestones: SmbMilestones::default(),
+            },
+            winning_snapshot.clone(),
+        )
+        .expect("insert replacing endpoint");
+        assert_eq!(
+            winning_outcome,
+            AdmissionOutcome::Retained {
+                id: 2,
+                displaced: true
+            }
+        );
+        retained.push(Some(retained_evidence(
+            &winning_input,
+            archive_key,
+            &winning_snapshot,
+            winning_outcome,
+        )));
+        assert!(!archive.active[1]);
+        assert!(archive.active[0] && archive.active[2]);
+
+        let duplicate = insert_candidate(
+            &mut archive,
+            Some(0),
+            3,
+            ArchiveCandidate {
+                input: displaced_input,
+                key: archive_key,
+                milestones: SmbMilestones::default(),
+            },
+            fake_snapshot(237),
+        )
+        .expect("duplicate old id");
+        assert_eq!(duplicate, AdmissionOutcome::Duplicate { id: 1 });
+
+        let rejected = insert_candidate(
+            &mut archive,
+            Some(0),
+            4,
+            ArchiveCandidate {
+                input: SmbInput {
+                    actions: vec![ButtonChord::new(4, 2); 4],
+                },
+                key: archive_key,
+                milestones: SmbMilestones::default(),
+            },
+            fake_snapshot(237),
+        )
+        .expect("reject costlier endpoint");
+        assert_eq!(rejected, AdmissionOutcome::Rejected);
+
+        let (entries, candidates) =
+            final_entries(5, &archive, &retained).expect("derive final active eligible endpoints");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, 2);
+        assert_eq!(candidates.len(), 1);
+        let champion = rank_champion(candidates).expect("rank eligible endpoint");
+        assert_eq!((champion.lane, champion.id), (5, 2));
+        assert_eq!((champion.draw, champion.parent_id), (1, 0));
+        assert_eq!(
+            champion.recipe.action,
+            *winning_input.actions.last().expect("action")
+        );
+        assert_eq!(champion.input, winning_input);
+        assert_eq!(champion.parent_lineage, vec![0, 2]);
+    }
+
+    #[test]
+    fn malformed_worker_reply_sets_and_error_order_are_rejected() {
+        let mut missing = (0..LANES - 1)
+            .map(|lane| LaneReply {
+                lane,
+                worker: lane,
+                result: Ok(minimal_lane(lane, 0, 0)),
+            })
+            .collect::<Vec<_>>();
+        missing.reverse();
+        assert!(consume_lane_replies(missing).is_err());
+
+        let duplicate = vec![
+            LaneReply {
+                lane: 0,
+                worker: 0,
+                result: Ok(minimal_lane(0, 0, 0)),
+            },
+            LaneReply {
+                lane: 0,
+                worker: 0,
+                result: Ok(minimal_lane(0, 0, 0)),
+            },
+        ];
+        assert!(consume_lane_replies(duplicate).is_err());
+
+        let mut errors = (0..LANES)
+            .map(|lane| LaneReply {
+                lane,
+                worker: lane,
+                result: Err(format!("failure-{lane}")),
+            })
+            .collect::<Vec<_>>();
+        errors.reverse();
+        let error = consume_lane_replies(errors).expect_err("inner failures must surface");
+        assert!(error.to_string().contains("lane 0: failure-0"));
+
+        let mixed = vec![
+            LaneReply {
+                lane: 7,
+                worker: 6,
+                result: Err("wrong-worker".to_owned()),
+            },
+            LaneReply {
+                lane: LANES,
+                worker: LANES,
+                result: Err("out-of-range".to_owned()),
+            },
+            LaneReply {
+                lane: 2,
+                worker: 2,
+                result: Err("first".to_owned()),
+            },
+            LaneReply {
+                lane: 2,
+                worker: 2,
+                result: Err("duplicate".to_owned()),
+            },
+        ];
+        let first = consume_lane_replies(mixed).expect_err("mixed metadata must fail");
+        let reversed = vec![
+            LaneReply {
+                lane: 2,
+                worker: 2,
+                result: Err("duplicate".to_owned()),
+            },
+            LaneReply {
+                lane: 2,
+                worker: 2,
+                result: Err("first".to_owned()),
+            },
+            LaneReply {
+                lane: LANES,
+                worker: LANES,
+                result: Err("out-of-range".to_owned()),
+            },
+            LaneReply {
+                lane: 7,
+                worker: 6,
+                result: Err("wrong-worker".to_owned()),
+            },
+        ];
+        let second = consume_lane_replies(reversed).expect_err("shuffled metadata must fail");
+        assert_eq!(first.to_string(), second.to_string());
+        assert_eq!(first.to_string(), "invalid lane reply: lane=7, worker=6");
+    }
+
+    #[test]
+    fn registered_work_cap_reconciles_and_rejects_overage() {
+        let per_lane_action = MAX_ACTION_FRAMES / u64::try_from(LANES).expect("lanes fit u64");
+        let per_lane_probe = MAX_PROBE_FRAMES / u64::try_from(LANES).expect("lanes fit u64");
+        let lanes = (0..LANES)
+            .map(|lane| minimal_lane(lane, per_lane_action, per_lane_probe))
+            .collect::<Vec<_>>();
+        let summary = summarize_work(&lanes, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES)
+            .expect("cap reconciles");
+        assert_eq!(summary.action, MAX_ACTION_FRAMES);
+        assert_eq!(summary.probe, MAX_PROBE_FRAMES);
+        assert_eq!(summary.source_probe, SOURCE_PROBE_FRAMES);
+        assert_eq!(summary.total, MAX_TOTAL_FRAMES);
+        assert!(summarize_work(&lanes, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES - 1).is_err());
+
+        let mut over = lanes;
+        over[0].action_frames += 1;
+        over[0].total_work_frames += 1;
+        assert!(summarize_work(&over, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES).is_err());
+
+        let mut wrong_count = (0..LANES)
+            .map(|lane| minimal_lane(lane, per_lane_action, per_lane_probe))
+            .collect::<Vec<_>>();
+        wrong_count[0].executed_draws -= 1;
+        assert!(summarize_work(&wrong_count, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES).is_err());
+    }
+
+    #[test]
+    fn verdict_and_ndjson_digest_bytes_are_frozen() {
+        assert_eq!(
+            serde_json::to_string(&Verdict::Adopt).expect("serialize verdict"),
+            "\"ADOPT\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Verdict::Stop).expect("serialize verdict"),
+            "\"STOP\""
+        );
+        #[derive(Serialize)]
+        struct Record {
+            record: &'static str,
+            value: u8,
+        }
+        let file = tempfile::NamedTempFile::new().expect("create temporary output");
+        let path = file.path().to_owned();
+        let mut output = NdjsonOutput::new(file.reopen().expect("reopen temporary output"));
+        output
+            .write(&Record {
+                record: "x",
+                value: 7,
+            })
+            .expect("write record");
+        let expected = b"{\"record\":\"x\",\"value\":7}\n";
+        assert_eq!(output.digest(), sha256_bytes(expected));
+        assert_eq!(
+            output.finish().expect("finish output"),
+            sha256_bytes(expected)
+        );
+        let mut actual = Vec::new();
+        fs::File::open(path)
+            .expect("open output")
+            .read_to_end(&mut actual)
+            .expect("read output");
+        assert_eq!(actual, expected);
     }
 }
