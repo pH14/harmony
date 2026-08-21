@@ -174,3 +174,43 @@ adoptable.
 There is one registered live run, no routine replay audit, no automatic rerun,
 no post-hoc ranking, and no adoption from any prior unregistered candidate.
 Any integrity mismatch authorizes nothing.
+
+## Result
+
+The one registered run completed successfully on `msr1` with verdict
+**ADOPT**. The implementation was sealed at commit `9d76a917`, with binary-
+source SHA-256
+`8526076c3321c4edc8a2890dcff000ddf65b60a5c16c587fc334f038bd89c834`,
+module-source SHA-256
+`b0e6365a6a90a99c2fc39a8e18e424b7d4a9149956024379228a5309384200d9`,
+and release-executable SHA-256
+`7fd73341010cf7644b3505bcfa14926072db0c08bfde2f28cacae0bef35ff38e`.
+The frozen recipe SHA-256 was
+`dce6eeec8e08648c1275bb5f48ccd6ec6a0d6863826392a76e58ff2597c4abec`.
+
+The canonical 17-line, 145,199,634-byte report is stored at
+`/root/harmony-smb-sol-p355-harvest-28e9dd86/results/p355-endpoint-harvest-12x700.jsonl`.
+Its body SHA-256 is
+`7d8670c0972acd53d681d4f9e6be76320942386037b301eba1b1e30cf8096b5d`
+and its whole-file SHA-256 is
+`8f7ec6d3c8d74c3e1708dc07a8a81c3b8aaf964be4cc7c4f2073c959e515bc42`.
+Realized work was 865,191 frames: 157,182 source replay, 45 source probe,
+4,693 setup, 345,460 live action, and 357,811 live probe frames.
+
+The registered total order selected lane 11 entry 570, with lineage
+`[0,1,2,4,6,7,9,17,22,23,67,124,176,180,184,185,186,189,192,193,218,219,224,228,235,241,242,244,246,247,253,268,332,484,500,569,570]`.
+It is a live, probe-surviving, normally retained endpoint at full watermark
+`(world=7, level=1, progress=85)` after 3,383 actions and 159,070 absolute
+frames. Its mechanical state is `(7,1,85,y=11,engine=8,dead=false,
+flag=false)`, raw-WRAM SHA-256 is
+`9b08eafed27af5bc8f2355f0492a364908ddf8e53f2e9a26a2162824b04e9777`,
+and snapshot SHA-256 is
+`9cc13488d2d3b00f3b87b3ef1533c326470a7b5c3ba1adb2785f61512ed5ba4c`.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-p355-harvest-28e9dd86/results/adopted-world-8-2-progress-85-input.json`;
+its compact-file and semantic SHA-256 is
+`3f10e294a943fbb2fe2dc51cb8877059e01a1cc319167f1df49f12b8d8c02e97`.
+This is the registered transition from World 8-1 progress 355 to World 8-2
+progress 85. Its from-genesis verification is required before any proposal in
+the separately preregistered continuation.
