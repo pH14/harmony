@@ -1,0 +1,40 @@
+[package]
+name = "cpu-qualification"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Rung-1 CPU qualification: per-chip host checks, counter measurement, and the measured-constants pack"
+
+[features]
+default = ["cli"]
+# The `cpu-qualification` binary and its deps; disable for a clap-free library.
+cli = ["dep:clap"]
+
+[[bin]]
+name = "cpu-qualification"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+# The measured-constants pack and the qualification report.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Pack format. `toml` is outside the conventions rule-5 whitelist; the same
+# ask-by-comment as `acceptance-suite`, for the same reason — a pack is a
+# reviewable checked-in artifact alongside docs/cpu-msr-contract.toml, and
+# docs/CPU-QUALIFICATION.md names it docs/chips/<baseline>.toml.
+toml = "0.8"
+# Pack hash pin, and the on-disk hash of a loaded kernel module.
+sha2 = "0.10"
+thiserror = "2"
+# CLI (bins only, per the whitelist).
+clap = { version = "4", features = ["derive"], optional = true }
+
+# The measurement halves are Linux-only by nature (perf_event_open, /proc,
+# /sys, /dev/cpu/N/msr). Gated on the OS here and on the arch at each use site
+# (AGENTS.md, cross-arch discipline).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true
