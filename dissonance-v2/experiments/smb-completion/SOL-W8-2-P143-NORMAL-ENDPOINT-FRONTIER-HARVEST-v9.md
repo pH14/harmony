@@ -186,3 +186,44 @@ and action semantics.
 There is one registered live run, no routine replay audit, no automatic rerun,
 no post-hoc ranking, and no adoption from any prior unregistered candidate.
 Any integrity mismatch authorizes nothing.
+
+## Result
+
+The one registered run completed successfully on `msr1` with adoption verdict
+**ADOPT** and terminal classification **CHANGE_STRUCTURE**. The implementation
+was sealed at commit `de9d2389`, with binary-source SHA-256
+`29299021df8383e3bd75168071be3c41c6ef1c662d70401705fda73b28516975`,
+module-source SHA-256
+`a004339cff6dec4d647172d3d779dcbc5883811957d149bd61d2f9737b567b12`,
+and release-executable SHA-256
+`113c0a368a9fe5403c1844a98ddbe6baf55a838abdddc2ab08a0e31a29f31589`.
+The frozen recipe SHA-256 was
+`65f73c6acf90ee61277640f07244b90e78b119ad50c65dd6934818acf001e4b1`.
+
+The canonical 18-line, 134,101,384-byte report is stored at
+`/root/harmony-smb-sol-w8-2-p143-harvest-1b0cb8cb/results/w8-2-p143-endpoint-harvest-12x680.jsonl`.
+Its body SHA-256 is
+`56bcee418c398c2c8e85c644adb6aea4f8541a6f5b3c3b006350dd379ab7c14f`
+and whole-file SHA-256 is
+`406674cd375a313db0c4857300659d899ff6d80ffbbc39caf58c487882328aca`.
+Realized work was 911,202 frames: 159,748 source replay, 45 source probe,
+4,693 setup, 183,420 live action, and 563,296 live probe frames.
+
+The registered total order selected lane 0 entry 5, with lineage `[0,4,5]`.
+It is a live, probe-surviving, normally retained endpoint at full watermark
+`(world=7, level=1, progress=144)` after 3,411 actions and 159,757 absolute
+frames. Its mechanical state is `(7,1,144,y=9,engine=8,dead=false,
+flag=false)`, raw-WRAM SHA-256 is
+`824f46256fc9e29ad0e6fa8cfaf3b801f5f555af81ff35863e617f6330bcf436`,
+and snapshot SHA-256 is
+`531fc0ca4b8178dbe7d3fbf99b994f5678138d73ffcbe014429384348dac36ce`.
+Its registered admission probe killed masks `0x00` and `0x01` after 39 frames
+each; mask `0x81` survived all 45 frames.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-w8-2-p143-harvest-1b0cb8cb/results/adopted-world-8-2-progress-144-input.json`;
+its compact-file and semantic SHA-256 is
+`8c162945c26f6544c390e659002422c8065f4b18535cdb8e75e7922b1d558025`.
+The registered terminal rule prohibits another unchanged endpoint-only
+harvest. The separately preregistered paired L1-vs-L4 canary changes only
+parent-selection coherence while retaining normal per-prefix admission.
