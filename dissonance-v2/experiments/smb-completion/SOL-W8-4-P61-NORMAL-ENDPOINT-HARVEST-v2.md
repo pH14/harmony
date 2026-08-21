@@ -77,3 +77,32 @@ ordinary endpoint; rank full watermark, fewest actions, input SHA, lane, id.
 otherwise **STOP**. One run; no rerun, relaxation, routine replay, or post-hoc
 choice. Terminal-like evidence remains diagnostic pending a separately frozen
 mechanical credits predicate and artifact-only confirmation.
+
+## Registered result: integrity STOP before recipes or workers
+
+Implementation commit `f5bd5c3869d8fce82131c74bb2fa93dd604f18f2`,
+module SHA `33aa7f2c1c14df8fa2bf518b45e91ea7ef4666db0d2bc90d5e3981006735b18b`,
+bin SHA `38477b0bc46347d598380664632e6c5babbec9543dd4652fa4b7ed02530a9123`,
+source archive SHA
+`f5a9cfee951f52787ba60f2a5a63a6185656a5264d16887e8b9fdfc1ece4bee3`,
+and release executable SHA
+`33c5e1c738fa253d642306a8d01ce7c0774a6c505f4cd90ee122926d9dd8eef1`
+were sealed before the single launch.
+
+The registered run used systemd invocation
+`000d084b13a04977953e5ef67d3b8548` and exited status 1 with exact stderr
+`Error: "source evidence probe transcript does not match the preregistration"`.
+The stderr SHA is
+`d1d590e5df74a7cbf24970f98b8d5e34f49970adbe399e83a3db1c3308b9241e`;
+stdout and the create-new report are both empty SHA
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+The failure occurred during exact source validation, before runtime recipe
+materialization, worker construction, or any experimental proposal.
+
+The frozen source-probe claim above was wrong. The authorizing p0 report's
+registered champion evidence records the exact ordered transcript
+`(mask=00,work=35,dead=true,survived=false)`, then
+`(mask=01,work=45,dead=false,survived=true)`, total 80 frames. This result is
+an integrity STOP with no scientific verdict and authorizes no reuse of the v2
+seed or byte-identical rerun. A new experiment requires a separate
+preregistration with the corrected transcript and a fresh seed.
