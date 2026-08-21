@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the World 8-2 p183 paired FULL/TAIL256 canary.
+//! Temporary sealed runner for the World 8-2 p196 paired B1/B2 sibling canary.
 
 use std::{
     collections::BTreeMap,
@@ -35,86 +35,87 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-2-p183-paired-full-tail256-canary-v1";
-const PREREGISTRATION_COMMIT: &str = "d8ef4322a3d19ac2dd9a704417bdc7f7b909cc89";
+const FORMAT: &str = "smb-w8-2-p196-paired-b1-b2-sibling-canary-v1";
+const PREREGISTRATION_COMMIT: &str = "ee578070f8c53718dbfaf1cc4da9fd4cf5ebf51f";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "2f9e57ffb03211d8959f606fb05f046c06cede0b8df2c5d8dabe30e834ce5a0e";
-const CODE_BASE: &str = "734191b103a4106282349bd286afa1eabbf1d48a";
-const AUTHORIZING_CONFIRMATION_PREREGISTRATION: &str = "d64cc8de";
-const AUTHORIZING_CONFIRMATION_IMPLEMENTATION: &str = "98aa20a5";
-const AUTHORIZING_CONFIRMATION_RESULT: &str = "734191b1";
-const AUTHORIZING_CONFIRMATION_REPORT_SHA256: &str =
-    "9fa87e073313acfa571c56f9b6004dc7e18de1fef5edab7c24030470a4a15230";
-const SOURCE_FILE_SHA256: &str = "c56360d445ece8c6df51153943c7ab593a5639a92f9057f31907618b35cc0112";
+    "6988acb3162ac2ffcadb191794a5d6c2b85c3a2ff07d3d3d39161ca3b0b0cb76";
+const CODE_BASE: &str = "c045412f1575f9921a86347ff8ea75a69d0565f2";
+const AUTHORIZING_P183_PREREGISTRATION: &str = "d8ef4322";
+const AUTHORIZING_P183_IMPLEMENTATION: &str = "5a4635f9";
+const AUTHORIZING_P183_RESULT: &str = "c045412f";
+const AUTHORIZING_P183_REPORT_SHA256: &str =
+    "7014812f683986c83f246eebd78e8efe9b98ff1576e5760e2fd1e9f269d88203";
+const SOURCE_FILE_SHA256: &str = "72f6dc1ed54ef824c73c794e03410b9d64502ede032fc8b787d4ac67763b403d";
 const SOURCE_INPUT_SHA256: &str =
-    "c56360d445ece8c6df51153943c7ab593a5639a92f9057f31907618b35cc0112";
-const SOURCE_BYTES: usize = 110_445;
-const SOURCE_WRAM_SHA256: &str = "37a3fe9b0285edf6ec9ac6ff23c3d6c1d4da64f12a5f280f6aed89737f47d160";
+    "72f6dc1ed54ef824c73c794e03410b9d64502ede032fc8b787d4ac67763b403d";
+const SOURCE_BYTES: usize = 110_605;
+const SOURCE_WRAM_SHA256: &str = "49b2721d7533f4c45249d60ce9ec715e2ef2d5d2c1e19776bd6e2ef75d4c2e80";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "dfb7d4a391a00f8340294887ca30b7abff3e200d3b7130fd8cf0042641af1098";
+    "0627939cc2ca87cbdeea4e74705a09145150f22b7b6d88543a63e4365b201c83";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-2-p183-paired-full-tail256-action-marginal-v1";
-const SEED_LABEL_SHA256: &str = "864ef8e409a480588b1cd8629996ced6f651fc8443177dd7569049285e79ce02";
-const MASTER_SEED: u64 = 6_377_277_434_759_761_542;
+const SEED_LABEL: &str = "sol-restart-w8-2-p196-paired-b1-b2-sibling-burst-v1";
+const SEED_LABEL_SHA256: &str = "cc83cf81c4262aa15a68a65b32772b0cb8af2dc0dffd00f8f71929142ef9e958";
+const MASTER_SEED: u64 = 11_613_137_214_561_551_308;
 const EXPECTED_RECIPE_SHA256: &str =
-    "039cfd75d3aee68251b3a20dae93b467dac3b5d794ec12b9ca69b8081f4933e0";
-const EXPECTED_RECIPE_BYTES: usize = 250_741;
+    "806e5c4d3200d983c7043aded109bd516463e543bba66c2867b24dd3e0484131";
+const EXPECTED_RECIPE_BYTES: usize = 132_496;
 const EXPECTED_PROJECTION_SHA256: [&str; 16] = [
-    "5b281ae12599811441b2d5cd869ee3587910f88175e6b6954e21939db0da1662",
-    "5032716ce13364d01ea7de208a91af478e9b71986ad202bc23465f490bf413fc",
-    "ea036424f333574f5b022163ce7e791214f69755915fd0aac94e4158b96e603d",
-    "6869e0a520c486c9dd96e93e4343cba4da1e6c77bb9660f31f18bf78b11688be",
-    "4a1ffeb740db1e6128e8a512795a6751a08273c6c83b9485578a450d7c04e28e",
-    "978f4a4257175cc98b76a30c2c98ab5c18a710c8d3b07105e25fb31f83bdffd6",
-    "60e74ddb4b664799f22846595a9f57fcfbe36f0c9696e85241e6f55e812b43b8",
-    "1da288de32802080a4bf8a0b1b9580a08d4c9d9a42c7d8b873dcc8c46e187257",
-    "9493d76c15606ecd89f7a71ab611f236031fde9b924da03113fa5f26364d05bf",
-    "f8b2828a4363f65b0fdfe077ecf943b0823f96da7e72e639832106a357cc09f6",
-    "22a80ab39649b173117a47f2036e6b30db162de7433e04a92f6f084e0cf30319",
-    "dcb00c5be713674f81c08e004444dc9b8b2059e347dfdb4edbe36f6ad7d974f2",
-    "0cc7fc639068c09c42802747465ac8c6b25b24157d148af723c066fd3315338e",
-    "ffe36ebd1991a59f2d56d38f749aceb6516f0b0019a7b0a62498b4dcd0c876b0",
-    "ee32bcbd774cb351a29dd9cb66d5fa75fbb22606fc94736c89128cfe7f316aad",
-    "17141f20267f28ef793c54a1b45a0c33774a0753d39af7d1c37ce10d18fb12e8",
+    "cf1e8b34673bea48574c38aa6847b2e053fb61aafdaeb475f08d2d43279e2c8c",
+    "7ba69e41612b223125eb41b1f162533c8b2a6eeacaff058baab8112d289c6ad1",
+    "e87356cf9caaba315df2a08996983b268dcd57ccf3e5b1568ad87be4c93fa0e0",
+    "a2f4e796a03b594afd186eb4488dcc43289ddf57d352ed7391c4f779b307c4fc",
+    "2685aa50a96e50ba49b1fc53c285b4ac165b61051bd55d48af2da9fb2b30e2a3",
+    "465cbd6785e8dd4285f29229c53ffabb9e19fe19806181cc21a4a17b7d5abfa8",
+    "a0bac85a19bbe649f73e4cc086c69295a1bb5ffc601b33adfb0f383c1d4a09ab",
+    "e46cc49b2be21d70624459bcf8fa49866fe4a837ba0691ccba5dfe2c4d90ce5f",
+    "a5784588968539cc096b8eef6f6770dc1d3c80609de78579e220e264a89abcf7",
+    "5f7ad5e3f879477046210d665cffc24c77a9385f47b861f0aa38c8cc542a4713",
+    "b965f6b866ffa16531d125cbda50f8ee4b78673e98801a93e97b7e767beeb1d5",
+    "965ae891b652368504bfb648cda91a10f9d0a0b05b72276b0c56a80258dba5c0",
+    "d9a3495b41e856f7cd8b1b62fe351cb9865bb2389d1958fdda427d4bb39b5fe9",
+    "921806407a58b8465d343e055366c13b3b858122b58e27126b83461b4223a081",
+    "72ba5612482d19cc31924bbe705745d9fd3f878c95b6af82df6fcbefa5a8b705",
+    "4a55900bd6882355d938b89b96e3f2c74af9a05cf2c9b4877e5e2c44c9b3e40b",
 ];
 const EXPECTED_PROJECTION_BYTES: [usize; 16] = [
-    15_390, 15_371, 15_356, 15_393, 15_388, 15_402, 15_356, 15_362, 15_344, 15_375, 15_379, 15_367,
-    15_337, 15_384, 15_342, 15_346,
+    8_003, 7_983, 7_964, 7_970, 7_985, 7_966, 7_986, 7_988, 7_990, 7_952, 7_965, 7_975, 7_971,
+    7_997, 7_975, 7_977,
 ];
-const SOURCE_ACTIONS: usize = 3_440;
-const SOURCE_FRAMES: u64 = 160_902;
+const SOURCE_ACTIONS: usize = 3_445;
+const SOURCE_FRAMES: u64 = 161_116;
 const PAIRS: usize = 16;
 const ARMS: usize = 32;
 const WORKERS: usize = 12;
 const SLOTS: usize = 128;
+const BURST_SIZE: usize = 2;
 const ACTION_LIMIT: usize = 4_096;
 const ARCHIVE_LIMIT: usize = 129;
-const MAX_LINEAGE_ACTIONS: usize = 3_568;
+const MAX_LINEAGE_ACTIONS: usize = 3_573;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
 const MAX_ACTION_FRAMES: u64 = 491_520;
 const MAX_PROBE_FRAMES: u64 = 552_960;
-const SOURCE_PROBE_FRAMES: u64 = 71;
-const MAX_TOTAL_FRAMES: u64 = 1_210_146;
-const EXPECTED_SELECTIONS: usize = 4_096;
+const SOURCE_PROBE_FRAMES: u64 = 45;
+const MAX_TOTAL_FRAMES: u64 = 1_210_334;
+const EXPECTED_B1_SELECTIONS: usize = 2_048;
+const EXPECTED_B2_SELECTIONS: usize = 1_024;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
-const SOURCE_PROBE_MASKS: [u8; 2] = [0x00, 0x01];
+const SOURCE_PROBE_MASKS: [u8; 1] = [0x00];
 const PROBE_FRAMES: u16 = 45;
-const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 2] =
-    [(0x00, 26, true, false), (0x01, 45, false, true)];
+const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 1] = [(0x00, 45, false, true)];
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 1,
-    progress: 183,
+    progress: 196,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 1,
-    progress: 183,
-    player_y_bucket: 9,
+    progress: 196,
+    player_y_bucket: 6,
     player_engine_state: 8,
     dead: false,
     flag_active: false,
@@ -122,10 +123,10 @@ const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
     level: 1,
-    progress: 183,
-    player_y_bucket: 9,
+    progress: 196,
+    player_y_bucket: 6,
     player_engine_state: 8,
-    state_fingerprint: 55,
+    state_fingerprint: 9,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -135,27 +136,24 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 129,
-    hold_frames: 9,
+    buttons: 131,
+    hold_frames: 74,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct Recipe {
     pair: usize,
     slot: usize,
-    rank_word: u64,
-    full_index: usize,
-    full_action: ButtonChord,
-    tail_index: usize,
-    tail_action: ButtonChord,
+    source_index: usize,
+    action: ButtonChord,
     selector_seed: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum ArmKind {
-    Full,
-    Tail256,
+    B1,
+    B2,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +161,7 @@ struct Config {
     pairs: usize,
     arms: usize,
     slots_per_arm: usize,
+    burst_size: usize,
     workers: usize,
     action_limit: usize,
     archive_limit: usize,
@@ -178,7 +177,7 @@ struct Config {
     assignment: &'static str,
     probe_masks: [u8; 3],
     probe_frames: u16,
-    source_probe_masks: [u8; 2],
+    source_probe_masks: [u8; 1],
     source_probe_frames: u64,
     max_action_frames: u64,
     max_probe_frames: u64,
@@ -279,13 +278,13 @@ struct CandidateRecord {
     pair: usize,
     arm: ArmKind,
     slot: usize,
-    rank_word: u64,
-    full_index: usize,
-    full_action: ButtonChord,
-    tail_index: usize,
-    tail_action: ButtonChord,
-    selector_seed: u64,
-    parent_id: usize,
+    burst: usize,
+    sibling_offset: usize,
+    recipe: Recipe,
+    selector_used: bool,
+    original_parent_id: usize,
+    original_parent_input_sha256: String,
+    original_parent_snapshot_sha256: String,
     start: StartEvidence,
     input: SmbInput,
     endpoint: EndpointEvidence,
@@ -296,17 +295,18 @@ struct CandidateRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct SlotRecord {
+struct SelectionRecord {
     pair: usize,
     arm: ArmKind,
-    slot: usize,
+    burst: usize,
+    selection_slot: usize,
     selector_seed: u64,
     selector: SmbSelectorDraw,
-    parent_id: usize,
-    parent_input_sha256: String,
-    parent_snapshot_sha256: String,
+    original_parent_id: usize,
+    original_parent_input_sha256: String,
+    original_parent_snapshot_sha256: String,
     start: StartEvidence,
-    candidate: CandidateRecord,
+    candidates: Vec<CandidateRecord>,
     productive: bool,
     selector_accounting: SmbSelectorAccounting,
     total_work_frames: u64,
@@ -317,11 +317,11 @@ struct RetainedEvidence {
     endpoint: EndpointEvidence,
     work_frames: u64,
     slot: usize,
-    rank_word: u64,
-    full_index: usize,
-    full_action: ButtonChord,
-    tail_index: usize,
-    tail_action: ButtonChord,
+    burst: usize,
+    sibling_offset: usize,
+    recipe: Recipe,
+    original_parent_id: usize,
+    burst_recipes: Vec<Recipe>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -338,6 +338,9 @@ struct FinalEntryRecord {
     probe_survived: bool,
     work_frames: u64,
     slot: usize,
+    burst: usize,
+    sibling_offset: usize,
+    original_parent_id: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -350,7 +353,7 @@ struct ArmRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     worker_setup_frames: Option<u64>,
     initial_archive_sha256: String,
-    slots: Vec<SlotRecord>,
+    selection_records: Vec<SelectionRecord>,
     final_active_entries: Vec<FinalEntryRecord>,
     final_maximum: ActiveMaximum,
     maximum_lineage_actions: usize,
@@ -371,11 +374,11 @@ struct ChampionCandidate {
     arm: ArmKind,
     id: usize,
     slot: usize,
-    rank_word: u64,
-    full_index: usize,
-    full_action: ButtonChord,
-    tail_index: usize,
-    tail_action: ButtonChord,
+    burst: usize,
+    sibling_offset: usize,
+    recipe: Recipe,
+    original_parent_id: usize,
+    burst_recipes: Vec<Recipe>,
     input: SmbInput,
     input_sha256: String,
     input_sha256_bytes: [u8; 32],
@@ -390,11 +393,11 @@ struct ChampionRecord {
     arm: ArmKind,
     id: usize,
     slot: usize,
-    rank_word: u64,
-    full_index: usize,
-    full_action: ButtonChord,
-    tail_index: usize,
-    tail_action: ButtonChord,
+    burst: usize,
+    sibling_offset: usize,
+    recipe: Recipe,
+    original_parent_id: usize,
+    burst_recipes: Vec<Recipe>,
     parent_lineage: Vec<u64>,
     input: SmbInput,
     input_sha256: String,
@@ -421,22 +424,22 @@ struct ClassificationRecord {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum StructuralVerdict {
     InconclusiveSparse,
-    PromoteTail256,
-    RetainFull,
+    PromoteB2,
+    RetainB1,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct PairOutcomeRecord {
     pair: usize,
-    full_maximum: SmbProgressWatermark,
-    tail256_maximum: SmbProgressWatermark,
+    b1_maximum: SmbProgressWatermark,
+    b2_maximum: SmbProgressWatermark,
     outcome: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct StructuralWitness {
     pair: usize,
-    full_maximum: SmbProgressWatermark,
+    b1_maximum: SmbProgressWatermark,
     champion: ChampionRecord,
 }
 
@@ -445,7 +448,7 @@ struct PairedClassificationRecord {
     record: &'static str,
     pairs: Vec<PairOutcomeRecord>,
     non_ties: usize,
-    tail256_wins: usize,
+    b2_wins: usize,
     tail_numerator: u128,
     tail_denominator: u128,
     witnesses: Vec<StructuralWitness>,
@@ -462,7 +465,8 @@ struct SummaryRecord {
     worker_setup_frames: Vec<u64>,
     scheduled_slots: usize,
     executed_slots: usize,
-    selections: usize,
+    b1_selections: usize,
+    b2_selections: usize,
     setup_frames: u64,
     source_replay_frames: u64,
     source_probe_frames: u64,
@@ -479,16 +483,16 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_confirmation_preregistration: &'static str,
-    authorizing_confirmation_implementation: &'static str,
-    authorizing_confirmation_result: &'static str,
-    authorizing_confirmation_report_sha256: &'static str,
+    authorizing_p183_preregistration: &'static str,
+    authorizing_p183_implementation: &'static str,
+    authorizing_p183_result: &'static str,
+    authorizing_p183_report_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
-    source_confirmation_pair: u64,
-    source_confirmation_arm: &'static str,
-    source_confirmation_entry_id: u64,
-    source_confirmation_prefix_depth: u64,
+    source_p183_pair: u64,
+    source_p183_arm: ArmKind,
+    source_p183_entry_id: u64,
+    source_p183_slot: u64,
     rom_sha256: &'a str,
     executable_sha256: &'a str,
     bin_source_sha256: &'a str,
@@ -543,16 +547,16 @@ struct ArmReply {
     result: Result<ArmRecord, String>,
 }
 
-/// Run the sealed paired FULL/TAIL256 canary from process arguments and environment.
+/// Run the sealed paired B1/B2 sibling canary from process arguments and environment.
 pub fn run_from_process(
     bin_source: &'static [u8],
     module_source: &'static [u8],
 ) -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
-    let source_path = PathBuf::from(
-        args.next()
-            .ok_or("usage: smb-w8-2-p183-paired-full-tail256-canary <input.json> <output.jsonl>")?,
-    );
+    let source_path =
+        PathBuf::from(args.next().ok_or(
+            "usage: smb-w8-2-p196-paired-b1-b2-sibling-canary <input.json> <output.jsonl>",
+        )?);
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
         return Err("unexpected extra argument".into());
@@ -575,11 +579,12 @@ pub fn run_from_process(
         pairs: PAIRS,
         arms: ARMS,
         slots_per_arm: SLOTS,
+        burst_size: BURST_SIZE,
         workers: WORKERS,
         action_limit: ACTION_LIMIT,
         archive_limit: ARCHIVE_LIMIT,
         max_lineage_actions: MAX_LINEAGE_ACTIONS,
-        selector: "concentrated_recency_fresh_seed_per_slot_v1",
+        selector: "concentrated_recency_b1_per_slot_b2_even_slot_per_burst_v1",
         retention: "probe_at_admission_45",
         replacement: "fewest_actions",
         key: "frozen",
@@ -641,16 +646,16 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_confirmation_preregistration: AUTHORIZING_CONFIRMATION_PREREGISTRATION,
-        authorizing_confirmation_implementation: AUTHORIZING_CONFIRMATION_IMPLEMENTATION,
-        authorizing_confirmation_result: AUTHORIZING_CONFIRMATION_RESULT,
-        authorizing_confirmation_report_sha256: AUTHORIZING_CONFIRMATION_REPORT_SHA256,
+        authorizing_p183_preregistration: AUTHORIZING_P183_PREREGISTRATION,
+        authorizing_p183_implementation: AUTHORIZING_P183_IMPLEMENTATION,
+        authorizing_p183_result: AUTHORIZING_P183_RESULT,
+        authorizing_p183_report_sha256: AUTHORIZING_P183_REPORT_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
-        source_confirmation_pair: 2,
-        source_confirmation_arm: "L1",
-        source_confirmation_entry_id: 93,
-        source_confirmation_prefix_depth: 1,
+        source_p183_pair: 5,
+        source_p183_arm: ArmKind::B1,
+        source_p183_entry_id: 58,
+        source_p183_slot: 105,
         rom_sha256: &rom_sha256,
         executable_sha256: &executable_sha256,
         bin_source_sha256: &bin_source_sha256,
@@ -697,7 +702,8 @@ pub fn run_from_process(
         worker_setup_frames: work.worker_setup_frames.clone(),
         scheduled_slots: work.scheduled,
         executed_slots: work.executed,
-        selections: work.selections,
+        b1_selections: work.b1_selections,
+        b2_selections: work.b2_selections,
         setup_frames: work.setup,
         source_replay_frames: baseline.record.replay_frames,
         source_probe_frames: work.source_probe,
@@ -750,52 +756,40 @@ fn validate_source(source: &SmbInput) -> Result<(), Box<dyn Error>> {
 
 fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>> {
     let source_len = u64::try_from(source.actions.len())?;
-    let tail_start = source_len
-        .checked_sub(256)
-        .ok_or("source is shorter than TAIL256")?;
+    if source_len == 0 {
+        return Err("cannot derive recipes from an empty source".into());
+    }
     let mut pairs = Vec::with_capacity(PAIRS);
     for pair in 0..PAIRS {
         let pair_u64 = u64::try_from(pair)?;
         let pair_seed = digest_word(&[
             &MASTER_SEED.to_le_bytes(),
-            b"p183-full-tail256-pair",
+            b"p196-b1-b2-pair",
             &pair_u64.to_le_bytes(),
         ])?;
         let mut slots = Vec::with_capacity(SLOTS);
         for slot in 0..SLOTS {
             let slot_u64 = u64::try_from(slot)?;
-            let rank_word = digest_word(&[
+            let action_word = digest_word(&[
                 &pair_seed.to_le_bytes(),
-                b"p183-full-tail256-rank",
+                b"p196-b1-b2-action",
                 &slot_u64.to_le_bytes(),
             ])?;
-            let full_index = usize::try_from(rank_word % source_len)?;
-            let tail_index = usize::try_from(
-                tail_start
-                    .checked_add(rank_word % 256)
-                    .ok_or("tail index overflow")?,
-            )?;
-            let full_action = *source
+            let source_index = usize::try_from(action_word % source_len)?;
+            let action = *source
                 .actions
-                .get(full_index)
-                .ok_or("derived FULL index is out of bounds")?;
-            let tail_action = *source
-                .actions
-                .get(tail_index)
-                .ok_or("derived TAIL256 index is out of bounds")?;
+                .get(source_index)
+                .ok_or("derived source index is out of bounds")?;
             let selector_seed = digest_word(&[
                 &pair_seed.to_le_bytes(),
-                b"p183-full-tail256-parent",
+                b"p196-b1-b2-parent",
                 &slot_u64.to_le_bytes(),
             ])?;
             slots.push(Recipe {
                 pair,
                 slot,
-                rank_word,
-                full_index,
-                full_action,
-                tail_index,
-                tail_action,
+                source_index,
+                action,
                 selector_seed,
             });
         }
@@ -817,11 +811,8 @@ fn recipe_identity_bytes(recipes: &[Vec<Recipe>]) -> Result<Vec<u8>, Box<dyn Err
             Ok((
                 u64::try_from(recipe.pair)?,
                 u64::try_from(recipe.slot)?,
-                recipe.rank_word,
-                u64::try_from(recipe.full_index)?,
-                recipe.full_action,
-                u64::try_from(recipe.tail_index)?,
-                recipe.tail_action,
+                u64::try_from(recipe.source_index)?,
+                recipe.action,
                 recipe.selector_seed,
             ))
         })
@@ -874,23 +865,13 @@ fn projection_bytes(recipes: &[Vec<Recipe>]) -> Result<Vec<Vec<u8>>, Box<dyn Err
                 }
                 Ok((
                     u64::try_from(recipe.slot)?,
-                    recipe.rank_word,
-                    u64::try_from(recipe.full_index)?,
-                    recipe.full_action,
-                    u64::try_from(recipe.tail_index)?,
-                    recipe.tail_action,
+                    u64::try_from(recipe.source_index)?,
+                    recipe.action,
                     recipe.selector_seed,
                 ))
             })
             .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
         let bytes = serde_json::to_vec(&identity)?;
-        if recipes
-            .iter()
-            .map(|recipe| recipe.full_action)
-            .eq(recipes.iter().map(|recipe| recipe.tail_action))
-        {
-            return Err("FULL and TAIL256 action vectors are identical within a pair".into());
-        }
         identities.push(bytes);
     }
     Ok(identities)
@@ -1089,7 +1070,7 @@ fn evaluate_parallel(
             let recipes = recipes.to_vec();
             let baseline = baseline.clone();
             let handle = thread::Builder::new()
-                .name(format!("paired-action-{worker}"))
+                .name(format!("paired-sibling-{worker}"))
                 .spawn_scoped(scope, move || {
                     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)
                         .map_err(|error| error.to_string());
@@ -1143,7 +1124,9 @@ fn evaluate_parallel(
         }
         drop(sender);
         for handle in handles {
-            handle.join().map_err(|_| "paired-action worker panicked")?;
+            handle
+                .join()
+                .map_err(|_| "paired-sibling worker panicked")?;
         }
         Ok(())
     })?;
@@ -1196,9 +1179,9 @@ fn run_arm(
     }
     let pair = ordinal / 2;
     let arm = if ordinal.is_multiple_of(2) {
-        ArmKind::Full
+        ArmKind::B1
     } else {
-        ArmKind::Tail256
+        ArmKind::B2
     };
     let mut archive = Archive::new();
     archive.max_entries = ARCHIVE_LIMIT;
@@ -1232,22 +1215,30 @@ fn run_arm(
         "absent_waypoint",
     ))?;
     let arm_work_before = target.frames_clocked();
-    let mut slots = Vec::with_capacity(SLOTS);
+    let selections = if arm == ArmKind::B1 {
+        SLOTS
+    } else {
+        SLOTS / BURST_SIZE
+    };
+    let mut selection_records = Vec::with_capacity(selections);
     let mut retained: Vec<Option<RetainedEvidence>> = vec![None];
     let mut action_total = 0_u64;
     let mut probe_total = 0_u64;
     let mut maximum_lineage_actions = SOURCE_ACTIONS;
 
-    for slot in 0..SLOTS {
-        let recipe = recipes.get(slot).ok_or("missing slot recipe")?;
-        if recipe.pair != pair || recipe.slot != slot {
-            return Err("slot recipe order is not canonical".into());
-        }
-        let action = match arm {
-            ArmKind::Full => recipe.full_action,
-            ArmKind::Tail256 => recipe.tail_action,
+    for burst in 0..selections {
+        let selection_slot = if arm == ArmKind::B1 {
+            burst
+        } else {
+            burst.checked_mul(BURST_SIZE).ok_or("burst slot overflow")?
         };
-        let mut rand = StdRand::with_seed(recipe.selector_seed);
+        let selection_recipe = recipes
+            .get(selection_slot)
+            .ok_or("missing selection recipe")?;
+        if selection_recipe.pair != pair || selection_recipe.slot != selection_slot {
+            return Err("selection recipe order is not canonical".into());
+        }
+        let mut rand = StdRand::with_seed(selection_recipe.selector_seed);
         let (parent_id, selector) = archive.select_parent(&mut rand, ACTION_LIMIT)?;
         let selector = selector.ok_or("normal selector omitted its draw record")?;
         let parent = archive
@@ -1256,8 +1247,8 @@ fn run_arm(
             .ok_or("selector returned a missing parent")?;
         let parent_report = parent.report.clone();
         let parent_snapshot = parent.snapshot.clone();
-        let parent_input_sha256 = sha256_json(&parent_report.input)?;
-        let parent_snapshot_sha256 = sha256_json(&parent_snapshot)?;
+        let original_parent_input_sha256 = sha256_json(&parent_report.input)?;
+        let original_parent_snapshot_sha256 = sha256_json(&parent_snapshot)?;
 
         target.restore(&parent_snapshot)?;
         verify_snapshot(target, &parent_snapshot)?;
@@ -1265,7 +1256,7 @@ fn run_arm(
             observation: target.observe(),
             mechanical: smb_mechanical_state_from_wram(target.wram()),
             wram_sha256: sha256_bytes(target.wram()),
-            snapshot_sha256: parent_snapshot_sha256.clone(),
+            snapshot_sha256: original_parent_snapshot_sha256.clone(),
             dead: target.is_dead(),
             failed: target.exit_kind() != ExitKind::Ok,
             milestones: parent_report.milestones,
@@ -1274,159 +1265,215 @@ fn run_arm(
             return Err("selector returned a terminal or failed parent".into());
         }
 
-        let slot_before = target.frames_clocked();
-        target.apply(&action);
-        let action_frames = target
-            .frames_clocked()
-            .checked_sub(slot_before)
-            .ok_or("action work counter moved backwards")?;
-        if target.exit_kind() != ExitKind::Ok {
-            return Err("emulator failed during a full action".into());
-        }
-        let dead = target.is_dead();
-        if action_frames > u64::from(action.bounded_hold_frames())
-            || (!dead && action_frames != u64::from(action.bounded_hold_frames()))
-        {
-            return Err("full action work does not match its bounded duration".into());
-        }
-        let observation = target.observe();
-        let mechanical = smb_mechanical_state_from_wram(target.wram());
-        let mut milestones = parent_report.milestones;
-        merge_action_milestones(&mut milestones, target)?;
-        let candidate_input = appended_input(&parent_report.input, action)?;
-        record_lineage_actions(&mut maximum_lineage_actions, candidate_input.actions.len())?;
-        let input_sha256 = sha256_json(&candidate_input)?;
-        let wram_sha256 = sha256_bytes(target.wram());
-        let mut snapshot_sha256 = None;
-        let mut key = None;
-        let mut probe = Vec::new();
-        let mut probe_survived = false;
-        let mut probe_frames = 0_u64;
-        let admission = if dead {
-            AdmissionOutcome::Terminal
-        } else {
-            let snapshot = target
-                .snapshot()
-                .ok_or("failed to snapshot ordinary slot endpoint")?;
-            let candidate_snapshot_sha256 = sha256_json(&snapshot)?;
-            let candidate_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
-            let (attempts, survived, work) = run_probe(target, &snapshot)?;
-            probe = attempts;
-            probe_survived = survived;
-            probe_frames = work;
-            snapshot_sha256 = Some(candidate_snapshot_sha256);
-            key = Some(candidate_key);
-            if survived {
-                insert_candidate(
-                    &mut archive,
-                    Some(parent_id),
-                    u64::try_from(slot.checked_add(1).ok_or("execution overflow")?)?,
-                    ArchiveCandidate {
-                        input: candidate_input.clone(),
-                        key: candidate_key,
-                        milestones,
-                    },
-                    snapshot,
-                )?
+        let candidate_count = if arm == ArmKind::B1 { 1 } else { BURST_SIZE };
+        let burst_recipes = recipes
+            .get(
+                selection_slot
+                    ..selection_slot
+                        .checked_add(candidate_count)
+                        .ok_or("burst end overflow")?,
+            )
+            .ok_or("missing burst recipes")?
+            .to_vec();
+        let selection_before = target.frames_clocked();
+        let mut candidates = Vec::with_capacity(candidate_count);
+        let mut selection_productive = false;
+        for (sibling_offset, recipe) in burst_recipes.iter().enumerate() {
+            let slot = selection_slot
+                .checked_add(sibling_offset)
+                .ok_or("candidate slot overflow")?;
+            if recipe.pair != pair || recipe.slot != slot {
+                return Err("candidate recipe order is not canonical".into());
+            }
+            let action = recipe.action;
+            target.restore(&parent_snapshot)?;
+            verify_snapshot(target, &parent_snapshot)?;
+            let candidate_start = StartEvidence {
+                observation: target.observe(),
+                mechanical: smb_mechanical_state_from_wram(target.wram()),
+                wram_sha256: sha256_bytes(target.wram()),
+                snapshot_sha256: original_parent_snapshot_sha256.clone(),
+                dead: target.is_dead(),
+                failed: target.exit_kind() != ExitKind::Ok,
+                milestones: parent_report.milestones,
+            };
+            if candidate_start != start {
+                return Err("sibling start differs from frozen selected parent".into());
+            }
+
+            let slot_before = target.frames_clocked();
+            target.apply(&action);
+            let action_frames = target
+                .frames_clocked()
+                .checked_sub(slot_before)
+                .ok_or("action work counter moved backwards")?;
+            if target.exit_kind() != ExitKind::Ok {
+                return Err("emulator failed during a full action".into());
+            }
+            let dead = target.is_dead();
+            if action_frames > u64::from(action.bounded_hold_frames())
+                || (!dead && action_frames != u64::from(action.bounded_hold_frames()))
+            {
+                return Err("full action work does not match its bounded duration".into());
+            }
+            let observation = target.observe();
+            let mechanical = smb_mechanical_state_from_wram(target.wram());
+            let mut milestones = parent_report.milestones;
+            merge_action_milestones(&mut milestones, target)?;
+            let candidate_input = appended_input(&parent_report.input, action)?;
+            record_lineage_actions(&mut maximum_lineage_actions, candidate_input.actions.len())?;
+            let input_sha256 = sha256_json(&candidate_input)?;
+            let wram_sha256 = sha256_bytes(target.wram());
+            let mut snapshot_sha256 = None;
+            let mut key = None;
+            let mut probe = Vec::new();
+            let mut probe_survived = false;
+            let mut probe_frames = 0_u64;
+            let admission = if dead {
+                AdmissionOutcome::Terminal
             } else {
-                AdmissionOutcome::ProbeRefused
+                let snapshot = target
+                    .snapshot()
+                    .ok_or("failed to snapshot ordinary slot endpoint")?;
+                let candidate_snapshot_sha256 = sha256_json(&snapshot)?;
+                let candidate_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+                let (attempts, survived, work) = run_probe(target, &snapshot)?;
+                probe = attempts;
+                probe_survived = survived;
+                probe_frames = work;
+                snapshot_sha256 = Some(candidate_snapshot_sha256);
+                key = Some(candidate_key);
+                if survived {
+                    let execution = if arm == ArmKind::B1 {
+                        slot.checked_add(1).ok_or("execution overflow")?
+                    } else {
+                        burst.checked_add(1).ok_or("execution overflow")?
+                    };
+                    insert_candidate(
+                        &mut archive,
+                        Some(parent_id),
+                        u64::try_from(execution)?,
+                        ArchiveCandidate {
+                            input: candidate_input.clone(),
+                            key: candidate_key,
+                            milestones,
+                        },
+                        snapshot,
+                    )?
+                } else {
+                    AdmissionOutcome::ProbeRefused
+                }
+            };
+            let endpoint = EndpointEvidence {
+                action,
+                input_actions: parent_report
+                    .input
+                    .actions
+                    .len()
+                    .checked_add(1)
+                    .ok_or("candidate action count overflow")?,
+                input_sha256,
+                observation,
+                mechanical,
+                watermark: watermark(mechanical),
+                wram_sha256,
+                snapshot_sha256,
+                key,
+                milestones,
+                action_frames,
+                dead,
+                failed: false,
+                probe,
+                probe_survived,
+                probe_frames,
+                admission,
+            };
+            let productive = endpoint.admission.newly_retained_id().is_some();
+            if let Some(id) = endpoint.admission.newly_retained_id() {
+                if id != retained.len() {
+                    return Err("retained evidence is not insertion-order aligned".into());
+                }
+                retained.push(Some(RetainedEvidence {
+                    endpoint: endpoint.clone(),
+                    work_frames: action_frames
+                        .checked_add(probe_frames)
+                        .ok_or("retained work overflow")?,
+                    slot,
+                    burst,
+                    sibling_offset,
+                    recipe: *recipe,
+                    original_parent_id: parent_id,
+                    burst_recipes: burst_recipes.clone(),
+                }));
+            } else if archive.entries.len() != retained.len() {
+                return Err("nonallocating admission changed archive length".into());
             }
-        };
-        let endpoint = EndpointEvidence {
-            action,
-            input_actions: parent_report
-                .input
-                .actions
-                .len()
-                .checked_add(1)
-                .ok_or("candidate action count overflow")?,
-            input_sha256,
-            observation,
-            mechanical,
-            watermark: watermark(mechanical),
-            wram_sha256,
-            snapshot_sha256,
-            key,
-            milestones,
-            action_frames,
-            dead,
-            failed: false,
-            probe,
-            probe_survived,
-            probe_frames,
-            admission,
-        };
-        let productive = endpoint.admission.newly_retained_id().is_some();
-        if let Some(id) = endpoint.admission.newly_retained_id() {
-            if id != retained.len() {
-                return Err("retained evidence is not insertion-order aligned".into());
-            }
-            retained.push(Some(RetainedEvidence {
-                endpoint: endpoint.clone(),
-                work_frames: action_frames
+            let slot_work = target
+                .frames_clocked()
+                .checked_sub(slot_before)
+                .ok_or("slot work counter moved backwards")?;
+            if slot_work
+                != action_frames
                     .checked_add(probe_frames)
-                    .ok_or("retained work overflow")?,
-                slot,
-                rank_word: recipe.rank_word,
-                full_index: recipe.full_index,
-                full_action: recipe.full_action,
-                tail_index: recipe.tail_index,
-                tail_action: recipe.tail_action,
-            }));
-        } else if archive.entries.len() != retained.len() {
-            return Err("nonallocating admission changed archive length".into());
-        }
-        let slot_work = target
-            .frames_clocked()
-            .checked_sub(slot_before)
-            .ok_or("slot work counter moved backwards")?;
-        if slot_work
-            != action_frames
+                    .ok_or("slot component work overflow")?
+            {
+                return Err("slot work does not reconcile with components".into());
+            }
+            action_total = action_total
+                .checked_add(action_frames)
+                .ok_or("arm action work overflow")?;
+            probe_total = probe_total
                 .checked_add(probe_frames)
-                .ok_or("slot component work overflow")?
-        {
-            return Err("slot work does not reconcile with components".into());
-        }
-        action_total = action_total
-            .checked_add(action_frames)
-            .ok_or("arm action work overflow")?;
-        probe_total = probe_total
-            .checked_add(probe_frames)
-            .ok_or("arm probe work overflow")?;
-        archive.record_selection(parent_id, &selector);
-        archive.record_selection_outcome(parent_id, productive, slot_work)?;
-        slots.push(SlotRecord {
-            pair,
-            arm,
-            slot,
-            selector_seed: recipe.selector_seed,
-            selector,
-            parent_id,
-            parent_input_sha256,
-            parent_snapshot_sha256,
-            start: start.clone(),
-            candidate: CandidateRecord {
+                .ok_or("arm probe work overflow")?;
+            selection_productive |= productive;
+            candidates.push(CandidateRecord {
                 pair,
                 arm,
                 slot,
-                rank_word: recipe.rank_word,
-                full_index: recipe.full_index,
-                full_action: recipe.full_action,
-                tail_index: recipe.tail_index,
-                tail_action: recipe.tail_action,
-                selector_seed: recipe.selector_seed,
-                parent_id,
-                start,
+                burst,
+                sibling_offset,
+                recipe: *recipe,
+                selector_used: sibling_offset == 0,
+                original_parent_id: parent_id,
+                original_parent_input_sha256: original_parent_input_sha256.clone(),
+                original_parent_snapshot_sha256: original_parent_snapshot_sha256.clone(),
+                start: candidate_start,
                 input: candidate_input,
                 endpoint,
                 productive,
                 active_ids: active_ids(&archive)?,
                 active_maximum: active_maximum(&archive)?,
                 total_work_frames: slot_work,
-            },
-            productive,
+            });
+        }
+        let selection_work = target
+            .frames_clocked()
+            .checked_sub(selection_before)
+            .ok_or("selection work counter moved backwards")?;
+        let candidate_work = candidates.iter().try_fold(0_u64, |sum, candidate| {
+            sum.checked_add(candidate.total_work_frames)
+                .ok_or("candidate work overflow")
+        })?;
+        if selection_work != candidate_work || candidates.len() != candidate_count {
+            return Err("selection work or candidate count does not reconcile".into());
+        }
+        archive.record_selection(parent_id, &selector);
+        archive.record_selection_outcome(parent_id, selection_productive, selection_work)?;
+        selection_records.push(SelectionRecord {
+            pair,
+            arm,
+            burst,
+            selection_slot,
+            selector_seed: selection_recipe.selector_seed,
+            selector,
+            original_parent_id: parent_id,
+            original_parent_input_sha256,
+            original_parent_snapshot_sha256,
+            start,
+            candidates,
+            productive: selection_productive,
             selector_accounting: archive.selector_report(),
-            total_work_frames: slot_work,
+            total_work_frames: selection_work,
         });
     }
 
@@ -1437,8 +1484,8 @@ fn run_arm(
         .frames_clocked()
         .checked_sub(arm_work_before)
         .ok_or("arm work counter moved backwards")?;
-    if arm_delta != total_work_frames || slots.len() != SLOTS {
-        return Err("arm work or slot counts do not reconcile".into());
+    if arm_delta != total_work_frames || selection_records.len() != selections {
+        return Err("arm work or selection counts do not reconcile".into());
     }
     let (final_active_entries, champion_candidates) =
         final_entries(pair, arm, &archive, &retained)?;
@@ -1450,13 +1497,13 @@ fn run_arm(
         worker,
         worker_setup_frames: (ordinal == worker).then_some(EXPECTED_SETUP_FRAMES),
         initial_archive_sha256,
-        slots,
+        selection_records,
         final_active_entries,
         final_maximum: active_maximum(&archive)?,
         maximum_lineage_actions,
         scheduled_slots: SLOTS,
         executed_slots: SLOTS,
-        selections: SLOTS,
+        selections,
         selector_accounting: archive.selector_report(),
         action_frames: action_total,
         probe_frames: probe_total,
@@ -1647,11 +1694,20 @@ fn final_entries(
             .get(id)
             .and_then(Option::as_ref)
             .ok_or("active allocated entry lacks retention evidence")?;
+        let expected_execution = if arm == ArmKind::B1 {
+            evidence.slot.checked_add(1).ok_or("execution overflow")?
+        } else {
+            evidence.burst.checked_add(1).ok_or("execution overflow")?
+        };
         if evidence.endpoint.admission.newly_retained_id() != Some(id)
             || evidence.endpoint.dead
             || evidence.endpoint.failed
             || !evidence.endpoint.probe_survived
             || evidence.endpoint.key != Some(entry.report.key)
+            || entry.report.parent_id != Some(u64::try_from(evidence.original_parent_id)?)
+            || entry.report.created_execution != u64::try_from(expected_execution)?
+            || evidence.burst_recipes.len() != if arm == ArmKind::B1 { 1 } else { BURST_SIZE }
+            || evidence.burst_recipes.get(evidence.sibling_offset) != Some(&evidence.recipe)
         {
             return Err("active entry disagrees with its normal admission evidence".into());
         }
@@ -1677,17 +1733,20 @@ fn final_entries(
             probe_survived: evidence.endpoint.probe_survived,
             work_frames: evidence.work_frames,
             slot: evidence.slot,
+            burst: evidence.burst,
+            sibling_offset: evidence.sibling_offset,
+            original_parent_id: evidence.original_parent_id,
         });
         candidates.push(ChampionCandidate {
             pair,
             arm,
             id,
             slot: evidence.slot,
-            rank_word: evidence.rank_word,
-            full_index: evidence.full_index,
-            full_action: evidence.full_action,
-            tail_index: evidence.tail_index,
-            tail_action: evidence.tail_action,
+            burst: evidence.burst,
+            sibling_offset: evidence.sibling_offset,
+            recipe: evidence.recipe,
+            original_parent_id: evidence.original_parent_id,
+            burst_recipes: evidence.burst_recipes.clone(),
             input: entry.report.input.clone(),
             input_sha256_bytes: hex_to_array(&input_sha256)?,
             input_sha256,
@@ -1729,9 +1788,14 @@ fn validate_arms(arms: &[ArmRecord]) -> Result<(), Box<dyn Error>> {
     }
     for (ordinal, record) in arms.iter().enumerate() {
         let expected_arm = if ordinal.is_multiple_of(2) {
-            ArmKind::Full
+            ArmKind::B1
         } else {
-            ArmKind::Tail256
+            ArmKind::B2
+        };
+        let expected_selections = if expected_arm == ArmKind::B1 {
+            SLOTS
+        } else {
+            SLOTS / BURST_SIZE
         };
         let accounted_selections = selector_selections(record.selector_accounting)?;
         if record.ordinal != ordinal
@@ -1739,9 +1803,9 @@ fn validate_arms(arms: &[ArmRecord]) -> Result<(), Box<dyn Error>> {
             || record.arm != expected_arm
             || record.worker != ordinal % WORKERS
             || record.worker_setup_frames != (ordinal < WORKERS).then_some(EXPECTED_SETUP_FRAMES)
-            || record.slots.len() != SLOTS
-            || record.selections != SLOTS
-            || accounted_selections != u64::try_from(SLOTS)?
+            || record.selection_records.len() != expected_selections
+            || record.selections != expected_selections
+            || accounted_selections != u64::try_from(expected_selections)?
             || record.selector_accounting.policy != SmbArchiveSelectorPolicy::ConcentratedRecency
             || record.selector_accounting.waypoint_selections != 0
             || record.scheduled_slots != SLOTS
@@ -1750,39 +1814,78 @@ fn validate_arms(arms: &[ArmRecord]) -> Result<(), Box<dyn Error>> {
         {
             return Err("arm record order or shape is not canonical".into());
         }
-        for (slot, slot_record) in record.slots.iter().enumerate() {
-            let expected_action = match expected_arm {
-                ArmKind::Full => slot_record.candidate.full_action,
-                ArmKind::Tail256 => slot_record.candidate.tail_action,
+        for (burst, selection) in record.selection_records.iter().enumerate() {
+            let selection_slot = if expected_arm == ArmKind::B1 {
+                burst
+            } else {
+                burst.checked_mul(BURST_SIZE).ok_or("burst overflow")?
             };
-            let candidate_input_sha256 = sha256_json(&slot_record.candidate.input)?;
-            if slot_record.pair != record.pair
-                || slot_record.arm != record.arm
-                || slot_record.slot != slot
-                || slot_record.candidate.pair != record.pair
-                || slot_record.candidate.arm != record.arm
-                || slot_record.candidate.slot != slot
-                || slot_record.candidate.selector_seed != slot_record.selector_seed
-                || slot_record.candidate.parent_id != slot_record.parent_id
-                || slot_record.candidate.start != slot_record.start
-                || slot_record.candidate.input.actions.last() != Some(&expected_action)
-                || slot_record.candidate.input.actions.len()
-                    != slot_record.candidate.endpoint.input_actions
-                || candidate_input_sha256 != slot_record.candidate.endpoint.input_sha256
-                || slot_record.candidate.endpoint.action != expected_action
-                || slot_record.candidate.productive != slot_record.productive
-                || slot_record.total_work_frames != slot_record.candidate.total_work_frames
-                || selector_selections(slot_record.selector_accounting)?
-                    != u64::try_from(slot.checked_add(1).ok_or("slot count overflow")?)?
-                || slot_record
-                    .candidate
-                    .endpoint
-                    .admission
-                    .newly_retained_id()
-                    .is_some()
-                    != slot_record.productive
+            let expected_candidates = if expected_arm == ArmKind::B1 {
+                1
+            } else {
+                BURST_SIZE
+            };
+            let candidate_work =
+                selection
+                    .candidates
+                    .iter()
+                    .try_fold(0_u64, |sum, candidate| {
+                        sum.checked_add(candidate.total_work_frames)
+                            .ok_or("candidate work overflow")
+                    })?;
+            if selection.pair != record.pair
+                || selection.arm != record.arm
+                || selection.burst != burst
+                || selection.selection_slot != selection_slot
+                || selection.candidates.len() != expected_candidates
+                || selection.selector_seed
+                    != selection
+                        .candidates
+                        .first()
+                        .ok_or("selection has no candidate")?
+                        .recipe
+                        .selector_seed
+                || selection.candidates.iter().any(|candidate| {
+                    candidate.original_parent_id != selection.original_parent_id
+                        || candidate.original_parent_input_sha256
+                            != selection.original_parent_input_sha256
+                        || candidate.original_parent_snapshot_sha256
+                            != selection.original_parent_snapshot_sha256
+                        || candidate.start != selection.start
+                })
+                || candidate_work != selection.total_work_frames
+                || selection.productive
+                    != selection
+                        .candidates
+                        .iter()
+                        .any(|candidate| candidate.productive)
+                || selector_selections(selection.selector_accounting)?
+                    != u64::try_from(burst.checked_add(1).ok_or("selection count overflow")?)?
             {
-                return Err("slot record order or accounting is not canonical".into());
+                return Err("selection record order or accounting is not canonical".into());
+            }
+            for (sibling_offset, candidate) in selection.candidates.iter().enumerate() {
+                let slot = selection_slot
+                    .checked_add(sibling_offset)
+                    .ok_or("candidate slot overflow")?;
+                let candidate_input_sha256 = sha256_json(&candidate.input)?;
+                if candidate.pair != record.pair
+                    || candidate.arm != record.arm
+                    || candidate.slot != slot
+                    || candidate.burst != burst
+                    || candidate.sibling_offset != sibling_offset
+                    || candidate.recipe.pair != record.pair
+                    || candidate.recipe.slot != slot
+                    || candidate.selector_used != (sibling_offset == 0)
+                    || candidate.input.actions.last() != Some(&candidate.recipe.action)
+                    || candidate.input.actions.len() != candidate.endpoint.input_actions
+                    || candidate_input_sha256 != candidate.endpoint.input_sha256
+                    || candidate.endpoint.action != candidate.recipe.action
+                    || candidate.endpoint.admission.newly_retained_id().is_some()
+                        != candidate.productive
+                {
+                    return Err("candidate record order or identity is not canonical".into());
+                }
             }
         }
     }
@@ -1834,11 +1937,11 @@ fn champion_record(candidate: &ChampionCandidate) -> ChampionRecord {
         arm: candidate.arm,
         id: candidate.id,
         slot: candidate.slot,
-        rank_word: candidate.rank_word,
-        full_index: candidate.full_index,
-        full_action: candidate.full_action,
-        tail_index: candidate.tail_index,
-        tail_action: candidate.tail_action,
+        burst: candidate.burst,
+        sibling_offset: candidate.sibling_offset,
+        recipe: candidate.recipe,
+        original_parent_id: candidate.original_parent_id,
+        burst_recipes: candidate.burst_recipes.clone(),
         parent_lineage: candidate.parent_lineage.clone(),
         input: candidate.input.clone(),
         input_sha256: candidate.input_sha256.clone(),
@@ -1864,45 +1967,39 @@ fn classify_paired(arms: &[ArmRecord]) -> Result<PairedClassificationRecord, Box
     validate_arms(arms)?;
     let mut pairs = Vec::with_capacity(PAIRS);
     let mut non_ties = 0_usize;
-    let mut tail256_wins = 0_usize;
+    let mut b2_wins = 0_usize;
     let mut witnesses = Vec::new();
     for pair in 0..PAIRS {
-        let full = arms.get(pair * 2).ok_or("missing FULL arm")?;
-        let tail256 = arms
+        let b1 = arms.get(pair * 2).ok_or("missing B1 arm")?;
+        let b2 = arms
             .get(
                 pair.checked_mul(2)
                     .and_then(|value| value.checked_add(1))
                     .ok_or("arm index overflow")?,
             )
-            .ok_or("missing TAIL256 arm")?;
-        let outcome = match tail256
-            .final_maximum
-            .watermark
-            .cmp(&full.final_maximum.watermark)
-        {
+            .ok_or("missing B2 arm")?;
+        let outcome = match b2.final_maximum.watermark.cmp(&b1.final_maximum.watermark) {
             std::cmp::Ordering::Greater => {
                 non_ties = non_ties.checked_add(1).ok_or("non-tie count overflow")?;
-                tail256_wins = tail256_wins
-                    .checked_add(1)
-                    .ok_or("TAIL256 win count overflow")?;
-                "TAIL256_WIN"
+                b2_wins = b2_wins.checked_add(1).ok_or("B2 win count overflow")?;
+                "B2_WIN"
             }
             std::cmp::Ordering::Less => {
                 non_ties = non_ties.checked_add(1).ok_or("non-tie count overflow")?;
-                "FULL_WIN"
+                "B1_WIN"
             }
             std::cmp::Ordering::Equal => "TIE",
         };
         pairs.push(PairOutcomeRecord {
             pair,
-            full_maximum: full.final_maximum.watermark,
-            tail256_maximum: tail256.final_maximum.watermark,
+            b1_maximum: b1.final_maximum.watermark,
+            b2_maximum: b2.final_maximum.watermark,
             outcome,
         });
-        witnesses.extend(structural_witnesses(pair, full, tail256));
+        witnesses.extend(structural_witnesses(pair, b1, b2));
     }
     witnesses.sort_by_key(|witness| (witness.pair, witness.champion.id));
-    let tail_numerator = sign_tail_numerator(non_ties, tail256_wins)?;
+    let tail_numerator = sign_tail_numerator(non_ties, b2_wins)?;
     let shift = u32::try_from(non_ties)?;
     let tail_denominator = 1_u128
         .checked_shl(shift)
@@ -1917,7 +2014,7 @@ fn classify_paired(arms: &[ArmRecord]) -> Result<PairedClassificationRecord, Box
         record: "paired_classification",
         pairs,
         non_ties,
-        tail256_wins,
+        b2_wins,
         tail_numerator,
         tail_denominator,
         witnesses,
@@ -1925,32 +2022,28 @@ fn classify_paired(arms: &[ArmRecord]) -> Result<PairedClassificationRecord, Box
     })
 }
 
-fn structural_witnesses(
-    pair: usize,
-    full: &ArmRecord,
-    tail256: &ArmRecord,
-) -> Vec<StructuralWitness> {
-    tail256
-        .champion_candidates
+fn structural_witnesses(pair: usize, b1: &ArmRecord, b2: &ArmRecord) -> Vec<StructuralWitness> {
+    b2.champion_candidates
         .iter()
-        .filter(|candidate| is_tail256_witness(candidate, full.final_maximum.watermark))
+        .filter(|candidate| is_b2_witness(candidate, b1.final_maximum.watermark))
         .map(|candidate| StructuralWitness {
             pair,
-            full_maximum: full.final_maximum.watermark,
+            b1_maximum: b1.final_maximum.watermark,
             champion: champion_record(candidate),
         })
         .collect()
 }
 
-fn is_tail256_witness(candidate: &ChampionCandidate, full_maximum: SmbProgressWatermark) -> bool {
-    candidate.arm == ArmKind::Tail256
+fn is_b2_witness(candidate: &ChampionCandidate, b1_maximum: SmbProgressWatermark) -> bool {
+    candidate.arm == ArmKind::B2
+        && candidate.sibling_offset == 1
+        && candidate.burst_recipes.len() == BURST_SIZE
         && candidate.endpoint.admission.newly_retained_id() == Some(candidate.id)
         && !candidate.endpoint.dead
         && !candidate.endpoint.failed
         && candidate.endpoint.probe_survived
         && candidate.endpoint.watermark > BASELINE_WATERMARK
-        && candidate.endpoint.watermark > full_maximum
-        && candidate.tail_action != candidate.full_action
+        && candidate.endpoint.watermark > b1_maximum
 }
 
 fn structural_verdict(
@@ -1966,9 +2059,9 @@ fn structural_verdict(
     Ok(if non_ties < 8 {
         StructuralVerdict::InconclusiveSparse
     } else if sign && has_witness {
-        StructuralVerdict::PromoteTail256
+        StructuralVerdict::PromoteB2
     } else {
-        StructuralVerdict::RetainFull
+        StructuralVerdict::RetainB1
     })
 }
 
@@ -2006,7 +2099,8 @@ struct WorkSummary {
     worker_setup_frames: Vec<u64>,
     scheduled: usize,
     executed: usize,
-    selections: usize,
+    b1_selections: usize,
+    b2_selections: usize,
     setup: u64,
     source_probe: u64,
     action: u64,
@@ -2032,7 +2126,8 @@ fn summarize_work(
     let mut probe = 0_u64;
     let mut scheduled = 0_usize;
     let mut executed = 0_usize;
-    let mut selections = 0_usize;
+    let mut b1_selections = 0_usize;
+    let mut b2_selections = 0_usize;
     for record in arms {
         action = action
             .checked_add(record.action_frames)
@@ -2054,7 +2149,11 @@ fn summarize_work(
         executed = executed
             .checked_add(record.executed_slots)
             .ok_or("executed slot count overflow")?;
-        selections = selections
+        let arm_selections = match record.arm {
+            ArmKind::B1 => &mut b1_selections,
+            ArmKind::B2 => &mut b2_selections,
+        };
+        *arm_selections = arm_selections
             .checked_add(record.selections)
             .ok_or("selection count overflow")?;
     }
@@ -2077,7 +2176,8 @@ fn summarize_work(
                 .and_then(|value| value.checked_mul(SLOTS))
                 .ok_or("scheduled slot bound overflow")?
         || executed != scheduled
-        || selections != EXPECTED_SELECTIONS
+        || b1_selections != EXPECTED_B1_SELECTIONS
+        || b2_selections != EXPECTED_B2_SELECTIONS
         || action > MAX_ACTION_FRAMES
         || probe > MAX_PROBE_FRAMES
     {
@@ -2101,7 +2201,8 @@ fn summarize_work(
             .collect(),
         scheduled,
         executed,
-        selections,
+        b1_selections,
+        b2_selections,
         setup,
         source_probe,
         action,
@@ -2226,11 +2327,44 @@ mod tests {
             arm,
             id,
             slot,
-            rank_word: u64::try_from(slot).expect("slot fits u64"),
-            full_index: slot,
-            full_action: ButtonChord::new(1, 2),
-            tail_index: SOURCE_ACTIONS - 1,
-            tail_action: ButtonChord::new(2, 2),
+            burst: if arm == ArmKind::B1 {
+                slot
+            } else {
+                slot / BURST_SIZE
+            },
+            sibling_offset: if arm == ArmKind::B1 {
+                0
+            } else {
+                slot % BURST_SIZE
+            },
+            recipe: Recipe {
+                pair,
+                slot,
+                source_index: slot,
+                action: ButtonChord::new(0, 2),
+                selector_seed: u64::try_from(slot).expect("slot fits u64"),
+            },
+            original_parent_id: 0,
+            burst_recipes: if arm == ArmKind::B1 {
+                vec![Recipe {
+                    pair,
+                    slot,
+                    source_index: slot,
+                    action: ButtonChord::new(0, 2),
+                    selector_seed: u64::try_from(slot).expect("slot fits u64"),
+                }]
+            } else {
+                let first = slot - slot % BURST_SIZE;
+                (first..first + BURST_SIZE)
+                    .map(|recipe_slot| Recipe {
+                        pair,
+                        slot: recipe_slot,
+                        source_index: recipe_slot,
+                        action: ButtonChord::new(0, 2),
+                        selector_seed: u64::try_from(recipe_slot).expect("slot fits u64"),
+                    })
+                    .collect()
+            },
             input,
             input_sha256: input_sha256_bytes
                 .iter()
@@ -2306,57 +2440,62 @@ mod tests {
         }
     }
 
-    fn synthetic_slot(pair: usize, arm: ArmKind, slot: usize) -> SlotRecord {
+    fn synthetic_selection(pair: usize, arm: ArmKind, burst: usize) -> SelectionRecord {
         let start = start_evidence(BASELINE_WATERMARK);
-        let mut endpoint = candidate(
+        let selection_slot = if arm == ArmKind::B1 {
+            burst
+        } else {
+            burst * BURST_SIZE
+        };
+        let candidate_count = if arm == ArmKind::B1 { 1 } else { BURST_SIZE };
+        let candidates = (0..candidate_count)
+            .map(|sibling_offset| {
+                let slot = selection_slot + sibling_offset;
+                let recipe = Recipe {
+                    pair,
+                    slot,
+                    source_index: slot,
+                    action: ButtonChord::new(0, 2),
+                    selector_seed: u64::try_from(slot).expect("slot fits u64"),
+                };
+                let mut endpoint =
+                    candidate(pair, arm, slot + 1, BASELINE_WATERMARK, 1, 0, slot).endpoint;
+                let input = SmbInput {
+                    actions: vec![recipe.action],
+                };
+                endpoint.input_actions = input.actions.len();
+                endpoint.input_sha256 = sha256_json(&input).expect("hash synthetic input");
+                endpoint.admission = AdmissionOutcome::Rejected;
+                CandidateRecord {
+                    pair,
+                    arm,
+                    slot,
+                    burst,
+                    sibling_offset,
+                    recipe,
+                    selector_used: sibling_offset == 0,
+                    original_parent_id: 0,
+                    original_parent_input_sha256: String::new(),
+                    original_parent_snapshot_sha256: String::new(),
+                    start: start.clone(),
+                    input,
+                    endpoint,
+                    productive: false,
+                    active_ids: vec![0],
+                    active_maximum: ActiveMaximum {
+                        watermark: BASELINE_WATERMARK,
+                        ids: vec![0],
+                    },
+                    total_work_frames: 2,
+                }
+            })
+            .collect::<Vec<_>>();
+        SelectionRecord {
             pair,
             arm,
-            slot + 1,
-            BASELINE_WATERMARK,
-            SOURCE_ACTIONS + 1,
-            0,
-            slot,
-        )
-        .endpoint;
-        let full_action = ButtonChord::new(1, 2);
-        let tail_action = ButtonChord::new(2, 2);
-        endpoint.action = match arm {
-            ArmKind::Full => full_action,
-            ArmKind::Tail256 => tail_action,
-        };
-        let input = SmbInput {
-            actions: vec![endpoint.action],
-        };
-        endpoint.input_actions = input.actions.len();
-        endpoint.input_sha256 = sha256_json(&input).expect("hash synthetic input");
-        endpoint.admission = AdmissionOutcome::Rejected;
-        let candidate = CandidateRecord {
-            pair,
-            arm,
-            slot,
-            rank_word: u64::try_from(slot).expect("slot fits u64"),
-            full_index: slot,
-            full_action,
-            tail_index: SOURCE_ACTIONS - 1,
-            tail_action,
-            selector_seed: u64::try_from(slot).expect("slot fits u64"),
-            parent_id: 0,
-            start: start.clone(),
-            input,
-            endpoint,
-            productive: false,
-            active_ids: vec![0],
-            active_maximum: ActiveMaximum {
-                watermark: BASELINE_WATERMARK,
-                ids: vec![0],
-            },
-            total_work_frames: 2,
-        };
-        SlotRecord {
-            pair,
-            arm,
-            slot,
-            selector_seed: u64::try_from(slot).expect("slot fits u64"),
+            burst,
+            selection_slot,
+            selector_seed: u64::try_from(selection_slot).expect("slot fits u64"),
             selector: SmbSelectorDraw {
                 path: SmbSelectorPath::Uniform,
                 classes_skipped: 0,
@@ -2364,14 +2503,14 @@ mod tests {
                 concentration: None,
                 waypoint: false,
             },
-            parent_id: 0,
-            parent_input_sha256: String::new(),
-            parent_snapshot_sha256: String::new(),
+            original_parent_id: 0,
+            original_parent_input_sha256: String::new(),
+            original_parent_snapshot_sha256: String::new(),
             start,
-            candidate,
+            candidates,
             productive: false,
-            selector_accounting: selector_accounting(slot + 1),
-            total_work_frames: 2,
+            selector_accounting: selector_accounting(burst + 1),
+            total_work_frames: u64::try_from(candidate_count * 2).expect("work fits u64"),
         }
     }
 
@@ -2381,9 +2520,14 @@ mod tests {
         maximum: SmbProgressWatermark,
         champion_candidates: Vec<ChampionCandidate>,
     ) -> ArmRecord {
-        let ordinal = pair * 2 + usize::from(arm == ArmKind::Tail256);
-        let slots = (0..SLOTS)
-            .map(|slot| synthetic_slot(pair, arm, slot))
+        let ordinal = pair * 2 + usize::from(arm == ArmKind::B2);
+        let selections = if arm == ArmKind::B1 {
+            SLOTS
+        } else {
+            SLOTS / BURST_SIZE
+        };
+        let selection_records = (0..selections)
+            .map(|burst| synthetic_selection(pair, arm, burst))
             .collect::<Vec<_>>();
         let action_frames = u64::try_from(SLOTS * 2).expect("work fits u64");
         ArmRecord {
@@ -2394,7 +2538,7 @@ mod tests {
             worker: ordinal % WORKERS,
             worker_setup_frames: (ordinal < WORKERS).then_some(EXPECTED_SETUP_FRAMES),
             initial_archive_sha256: String::new(),
-            slots,
+            selection_records,
             final_active_entries: Vec::new(),
             final_maximum: ActiveMaximum {
                 watermark: maximum,
@@ -2403,8 +2547,8 @@ mod tests {
             maximum_lineage_actions: SOURCE_ACTIONS,
             scheduled_slots: SLOTS,
             executed_slots: SLOTS,
-            selections: SLOTS,
-            selector_accounting: selector_accounting(SLOTS),
+            selections,
+            selector_accounting: selector_accounting(selections),
             action_frames,
             probe_frames: 0,
             total_work_frames: action_frames,
@@ -2413,31 +2557,31 @@ mod tests {
     }
 
     fn paired_arms_with_boundary_candidates() -> Vec<ArmRecord> {
-        let full_maximum = SmbProgressWatermark {
+        let b1_maximum = SmbProgressWatermark {
             world: 7,
             level: 1,
-            progress: 184,
+            progress: 197,
         };
         let mut arms = Vec::with_capacity(ARMS);
         for pair in 0..PAIRS {
-            arms.push(synthetic_arm(pair, ArmKind::Full, full_maximum, Vec::new()));
-            let tail256_maximum = SmbProgressWatermark {
-                progress: 185,
-                ..full_maximum
+            arms.push(synthetic_arm(pair, ArmKind::B1, b1_maximum, Vec::new()));
+            let b2_maximum = SmbProgressWatermark {
+                progress: 198,
+                ..b1_maximum
             };
             let candidate = candidate(
                 pair,
-                ArmKind::Tail256,
+                ArmKind::B2,
                 1,
-                tail256_maximum,
+                b2_maximum,
                 SOURCE_ACTIONS + 1,
                 u8::try_from(pair).expect("pair fits u8"),
-                pair,
+                1,
             );
             arms.push(synthetic_arm(
                 pair,
-                ArmKind::Tail256,
-                tail256_maximum,
+                ArmKind::B2,
+                b2_maximum,
                 vec![candidate],
             ));
         }
@@ -2455,12 +2599,9 @@ mod tests {
             Recipe {
                 pair: 0,
                 slot: 0,
-                rank_word: 11_285_664_908_963_401_769,
-                full_index: 1_609,
-                full_action: ButtonChord::new(73, 64),
-                tail_index: 3_225,
-                tail_action: ButtonChord::new(153, 14),
-                selector_seed: 14_881_283_772_109_067_701,
+                source_index: 1_382,
+                action: ButtonChord::new(102, 75),
+                selector_seed: 11_257_089_157_767_927_824,
             }
         );
         assert_eq!(
@@ -2468,17 +2609,14 @@ mod tests {
             Recipe {
                 pair: 15,
                 slot: 127,
-                rank_word: 7_197_191_640_346_007_267,
-                full_index: 2_627,
-                full_action: ButtonChord::new(67, 11),
-                tail_index: 3_411,
-                tail_action: ButtonChord::new(83, 81),
-                selector_seed: 7_063_694_047_214_560_074,
+                source_index: 2_036,
+                action: ButtonChord::new(244, 15),
+                selector_seed: 18_108_817_186_768_306_067,
             }
         );
         assert_eq!(
             recipe_sha256(&recipes).expect("hash synthetic recipe"),
-            "affd6ec44508c51d062227349c879fcb94073c7d91438a5fa9cccf1b2b13414f"
+            "e077671400610fb087c9156c18f6ea58cbd27176c815ccfa1ef67f3de55a5424"
         );
         let mut projections = projection_bytes(&recipes).expect("serialize projections");
         assert_eq!(projections.len(), PAIRS);
@@ -2487,31 +2625,31 @@ mod tests {
         assert!(projection_sha256(&recipes).is_err());
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "039cfd75d3aee68251b3a20dae93b467dac3b5d794ec12b9ca69b8081f4933e0"
+            "806e5c4d3200d983c7043aded109bd516463e543bba66c2867b24dd3e0484131"
         );
-        assert_eq!(EXPECTED_RECIPE_BYTES, 250_741);
+        assert_eq!(EXPECTED_RECIPE_BYTES, 132_496);
     }
 
     #[test]
-    fn paired_sign_gate_requires_exact_tail_and_structural_witness() {
+    fn paired_sign_gate_requires_exact_tail_and_second_sibling_witness() {
         assert_eq!(sign_tail_numerator(16, 16).expect("tail"), 1);
         assert_eq!(sign_tail_numerator(8, 8).expect("tail"), 1);
         assert_eq!(sign_tail_numerator(8, 7).expect("tail"), 9);
         let arms = paired_arms_with_boundary_candidates();
         let classified = classify_paired(&arms).expect("classify paired arms");
         assert_eq!(classified.non_ties, 16);
-        assert_eq!(classified.tail256_wins, 16);
+        assert_eq!(classified.b2_wins, 16);
         assert!(
             classified
                 .pairs
                 .iter()
-                .all(|outcome| outcome.outcome == "TAIL256_WIN")
+                .all(|outcome| outcome.outcome == "B2_WIN")
         );
         assert_eq!(
             (classified.tail_numerator, classified.tail_denominator),
             (1, 65_536)
         );
-        assert_eq!(classified.verdict, StructuralVerdict::PromoteTail256);
+        assert_eq!(classified.verdict, StructuralVerdict::PromoteB2);
         assert_eq!(classified.witnesses.len(), PAIRS);
         assert_eq!(
             (
@@ -2520,7 +2658,7 @@ mod tests {
                 classified.witnesses[0].champion.slot,
                 classified.witnesses[0].champion.endpoint.watermark.progress,
             ),
-            (0, 1, 0, 185)
+            (0, 1, 1, 198)
         );
         let work = summarize_work(&arms, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES)
             .expect("reconcile paired work");
@@ -2528,6 +2666,8 @@ mod tests {
             work.worker_setup_frames,
             vec![EXPECTED_SETUP_FRAMES; WORKERS]
         );
+        assert_eq!(work.b1_selections, EXPECTED_B1_SELECTIONS);
+        assert_eq!(work.b2_selections, EXPECTED_B2_SELECTIONS);
         assert_eq!(
             arms.iter()
                 .map(|arm| serde_json::to_value(arm).expect("serialize arm"))
@@ -2545,14 +2685,14 @@ mod tests {
         let classified =
             classify_paired(&without_strict_witness).expect("classify witness-free arms");
         assert!(classified.witnesses.is_empty());
-        assert_eq!(classified.verdict, StructuralVerdict::RetainFull);
+        assert_eq!(classified.verdict, StructuralVerdict::RetainB1);
 
         let mut sparse = paired_arms_with_boundary_candidates();
         for pair in 7..PAIRS {
-            let full_maximum = sparse[pair * 2].final_maximum.watermark;
-            let tail256 = &mut sparse[pair * 2 + 1];
-            tail256.final_maximum.watermark = full_maximum;
-            tail256.champion_candidates.clear();
+            let b1_maximum = sparse[pair * 2].final_maximum.watermark;
+            let b2 = &mut sparse[pair * 2 + 1];
+            b2.final_maximum.watermark = b1_maximum;
+            b2.champion_candidates.clear();
         }
         let classified = classify_paired(&sparse).expect("classify sparse arms");
         assert_eq!(classified.non_ties, 7);
@@ -2564,22 +2704,22 @@ mod tests {
             r#""INCONCLUSIVE_SPARSE""#
         );
         assert_eq!(
-            serde_json::to_string(&StructuralVerdict::PromoteTail256)
-                .expect("serialize confirmation verdict"),
-            r#""PROMOTE_TAIL256""#
+            serde_json::to_string(&StructuralVerdict::PromoteB2)
+                .expect("serialize promotion verdict"),
+            r#""PROMOTE_B2""#
         );
         assert_eq!(
-            serde_json::to_string(&StructuralVerdict::RetainFull)
+            serde_json::to_string(&StructuralVerdict::RetainB1)
                 .expect("serialize rejection verdict"),
-            r#""RETAIN_FULL""#
+            r#""RETAIN_B1""#
         );
         assert_eq!(
-            serde_json::to_string(&ArmKind::Full).expect("serialize FULL arm"),
-            r#""FULL""#
+            serde_json::to_string(&ArmKind::B1).expect("serialize B1 arm"),
+            r#""B1""#
         );
         assert_eq!(
-            serde_json::to_string(&ArmKind::Tail256).expect("serialize TAIL256 arm"),
-            r#""TAIL256""#
+            serde_json::to_string(&ArmKind::B2).expect("serialize B2 arm"),
+            r#""B2""#
         );
     }
 
@@ -2587,11 +2727,11 @@ mod tests {
     fn structural_sign_boundary_is_exact_and_sparse_takes_precedence() {
         assert_eq!(
             structural_verdict(8, 9, 256, true).expect("classify 9/256 tail"),
-            StructuralVerdict::RetainFull
+            StructuralVerdict::RetainB1
         );
         assert_eq!(
             structural_verdict(8, 1, 256, true).expect("classify 1/256 tail"),
-            StructuralVerdict::PromoteTail256
+            StructuralVerdict::PromoteB2
         );
         assert_eq!(
             structural_verdict(7, 1, 128, true).expect("classify sparse tail"),
@@ -2600,31 +2740,73 @@ mod tests {
     }
 
     #[test]
-    fn tail256_witness_requires_strict_progress_and_a_different_paired_chord() {
-        let full_maximum = SmbProgressWatermark {
-            progress: 184,
+    fn b2_records_one_aggregate_selection_for_two_same_parent_siblings() {
+        let mut arms = paired_arms_with_boundary_candidates();
+        let selection = &arms[1].selection_records[0];
+        assert_eq!(arms[0].selection_records.len(), SLOTS);
+        assert_eq!(arms[1].selection_records.len(), SLOTS / BURST_SIZE);
+        assert_eq!(selection.candidates.len(), BURST_SIZE);
+        assert_eq!(
+            selection
+                .candidates
+                .iter()
+                .map(|candidate| candidate.original_parent_id)
+                .collect::<Vec<_>>(),
+            vec![selection.original_parent_id; BURST_SIZE]
+        );
+        assert!(selection.candidates[0].selector_used);
+        assert!(!selection.candidates[1].selector_used);
+        assert_eq!(selection.candidates[0].start, selection.candidates[1].start);
+        assert_eq!(
+            selector_selections(selection.selector_accounting).expect("count"),
+            1
+        );
+
+        arms[1].selection_records[0].candidates[1].original_parent_id = 1;
+        assert!(validate_arms(&arms).is_err());
+        arms[1].selection_records[0].candidates[1].original_parent_id = 0;
+        arms[1].selection_records[0].candidates[1].start.wram_sha256 = "different".to_owned();
+        assert!(validate_arms(&arms).is_err());
+        arms[1].selection_records[0].candidates[1]
+            .start
+            .wram_sha256
+            .clear();
+        arms[1].selection_records[0].productive = true;
+        assert!(validate_arms(&arms).is_err());
+    }
+
+    #[test]
+    fn b2_witness_requires_second_sibling_and_strict_progress() {
+        let b1_maximum = SmbProgressWatermark {
+            progress: 197,
             ..BASELINE_WATERMARK
         };
         let strict = SmbProgressWatermark {
-            progress: 185,
+            progress: 198,
             ..BASELINE_WATERMARK
         };
-        let mut witness = candidate(0, ArmKind::Tail256, 1, strict, SOURCE_ACTIONS + 1, 1, 0);
-        assert!(is_tail256_witness(&witness, full_maximum));
+        let mut witness = candidate(0, ArmKind::B2, 1, strict, SOURCE_ACTIONS + 1, 1, 1);
+        assert!(is_b2_witness(&witness, b1_maximum));
 
-        witness.tail_action = witness.full_action;
-        assert!(!is_tail256_witness(&witness, full_maximum));
-        witness.tail_action = ButtonChord::new(2, 2);
-        witness.endpoint.watermark = full_maximum;
-        assert!(!is_tail256_witness(&witness, full_maximum));
+        witness.sibling_offset = 0;
+        assert!(!is_b2_witness(&witness, b1_maximum));
+        witness.sibling_offset = 1;
+        witness.endpoint.watermark = b1_maximum;
+        assert!(!is_b2_witness(&witness, b1_maximum));
         witness.endpoint.watermark = BASELINE_WATERMARK;
-        assert!(!is_tail256_witness(&witness, BASELINE_WATERMARK));
+        assert!(!is_b2_witness(&witness, BASELINE_WATERMARK));
         witness.endpoint.watermark = strict;
         witness.endpoint.probe_survived = false;
-        assert!(!is_tail256_witness(&witness, full_maximum));
+        assert!(!is_b2_witness(&witness, b1_maximum));
         witness.endpoint.probe_survived = true;
         witness.endpoint.admission = AdmissionOutcome::Duplicate { id: witness.id };
-        assert!(!is_tail256_witness(&witness, full_maximum));
+        assert!(!is_b2_witness(&witness, b1_maximum));
+        witness.endpoint.admission = AdmissionOutcome::Retained {
+            id: witness.id,
+            displaced: false,
+        };
+        witness.burst_recipes.truncate(1);
+        assert!(!is_b2_witness(&witness, b1_maximum));
     }
 
     #[test]
@@ -2632,19 +2814,19 @@ mod tests {
         let base = SmbProgressWatermark {
             world: 7,
             level: 1,
-            progress: 184,
+            progress: 197,
         };
         let champion = rank_champion(vec![
-            candidate(0, ArmKind::Full, 9, base, 9, 0x10, 1),
-            candidate(1, ArmKind::Tail256, 8, base, 8, 0x20, 4),
-            candidate(1, ArmKind::Full, 7, base, 8, 0x20, 1),
-            candidate(0, ArmKind::Tail256, 6, base, 8, 0x20, 3),
-            candidate(0, ArmKind::Full, 5, base, 8, 0x20, 1),
+            candidate(0, ArmKind::B1, 9, base, 9, 0x10, 1),
+            candidate(1, ArmKind::B2, 8, base, 8, 0x20, 5),
+            candidate(1, ArmKind::B1, 7, base, 8, 0x20, 1),
+            candidate(0, ArmKind::B2, 6, base, 8, 0x20, 3),
+            candidate(0, ArmKind::B1, 5, base, 8, 0x20, 1),
         ])
         .expect("champion exists");
         assert_eq!(
             (champion.pair, champion.arm, champion.id),
-            (0, ArmKind::Full, 5)
+            (0, ArmKind::B1, 5)
         );
         assert_eq!(verdict_for(Some(&champion)), Verdict::Adopt);
 
@@ -2654,8 +2836,8 @@ mod tests {
             progress: 0,
         };
         let cross_level = rank_champion(vec![
-            candidate(0, ArmKind::Full, 1, base, 1, 0, 1),
-            candidate(7, ArmKind::Tail256, 2, later_level, 20, 0xff, 4),
+            candidate(0, ArmKind::B1, 1, base, 1, 0, 1),
+            candidate(7, ArmKind::B2, 2, later_level, 20, 0xff, 5),
         ])
         .expect("cross-level champion");
         assert_eq!(cross_level.endpoint.watermark, later_level);
