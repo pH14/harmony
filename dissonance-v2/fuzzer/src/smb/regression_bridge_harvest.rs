@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Sealed World 8-4 p73 regression-bridge H8 harvest.
+//! Sealed World 8-4 p153 regression-bridge H8 harvest.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -32,29 +32,29 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-4-p73-regression-bridge-h8-harvest-v1";
-const PREREGISTRATION_COMMIT: &str = "ca7a7b2239a6fa6b44e1e0cb87d75a405b3c109b";
+const FORMAT: &str = "smb-w8-4-p153-regression-bridge-h8-harvest-v1";
+const PREREGISTRATION_COMMIT: &str = "c7b869d1a22d281c2e418739c594b7ccf2918e36";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "effe449dd08aeec64bf23bf5657081182e491542ba2646d0f402bdcdbc36cdaf";
-const CODE_BASE: &str = "55bdab5f965a300f6d12529bc322ebab421f63d6";
-const AUTHORIZING_P73_PREREGISTRATION: &str = "6078a7c781de16b0bc75c152481cf158a5669ee3";
-const AUTHORIZING_P73_IMPLEMENTATION: &str = "00fd0a1ae25e08afc6302882c168084f3ae29eac";
-const AUTHORIZING_P73_RESULT: &str = "55bdab5f965a300f6d12529bc322ebab421f63d6";
-const AUTHORIZING_P73_REPORT_SHA256: &str =
-    "e4d9d86738c546048d67dda3adea15032bda5dbb65e3afcc212f958977a7999a";
-const SOURCE_FILE_SHA256: &str = "d222d9ebc0126c52473a121e4143889ec92ee584cd53837a3461b0c6c2648a7c";
+    "9b7b85c81dd7b6d2ca4e8c5892521a5c93081e05cce5c52bd30ff0044ebcaeb1";
+const CODE_BASE: &str = "7312116a5280a7937b18e31c09497d78a18cc955";
+const AUTHORIZING_PREREGISTRATION: &str = "3c264bf1aecc49cb6f04db70d41e05f9fac4b9fd";
+const AUTHORIZING_IMPLEMENTATION: &str = "d6690276acddd7d48a6f29ee8e1d67778fb8c288";
+const AUTHORIZING_RESULT: &str = "7312116a5280a7937b18e31c09497d78a18cc955";
+const AUTHORIZING_REPORT_SHA256: &str =
+    "c4499e7a8af1e2c2683b0fb40c0923e9ace320fb930fa5597f3bd892128cd26f";
+const SOURCE_FILE_SHA256: &str = "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
 const SOURCE_INPUT_SHA256: &str =
-    "d222d9ebc0126c52473a121e4143889ec92ee584cd53837a3461b0c6c2648a7c";
-const SOURCE_WRAM_SHA256: &str = "bc051f742198e95efeb2e0392fc2c7cb72f0fd38dc4449247a0082eebe60e734";
+    "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
+const SOURCE_WRAM_SHA256: &str = "897c7bc0df63a68249b75e81a8bfc8ea3a87a7c872241d4e51a2819ff39689c5";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "3620e6ed58f4853cc059b4daf7f2bc493ee61480abbdf84fb6dff5d26e670927";
+    "329594d247d5a97ea59a0e7ec1b0856cfb0388141941f05062e4d6641adf5344";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
 const EXPECTED_RECIPE_SHA256: &str =
-    "d457c4b075f2452439681ddfd5629802e0d16100be920819455e77e097c58d54";
-const EXPECTED_RECIPE_BYTES: usize = 515_034;
-const SOURCE_BYTES: usize = 114_128;
-const SOURCE_ACTIONS: usize = 3_554;
-const SOURCE_FRAMES: u64 = 167_340;
+    "aaf2196e37f51ac03eb802417c12e2aadb9100b0ff7dc1ecb4371167aae17060";
+const EXPECTED_RECIPE_BYTES: usize = 515_409;
+const SOURCE_BYTES: usize = 114_838;
+const SOURCE_ACTIONS: usize = 3_576;
+const SOURCE_FRAMES: u64 = 168_594;
 const STREAMS: usize = 1_680;
 const HORIZON: usize = 8;
 const MAX_BOUNDARIES: usize = STREAMS * HORIZON;
@@ -64,12 +64,12 @@ const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
-const MASTER_SEED: u64 = 8_432_089_200_028_054_390;
+const MASTER_SEED: u64 = 16_878_457_775_653_588_938;
 const TAIL_INDEX_DOMAIN: &[u8] = b"regression-bridge-source-index";
 const MAX_ACTION_FRAMES: u64 = 1_512_840;
 const MAX_PROBE_FRAMES: u64 = 1_814_400;
 const SOURCE_PROBE_FRAMES: u64 = 45;
-const MAX_TOTAL_FRAMES: u64 = 3_499_318;
+const MAX_TOTAL_FRAMES: u64 = 3_500_572;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const PROBE_FRAMES: u16 = 45;
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
@@ -78,13 +78,13 @@ const SOURCE_MASKS: [u8; 14] = [0, 1, 2, 16, 32, 64, 66, 128, 129, 130, 131, 192
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 3,
-    progress: 73,
+    progress: 153,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 3,
-    progress: 73,
-    player_y_bucket: 8,
+    progress: 153,
+    player_y_bucket: 11,
     player_engine_state: 8,
     dead: false,
     flag_active: false,
@@ -92,10 +92,10 @@ const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
     level: 3,
-    progress: 73,
-    player_y_bucket: 8,
+    progress: 153,
+    player_y_bucket: 11,
     player_engine_state: 8,
-    state_fingerprint: 60,
+    state_fingerprint: 9,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -105,8 +105,8 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 0,
-    hold_frames: 3,
+    buttons: 130,
+    hold_frames: 104,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -267,10 +267,10 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_duration_preregistration: &'static str,
-    authorizing_duration_implementation: &'static str,
-    authorizing_duration_result: &'static str,
-    authorizing_duration_report_sha256: &'static str,
+    authorizing_preregistration: &'static str,
+    authorizing_implementation: &'static str,
+    authorizing_result: &'static str,
+    authorizing_report_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
     rom_sha256: &'a str,
@@ -364,7 +364,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path =
         PathBuf::from(args.next().ok_or(
-            "usage: smb-w8-4-p73-regression-bridge-h8-harvest <input.json> <output.jsonl>",
+            "usage: smb-w8-4-p153-regression-bridge-h8-harvest <input.json> <output.jsonl>",
         )?);
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -443,10 +443,10 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_duration_preregistration: AUTHORIZING_P73_PREREGISTRATION,
-        authorizing_duration_implementation: AUTHORIZING_P73_IMPLEMENTATION,
-        authorizing_duration_result: AUTHORIZING_P73_RESULT,
-        authorizing_duration_report_sha256: AUTHORIZING_P73_REPORT_SHA256,
+        authorizing_preregistration: AUTHORIZING_PREREGISTRATION,
+        authorizing_implementation: AUTHORIZING_IMPLEMENTATION,
+        authorizing_result: AUTHORIZING_RESULT,
+        authorizing_report_sha256: AUTHORIZING_REPORT_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
         rom_sha256: &rom_sha256,
@@ -1527,12 +1527,12 @@ mod tests {
         assert_eq!(recipes[0].actions[0], ButtonChord::new(0, 1));
         assert_eq!(
             recipes[0].tail_source_indices,
-            vec![1175, 1916, 50, 1405, 165, 1091, 1305]
+            vec![1477, 187, 1473, 1139, 713, 3111, 1861]
         );
         assert_eq!(recipes[STREAMS - 1].actions[0], ButtonChord::new(194, 120));
         assert_eq!(
             recipes[STREAMS - 1].tail_source_indices,
-            vec![862, 2366, 1084, 2335, 524, 1655, 1767]
+            vec![2084, 1367, 518, 2486, 2543, 1613, 1444]
         );
         assert_eq!(
             recipes
@@ -1542,10 +1542,10 @@ mod tests {
                 .len(),
             STREAMS
         );
-        assert_eq!(EXPECTED_RECIPE_BYTES, 515_034);
+        assert_eq!(EXPECTED_RECIPE_BYTES, 515_409);
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "d457c4b075f2452439681ddfd5629802e0d16100be920819455e77e097c58d54"
+            "aaf2196e37f51ac03eb802417c12e2aadb9100b0ff7dc1ecb4371167aae17060"
         );
     }
 
@@ -1558,7 +1558,7 @@ mod tests {
             ..BASELINE_WATERMARK
         };
         let strict = SmbProgressWatermark {
-            progress: 74,
+            progress: 154,
             ..BASELINE_WATERMARK
         };
         let boundaries = vec![
