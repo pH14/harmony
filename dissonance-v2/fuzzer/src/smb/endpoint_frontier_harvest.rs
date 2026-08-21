@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the World 8-2 p140 normal-endpoint frontier harvest.
+//! Temporary sealed runner for the World 8-2 p143 normal-endpoint frontier harvest.
 
 use std::{
     collections::BTreeMap,
@@ -35,61 +35,57 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-2-p140-endpoint-frontier-harvest-v8";
-const PREREGISTRATION_COMMIT: &str = "879baaa6b18d48892446a221111fbd9591d421e6";
+const FORMAT: &str = "smb-w8-2-p143-endpoint-frontier-harvest-v9";
+const PREREGISTRATION_COMMIT: &str = "1b0cb8cb9fa48311718c5321f17d1e6e88568901";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "cebbc449027132ee0b32e1b3cc11e45609e4cef257419dac2675c1cf30eff2d5";
-const CODE_BASE: &str = "efa091a1f9dca531d7da2f8d3256d73600393889";
-const AUTHORIZING_V7_PREREGISTRATION: &str = "cdde38f8";
-const AUTHORIZING_V7_IMPLEMENTATION: &str = "b397dec5";
-const AUTHORIZING_V7_RESULT: &str = "efa091a1f9dca531d7da2f8d3256d73600393889";
-const AUTHORIZING_V7_REPORT_SHA256: &str =
-    "356f255958d05ecc0ef5aa4f4cd488f29db47d687650a5a2113a74e02137373b";
-const SOURCE_FILE_SHA256: &str = "2aec47372f9772f452967bc2088d09b31df43111e081bc0bdc21c42ae22e66ef";
+    "b9546c1afa27658291cdba6e94a71723c4dcda2fbdbeaada04dd0606782f679c";
+const CODE_BASE: &str = "6365540e5398f08f06b8de3f4fe9e5cecef77713";
+const AUTHORIZING_V8_PREREGISTRATION: &str = "879baaa6";
+const AUTHORIZING_V8_IMPLEMENTATION: &str = "20f04b7d";
+const AUTHORIZING_V8_RESULT: &str = "6365540e5398f08f06b8de3f4fe9e5cecef77713";
+const AUTHORIZING_V8_REPORT_SHA256: &str =
+    "da45db6702f5c4e1623623812307f699ee60992e585b74e738c1972e5442a0ff";
+const SOURCE_FILE_SHA256: &str = "96e4eeef6a968fc4c3705875c581f78ddc054250366b53b0a0d1783b9e5b36cd";
 const SOURCE_INPUT_SHA256: &str =
-    "2aec47372f9772f452967bc2088d09b31df43111e081bc0bdc21c42ae22e66ef";
-const SOURCE_WRAM_SHA256: &str = "a3d2a3ec85d1f450c37bb6c39e61ac8425c4bdead045f86e3cf9f0f31536dbc4";
+    "96e4eeef6a968fc4c3705875c581f78ddc054250366b53b0a0d1783b9e5b36cd";
+const SOURCE_WRAM_SHA256: &str = "c84a4bcf5c5da85a8e6141f798806721bc3d40ad9c113e778846c0bddc177a1c";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "418d226b9f90ad33bf1e388a0184b5d7265e1104ed6e336e1a1592f5bba2eac4";
+    "302b85270e398f4b21808a71ab5276bb691b92ad5e4f03fcfe9a2ae36e85c943";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-2-p140-normal-endpoint-frontier-harvest-v8";
-const SEED_LABEL_SHA256: &str = "aceeaa197c15e68128ce6e7057ebe07b7475f12d259b5a85d4709841a0528afc";
-const MASTER_SEED: u64 = 9_360_192_498_286_915_244;
+const SEED_LABEL: &str = "sol-restart-w8-2-p143-normal-endpoint-frontier-harvest-v9";
+const SEED_LABEL_SHA256: &str = "a3fc3dc6fe5a4c0c8c94f2563a91f7dc5d73600cc5090dbe49afed43027ba98a";
+const MASTER_SEED: u64 = 886_183_276_979_289_251;
 const EXPECTED_RECIPE_SHA256: &str =
-    "b137bcb91f8fa847d95b520b67949fe96760da01dcfe01d7a2c956a6287a60ba";
-const SOURCE_ACTIONS: usize = 3_404;
-const SOURCE_FRAMES: u64 = 159_699;
+    "65f73c6acf90ee61277640f07244b90e78b119ad50c65dd6934818acf001e4b1";
+const SOURCE_ACTIONS: usize = 3_409;
+const SOURCE_FRAMES: u64 = 159_748;
 const LANES: usize = 12;
-const DRAWS: usize = 692;
+const DRAWS: usize = 680;
 const ACTION_LIMIT: usize = 4_096;
-const ARCHIVE_LIMIT: usize = 693;
-const MAX_LINEAGE_ACTIONS: usize = 4_096;
+const ARCHIVE_LIMIT: usize = 681;
+const MAX_LINEAGE_ACTIONS: usize = 4_089;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
-const MAX_ACTION_FRAMES: u64 = 996_480;
-const MAX_PROBE_FRAMES: u64 = 1_121_040;
-const SOURCE_PROBE_FRAMES: u64 = 119;
-const MAX_TOTAL_FRAMES: u64 = 2_282_031;
+const MAX_ACTION_FRAMES: u64 = 979_200;
+const MAX_PROBE_FRAMES: u64 = 1_101_600;
+const SOURCE_PROBE_FRAMES: u64 = 45;
+const MAX_TOTAL_FRAMES: u64 = 2_245_286;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const PROBE_FRAMES: u16 = 45;
-const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 3] = [
-    (0x00, 37, true, false),
-    (0x01, 37, true, false),
-    (0x81, 45, false, true),
-];
+const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 1] = [(0x00, 45, false, true)];
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 1,
-    progress: 140,
+    progress: 143,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 1,
-    progress: 140,
-    player_y_bucket: 11,
+    progress: 143,
+    player_y_bucket: 7,
     player_engine_state: 8,
     dead: false,
     flag_active: false,
@@ -97,10 +93,10 @@ const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
     level: 1,
-    progress: 140,
-    player_y_bucket: 11,
+    progress: 143,
+    player_y_bucket: 7,
     player_engine_state: 8,
-    state_fingerprint: 35,
+    state_fingerprint: 8,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -110,8 +106,8 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 1,
-    hold_frames: 120,
+    buttons: 2,
+    hold_frames: 7,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -142,7 +138,7 @@ struct Config {
     assignment: &'static str,
     probe_masks: [u8; 3],
     probe_frames: u16,
-    source_probe_masks: [u8; 3],
+    source_probe_masks: [u8; 1],
     source_probe_frames: u64,
     max_action_frames: u64,
     max_probe_frames: u64,
@@ -334,11 +330,27 @@ struct ClassificationRecord {
     champion: Option<ChampionRecord>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum TerminalClassification {
+    RepeatEndpoint,
+    ChangeStructure,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct TerminalClassificationRecord {
+    record: &'static str,
+    classification: TerminalClassification,
+    verdict: Verdict,
+    champion_watermark: Option<SmbProgressWatermark>,
+}
+
 #[derive(Debug, Serialize)]
 struct SummaryRecord {
     record: &'static str,
     body_sha256: String,
     verdict: Verdict,
+    terminal_classification: TerminalClassification,
     champion: Option<ChampionRecord>,
     lane_setup_frames: Vec<u64>,
     setup_frames: u64,
@@ -357,14 +369,14 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_v7_preregistration: &'static str,
-    authorizing_v7_implementation: &'static str,
-    authorizing_v7_result: &'static str,
-    authorizing_v7_report_sha256: &'static str,
+    authorizing_v8_preregistration: &'static str,
+    authorizing_v8_implementation: &'static str,
+    authorizing_v8_result: &'static str,
+    authorizing_v8_report_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
-    source_v7_lane: u64,
-    source_v7_entry_id: u64,
+    source_v8_lane: u64,
+    source_v8_entry_id: u64,
     rom_sha256: &'a str,
     executable_sha256: &'a str,
     bin_source_sha256: &'a str,
@@ -423,7 +435,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path = PathBuf::from(
         args.next()
-            .ok_or("usage: smb-w8-2-p140-endpoint-frontier-harvest <input.json> <output.jsonl>")?,
+            .ok_or("usage: smb-w8-2-p143-endpoint-frontier-harvest <input.json> <output.jsonl>")?,
     );
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -461,7 +473,7 @@ pub fn run_from_process(
         assignment: "one_lane_per_persistent_worker_buffered_ascending_v1",
         probe_masks: PROBE_MASKS,
         probe_frames: PROBE_FRAMES,
-        source_probe_masks: PROBE_MASKS,
+        source_probe_masks: [0x00],
         source_probe_frames: SOURCE_PROBE_FRAMES,
         max_action_frames: MAX_ACTION_FRAMES,
         max_probe_frames: MAX_PROBE_FRAMES,
@@ -509,14 +521,14 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_v7_preregistration: AUTHORIZING_V7_PREREGISTRATION,
-        authorizing_v7_implementation: AUTHORIZING_V7_IMPLEMENTATION,
-        authorizing_v7_result: AUTHORIZING_V7_RESULT,
-        authorizing_v7_report_sha256: AUTHORIZING_V7_REPORT_SHA256,
+        authorizing_v8_preregistration: AUTHORIZING_V8_PREREGISTRATION,
+        authorizing_v8_implementation: AUTHORIZING_V8_IMPLEMENTATION,
+        authorizing_v8_result: AUTHORIZING_V8_RESULT,
+        authorizing_v8_report_sha256: AUTHORIZING_V8_REPORT_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
-        source_v7_lane: 0,
-        source_v7_entry_id: 258,
+        source_v8_lane: 3,
+        source_v8_entry_id: 192,
         rom_sha256: &rom_sha256,
         executable_sha256: &executable_sha256,
         bin_source_sha256: &bin_source_sha256,
@@ -543,10 +555,13 @@ pub fn run_from_process(
         output.write(lane)?;
     }
     output.write(&classification)?;
+    let terminal = terminal_classification(&classification);
+    output.write(&terminal)?;
     let summary = SummaryRecord {
         record: "summary",
         body_sha256: output.digest(),
         verdict: classification.verdict,
+        terminal_classification: terminal.classification,
         champion: classification.champion.clone(),
         lane_setup_frames: lanes.iter().map(|lane| lane.setup_frames).collect(),
         setup_frames: work.setup,
@@ -1475,6 +1490,26 @@ fn verdict_for(champion: Option<&ChampionRecord>) -> Verdict {
     }
 }
 
+fn terminal_classification(classification: &ClassificationRecord) -> TerminalClassificationRecord {
+    let champion_watermark = classification
+        .champion
+        .as_ref()
+        .map(|champion| champion.endpoint.watermark);
+    let classification_value = if classification.verdict == Verdict::Adopt
+        && champion_watermark.is_some_and(|watermark| (watermark.world, watermark.level) > (7, 1))
+    {
+        TerminalClassification::RepeatEndpoint
+    } else {
+        TerminalClassification::ChangeStructure
+    };
+    TerminalClassificationRecord {
+        record: "terminal_classification",
+        classification: classification_value,
+        verdict: classification.verdict,
+        champion_watermark,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WorkSummary {
     setup: u64,
@@ -1809,48 +1844,48 @@ mod tests {
         verify_seed().expect("sealed seed is self-consistent");
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "b137bcb91f8fa847d95b520b67949fe96760da01dcfe01d7a2c956a6287a60ba"
+            "65f73c6acf90ee61277640f07244b90e78b119ad50c65dd6934818acf001e4b1"
         );
         let source = synthetic_source();
         let recipes = derive_recipes(&source).expect("derive recipes");
         assert_eq!(recipes.len(), 12);
-        assert!(recipes.iter().all(|lane| lane.len() == 692));
+        assert!(recipes.iter().all(|lane| lane.len() == 680));
         assert_eq!(
             (recipes[0][0].source_index, recipes[0][0].selector_seed),
-            (11, 5_202_494_330_836_640_919)
+            (3_196, 1_793_633_142_327_123_733)
         );
         assert_eq!(
             (recipes[0][1].source_index, recipes[0][1].selector_seed),
-            (1_234, 6_014_286_951_701_480_606)
+            (1_829, 9_537_948_778_091_305_109)
         );
         assert_eq!(
             (
-                recipes[11][691].source_index,
-                recipes[11][691].selector_seed,
+                recipes[11][679].source_index,
+                recipes[11][679].selector_seed,
             ),
-            (2_483, 8_890_594_301_605_917_540)
+            (676, 17_094_110_010_821_981_582)
         );
         assert_eq!(
             serde_json::to_vec(&(
                 0_u64,
                 0_u64,
-                11_u64,
+                3_196_u64,
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ))
             .expect("serialize first recipe"),
-            br#"[0,0,11,{"buttons":11,"hold_frames":13},5202494330836640919]"#
+            br#"[0,0,3196,{"buttons":124,"hold_frames":104},1793633142327123733]"#
         );
         assert_eq!(
             recipe_sha256(&recipes).expect("hash recipes"),
-            "58890627a086f5546683270651e7ab34486ffd20c90818fdc671a6407a2a8fa3"
+            "2b620e130a7910f1393a94a5e607a2b261c323d32e030cfd3aa29b6802266bd8"
         );
     }
 
     #[test]
     fn maximum_lineage_actions_are_bounded_and_reported() {
         assert_eq!(SOURCE_ACTIONS.checked_add(DRAWS), Some(MAX_LINEAGE_ACTIONS));
-        assert!(MAX_LINEAGE_ACTIONS <= ACTION_LIMIT);
+        assert!(MAX_LINEAGE_ACTIONS < ACTION_LIMIT);
         let mut maximum = SOURCE_ACTIONS;
         record_lineage_actions(&mut maximum, MAX_LINEAGE_ACTIONS)
             .expect("registered maximum is allowed");
@@ -1872,10 +1907,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             source_probe_frames(&attempts).expect("registered transcript"),
-            119
+            45
         );
         let mut malformed = attempts;
-        malformed[1].work_frames = 38;
+        malformed[0].work_frames = 44;
         assert!(source_probe_frames(&malformed).is_err());
     }
 
@@ -1891,18 +1926,18 @@ mod tests {
     #[test]
     fn champion_ranking_is_total_and_verdict_is_strict() {
         let ranked = rank_champion(vec![
-            candidate(0, 9, 141, 8, 0x10),
-            candidate(1, 8, 142, 12, 0xff),
-            candidate(2, 7, 142, 10, 0xff),
-            candidate(3, 6, 142, 10, 0x20),
-            candidate(4, 5, 142, 10, 0x20),
-            candidate(4, 4, 142, 10, 0x20),
+            candidate(0, 9, 144, 8, 0x10),
+            candidate(1, 8, 145, 12, 0xff),
+            candidate(2, 7, 145, 10, 0xff),
+            candidate(3, 6, 145, 10, 0x20),
+            candidate(4, 5, 145, 10, 0x20),
+            candidate(4, 4, 145, 10, 0x20),
         ])
         .expect("champion exists");
         assert_eq!((ranked.lane, ranked.id), (3, 6));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
 
-        let equal = rank_champion(vec![candidate(0, 1, 140, 1, 0)]).expect("candidate exists");
+        let equal = rank_champion(vec![candidate(0, 1, 143, 1, 0)]).expect("candidate exists");
         assert_eq!(verdict_for(Some(&equal)), Verdict::Stop);
         assert_eq!(verdict_for(None), Verdict::Stop);
     }
@@ -1916,12 +1951,50 @@ mod tests {
             )),
             Verdict::Stop
         );
-        let current_level = candidate_at(1, 2, 7, 1, 141, 1, 0xff);
+        let current_level = candidate_at(1, 2, 7, 1, 144, 1, 0xff);
         let later_level = candidate_at(2, 3, 7, 2, 0, 1, 0xff);
         let ranked = rank_champion(vec![later_level, current_level, old_level])
             .expect("cross-level candidate exists");
         assert_eq!((ranked.lane, ranked.id), (2, 3));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
+    }
+
+    #[test]
+    fn terminal_repeat_requires_a_later_world_or_level() {
+        let make_classification = |champion: Option<ChampionRecord>| ClassificationRecord {
+            record: "classification",
+            verdict: verdict_for(champion.as_ref()),
+            eligible_entries: usize::from(champion.is_some()),
+            champion,
+        };
+
+        let stop = make_classification(None);
+        assert_eq!(
+            terminal_classification(&stop).classification,
+            TerminalClassification::ChangeStructure
+        );
+
+        let same_level =
+            rank_champion(vec![candidate_at(0, 1, 7, 1, 144, 1, 0)]).expect("same-level candidate");
+        let same_level = make_classification(Some(same_level));
+        assert_eq!(same_level.verdict, Verdict::Adopt);
+        assert_eq!(
+            terminal_classification(&same_level).classification,
+            TerminalClassification::ChangeStructure
+        );
+
+        let later_level =
+            rank_champion(vec![candidate_at(0, 1, 7, 2, 0, 1, 0)]).expect("later-level candidate");
+        let later_level = make_classification(Some(later_level));
+        assert_eq!(
+            terminal_classification(&later_level).classification,
+            TerminalClassification::RepeatEndpoint
+        );
+        assert_eq!(
+            serde_json::to_string(&TerminalClassification::RepeatEndpoint)
+                .expect("serialize terminal classification"),
+            r#""REPEAT_ENDPOINT""#
+        );
     }
 
     #[test]
