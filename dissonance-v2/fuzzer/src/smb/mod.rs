@@ -5,7 +5,7 @@
 pub mod archive;
 pub mod campaign;
 #[doc(hidden)]
-pub mod duration_closure_census;
-#[doc(hidden)]
 pub mod endpoint_frontier_harvest;
+#[doc(hidden)]
+pub mod regression_bridge_harvest;
 pub mod target;
