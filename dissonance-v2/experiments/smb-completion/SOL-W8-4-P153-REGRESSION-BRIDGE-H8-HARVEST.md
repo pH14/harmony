@@ -171,3 +171,43 @@ create-new canonical NDJSON with header, baseline, recipes, ordered boundary
 records, classifications, summary, and source/ROM/executable/bin/module/config/
 recipe/trace/body/whole-file hashes; paths, timestamps, and completion order
 must not enter canonical bytes.
+
+## Registered result
+
+Preregistration commit `c7b869d1a22d281c2e418739c594b7ccf2918e36` (document
+SHA-256 `9b7b85c81dd7b6d2ca4e8c5892521a5c93081e05cce5c52bd30ff0044ebcaeb1`)
+and implementation commit `26bb165bee94d008020aabba7d4b2b09ebc2ee49` used
+module SHA-256
+`aeb9abd272c7b44313681b87897eb5ff509d58b7303d60733b29f7e7cfad3019`,
+bin-source SHA-256
+`1680190449eb08cfb627582b04dc92d131ddf893cb55e4b1bed89460fe7ddb87`,
+and release-executable SHA-256
+`42f25d80c1675da2c67ff34721a71b619a7a4e25ee90808faf1c5d078555a3d6`,
+built once offline and locked from sealed source archive SHA-256
+`01577de3d7703b6edcdfd74ec2b96e91c00da344068317c05522d71f8558a258`
+under `/root/harmony-smb-sol-w8-4-p153-regression-bridge-26bb165b`. The
+sealed recipe was 515,409 bytes with SHA-256
+`aaf2196e37f51ac03eb802417c12e2aadb9100b0ff7dc1ecb4371167aae17060`; all
+1,680 projections were pairwise distinct. The sole run (systemd unit
+`harmony-smb-sol-w8-4-p153-regression-bridge-26bb165b`, `Restart=no`)
+completed successfully and produced 14,985 NDJSON lines, 101,503,006 bytes,
+whole-file SHA-256
+`1aa94587fa946a53b9be4da605bd86631217d5123cb9e2a422acc0362f166e6e`,
+and body SHA-256
+`7b36086ecddcb4021a1daa9445e2617c3132e71b69d76345c341e4313f71164d`.
+Standard error was empty and standard output bound the same report hash. The
+baseline reproduced every registered source datum.
+
+The registered verdicts are **NO_REGRESSION_BRIDGE** and **NO_ADOPT**. All
+1,680 streams completed; 13,299 boundaries executed, 56 ended dead, and no
+boundary was strictly beyond `(7,3,153)`, so no probe ran. Checked work was
+4,693 setup + 168,594 source replay + 45 source probe + 649,618 action + 0
+probe = **822,950 frames**, below the 3,500,572-frame cap.
+
+Diagnostic only. The 14 one-frame first actions left the watermark at 153;
+every other depth-1 boundary ended live between 89 and 107. Later depths
+climbed back to a ceiling of exactly 124 (first reached at depth 5, held by
+15 streams at depth 8) and never higher. The transient maximum of every
+stream was its source value 153. No H8 policy is promoted, and this fixed H8
+continuation from p153 is closed without rerun or enlargement. The p153
+source remains the best verified retained position.
