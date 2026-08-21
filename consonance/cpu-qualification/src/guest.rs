@@ -67,9 +67,11 @@ pub enum GuestError {
 /// f4             hlt
 /// ```
 ///
-/// The `jnz` is taken on every iteration but the last, so the payload retires
-/// exactly `n - 1` taken branches and nothing else branches. That is the whole
-/// analysis behind [`guest_oracle_delta`].
+/// The `jnz` retires once per iteration — taken on every iteration but the
+/// last — and nothing else branches. An event that counts every retired
+/// conditional branch sees `n` per run; one that counts only taken branches
+/// sees `n - 1`. Either way the count is `n` plus a constant, which is the
+/// whole analysis behind [`guest_oracle_delta`].
 #[must_use]
 pub fn emit_loop_payload(n: u32) -> [u8; LOOP_PAYLOAD_BYTES] {
     let [b0, b1, b2, b3] = n.to_le_bytes();
@@ -78,18 +80,16 @@ pub fn emit_loop_payload(n: u32) -> [u8; LOOP_PAYLOAD_BYTES] {
 
 /// The analytical count for the difference between two guest runs.
 ///
-/// Each run of `n` iterations retires `n - 1` taken branches, so the difference
-/// between an `n2` run and an `n1` run is exactly `n2 - n1`. The `- 1` cancels,
-/// which is why the differential needs no assumption about entry or exit work.
+/// Each run of `n` iterations retires the `jnz` `n` times, counted as `n` or
+/// `n - 1` depending on whether the event counts not-taken conditional
+/// branches. The constant cancels in the difference, so an `n2` run minus an
+/// `n1` run is exactly `n2 - n1` under either counting rule, with no
+/// assumption about entry or exit work. There is deliberately no absolute
+/// oracle: the per-run count is a per-event fact, and the differential is the
+/// measurement.
 #[must_use]
 pub fn guest_oracle_delta(n1: u64, n2: u64) -> u64 {
     n2.saturating_sub(n1)
-}
-
-/// The taken branches one guest run of `n` iterations retires.
-#[must_use]
-pub fn guest_oracle_absolute(n: u64) -> u64 {
-    n.saturating_sub(1)
 }
 
 /// One component of a saved vCPU state, and its bytes.
@@ -202,13 +202,7 @@ mod tests {
     #[test]
     fn the_guest_oracle_is_the_iteration_difference() {
         assert_eq!(guest_oracle_delta(100_000, 200_000), 100_000);
-        // One fewer taken branch than iterations, on each side, so the
-        // difference carries no correction.
-        assert_eq!(
-            guest_oracle_absolute(200_000) - guest_oracle_absolute(100_000),
-            guest_oracle_delta(100_000, 200_000)
-        );
-        assert_eq!(guest_oracle_absolute(0), 0);
+        assert_eq!(guest_oracle_delta(100_000, 100_000), 0);
     }
 
     fn capture(names: &[(&'static str, &[u8])]) -> StateCapture {
