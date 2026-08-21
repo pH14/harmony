@@ -406,6 +406,10 @@ pub struct SmbCampaignModeReport {
     pub rom_sha256: String,
     /// Frames emulated by the origin bootstrap walk, probes included.
     pub bootstrap_frames: u64,
+    /// Outcome counts of the whole-tree import; absent under every other
+    /// resume rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_import: Option<SmbTreeImportCounts>,
     /// Bootstrap frames plus every job's frames, probes included.
     pub frames_emulated: u64,
     /// Jobs skipped before execution as known duplicates.
@@ -480,6 +484,13 @@ pub enum SmbCampaignResumePolicy {
     /// cheaply, and the link finished 477 frames worse at the same bucket than
     /// the one it started from.
     FastestToDepth32,
+    /// Import the source archive's whole retained tree instead of one lineage:
+    /// every entry is rebuilt from its parent's snapshot, inserted in source
+    /// order under this run's key, retention, and replacement policies so the
+    /// active population and cells are re-derived, and scheduler counters
+    /// start neutral. The header's resume input is the frontier-shortest
+    /// input, recorded only as the archive's frontier identity.
+    WholeTree,
 }
 
 /// Frames charged per bucket of ground an entry gives up by standing behind the
@@ -496,6 +507,7 @@ pub fn resume_identifier(policy: SmbCampaignResumePolicy) -> &'static str {
         SmbCampaignResumePolicy::FrontierShortest => "frontier_shortest",
         SmbCampaignResumePolicy::FastestInLevelWithin32 => "fastest_in_level_32",
         SmbCampaignResumePolicy::FastestToDepth32 => "fastest_to_depth_32_16",
+        SmbCampaignResumePolicy::WholeTree => "whole_tree",
     }
 }
 
@@ -508,6 +520,7 @@ pub fn resume_from_identifier(identifier: &str) -> Result<SmbCampaignResumePolic
         "frontier_shortest" => Ok(SmbCampaignResumePolicy::FrontierShortest),
         "fastest_in_level_32" => Ok(SmbCampaignResumePolicy::FastestInLevelWithin32),
         "fastest_to_depth_32_16" => Ok(SmbCampaignResumePolicy::FastestToDepth32),
+        "whole_tree" => Ok(SmbCampaignResumePolicy::WholeTree),
         _ => Err("unknown campaign resume policy identifier".into()),
     }
 }
@@ -574,7 +587,10 @@ pub fn select_frontier_resume_input(
         .map(|entry| (entry.key.world, entry.key.level, entry.key.progress))
         .max()
         .ok_or("source archive contains no retained entries")?;
-    if policy == SmbCampaignResumePolicy::FrontierShortest {
+    if matches!(
+        policy,
+        SmbCampaignResumePolicy::FrontierShortest | SmbCampaignResumePolicy::WholeTree
+    ) {
         return source
             .entries
             .iter()
@@ -1895,6 +1911,156 @@ impl CoordinatorCore {
         Ok(())
     }
 
+    /// Import a source archive's whole retained tree at execution zero.
+    ///
+    /// Entries are walked in source order. Each one restores its imported
+    /// parent's snapshot, applies the actions past the parent's input, and is
+    /// inserted under this run's policies, so liveness, cells, room sets, and
+    /// replacement decisions are re-derived rather than copied. An entry whose
+    /// parent was not imported is re-rooted at its nearest imported ancestor;
+    /// an entry that dies, fails its admission probe, or exceeds the action
+    /// limit is skipped and counted.
+    fn import_tree(
+        &mut self,
+        target: &mut SmbTarget,
+        source: &SmbArchiveReport,
+    ) -> Result<SmbTreeImportCounts, Box<dyn Error>> {
+        target.reset();
+        let genesis_key = archive_key(target.wram(), self.key_policy);
+        let genesis_snapshot = target
+            .snapshot()
+            .ok_or("failed to snapshot campaign genesis")?;
+        let genesis_id = self
+            .archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    input: SmbInput::default(),
+                    key: genesis_key,
+                    milestones: SmbMilestones::default(),
+                },
+                genesis_snapshot,
+            )?
+            .ok_or("failed to retain campaign genesis")?;
+        let mut counts = SmbTreeImportCounts::default();
+        let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
+        let mut imported: Vec<Option<usize>> = Vec::with_capacity(source.entries.len());
+        for (index, entry) in source.entries.iter().enumerate() {
+            index_of.insert(entry.id, index);
+            if entry.input.actions.is_empty() {
+                imported.push(Some(genesis_id));
+                continue;
+            }
+            if entry.input.actions.len() > self.max_actions {
+                counts.over_limit = counts.over_limit.saturating_add(1);
+                imported.push(None);
+                continue;
+            }
+            // Nearest imported ancestor; the walk stays within earlier source
+            // entries, which are the only ones that can be imported already.
+            let mut ancestor = entry.parent_id;
+            let mut parent = None;
+            while let Some(id) = ancestor {
+                let Some(ancestor_index) = index_of.get(&id).copied().filter(|i| *i < index) else {
+                    break;
+                };
+                if let Some(new_id) = imported[ancestor_index] {
+                    parent = Some((ancestor_index, new_id));
+                    break;
+                }
+                ancestor = source.entries[ancestor_index].parent_id;
+            }
+            let (parent_input_len, parent_id) = match parent {
+                Some((ancestor_index, new_id)) => {
+                    let parent_input = &source.entries[ancestor_index].input.actions;
+                    if entry.input.actions.get(..parent_input.len())
+                        != Some(parent_input.as_slice())
+                    {
+                        return Err("source archive entry does not extend its parent".into());
+                    }
+                    if ancestor_index != index_of[&entry.parent_id.unwrap_or(u64::MAX)] {
+                        counts.rerooted = counts.rerooted.saturating_add(1);
+                    }
+                    (parent_input.len(), new_id)
+                }
+                None => {
+                    counts.rerooted = counts.rerooted.saturating_add(1);
+                    (0, genesis_id)
+                }
+            };
+            let parent_entry = &self.archive.entries[parent_id];
+            let mut milestones = parent_entry.report.milestones;
+            let mut prefix = parent_entry.report.input.clone();
+            target.restore(&parent_entry.snapshot)?;
+            let mut terminal = false;
+            for action in &entry.input.actions[parent_input_len..] {
+                prefix.actions.push(*action);
+                target.apply(action);
+                merge_progress_watermark(&mut self.watermark, target.last_action_observations());
+                merge_action_milestones(&mut milestones, target)?;
+                merge_milestones(&mut self.aggregate, milestones);
+                update_first_inputs(
+                    &mut self.first_reached,
+                    &mut self.first_inputs,
+                    milestones,
+                    0,
+                    &prefix,
+                );
+                if milestone_key(milestones) > milestone_key(self.champion_milestones) {
+                    self.champion_milestones = milestones;
+                    self.champion_input = prefix.clone();
+                }
+                if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                    terminal = true;
+                    break;
+                }
+            }
+            if terminal {
+                counts.terminal = counts.terminal.saturating_add(1);
+                imported.push(None);
+                continue;
+            }
+            let snapshot = target
+                .snapshot()
+                .ok_or("failed to snapshot campaign tree import")?;
+            let key = archive_key(target.wram(), self.key_policy);
+            if !admission_is_viable(target, &snapshot, self.retention_policy)? {
+                counts.probe_refused = counts.probe_refused.saturating_add(1);
+                imported.push(None);
+                continue;
+            }
+            let inserted_before = self.archive.entries.len();
+            match self.archive.insert(
+                Some(parent_id),
+                0,
+                ArchiveCandidate {
+                    input: prefix,
+                    key,
+                    milestones,
+                },
+                snapshot,
+            )? {
+                Some(id) if id == inserted_before => {
+                    counts.imported = counts.imported.saturating_add(1);
+                    imported.push(Some(id));
+                }
+                Some(id) => {
+                    counts.duplicate = counts.duplicate.saturating_add(1);
+                    imported.push(Some(id));
+                }
+                None => {
+                    counts.rejected = counts.rejected.saturating_add(1);
+                    imported.push(None);
+                }
+            }
+        }
+        if self.archive.entries.len() == 1 {
+            return Err("whole-tree import retained no entry past genesis".into());
+        }
+        Ok(counts)
+    }
+
     /// Admit one executed job at the next sequence position, merging its
     /// per-action evidence in order and applying the promoted retention rules
     /// through the campaign's sole archive implementation.
@@ -2068,6 +2234,25 @@ impl CoordinatorCore {
     }
 }
 
+/// Outcome counts of a whole-tree import, recorded in the campaign report.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbTreeImportCounts {
+    /// Source entries retained as new entries.
+    pub imported: u64,
+    /// Source entries whose rebuilt input was already retained.
+    pub duplicate: u64,
+    /// Source entries the archive refused under this run's replacement rules.
+    pub rejected: u64,
+    /// Source entries whose admission probe failed under this run's policy.
+    pub probe_refused: u64,
+    /// Source entries whose rebuilt walk ended dead or failed.
+    pub terminal: u64,
+    /// Source entries longer than this run's action limit.
+    pub over_limit: u64,
+    /// Source entries attached to an ancestor other than their recorded parent.
+    pub rerooted: u64,
+}
+
 /// The resume input and origin record derived from a campaign origin.
 struct ResolvedOrigin {
     record: SmbCampaignOriginRecord,
@@ -2189,6 +2374,26 @@ fn finish_chord_stream_record(
     Ok(tables.finish_record()?)
 }
 
+/// Seed the coordinator from the origin: the whole source tree under the
+/// whole-tree resume rule, otherwise the single resume input.
+fn bootstrap_core(
+    core: &mut CoordinatorCore,
+    target: &mut SmbTarget,
+    resume_policy: SmbCampaignResumePolicy,
+    origin: &SmbCampaignOrigin,
+    resume_input: &SmbInput,
+) -> Result<Option<SmbTreeImportCounts>, Box<dyn Error>> {
+    match (resume_policy, origin) {
+        (SmbCampaignResumePolicy::WholeTree, SmbCampaignOrigin::Archive { report, .. }) => {
+            Ok(Some(core.import_tree(target, report)?))
+        }
+        _ => {
+            core.bootstrap(target, std::slice::from_ref(resume_input))?;
+            Ok(None)
+        }
+    }
+}
+
 fn resolve_origin(
     origin: &SmbCampaignOrigin,
     resume_policy: SmbCampaignResumePolicy,
@@ -2289,6 +2494,7 @@ impl<'a> StreamWriter<'a> {
 /// stream on replay.
 struct CampaignCounters {
     bootstrap_frames: u64,
+    tree_import: Option<SmbTreeImportCounts>,
     job_frames: u64,
     duplicates_skipped: u64,
     jobs_per_worker: Vec<u64>,
@@ -2299,6 +2505,7 @@ impl CampaignCounters {
     fn new(workers: u32) -> Self {
         Self {
             bootstrap_frames: 0,
+            tree_import: None,
             job_frames: 0,
             duplicates_skipped: 0,
             jobs_per_worker: vec![0; workers as usize],
@@ -2347,6 +2554,7 @@ fn build_report(
         worker_seed_derivation: header.worker_seed_derivation.clone(),
         rom_sha256: header.rom_sha256.clone(),
         bootstrap_frames: counters.bootstrap_frames,
+        tree_import: counters.tree_import,
         frames_emulated: counters
             .bootstrap_frames
             .saturating_add(counters.job_frames),
@@ -2489,9 +2697,12 @@ pub fn run_smb_campaign_with_progress(
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = bootstrap_target.frames_clocked();
-    core.bootstrap(
+    counters.tree_import = bootstrap_core(
+        &mut core,
         &mut bootstrap_target,
-        std::slice::from_ref(&resolved.resume_input),
+        config.resume_policy,
+        origin,
+        &resolved.resume_input,
     )?;
     counters.bootstrap_frames = bootstrap_target
         .frames_clocked()
@@ -2851,7 +3062,13 @@ pub fn replay_smb_campaign(
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = target.frames_clocked();
-    core.bootstrap(&mut target, &[resume_input])?;
+    counters.tree_import = bootstrap_core(
+        &mut core,
+        &mut target,
+        resume_from_identifier(&header.resume_policy)?,
+        &chord_origin,
+        &resume_input,
+    )?;
     counters.bootstrap_frames = target.frames_clocked().saturating_sub(frames_before);
 
     for line in record_lines {
@@ -4702,6 +4919,138 @@ mod tests {
             .expect("replay archive-origin campaign");
         assert_eq!(live, replayed);
         assert_eq!(live.origin.kind, "archive");
+        assert_eq!(live.tree_import, None);
+
+        // The whole-tree rule seeds the run with every source entry instead
+        // of one lineage, replays byte-identically, and records the import.
+        let tree_config = SmbCampaignConfig {
+            resume_policy: SmbCampaignResumePolicy::WholeTree,
+            ..config
+        };
+        let mut tree_stream = Vec::new();
+        let tree_live = run_smb_campaign(
+            &rom,
+            &tree_config,
+            &SmbCampaignOrigin::Archive {
+                path: "seed-archive.json".to_owned(),
+                file_sha256: source_sha.to_owned(),
+                report: Box::new(source.clone()),
+            },
+            &mut tree_stream,
+        )
+        .expect("whole-tree campaign");
+        let tree_replayed = replay_smb_campaign(&rom, &tree_stream, Some(&source))
+            .expect("replay whole-tree campaign");
+        assert_eq!(tree_live, tree_replayed);
+        assert_eq!(tree_live.resume_policy, "whole_tree");
+        let counts = tree_live.tree_import.expect("tree import counts");
+        let source_retained = u64::try_from(source.entries.len() - 1).expect("count");
+        assert_eq!(
+            counts.imported
+                + counts.duplicate
+                + counts.rejected
+                + counts.probe_refused
+                + counts.terminal
+                + counts.over_limit,
+            source_retained
+        );
+        assert!(counts.imported >= 1);
+        assert_eq!(counts.rerooted, 0);
+        let imported_inputs: std::collections::BTreeSet<_> = tree_live
+            .archive
+            .entries
+            .iter()
+            .filter(|entry| entry.created_execution == 0)
+            .map(|entry| entry.input.clone())
+            .collect();
+        let source_inputs: std::collections::BTreeSet<_> = source
+            .entries
+            .iter()
+            .map(|entry| entry.input.clone())
+            .collect();
+        assert!(imported_inputs.is_subset(&source_inputs));
+        assert!(imported_inputs.len() > live.origin.resume_actions + 1);
+    }
+
+    #[test]
+    fn whole_tree_import_rebuilds_the_source_population() {
+        use crate::smb::archive::{SmbArchiveEntryReport, SmbArchiveKey};
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("target");
+        let chord = |mask: u8| ButtonChord::new(mask, 4);
+        let entry =
+            |id: u64, parent: Option<u64>, actions: Vec<ButtonChord>| SmbArchiveEntryReport {
+                id,
+                parent_id: parent,
+                created_execution: 0,
+                input: SmbInput { actions },
+                key: SmbArchiveKey {
+                    world: 0,
+                    level: 0,
+                    progress: 0,
+                    player_y_bucket: 0,
+                    player_engine_state: 0,
+                    state_fingerprint: 0,
+                    room_x_bucket: 0,
+                    rooms: 0,
+                },
+                milestones: SmbMilestones::default(),
+                selector: None,
+            };
+        // A trunk of two, a branch off the trunk, a child whose recorded
+        // parent is absent from the report, and one past the action limit.
+        let entries = vec![
+            entry(0, None, Vec::new()),
+            entry(1, Some(0), vec![chord(0x01)]),
+            entry(2, Some(1), vec![chord(0x01), chord(0x02)]),
+            entry(3, Some(1), vec![chord(0x01), chord(0x80)]),
+            entry(9, Some(7), vec![chord(0x01), chord(0x02), chord(0x40)]),
+            entry(10, Some(2), vec![chord(0x01); 5]),
+        ];
+        let source = SmbArchiveReport {
+            seed: 0,
+            executions: 0,
+            milestones: SmbMilestones::default(),
+            progress_watermark: crate::smb::target::SmbProgressWatermark::default(),
+            first_reached: crate::smb::target::SmbMilestoneTimes::default(),
+            first_inputs: crate::smb::target::SmbMilestoneInputs::default(),
+            champion_input: SmbInput::default(),
+            entries,
+            progress_curve: Vec::new(),
+            retained: 0,
+            rejected: 0,
+            deaths: 0,
+            ladder: crate::smb::archive::SmbLadder::default(),
+            selector: crate::smb::archive::SmbSelectorAccounting::default(),
+        };
+        let mut core = CoordinatorCore::new(
+            4,
+            SmbArchiveSelectorPolicy::ConcentratedRecency,
+            SmbArchiveRetentionPolicy::Frozen,
+            32_768,
+            crate::smb::archive::SmbArchiveKeyPolicy::Frozen,
+            crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
+            crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
+        );
+        let counts = core.import_tree(&mut target, &source).expect("import");
+        assert_eq!(counts.over_limit, 1);
+        assert_eq!(counts.rerooted, 1);
+        assert_eq!(counts.terminal, 0);
+        // The synthetic ROM never leaves one cell, so the two-entry cell
+        // keeps genesis and the one-action entry and refuses the rest.
+        assert_eq!((counts.imported, counts.rejected), (1, 3));
+        let reports: Vec<_> = core.archive.entries.iter().map(|e| &e.report).collect();
+        assert_eq!(reports[0].input.actions.len(), 0);
+        for report in &reports[1..] {
+            let parent = usize::try_from(report.parent_id.expect("parent")).expect("index");
+            let parent_input = &reports[parent].input.actions;
+            assert_eq!(
+                report.input.actions.get(..parent_input.len()),
+                Some(parent_input.as_slice())
+            );
+            assert_eq!(report.created_execution, 0);
+        }
+        assert_eq!(reports.len(), 2);
     }
 
     #[test]
