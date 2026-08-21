@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the final World 8-3 p191 normal-endpoint harvest.
+//! Temporary sealed runner for the World 8-4 p0 normal-endpoint harvest.
 
 use std::{
     collections::BTreeMap,
@@ -35,54 +35,54 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-3-p191-normal-endpoint-harvest-v5";
-const PREREGISTRATION_COMMIT: &str = "52eadc8f71c167ae90da3b4a975c5c71de26c191";
+const FORMAT: &str = "smb-w8-4-p0-normal-endpoint-harvest-v1";
+const PREREGISTRATION_COMMIT: &str = "4f0e75494ca93ee31f38da663cd90715936f24e2";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "8b036708d1a7454300f6644a8e7629b638a2b2a73e294ad4f7dfe15951846afd";
-const CODE_BASE: &str = "afcb737c67d060ffcc2d50b6b41a95e9fa255bfa";
-const AUTHORIZING_P187_PREREGISTRATION: &str = "e80b6971";
-const AUTHORIZING_P187_IMPLEMENTATION: &str = "cae526e4";
-const AUTHORIZING_P187_RESULT: &str = "afcb737c";
-const AUTHORIZING_P187_REPORT_SHA256: &str =
-    "7939f1fbe24a16241fde1ab95d637839f9a2f3aa29d2365374ba18f9d0c9b3ad";
-const SOURCE_FILE_SHA256: &str = "db39971b3ee10119d0d14224f8fc4fea79ac65c5a2f14b7cfc6785a57df08836";
+    "fbb7d4e18099981fb6ec685a6851f41ed8b65c5aeb0482ebbdaaa50e76a19b9d";
+const CODE_BASE: &str = "3be2e5e00d232ec11d500ceb96a8831c80e2257a";
+const AUTHORIZING_P191_PREREGISTRATION: &str = "52eadc8f";
+const AUTHORIZING_P191_IMPLEMENTATION: &str = "79c184c1";
+const AUTHORIZING_P191_RESULT: &str = "3be2e5e0";
+const AUTHORIZING_P191_REPORT_SHA256: &str =
+    "3feffad9255911dffc0278aaffbe5c45801db8b1aff1c03ff45cdb95f78bc7e3";
+const SOURCE_FILE_SHA256: &str = "59f00e2dda00c730cda3c44e441fd94c65ee28c641be10e69be00c522522b706";
 const SOURCE_INPUT_SHA256: &str =
-    "db39971b3ee10119d0d14224f8fc4fea79ac65c5a2f14b7cfc6785a57df08836";
-const SOURCE_BYTES: usize = 112_798;
-const SOURCE_WRAM_SHA256: &str = "9e64d29a26b9570c2d6129f1cd0f80a3139b5d15fe3da5b45bbf453212ff1e5f";
+    "59f00e2dda00c730cda3c44e441fd94c65ee28c641be10e69be00c522522b706";
+const SOURCE_BYTES: usize = 113_193;
+const SOURCE_WRAM_SHA256: &str = "495908631d94d76765a350ee6b17b40dfc0a02614090eee7c8c199f7cc5e251c";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "73729a4c2a49ea44b138a2ff66b63a49bdb53c9e363c2ac97336d45543295dc9";
+    "620d9ee95be67da58fe943e44b9e94895cc1b4afc98243ad2e8a9a296364abf8";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-3-p191-normal-endpoint-harvest-v5";
-const SEED_LABEL_SHA256: &str = "dd8a1dc4726a198c134c073178f7ced81bca3931e55cc837dc68c437407b1b52";
-const MASTER_SEED: u64 = 10_095_217_080_876_763_869;
+const SEED_LABEL: &str = "sol-restart-w8-4-p0-normal-endpoint-harvest-v1";
+const SEED_LABEL_SHA256: &str = "6dc2f01dc328a7febeb108a53d041e890967040b15310420c6fa523a80f00a62";
+const MASTER_SEED: u64 = 18_349_680_025_230_426_733;
 const EXPECTED_RECIPE_SHA256: &str =
-    "3f672bdb82177d0f46290478b5054f7a49b1c9678a1aa268e15b017e092b40ef";
-const EXPECTED_RECIPE_BYTES: usize = 400_136;
+    "7d7ee6e1ce78e95c7710bae40192e1bc1bea603ddc554cbd1ca6932a10603568";
+const EXPECTED_RECIPE_BYTES: usize = 400_213;
 const EXPECTED_PROJECTION_SHA256: [&str; 12] = [
-    "5072731817e1cc56b4c5f2c69981dccd240ed3299caa0a7a0d3b7b1b22faf258",
-    "897e5e8062bed2de32d4326869e6c798c52b4014791049d44127edbe6bfb5473",
-    "30cfbc12d0c168fcbff0e701daf0ef19a95af7c3fc10ca28dd8b141ae011286e",
-    "8999223463756d311b152575163811d2d931e06cb0e4db6ba123b56a332dc367",
-    "6b9879ace970859116ac33661e3344c3b99b526e08f07f922d5368464d929af0",
-    "0206d103f0fccac15202fee91e14e8ad2deab24da818f511c22b15a4fd103cc4",
-    "c24189246c10572610c390817bbe83560e0a036a546d3b9c02ac5ce31409dfe6",
-    "8ee4bbf8d5af4015b83672ae1077174a76b0bff8c345030d4d71cd52fd98c0f4",
-    "0b3559d10a3ae07e06c22153820587701b80437f6a2eada7c0d088e503624e57",
-    "5cbac798957ec838d97b6767b5edd2e73a780b82d125638b1b83ea758f570dde",
-    "ec2f6d5aedf8c15a82b1a2c338560c1538de1a42ac13574c518ce0e248319b0e",
-    "a130fd19b50943121b03ff930d3e94fe845f42b90b95c86d3dd6783b16a3e7b3",
+    "3a5359818f4650a759d2f2bd86309a39d4a76d51a150b44137776da3e54233cc",
+    "c574de1a6b7267869e117d74ef5013deec70f911da51033393dcce6693079fd5",
+    "2c4a0633d9ff29e1c6347fc3114432e7652eb7d5fc40a10f5eef888b475da35d",
+    "349d6a01bd3a5b7f5d9c12bae5920097e2b1fb3b7869560bfd6e9ac8d42b2161",
+    "b9ec30d8c020e858ebb9246cdc49013bc0070842615f4b69396c5d7af3bc2ea1",
+    "c53abba5c2c9dd98b4cf1acfffdb7399ade88c7ffdae9057003e13e76a2c0431",
+    "ddb382ead3e779d685b39b2a2feedd584cb4d7b62c1abf6b3db7ebb835667a06",
+    "57992a221ac0b50ea459efa43c9d35e3670bc063016f136633916094d09b0680",
+    "bf4fc67de3db7aa7b49007d569f1b6004fb338774d3bb4bf160f9bd8d62d3f4b",
+    "bfe0979352b5a6a7d960ed397bbc2df7e6dcff651793079a6ab0864a9fc52b44",
+    "e23e1f7cbca72b159ff10012dd0a56a2594e6caf511b9ef151431eddb8a28e2a",
+    "0c7c2a15028b400259e22a178b29e55228a59becd19a37b6a0a8ebd0a968be8d",
 ];
 const EXPECTED_PROJECTION_BYTES: [usize; 12] = [
-    32_212, 32_208, 32_277, 32_254, 32_239, 32_236, 32_234, 32_232, 32_288, 32_203, 32_225, 32_227,
+    32_231, 32_298, 32_279, 32_250, 32_279, 32_227, 32_250, 32_243, 32_196, 32_233, 32_174, 32_252,
 ];
-const SOURCE_ACTIONS: usize = 3_513;
-const SOURCE_FRAMES: u64 = 164_814;
+const SOURCE_ACTIONS: usize = 3_525;
+const SOURCE_FRAMES: u64 = 165_794;
 const LANES: usize = 12;
 const DRAWS: usize = 512;
 const ACTION_LIMIT: usize = 4_096;
 const ARCHIVE_LIMIT: usize = 513;
-const MAX_LINEAGE_ACTIONS: usize = 4_025;
+const MAX_LINEAGE_ACTIONS: usize = 4_037;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
@@ -90,32 +90,32 @@ const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
 const MAX_ACTION_FRAMES: u64 = 737_280;
 const MAX_PROBE_FRAMES: u64 = 829_440;
 const SOURCE_PROBE_FRAMES: u64 = 45;
-const MAX_TOTAL_FRAMES: u64 = 1_736_272;
+const MAX_TOTAL_FRAMES: u64 = 1_737_252;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const PROBE_FRAMES: u16 = 45;
 const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 1] = [(0x00, 45, false, true)];
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
-    level: 2,
-    progress: 191,
+    level: 3,
+    progress: 0,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
-    level: 2,
-    progress: 191,
-    player_y_bucket: 9,
-    player_engine_state: 8,
+    level: 3,
+    progress: 0,
+    player_y_bucket: 0,
+    player_engine_state: 0,
     dead: false,
     flag_active: false,
 };
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
-    level: 2,
-    progress: 191,
-    player_y_bucket: 9,
-    player_engine_state: 8,
-    state_fingerprint: 30,
+    level: 3,
+    progress: 0,
+    player_y_bucket: 0,
+    player_engine_state: 0,
+    state_fingerprint: 9,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -125,8 +125,8 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 1,
-    hold_frames: 108,
+    buttons: 32,
+    hold_frames: 99,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -391,10 +391,10 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_p187_preregistration: &'static str,
-    authorizing_p187_implementation: &'static str,
-    authorizing_p187_result: &'static str,
-    authorizing_p187_report_sha256: &'static str,
+    authorizing_p191_preregistration: &'static str,
+    authorizing_p191_implementation: &'static str,
+    authorizing_p191_result: &'static str,
+    authorizing_p191_report_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
     rom_sha256: &'a str,
@@ -451,7 +451,7 @@ struct LaneReply {
     result: Result<LaneRecord, String>,
 }
 
-/// Run the final sealed World 8-3 p191 endpoint harvest from process arguments and environment.
+/// Run the sealed World 8-4 p0 endpoint harvest from process arguments and environment.
 pub fn run_from_process(
     bin_source: &'static [u8],
     module_source: &'static [u8],
@@ -459,7 +459,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path = PathBuf::from(
         args.next()
-            .ok_or("usage: smb-w8-3-p191-normal-endpoint-harvest-v5 <input.json> <output.jsonl>")?,
+            .ok_or("usage: smb-w8-4-p0-normal-endpoint-harvest-v1 <input.json> <output.jsonl>")?,
     );
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -547,10 +547,10 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_p187_preregistration: AUTHORIZING_P187_PREREGISTRATION,
-        authorizing_p187_implementation: AUTHORIZING_P187_IMPLEMENTATION,
-        authorizing_p187_result: AUTHORIZING_P187_RESULT,
-        authorizing_p187_report_sha256: AUTHORIZING_P187_REPORT_SHA256,
+        authorizing_p191_preregistration: AUTHORIZING_P191_PREREGISTRATION,
+        authorizing_p191_implementation: AUTHORIZING_P191_IMPLEMENTATION,
+        authorizing_p191_result: AUTHORIZING_P191_RESULT,
+        authorizing_p191_report_sha256: AUTHORIZING_P191_REPORT_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
         rom_sha256: &rom_sha256,
@@ -657,7 +657,7 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
         let lane_u64 = u64::try_from(lane)?;
         let lane_seed = digest_word(&[
             &MASTER_SEED.to_le_bytes(),
-            b"w8-3-p191-v5-lane",
+            b"w8-4-p0-v1-lane",
             &lane_u64.to_le_bytes(),
         ])?;
         let mut draws = Vec::with_capacity(DRAWS);
@@ -665,7 +665,7 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
             let draw_u64 = u64::try_from(draw)?;
             let source_word = digest_word(&[
                 &lane_seed.to_le_bytes(),
-                b"w8-3-p191-v5-action",
+                b"w8-4-p0-v1-action",
                 &draw_u64.to_le_bytes(),
             ])?;
             let source_index = usize::try_from(source_word % source_len)?;
@@ -675,7 +675,7 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
                 .ok_or("derived source index is out of bounds")?;
             let selector_seed = digest_word(&[
                 &lane_seed.to_le_bytes(),
-                b"w8-3-p191-v5-parent",
+                b"w8-4-p0-v1-parent",
                 &draw_u64.to_le_bytes(),
             ])?;
             draws.push(Recipe {
@@ -1821,7 +1821,7 @@ mod tests {
         actions: usize,
         hash_byte: u8,
     ) -> ChampionCandidate {
-        candidate_at(lane, id, 7, 2, progress, actions, hash_byte)
+        candidate_at(lane, id, 7, 3, progress, actions, hash_byte)
     }
 
     fn candidate_at(
@@ -1991,12 +1991,12 @@ mod tests {
         verify_seed().expect("sealed seed is self-consistent");
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "3f672bdb82177d0f46290478b5054f7a49b1c9678a1aa268e15b017e092b40ef"
+            "7d7ee6e1ce78e95c7710bae40192e1bc1bea603ddc554cbd1ca6932a10603568"
         );
-        assert_eq!(EXPECTED_RECIPE_BYTES, 400_136);
+        assert_eq!(EXPECTED_RECIPE_BYTES, 400_213);
         let mut source = synthetic_source();
-        source.actions[274] = ButtonChord::new(130, 12);
-        source.actions[1_650] = ButtonChord::new(2, 3);
+        source.actions[2_842] = ButtonChord::new(129, 100);
+        source.actions[2_936] = ButtonChord::new(130, 96);
         let recipes = derive_recipes(&source).expect("derive recipes");
         assert_eq!(recipes.len(), LANES);
         assert!(recipes.iter().all(|lane| lane.len() == DRAWS));
@@ -2006,7 +2006,11 @@ mod tests {
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ),
-            (274, ButtonChord::new(130, 12), 13_522_329_367_026_068_259)
+            (
+                2_842,
+                ButtonChord::new(129, 100),
+                14_966_869_252_730_861_383
+            )
         );
         assert_eq!(
             (
@@ -2014,24 +2018,24 @@ mod tests {
                 recipes[11][511].action,
                 recipes[11][511].selector_seed,
             ),
-            (1_650, ButtonChord::new(2, 3), 14_755_832_001_307_289_351)
+            (2_936, ButtonChord::new(130, 96), 644_824_161_704_894_175)
         );
         assert_eq!(
             serde_json::to_vec(&(
                 0_u64,
                 0_u64,
-                274_u64,
+                2_842_u64,
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ))
             .expect("serialize first recipe"),
-            br#"[0,0,274,{"buttons":130,"hold_frames":12},13522329367026068259]"#
+            br#"[0,0,2842,{"buttons":129,"hold_frames":100},14966869252730861383]"#
         );
         let identity = recipe_identity_bytes(&recipes).expect("serialize recipes");
-        assert_eq!(identity.len(), 403_704);
+        assert_eq!(identity.len(), 403_545);
         assert_eq!(
             sha256_bytes(&identity),
-            "54adf436981ebb2d8424cf4987f226d3dfccd6f22587d873a8e630f678f44510"
+            "918923db10deefe11d1de2adf58bcff833e9edb8c5727df7d1e223f181e16d72"
         );
         let mut projections = projection_bytes(&recipes).expect("serialize projections");
         assert_eq!(projections.len(), LANES);
@@ -2084,34 +2088,34 @@ mod tests {
     #[test]
     fn champion_ranking_is_total_and_verdict_is_strict() {
         let ranked = rank_champion(vec![
-            candidate(0, 9, 192, 8, 0x10),
-            candidate(1, 8, 193, 12, 0xff),
-            candidate(2, 7, 193, 10, 0xff),
-            candidate(3, 6, 193, 10, 0x20),
-            candidate(4, 5, 193, 10, 0x20),
-            candidate(4, 4, 193, 10, 0x20),
+            candidate(0, 9, 1, 8, 0x10),
+            candidate(1, 8, 2, 12, 0xff),
+            candidate(2, 7, 2, 10, 0xff),
+            candidate(3, 6, 2, 10, 0x20),
+            candidate(4, 5, 2, 10, 0x20),
+            candidate(4, 4, 2, 10, 0x20),
         ])
         .expect("champion exists");
         assert_eq!((ranked.lane, ranked.id), (3, 6));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
 
-        let equal = rank_champion(vec![candidate(0, 1, 191, 1, 0)]).expect("candidate exists");
+        let equal = rank_champion(vec![candidate(0, 1, 0, 1, 0)]).expect("candidate exists");
         assert_eq!(verdict_for(Some(&equal)), Verdict::Stop);
         assert_eq!(verdict_for(None), Verdict::Stop);
     }
 
     #[test]
     fn full_watermark_ranking_dominates_cross_level_progress() {
-        let old_level = candidate_at(0, 1, 7, 1, u16::MAX, 1, 0x00);
+        let old_level = candidate_at(0, 1, 7, 2, u16::MAX, 1, 0x00);
         assert_eq!(
             verdict_for(Some(
                 &rank_champion(vec![old_level.clone()]).expect("candidate")
             )),
             Verdict::Stop
         );
-        let current_level = candidate_at(1, 2, 7, 2, 192, 1, 0xff);
-        let later_level = candidate_at(2, 3, 7, 3, 0, 1, 0xff);
-        let ranked = rank_champion(vec![later_level, current_level, old_level])
+        let current_level = candidate_at(1, 2, 7, 3, 1, 1, 0xff);
+        let later_world = candidate_at(2, 3, 8, 0, 0, 1, 0xff);
+        let ranked = rank_champion(vec![later_world, current_level, old_level])
             .expect("cross-level candidate exists");
         assert_eq!((ranked.lane, ranked.id), (2, 3));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
