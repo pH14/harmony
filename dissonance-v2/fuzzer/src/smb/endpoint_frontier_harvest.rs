@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the World 8-2 p85 normal-endpoint frontier harvest.
+//! Temporary sealed runner for the World 8-2 p140 normal-endpoint frontier harvest.
 
 use std::{
     collections::BTreeMap,
@@ -35,55 +35,60 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-2-p85-endpoint-frontier-harvest-v7";
-const PREREGISTRATION_COMMIT: &str = "cdde38f8e0da2029dc07559c7c705c11ecb33298";
+const FORMAT: &str = "smb-w8-2-p140-endpoint-frontier-harvest-v8";
+const PREREGISTRATION_COMMIT: &str = "879baaa6b18d48892446a221111fbd9591d421e6";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "5bb0b63b3b83667dff9486a35e6979c35f65923b5aaae79ed2cb299a1a54cba6";
-const CODE_BASE: &str = "78951c5564668b0f8149025ce57f900106637657";
-const AUTHORIZING_V6_PREREGISTRATION: &str = "28e9dd86";
-const AUTHORIZING_V6_IMPLEMENTATION: &str = "9d76a917";
-const AUTHORIZING_V6_RESULT: &str = "78951c5564668b0f8149025ce57f900106637657";
-const AUTHORIZING_V6_REPORT_SHA256: &str =
-    "8f7ec6d3c8d74c3e1708dc07a8a81c3b8aaf964be4cc7c4f2073c959e515bc42";
-const SOURCE_FILE_SHA256: &str = "3f10e294a943fbb2fe2dc51cb8877059e01a1cc319167f1df49f12b8d8c02e97";
+    "cebbc449027132ee0b32e1b3cc11e45609e4cef257419dac2675c1cf30eff2d5";
+const CODE_BASE: &str = "efa091a1f9dca531d7da2f8d3256d73600393889";
+const AUTHORIZING_V7_PREREGISTRATION: &str = "cdde38f8";
+const AUTHORIZING_V7_IMPLEMENTATION: &str = "b397dec5";
+const AUTHORIZING_V7_RESULT: &str = "efa091a1f9dca531d7da2f8d3256d73600393889";
+const AUTHORIZING_V7_REPORT_SHA256: &str =
+    "356f255958d05ecc0ef5aa4f4cd488f29db47d687650a5a2113a74e02137373b";
+const SOURCE_FILE_SHA256: &str = "2aec47372f9772f452967bc2088d09b31df43111e081bc0bdc21c42ae22e66ef";
 const SOURCE_INPUT_SHA256: &str =
-    "3f10e294a943fbb2fe2dc51cb8877059e01a1cc319167f1df49f12b8d8c02e97";
-const SOURCE_WRAM_SHA256: &str = "9b08eafed27af5bc8f2355f0492a364908ddf8e53f2e9a26a2162824b04e9777";
+    "2aec47372f9772f452967bc2088d09b31df43111e081bc0bdc21c42ae22e66ef";
+const SOURCE_WRAM_SHA256: &str = "a3d2a3ec85d1f450c37bb6c39e61ac8425c4bdead045f86e3cf9f0f31536dbc4";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "9cc13488d2d3b00f3b87b3ef1533c326470a7b5c3ba1adb2785f61512ed5ba4c";
+    "418d226b9f90ad33bf1e388a0184b5d7265e1104ed6e336e1a1592f5bba2eac4";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-2-p85-normal-endpoint-frontier-harvest-v7";
-const SEED_LABEL_SHA256: &str = "7a9c36bc73c652c320f838ddec589877a8551ec72bd6485b9bcfd2f6f32226bd";
-const MASTER_SEED: u64 = 14_074_529_985_867_455_610;
+const SEED_LABEL: &str = "sol-restart-w8-2-p140-normal-endpoint-frontier-harvest-v8";
+const SEED_LABEL_SHA256: &str = "aceeaa197c15e68128ce6e7057ebe07b7475f12d259b5a85d4709841a0528afc";
+const MASTER_SEED: u64 = 9_360_192_498_286_915_244;
 const EXPECTED_RECIPE_SHA256: &str =
-    "98e249b21b2bafda0d27610cb827a1fba6f2c8f2881bc4d948a407e884cbdc10";
-const SOURCE_ACTIONS: usize = 3_383;
-const SOURCE_FRAMES: u64 = 159_070;
+    "b137bcb91f8fa847d95b520b67949fe96760da01dcfe01d7a2c956a6287a60ba";
+const SOURCE_ACTIONS: usize = 3_404;
+const SOURCE_FRAMES: u64 = 159_699;
 const LANES: usize = 12;
-const DRAWS: usize = 700;
+const DRAWS: usize = 692;
 const ACTION_LIMIT: usize = 4_096;
-const ARCHIVE_LIMIT: usize = 701;
-const MAX_LINEAGE_ACTIONS: usize = 4_083;
+const ARCHIVE_LIMIT: usize = 693;
+const MAX_LINEAGE_ACTIONS: usize = 4_096;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
-const MAX_ACTION_FRAMES: u64 = 1_008_000;
-const MAX_PROBE_FRAMES: u64 = 1_134_000;
-const SOURCE_PROBE_FRAMES: u64 = 45;
-const MAX_TOTAL_FRAMES: u64 = 2_305_808;
+const MAX_ACTION_FRAMES: u64 = 996_480;
+const MAX_PROBE_FRAMES: u64 = 1_121_040;
+const SOURCE_PROBE_FRAMES: u64 = 119;
+const MAX_TOTAL_FRAMES: u64 = 2_282_031;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const PROBE_FRAMES: u16 = 45;
+const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 3] = [
+    (0x00, 37, true, false),
+    (0x01, 37, true, false),
+    (0x81, 45, false, true),
+];
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 1,
-    progress: 85,
+    progress: 140,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 1,
-    progress: 85,
+    progress: 140,
     player_y_bucket: 11,
     player_engine_state: 8,
     dead: false,
@@ -92,10 +97,10 @@ const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
     level: 1,
-    progress: 85,
+    progress: 140,
     player_y_bucket: 11,
     player_engine_state: 8,
-    state_fingerprint: 27,
+    state_fingerprint: 35,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -105,8 +110,8 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 130,
-    hold_frames: 112,
+    buttons: 1,
+    hold_frames: 120,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -137,8 +142,8 @@ struct Config {
     assignment: &'static str,
     probe_masks: [u8; 3],
     probe_frames: u16,
-    source_probe_mask: u8,
-    source_probe_frames: u16,
+    source_probe_masks: [u8; 3],
+    source_probe_frames: u64,
     max_action_frames: u64,
     max_probe_frames: u64,
     max_total_frames: u64,
@@ -159,7 +164,7 @@ struct BaselineRecord {
     key: SmbArchiveKey,
     milestones: SmbMilestones,
     final_action: ButtonChord,
-    source_probe: ProbeAttempt,
+    source_probes: Vec<ProbeAttempt>,
 }
 
 #[derive(Clone)]
@@ -352,14 +357,14 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_v6_preregistration: &'static str,
-    authorizing_v6_implementation: &'static str,
-    authorizing_v6_result: &'static str,
-    authorizing_v6_report_sha256: &'static str,
+    authorizing_v7_preregistration: &'static str,
+    authorizing_v7_implementation: &'static str,
+    authorizing_v7_result: &'static str,
+    authorizing_v7_report_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
-    source_v6_lane: u64,
-    source_v6_entry_id: u64,
+    source_v7_lane: u64,
+    source_v7_entry_id: u64,
     rom_sha256: &'a str,
     executable_sha256: &'a str,
     bin_source_sha256: &'a str,
@@ -418,7 +423,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path = PathBuf::from(
         args.next()
-            .ok_or("usage: smb-w8-2-p85-endpoint-frontier-harvest <input.json> <output.jsonl>")?,
+            .ok_or("usage: smb-w8-2-p140-endpoint-frontier-harvest <input.json> <output.jsonl>")?,
     );
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -456,8 +461,8 @@ pub fn run_from_process(
         assignment: "one_lane_per_persistent_worker_buffered_ascending_v1",
         probe_masks: PROBE_MASKS,
         probe_frames: PROBE_FRAMES,
-        source_probe_mask: 0,
-        source_probe_frames: PROBE_FRAMES,
+        source_probe_masks: PROBE_MASKS,
+        source_probe_frames: SOURCE_PROBE_FRAMES,
         max_action_frames: MAX_ACTION_FRAMES,
         max_probe_frames: MAX_PROBE_FRAMES,
         max_total_frames: MAX_TOTAL_FRAMES,
@@ -494,7 +499,7 @@ pub fn run_from_process(
     let work = summarize_work(
         &lanes,
         baseline.record.setup_frames,
-        baseline.record.source_probe.work_frames,
+        source_probe_frames(&baseline.record.source_probes)?,
     )?;
 
     let mut output = NdjsonOutput::new(output_file);
@@ -504,14 +509,14 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_v6_preregistration: AUTHORIZING_V6_PREREGISTRATION,
-        authorizing_v6_implementation: AUTHORIZING_V6_IMPLEMENTATION,
-        authorizing_v6_result: AUTHORIZING_V6_RESULT,
-        authorizing_v6_report_sha256: AUTHORIZING_V6_REPORT_SHA256,
+        authorizing_v7_preregistration: AUTHORIZING_V7_PREREGISTRATION,
+        authorizing_v7_implementation: AUTHORIZING_V7_IMPLEMENTATION,
+        authorizing_v7_result: AUTHORIZING_V7_RESULT,
+        authorizing_v7_report_sha256: AUTHORIZING_V7_REPORT_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
-        source_v6_lane: 11,
-        source_v6_entry_id: 570,
+        source_v7_lane: 0,
+        source_v7_entry_id: 258,
         rom_sha256: &rom_sha256,
         executable_sha256: &executable_sha256,
         bin_source_sha256: &bin_source_sha256,
@@ -719,19 +724,20 @@ fn build_baseline(target: &mut SmbTarget, source: &SmbInput) -> Result<Baseline,
     {
         return Err("source replay evidence does not match the preregistration".into());
     }
-    let source_probe = run_source_probe(
+    let source_probes = run_source_probes(
         target,
         &snapshot,
         wram_sha256.as_str(),
         snapshot_sha256.as_str(),
     )?;
+    let source_probe_work = source_probe_frames(&source_probes)?;
     let baseline_delta = target
         .frames_clocked()
         .checked_sub(replay_before)
         .ok_or("baseline total work counter moved backwards")?;
     if baseline_delta
         != replay_frames
-            .checked_add(source_probe.work_frames)
+            .checked_add(source_probe_work)
             .ok_or("baseline component work overflow")?
     {
         return Err("baseline work does not reconcile with replay and source probe".into());
@@ -750,31 +756,43 @@ fn build_baseline(target: &mut SmbTarget, source: &SmbInput) -> Result<Baseline,
         key,
         milestones,
         final_action: BASELINE_FINAL_ACTION,
-        source_probe,
+        source_probes,
     };
     Ok(Baseline { record, snapshot })
 }
 
-fn run_source_probe(
+fn run_source_probes(
     target: &mut SmbTarget,
     snapshot: &SmbSnapshot,
     expected_wram_sha256: &str,
     expected_snapshot_sha256: &str,
-) -> Result<ProbeAttempt, Box<dyn Error>> {
-    target.restore(snapshot)?;
-    verify_snapshot(target, snapshot)?;
-    let before = target.frames_clocked();
-    let survived = target.survives_probe(0, PROBE_FRAMES);
-    let work_frames = target
-        .frames_clocked()
-        .checked_sub(before)
-        .ok_or("source-probe work counter moved backwards")?;
-    if target.exit_kind() != ExitKind::Ok
-        || target.is_dead()
-        || !survived
-        || work_frames != SOURCE_PROBE_FRAMES
-    {
-        return Err("source evidence probe did not survive exactly as registered".into());
+) -> Result<Vec<ProbeAttempt>, Box<dyn Error>> {
+    let mut attempts = Vec::with_capacity(SOURCE_PROBE_TRANSCRIPT.len());
+    for (mask, expected_work, expected_dead, expected_survived) in SOURCE_PROBE_TRANSCRIPT {
+        target.restore(snapshot)?;
+        verify_snapshot(target, snapshot)?;
+        let before = target.frames_clocked();
+        let survived = target.survives_probe(mask, PROBE_FRAMES);
+        let work_frames = target
+            .frames_clocked()
+            .checked_sub(before)
+            .ok_or("source-probe work counter moved backwards")?;
+        let dead = target.is_dead();
+        if target.exit_kind() != ExitKind::Ok
+            || work_frames != expected_work
+            || dead != expected_dead
+            || survived != expected_survived
+        {
+            return Err(
+                "source evidence probe transcript does not match the preregistration".into(),
+            );
+        }
+        attempts.push(ProbeAttempt {
+            mask,
+            work_frames,
+            dead,
+            survived,
+        });
     }
     target.restore(snapshot)?;
     verify_snapshot(target, snapshot)?;
@@ -786,12 +804,34 @@ fn run_source_probe(
     {
         return Err("source evidence probe did not restore exact source state".into());
     }
-    Ok(ProbeAttempt {
-        mask: 0,
-        work_frames,
-        dead: false,
-        survived,
-    })
+    Ok(attempts)
+}
+
+fn source_probe_frames(attempts: &[ProbeAttempt]) -> Result<u64, Box<dyn Error>> {
+    if attempts.len() != SOURCE_PROBE_TRANSCRIPT.len() {
+        return Err("source evidence probe count does not match the preregistration".into());
+    }
+    let mut total = 0_u64;
+    for (attempt, (mask, work_frames, dead, survived)) in
+        attempts.iter().zip(SOURCE_PROBE_TRANSCRIPT)
+    {
+        if (
+            attempt.mask,
+            attempt.work_frames,
+            attempt.dead,
+            attempt.survived,
+        ) != (mask, work_frames, dead, survived)
+        {
+            return Err("source evidence probe record is not canonical".into());
+        }
+        total = total
+            .checked_add(attempt.work_frames)
+            .ok_or("source evidence probe work overflow")?;
+    }
+    if total != SOURCE_PROBE_FRAMES {
+        return Err("source evidence probe work does not match the preregistration".into());
+    }
+    Ok(total)
 }
 
 fn evaluate_parallel(
@@ -1769,54 +1809,74 @@ mod tests {
         verify_seed().expect("sealed seed is self-consistent");
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "98e249b21b2bafda0d27610cb827a1fba6f2c8f2881bc4d948a407e884cbdc10"
+            "b137bcb91f8fa847d95b520b67949fe96760da01dcfe01d7a2c956a6287a60ba"
         );
         let source = synthetic_source();
         let recipes = derive_recipes(&source).expect("derive recipes");
         assert_eq!(recipes.len(), 12);
-        assert!(recipes.iter().all(|lane| lane.len() == 700));
+        assert!(recipes.iter().all(|lane| lane.len() == 692));
         assert_eq!(
             (recipes[0][0].source_index, recipes[0][0].selector_seed),
-            (1_750, 943_137_178_376_001_167)
+            (11, 5_202_494_330_836_640_919)
         );
         assert_eq!(
             (recipes[0][1].source_index, recipes[0][1].selector_seed),
-            (1_783, 8_097_903_631_560_075_570)
+            (1_234, 6_014_286_951_701_480_606)
         );
         assert_eq!(
             (
-                recipes[11][699].source_index,
-                recipes[11][699].selector_seed,
+                recipes[11][691].source_index,
+                recipes[11][691].selector_seed,
             ),
-            (1_061, 9_735_560_320_379_332_873)
+            (2_483, 8_890_594_301_605_917_540)
         );
         assert_eq!(
             serde_json::to_vec(&(
                 0_u64,
                 0_u64,
-                1_750_u64,
+                11_u64,
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ))
             .expect("serialize first recipe"),
-            br#"[0,0,1750,{"buttons":214,"hold_frames":86},943137178376001167]"#
+            br#"[0,0,11,{"buttons":11,"hold_frames":13},5202494330836640919]"#
         );
         assert_eq!(
             recipe_sha256(&recipes).expect("hash recipes"),
-            "522c0974d9c633d53d6ec1db9951a350c82a14e5e917b3b39a2f0b9ce189337c"
+            "58890627a086f5546683270651e7ab34486ffd20c90818fdc671a6407a2a8fa3"
         );
     }
 
     #[test]
     fn maximum_lineage_actions_are_bounded_and_reported() {
         assert_eq!(SOURCE_ACTIONS.checked_add(DRAWS), Some(MAX_LINEAGE_ACTIONS));
-        assert!(MAX_LINEAGE_ACTIONS < ACTION_LIMIT);
+        assert!(MAX_LINEAGE_ACTIONS <= ACTION_LIMIT);
         let mut maximum = SOURCE_ACTIONS;
         record_lineage_actions(&mut maximum, MAX_LINEAGE_ACTIONS)
             .expect("registered maximum is allowed");
         assert_eq!(maximum, MAX_LINEAGE_ACTIONS);
         assert!(record_lineage_actions(&mut maximum, MAX_LINEAGE_ACTIONS + 1).is_err());
         assert_eq!(maximum, MAX_LINEAGE_ACTIONS);
+    }
+
+    #[test]
+    fn source_probe_transcript_and_work_are_exact() {
+        let attempts = SOURCE_PROBE_TRANSCRIPT
+            .into_iter()
+            .map(|(mask, work_frames, dead, survived)| ProbeAttempt {
+                mask,
+                work_frames,
+                dead,
+                survived,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_probe_frames(&attempts).expect("registered transcript"),
+            119
+        );
+        let mut malformed = attempts;
+        malformed[1].work_frames = 38;
+        assert!(source_probe_frames(&malformed).is_err());
     }
 
     #[test]
@@ -1831,18 +1891,18 @@ mod tests {
     #[test]
     fn champion_ranking_is_total_and_verdict_is_strict() {
         let ranked = rank_champion(vec![
-            candidate(0, 9, 86, 8, 0x10),
-            candidate(1, 8, 87, 12, 0xff),
-            candidate(2, 7, 87, 10, 0xff),
-            candidate(3, 6, 87, 10, 0x20),
-            candidate(4, 5, 87, 10, 0x20),
-            candidate(4, 4, 87, 10, 0x20),
+            candidate(0, 9, 141, 8, 0x10),
+            candidate(1, 8, 142, 12, 0xff),
+            candidate(2, 7, 142, 10, 0xff),
+            candidate(3, 6, 142, 10, 0x20),
+            candidate(4, 5, 142, 10, 0x20),
+            candidate(4, 4, 142, 10, 0x20),
         ])
         .expect("champion exists");
         assert_eq!((ranked.lane, ranked.id), (3, 6));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
 
-        let equal = rank_champion(vec![candidate(0, 1, 85, 1, 0)]).expect("candidate exists");
+        let equal = rank_champion(vec![candidate(0, 1, 140, 1, 0)]).expect("candidate exists");
         assert_eq!(verdict_for(Some(&equal)), Verdict::Stop);
         assert_eq!(verdict_for(None), Verdict::Stop);
     }
@@ -1856,7 +1916,7 @@ mod tests {
             )),
             Verdict::Stop
         );
-        let current_level = candidate_at(1, 2, 7, 1, 86, 1, 0xff);
+        let current_level = candidate_at(1, 2, 7, 1, 141, 1, 0xff);
         let later_level = candidate_at(2, 3, 7, 2, 0, 1, 0xff);
         let ranked = rank_champion(vec![later_level, current_level, old_level])
             .expect("cross-level candidate exists");
