@@ -154,3 +154,37 @@ sequential or novel-mask test. No rerun, enlargement, threshold relaxation, or
 pooled prior outcome is allowed. Create-new canonical NDJSON binds header,
 baseline, recipes, candidates, classifications, summary, and identity/config/
 recipe/trace/body/whole-file hashes without paths or timestamps.
+
+## Registered result
+
+Implementation commit `00fd0a1ae25e08afc6302882c168084f3ae29eac`
+used module SHA-256
+`800a609ea57a4655323477b2fbd6034fd81da4d62b768b1d82404fa396256590`,
+bin-source SHA-256
+`31758153dca1b05a829f3a57a44bdf17177c2ba029159990c1e079baf8bb5200`,
+and sealed release-executable SHA-256
+`72462c523eec6eece58955136b24de2a001d25bb7049dc4674f2d5f1ad81fddf`.
+The sole registered run completed successfully and emitted 1,686 NDJSON lines,
+12,585,869 bytes, whole-file SHA-256
+`e4d9d86738c546048d67dda3adea15032bda5dbb65e3afcc212f958977a7999a`,
+and body SHA-256
+`c37ed5c33dd39d37b7e857df04ba6f27d0325322a3f72024de6a8d98dce5c9bd`.
+Standard error was empty and standard output bound the same whole-file hash.
+
+The registered verdicts are **NO_DIRECT_ADVANCE** and **NO_ADOPT**. All 1,680
+candidates completed: 1,652 ended alive and 1,580 survived the normal probe,
+but zero ended strictly beyond `(7,3,73)` and zero transiently crossed it.
+The 387 exact source-occurrence chords yielded 383 live and 363 probe-surviving
+endpoints; the 1,293 factorial-closure chords yielded 1,269 live and 1,217
+probe-surviving endpoints. The best live endpoint of either class was only
+`(7,3,18)`, from exact source chord `(0x83,120)`. Endpoint states collapsed to
+30 decoded mechanical states and progress 9 through 18 despite 1,652 distinct
+snapshot hashes. This closes direct one-action timing over every inherited mask
+and every legal hold duration; neither empirical support nor factorial closure
+produced an adoptable candidate.
+
+Checked work was 4,693 setup + 167,340 source replay + 45 source probe +
+101,358 candidate action + 75,749 candidate probe = **349,185 frames**, below
+the registered 500,518-frame cap. No rerun or support-policy promotion is
+authorized. The next experiment must be separately preregistered and sequential
+or use a genuinely novel mask source.
