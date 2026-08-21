@@ -96,3 +96,44 @@ Emit create-new canonical NDJSON with header, baseline, recipes, 12 lane
 records, classification, and summary, binding prereg/source/ROM/executable/
 bin/module/config/recipe/trace/body/whole-file hashes. Paths, timestamps, and
 completion order must not enter canonical bytes.
+
+## Registered result
+
+Preregistration commit `f9eda846ba749f2fedcf680723998ab0bd1c1487` and
+implementation commit `1b739de2` (full hash in git) used module SHA-256
+`c219cadd969bfb5d529198f189795aa82780b070388577383818ffbf7a8d571d`,
+bin-source SHA-256
+`7c9d0785f6212f53e147d850174c4ec2ef9e369b333e064ab55d5e4476dcbc6c`,
+and release-executable SHA-256
+`a75865d5b330d2582fb842b72478d8a5a5ec131dc28d1cdccb84fc1b69f1e675`,
+built once offline and locked from sealed source archive SHA-256
+`da8938287e0d67c1a8fa0b886a7b74d2dd7aaa9b9c4575449170b142b0915251`
+under `/root/harmony-smb-sol-w8-4-p153-class-uniform-1b739de2`; the sealed
+tree matched the implementation commit file for file. The sealed recipe was
+400,257 bytes with SHA-256
+`124369c31f3f09c39a3275cba6169331a40a9a3d03d149b0e63ddc1186a7ab1e`. The sole
+run (systemd unit `harmony-smb-sol-w8-4-p153-class-uniform-1b739de2`,
+`Restart=no`, exit 0, no restarts) produced 17 NDJSON lines in registered
+order, 812,566,867 bytes, whole-file SHA-256
+`c41a4fda904677fec6b761b2256ed1e7d7e6e8438f75cab71564bf68fd766356`,
+and body SHA-256
+`189e317a03a31566b668a78be7616eacef710f788ebe4b47e1a1fe0c2ef2c245`.
+Standard error was empty and standard output bound the same report hash.
+The baseline reproduced every registered source datum.
+
+The registered verdict is **STOP**. All 6,144 scheduled candidates executed
+and were selected and accounted exactly once; 5,880 final-active ordinary
+entries were eligible and none exceeded `(7,3,1,153)`. The best eligible
+entry reached `(7,3,1,124)`. Checked work was 4,693 setup + 168,594 source
+replay + 45 source probe + 281,165 action + 274,896 probe = **729,393
+frames**, below the 1,740,052-frame cap.
+
+Diagnostic only. No draw left room `(3,5)`; 33 endpoints were dead. Each
+lane selected 65 to 78 distinct classes; uniform-path draws were 113 to 143
+per lane and class draws 369 to 399, with no counter reset. Live endpoints
+sat on page 5 (1,642), page 6 (3,951), and page 7 (518). Final entries
+covered player y buckets 5 through 11 on pages 5 and 6 and reached page 7
+only 508 times, never page 8 or 9. Spreading draws evenly across classes
+removed the depth pressure that previously carried lineages back to pages 8
+and 9, so the one known pipe at progress 124 and any states beyond it were
+not reached within 512 draws per lane.
