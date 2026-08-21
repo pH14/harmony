@@ -1916,10 +1916,12 @@ impl CoordinatorCore {
     /// Entries are walked in source order. Each one restores its imported
     /// parent's snapshot, applies the actions past the parent's input, and is
     /// inserted under this run's policies, so liveness, cells, room sets, and
-    /// replacement decisions are re-derived rather than copied. An entry whose
-    /// parent was not imported is re-rooted at its nearest imported ancestor;
-    /// an entry that dies, fails its admission probe, or exceeds the action
-    /// limit is skipped and counted.
+    /// replacement decisions are re-derived rather than copied. The admission
+    /// probe is not repeated: the source already admitted every entry, and
+    /// probing tens of thousands of imports would cost more frames than the
+    /// search they seed. An entry whose parent was not imported is re-rooted
+    /// at its nearest imported ancestor; an entry that dies or exceeds the
+    /// action limit is skipped and counted.
     fn import_tree(
         &mut self,
         target: &mut SmbTarget,
@@ -2025,11 +2027,6 @@ impl CoordinatorCore {
                 .snapshot()
                 .ok_or("failed to snapshot campaign tree import")?;
             let key = archive_key(target.wram(), self.key_policy);
-            if !admission_is_viable(target, &snapshot, self.retention_policy)? {
-                counts.probe_refused = counts.probe_refused.saturating_add(1);
-                imported.push(None);
-                continue;
-            }
             let inserted_before = self.archive.entries.len();
             match self.archive.insert(
                 Some(parent_id),
@@ -2243,8 +2240,6 @@ pub struct SmbTreeImportCounts {
     pub duplicate: u64,
     /// Source entries the archive refused under this run's replacement rules.
     pub rejected: u64,
-    /// Source entries whose admission probe failed under this run's policy.
-    pub probe_refused: u64,
     /// Source entries whose rebuilt walk ended dead or failed.
     pub terminal: u64,
     /// Source entries longer than this run's action limit.
@@ -4949,7 +4944,6 @@ mod tests {
             counts.imported
                 + counts.duplicate
                 + counts.rejected
-                + counts.probe_refused
                 + counts.terminal
                 + counts.over_limit,
             source_retained
