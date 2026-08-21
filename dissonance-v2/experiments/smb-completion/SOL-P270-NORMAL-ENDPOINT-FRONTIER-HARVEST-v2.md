@@ -169,3 +169,41 @@ adoptable.
 There is one registered live run, no routine replay audit, no automatic rerun,
 no post-hoc ranking, and no adoption from any prior unregistered candidate.
 Any integrity mismatch authorizes nothing.
+
+## Result
+
+The one registered run completed successfully on `msr1` with verdict
+**ADOPT**. The sealed implementation commit was `73804c16`; binary-source,
+module-source, and release-executable SHA-256 values were respectively
+`b64858d54c36dd3c80badfb0e35dafa495fecbfbd52e133df08b13b1d7b7957c`,
+`af9b87bed3f48e9e1e5bb14faccd5995d10c33be5df1f6a8dcfaca8c976bc32a`,
+and `14895b0a271a96276e7a4414f15a526b822a4fe2e8e145e446c156fb0cb8f3b7`.
+The frozen recipe SHA-256 was
+`20eb7679b8a19c9d79b82d5ee9e435e37f62c6c8030ea30c88ec3d37a677fc87`.
+
+The canonical 17-line report is
+`/root/harmony-smb-sol-p270-harvest-fc85a115/results/p270-endpoint-harvest-12x512.jsonl`.
+It is 96,396,825 bytes with body SHA-256
+`432076cfe2276c7e0b5cff57dfc400911251ff7d75557533aac20fd283a5d34f`
+and whole-file SHA-256
+`5d3a6873c8cd09e27a925ebdcae80f90b6a14b834df08a52c0073915d8f0b622`.
+Standard error was empty. Realized work was 676,009 frames: 155,855 source
+replay, 45 source-probe, 4,693 setup, and 515,416 experimental frames.
+
+Final lane watermarks in world 8-1 were
+`[286, 305, 304, 287, 286, 286, 299, 299, 287, 299, 283, 287]`.
+The registered total order selected lane 1 entry 355, lineage
+`[0, 2, 14, 25, 37, 45, 61, 128, 130, 195, 332, 355]`. It is a live,
+probe-surviving normal endpoint at progress 305 after 3,320 actions and
+156,342 absolute frames. Its semantic input SHA-256 is
+`e506fcfd4404b20ee1d010eea8d33dbc78b68e3e7a8db308dd405f8d3c858e23`,
+raw-WRAM SHA-256 is
+`d0a4500b17824a184ee47d3a96fb9d2415d59aa829898a69bcb5f7d04c274f65`,
+and snapshot SHA-256 is
+`7c2ee354c8f0cb5399a455e7225f7e61a986d6bdbdaf9c4a2f3338dd6dd2f088`.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-p270-harvest-fc85a115/results/adopted-progress-305-input.json`;
+its compact-file SHA-256 is the semantic input hash above. Its mandatory
+from-genesis verification is assigned to the baseline phase of the separately
+preregistered next continuation before any live proposal is generated.
