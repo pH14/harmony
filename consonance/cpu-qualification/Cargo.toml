@@ -24,7 +24,7 @@ serde_json = "1"
 # reviewable checked-in artifact alongside docs/cpu-msr-contract.toml, and
 # docs/CPU-QUALIFICATION.md names it docs/chips/<baseline>.toml.
 toml = "0.8"
-# Pack hash pin, and the on-disk hash of a loaded kernel module.
+# The pack hash pin.
 sha2 = "0.10"
 thiserror = "2"
 # CLI (bins only, per the whitelist).

@@ -262,17 +262,31 @@ fn dev_kvm_state() -> String {
     }
 }
 
-/// A loaded KVM module's identity, by the content-derived source version the
-/// kernel records for it.
+/// A loaded KVM module's identity, by content: the checksum the kernel records
+/// over the module's source and the build identity of the object it was
+/// compiled into. A patched module differs from a stock one in both.
 fn kvm_module_identity(module: &str) -> String {
     let sys = format!("/sys/module/{module}");
     if !Path::new(&sys).exists() {
         return "not loaded".to_string();
     }
-    read_optional(format!("{sys}/srcversion")).map_or_else(
-        || "loaded, no srcversion".to_string(),
-        |v| format!("srcversion {v}"),
-    )
+    let srcversion =
+        read_optional(format!("{sys}/srcversion")).unwrap_or_else(|| "unrecorded".to_string());
+    let build_id = fs::read(format!("{sys}/notes/.note.gnu.build-id"))
+        .ok()
+        .filter(|bytes| bytes.len() > 16)
+        .map_or_else(
+            || "unrecorded".to_string(),
+            |bytes| {
+                // An ELF note is a 12-byte header, then the four-byte name
+                // "GNU\0", then the identifier itself.
+                bytes[16..]
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            },
+        );
+    format!("srcversion {srcversion}, build-id {build_id}")
 }
 
 /// Open the work-clock event and see how it behaves.
