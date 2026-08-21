@@ -79,3 +79,31 @@ ordinary endpoint; rank full watermark, fewest actions, input SHA, lane, id.
 otherwise **STOP**. One run; no rerun, relaxation, routine replay, or post-hoc
 choice. Terminal-like evidence remains diagnostic pending a separately frozen
 mechanical credits predicate and artifact-only confirmation.
+
+## Registered result: STOP at World 8-4 p73
+
+Implementation commit `c3902b4afdbff29b839637512a8902b2da036cf3`,
+module SHA `c5e74707f8a00801f846311299f06356c628a50f338cd394df9d7b1b5826e93c`,
+bin SHA `aaffd720de1579c732ca79c2084f472eb3390f16bd21564c2ccf23e9af1e5d3a`,
+source archive SHA
+`c8b9d7d27a555aa94b042521004ac6356e831183cc66978f1baa558370a07a9f`,
+and release executable SHA
+`e4557737c606058cb316dee5d813be33791016df6218a0bd4787bb5b0da7c7ef`
+were sealed before the single launch. Systemd invocation
+`5f7caab79c4f4d6fb6383342ded32a9e` exited successfully with empty stderr.
+
+The 17-line, 800,113,754-byte report SHA is
+`5fc888c8fcb522b9b1216de9649223cebbddbf87709e68d1236a4e2031ff2e90`;
+body SHA is
+`bc39c8c01c796eaf8ba7da9d46bec3598ee906aead06cd310e82cd79b66c9d2f`.
+All 6,144 candidates and selections completed. Work was setup4,693,
+source-replay167,340, source-probe45, action282,105, candidate-probe273,639,
+experimental555,744, total727,822 frames, below every frozen cap.
+
+The registered verdict is **STOP**. Across 2,920 final-active newly allocated
+eligible endpoints, none exceeded the immutable p73 source floor. The best
+eligible new endpoint was lane4/id198 at `(7,3,31)`, so it is not adoptable and
+no new source file was materialized. This closes another identical full-size
+ordinary continuation from p73. Any further work requires a separately
+preregistered structural test; the registered p73 source remains the only
+authorized frontier.
