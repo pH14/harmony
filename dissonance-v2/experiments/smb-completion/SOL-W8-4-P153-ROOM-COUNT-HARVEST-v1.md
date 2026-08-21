@@ -197,3 +197,47 @@ Emit create-new canonical NDJSON with header, baseline, recipes, 12 lane
 records, classification, and summary, binding prereg/source/ROM/executable/bin/
 module/config/recipe/trace/body/whole-file hashes. Paths, timestamps, and
 completion order must not enter canonical bytes.
+
+## Registered result
+
+Preregistration commit `6d4c6c9d1304d2cb7230d03a1141cc3217c5af32` (document
+SHA-256 `b90b6050e52ea208a53c5b4f50b2e21d170f0dec35990de3c8753321a62632b1`)
+and implementation commit `12091c872eecb2cf0224109c16ab34be4fe3a9c8` used
+module SHA-256
+`678a3ceee9508121ee5a87b0cb02654b5f9c614ef448f2f62ad8cac9d5bfbfc7`,
+bin-source SHA-256
+`2e4d6b95a3c01b70e14d6d723929da345ce735a9c2983368ebab218364f038ab`,
+and release-executable SHA-256
+`5f78f18c080d0f48aa3adcb85662ba207052a1c85bd05244a53026aa01fd9c0f`,
+built once offline and locked from sealed source archive SHA-256
+`b9a3c5a619239cd5d5dca611b2914c179a87423c5afda2891ddf3eab894dc28d`
+under `/root/harmony-smb-sol-w8-4-p153-room-count-12091c87`; the sealed tree
+matched the implementation commit file for file. The sealed recipe was
+400,216 bytes with SHA-256
+`a8f98830c477ec2bed72ac6de044dc9986b1d06b656ba5650e5fb679fb094035`. The sole
+run (systemd unit `harmony-smb-sol-w8-4-p153-room-count-12091c87`,
+`Restart=no`, exit 0, no restarts) produced 17 NDJSON lines in registered
+order, 816,667,687 bytes, whole-file SHA-256
+`dba126e0fc52bb4a982606bf51ccbff7fcac9341d5745c207c72a3a17e68d82c`,
+and body SHA-256
+`b927c4feef265f7908ac71d723611a67ea15a06e0ef3c522af1ac522665b5f70`.
+Standard error was empty and standard output bound the same report hash. The
+baseline reproduced every registered source datum, including room value
+`(3,5)` and full watermark `(7,3,1,153)`.
+
+The registered verdict is **STOP**. All 6,144 scheduled candidates executed
+and were selected and accounted exactly once; 5,210 final-active ordinary
+entries were eligible and none exceeded `(7,3,1,153)`. The best eligible entry
+is lane 10 id 428 at exactly `(7,3,1,153)`. Checked work was 4,693 setup +
+168,594 source replay + 45 source probe + 266,015 action + 261,924 probe =
+**701,271 frames**, below the 1,740,052-frame cap.
+
+Diagnostic only. Every one of the 6,144 action endpoints, live or dead, read
+room value `(3,5)`; no lineage ever left the source room, so the room term
+was never exercised. 467 endpoints were dead; live progress never fell below
+88 and engine states were only 8 and 11. Live endpoints by page were 339 on
+page 5, 1,793 on page 6, 1,275 on page 7, 757 on page 8, and 1,513 on page 9.
+The source marginal contains Down in 153 of 3,576 chords (4.3%), so about
+264 draws carried Down at all, each from a parent chosen by frontier
+concentration rather than by position. The term is sound but the one-action
+source-marginal draw produced no event for it to reward.
