@@ -1007,26 +1007,32 @@ pub enum SmbArchiveKeyPolicy {
         /// Registered room progress bucket.
         progress: u16,
     },
-    /// The frozen key plus `rooms`: the count of distinct room identities a
-    /// lineage has visited inside its current level. The room identity is
-    /// the bytes at `ROOM_IDENTITY_BYTES`, read from the candidate's own
-    /// snapshot at insertion; a child in the same `(world, level)` as its
+    /// The frozen key plus `rooms`: the count of distinct rooms a lineage has
+    /// visited inside its current level. A room is an area identity (the
+    /// bytes at `ROOM_IDENTITY_BYTES`) together with the page the lineage
+    /// arrived in it at, see [`SmbRoomIdentity`]; a child in the same `(world, level)` as its
     /// parent inherits the parent's room set, any other child starts a new
     /// set. The search learns only that a value is new, never which value is
     /// wanted.
     FrozenRooms,
 }
 
-/// Work RAM addresses whose bytes identify the current room: area type, area
-/// data offset, and the entrance mode the game sets when the player arrives
-/// through a pipe or vine rather than from the level start. The entrance mode
-/// is part of the identity because the game keeps it for the rest of the
-/// room, so a room re-entered through a warp is a different room to the
-/// search from the same room walked into from its start.
-pub const ROOM_IDENTITY_BYTES: [usize; 3] = [0x074e, 0x074f, 0x0752];
+/// Work RAM addresses whose byte pair identifies the current area (area type
+/// and area data offset).
+pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
 
-/// One room identity: the bytes at `ROOM_IDENTITY_BYTES`, in order.
-pub type SmbRoomIdentity = [u8; ROOM_IDENTITY_BYTES.len()];
+/// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
+/// the level page the lineage arrived in that area at. The arrival page is
+/// part of the identity because a warp can drop the player back into an area
+/// already walked through; the game keeps no settled byte that says so, but
+/// the screen never scrolls backward, so a child standing more than a page
+/// behind its parent inside one level can only have arrived by warp. Looping
+/// through the same warp arrives at the same page and adds no room.
+pub type SmbRoomIdentity = [u8; 3];
+
+/// Smallest backward progress step, in buckets, that only a warp can produce
+/// within one level: one full screen plus one bucket.
+const ROOM_ARRIVAL_SNAP: u16 = 17;
 
 /// Whether admission probes a candidate for viability before retaining it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1519,6 +1525,8 @@ pub(crate) struct Archive {
     /// `SmbArchiveKeyPolicy::FrozenRooms`; otherwise every entry holds an
     /// empty set.
     room_sets: Vec<Vec<SmbRoomIdentity>>,
+    /// The room each entry currently stands in, aligned with `room_sets`.
+    current_rooms: Vec<SmbRoomIdentity>,
 }
 
 impl Archive {
@@ -1632,6 +1640,7 @@ impl Archive {
             replacement_frames_displaced: 0,
             key_policy: SmbArchiveKeyPolicy::Frozen,
             room_sets: Vec::new(),
+            current_rooms: Vec::new(),
         }
     }
 
@@ -1687,12 +1696,12 @@ impl Archive {
         if let Some(existing) = self.input_ids.get(&input) {
             return Ok(Some(*existing));
         }
-        let room_set = if self.key_policy == SmbArchiveKeyPolicy::FrozenRooms {
-            let set = self.room_set_for(parent_id, key, snapshot.wram())?;
+        let (room_set, current_room) = if self.key_policy == SmbArchiveKeyPolicy::FrozenRooms {
+            let (set, current) = self.room_set_for(parent_id, key, snapshot.wram())?;
             key.rooms = u8::try_from(set.len())?;
-            set
+            (set, current)
         } else {
-            Vec::new()
+            (Vec::new(), SmbRoomIdentity::default())
         };
         // Frames this candidate spent inside its own pair, derived from the
         // recorded action durations and the parent's recorded pair alone. It
@@ -1759,6 +1768,7 @@ impl Archive {
         self.entries.push(ArchiveEntry { report, snapshot });
         self.active.push(true);
         self.room_sets.push(room_set);
+        self.current_rooms.push(current_room);
         self.frames_in_level.push(candidate_frames_in_level);
         self.selected.push(0);
         self.productive.push(0);
@@ -1771,41 +1781,54 @@ impl Archive {
         Ok(Some(id))
     }
 
-    /// The candidate's sorted room set: the parent's set when the candidate
-    /// stays in the parent's level, otherwise a fresh set, plus the room the
-    /// candidate's own work RAM reports.
+    /// The candidate's sorted room set and the room it stands in: the parent's
+    /// set when the candidate stays in the parent's level, otherwise a fresh
+    /// set, plus the candidate's room. The candidate keeps the parent's room
+    /// unless the area bytes changed or it arrived by warp.
     fn room_set_for(
         &self,
         parent_id: Option<usize>,
         key: SmbArchiveKey,
         wram: &[u8],
-    ) -> Result<Vec<SmbRoomIdentity>, Box<dyn Error>> {
-        let mut room = SmbRoomIdentity::default();
-        for (slot, offset) in room.iter_mut().zip(ROOM_IDENTITY_BYTES) {
+    ) -> Result<(Vec<SmbRoomIdentity>, SmbRoomIdentity), Box<dyn Error>> {
+        let mut area = [0_u8; 2];
+        for (slot, offset) in area.iter_mut().zip(ROOM_IDENTITY_BYTES) {
             *slot = *wram
                 .get(offset)
                 .ok_or("room identity byte outside work RAM")?;
         }
-        let mut set = match parent_id {
-            Some(parent) => {
-                let parent_key = self
-                    .entries
+        let arrival_page = u8::try_from(key.progress / 16)?;
+        let arrived_here = [area[0], area[1], arrival_page];
+        let parent = parent_id
+            .map(|parent| {
+                self.entries
                     .get(parent)
-                    .ok_or("room set parent is missing")?
-                    .report
-                    .key;
-                if (parent_key.world, parent_key.level) == (key.world, key.level) {
-                    self.room_set(parent).to_vec()
+                    .map(|entry| (entry.report.key, self.current_rooms[parent]))
+                    .ok_or("room set parent is missing")
+            })
+            .transpose()?;
+        let (mut set, current) = match parent {
+            Some((parent_key, parent_room))
+                if (parent_key.world, parent_key.level) == (key.world, key.level) =>
+            {
+                let same_area = parent_room[..2] == area;
+                let warped = parent_key.progress >= key.progress.saturating_add(ROOM_ARRIVAL_SNAP);
+                let current = if same_area && !warped {
+                    parent_room
                 } else {
-                    Vec::new()
-                }
+                    arrived_here
+                };
+                (
+                    self.room_set(parent_id.unwrap_or_default()).to_vec(),
+                    current,
+                )
             }
-            None => Vec::new(),
+            _ => (Vec::new(), arrived_here),
         };
-        if let Err(slot) = set.binary_search(&room) {
-            set.insert(slot, room);
+        if let Err(slot) = set.binary_search(&current) {
+            set.insert(slot, current);
         }
-        Ok(set)
+        Ok((set, current))
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -5478,8 +5501,8 @@ mod tests {
         Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
         MAX_SMB_COMPLETION_ACTIONS, ROOM_IDENTITY_BYTES, SELECTION_EXHAUSTION_THRESHOLD,
         SmbArchiveKey, SmbArchiveKeyPolicy, SmbArchiveReplacementPolicy, SmbArchiveSelectorPolicy,
-        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbProgressWatermark, SmbRoomIdentity,
-        SmbSelectorDraw, SmbSelectorPath, analyze_player_column, merge_progress_watermark,
+        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbProgressWatermark, SmbSelectorDraw,
+        SmbSelectorPath, analyze_player_column, merge_progress_watermark,
     };
     use crate::{
         smb::target::{ButtonChord, SmbInput, SmbObservations, SmbSnapshot, SmbTarget},
@@ -5914,12 +5937,12 @@ mod tests {
         let mut archive = Archive::new();
         archive.set_key_policy(SmbArchiveKeyPolicy::FrozenRooms);
         let genesis = selector_snapshot();
-        let room_snapshot = |room: SmbRoomIdentity| -> SmbSnapshot {
+        let area_snapshot = |area: [u8; 2]| -> SmbSnapshot {
             let mut value = serde_json::to_value(&genesis).expect("serialize snapshot");
             let wram = value["observation"]["wram"]
                 .as_array_mut()
                 .expect("snapshot work RAM");
-            for (offset, byte) in ROOM_IDENTITY_BYTES.into_iter().zip(room) {
+            for (offset, byte) in ROOM_IDENTITY_BYTES.into_iter().zip(area) {
                 wram[offset] = serde_json::json!(byte);
             }
             serde_json::from_value(value).expect("rebuild snapshot")
@@ -5930,7 +5953,7 @@ mod tests {
             progress,
             ..BASELINE_LIKE_KEY
         };
-        let insert = |archive: &mut Archive, parent, actions: usize, key, room| {
+        let insert = |archive: &mut Archive, parent, actions: usize, key, area| {
             archive
                 .insert(
                     parent,
@@ -5942,33 +5965,41 @@ mod tests {
                         key,
                         milestones: crate::smb::target::SmbMilestones::default(),
                     },
-                    room_snapshot(room),
+                    area_snapshot(area),
                 )
                 .expect("insert")
-                .expect("retain")
+                .expect("retained")
         };
-        let root = insert(&mut archive, None, 1, key(7, 3, 10), [3, 5, 0]);
+        let root = insert(&mut archive, None, 1, key(7, 3, 10), [3, 5]);
         assert_eq!(archive.entries[root].report.key.rooms, 1);
-        let same = insert(&mut archive, Some(root), 2, key(7, 3, 20), [3, 5, 0]);
+        assert_eq!(archive.room_set(root), &[[3, 5, 0]]);
+        // Walking on, and even stepping back a whole screen, stays in the room.
+        let same = insert(&mut archive, Some(root), 2, key(7, 3, 40), [3, 5]);
         assert_eq!(archive.entries[same].report.key.rooms, 1);
-        let pipe = insert(&mut archive, Some(same), 3, key(7, 3, 2), [2, 0, 0]);
+        let stepped_back = insert(&mut archive, Some(same), 3, key(7, 3, 24), [3, 5]);
+        assert_eq!(archive.entries[stepped_back].report.key.rooms, 1);
+        // A different area is a new room.
+        let pipe = insert(&mut archive, Some(stepped_back), 4, key(7, 3, 2), [2, 0]);
         assert_eq!(archive.entries[pipe].report.key.rooms, 2);
         assert_eq!(archive.room_set(pipe), &[[2, 0, 0], [3, 5, 0]]);
-        let back = insert(&mut archive, Some(pipe), 4, key(7, 3, 30), [3, 5, 0]);
-        assert_eq!(archive.entries[back].report.key.rooms, 2);
-        // The same area re-entered through a warp carries the entrance mode
-        // and counts as a third room; looping through it again adds nothing.
-        let warped = insert(&mut archive, Some(back), 5, key(7, 3, 1), [3, 5, 2]);
-        assert_eq!(archive.entries[warped].report.key.rooms, 3);
-        let looped = insert(&mut archive, Some(warped), 6, key(7, 3, 1), [3, 5, 2]);
-        assert_eq!(archive.entries[looped].report.key.rooms, 3);
-        let back = looped;
-        let next_level = insert(&mut archive, Some(back), 7, key(8, 0, 0), [1, 1, 0]);
+        // Returning to the first area at a later page arrives in a third room.
+        let back = insert(&mut archive, Some(pipe), 5, key(7, 3, 70), [3, 5]);
+        assert_eq!(archive.entries[back].report.key.rooms, 3);
+        assert_eq!(archive.room_set(back), &[[2, 0, 0], [3, 5, 0], [3, 5, 4]]);
+        // A warp inside the area (more than a screen backward) arrives at a
+        // new page and counts; the same warp again adds nothing.
+        let warped = insert(&mut archive, Some(back), 6, key(7, 3, 17), [3, 5]);
+        assert_eq!(archive.entries[warped].report.key.rooms, 4);
+        let onward = insert(&mut archive, Some(warped), 7, key(7, 3, 70), [3, 5]);
+        assert_eq!(archive.entries[onward].report.key.rooms, 4);
+        let looped = insert(&mut archive, Some(onward), 8, key(7, 3, 17), [3, 5]);
+        assert_eq!(archive.entries[looped].report.key.rooms, 4);
+        let next_level = insert(&mut archive, Some(looped), 9, key(8, 0, 0), [1, 1]);
         assert_eq!(archive.entries[next_level].report.key.rooms, 1);
         assert_eq!(archive.room_set(next_level), &[[1, 1, 0]]);
 
         let mut frozen = Archive::new();
-        let plain = insert(&mut frozen, None, 1, key(7, 3, 10), [3, 5, 0]);
+        let plain = insert(&mut frozen, None, 1, key(7, 3, 10), [3, 5]);
         assert_eq!(frozen.entries[plain].report.key.rooms, 0);
         assert!(frozen.room_set(plain).is_empty());
     }
