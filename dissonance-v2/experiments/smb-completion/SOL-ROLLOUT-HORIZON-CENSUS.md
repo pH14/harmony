@@ -249,7 +249,50 @@ scale: do not enlarge the census or change a searcher policy from this result.
 On GO, define `H*` as the smallest eligible horizon passing the exact test. The
 exact same binary, seed, source/ROM/executable paths, and configuration must
 first produce a byte-identical canonical report at a second create-new output
-path; the output path is deliberately excluded
-from canonical bytes. A mismatch is an integrity stop. A GO then authorizes
+path; the output path is deliberately excluded from canonical bytes. A
+mismatch is an integrity stop. A GO then authorizes
 only a separately preregistered paired campaign canary at `H*`; it never
 directly promotes a policy.
+
+## Sealed result
+
+Status: **STOP**. The one registered live run completed on `msr1`; the GO gate
+failed, so there was no exact rerun and no searcher-policy change is authorized
+from this experiment.
+
+- Implementation commit: `37afff66cc51ce29ec0af4a7ad19f91d5a22cfb7`.
+- Temporary implementation source SHA-256:
+  `af321eeba46d6d44eb1f5087336de3f465028edde364cc856a7c86c797664f4a`.
+- Release executable SHA-256:
+  `5962e08a5ac935ab8fd589149d6de8dfb8b5a0ec569d378c6b3bef1b7b7c3f4e`.
+- Config SHA-256:
+  `ef340d10afd17ca98c3a19e6b4a9730019f713ee4a5e2c625849e23daaaa7786`.
+- Recipe SHA-256:
+  `a000be41bdc99f2b7c0fd1b35d8a35770c0f377b446d17ea724735d8454800a2`.
+- Canonical report on `msr1`:
+  `/root/harmony-smb-sol-rollout-234cf6b1/results/c119-rollout-horizon-100-prereg-234cf6b1.jsonl`;
+  1,848 lines, 2,469,475 bytes; body SHA-256
+  `6e38e487442db7d069cbfebda51c8c4f3cb33b07d63556750ed001caa44adea6`;
+  whole-file SHA-256
+  `a2a5e698e05e1dc4acfe7f8b3243d8930d159a499ffe95ec226ddfd1bba2af69`.
+- Appended emulator work: 16,491 continuous frames and 53,900 reset-band
+  frames, in addition to the one validated 155,148-frame source replay.
+
+The paired results were:
+
+| H | eligible | continuity wins | reset wins | exact one-sided tail | adjusted gate |
+|---:|---:|---:|---:|---:|:---|
+| 2 | 75 | 0 | 3 | 8/8 | calibration only |
+| 4 | 49 | 6 | 5 | 1024/2048 | fail |
+| 8 | 18 | 4 | 0 | 1/16 | fail |
+| 16 | 5 | 0 | 0 | 1/1 | fail |
+| 32 | 0 | 0 | 0 | 1/1 | fail |
+
+The directional `4-0` at `H=8` is hypothesis-generating but does not meet the
+frozen family-wise threshold of `1/80`; it must not be promoted, enlarged, or
+selected post hoc. Survival and eligibility also collapse with horizon: only
+7 continuous streams remained alive through action 8, one through action 16,
+and none through action 32. The supported conclusion is therefore narrow:
+blind fixed long rollouts from this frontier do not provide sufficient paired
+evidence of a useful continuity effect at this scale. Pivot to a different
+structural hypothesis rather than adding a long-suffix policy.
