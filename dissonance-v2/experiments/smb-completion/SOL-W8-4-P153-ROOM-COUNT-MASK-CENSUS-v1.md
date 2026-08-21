@@ -139,3 +139,46 @@ records (harvest draws, final entries, census boundaries), classification,
 and summary, binding prereg/source/ROM/executable/bin/module/config/recipe/
 trace/body/whole-file hashes. Paths, timestamps, and completion order must
 not enter canonical bytes.
+
+## Registered result
+
+Preregistration commit `89be84fa5f8cbf9450293350b310037a3bab95c5` (document
+SHA-256 `8bead7e2d52c8a07355570d2a7e8a53d3c81a1cc0ea976daf85123c395b19cd8`)
+and implementation commit `d9e6de7f49f3bab919a70cb22209f27d2750f7ea` used
+module SHA-256
+`6bfa77173d614cee9a0af6acd434d1784c98959aa120e1b1dc68f810adb5412d`,
+bin-source SHA-256
+`30cda3c70e6f42ac90ed80792b9db7ac6f8ba8c567f749149d6a77b0630011c2`,
+and release-executable SHA-256
+`6ce340c22b8ba0a2e416578219013614e92a7c1c551be61145f1a9277fc78e92`,
+built once offline and locked from sealed source archive SHA-256
+`377bcf699bd90de79e37c2bef19e70597c7d88348f43a54902b2cf60c05651ca`
+under `/root/harmony-smb-sol-w8-4-p153-room-census-d9e6de7f`; the sealed tree
+matched the implementation commit file for file. The sole run (systemd unit
+`harmony-smb-sol-w8-4-p153-room-census-d9e6de7f`, `Restart=no`, exit 0, no
+restarts) produced 17 NDJSON lines in registered order, 1,367,358,760 bytes,
+whole-file SHA-256
+`a7dae996ae01666f07b730734c245bfa7bb7eea11c17777708b20c5e7a5bff19`,
+and body SHA-256
+`2b719690544aa673d5292f8550e9323351ee70a4198210d5455b42d4701f9973`.
+Standard error was empty and standard output bound the same report hash.
+
+All twelve lanes reproduced their registered final-entry digests, counts,
+and harvest work exactly. The census executed 72,940 boundaries. The
+registered verdicts are **STOP** and **NO_ROOM_EXIT**: no boundary read a
+room value other than `(3,5)`, no boundary exceeded `(7,3,1,153)`, and no
+probe was required. Checked work was 4,693 setup + 168,594 source replay +
+45 source probe + 266,015 harvest action + 261,924 harvest probe + 8,139,212
+census action + 0 census probe = **8,840,483 frames**, below the
+20,339,752-frame cap.
+
+Diagnostic only. 10,826 boundaries were dead; live boundaries spanned
+progress 16 to 152, and engine states were 8 (63,201), 11 (9,737), and 7
+(2). The two engine-state-7 boundaries are the only pipe entries in the
+census: lane 9 ids 353 and 357, parents at progress 125 and 124 with player
+y buckets 9 and 7, both under mask `0x20` held 120 frames. Both ended at
+progress 16 on page 1 of the same area with `$0751` entrance page 1 and
+`$0752` alternate-entrance control 2, and the area bytes `$074e,$074f`
+unchanged at `(3,5)`. Every other retained state, under every source mask,
+stayed in the area without entering a pipe. Retained entries sit on pages 5
+through 9 only, with player y bucket 11 (ground) in 3,476 of 5,210.
