@@ -93,3 +93,31 @@ the exact sole next-source input/evidence. Otherwise **STOP**. This is one run
 with no rerun, relaxation, routine replay audit, or post-hoc candidate choice.
 Any observed terminal/credits-like state is diagnostic until a separately
 frozen mechanical completion predicate and artifact-only replay confirm it.
+
+## Registered result
+
+The registered run completed successfully under implementation `597ea67f`
+and executable SHA-256
+`f24426757a596e4f2bdd31128956bee69c0f372d398e2d0c94961fa2cd2c71b8`.
+The 797,872,839-byte report at
+`/root/harmony-smb-sol-w8-4-p0-harvest-4f0e7549/results/w8-4-p0-normal-endpoint-harvest-12x512.jsonl`
+has whole-file SHA-256
+`255f9b430841303a4e5d9c9d6eb9820c1887ba9c7b3c3f5192d53c2c1eb87e59`
+and body SHA-256
+`9f0791def420da48a256905909f02aa6ae38a94294764bb5074877754f1230c4`.
+All 6,144 candidates/selections executed with empty stderr. Work was 4,693
+setup, 165,794 replay, 45 source probe, 271,327 action, and 235,795 candidate
+probe frames: 677,654 total.
+
+The verdict is **ADOPT**. Lane 9 entry 363 at draw 435, parent 343, has
+lineage `[0,1,3,6,8,29,52,56,57,60,64,65,70,73,74,75,82,123,137,222,252,272,298,343,363]`.
+Its 3,549-action input is alive and probe-surviving and advances World 8-4
+from progress 0 to **progress 61** at frame 167,136. Mechanical state is
+`(7,3,61,y=11,engine=8,dead=false,flag=false)`. Input, WRAM, and snapshot
+SHA-256 values are respectively
+`15572c6ea86e749d89995a74ee725bf76a5da500b14efa508635d3e2f664da4c`,
+`fae8453cb375f25a913d34d2c3aaf8d9d5d5fd109269eaf845d2c0a6cec9781e`,
+and `62761b7a01aa2d942ea44da20b814e657fb20ff4036f918738c2c8d980e914be`.
+The sole next-source file is
+`/root/harmony-smb-sol-w8-4-p0-harvest-4f0e7549/results/adopted-world-8-4-progress-61-input.json`,
+113,972 bytes with the same input SHA-256.
