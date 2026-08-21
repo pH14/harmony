@@ -1081,6 +1081,14 @@ pub enum SmbArchiveSelectorPolicy {
         /// Inclusive window high bucket.
         high: u16,
     },
+    /// Every distinct occupied state class gets an equal share of the
+    /// three-in-four frontier draws, so effort spreads over every position
+    /// and height the archive has reached instead of concentrating on the
+    /// deepest progress band. A class is the key tuple
+    /// `(world, level, rooms, progress, player_y_bucket)`; the concentrated
+    /// recency draw is applied within the chosen class, and exhaustion
+    /// accounting is unchanged.
+    ClassUniform,
 }
 
 /// Whether a declared waypoint region receives auxiliary retention and
@@ -1184,6 +1192,9 @@ pub enum SmbSelectorPath {
     Uniform,
     /// The corrected tie-class frontier draw.
     TieClass,
+    /// One occupied state class chosen uniformly, then the concentrated
+    /// recency draw within it.
+    ClassUniform,
 }
 
 /// One corrected-selector draw, recorded so selection-time state is checkable.
@@ -1732,7 +1743,8 @@ impl Archive {
                 .budget(&id, parameters)
                 .is_ok_and(|budget| self.budget_draws[id] < budget),
             SmbArchiveSelectorPolicy::ConcentratedRecency
-            | SmbArchiveSelectorPolicy::PinnedWindow { .. } => {
+            | SmbArchiveSelectorPolicy::PinnedWindow { .. }
+            | SmbArchiveSelectorPolicy::ClassUniform => {
                 self.since_retained[id] < SELECTION_EXHAUSTION_THRESHOLD
             }
         }
@@ -1786,7 +1798,8 @@ impl Archive {
                 if members.is_empty() { active } else { members }
             }
             SmbArchiveSelectorPolicy::ConcentratedRecency
-            | SmbArchiveSelectorPolicy::YieldBudgeted(_) => active,
+            | SmbArchiveSelectorPolicy::YieldBudgeted(_)
+            | SmbArchiveSelectorPolicy::ClassUniform => active,
         };
         let mut counter_reset = false;
         let pool =
@@ -1880,7 +1893,21 @@ impl Archive {
                     ));
                 }
             }
-            if let Some(class) = self.best_unexhausted_class(&pool, &mut classes_skipped) {
+            if self.selector_accounting.policy == SmbArchiveSelectorPolicy::ClassUniform {
+                if let Some(class) = self.uniform_unexhausted_class(rand, &pool)? {
+                    let (id, concentration) = self.draw_from_class(rand, class)?;
+                    return Ok((
+                        id,
+                        SmbSelectorDraw {
+                            path: SmbSelectorPath::ClassUniform,
+                            classes_skipped,
+                            counter_reset,
+                            concentration,
+                            waypoint: false,
+                        },
+                    ));
+                }
+            } else if let Some(class) = self.best_unexhausted_class(&pool, &mut classes_skipped) {
                 let (id, concentration) = self.draw_from_class(rand, class)?;
                 return Ok((
                     id,
@@ -1909,6 +1936,38 @@ impl Archive {
             }
             counter_reset = true;
         }
+    }
+
+    /// The unexhausted members of one occupied state class chosen uniformly
+    /// among the classes that still hold an unexhausted member, or `None`
+    /// when every active entry is exhausted.
+    fn uniform_unexhausted_class(
+        &self,
+        rand: &mut StdRand,
+        active: &[usize],
+    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
+        let mut classes = BTreeMap::<(u8, u8, u8, u16, u8), Vec<usize>>::new();
+        for id in active {
+            if !self.selector_unexhausted(*id) {
+                continue;
+            }
+            let key = self.entries[*id].report.key;
+            classes
+                .entry((
+                    key.world,
+                    key.level,
+                    key.rooms,
+                    key.progress,
+                    key.player_y_bucket,
+                ))
+                .or_default()
+                .push(*id);
+        }
+        let Some(count) = NonZeroUsize::new(classes.len()) else {
+            return Ok(None);
+        };
+        let chosen = rand.below(count);
+        Ok(classes.into_values().nth(chosen))
     }
 
     /// The unexhausted members of the best surviving tie class, or `None` when
@@ -2003,7 +2062,7 @@ impl Archive {
                     .uniform_selections
                     .saturating_add(1);
             }
-            SmbSelectorPath::TieClass => {
+            SmbSelectorPath::TieClass | SmbSelectorPath::ClassUniform => {
                 self.selector_accounting.tie_class_selections = self
                     .selector_accounting
                     .tie_class_selections
@@ -5739,6 +5798,36 @@ mod tests {
     }
 
     #[test]
+    fn class_uniform_spreads_frontier_draws_over_every_occupied_class() {
+        let mut keys: Vec<(u8, u8, u16)> = vec![(7, 3, 153)];
+        keys.extend(std::iter::repeat_n((7, 3, 150), 40));
+        keys.push((7, 3, 20));
+        let mut archive = selector_archive(&keys);
+        archive.entries[41].report.key.player_y_bucket = 3;
+        archive.set_selector_policy(SmbArchiveSelectorPolicy::ClassUniform);
+        let mut rand = StdRand::with_seed(0xc1a5_5e5e);
+        let mut class_draws = 0;
+        let mut lone_low_draws = 0;
+        for _ in 0..400 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("class-uniform selection");
+            let draw = draw.expect("class-uniform draw record");
+            if draw.path == SmbSelectorPath::ClassUniform {
+                class_draws += 1;
+                if id == 41 {
+                    lone_low_draws += 1;
+                }
+            }
+        }
+        assert!(class_draws > 200);
+        // The single low entry is one class among many (one per distinct
+        // fingerprint-free tuple), so it must receive a visible share rather
+        // than the near-zero share the frontier walk would give it.
+        assert!(lone_low_draws > 10, "lone low class drew {lone_low_draws}");
+    }
+
+    #[test]
     fn rooms_is_omitted_from_serialized_keys_when_zero() {
         let mut key = BASELINE_LIKE_KEY;
         let legacy = serde_json::to_string(&key).expect("serialize legacy key");
@@ -5851,6 +5940,7 @@ mod tests {
                 .expect("concentrated selection");
             let draw = draw.expect("concentrated draw record");
             match draw.path {
+                SmbSelectorPath::ClassUniform => panic!("concentrated policy took the class path"),
                 SmbSelectorPath::TieClass => {
                     tie_class_draws += 1;
                     assert!(
