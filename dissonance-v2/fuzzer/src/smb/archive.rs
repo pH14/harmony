@@ -1311,6 +1311,15 @@ pub struct SmbArchiveKey {
     /// serialization — everywhere else, so legacy keys are byte-identical.
     #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
     pub room_x_bucket: u8,
+    /// Count of distinct room values visited within the current level along
+    /// the entry's lineage. Zero means the producer does not track rooms;
+    /// omitted from serialization so legacy keys stay byte-identical.
+    #[serde(default, skip_serializing_if = "rooms_is_absent")]
+    pub rooms: u8,
+}
+
+fn rooms_is_absent(rooms: &u8) -> bool {
+    *rooms == 0
 }
 
 fn room_x_bucket_is_absent(bucket: &u8) -> bool {
@@ -1913,10 +1922,13 @@ impl Archive {
         active: &[usize],
         classes_skipped: &mut u64,
     ) -> Option<Vec<usize>> {
-        let mut pairs = BTreeMap::<(u8, u8), Vec<usize>>::new();
+        let mut pairs = BTreeMap::<(u8, u8, u8), Vec<usize>>::new();
         for id in active {
             let key = self.entries[*id].report.key;
-            pairs.entry((key.world, key.level)).or_default().push(*id);
+            pairs
+                .entry((key.world, key.level, key.rooms))
+                .or_default()
+                .push(*id);
         }
         for (_, mut members) in pairs.into_iter().rev() {
             members.sort_by_key(|id| (Reverse(self.entries[*id].report.key.progress), *id));
@@ -5208,6 +5220,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
         player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
         room_x_bucket,
+        rooms: 0,
     }
 }
 
@@ -5655,6 +5668,7 @@ mod tests {
                 player_engine_state: 0,
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
                 room_x_bucket: 0,
+                rooms: 0,
             };
             archive
                 .insert(
@@ -5698,6 +5712,54 @@ mod tests {
         }
         assert!(tie_class_draws > 0);
     }
+
+    #[test]
+    fn tie_class_prefers_more_rooms_over_higher_progress() {
+        let keys: Vec<(u8, u8, u16)> = vec![(7, 3, 153), (7, 3, 152), (7, 3, 20), (7, 3, 19)];
+        let mut archive = selector_archive(&keys);
+        archive.entries[2].report.key.rooms = 2;
+        archive.entries[3].report.key.rooms = 2;
+        let mut rand = StdRand::with_seed(0x0700_0400);
+        let mut tie_class_draws = 0;
+        for _ in 0..128 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("room selection");
+            let draw = draw.expect("room draw record");
+            if draw.path == SmbSelectorPath::TieClass {
+                tie_class_draws += 1;
+                assert!(
+                    id == 2 || id == 3,
+                    "tie-class draws must come from the two-room entries, got {id}"
+                );
+                assert_eq!(draw.classes_skipped, 0);
+            }
+        }
+        assert!(tie_class_draws > 0);
+    }
+
+    #[test]
+    fn rooms_is_omitted_from_serialized_keys_when_zero() {
+        let mut key = BASELINE_LIKE_KEY;
+        let legacy = serde_json::to_string(&key).expect("serialize legacy key");
+        assert!(!legacy.contains("rooms"));
+        key.rooms = 2;
+        let extended = serde_json::to_string(&key).expect("serialize extended key");
+        assert!(extended.contains("\"rooms\":2"));
+        let decoded: SmbArchiveKey = serde_json::from_str(&legacy).expect("decode legacy key");
+        assert_eq!(decoded.rooms, 0);
+    }
+
+    const BASELINE_LIKE_KEY: SmbArchiveKey = SmbArchiveKey {
+        world: 7,
+        level: 3,
+        progress: 153,
+        player_y_bucket: 11,
+        player_engine_state: 8,
+        state_fingerprint: 9,
+        room_x_bucket: 0,
+        rooms: 0,
+    };
 
     #[test]
     fn corrected_selector_starves_exhausted_parents_and_falls_through() {
@@ -5853,6 +5915,7 @@ mod tests {
             player_engine_state: 0,
             state_fingerprint: 0,
             room_x_bucket: 0,
+            rooms: 0,
         }
     }
 

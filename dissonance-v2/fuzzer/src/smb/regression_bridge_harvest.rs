@@ -97,6 +97,7 @@ const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     player_engine_state: 8,
     state_fingerprint: 9,
     room_x_bucket: 0,
+    rooms: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     max_1_1_scroll_bucket: 195,

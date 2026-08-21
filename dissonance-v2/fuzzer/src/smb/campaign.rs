@@ -4781,6 +4781,7 @@ mod tests {
             player_engine_state: 0,
             state_fingerprint: 0,
             room_x_bucket: 0,
+            rooms: 0,
         };
         // Two lineages through one pair. The deep one walks further on long
         // holds; the shallow one stops twenty buckets back having spent far
@@ -4933,6 +4934,7 @@ mod tests {
             player_engine_state: 0,
             state_fingerprint: 0,
             room_x_bucket: 0,
+            rooms: 0,
         };
         // C111's situation in miniature: a tip entry at the frontier, and a
         // shallower entry twenty buckets back that is cheaper where it stands
@@ -5284,6 +5286,7 @@ mod tests {
             player_engine_state: 0,
             state_fingerprint: 0,
             room_x_bucket: 0,
+            rooms: 0,
         };
         let candidate_key = SmbArchiveKey {
             progress: 10,

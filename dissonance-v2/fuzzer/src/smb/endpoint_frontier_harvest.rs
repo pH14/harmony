@@ -35,18 +35,18 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-4-p153-pinned-window-source-marginal-harvest-v1";
-const PREREGISTRATION_COMMIT: &str = "e7bb0c0b7fe1c412894b997079ee954e1a6bcbc5";
+const FORMAT: &str = "smb-w8-4-p153-room-count-harvest-v1";
+const PREREGISTRATION_COMMIT: &str = "6d4c6c9d1304d2cb7230d03a1141cc3217c5af32";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "925893bf4af0d1a38f93d9a25667ddf0e3bb669253521ca4b879a0d1d4197219";
-const CODE_BASE: &str = "07ee3ad5a508531c973548b4d36d615d43eb192a";
-const AUTHORIZING_PREREGISTRATION: &str = "b369932916e8f6ae5758f5383ea7d3cc69f08545";
-const AUTHORIZING_IMPLEMENTATION: &str = "01c7e822b3ded5289d385773b49b3b862a37c39e";
-const AUTHORIZING_RESULT: &str = "07ee3ad5a508531c973548b4d36d615d43eb192a";
+    "b90b6050e52ea208a53c5b4f50b2e21d170f0dec35990de3c8753321a62632b1";
+const CODE_BASE: &str = "0e45778f30fcb7ba6855f07555db0b76af10dc6b";
+const AUTHORIZING_PREREGISTRATION: &str = "e7bb0c0b7fe1c412894b997079ee954e1a6bcbc5";
+const AUTHORIZING_IMPLEMENTATION: &str = "26f14912c7c261ae2bac348e7fe483d2cb44cc2e";
+const AUTHORIZING_RESULT: &str = "0e45778f30fcb7ba6855f07555db0b76af10dc6b";
 const AUTHORIZING_REPORT_SHA256: &str =
-    "e8312b0f7e2370d3f31a9137ee831dd1775cbe5cb73d104e7d82c272389c29c8";
+    "fcf8a0aaddb339f72b9e7da0ffb3c5b40be59188aaac670a483b2f9f840f6ee3";
 const AUTHORIZING_RESULT_DOC_SHA256: &str =
-    "2fa05821e9579dcf76aa4449438f624e5f7775b43f233b9728e3aa524d696ead";
+    "c73278831c6309937b89f0b9633d9b45f642093e5bae05b0de472906c69e2062";
 const SOURCE_FILE_SHA256: &str = "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
 const SOURCE_INPUT_SHA256: &str =
     "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
@@ -55,28 +55,28 @@ const SOURCE_WRAM_SHA256: &str = "897c7bc0df63a68249b75e81a8bfc8ea3a87a7c872241d
 const SOURCE_SNAPSHOT_SHA256: &str =
     "329594d247d5a97ea59a0e7ec1b0856cfb0388141941f05062e4d6641adf5344";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-4-p153-pinned-window-source-marginal-harvest-v1";
-const SEED_LABEL_SHA256: &str = "39ed0863abc4f31b9156f7646b2d12b9564b820e66bf3db18fb7d55e035fef79";
-const MASTER_SEED: u64 = 2_014_169_698_744_724_793;
+const SEED_LABEL: &str = "sol-restart-w8-4-p153-room-count-harvest-v1";
+const SEED_LABEL_SHA256: &str = "e7c2dc82357919ddae30e30de1576595ab996f3e15a115d051bff0f10d309dfd";
+const MASTER_SEED: u64 = 15_931_898_427_535_573_735;
 const EXPECTED_RECIPE_SHA256: &str =
-    "151be9a984c635e367bedfc41e8ae899fddc0170878c8b113c76f5c64061acdf";
-const EXPECTED_RECIPE_BYTES: usize = 400_277;
+    "a8f98830c477ec2bed72ac6de044dc9986b1d06b656ba5650e5fb679fb094035";
+const EXPECTED_RECIPE_BYTES: usize = 400_216;
 const EXPECTED_PROJECTION_SHA256: [&str; 12] = [
-    "d1bd7fdcf8c55d744a70a156b85543c6aaf3dec12f883417278e07614b1ba3f2",
-    "ca05d1f1c99b3e4ea522b976b8aee3977413d978e228e72c6e7d37e9bfc57157",
-    "c58e5a968eab09436e71d6ec1087dc63df45c7672c144f65ff7ebf28418a36b1",
-    "3bdba20dd4fdf86652ee05a5b818d432c58588805473670c4f66eb3b5c3f19a5",
-    "d490e4f0d708709c53b4f40c276fb98bdcd071594874491bccc9c82e8b316b1e",
-    "7af486c2a12ff994a554d76814a73fed86031e96cb35d855fe6dc5288d1c0956",
-    "251919581ce3418c246c21e918ce579e05be54db04c79e7039752a901d3721a1",
-    "7b14c66a0cfa98e0ed02c76d2c841750840d7e9a94991f88d0939e711cbc3248",
-    "d40d8b9cb6146436acbd5f73bb7314a49e6c71d89e1d62e96150d6fd471f67f5",
-    "0b7f264455007b0b6db0ae4ae94f65e31bcc055b3df7fe04194719951d040150",
-    "9adcf85bf1ff29d961fb32add1d3c4205997786a6bfc837f9dc38c7ffb9e4ad9",
-    "b129c8ecdf81b4c7401a9ff046a03ed618c991c36d82dd847c145ea2e55f7519",
+    "52fee31e78d815593776ae65f5d0e0262494bfdc6dbeffa8ebed81b448211605",
+    "dbe3563ff6a0ba0483abc610e3fcbbc8f6e491da8e3858e306f4fee87c19daf1",
+    "b9313d0e426a855467c5b4d977308826ce7d2b0ab57aa14b55059b2d6989bfbf",
+    "ff4d3bb36d4e7bc18592bd4a6f8753494008df1c9274009610500308dd966378",
+    "ef14bf60581dd017129d29a7a9070361d6779b3f8abf596bc359b0b68640c4f4",
+    "d5c2dc92b9901c76b96ddd4f37f185b7e9fa2428a7897c358df91d11cd33234d",
+    "ce98fe06ac5bcb2d43cb9196a6352aee270734d05a19ebf450c486e3a4866e4a",
+    "c908da46e74e9310e514a00d2f44784279acf8af3ae7534f89dac598a804f918",
+    "9fcca0b9610aeb3a6b40fd43d78168df71518ee497abf7788afd1b4a04227640",
+    "8299efb6908e5d158e88bbe78dc42143cbd5e34b443dd4d0050fe4581ea3e324",
+    "5ab3ae1b2e87943284fd4c0367b1c1b3cc3c67d1c9788739ba515046e2770429",
+    "8e726a8b88e3eaebb8406e443311604cea85fcad970586bf28389de8bb7b88ca",
 ];
 const EXPECTED_PROJECTION_BYTES: [usize; 12] = [
-    32_218, 32_257, 32_282, 32_241, 32_233, 32_234, 32_225, 32_238, 32_287, 32_233, 32_276, 32_252,
+    32_189, 32_207, 32_213, 32_277, 32_265, 32_252, 32_239, 32_245, 32_241, 32_217, 32_249, 32_321,
 ];
 const SELECTOR_POLICY: SmbArchiveSelectorPolicy = SmbArchiveSelectorPolicy::PinnedWindow {
     world: 7,
@@ -108,6 +108,14 @@ const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     level: 3,
     progress: 153,
 };
+const ROOM_BYTES: [usize; 2] = [0x074e, 0x074f];
+const SOURCE_ROOM: RoomValue = RoomValue(3, 5);
+const BASELINE_FULL_WATERMARK: FullWatermark = FullWatermark {
+    world: 7,
+    level: 3,
+    rooms: 1,
+    progress: 153,
+};
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 3,
@@ -125,6 +133,7 @@ const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     player_engine_state: 8,
     state_fingerprint: 9,
     room_x_bucket: 0,
+    rooms: 1,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     max_1_1_scroll_bucket: 195,
@@ -136,6 +145,21 @@ const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
     buttons: 130,
     hold_frames: 104,
 };
+
+/// Identity of the current room: the ordered byte pair at `ROOM_BYTES`. The
+/// search only ever asks whether a value is new to the lineage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+struct RoomValue(u8, u8);
+
+/// Ordering used for ranking and the ADOPT gate: a lineage that has seen more
+/// rooms in the current level outranks any progress inside one room.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+struct FullWatermark {
+    world: u8,
+    level: u8,
+    rooms: u8,
+    progress: u16,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct Recipe {
@@ -154,6 +178,9 @@ struct Config {
     action_limit: usize,
     archive_limit: usize,
     max_lineage_actions: usize,
+    room_term: &'static str,
+    room_bytes: [usize; 2],
+    source_room: RoomValue,
     selector: &'static str,
     action_draw: &'static str,
     retention: &'static str,
@@ -182,6 +209,9 @@ struct BaselineRecord {
     endpoint_observation: SmbObservations,
     endpoint: SmbMechanicalState,
     watermark: SmbProgressWatermark,
+    room: RoomValue,
+    room_set: Vec<RoomValue>,
+    full_watermark: FullWatermark,
     trace_sha256: String,
     wram_sha256: String,
     snapshot_sha256: String,
@@ -243,6 +273,9 @@ struct EndpointEvidence {
     observation: SmbObservations,
     mechanical: SmbMechanicalState,
     watermark: SmbProgressWatermark,
+    room: RoomValue,
+    room_set: Vec<RoomValue>,
+    full_watermark: FullWatermark,
     wram_sha256: String,
     snapshot_sha256: Option<String>,
     key: Option<SmbArchiveKey>,
@@ -258,7 +291,7 @@ struct EndpointEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct ActiveMaximum {
-    watermark: SmbProgressWatermark,
+    watermark: FullWatermark,
     ids: Vec<usize>,
 }
 
@@ -301,7 +334,7 @@ struct FinalEntryRecord {
     actions: usize,
     input_sha256: String,
     key: SmbArchiveKey,
-    watermark: SmbProgressWatermark,
+    watermark: FullWatermark,
     milestones: SmbMilestones,
     snapshot_sha256: String,
     probe_survived: bool,
@@ -496,7 +529,10 @@ pub fn run_from_process(
         action_limit: ACTION_LIMIT,
         archive_limit: ARCHIVE_LIMIT,
         max_lineage_actions: MAX_LINEAGE_ACTIONS,
-        selector: "pinned_window_7_3_0_152_concentrated_recency_fresh_seed_per_draw_v1",
+        room_term: "distinct_room_count_per_level_at_action_boundaries_v1",
+        room_bytes: ROOM_BYTES,
+        source_room: SOURCE_ROOM,
+        selector: "pinned_window_7_3_0_152_rooms_then_progress_concentrated_recency_fresh_seed_per_draw_v1",
         action_draw: "opaque_source_occurrence_chord_v1",
         retention: "probe_at_admission_45",
         replacement: "fewest_actions",
@@ -820,8 +856,14 @@ fn build_baseline(target: &mut SmbTarget, source: &SmbInput) -> Result<Baseline,
         .ok_or("failed to snapshot source endpoint")?;
     let wram_sha256 = sha256_bytes(target.wram());
     let snapshot_sha256 = sha256_json(&snapshot)?;
-    let key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+    let room = room_value(target.wram())?;
+    let room_set = vec![room];
+    let mut key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+    key.rooms = room_count(&room_set)?;
+    let full_watermark = full_watermark(endpoint, key.rooms);
     if replay_frames != SOURCE_FRAMES
+        || room != SOURCE_ROOM
+        || full_watermark != BASELINE_FULL_WATERMARK
         || endpoint_observation.frame_count != SOURCE_FRAMES
         || endpoint != BASELINE_ENDPOINT
         || watermark != BASELINE_WATERMARK
@@ -859,6 +901,9 @@ fn build_baseline(target: &mut SmbTarget, source: &SmbInput) -> Result<Baseline,
         endpoint_observation,
         endpoint,
         watermark,
+        room,
+        room_set,
+        full_watermark,
         trace_sha256: finish_sha256(trace),
         wram_sha256,
         snapshot_sha256,
@@ -1069,6 +1114,7 @@ fn run_lane(
     let lane_work_before = target.frames_clocked();
     let mut draws = Vec::with_capacity(DRAWS);
     let mut retained: Vec<Option<RetainedEvidence>> = vec![None];
+    let mut room_sets: Vec<Vec<RoomValue>> = vec![baseline.record.room_set.clone()];
     let mut action_total = 0_u64;
     let mut probe_total = 0_u64;
     let mut maximum_lineage_actions = SOURCE_ACTIONS;
@@ -1130,6 +1176,11 @@ fn run_lane(
         let input_sha256 = sha256_json(&input)?;
         let wram_sha256 = sha256_bytes(target.wram());
 
+        let room = room_value(target.wram())?;
+        let parent_rooms = room_sets.get(parent_id).ok_or("parent lacks a room set")?;
+        let room_set = child_room_set(parent_rooms, parent_report.key, mechanical, room);
+        let rooms = room_count(&room_set)?;
+        let full_watermark = full_watermark(mechanical, rooms);
         let mut snapshot_sha256 = None;
         let mut key = None;
         let mut probe = Vec::new();
@@ -1144,7 +1195,8 @@ fn run_lane(
                 .snapshot()
                 .ok_or("failed to snapshot ordinary endpoint")?;
             let candidate_snapshot_sha256 = sha256_json(&snapshot)?;
-            let candidate_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+            let mut candidate_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+            candidate_key.rooms = rooms;
             let (attempts, survived, work) = run_probe(target, &snapshot)?;
             probe = attempts;
             probe_survived = survived;
@@ -1178,6 +1230,9 @@ fn run_lane(
             observation,
             mechanical,
             watermark: watermark(mechanical),
+            room,
+            room_set: room_set.clone(),
+            full_watermark,
             wram_sha256,
             snapshot_sha256,
             key,
@@ -1191,9 +1246,10 @@ fn run_lane(
             admission,
         };
         if let Some(id) = endpoint.admission.newly_retained_id() {
-            if id != retained.len() || retained_snapshot.is_none() {
+            if id != retained.len() || id != room_sets.len() || retained_snapshot.is_none() {
                 return Err("retained evidence is not insertion-order aligned".into());
             }
+            room_sets.push(room_set.clone());
             retained.push(Some(RetainedEvidence {
                 draw: recipe.draw,
                 recipe: *recipe,
@@ -1466,6 +1522,7 @@ fn final_entries(
             || evidence.endpoint.failed
             || !evidence.endpoint.probe_survived
             || evidence.endpoint.key != Some(entry.report.key)
+            || evidence.endpoint.full_watermark != watermark_from_key(entry.report.key)
             || evidence.recipe.lane != lane
             || evidence.recipe.draw != evidence.draw
             || evidence.recipe.action != evidence.endpoint.action
@@ -1575,8 +1632,8 @@ fn rank_champion(mut candidates: Vec<ChampionCandidate>) -> Option<ChampionRecor
     candidates.sort_by(|left, right| {
         right
             .endpoint
-            .watermark
-            .cmp(&left.endpoint.watermark)
+            .full_watermark
+            .cmp(&left.endpoint.full_watermark)
             .then_with(|| left.input.actions.len().cmp(&right.input.actions.len()))
             .then_with(|| left.input_sha256_bytes.cmp(&right.input_sha256_bytes))
             .then_with(|| left.lane.cmp(&right.lane))
@@ -1601,7 +1658,7 @@ fn verdict_for(champion: Option<&ChampionRecord>) -> Verdict {
         !candidate.endpoint.dead
             && !candidate.endpoint.failed
             && candidate.endpoint.probe_survived
-            && candidate.endpoint.watermark > BASELINE_WATERMARK
+            && candidate.endpoint.full_watermark > BASELINE_FULL_WATERMARK
     }) {
         Verdict::Adopt
     } else {
@@ -1724,12 +1781,56 @@ fn watermark(state: SmbMechanicalState) -> SmbProgressWatermark {
     }
 }
 
-fn watermark_from_key(key: SmbArchiveKey) -> SmbProgressWatermark {
-    SmbProgressWatermark {
+fn watermark_from_key(key: SmbArchiveKey) -> FullWatermark {
+    FullWatermark {
         world: key.world,
         level: key.level,
+        rooms: key.rooms,
         progress: key.progress,
     }
+}
+
+fn full_watermark(state: SmbMechanicalState, rooms: u8) -> FullWatermark {
+    FullWatermark {
+        world: state.world,
+        level: state.level,
+        rooms,
+        progress: state.progress,
+    }
+}
+
+fn room_value(wram: &[u8]) -> Result<RoomValue, Box<dyn Error>> {
+    let first = *wram
+        .get(ROOM_BYTES[0])
+        .ok_or("room byte outside work RAM")?;
+    let second = *wram
+        .get(ROOM_BYTES[1])
+        .ok_or("room byte outside work RAM")?;
+    Ok(RoomValue(first, second))
+}
+
+fn room_count(room_set: &[RoomValue]) -> Result<u8, Box<dyn Error>> {
+    if room_set.is_empty() || room_set.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("room set is not a sorted non-empty set".into());
+    }
+    Ok(u8::try_from(room_set.len())?)
+}
+
+fn child_room_set(
+    parent_rooms: &[RoomValue],
+    parent_key: SmbArchiveKey,
+    child: SmbMechanicalState,
+    room: RoomValue,
+) -> Vec<RoomValue> {
+    let mut set = if (parent_key.world, parent_key.level) == (child.world, child.level) {
+        parent_rooms.to_vec()
+    } else {
+        Vec::new()
+    };
+    if let Err(slot) = set.binary_search(&room) {
+        set.insert(slot, room);
+    }
+    set
 }
 
 fn read_bounded(path: &Path, limit: usize, label: &str) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1845,6 +1946,20 @@ mod tests {
         actions: usize,
         hash_byte: u8,
     ) -> ChampionCandidate {
+        candidate_with_rooms(lane, id, world, level, 1, progress, actions, hash_byte)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn candidate_with_rooms(
+        lane: usize,
+        id: usize,
+        world: u8,
+        level: u8,
+        rooms: u8,
+        progress: u16,
+        actions: usize,
+        hash_byte: u8,
+    ) -> ChampionCandidate {
         let input = SmbInput {
             actions: vec![ButtonChord::new(0, 2); actions],
         };
@@ -1881,6 +1996,9 @@ mod tests {
                 observation: candidate_observation,
                 mechanical,
                 watermark: watermark(mechanical),
+                room: SOURCE_ROOM,
+                room_set: vec![SOURCE_ROOM],
+                full_watermark: full_watermark(mechanical, rooms),
                 wram_sha256: String::new(),
                 snapshot_sha256: Some(String::new()),
                 key: None,
@@ -1909,6 +2027,7 @@ mod tests {
             player_engine_state: 8,
             state_fingerprint: u8::try_from(progress % 64).expect("fingerprint fits u8"),
             room_x_bucket: 0,
+            rooms: 0,
         }
     }
 
@@ -1951,7 +2070,10 @@ mod tests {
                 input_sha256: sha256_json(input).expect("hash candidate input"),
                 observation: observation(key.progress),
                 mechanical,
-                watermark: watermark_from_key(key),
+                watermark: watermark(mechanical),
+                room: SOURCE_ROOM,
+                room_set: vec![SOURCE_ROOM],
+                full_watermark: watermark_from_key(key),
                 wram_sha256: sha256_bytes(&[]),
                 snapshot_sha256: Some(sha256_json(snapshot).expect("hash candidate snapshot")),
                 key: Some(key),
@@ -1983,7 +2105,7 @@ mod tests {
             draws: Vec::new(),
             final_active_entries: Vec::new(),
             final_maximum: ActiveMaximum {
-                watermark: BASELINE_WATERMARK,
+                watermark: BASELINE_FULL_WATERMARK,
                 ids: vec![0],
             },
             maximum_lineage_actions: SOURCE_ACTIONS,
@@ -2003,12 +2125,12 @@ mod tests {
         verify_seed().expect("sealed seed is self-consistent");
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "151be9a984c635e367bedfc41e8ae899fddc0170878c8b113c76f5c64061acdf"
+            "a8f98830c477ec2bed72ac6de044dc9986b1d06b656ba5650e5fb679fb094035"
         );
-        assert_eq!(EXPECTED_RECIPE_BYTES, 400_277);
+        assert_eq!(EXPECTED_RECIPE_BYTES, 400_216);
         let mut source = synthetic_source();
-        source.actions[2049] = ButtonChord::new(16, 100);
-        source.actions[1469] = ButtonChord::new(130, 96);
+        source.actions[2828] = ButtonChord::new(16, 100);
+        source.actions[2020] = ButtonChord::new(130, 96);
         let recipes = derive_recipes(&source).expect("derive recipes");
         assert_eq!(recipes.len(), LANES);
         assert!(recipes.iter().all(|lane| lane.len() == DRAWS));
@@ -2018,7 +2140,7 @@ mod tests {
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ),
-            (2049, ButtonChord::new(16, 100), 16_469_691_940_670_059_951)
+            (2828, ButtonChord::new(16, 100), 17_679_355_481_306_115_971)
         );
         assert_eq!(
             (
@@ -2026,24 +2148,24 @@ mod tests {
                 recipes[11][511].action,
                 recipes[11][511].selector_seed,
             ),
-            (1469, ButtonChord::new(130, 96), 11_024_599_411_349_312_354)
+            (2020, ButtonChord::new(130, 96), 10_954_466_614_796_991_060)
         );
         assert_eq!(
             serde_json::to_vec(&(
                 0_u64,
                 0_u64,
-                2049_u64,
+                2828_u64,
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ))
             .expect("serialize first recipe"),
-            br#"[0,0,2049,{"buttons":16,"hold_frames":100},16469691940670059951]"#
+            br#"[0,0,2828,{"buttons":16,"hold_frames":100},17679355481306115971]"#
         );
         let identity = recipe_identity_bytes(&recipes).expect("serialize recipes");
         assert_eq!(identity.iter().filter(|&&byte| byte == b'[').count(), 6_145);
         assert_eq!(
             sha256_bytes(&identity),
-            "ece95c2c16117a21b9a5933aa5c37b5e6fd365143710ded72baf0d19f59fc932"
+            "9cbc044a3c1c720b76c5f6585c30fcb21e349abe5425ebd178e89555c4faacd1"
         );
         let mut projections = projection_bytes(&recipes).expect("serialize projections");
         assert_eq!(projections.len(), LANES);
@@ -2128,6 +2250,53 @@ mod tests {
             .expect("cross-level candidate exists");
         assert_eq!((ranked.lane, ranked.id), (2, 3));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
+    }
+
+    #[test]
+    fn a_second_room_at_low_progress_outranks_in_room_progress() {
+        let in_room = candidate_with_rooms(0, 1, 7, 3, 1, 170, 1, 0xff);
+        let new_room = candidate_with_rooms(1, 2, 7, 3, 2, 4, 1, 0xff);
+        let ranked = rank_champion(vec![in_room, new_room]).expect("room candidate exists");
+        assert_eq!((ranked.lane, ranked.id), (1, 2));
+        assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
+        let fewer_rooms = candidate_with_rooms(2, 3, 7, 3, 0, 200, 1, 0xff);
+        let ranked = rank_champion(vec![fewer_rooms]).expect("candidate exists");
+        assert_eq!(verdict_for(Some(&ranked)), Verdict::Stop);
+        assert_eq!(
+            BASELINE_FULL_WATERMARK,
+            full_watermark(BASELINE_ENDPOINT, BASELINE_KEY.rooms)
+        );
+        assert_eq!(BASELINE_KEY.rooms, 1);
+        assert_eq!(watermark_from_key(BASELINE_KEY), BASELINE_FULL_WATERMARK);
+    }
+
+    #[test]
+    fn room_sets_grow_within_a_level_and_reset_across_levels() {
+        let mut wram = vec![0_u8; 0x0800];
+        wram[ROOM_BYTES[0]] = 3;
+        wram[ROOM_BYTES[1]] = 5;
+        assert_eq!(room_value(&wram).expect("room value"), SOURCE_ROOM);
+        assert!(room_value(&wram[..ROOM_BYTES[1]]).is_err());
+
+        let parent = vec![SOURCE_ROOM];
+        let same_level = BASELINE_ENDPOINT;
+        let again = child_room_set(&parent, BASELINE_KEY, same_level, SOURCE_ROOM);
+        assert_eq!(again, vec![SOURCE_ROOM]);
+        let pipe = child_room_set(&parent, BASELINE_KEY, same_level, RoomValue(2, 0));
+        assert_eq!(pipe, vec![RoomValue(2, 0), SOURCE_ROOM]);
+        assert_eq!(room_count(&pipe).expect("room count"), 2);
+        let third = child_room_set(&pipe, BASELINE_KEY, same_level, RoomValue(3, 6));
+        assert_eq!(room_count(&third).expect("room count"), 3);
+
+        let mut next_level = BASELINE_ENDPOINT;
+        next_level.level = 0;
+        next_level.world = 8;
+        let reset = child_room_set(&third, BASELINE_KEY, next_level, RoomValue(1, 1));
+        assert_eq!(reset, vec![RoomValue(1, 1)]);
+
+        assert!(room_count(&[]).is_err());
+        assert!(room_count(&[SOURCE_ROOM, SOURCE_ROOM]).is_err());
+        assert!(room_count(&[RoomValue(3, 6), RoomValue(2, 0)]).is_err());
     }
 
     #[test]
