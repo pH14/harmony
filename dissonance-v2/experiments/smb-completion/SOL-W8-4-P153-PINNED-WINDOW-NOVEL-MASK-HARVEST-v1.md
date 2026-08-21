@@ -171,3 +171,48 @@ Emit create-new canonical NDJSON with header, baseline, recipes, 12 lane
 records, classification, and summary, binding prereg/source/ROM/executable/bin/
 module/config/recipe/trace/body/whole-file hashes. Paths, timestamps, and
 completion order must not enter canonical bytes.
+
+## Registered result
+
+Preregistration commit `b369932916e8f6ae5758f5383ea7d3cc69f08545` (document
+SHA-256 `67353540194b9c6e6e422eba7384d61b5606c692a28898d8133231c239df6e34`)
+and implementation commit `01c7e822b3ded5289d385773b49b3b862a37c39e` used
+module SHA-256
+`17cfce44217330be227d15b512ba4d35d203ef529604e11e31f106f4927be549`,
+bin-source SHA-256
+`9952436f71f5f52a4102f9e6e1f5b3b9401412c38138765325642a67fca198b1`,
+and release-executable SHA-256
+`e5c12e7b5244a5ac7a56267c2666c3fef73781bfa88e8ac29b234eddfbcec095`,
+built once offline and locked from sealed source archive SHA-256
+`dbd4cb8f751ac75d5c72a16f71adb3d6680d8191478c1f50d062dfc1793e2d36`
+under `/root/harmony-smb-sol-w8-4-p153-pinned-novel-01c7e822`. The sealed
+recipe was 402,674 bytes with SHA-256
+`3b930032a9847a4fd08d23b68025648baebd57c5bce44b7cf009205c3bcb04a8`. The sole
+run (systemd unit `harmony-smb-sol-w8-4-p153-pinned-novel-01c7e822`,
+`Restart=no`) completed successfully and produced 17 NDJSON lines in
+registered order, 805,674,427 bytes, whole-file SHA-256
+`e8312b0f7e2370d3f31a9137ee831dd1775cbe5cb73d104e7d82c272389c29c8`,
+and body SHA-256
+`38dc8778bcddba297d50e1100cddc548b169333c4747db373fed5d221fcd11bf`.
+Standard error was empty and standard output bound the same report hash. The
+baseline reproduced every registered source datum.
+
+The registered verdict is **STOP**. All 6,144 scheduled candidates executed
+and were selected and accounted exactly once; 4,758 final-active ordinary
+entries were eligible and none exceeded `(7,3,153)`. Checked work was 4,693
+setup + 168,594 source replay + 45 source probe + 282,515 action + 274,057
+probe = **729,904 frames**, below the 1,740,052-frame cap. Only 17 draws
+selected the source as parent; the pin held for every other draw.
+
+Diagnostic only. Lineages climbed from the four-page regression past the
+124 ceiling of the bridge to a maximum of 141, with the bulk of late
+endpoints between 132 and 134; 73 draws ended dead. Twenty-two early draws
+ended at exactly 153, all with bit `0x08` set in the mask. In this target's
+controller mapping bit `0x08` is Start, so those endpoints are paused games,
+and the source's 14-mask support already contains Up (`0x10`) and Down
+(`0x20`). The preregistration's motivation for the full-domain mask draw was
+therefore mistaken in substance: the two bits absent from the source are
+Select and Start, and roughly half the draws toggled pause. The pinned-window
+selection is the part of this design that did work. No rerun, relaxation, or
+enlargement is authorized; the p153 source remains the best verified retained
+position.
