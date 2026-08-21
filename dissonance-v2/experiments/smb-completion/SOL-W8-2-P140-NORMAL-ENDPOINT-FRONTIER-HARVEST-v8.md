@@ -181,3 +181,43 @@ adoptable.
 There is one registered live run, no routine replay audit, no automatic rerun,
 no post-hoc ranking, and no adoption from any prior unregistered candidate.
 Any integrity mismatch authorizes nothing.
+
+## Result
+
+The one registered run completed successfully on `msr1` with verdict
+**ADOPT**. The implementation was sealed at commit `20f04b7d`, with binary-
+source SHA-256
+`e964dd3719795d554a1c78a237649b06fb5222cabb4163b82be8392fc97ddc34`,
+module-source SHA-256
+`9c9644675dbb4600331d63c37413e1c608585eb0254b731c98f59033388527de`,
+and release-executable SHA-256
+`c06b78cab51d802a28ad3dfcfe1e32b19857b19b9d0cf469f555e55017ad0214`.
+The frozen recipe SHA-256 was
+`b137bcb91f8fa847d95b520b67949fe96760da01dcfe01d7a2c956a6287a60ba`.
+
+The canonical 17-line, 140,057,773-byte report is stored at
+`/root/harmony-smb-sol-w8-2-p140-harvest-879baaa6/results/w8-2-p140-endpoint-harvest-12x692.jsonl`.
+Its body SHA-256 is
+`84f952394d138511c1356528c18c2dfb7b2ddfbf530bf8b767894860d4fbfcbd`
+and its whole-file SHA-256 is
+`da45db6702f5c4e1623623812307f699ee60992e585b74e738c1972e5442a0ff`.
+Realized work was 772,784 frames: 159,699 source replay, 119 source evidence
+probes, 4,693 setup, 238,936 live action, and 369,337 live probe frames.
+
+The registered total order selected lane 3 entry 192, with lineage
+`[0,2,11,79,96,192]`. It is a live, probe-surviving, normally retained endpoint
+at full watermark `(world=7, level=1, progress=143)` after 3,409 actions and
+159,748 absolute frames. Its mechanical state is
+`(7,1,143,y=7,engine=8,dead=false,flag=false)`, raw-WRAM SHA-256 is
+`c84a4bcf5c5da85a8e6141f798806721bc3d40ad9c113e778846c0bddc177a1c`,
+and snapshot SHA-256 is
+`302b85270e398f4b21808a71ab5276bb691b92ad5e4f03fcfe9a2ae36e85c943`.
+Its registered admission probe survived mask `0x00` for all 45 frames.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-w8-2-p140-harvest-879baaa6/results/adopted-world-8-2-progress-143-input.json`;
+its compact-file and semantic SHA-256 is
+`96e4eeef6a968fc4c3705875c581f78ddc054250366b53b0a0d1783b9e5b36cd`.
+This round advanced only three same-level progress units after 8,304 draws.
+The separately preregistered v9 continuation is therefore the final unchanged
+endpoint-only confirmation at this frontier.
