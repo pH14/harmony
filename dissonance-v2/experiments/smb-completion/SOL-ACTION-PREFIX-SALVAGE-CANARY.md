@@ -239,3 +239,61 @@ INCONCLUSIVE or STOP forbids enlarging or reinterpreting this census. The next
 registered hypothesis may test the neutral one-generation admission bridge or
 compact short-job lineage, but may not rescue this gate with selected chords.
 There is one registered live run and no automatic exact rerun.
+
+## Sealed result
+
+Status: **GO**. The single registered run completed on `msr1`; there was no
+rerun and no candidate was imported into a campaign.
+
+- Implementation commit: `d83512444176e647f52a9cdd3bae05d8223a468e`.
+- Temporary implementation source SHA-256:
+  `7221f9566902b76a64ee5d32da058073436b7adc7e9a343b3d81a0c3d5726b32`.
+- Stable commit-rooted source archive SHA-256:
+  `188d8fa40e6cb3ca74d227ddcfc278083bd4d83747450d8e288f36a9f6980b2d`.
+- Release executable SHA-256:
+  `675dd8e80a716b391311ec236a0b40ba6b6cca203f7b24c6124bad339ffe4e2f`.
+- Config SHA-256:
+  `b004cd9cce1524ef8b9ddea77a6345ecaf1f2c0ab2f8d317cba1a4bf9b7b1b7e`.
+- Canary recipe SHA-256:
+  `0559afd3066ad058d3611fd71fcf58b7dcb86a5b62dba743cef0813815e7a2e2`;
+  the reconstructed 100-by-32 action hash exactly matched the sealed
+  `a000be41bdc99f2b7c0fd1b35d8a35770c0f377b446d17ea724735d8454800a2`
+  identity.
+- Canonical report:
+  `/root/harmony-smb-sol-observer-salvage-d8351244/results/c119-observer-prefix-salvage-100.jsonl`;
+  105 lines, 3,703,680 bytes; body SHA-256
+  `9f4e90a91de0ef966603cb2064123c7795c38e9d50e6ac15b5390c53747ca133`;
+  whole-file SHA-256
+  `ad0bfdfe85b08562b7a76425655c44c82c6f7b0d24259f1c212057662ffb394e`.
+
+Raw evidence contained 15 full actions ending live-deeper, 23 with an interior
+live-deeper observer event, 8 event-prefix salvages, 7 probe-surviving
+salvages, and 1 probe refusal. After the frozen equal-full-chord
+deduplication, the corresponding counts were 14, 21, 7, 6, and 1.
+
+The six canonical credited opportunities reduced to two distinct candidate
+inputs and two distinct full target snapshots, satisfying every frozen GO
+threshold:
+
+- offset 19 frames, candidate SHA-256
+  `9ae15f068d9b2dea7bd2b9fec20cd7883b4de315d8c560f09b905272956e0950`,
+  snapshot SHA-256
+  `8cec62febe6c6730ee59e0275faee594f85289219cab467abf47bf7a1e84190e`;
+  and
+- offset 23 frames, candidate SHA-256
+  `6c4a57677b162c0666b6b4a6896fe978c4200fca1a3f18974f89ff3e93cf1999`,
+  snapshot SHA-256
+  `d2b7bf86277bfe131b5174cecbbe7a4b80b7af0b6e07ae91224aa81d86bf7361`.
+
+Both are live action-boundary states at
+`SmbProgressWatermark { world: 7, level: 0, progress: 237 }`, one bucket beyond
+the registered C119 source. They demonstrate a repeated endpoint-only loss,
+not a new historical maximum: C119 had already observed deeper transient
+watermarks elsewhere. The result authorizes only the preregistered next step
+described above—a small paired normal-admission campaign canary for generic
+interior candidate-prefix emission.
+
+Measured work was 4,701 full-action frames, 11,288 candidate-reconstruction
+frames, 10,809 probe frames, 4,693 target-setup frames, and the single 155,148
+frame source replay. Every independent body, file, recipe, executable, source,
+ROM, trace, WRAM, snapshot, and setup-work identity reconciled.
