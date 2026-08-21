@@ -178,3 +178,44 @@ adoptable.
 There is one registered live run, no routine replay audit, no automatic rerun,
 no post-hoc ranking, and no adoption from any prior unregistered candidate.
 Any integrity mismatch authorizes nothing.
+
+## Result
+
+The one registered run completed successfully on `msr1` with verdict
+**ADOPT**. The implementation was sealed at commit `b397dec5`, with binary-
+source SHA-256
+`bf06aa5bb477c8b82a8d58e1cd05df4d09a98d0e2c1ffb030f03813cdd3d0865`,
+module-source SHA-256
+`43d47302ccde1e3dcdf656b92e1035f79f1ad815d23e08cc2a26cb6eed820abe`,
+and release-executable SHA-256
+`ad184168306ce683116da78f744fe85bb306f46be82e30283461d442201fe361`.
+The frozen recipe SHA-256 was
+`98e249b21b2bafda0d27610cb827a1fba6f2c8f2881bc4d948a407e884cbdc10`.
+
+The canonical 17-line, 148,277,041-byte report is stored at
+`/root/harmony-smb-sol-w8-2-p85-harvest-cdde38f8/results/w8-2-p85-endpoint-harvest-12x700.jsonl`.
+Its body SHA-256 is
+`fef9597e9817e7243817ba14bbd3c28e5bed29a5896fefa1fc85ab3e25ba6831`
+and its whole-file SHA-256 is
+`356f255958d05ecc0ef5aa4f4cd488f29db47d687650a5a2113a74e02137373b`.
+Realized work was 847,421 frames: 159,070 source replay, 45 source probe,
+4,693 setup, 340,738 live action, and 342,875 live probe frames.
+
+The registered total order selected lane 0 entry 258, with lineage
+`[0,1,2,11,14,21,23,24,54,67,69,75,82,91,115,116,125,173,179,183,193,258]`.
+It is a live, probe-surviving, normally retained endpoint at full watermark
+`(world=7, level=1, progress=140)` after 3,404 actions and 159,699 absolute
+frames. Its mechanical state is `(7,1,140,y=11,engine=8,dead=false,
+flag=false)`, raw-WRAM SHA-256 is
+`a3d2a3ec85d1f450c37bb6c39e61ac8425c4bdead045f86e3cf9f0f31536dbc4`,
+and snapshot SHA-256 is
+`418d226b9f90ad33bf1e388a0184b5d7265e1104ed6e336e1a1592f5bba2eac4`.
+Its registered admission probe killed masks `0x00` and `0x01` after 37 frames
+each; mask `0x81` survived all 45 frames.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-w8-2-p85-harvest-cdde38f8/results/adopted-world-8-2-progress-140-input.json`;
+its compact-file and semantic SHA-256 is
+`2aec47372f9772f452967bc2088d09b31df43111e081bc0bdc21c42ae22e66ef`.
+Its from-genesis verification is required before any proposal in the
+separately preregistered continuation.
