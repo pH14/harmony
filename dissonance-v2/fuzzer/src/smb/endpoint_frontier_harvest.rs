@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the World 8-2 p144 paired L1/L4 phrase canary.
+//! Temporary sealed runner for the World 8-2 p165 confirmatory L1/L4 phrase canary.
 
 use std::{
     collections::BTreeMap,
@@ -35,76 +35,86 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-2-p144-paired-l1-l4-phrase-canary-v1";
-const PREREGISTRATION_COMMIT: &str = "e94d502782d3689f5b4d43b962c61409f021d10f";
+const FORMAT: &str = "smb-w8-2-p165-confirmatory-l1-l4-canary-v2";
+const PREREGISTRATION_COMMIT: &str = "d64cc8de17cb40eee12f5b84a04a136bd1bc0138";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "5d89bb549f3a63c3b6d93d58421b93b182cfdeaf8cdc61b262da00a16122d1ff";
-const CODE_BASE: &str = "e56f1301567433b054ba009894adb68f9164d43a";
-const AUTHORIZING_V9_PREREGISTRATION: &str = "1b0cb8cb";
-const AUTHORIZING_V9_IMPLEMENTATION: &str = "de9d2389";
-const AUTHORIZING_V9_RESULT: &str = "e56f1301567433b054ba009894adb68f9164d43a";
-const AUTHORIZING_V9_REPORT_SHA256: &str =
-    "406674cd375a313db0c4857300659d899ff6d80ffbbc39caf58c487882328aca";
-const SOURCE_FILE_SHA256: &str = "8c162945c26f6544c390e659002422c8065f4b18535cdb8e75e7922b1d558025";
+    "763c56646903c70dc113f7f5eb633b933a5a74a68f02d30bae6bc6ce5347fc6e";
+const CODE_BASE: &str = "e8c3eb00dba5d5cf00bb1c2294a3c76d8eb0a494";
+const AUTHORIZING_PAIRED_PREREGISTRATION: &str = "e94d5027";
+const AUTHORIZING_PAIRED_IMPLEMENTATION: &str = "782081d4";
+const AUTHORIZING_PAIRED_RESULT: &str = "e8c3eb00";
+const AUTHORIZING_PAIRED_REPORT_SHA256: &str =
+    "fa57d9118790b97b81147835aa3caa6a5b88eb8126752aa63658cbdedc010242";
+const SOURCE_FILE_SHA256: &str = "42d92ae8b8a4ed47465302c75c5800b79a54a4990d07b8e1306af75217ce7321";
 const SOURCE_INPUT_SHA256: &str =
-    "8c162945c26f6544c390e659002422c8065f4b18535cdb8e75e7922b1d558025";
-const SOURCE_WRAM_SHA256: &str = "824f46256fc9e29ad0e6fa8cfaf3b801f5f555af81ff35863e617f6330bcf436";
+    "42d92ae8b8a4ed47465302c75c5800b79a54a4990d07b8e1306af75217ce7321";
+const SOURCE_WRAM_SHA256: &str = "83b7a658bd1c34828204840087b9c125456177155503eb7bfacbf7d3103f4185";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "531fc0ca4b8178dbe7d3fbf99b994f5678138d73ffcbe014429384348dac36ce";
+    "fc69d5f71e7ac1d74c17b42eaa1fbf9bc0230bb109d23019cba8d99e7e853cba";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-2-p144-paired-l1-l4-phrase-canary-v1";
-const SEED_LABEL_SHA256: &str = "3a7b6d0eb01aab0e3043c7fe3c2e90d72d74765af41538b2f8e7081171a00dd3";
-const MASTER_SEED: u64 = 1_056_967_881_007_135_546;
+const SEED_LABEL: &str = "sol-restart-w8-2-p165-confirmatory-l1-l4-phrase-canary-v2";
+const SEED_LABEL_SHA256: &str = "291d75929cd4d2cd80214aa56eb69062b47fed43e0693c4eab87a218524c7774";
+const MASTER_SEED: u64 = 14_831_150_291_821_600_041;
 const EXPECTED_RECIPE_SHA256: &str =
-    "1ffca21f9ab3136fedb0e74abff3aaabc153a8393e799d4598453d53b9e3b2d1";
-const EXPECTED_PROJECTION_SHA256: [&str; 8] = [
-    "9adc545c38ecc1f4257daedfbe9537602a463c2eb9c569aa95642e64874fb248",
-    "e8c279c503bb9c0df7a2910c3769adb88babfcc7d413064e5f63c9ca11ebb027",
-    "ccc1b7473c1d0c7abf7c19427a1af222bdc8cb2785b79108fe6a02f4e368b91b",
-    "fcd86538fe774538a05a2bebbd2cfa9c56193b39da8f42b9c8a49774dc954baf",
-    "cc260b5ab5622dc5b553addd6449822b72cb059a063d7ee73ae9fe9c19649099",
-    "1cf3f51b2824a1267bba3935b842c0ac8175df7d1532ccdb3462183b2b802498",
-    "40ca8a510cc79c75195267fa253f1b989ae1e3908dd3b126c85da1586c73476c",
-    "89f2da97e718610d0ac866fce53672558676e9b1552237c49c0b9e2f3f4083fe",
+    "98c1fa5c8122a7034ed2cd1f39f52e145fd4ca761e90d2300d60303e020ec83b";
+const EXPECTED_RECIPE_BYTES: usize = 132_501;
+const EXPECTED_PROJECTION_SHA256: [&str; 16] = [
+    "f32ab6edb034998ed754b6679c0009c0ce522d01ad0998a63da9bb4ba6be8768",
+    "d0cc79ad24201b4a29c83422548cba1331badf18f01ac3717f94047bd7f29800",
+    "52de17cadc2d99460c344701f4f732bcf4bfc9e84530fc9a44b210d1998d393a",
+    "b677b92d3c0978492b29c77d8a8035373e4987c0fdb654d04d90e2bdfb01a112",
+    "930f9edb8d59ddebdc67701916f330adbf1d4025e6140d95a0b8b9e2efd5bf16",
+    "7c307eed9d4706c636833083f28290ed5c220b3ff77699a7589a98c3aad50b5a",
+    "ff8ea548df99d7de1daa65ecfbbc24087673d2d998532aef6fc8054d6ce8de30",
+    "a096e828bbc7063209d864a47431e5d3fbfcfe4fc84c64be794af0393fc8889c",
+    "74e55772af57ca0c3ce5fe469d14ba370151fb8d50b2a267ddd4ee955ca9f832",
+    "4c8f7ddf8cd1429be6575457d2d29a72f7ae1ff67740d9c27e2d5547d4e7d7d9",
+    "8f9d1940b6738ccc4a87e06e853cefb4fcb1551bc87e47d52eade3c18125fa3d",
+    "bd804b45207408c3d3d437c5f5d818d833af4cc79e7412504be616e1958974da",
+    "e91fee3760fa66717efb950accfd28456ff3c3bb642df78e1bf895bbcd0fb483",
+    "17d02a43338861248dd8082545ad57988d8b6594af2ae82ece088308c5c00d0c",
+    "6f8e5b8c886671bf0c5d90b457a131d8733f49db75e0fc07d13c04f8c0cf84bf",
+    "93e26f3dd991d0dcce85a096d9b29a4e3792312be7610b1f13efff06af612657",
 ];
-const SOURCE_ACTIONS: usize = 3_411;
-const SOURCE_FRAMES: u64 = 159_757;
-const PAIRS: usize = 8;
-const ARMS: usize = 16;
+const EXPECTED_PROJECTION_BYTES: [usize; 16] = [
+    7_976, 7_988, 7_938, 7_952, 8_000, 7_983, 7_989, 8_011, 7_968, 7_976, 8_002, 7_969, 7_983,
+    7_970, 7_954, 7_993,
+];
+const SOURCE_ACTIONS: usize = 3_429;
+const SOURCE_FRAMES: u64 = 160_502;
+const PAIRS: usize = 16;
+const ARMS: usize = 32;
 const WORKERS: usize = 12;
-const SLOTS: usize = 256;
+const SLOTS: usize = 128;
 const PHRASE_LENGTH: usize = 4;
 const ACTION_LIMIT: usize = 4_096;
-const ARCHIVE_LIMIT: usize = 257;
-const MAX_LINEAGE_ACTIONS: usize = 3_667;
+const ARCHIVE_LIMIT: usize = 129;
+const MAX_LINEAGE_ACTIONS: usize = 3_557;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
 const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
 const MAX_ACTION_FRAMES: u64 = 491_520;
 const MAX_PROBE_FRAMES: u64 = 552_960;
-const SOURCE_PROBE_FRAMES: u64 = 123;
-const MAX_TOTAL_FRAMES: u64 = 1_209_053;
+const SOURCE_PROBE_FRAMES: u64 = 45;
+const MAX_TOTAL_FRAMES: u64 = 1_209_720;
 const EXPECTED_L1_SELECTIONS: usize = 2_048;
 const EXPECTED_L4_SELECTIONS: usize = 512;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
+const SOURCE_PROBE_MASKS: [u8; 1] = [0x00];
 const PROBE_FRAMES: u16 = 45;
-const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 3] = [
-    (0x00, 39, true, false),
-    (0x01, 39, true, false),
-    (0x81, 45, false, true),
-];
+const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 1] = [(0x00, 45, false, true)];
 const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 1,
-    progress: 144,
+    progress: 165,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 1,
-    progress: 144,
-    player_y_bucket: 9,
+    progress: 165,
+    player_y_bucket: 11,
     player_engine_state: 8,
     dead: false,
     flag_active: false,
@@ -112,10 +122,10 @@ const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
     level: 1,
-    progress: 144,
-    player_y_bucket: 9,
+    progress: 165,
+    player_y_bucket: 11,
     player_engine_state: 8,
-    state_fingerprint: 2,
+    state_fingerprint: 3,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -125,8 +135,8 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 131,
-    hold_frames: 3,
+    buttons: 16,
+    hold_frames: 113,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -165,7 +175,7 @@ struct Config {
     assignment: &'static str,
     probe_masks: [u8; 3],
     probe_frames: u16,
-    source_probe_masks: [u8; 3],
+    source_probe_masks: [u8; 1],
     source_probe_frames: u64,
     max_action_frames: u64,
     max_probe_frames: u64,
@@ -408,8 +418,9 @@ struct ClassificationRecord {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 enum StructuralVerdict {
-    GoL4,
-    NoGoL4,
+    InconclusiveSparse,
+    ConfirmL4,
+    RejectL4,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -468,14 +479,16 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_v9_preregistration: &'static str,
-    authorizing_v9_implementation: &'static str,
-    authorizing_v9_result: &'static str,
-    authorizing_v9_report_sha256: &'static str,
+    authorizing_paired_preregistration: &'static str,
+    authorizing_paired_implementation: &'static str,
+    authorizing_paired_result: &'static str,
+    authorizing_paired_report_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
-    source_v9_lane: u64,
-    source_v9_entry_id: u64,
+    source_paired_pair: u64,
+    source_paired_arm: ArmKind,
+    source_paired_entry_id: u64,
+    source_paired_prefix_depth: u64,
     rom_sha256: &'a str,
     executable_sha256: &'a str,
     bin_source_sha256: &'a str,
@@ -535,7 +548,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path = PathBuf::from(
         args.next()
-            .ok_or("usage: smb-w8-2-p144-paired-l1-l4-phrase-canary <input.json> <output.jsonl>")?,
+            .ok_or("usage: smb-w8-2-p165-confirmatory-l1-l4-canary <input.json> <output.jsonl>")?,
     );
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -575,7 +588,7 @@ pub fn run_from_process(
         assignment: "ordinal_modulo_12_persistent_buffered_ascending_v1",
         probe_masks: PROBE_MASKS,
         probe_frames: PROBE_FRAMES,
-        source_probe_masks: PROBE_MASKS,
+        source_probe_masks: SOURCE_PROBE_MASKS,
         source_probe_frames: SOURCE_PROBE_FRAMES,
         max_action_frames: MAX_ACTION_FRAMES,
         max_probe_frames: MAX_PROBE_FRAMES,
@@ -604,8 +617,9 @@ pub fn run_from_process(
     let mut baseline_target = SmbTarget::from_smb_rom_bytes_headless(&rom)?;
     let baseline = build_baseline(&mut baseline_target, &source)?;
     let recipes = derive_recipes(&source)?;
-    let recipe_sha256 = recipe_sha256(&recipes)?;
-    if recipe_sha256 != EXPECTED_RECIPE_SHA256 {
+    let recipe_bytes = recipe_identity_bytes(&recipes)?;
+    let recipe_sha256 = sha256_bytes(&recipe_bytes);
+    if recipe_bytes.len() != EXPECTED_RECIPE_BYTES || recipe_sha256 != EXPECTED_RECIPE_SHA256 {
         return Err("frozen recipe identity does not match the sealed oracle".into());
     }
     let projection_sha256 = projection_sha256(&recipes)?;
@@ -625,14 +639,16 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_v9_preregistration: AUTHORIZING_V9_PREREGISTRATION,
-        authorizing_v9_implementation: AUTHORIZING_V9_IMPLEMENTATION,
-        authorizing_v9_result: AUTHORIZING_V9_RESULT,
-        authorizing_v9_report_sha256: AUTHORIZING_V9_REPORT_SHA256,
+        authorizing_paired_preregistration: AUTHORIZING_PAIRED_PREREGISTRATION,
+        authorizing_paired_implementation: AUTHORIZING_PAIRED_IMPLEMENTATION,
+        authorizing_paired_result: AUTHORIZING_PAIRED_RESULT,
+        authorizing_paired_report_sha256: AUTHORIZING_PAIRED_REPORT_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
-        source_v9_lane: 0,
-        source_v9_entry_id: 5,
+        source_paired_pair: 2,
+        source_paired_arm: ArmKind::L4,
+        source_paired_entry_id: 121,
+        source_paired_prefix_depth: 1,
         rom_sha256: &rom_sha256,
         executable_sha256: &executable_sha256,
         bin_source_sha256: &bin_source_sha256,
@@ -735,7 +751,7 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
         let pair_u64 = u64::try_from(pair)?;
         let pair_seed = digest_word(&[
             &MASTER_SEED.to_le_bytes(),
-            b"paired-l1-l4-pair",
+            b"confirm-l1-l4-v2-pair",
             &pair_u64.to_le_bytes(),
         ])?;
         let mut slots = Vec::with_capacity(SLOTS);
@@ -743,7 +759,7 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
             let slot_u64 = u64::try_from(slot)?;
             let source_word = digest_word(&[
                 &pair_seed.to_le_bytes(),
-                b"paired-l1-l4-action",
+                b"confirm-l1-l4-v2-action",
                 &slot_u64.to_le_bytes(),
             ])?;
             let source_index = usize::try_from(source_word % source_len)?;
@@ -753,7 +769,7 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
                 .ok_or("derived source index is out of bounds")?;
             let selector_seed = digest_word(&[
                 &pair_seed.to_le_bytes(),
-                b"paired-l1-l4-parent",
+                b"confirm-l1-l4-v2-parent",
                 &slot_u64.to_le_bytes(),
             ])?;
             slots.push(Recipe {
@@ -769,7 +785,12 @@ fn derive_recipes(source: &SmbInput) -> Result<Vec<Vec<Recipe>>, Box<dyn Error>>
     Ok(pairs)
 }
 
+#[cfg(test)]
 fn recipe_sha256(recipes: &[Vec<Recipe>]) -> Result<String, Box<dyn Error>> {
+    Ok(sha256_bytes(&recipe_identity_bytes(recipes)?))
+}
+
+fn recipe_identity_bytes(recipes: &[Vec<Recipe>]) -> Result<Vec<u8>, Box<dyn Error>> {
     let identity = recipes
         .iter()
         .flat_map(|pair| pair.iter())
@@ -783,11 +804,18 @@ fn recipe_sha256(recipes: &[Vec<Recipe>]) -> Result<String, Box<dyn Error>> {
             ))
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-    sha256_json(&identity)
+    Ok(serde_json::to_vec(&identity)?)
 }
 
 fn projection_sha256(recipes: &[Vec<Recipe>]) -> Result<Vec<String>, Box<dyn Error>> {
     let identities = projection_bytes(recipes)?;
+    if identities
+        .iter()
+        .map(Vec::len)
+        .ne(EXPECTED_PROJECTION_BYTES)
+    {
+        return Err("pair recipe projection byte lengths do not match the sealed oracle".into());
+    }
     let hashes = identities
         .iter()
         .map(|bytes| sha256_bytes(bytes))
@@ -1979,10 +2007,12 @@ fn structural_verdict(
         .checked_mul(80)
         .ok_or("sign-tail comparison overflow")?
         <= tail_denominator;
-    Ok(if non_ties >= 7 && sign && has_witness {
-        StructuralVerdict::GoL4
+    Ok(if non_ties < 8 {
+        StructuralVerdict::InconclusiveSparse
+    } else if sign && has_witness {
+        StructuralVerdict::ConfirmL4
     } else {
-        StructuralVerdict::NoGoL4
+        StructuralVerdict::RejectL4
     })
 }
 
@@ -2450,7 +2480,7 @@ mod tests {
         let l1_maximum = SmbProgressWatermark {
             world: 7,
             level: 1,
-            progress: 145,
+            progress: 166,
         };
         let mut arms = Vec::with_capacity(ARMS);
         for pair in 0..PAIRS {
@@ -2462,7 +2492,7 @@ mod tests {
                         ArmKind::L4,
                         1,
                         SmbProgressWatermark {
-                            progress: 147,
+                            progress: 168,
                             ..l1_maximum
                         },
                         SOURCE_ACTIONS + 1,
@@ -2484,7 +2514,7 @@ mod tests {
                         ArmKind::L4,
                         4,
                         SmbProgressWatermark {
-                            progress: 146,
+                            progress: 167,
                             ..l1_maximum
                         },
                         SOURCE_ACTIONS + 2,
@@ -2498,7 +2528,7 @@ mod tests {
                     ArmKind::L4,
                     1,
                     SmbProgressWatermark {
-                        progress: 146,
+                        progress: 167,
                         ..l1_maximum
                     },
                     SOURCE_ACTIONS + 1,
@@ -2527,18 +2557,21 @@ mod tests {
             Recipe {
                 pair: 0,
                 slot: 0,
-                source_index: 2_608,
-                action: ButtonChord::new(48, 111),
-                selector_seed: 13_352_630_852_398_418_839,
+                source_index: 1_177,
+                action: ButtonChord::new(153, 108),
+                selector_seed: 4_688_544_944_769_344_307,
             }
         );
         assert_eq!(
-            (recipes[7][255].source_index, recipes[7][255].selector_seed),
-            (285, 9_454_468_690_816_885_930)
+            (
+                recipes[15][127].source_index,
+                recipes[15][127].selector_seed
+            ),
+            (1_524, 8_093_841_264_025_830_477)
         );
         assert_eq!(
             recipe_sha256(&recipes).expect("hash recipes"),
-            "7759e3e953e157a15dd1c7acd73141afbabeb064cf80f8bc6c6dcea906c3383e"
+            "201577d284a0edf5d7d92711eaa74cc1c014150cc98cf7fb54bba95961da4c63"
         );
         let mut projections = projection_bytes(&recipes).expect("serialize projections");
         assert_eq!(projections.len(), PAIRS);
@@ -2547,24 +2580,24 @@ mod tests {
         assert!(projection_sha256(&recipes).is_err());
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "1ffca21f9ab3136fedb0e74abff3aaabc153a8393e799d4598453d53b9e3b2d1"
+            "98c1fa5c8122a7034ed2cd1f39f52e145fd4ca761e90d2300d60303e020ec83b"
         );
     }
 
     #[test]
     fn paired_sign_gate_requires_exact_tail_and_structural_witness() {
+        assert_eq!(sign_tail_numerator(16, 16).expect("tail"), 1);
         assert_eq!(sign_tail_numerator(8, 8).expect("tail"), 1);
-        assert_eq!(sign_tail_numerator(7, 7).expect("tail"), 1);
         assert_eq!(sign_tail_numerator(8, 7).expect("tail"), 9);
         let arms = paired_arms_with_boundary_candidates();
         let classified = classify_paired(&arms).expect("classify paired arms");
-        assert_eq!(classified.non_ties, 8);
-        assert_eq!(classified.l4_wins, 8);
+        assert_eq!(classified.non_ties, 16);
+        assert_eq!(classified.l4_wins, 16);
         assert_eq!(
             (classified.tail_numerator, classified.tail_denominator),
-            (1, 256)
+            (1, 65_536)
         );
-        assert_eq!(classified.verdict, StructuralVerdict::GoL4);
+        assert_eq!(classified.verdict, StructuralVerdict::ConfirmL4);
         assert_eq!(classified.witnesses.len(), 1);
         assert_eq!(
             (
@@ -2573,7 +2606,7 @@ mod tests {
                 classified.witnesses[0].champion.prefix_depth,
                 classified.witnesses[0].champion.endpoint.watermark.progress,
             ),
-            (0, 4, 2, 146)
+            (0, 4, 2, 167)
         );
         let work = summarize_work(&arms, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES)
             .expect("reconcile paired work");
@@ -2596,7 +2629,50 @@ mod tests {
         let classified =
             classify_paired(&without_strict_witness).expect("classify witness-free arms");
         assert!(classified.witnesses.is_empty());
-        assert_eq!(classified.verdict, StructuralVerdict::NoGoL4);
+        assert_eq!(classified.verdict, StructuralVerdict::RejectL4);
+
+        let mut sparse = paired_arms_with_boundary_candidates();
+        for pair in 7..PAIRS {
+            let l1_maximum = sparse[pair * 2].final_maximum.watermark;
+            let l4 = &mut sparse[pair * 2 + 1];
+            l4.final_maximum.watermark = l1_maximum;
+            l4.champion_candidates.clear();
+        }
+        let classified = classify_paired(&sparse).expect("classify sparse arms");
+        assert_eq!(classified.non_ties, 7);
+        assert!(!classified.witnesses.is_empty());
+        assert_eq!(classified.verdict, StructuralVerdict::InconclusiveSparse);
+        assert_eq!(
+            serde_json::to_string(&StructuralVerdict::InconclusiveSparse)
+                .expect("serialize sparse verdict"),
+            r#""INCONCLUSIVE_SPARSE""#
+        );
+        assert_eq!(
+            serde_json::to_string(&StructuralVerdict::ConfirmL4)
+                .expect("serialize confirmation verdict"),
+            r#""CONFIRM_L4""#
+        );
+        assert_eq!(
+            serde_json::to_string(&StructuralVerdict::RejectL4)
+                .expect("serialize rejection verdict"),
+            r#""REJECT_L4""#
+        );
+    }
+
+    #[test]
+    fn structural_sign_boundary_is_exact_and_sparse_takes_precedence() {
+        assert_eq!(
+            structural_verdict(8, 9, 256, true).expect("classify 9/256 tail"),
+            StructuralVerdict::RejectL4
+        );
+        assert_eq!(
+            structural_verdict(8, 1, 256, true).expect("classify 1/256 tail"),
+            StructuralVerdict::ConfirmL4
+        );
+        assert_eq!(
+            structural_verdict(7, 1, 128, true).expect("classify sparse tail"),
+            StructuralVerdict::InconclusiveSparse
+        );
     }
 
     #[test]
@@ -2604,7 +2680,7 @@ mod tests {
         let base = SmbProgressWatermark {
             world: 7,
             level: 1,
-            progress: 145,
+            progress: 166,
         };
         let champion = rank_champion(vec![
             candidate(0, ArmKind::L1, 9, base, 9, 0x10, 1),
