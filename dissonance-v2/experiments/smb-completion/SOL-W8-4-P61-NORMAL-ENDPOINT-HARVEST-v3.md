@@ -90,3 +90,37 @@ ordinary endpoint; rank full watermark, fewest actions, input SHA, lane, id.
 otherwise **STOP**. One run; no rerun, relaxation, routine replay, or post-hoc
 choice. Terminal-like evidence remains diagnostic pending a separately frozen
 mechanical credits predicate and artifact-only confirmation.
+
+## Registered result: ADOPT World 8-4 p73
+
+Implementation commit `9de5e622ef38fbf68e6d431c41c2bdccf3573181`,
+module SHA `c96df0c38dcc04f6b6dce4f32209d8c3dc6d29dff4e70038e8c080e04e4331bb`,
+bin SHA `3eb901d781ed26e29f5820e15ddfa42296d8331ba9b4055b8d30c9bcdb67b99a`,
+source archive SHA
+`e1d1ed36f4069ad4ed1088ec95bd9a7934c5e6d41e011006b36fc14ed4136604`,
+and release executable SHA
+`26804e54a1f6fdb42283ebf57565355e3529eb032a35900e9e8f2ce17ff54fac`
+were sealed before the single launch. Systemd invocation
+`277ccfd542404a13b0a8c3947fa6a94c` exited successfully with empty stderr.
+
+The 17-line, 801,761,841-byte report SHA is
+`6fba3d7d27bd0ab85bc0dc832f4246f7512d3d68d829eb9a48bb971857bec0bb`;
+body SHA is
+`b108a6e945ee43baa9a8845ed9a1e637ec180d07821aed45949003d03319e7e6`.
+All 6,144 candidates and selections completed. Work was setup4,693,
+source-replay167,136, source-probe80, action179,614, candidate-probe322,836,
+experimental502,450, total674,359 frames, below every frozen cap.
+
+The registered verdict is **ADOPT**. The sole champion is lane11/id173,
+draw305, parent167, lineage `[0,1,2,115,167,173]`, created by the opaque source
+occurrence at index1331, chord `{buttons:0,hold_frames:3}`. Its exact input has
+3,554 actions, 114,128 bytes, and compact/semantic SHA
+`d222d9ebc0126c52473a121e4143889ec92ee584cd53837a3461b0c6c2648a7c`.
+It replays to alive Ok endpoint/full maximum `(7,3,73)` at frame167,340,
+mechanical `(7,3,73,y=8,engine=8,dead=false,flag=false)`, key fingerprint60,
+WRAM SHA `bc051f742198e95efeb2e0392fc2c7cb72f0fd38dc4449247a0082eebe60e734`,
+snapshot SHA
+`3620e6ed58f4853cc059b4daf7f2bc493ee61480abbdf84fb6dff5d26e670927`,
+milestones `(195,true,true,true)`, and survives the first mask00 45-frame
+probe. The exact adopted file is
+`/root/harmony-smb-sol-w8-4-p61-harvest-v3-3aaeb783/results/adopted-world-8-4-progress-73-input.json`.
