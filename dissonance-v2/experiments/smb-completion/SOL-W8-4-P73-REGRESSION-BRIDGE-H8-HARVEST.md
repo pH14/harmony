@@ -155,3 +155,53 @@ create-new canonical NDJSON with header, baseline, recipes, ordered boundary
 records, classifications, summary, and source/ROM/executable/bin/module/config/
 recipe/trace/body/whole-file hashes; paths, timestamps, and completion order
 must not enter canonical bytes.
+
+## Registered result
+
+Implementation commit `a8ba2346cc99c8ae78a8a419d2574c97c87dfe32`
+used module SHA-256
+`71605f0497a34284fbd0d48da25e937d904ca7f3985e645bc5f531030abff4bc`,
+bin-source SHA-256
+`08aa386de3ec3b0edc4e3faaabd4f7052600f2981c58421b15ca04c2aa8a4480`,
+and release-executable SHA-256
+`0d4cd2bf99c3a268773eeca5b2b0e9931082958555339e07e0a0ccc800803cf8`.
+The sealed recipe was 515,034 bytes with registered SHA-256
+`d457c4b075f2452439681ddfd5629802e0d16100be920819455e77e097c58d54`.
+The sole run completed successfully and produced 14,074 NDJSON lines,
+89,748,251 bytes, whole-file SHA-256
+`b33441042225e4a047178f708acc7b97e396e003b6212c065c21b314ed979abd`,
+and body SHA-256
+`ed489654b5c6b1301711fb0d71cd402eaed189b678905aa19982e8d789aa052d`.
+Standard error was empty and standard output bound the same report hash.
+
+The registered verdicts are **MULTIPLE_REGRESSION_BRIDGES** and **ADOPT**.
+There are eight canonical eligible boundary inputs with eight distinct snapshot
+hashes, arising from three distinct first actions. Streams 1371, 1396, and 1416
+began with opaque chords `(0xc0,52)`, `(0xc0,77)`, and `(0xc0,97)` respectively;
+all three first boundaries were live at `(7,3,9)` with distinct Frozen state
+fingerprints. Later depths 6 through 8 crossed the source watermark. This is
+direct evidence that a temporary target-reported progress regression can carry
+state needed by a later ordinary action boundary; no single action in the prior
+exhaustive census could do so.
+
+The deterministic champion is stream 1416 depth 8 at watermark `(7,3,113)`.
+Its exact eight-action suffix is `[(0xc0,97),(0x83,8),(0x80,5),(0x02,7),
+(0x82,12),(0x20,112),(0x82,10),(0x80,114)]`. The 3,562-action semantic input
+SHA-256 is
+`0b72eafdf81670fdf40ef80dab9226ddbee7c855728661f893816789fb24239f`;
+the compact 114,388-byte adopted file has the same SHA. Endpoint WRAM SHA-256 is
+`3bcdfbb5291fdfbf94ed016a77783e6bbb4b400c3ae24dc8d73f5d3ea844a24c`,
+snapshot SHA-256 is
+`0e87a78fc87df608fb466cd94154e814e095dad9eb2956edfaebba7b34080f00`,
+and Frozen key is `{world:7,level:3,progress:113,player_y_bucket:11,
+player_engine_state:8,state_fingerprint:59}`. It survived the first normal
+mask-0 45-frame probe. The authorized artifact is
+`/root/harmony-smb-sol-w8-4-p73-regression-bridge-a8ba2346/results/adopted-world-8-4-progress-113-input.json`.
+
+Checked work was 4,693 setup + 167,340 source replay + 45 source probe +
+597,845 action + 360 strict-candidate probe = **770,283 frames**, below the
+3,499,318-frame cap. The exact p113 champion is authorized as the next source
+only after a fresh genesis replay reproduces all registered evidence. This
+result does not promote H8 as a general policy. It does authorize a separately
+preregistered regression-tolerant parent-selection canary if later structural
+work is needed.
