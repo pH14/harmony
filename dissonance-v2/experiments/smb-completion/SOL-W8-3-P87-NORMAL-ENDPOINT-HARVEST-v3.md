@@ -151,3 +151,35 @@ exact input and full lane/draw/lineage/state/hash/work evidence. It is the sole
 authorized next source. Otherwise verdict is **STOP** and nothing is
 adoptable. Any integrity mismatch authorizes nothing. There is one registered
 run, no routine replay audit, rerun, or post-hoc candidate choice.
+
+## Registered result
+
+The one registered run completed successfully on `msr1` under implementation
+commit `3175521b`, release executable SHA-256
+`d5c19cdb9f4e2b8b3d6bfd0254495207b49273abf6991db1b0546d332ee374e4`.
+Its 803,325,108-byte create-new report is
+`/root/harmony-smb-sol-w8-3-p87-harvest-39e37a7f/results/w8-3-p87-normal-endpoint-harvest-12x512.jsonl`,
+whole-file SHA-256
+`be7cc836d3849bb0e0dea5775ae4a454de1474ed505ed15c49094c571a9aeb81`
+and body SHA-256
+`5472dd46ba33e88dd0de73eb84abe62bbf00123336abb0c84735ed43d63dd8ef`.
+The service exited successfully with empty stderr. All 6,144 candidates and
+selections executed. Work reconciled to 4,693 setup, 163,702 source replay,
+45 source probe, 220,441 action, and 249,227 candidate-probe frames: 638,108
+total, below the registered cap.
+
+The verdict is **ADOPT**. Lane 6 entry 337 at draw 484, parent 336, is the
+deterministic champion. Its lineage is
+`[0,4,8,21,27,68,70,122,185,211,222,224,225,226,227,232,233,236,237,242,244,247,267,269,282,330,336,337]`.
+The exact 3,507-action candidate is alive and probe-surviving and advances the
+full watermark from `(7,2,87)` to **`(7,2,187)`** at absolute frame 164,661.
+Its mechanical state is
+`(world=7,level=2,progress=187,y_bucket=11,engine_state=8,dead=false,flag_active=false)`.
+Semantic input, endpoint WRAM, and endpoint snapshot SHA-256 values are
+respectively
+`34b8e7a81c5d35472361f72674693c6616d43c94522d1e2cbb9f4a7ca58c8965`,
+`92a1c9958ff7eda310d3a5e605788ad638dedc64e86dbf37433c083b6521271a`,
+and `088a810354fbe3e31ab2c361a3ddb4a78e42cae2f09a1f32b63c8ef25a4e9c50`.
+The sole authorized next-source file is
+`/root/harmony-smb-sol-w8-3-p87-harvest-39e37a7f/results/adopted-world-8-3-progress-187-input.json`,
+112,605 bytes with the same semantic SHA-256.
