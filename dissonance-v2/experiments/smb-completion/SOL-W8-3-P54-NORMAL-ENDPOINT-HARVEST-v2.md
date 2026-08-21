@@ -153,3 +153,35 @@ input and complete lane/draw/lineage/state/hash/work evidence. It is the sole
 authorized next source. Otherwise verdict is **STOP** and nothing is
 adoptable. Any integrity mismatch authorizes nothing. There is one registered
 run, no routine replay audit, rerun, or post-hoc candidate choice.
+
+## Registered result
+
+The one registered run completed successfully on `msr1` under implementation
+commit `0318be14`, release executable SHA-256
+`b7565ec6c07b6c9c5e38bccc6a47da34ec0160852ca40e96e02375f0ad745d18`.
+Its create-new report is
+`/root/harmony-smb-sol-w8-3-p54-harvest-4a19338a/results/w8-3-p54-normal-endpoint-harvest-12x512.jsonl`,
+804,235,527 bytes, whole-file SHA-256
+`14bcd67c02ed672c1605a312cd461fe2a1b8e47c67c2d75a29eea61ed4974041`,
+and registered body SHA-256
+`3c77ec8aaaba8af01db2f912f61f96ce4108d3e5e0fb798b77f3510b64ab445d`.
+The service exited successfully with empty stderr. All 6,144 scheduled
+candidates and selections executed. Work reconciled to 4,693 setup, 163,227
+source replay, 45 source probe, 209,718 action, and 213,098 candidate-probe
+frames: 590,781 total, below the registered cap.
+
+The verdict is **ADOPT**. Lane 8 entry 352, created at draw 511 from parent
+318, is the deterministic champion. Its lineage is
+`[0,1,14,18,30,109,145,310,311,316,318,352]`. The exact candidate has 3,480
+actions, is alive and probe-surviving, and advances the full watermark from
+`(7,2,54)` to **`(7,2,87)`** at absolute frame 163,702. Its mechanical state
+is `(world=7,level=2,progress=87,y_bucket=11,engine_state=8,dead=false,flag_active=false)`.
+The candidate semantic input, endpoint WRAM, and endpoint snapshot SHA-256
+values are respectively
+`f1a3a2a396c5de1b1d4cdc8d988598a837cc05ae57de5361ed492c98a510780f`,
+`5d20b2ce16d18afb74e2302bf90cc7abd8e66755a19484fd24a0bdb1fe11618f`,
+and `976a4d921af030bc9410d06fce5d19d9c737e049683a06ba01107ff82f23e1c4`.
+The exact authorized next-source file is
+`/root/harmony-smb-sol-w8-3-p54-harvest-4a19338a/results/adopted-world-8-3-progress-87-input.json`,
+111,745 bytes with the same semantic SHA-256. No other result from this run is
+adoptable.
