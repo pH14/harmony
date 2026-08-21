@@ -107,14 +107,17 @@ exclude_globs = [
     # which is NOT excluded and is exact-value mutation-tested.
     "**/pmu_sys.rs",
     # `cpu-qualification`'s measurement halves, same rationale as `pmu_sys.rs`:
-    # `perf_sys.rs` is the `perf_event_open`/ioctl/mmap orchestration and
-    # `stage0_sys.rs` is the `/proc`, `/sys`, and MSR reader. Both need a real
-    # Linux host with perf and root, so the no-`--ignored` oracle never runs a
-    # line of either and every mutant is structurally unkillable. Their pure
-    # halves — the attr builder and ring walk in `perf.rs`, the parsers and row
-    # construction in `stage0.rs` — are NOT excluded and are mutation-gated.
+    # `perf_sys.rs` is the `perf_event_open`/ioctl/mmap orchestration,
+    # `stage0_sys.rs` is the `/proc`, `/sys`, and MSR reader, and
+    # `stage1_sys.rs` drives the counter itself. All three need a real Linux
+    # host with perf and root, so the no-`--ignored` oracle never runs a line of
+    # them and every mutant is structurally unkillable. Their pure halves — the
+    # attr builder and ring walk in `perf.rs`, the parsers and row construction
+    # in `stage0.rs`, the oracle, skid buckets, margin derivation, and
+    # projection in `stage1.rs` — are NOT excluded and are mutation-gated.
     "**/perf_sys.rs",
     "**/stage0_sys.rs",
+    "**/stage1_sys.rs",
 ]
 
 # Structurally-unkillable mutants in `consonance/vmm-core`, by category. The

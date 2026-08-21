@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::stage1::{is_clean, offset_from_counts, oracle_events};
+
 /// The acceptance floors a run commits to before it measures anything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Floors {
@@ -106,6 +108,12 @@ pub enum Record {
         samples: u64,
         /// The counter value the sample carries, taken at the interrupt.
         value_at_interrupt: u64,
+        /// Records the kernel dropped for want of ring space. A dropped record
+        /// means the arm's account is incomplete, whatever the sample count says.
+        dropped: u64,
+        /// Throttle and unthrottle records: the kernel suppressed interrupts for
+        /// part of the arm, so its delivery says nothing about the hardware.
+        throttled: u64,
     },
     /// A run's own overflow tally. Cross-checked, never an input to a pass.
     OverflowSummary {
@@ -291,11 +299,6 @@ struct ExactnessGroup<'a> {
     multiplexed: u64,
 }
 
-/// Whether a repetition's two windows were free of interrupts.
-fn is_clean(irqs_n1: u64, irqs_n2: u64) -> bool {
-    irqs_n1 == 0 && irqs_n2 == 0
-}
-
 /// Count exactness, recomputed on interrupt-free windows only.
 fn check_exactness(records: &[Record], floors: Floors, checks: &mut Vec<Check>) {
     let mut groups: BTreeMap<(String, String), ExactnessGroup> = BTreeMap::new();
@@ -349,10 +352,12 @@ fn check_exactness(records: &[Record], floors: Floors, checks: &mut Vec<Check>) 
         let all_present = group.reps == contiguous;
 
         let mut mismatches = 0u64;
+        let mut bad_oracle = 0u64;
         let mut offsets: BTreeSet<i128> = BTreeSet::new();
         for record in &group.clean {
             if let Record::Exactness {
                 n1,
+                n2,
                 count_n1,
                 count_n2,
                 oracle_delta,
@@ -360,25 +365,36 @@ fn check_exactness(records: &[Record], floors: Floors, checks: &mut Vec<Check>) 
                 ..
             } = record
             {
-                if count_n2.saturating_sub(*count_n1) != *oracle_delta {
+                // The oracle is recomputed from the payload's per-iteration
+                // event count, never read from the record. The recorded value
+                // is cross-checked against it and cannot substitute for it.
+                let oracle = oracle_events(*events_per_iteration, *n1, *n2);
+                if oracle != *oracle_delta {
+                    bad_oracle += 1;
+                }
+                if count_n2.saturating_sub(*count_n1) != oracle {
                     mismatches += 1;
                 }
                 // The fixed prologue contribution: what the count carries beyond
                 // the analytical per-iteration total. It must not move between
                 // repetitions of one class.
-                let expected = i128::from(*events_per_iteration) * i128::from(*n1);
-                offsets.insert(i128::from(*count_n1) - expected);
+                offsets.insert(offset_from_counts(*events_per_iteration, *n1, *count_n1));
             }
         }
         let enough = group.clean.len() as u64 >= floors.min_clean_reps;
         let stable = offsets.len() <= 1;
-        let passed = all_present && enough && stable && mismatches == 0 && group.multiplexed == 0;
+        let passed = all_present
+            && enough
+            && stable
+            && mismatches == 0
+            && bad_oracle == 0
+            && group.multiplexed == 0;
         checks.push(Check::new(
             format!("exactness[{payload}/{condition}]"),
             passed,
             format!(
                 "reps={} contiguous={all_present} clean={} floor={} mismatches={mismatches} \
-                 multiplexed={} offset_stable={stable}",
+                 recorded_oracle_disagrees={bad_oracle} multiplexed={} offset_stable={stable}",
                 group.reps.len(),
                 group.clean.len(),
                 floors.min_clean_reps,
@@ -428,9 +444,20 @@ fn check_interference(records: &[Record], checks: &mut Vec<Check>) {
     }
 }
 
+/// One armed overflow, as the recomputation reads it back.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Arm {
+    idx: u64,
+    period: u64,
+    samples: u64,
+    value: u64,
+    dropped: u64,
+    throttled: u64,
+}
+
 /// Overflow delivery and skid, recomputed from the per-arm records.
 fn check_overflow(records: &[Record], floors: Floors, checks: &mut Vec<Check>) {
-    let mut arms: BTreeMap<String, Vec<(u64, u64, u64, u64)>> = BTreeMap::new();
+    let mut arms: BTreeMap<String, Vec<Arm>> = BTreeMap::new();
     for record in records {
         if let Record::OverflowArm {
             payload,
@@ -438,21 +465,25 @@ fn check_overflow(records: &[Record], floors: Floors, checks: &mut Vec<Check>) {
             period,
             samples,
             value_at_interrupt,
+            dropped,
+            throttled,
         } = record
         {
-            arms.entry(payload.clone()).or_default().push((
-                *idx,
-                *period,
-                *samples,
-                *value_at_interrupt,
-            ));
+            arms.entry(payload.clone()).or_default().push(Arm {
+                idx: *idx,
+                period: *period,
+                samples: *samples,
+                value: *value_at_interrupt,
+                dropped: *dropped,
+                throttled: *throttled,
+            });
         }
     }
     let mut delivered_total = 0u64;
     let measured_payloads: BTreeSet<String> = arms.keys().cloned().collect();
     for (payload, mut rows) in arms {
         rows.sort_unstable();
-        let indices: Vec<u64> = rows.iter().map(|(idx, ..)| *idx).collect();
+        let indices: Vec<u64> = rows.iter().map(|arm| arm.idx).collect();
         let contiguous: Vec<u64> = (0..rows.len() as u64).collect();
         let all_present = indices == contiguous;
 
@@ -462,15 +493,23 @@ fn check_overflow(records: &[Record], floors: Floors, checks: &mut Vec<Check>) {
         let mut delivered = 0u64;
         let mut over_margin = 0u64;
         let mut skid_max = 0u64;
-        for (_, period, samples, value) in &rows {
-            match samples {
+        // An arm the kernel dropped records for, or throttled during, says
+        // nothing about delivery either way, so it counts against the run
+        // instead of being read as a clean single delivery.
+        let mut unaccounted = 0u64;
+        for arm in &rows {
+            if arm.dropped > 0 || arm.throttled > 0 {
+                unaccounted += 1;
+                continue;
+            }
+            match arm.samples {
                 0 => lost += 1,
                 1 => {
-                    if value < period {
+                    if arm.value < arm.period {
                         premature += 1;
                     } else {
                         delivered += 1;
-                        let skid = value - period;
+                        let skid = arm.value - arm.period;
                         skid_max = skid_max.max(skid);
                         if skid > floors.skid_margin {
                             over_margin += 1;
@@ -486,14 +525,15 @@ fn check_overflow(records: &[Record], floors: Floors, checks: &mut Vec<Check>) {
             && duplicated == 0
             && premature == 0
             && over_margin == 0
+            && unaccounted == 0
             && delivered == rows.len() as u64;
         checks.push(Check::new(
             format!("overflow[{payload}]"),
             passed,
             format!(
                 "arms={} contiguous={all_present} delivered_once={delivered} lost={lost} \
-                 duplicated={duplicated} premature={premature} skid_max={skid_max} \
-                 margin={} over_margin={over_margin}",
+                 duplicated={duplicated} premature={premature} unaccounted={unaccounted} \
+                 skid_max={skid_max} margin={} over_margin={over_margin}",
                 rows.len(),
                 floors.skid_margin
             ),
@@ -668,6 +708,8 @@ mod tests {
             period: 1000,
             samples,
             value_at_interrupt: value,
+            dropped: 0,
+            throttled: 0,
         }
     }
 
@@ -734,6 +776,40 @@ mod tests {
         let verdict = recompute(&records);
         assert!(!verdict.passed);
         assert!(verdict.checks.iter().any(|c| c.name == "plan" && !c.passed));
+    }
+
+    #[test]
+    fn a_recorded_oracle_that_disagrees_with_the_analysis_cannot_stand_in_for_it() {
+        let mut records = passing_run();
+        // Counts that match the recorded oracle, and a recorded oracle that does
+        // not match what the payload's per-iteration analysis says.
+        records.push(Record::Exactness {
+            payload: "loop_backedge".to_string(),
+            condition: "pinned-solo".to_string(),
+            rep: 2,
+            n1: 1000,
+            n2: 2000,
+            count_n1: 1000,
+            count_n2: 1500,
+            oracle_delta: 500,
+            events_per_iteration: 1,
+            multiplexed: false,
+            irqs_n1: 0,
+            irqs_n2: 0,
+        });
+        let verdict = recompute(&records);
+        assert!(!verdict.passed);
+        let check = verdict
+            .checks
+            .iter()
+            .find(|c| c.name == "exactness[loop_backedge/pinned-solo]")
+            .expect("the payload is checked");
+        assert!(
+            check.detail.contains("recorded_oracle_disagrees=1"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("mismatches=1"), "{}", check.detail);
     }
 
     #[test]
@@ -933,6 +1009,30 @@ mod tests {
             .find(|c| c.name.starts_with("overflow["))
             .expect("the payload is checked");
         assert!(check.detail.contains("premature=1"), "{}", check.detail);
+    }
+
+    #[test]
+    fn an_arm_the_kernel_dropped_records_for_cannot_be_read_as_a_delivery() {
+        for (dropped, throttled) in [(1u64, 0u64), (0, 1)] {
+            let mut records = passing_run();
+            records.push(Record::OverflowArm {
+                payload: "loop_backedge".to_string(),
+                idx: 3,
+                period: 1000,
+                samples: 1,
+                value_at_interrupt: 1000,
+                dropped,
+                throttled,
+            });
+            let verdict = recompute(&records);
+            assert!(!verdict.passed, "dropped={dropped} throttled={throttled}");
+            let check = verdict
+                .checks
+                .iter()
+                .find(|c| c.name.starts_with("overflow["))
+                .expect("the payload is checked");
+            assert!(check.detail.contains("unaccounted=1"), "{}", check.detail);
+        }
     }
 
     #[test]

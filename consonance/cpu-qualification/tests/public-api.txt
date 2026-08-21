@@ -211,6 +211,8 @@ pub cpu_qualification::perf_sys::PerfError::PinVerify
 pub cpu_qualification::perf_sys::PerfError::PinVerify::got: i32
 pub cpu_qualification::perf_sys::PerfError::PinVerify::want: usize
 pub cpu_qualification::perf_sys::PerfError::Read(alloc::string::String)
+impl core::convert::From<cpu_qualification::perf_sys::PerfError> for cpu_qualification::stage1::Stage1Error
+pub fn cpu_qualification::stage1::Stage1Error::from(cpu_qualification::perf_sys::PerfError) -> cpu_qualification::stage1::Stage1Error
 pub struct cpu_qualification::perf_sys::PerfCounter
 impl cpu_qualification::perf_sys::PerfCounter
 pub fn cpu_qualification::perf_sys::PerfCounter::disable(&self) -> core::result::Result<(), cpu_qualification::perf_sys::PerfError>
@@ -264,10 +266,12 @@ pub cpu_qualification::report::Record::HostRow::expect: alloc::string::String
 pub cpu_qualification::report::Record::HostRow::found: alloc::string::String
 pub cpu_qualification::report::Record::HostRow::scope: alloc::string::String
 pub cpu_qualification::report::Record::OverflowArm
+pub cpu_qualification::report::Record::OverflowArm::dropped: u64
 pub cpu_qualification::report::Record::OverflowArm::idx: u64
 pub cpu_qualification::report::Record::OverflowArm::payload: alloc::string::String
 pub cpu_qualification::report::Record::OverflowArm::period: u64
 pub cpu_qualification::report::Record::OverflowArm::samples: u64
+pub cpu_qualification::report::Record::OverflowArm::throttled: u64
 pub cpu_qualification::report::Record::OverflowArm::value_at_interrupt: u64
 pub cpu_qualification::report::Record::OverflowSummary
 pub cpu_qualification::report::Record::OverflowSummary::arms_total: u64
@@ -378,6 +382,75 @@ pub fn cpu_qualification::stage0_sys::probe_work_clock(&cpu_qualification::chips
 pub fn cpu_qualification::stage0_sys::read_chip_identity() -> core::result::Result<cpu_qualification::chips::ChipIdentity, cpu_qualification::stage0::Stage0Error>
 pub fn cpu_qualification::stage0_sys::read_conditions(&cpu_qualification::chips::ChipEntry, &[usize]) -> core::result::Result<alloc::vec::Vec<cpu_qualification::stage0::Reading>, cpu_qualification::stage0::Stage0Error>
 pub fn cpu_qualification::stage0_sys::run(&cpu_qualification::pack::Pack) -> core::result::Result<cpu_qualification::stage0::Stage0Outcome, cpu_qualification::stage0::Stage0Error>
+pub mod cpu_qualification::stage1
+pub enum cpu_qualification::stage1::Interference
+pub cpu_qualification::stage1::Interference::CoTenant
+pub cpu_qualification::stage1::Interference::MemoryPressure
+pub cpu_qualification::stage1::Interference::Quiet
+pub cpu_qualification::stage1::Interference::SmtSibling
+impl cpu_qualification::stage1::Interference
+pub fn cpu_qualification::stage1::Interference::all() -> [cpu_qualification::stage1::Interference; 4]
+pub fn cpu_qualification::stage1::Interference::token(self) -> &'static str
+pub enum cpu_qualification::stage1::Stage1Error
+pub cpu_qualification::stage1::Stage1Error::BadScales
+pub cpu_qualification::stage1::Stage1Error::BadScales::n1: u64
+pub cpu_qualification::stage1::Stage1Error::BadScales::n2: u64
+pub cpu_qualification::stage1::Stage1Error::BadScales::payload: alloc::string::String
+pub cpu_qualification::stage1::Stage1Error::Counter
+pub cpu_qualification::stage1::Stage1Error::Counter::detail: alloc::string::String
+pub cpu_qualification::stage1::Stage1Error::Counter::what: alloc::string::String
+pub cpu_qualification::stage1::Stage1Error::Read
+pub cpu_qualification::stage1::Stage1Error::Read::detail: alloc::string::String
+pub cpu_qualification::stage1::Stage1Error::Read::what: alloc::string::String
+pub cpu_qualification::stage1::Stage1Error::Unavailable
+pub cpu_qualification::stage1::Stage1Error::Unavailable::detail: alloc::string::String
+pub cpu_qualification::stage1::Stage1Error::Unavailable::what: alloc::string::String
+pub cpu_qualification::stage1::Stage1Error::WrongPlatform
+pub cpu_qualification::stage1::Stage1Error::WrongPlatform::target: &'static str
+impl core::convert::From<cpu_qualification::perf_sys::PerfError> for cpu_qualification::stage1::Stage1Error
+pub fn cpu_qualification::stage1::Stage1Error::from(cpu_qualification::perf_sys::PerfError) -> cpu_qualification::stage1::Stage1Error
+pub struct cpu_qualification::stage1::MeasurementPlan
+pub cpu_qualification::stage1::MeasurementPlan::arms_per_period: u64
+pub cpu_qualification::stage1::MeasurementPlan::conditions: alloc::vec::Vec<cpu_qualification::stage1::Interference>
+pub cpu_qualification::stage1::MeasurementPlan::core: usize
+pub cpu_qualification::stage1::MeasurementPlan::n1: u64
+pub cpu_qualification::stage1::MeasurementPlan::n2: u64
+pub cpu_qualification::stage1::MeasurementPlan::periods: alloc::vec::Vec<u64>
+pub cpu_qualification::stage1::MeasurementPlan::reps: u64
+impl cpu_qualification::stage1::MeasurementPlan
+pub fn cpu_qualification::stage1::MeasurementPlan::clean_reps_floor(&self) -> u64
+pub fn cpu_qualification::stage1::MeasurementPlan::overflow_floor(&self, u64) -> u64
+pub fn cpu_qualification::stage1::MeasurementPlan::slice(&self, u64, u64) -> cpu_qualification::stage1::MeasurementPlan
+pub fn cpu_qualification::stage1::MeasurementPlan::standard(usize) -> cpu_qualification::stage1::MeasurementPlan
+pub struct cpu_qualification::stage1::SkidBuckets
+pub cpu_qualification::stage1::SkidBuckets::counts: [u64; 6]
+pub cpu_qualification::stage1::SkidBuckets::max: u64
+pub cpu_qualification::stage1::SkidBuckets::min: core::option::Option<u64>
+pub cpu_qualification::stage1::SkidBuckets::total: u64
+impl cpu_qualification::stage1::SkidBuckets
+pub fn cpu_qualification::stage1::SkidBuckets::observe(&mut self, u64)
+pub fn cpu_qualification::stage1::SkidBuckets::summary(&self) -> alloc::string::String
+pub struct cpu_qualification::stage1::Stage1Outcome
+pub cpu_qualification::stage1::Stage1Outcome::records: alloc::vec::Vec<cpu_qualification::report::Record>
+pub cpu_qualification::stage1::Stage1Outcome::skid: cpu_qualification::stage1::SkidBuckets
+pub cpu_qualification::stage1::Stage1Outcome::unmeasured: alloc::vec::Vec<alloc::string::String>
+pub const cpu_qualification::stage1::NEEDS_A_VCPU: [&str; 2]
+pub const cpu_qualification::stage1::SKID_BUCKET_EDGES: [u64; 6]
+pub fn cpu_qualification::stage1::count_offset(&cpu_qualification::payload::PayloadSpec, u64, u64) -> i128
+pub fn cpu_qualification::stage1::derive_margin(u64) -> (u64, alloc::string::String)
+pub fn cpu_qualification::stage1::interrupts_for_core(&str, usize) -> u64
+pub fn cpu_qualification::stage1::is_clean(u64, u64) -> bool
+pub fn cpu_qualification::stage1::iterations_for(&cpu_qualification::payload::PayloadSpec, u64) -> u64
+pub fn cpu_qualification::stage1::offset_from_counts(u64, u64, u64) -> i128
+pub fn cpu_qualification::stage1::oracle_delta(&cpu_qualification::payload::PayloadSpec, u64, u64) -> u64
+pub fn cpu_qualification::stage1::oracle_events(u64, u64, u64) -> u64
+pub fn cpu_qualification::stage1::projection(&str, u64, u64, u64) -> cpu_qualification::report::Record
+pub mod cpu_qualification::stage1_sys
+pub fn cpu_qualification::stage1_sys::interrupts_on_core(usize) -> core::result::Result<u64, cpu_qualification::stage1::Stage1Error>
+pub fn cpu_qualification::stage1_sys::measure_exactness(u64, &cpu_qualification::payload::PayloadSpec, &cpu_qualification::stage1::MeasurementPlan, cpu_qualification::stage1::Interference) -> core::result::Result<alloc::vec::Vec<cpu_qualification::report::Record>, cpu_qualification::stage1::Stage1Error>
+pub fn cpu_qualification::stage1_sys::measure_overflow(u64, &cpu_qualification::payload::PayloadSpec, u64, u64, u64) -> core::result::Result<(alloc::vec::Vec<cpu_qualification::report::Record>, cpu_qualification::stage1::SkidBuckets), cpu_qualification::stage1::Stage1Error>
+pub fn cpu_qualification::stage1_sys::run(u64, &cpu_qualification::stage1::MeasurementPlan) -> core::result::Result<cpu_qualification::stage1::Stage1Outcome, cpu_qualification::stage1::Stage1Error>
+pub fn cpu_qualification::stage1_sys::smt_sibling(usize) -> core::result::Result<core::option::Option<usize>, cpu_qualification::stage1::Stage1Error>
 pub enum cpu_qualification::Field<T>
 pub cpu_qualification::Field::Absent
 pub cpu_qualification::Field::Absent::absent: alloc::string::String
@@ -450,10 +523,12 @@ pub cpu_qualification::Record::HostRow::expect: alloc::string::String
 pub cpu_qualification::Record::HostRow::found: alloc::string::String
 pub cpu_qualification::Record::HostRow::scope: alloc::string::String
 pub cpu_qualification::Record::OverflowArm
+pub cpu_qualification::Record::OverflowArm::dropped: u64
 pub cpu_qualification::Record::OverflowArm::idx: u64
 pub cpu_qualification::Record::OverflowArm::payload: alloc::string::String
 pub cpu_qualification::Record::OverflowArm::period: u64
 pub cpu_qualification::Record::OverflowArm::samples: u64
+pub cpu_qualification::Record::OverflowArm::throttled: u64
 pub cpu_qualification::Record::OverflowArm::value_at_interrupt: u64
 pub cpu_qualification::Record::OverflowSummary
 pub cpu_qualification::Record::OverflowSummary::arms_total: u64
