@@ -4,4 +4,6 @@
 
 pub mod archive;
 pub mod campaign;
+#[doc(hidden)]
+pub mod endpoint_frontier_harvest;
 pub mod target;
