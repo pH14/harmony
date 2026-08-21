@@ -169,9 +169,10 @@ today duplicated in `vmm-backend/src/arch/x86/mod.rs` and
 `vmm-core/src/vendor/x86/work_perf.rs`, and the skid margin, today one global in
 `vmm-backend/src/run_until.rs`.
 
-`scripts/box-gates.sh` opens every window with `cpu-qualification check`, replacing
-its hand-rolled host-baseline function. The module-identity check subsumes the current
-module-size comparison and works for `kvm_intel` and `kvm_amd` alike.
+Every hardware lane opens its run window with `cpu-qualification check`. The retired
+det-cfl-v1 lane's gate script did this with a hand-rolled host-baseline function and a
+module-size comparison; `check` replaces both for the next box that registers, and the
+module-identity check works for `kvm_intel` and `kvm_amd` alike.
 
 The `box.yml` qualification lane runs the suite. The ARM lane already names rung 1 as
 its content; this crate is that content. Baseline names stay aligned three ways: the
@@ -205,16 +206,17 @@ exactly once, 10⁶ landings with zero overshoot, 1,000 same-seed identical repe
 The second customer is **`msr1`**: the ARM box gets a pack, and the placeholder step
 in its `box.yml` lane is replaced by the suite.
 
-**`det-cfl-v1` keeps its current certification.** Its pack is transcribed from the
-constants already in code and the ratified contract; no re-run. The transcribed pack
-is what the consumer edits read, so the Intel box keeps running unchanged.
+**`det-cfl-v1` is transcribed, never re-run.** Its machine is retired along with its
+hardware lane. The pack is transcribed from the constants already in code and the
+ratified contract; it is the record the consumer edits read, and the template the next
+chip's pack follows.
 
 ## Order of work
 
 1. Crate skeleton: pack format, report format, known-chip table, `report`
    recomputation. Portable, fully unit-tested.
-2. Stage 0, plus `check`, wired into `box-gates.sh`. The transcribed `det-cfl-v1`
-   pack lands here.
+2. Stage 0, plus `check`. The transcribed `det-cfl-v1` pack lands here; lane wiring
+   waits for the next registered box.
 3. Stage 1, ported from the spike harnesses.
 4. Stages 2–3, plus the `box.yml` lane.
 5. Consumer edits: the host-assert refusal, constants read from the pack.
