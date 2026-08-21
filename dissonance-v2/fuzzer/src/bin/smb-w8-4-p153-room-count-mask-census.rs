@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Entry point for the sealed World 8-4 p153 room-count harvest.
+//! Entry point for the sealed World 8-4 p153 room-count mask census.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     fuzzer::smb::endpoint_frontier_harvest::run_from_process(
-        include_bytes!("smb-w8-4-p153-room-count-harvest.rs"),
+        include_bytes!("smb-w8-4-p153-room-count-mask-census.rs"),
         include_bytes!("../smb/endpoint_frontier_harvest.rs"),
     )
 }

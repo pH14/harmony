@@ -35,18 +35,18 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-4-p153-room-count-harvest-v1";
-const PREREGISTRATION_COMMIT: &str = "6d4c6c9d1304d2cb7230d03a1141cc3217c5af32";
+const FORMAT: &str = "smb-w8-4-p153-room-count-mask-census-v1";
+const PREREGISTRATION_COMMIT: &str = "89be84fa5f8cbf9450293350b310037a3bab95c5";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "b90b6050e52ea208a53c5b4f50b2e21d170f0dec35990de3c8753321a62632b1";
-const CODE_BASE: &str = "0e45778f30fcb7ba6855f07555db0b76af10dc6b";
-const AUTHORIZING_PREREGISTRATION: &str = "e7bb0c0b7fe1c412894b997079ee954e1a6bcbc5";
-const AUTHORIZING_IMPLEMENTATION: &str = "26f14912c7c261ae2bac348e7fe483d2cb44cc2e";
-const AUTHORIZING_RESULT: &str = "0e45778f30fcb7ba6855f07555db0b76af10dc6b";
+    "8bead7e2d52c8a07355570d2a7e8a53d3c81a1cc0ea976daf85123c395b19cd8";
+const CODE_BASE: &str = "531fae84518f53980e25393e06a5b97a8395b9ea";
+const AUTHORIZING_PREREGISTRATION: &str = "6d4c6c9d1304d2cb7230d03a1141cc3217c5af32";
+const AUTHORIZING_IMPLEMENTATION: &str = "12091c872eecb2cf0224109c16ab34be4fe3a9c8";
+const AUTHORIZING_RESULT: &str = "531fae84518f53980e25393e06a5b97a8395b9ea";
 const AUTHORIZING_REPORT_SHA256: &str =
-    "fcf8a0aaddb339f72b9e7da0ffb3c5b40be59188aaac670a483b2f9f840f6ee3";
+    "dba126e0fc52bb4a982606bf51ccbff7fcac9341d5745c207c72a3a17e68d82c";
 const AUTHORIZING_RESULT_DOC_SHA256: &str =
-    "c73278831c6309937b89f0b9633d9b45f642093e5bae05b0de472906c69e2062";
+    "aa7f6c2c94086faf39202d92477dc9b287451d877fe2591ed643a0ed85ccc771";
 const SOURCE_FILE_SHA256: &str = "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
 const SOURCE_INPUT_SHA256: &str =
     "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
@@ -98,7 +98,76 @@ const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
 const MAX_ACTION_FRAMES: u64 = 737_280;
 const MAX_PROBE_FRAMES: u64 = 829_440;
 const SOURCE_PROBE_FRAMES: u64 = 45;
-const MAX_TOTAL_FRAMES: u64 = 1_740_052;
+const MAX_TOTAL_FRAMES: u64 = 20_339_752;
+const CENSUS_MASKS: [u8; 14] = [0, 1, 2, 16, 32, 64, 66, 128, 129, 130, 131, 192, 193, 194];
+const CENSUS_HOLD_FRAMES: u8 = 120;
+const CENSUS_BOUNDARIES: usize = 72_940;
+const MAX_CENSUS_ACTION_FRAMES: u64 = 8_752_800;
+const MAX_CENSUS_PROBE_FRAMES: u64 = 9_846_900;
+const REGISTERED_FINAL_ENTRIES: [(usize, &str); LANES] = [
+    (
+        468,
+        "59f0f243d761526c6be332adbfb30177e36d26e683ad4a1c924fbd2c3261a4a2",
+    ),
+    (
+        383,
+        "8bb95455c719fb6ac0a7e5ba6d313b7f3b37f006e91f0ca2e9a232bde409d3d9",
+    ),
+    (
+        433,
+        "3e9de6122428b421533b2cc70b61ee213498bcfc3d43f0b97cbce6660bb96173",
+    ),
+    (
+        435,
+        "831c5e36d0eea3860f641d4b73569c11ee2bed505100577cc2c163e39721d7b9",
+    ),
+    (
+        454,
+        "e1355a0919a39426af04a62a56b5fe52a03e3bdef76982bbe6ca981b1c3deee6",
+    ),
+    (
+        433,
+        "f11923a0cb7e3a346562aefaa4d6c3a0b293b2439455f0fd8b85109bc27b205c",
+    ),
+    (
+        394,
+        "92c02e0b5d795e3273ae4b0f4b475793459ecc95c54673876774db101d1338cc",
+    ),
+    (
+        455,
+        "dc3ef6812a29175eb340c39a7151ee93994f4e5588a954c62075696ab21658c7",
+    ),
+    (
+        493,
+        "6895dfbe182e4813cfcfe1743dfc45762210e68116b7226257f2cfea82fe10d6",
+    ),
+    (
+        390,
+        "06ec7fb18300ed0c29938b67673e8d29802a7713c84ea1b680bb9301d0eae864",
+    ),
+    (
+        435,
+        "e6d2fdc960536ee1d17039d23012f9ccdc43489972714fa840524cf71b343eb2",
+    ),
+    (
+        437,
+        "0cd4084e9190d03d69d296f10cb243182ed849b7cb6f9f64ee51bcf3bde86855",
+    ),
+];
+const REGISTERED_HARVEST_WORK: [(u64, u64); LANES] = [
+    (21_059, 22_204),
+    (20_052, 19_544),
+    (23_920, 22_411),
+    (22_732, 22_050),
+    (21_656, 21_689),
+    (20_472, 23_479),
+    (20_731, 19_441),
+    (22_936, 22_518),
+    (23_907, 22_820),
+    (22_065, 21_760),
+    (20_475, 21_251),
+    (26_010, 22_757),
+];
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const PROBE_FRAMES: u16 = 45;
 const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 1] = [(0x00, 45, false, true)];
@@ -178,6 +247,12 @@ struct Config {
     action_limit: usize,
     archive_limit: usize,
     max_lineage_actions: usize,
+    census_masks: [u8; 14],
+    census_hold_frames: u8,
+    census_boundaries: usize,
+    census_probe_rule: &'static str,
+    max_census_action_frames: u64,
+    max_census_probe_frames: u64,
     room_term: &'static str,
     room_bytes: [usize; 2],
     source_room: RoomValue,
@@ -341,6 +416,29 @@ struct FinalEntryRecord {
     work_frames: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct CensusBoundary {
+    id: usize,
+    mask: u8,
+    action: ButtonChord,
+    parent_input_sha256: String,
+    input_actions: usize,
+    input_sha256: String,
+    observation: SmbObservations,
+    mechanical: SmbMechanicalState,
+    room: RoomValue,
+    room_set: Vec<RoomValue>,
+    full_watermark: FullWatermark,
+    key: Option<SmbArchiveKey>,
+    wram_sha256: String,
+    action_frames: u64,
+    dead: bool,
+    room_exit: bool,
+    probe: Vec<ProbeAttempt>,
+    probe_survived: bool,
+    probe_frames: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct LaneRecord {
     record: &'static str,
@@ -350,6 +448,7 @@ struct LaneRecord {
     initial_archive_sha256: String,
     draws: Vec<DrawRecord>,
     final_active_entries: Vec<FinalEntryRecord>,
+    final_entries_sha256: String,
     final_maximum: ActiveMaximum,
     maximum_lineage_actions: usize,
     scheduled_draws: usize,
@@ -358,6 +457,11 @@ struct LaneRecord {
     selector_accounting: SmbSelectorAccounting,
     action_frames: u64,
     probe_frames: u64,
+    census: Vec<CensusBoundary>,
+    census_boundaries: usize,
+    census_room_exits: usize,
+    census_action_frames: u64,
+    census_probe_frames: u64,
     total_work_frames: u64,
     #[serde(skip)]
     champion_candidates: Vec<ChampionCandidate>,
@@ -367,6 +471,7 @@ struct LaneRecord {
 struct ChampionCandidate {
     lane: usize,
     id: usize,
+    mask: u8,
     draw: usize,
     recipe: Recipe,
     parent_id: usize,
@@ -382,6 +487,7 @@ struct ChampionCandidate {
 struct ChampionRecord {
     lane: usize,
     id: usize,
+    mask: u8,
     draw: usize,
     recipe: Recipe,
     parent_id: usize,
@@ -399,10 +505,20 @@ enum Verdict {
     Stop,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum RoomExitClass {
+    RoomExitObserved,
+    NoRoomExit,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct ClassificationRecord {
     record: &'static str,
     verdict: Verdict,
+    room_exit: RoomExitClass,
+    census_boundaries: usize,
+    room_exit_boundaries: usize,
     eligible_entries: usize,
     champion: Option<ChampionRecord>,
 }
@@ -422,6 +538,9 @@ struct SummaryRecord {
     source_probe_frames: u64,
     action_frames: u64,
     probe_frames: u64,
+    census_boundaries: usize,
+    census_action_frames: u64,
+    census_probe_frames: u64,
     experimental_frames: u64,
     total_frames: u64,
 }
@@ -529,6 +648,12 @@ pub fn run_from_process(
         action_limit: ACTION_LIMIT,
         archive_limit: ARCHIVE_LIMIT,
         max_lineage_actions: MAX_LINEAGE_ACTIONS,
+        census_masks: CENSUS_MASKS,
+        census_hold_frames: CENSUS_HOLD_FRAMES,
+        census_boundaries: CENSUS_BOUNDARIES,
+        census_probe_rule: "only_live_boundaries_strictly_above_source_full_watermark_v1",
+        max_census_action_frames: MAX_CENSUS_ACTION_FRAMES,
+        max_census_probe_frames: MAX_CENSUS_PROBE_FRAMES,
         room_term: "distinct_room_count_per_level_at_action_boundaries_v1",
         room_bytes: ROOM_BYTES,
         source_room: SOURCE_ROOM,
@@ -651,6 +776,9 @@ pub fn run_from_process(
         source_probe_frames: work.source_probe,
         action_frames: work.action,
         probe_frames: work.probe,
+        census_boundaries: work.census_boundaries,
+        census_action_frames: work.census_action,
+        census_probe_frames: work.census_probe,
         experimental_frames: work.experimental,
         total_frames: work.total,
     };
@@ -1313,7 +1441,192 @@ fn run_lane(
     if lane_delta != total_work_frames {
         return Err("lane work does not reconcile".into());
     }
-    let (final_active_entries, champion_candidates) = final_entries(lane, &archive, &retained)?;
+    let (final_active_entries, _) = final_entries(lane, &archive, &retained)?;
+    let final_entries_sha256 = sha256_json(&final_active_entries)?;
+    let (registered_count, registered_sha256) = REGISTERED_FINAL_ENTRIES[lane];
+    if final_active_entries.len() != registered_count
+        || final_entries_sha256 != registered_sha256
+        || (action_total, probe_total) != REGISTERED_HARVEST_WORK[lane]
+    {
+        return Err("reproduced harvest archive does not match the registered lane".into());
+    }
+    let final_maximum = active_maximum(&archive)?;
+    let selector_accounting = archive.selector_report();
+    let harvest_work_frames = total_work_frames;
+
+    let census_before = target.frames_clocked();
+    let mut census = Vec::with_capacity(
+        final_active_entries
+            .len()
+            .checked_mul(CENSUS_MASKS.len())
+            .ok_or("census size overflow")?,
+    );
+    let mut champion_candidates = Vec::new();
+    let mut census_action_total = 0_u64;
+    let mut census_probe_total = 0_u64;
+    let mut census_room_exits = 0_usize;
+    for record in &final_active_entries {
+        let id = record.id;
+        let entry = archive.entries.get(id).ok_or("census entry is missing")?;
+        let entry_rooms = room_sets.get(id).ok_or("census entry lacks a room set")?;
+        let parent_input_sha256 = sha256_json(&entry.report.input)?;
+        if parent_input_sha256 != record.input_sha256 {
+            return Err("census entry input identity changed".into());
+        }
+        for mask in CENSUS_MASKS {
+            let action = ButtonChord::new(mask, CENSUS_HOLD_FRAMES);
+            if action.bounded_hold_frames() != CENSUS_HOLD_FRAMES {
+                return Err("census chord duration was clamped".into());
+            }
+            target.restore(&entry.snapshot)?;
+            verify_snapshot(target, &entry.snapshot)?;
+            let boundary_before = target.frames_clocked();
+            target.apply(&action);
+            let action_frames = target
+                .frames_clocked()
+                .checked_sub(boundary_before)
+                .ok_or("census action work counter moved backwards")?;
+            if target.exit_kind() != ExitKind::Ok {
+                return Err("emulator failed during a census action".into());
+            }
+            let dead = target.is_dead();
+            if action_frames > u64::from(CENSUS_HOLD_FRAMES)
+                || (!dead && action_frames != u64::from(CENSUS_HOLD_FRAMES))
+            {
+                return Err("census action did not execute its registered duration".into());
+            }
+            let observation = target.observe();
+            let mechanical = smb_mechanical_state_from_wram(target.wram());
+            let input = appended_input(&entry.report.input, action)?;
+            if input.actions.len() > ACTION_LIMIT {
+                return Err("census input exceeds the action limit".into());
+            }
+            let input_sha256 = sha256_json(&input)?;
+            let wram_sha256 = sha256_bytes(target.wram());
+            let room = room_value(target.wram())?;
+            let room_set = child_room_set(entry_rooms, entry.report.key, mechanical, room);
+            let rooms = room_count(&room_set)?;
+            let full_watermark = full_watermark(mechanical, rooms);
+            let room_exit = room != SOURCE_ROOM
+                && (mechanical.world, mechanical.level) == (BASELINE_KEY.world, BASELINE_KEY.level);
+            if room_exit {
+                census_room_exits = census_room_exits
+                    .checked_add(1)
+                    .ok_or("room exit count overflow")?;
+            }
+            let mut key = None;
+            let mut probe = Vec::new();
+            let mut probe_survived = false;
+            let mut probe_frames = 0_u64;
+            if !dead {
+                let mut candidate_key = archive_key(target.wram(), SmbArchiveKeyPolicy::Frozen);
+                candidate_key.rooms = rooms;
+                key = Some(candidate_key);
+                if full_watermark > BASELINE_FULL_WATERMARK {
+                    let snapshot = target
+                        .snapshot()
+                        .ok_or("failed to snapshot census boundary")?;
+                    let (attempts, survived, work) = run_probe(target, &snapshot)?;
+                    probe = attempts;
+                    probe_survived = survived;
+                    probe_frames = work;
+                }
+            }
+            let boundary_work = target
+                .frames_clocked()
+                .checked_sub(boundary_before)
+                .ok_or("census boundary work counter moved backwards")?;
+            if boundary_work
+                != action_frames
+                    .checked_add(probe_frames)
+                    .ok_or("census boundary work overflow")?
+            {
+                return Err("census boundary work does not reconcile".into());
+            }
+            census_action_total = census_action_total
+                .checked_add(action_frames)
+                .ok_or("census action work overflow")?;
+            census_probe_total = census_probe_total
+                .checked_add(probe_frames)
+                .ok_or("census probe work overflow")?;
+            let boundary = CensusBoundary {
+                id,
+                mask,
+                action,
+                parent_input_sha256: parent_input_sha256.clone(),
+                input_actions: input.actions.len(),
+                input_sha256: input_sha256.clone(),
+                observation,
+                mechanical,
+                room,
+                room_set: room_set.clone(),
+                full_watermark,
+                key,
+                wram_sha256,
+                action_frames,
+                dead,
+                room_exit,
+                probe,
+                probe_survived,
+                probe_frames,
+            };
+            if !dead && probe_survived && full_watermark > BASELINE_FULL_WATERMARK {
+                let mut lineage = parent_lineage(&archive, id)?;
+                lineage.push(u64::try_from(id)?);
+                champion_candidates.push(ChampionCandidate {
+                    lane,
+                    id,
+                    mask,
+                    draw: record.draw,
+                    recipe: record.recipe,
+                    parent_id: id,
+                    input,
+                    input_sha256_bytes: hex_to_array(&input_sha256)?,
+                    input_sha256: input_sha256.clone(),
+                    parent_lineage: lineage,
+                    endpoint: EndpointEvidence {
+                        action,
+                        input_actions: boundary.input_actions,
+                        input_sha256,
+                        observation: boundary.observation.clone(),
+                        mechanical,
+                        watermark: watermark(mechanical),
+                        room,
+                        room_set,
+                        full_watermark,
+                        wram_sha256: boundary.wram_sha256.clone(),
+                        snapshot_sha256: None,
+                        key,
+                        milestones: entry.report.milestones,
+                        action_frames,
+                        dead,
+                        failed: false,
+                        probe: boundary.probe.clone(),
+                        probe_survived,
+                        probe_frames,
+                        admission: AdmissionOutcome::ProbeRefused,
+                    },
+                    work_frames: boundary_work,
+                });
+            }
+            census.push(boundary);
+            target.restore(&entry.snapshot)?;
+            verify_snapshot(target, &entry.snapshot)?;
+        }
+    }
+    let census_work = census_action_total
+        .checked_add(census_probe_total)
+        .ok_or("census work overflow")?;
+    let census_delta = target
+        .frames_clocked()
+        .checked_sub(census_before)
+        .ok_or("census work counter moved backwards")?;
+    if census_delta != census_work {
+        return Err("census work does not reconcile".into());
+    }
+    let total_work_frames = harvest_work_frames
+        .checked_add(census_work)
+        .ok_or("lane total work overflow")?;
     Ok(LaneRecord {
         record: "lane",
         lane,
@@ -1322,14 +1635,20 @@ fn run_lane(
         initial_archive_sha256,
         draws,
         final_active_entries,
-        final_maximum: active_maximum(&archive)?,
+        final_entries_sha256,
+        final_maximum,
         maximum_lineage_actions,
         scheduled_draws: DRAWS,
         executed_draws: DRAWS,
         selections: DRAWS,
-        selector_accounting: archive.selector_report(),
+        selector_accounting,
         action_frames: action_total,
         probe_frames: probe_total,
+        census_boundaries: census.len(),
+        census_room_exits,
+        census,
+        census_action_frames: census_action_total,
+        census_probe_frames: census_probe_total,
         total_work_frames,
         champion_candidates,
     })
@@ -1559,6 +1878,7 @@ fn final_entries(
         candidates.push(ChampionCandidate {
             lane,
             id,
+            mask: 0,
             draw: evidence.draw,
             recipe: evidence.recipe,
             parent_id: evidence.parent_id,
@@ -1613,6 +1933,35 @@ fn classify(lanes: &[LaneRecord]) -> Result<ClassificationRecord, Box<dyn Error>
             return Err("lane record order or shape is not canonical".into());
         }
     }
+    let mut census_boundaries = 0_usize;
+    let mut room_exit_boundaries = 0_usize;
+    for record in lanes {
+        if record.census.len() != record.census_boundaries
+            || record.census.len()
+                != record
+                    .final_active_entries
+                    .len()
+                    .checked_mul(CENSUS_MASKS.len())
+                    .ok_or("census size overflow")?
+            || record
+                .census
+                .iter()
+                .filter(|boundary| boundary.room_exit)
+                .count()
+                != record.census_room_exits
+        {
+            return Err("lane census shape is not canonical".into());
+        }
+        census_boundaries = census_boundaries
+            .checked_add(record.census_boundaries)
+            .ok_or("census boundary count overflow")?;
+        room_exit_boundaries = room_exit_boundaries
+            .checked_add(record.census_room_exits)
+            .ok_or("room exit count overflow")?;
+    }
+    if census_boundaries != CENSUS_BOUNDARIES {
+        return Err("census boundary count does not match the preregistration".into());
+    }
     let candidates = lanes
         .iter()
         .flat_map(|lane| lane.champion_candidates.iter().cloned())
@@ -1620,9 +1969,17 @@ fn classify(lanes: &[LaneRecord]) -> Result<ClassificationRecord, Box<dyn Error>
     let eligible_entries = candidates.len();
     let champion = rank_champion(candidates);
     let verdict = verdict_for(champion.as_ref());
+    let room_exit = if room_exit_boundaries > 0 {
+        RoomExitClass::RoomExitObserved
+    } else {
+        RoomExitClass::NoRoomExit
+    };
     Ok(ClassificationRecord {
         record: "classification",
         verdict,
+        room_exit,
+        census_boundaries,
+        room_exit_boundaries,
         eligible_entries,
         champion,
     })
@@ -1638,10 +1995,12 @@ fn rank_champion(mut candidates: Vec<ChampionCandidate>) -> Option<ChampionRecor
             .then_with(|| left.input_sha256_bytes.cmp(&right.input_sha256_bytes))
             .then_with(|| left.lane.cmp(&right.lane))
             .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.mask.cmp(&right.mask))
     });
     candidates.first().map(|candidate| ChampionRecord {
         lane: candidate.lane,
         id: candidate.id,
+        mask: candidate.mask,
         draw: candidate.draw,
         recipe: candidate.recipe,
         parent_id: candidate.parent_id,
@@ -1675,6 +2034,9 @@ struct WorkSummary {
     source_probe: u64,
     action: u64,
     probe: u64,
+    census_boundaries: usize,
+    census_action: u64,
+    census_probe: u64,
     experimental: u64,
     total: u64,
 }
@@ -1696,6 +2058,9 @@ fn summarize_work(
     let mut selections = 0_usize;
     let mut action = 0_u64;
     let mut probe = 0_u64;
+    let mut census_boundaries = 0_usize;
+    let mut census_action = 0_u64;
+    let mut census_probe = 0_u64;
     for (lane, record) in lanes.iter().enumerate() {
         if record.lane != lane
             || record.setup_frames != EXPECTED_SETUP_FRAMES
@@ -1723,10 +2088,21 @@ fn summarize_work(
         probe = probe
             .checked_add(record.probe_frames)
             .ok_or("probe work overflow")?;
+        census_boundaries = census_boundaries
+            .checked_add(record.census_boundaries)
+            .ok_or("census boundary count overflow")?;
+        census_action = census_action
+            .checked_add(record.census_action_frames)
+            .ok_or("census action work overflow")?;
+        census_probe = census_probe
+            .checked_add(record.census_probe_frames)
+            .ok_or("census probe work overflow")?;
         if record.total_work_frames
             != record
                 .action_frames
                 .checked_add(record.probe_frames)
+                .and_then(|value| value.checked_add(record.census_action_frames))
+                .and_then(|value| value.checked_add(record.census_probe_frames))
                 .ok_or("lane component work overflow")?
         {
             return Err("lane work does not reconcile in summary".into());
@@ -1746,11 +2122,16 @@ fn summarize_work(
         || setup != expected_setup
         || action > MAX_ACTION_FRAMES
         || probe > MAX_PROBE_FRAMES
+        || census_boundaries != CENSUS_BOUNDARIES
+        || census_action > MAX_CENSUS_ACTION_FRAMES
+        || census_probe > MAX_CENSUS_PROBE_FRAMES
     {
         return Err("work component exceeds the preregistered bound".into());
     }
     let experimental = action
         .checked_add(probe)
+        .and_then(|value| value.checked_add(census_action))
+        .and_then(|value| value.checked_add(census_probe))
         .ok_or("experimental work overflow")?;
     let total = setup
         .checked_add(SOURCE_FRAMES)
@@ -1768,6 +2149,9 @@ fn summarize_work(
         source_probe,
         action,
         probe,
+        census_boundaries,
+        census_action,
+        census_probe,
         experimental,
         total,
     })
@@ -1982,6 +2366,7 @@ mod tests {
         ChampionCandidate {
             lane,
             id,
+            mask: 0,
             draw: id,
             recipe,
             parent_id: 0,
@@ -2104,6 +2489,7 @@ mod tests {
             initial_archive_sha256: String::new(),
             draws: Vec::new(),
             final_active_entries: Vec::new(),
+            final_entries_sha256: String::new(),
             final_maximum: ActiveMaximum {
                 watermark: BASELINE_FULL_WATERMARK,
                 ids: vec![0],
@@ -2115,6 +2501,11 @@ mod tests {
             selector_accounting: SmbSelectorAccounting::default(),
             action_frames,
             probe_frames,
+            census: Vec::new(),
+            census_boundaries: REGISTERED_FINAL_ENTRIES[lane].0 * CENSUS_MASKS.len(),
+            census_room_exits: 0,
+            census_action_frames: 0,
+            census_probe_frames: 0,
             total_work_frames: action_frames + probe_frames,
             champion_candidates: Vec::new(),
         }
@@ -2622,12 +3013,30 @@ mod tests {
         let lanes = (0..LANES)
             .map(|lane| minimal_lane(lane, per_lane_action, per_lane_probe))
             .collect::<Vec<_>>();
+        let mut lanes = lanes;
+        for lane in &mut lanes {
+            let boundaries = u64::try_from(lane.census_boundaries).expect("boundaries fit u64");
+            lane.census_action_frames = boundaries * u64::from(CENSUS_HOLD_FRAMES);
+            lane.census_probe_frames =
+                boundaries * u64::from(PROBE_FRAMES) * u64::try_from(PROBE_MASKS.len()).unwrap();
+            lane.total_work_frames += lane.census_action_frames + lane.census_probe_frames;
+        }
         let summary = summarize_work(&lanes, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES)
             .expect("cap reconciles");
         assert_eq!(summary.action, MAX_ACTION_FRAMES);
         assert_eq!(summary.probe, MAX_PROBE_FRAMES);
+        assert_eq!(summary.census_boundaries, CENSUS_BOUNDARIES);
+        assert_eq!(summary.census_action, MAX_CENSUS_ACTION_FRAMES);
+        assert_eq!(summary.census_probe, MAX_CENSUS_PROBE_FRAMES);
         assert_eq!(summary.source_probe, SOURCE_PROBE_FRAMES);
         assert_eq!(summary.total, MAX_TOTAL_FRAMES);
+        let mut census_over = lanes.clone();
+        census_over[0].census_action_frames += 1;
+        census_over[0].total_work_frames += 1;
+        assert!(summarize_work(&census_over, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES).is_err());
+        let mut census_short = lanes.clone();
+        census_short[0].census_boundaries -= 1;
+        assert!(summarize_work(&census_short, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES).is_err());
         assert!(summarize_work(&lanes, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES - 1).is_err());
 
         let mut over = lanes;
@@ -2640,6 +3049,60 @@ mod tests {
             .collect::<Vec<_>>();
         wrong_count[0].executed_draws -= 1;
         assert!(summarize_work(&wrong_count, EXPECTED_SETUP_FRAMES, SOURCE_PROBE_FRAMES).is_err());
+    }
+
+    #[test]
+    fn census_grid_matches_the_preregistration() {
+        assert_eq!(
+            REGISTERED_FINAL_ENTRIES
+                .iter()
+                .map(|(count, _)| *count)
+                .sum::<usize>()
+                * CENSUS_MASKS.len(),
+            CENSUS_BOUNDARIES
+        );
+        assert!(CENSUS_MASKS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            ButtonChord::new(194, CENSUS_HOLD_FRAMES).bounded_hold_frames(),
+            CENSUS_HOLD_FRAMES
+        );
+        assert_eq!(
+            u64::try_from(CENSUS_BOUNDARIES).unwrap() * u64::from(CENSUS_HOLD_FRAMES),
+            MAX_CENSUS_ACTION_FRAMES
+        );
+        assert_eq!(
+            u64::try_from(CENSUS_BOUNDARIES * PROBE_MASKS.len()).unwrap() * u64::from(PROBE_FRAMES),
+            MAX_CENSUS_PROBE_FRAMES
+        );
+        assert!(
+            REGISTERED_FINAL_ENTRIES
+                .iter()
+                .all(|(_, sha)| sha.len() == 64)
+        );
+        assert!(
+            REGISTERED_HARVEST_WORK
+                .iter()
+                .all(|(action, probe)| *action <= 512 * 120 && *probe <= 512 * 135)
+        );
+    }
+
+    #[test]
+    fn census_ranking_breaks_ties_by_mask_and_room_exit_class_is_frozen() {
+        let mut low_mask = candidate_with_rooms(2, 9, 7, 3, 2, 4, 1, 0x40);
+        low_mask.mask = 16;
+        let mut high_mask = candidate_with_rooms(2, 9, 7, 3, 2, 4, 1, 0x40);
+        high_mask.mask = 32;
+        let ranked = rank_champion(vec![high_mask, low_mask]).expect("champion");
+        assert_eq!(ranked.mask, 16);
+        assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
+        assert_eq!(
+            serde_json::to_string(&RoomExitClass::RoomExitObserved).expect("serialize class"),
+            "\"ROOM_EXIT_OBSERVED\""
+        );
+        assert_eq!(
+            serde_json::to_string(&RoomExitClass::NoRoomExit).expect("serialize class"),
+            "\"NO_ROOM_EXIT\""
+        );
     }
 
     #[test]
