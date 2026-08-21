@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary sealed runner for the World 8-4 p113 normal-endpoint harvest.
+//! Temporary sealed runner for the World 8-4 p153 normal-endpoint harvest.
 
 use std::{
     collections::BTreeMap,
@@ -35,56 +35,56 @@ use crate::{
     target::Target,
 };
 
-const FORMAT: &str = "smb-w8-4-p113-normal-endpoint-harvest-v1";
-const PREREGISTRATION_COMMIT: &str = "d0092d77a2e2c7121ba53bf09d31e975dc7d9146";
+const FORMAT: &str = "smb-w8-4-p153-normal-endpoint-harvest-v1";
+const PREREGISTRATION_COMMIT: &str = "3c264bf1aecc49cb6f04db70d41e05f9fac4b9fd";
 const PREREGISTRATION_DOC_SHA256: &str =
-    "36c6ac1a79320434b98001475d926832153595a380358cf96426cab75e7c7c40";
-const CODE_BASE: &str = "4d3440d4ff2265fb9869e8ab3cceff8277963b31";
-const AUTHORIZING_BRIDGE_PREREGISTRATION: &str = "ca7a7b2239a6fa6b44e1e0cb87d75a405b3c109b";
-const AUTHORIZING_BRIDGE_IMPLEMENTATION: &str = "a8ba2346cc99c8ae78a8a419d2574c97c87dfe32";
-const AUTHORIZING_BRIDGE_RESULT: &str = "4d3440d4ff2265fb9869e8ab3cceff8277963b31";
-const AUTHORIZING_BRIDGE_REPORT_SHA256: &str =
-    "b33441042225e4a047178f708acc7b97e396e003b6212c065c21b314ed979abd";
-const AUTHORIZING_BRIDGE_RESULT_DOC_SHA256: &str =
-    "6d79ffaea623cc835f617a044495840bc8b259d488da90bf4a4dbefa88fb0e45";
-const SOURCE_FILE_SHA256: &str = "0b72eafdf81670fdf40ef80dab9226ddbee7c855728661f893816789fb24239f";
+    "3bacab814312ba9cccc439974015545e74af1981fb277ec8cd36818cfb0f70c5";
+const CODE_BASE: &str = "8b522f35df8dd0e2922f0a10a944c6779c1cbea8";
+const AUTHORIZING_PREREGISTRATION: &str = "d0092d77a2e2c7121ba53bf09d31e975dc7d9146";
+const AUTHORIZING_IMPLEMENTATION: &str = "c765fcf4ccde299c0a880c70955f9683f42554fc";
+const AUTHORIZING_RESULT: &str = "8b522f35df8dd0e2922f0a10a944c6779c1cbea8";
+const AUTHORIZING_REPORT_SHA256: &str =
+    "727227f63bd44d1427b04965f44aa82a448a8f407f93af97af2f9c24756ef4d9";
+const AUTHORIZING_RESULT_DOC_SHA256: &str =
+    "597294bc6fa90885aa98e22e9902d4acf175187059ce2cee785961c4f536da5c";
+const SOURCE_FILE_SHA256: &str = "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
 const SOURCE_INPUT_SHA256: &str =
-    "0b72eafdf81670fdf40ef80dab9226ddbee7c855728661f893816789fb24239f";
-const SOURCE_BYTES: usize = 114_388;
-const SOURCE_WRAM_SHA256: &str = "3bcdfbb5291fdfbf94ed016a77783e6bbb4b400c3ae24dc8d73f5d3ea844a24c";
+    "14af93bd006ba77cea923ab31cb7aa8ac0ad903a7bc65d5a378c92ccc337300b";
+const SOURCE_BYTES: usize = 114_838;
+const SOURCE_WRAM_SHA256: &str = "897c7bc0df63a68249b75e81a8bfc8ea3a87a7c872241d4e51a2819ff39689c5";
 const SOURCE_SNAPSHOT_SHA256: &str =
-    "0e87a78fc87df608fb466cd94154e814e095dad9eb2956edfaebba7b34080f00";
+    "329594d247d5a97ea59a0e7ec1b0856cfb0388141941f05062e4d6641adf5344";
 const ROM_SHA256: &str = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
-const SEED_LABEL: &str = "sol-restart-w8-4-p113-normal-endpoint-harvest-v1";
-const SEED_LABEL_SHA256: &str = "063eb12ff0a5d06af90cc088f21ba22ff47db6949b5ae16a189a93b095ffa9c1";
-const MASTER_SEED: u64 = 7_696_834_214_187_056_646;
+const SEED_LABEL: &str = "sol-restart-w8-4-p153-normal-endpoint-harvest-v1";
+const SEED_LABEL_SHA256: &str = "397ff1b0d4146d3cc4cf6a59229f78ec8213c804291f3871cd2622ad2869cadc";
+const MASTER_SEED: u64 = 4_354_159_318_471_376_697;
 const EXPECTED_RECIPE_SHA256: &str =
-    "8a0d66a2f13be9fdaa2e15bbe97c1239e7a4def8e95f93ffefdeb125ea839dfd";
-const EXPECTED_RECIPE_BYTES: usize = 400_322;
+    "15c8fd2cfc37d10fd8e8b0ac7c9e0e4d15ba4c7857cb944b60dd2b113b0939fc";
+const EXPECTED_RECIPE_BYTES: usize = 400_307;
 const EXPECTED_PROJECTION_SHA256: [&str; 12] = [
-    "d28b07f53dadd7b87f31efac816d9f1c4984e0ae8a5082b5f3fe58d2cec84ec9",
-    "07e792ecc558728252fce79614096b4ce9ef08a22483f159d075b693af3c26d5",
-    "c9186304ed12324e13a111340aa1226c69dcc0c31210aa84d61a6e541404e11a",
-    "4243d937660ceda0c35912ccc1645d3baa0ccc6e5acbc8bf370bd4795aee3e2e",
-    "8bc2a5533d2d618959434f23a50c7f3a961ed7d222e1dd152cf44980c3589249",
-    "ef2e7bc8aa86b65e83b0c53fc9f4471109515732f48fbb38bcae9d7730cba83c",
-    "41af6b4e49d72cc5248b4ebe01011fe14b74f5dba5e0fb582960a7a245922318",
-    "d9ade5d6ba4d2377f1d166f1507c14fd3873ecfd2d54762fb68d1d4d094a24b1",
-    "ad7fedb65bdbec4eb9f7bb230e9592555d0c06a4a185197c58a9200af33460a4",
-    "4de73f5190a5c379c009788079fcda6720cdcee6a9dd845aff1a78f7e48ddcc1",
-    "4ce01d9c3fcbe668787dc1adf075274c3c3af42456959c790f97caa4abc64748",
-    "8d538ca8ae3a7f6dfe14a6934064bea3d5c204f96378f46f9295f9e5a6819e41",
+    "42ceb5b02aa49b28184c68699d9c02fcb99be87f7cba81a114344681eeac8071",
+    "f803e213a1a89b9bc1edfb4c7d001e9791c38a6873f5aec0c15fd1f04944b401",
+    "cff70ceea1b243bcb7f877f92a86172ce6e0a8bf78a3a664aa3dc05cf4f581bd",
+    "e62ac59f18017fef50e3ea25ecea3de50554e8a9cb7a1f449f8cbc25e31889bf",
+    "bc1a82c0d66424a2ff5ce4aac29290389a183672d02da245eb2fa47f8b536162",
+    "c20bcf8741df1f0161c970fe9db06a3f397854da21088f51bb155e809a8638be",
+    "1f966a5587c8cfe8b4ace8cb51baaf80e96628d429bff990f1e867da2a4342ed",
+    "b7af7f78a474f6d16d8d895f7b17abd3c09d465c075c3e83e3b3c0f207e5cae2",
+    "47718d3f31731238207f8911c038112d7ddd99a2cf0c18a7107bd3d652bb569b",
+    "ae48e3cac4978cbe7c4d4c314e7031a6d23b5fd580d9e1a0d7dff5a4de105730",
+    "dc3e354b0bb36207cc9a8200e271f22a5b3c0220900857b2bf4d780d6c3e42f2",
+    "94661066219b85b7ed0a6dbaa1d024a997acd981cd9be1bc0d13e1f80a5e31c6",
 ];
 const EXPECTED_PROJECTION_BYTES: [usize; 12] = [
-    32_195, 32_279, 32_268, 32_247, 32_245, 32_208, 32_262, 32_226, 32_237, 32_279, 32_304, 32_271,
+    32_286, 32_213, 32_288, 32_252, 32_254, 32_298, 32_208, 32_253, 32_297, 32_229, 32_183, 32_245,
 ];
-const SOURCE_ACTIONS: usize = 3_562;
-const SOURCE_FRAMES: u64 = 167_705;
+const SOURCE_ACTIONS: usize = 3_576;
+const SOURCE_FRAMES: u64 = 168_594;
 const LANES: usize = 12;
 const DRAWS: usize = 512;
 const ACTION_LIMIT: usize = 4_096;
 const ARCHIVE_LIMIT: usize = 513;
-const MAX_LINEAGE_ACTIONS: usize = 4_074;
+const MAX_LINEAGE_ACTIONS: usize = 4_088;
 const EXPECTED_SETUP_FRAMES: u64 = 361;
 const MAX_SOURCE_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_ROM_BYTES: usize = 16 * 1_024 * 1_024;
@@ -92,7 +92,7 @@ const MAX_EXECUTABLE_BYTES: usize = 256 * 1_024 * 1_024;
 const MAX_ACTION_FRAMES: u64 = 737_280;
 const MAX_PROBE_FRAMES: u64 = 829_440;
 const SOURCE_PROBE_FRAMES: u64 = 45;
-const MAX_TOTAL_FRAMES: u64 = 1_739_163;
+const MAX_TOTAL_FRAMES: u64 = 1_740_052;
 const PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 const PROBE_FRAMES: u16 = 45;
 const SOURCE_PROBE_TRANSCRIPT: [(u8, u64, bool, bool); 1] = [(0x00, 45, false, true)];
@@ -100,12 +100,12 @@ const TRACE_DOMAIN: &[u8] = b"smb-trace-canary-v1\0trace\0";
 const BASELINE_WATERMARK: SmbProgressWatermark = SmbProgressWatermark {
     world: 7,
     level: 3,
-    progress: 113,
+    progress: 153,
 };
 const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
     world: 7,
     level: 3,
-    progress: 113,
+    progress: 153,
     player_y_bucket: 11,
     player_engine_state: 8,
     dead: false,
@@ -114,10 +114,10 @@ const BASELINE_ENDPOINT: SmbMechanicalState = SmbMechanicalState {
 const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     world: 7,
     level: 3,
-    progress: 113,
+    progress: 153,
     player_y_bucket: 11,
     player_engine_state: 8,
-    state_fingerprint: 59,
+    state_fingerprint: 9,
     room_x_bucket: 0,
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
@@ -127,8 +127,8 @@ const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     reached_onward: true,
 };
 const BASELINE_FINAL_ACTION: ButtonChord = ButtonChord {
-    buttons: 128,
-    hold_frames: 114,
+    buttons: 130,
+    hold_frames: 104,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -393,11 +393,11 @@ struct HeaderRecord<'a> {
     preregistration_commit: &'static str,
     preregistration_doc_sha256: &'static str,
     code_base: &'static str,
-    authorizing_bridge_preregistration: &'static str,
-    authorizing_bridge_implementation: &'static str,
-    authorizing_bridge_result: &'static str,
-    authorizing_bridge_report_sha256: &'static str,
-    authorizing_bridge_result_doc_sha256: &'static str,
+    authorizing_preregistration: &'static str,
+    authorizing_implementation: &'static str,
+    authorizing_result: &'static str,
+    authorizing_report_sha256: &'static str,
+    authorizing_result_doc_sha256: &'static str,
     source_file_sha256: &'a str,
     source_input_sha256: &'a str,
     rom_sha256: &'a str,
@@ -454,7 +454,7 @@ struct LaneReply {
     result: Result<LaneRecord, String>,
 }
 
-/// Run the sealed World 8-4 p113 endpoint harvest from process arguments and environment.
+/// Run the sealed World 8-4 p153 endpoint harvest from process arguments and environment.
 pub fn run_from_process(
     bin_source: &'static [u8],
     module_source: &'static [u8],
@@ -462,7 +462,7 @@ pub fn run_from_process(
     let mut args = env::args_os().skip(1);
     let source_path = PathBuf::from(
         args.next()
-            .ok_or("usage: smb-w8-4-p113-normal-endpoint-harvest <input.json> <output.jsonl>")?,
+            .ok_or("usage: smb-w8-4-p153-normal-endpoint-harvest <input.json> <output.jsonl>")?,
     );
     let output_path = PathBuf::from(args.next().ok_or("missing output NDJSON path")?);
     if args.next().is_some() {
@@ -550,11 +550,11 @@ pub fn run_from_process(
         preregistration_commit: PREREGISTRATION_COMMIT,
         preregistration_doc_sha256: PREREGISTRATION_DOC_SHA256,
         code_base: CODE_BASE,
-        authorizing_bridge_preregistration: AUTHORIZING_BRIDGE_PREREGISTRATION,
-        authorizing_bridge_implementation: AUTHORIZING_BRIDGE_IMPLEMENTATION,
-        authorizing_bridge_result: AUTHORIZING_BRIDGE_RESULT,
-        authorizing_bridge_report_sha256: AUTHORIZING_BRIDGE_REPORT_SHA256,
-        authorizing_bridge_result_doc_sha256: AUTHORIZING_BRIDGE_RESULT_DOC_SHA256,
+        authorizing_preregistration: AUTHORIZING_PREREGISTRATION,
+        authorizing_implementation: AUTHORIZING_IMPLEMENTATION,
+        authorizing_result: AUTHORIZING_RESULT,
+        authorizing_report_sha256: AUTHORIZING_REPORT_SHA256,
+        authorizing_result_doc_sha256: AUTHORIZING_RESULT_DOC_SHA256,
         source_file_sha256: &source_file_sha256,
         source_input_sha256: &source_input_sha256,
         rom_sha256: &rom_sha256,
@@ -1995,12 +1995,12 @@ mod tests {
         verify_seed().expect("sealed seed is self-consistent");
         assert_eq!(
             EXPECTED_RECIPE_SHA256,
-            "8a0d66a2f13be9fdaa2e15bbe97c1239e7a4def8e95f93ffefdeb125ea839dfd"
+            "15c8fd2cfc37d10fd8e8b0ac7c9e0e4d15ba4c7857cb944b60dd2b113b0939fc"
         );
-        assert_eq!(EXPECTED_RECIPE_BYTES, 400_322);
+        assert_eq!(EXPECTED_RECIPE_BYTES, 400_307);
         let mut source = synthetic_source();
-        source.actions[502] = ButtonChord::new(16, 100);
-        source.actions[328] = ButtonChord::new(130, 96);
+        source.actions[3197] = ButtonChord::new(16, 100);
+        source.actions[209] = ButtonChord::new(130, 96);
         let recipes = derive_recipes(&source).expect("derive recipes");
         assert_eq!(recipes.len(), LANES);
         assert!(recipes.iter().all(|lane| lane.len() == DRAWS));
@@ -2010,7 +2010,7 @@ mod tests {
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ),
-            (502, ButtonChord::new(16, 100), 17_743_222_062_959_608_690)
+            (3197, ButtonChord::new(16, 100), 6_361_080_593_292_495_003)
         );
         assert_eq!(
             (
@@ -2018,24 +2018,24 @@ mod tests {
                 recipes[11][511].action,
                 recipes[11][511].selector_seed,
             ),
-            (328, ButtonChord::new(130, 96), 17_729_466_421_451_079_620)
+            (209, ButtonChord::new(130, 96), 10_080_628_739_762_550_361)
         );
         assert_eq!(
             serde_json::to_vec(&(
                 0_u64,
                 0_u64,
-                502_u64,
+                3197_u64,
                 recipes[0][0].action,
                 recipes[0][0].selector_seed,
             ))
             .expect("serialize first recipe"),
-            br#"[0,0,502,{"buttons":16,"hold_frames":100},17743222062959608690]"#
+            br#"[0,0,3197,{"buttons":16,"hold_frames":100},6361080593292495003]"#
         );
         let identity = recipe_identity_bytes(&recipes).expect("serialize recipes");
         assert_eq!(identity.iter().filter(|&&byte| byte == b'[').count(), 6_145);
         assert_eq!(
             sha256_bytes(&identity),
-            "504d1baa572a9f1b56f5ba3807559a4f0674d2fa7c40833ebba660f90903e7a6"
+            "4b66e8747ef0b6b706d49d211a7b1f2f94560132ecd52f7ac95dcb519f5f0571"
         );
         let mut projections = projection_bytes(&recipes).expect("serialize projections");
         assert_eq!(projections.len(), LANES);
@@ -2046,8 +2046,9 @@ mod tests {
 
     #[test]
     fn maximum_lineage_actions_are_bounded_and_reported() {
-        assert_eq!(SOURCE_ACTIONS.checked_add(DRAWS), Some(MAX_LINEAGE_ACTIONS));
-        assert!(MAX_LINEAGE_ACTIONS < ACTION_LIMIT);
+        let maximum_lineage = SOURCE_ACTIONS.checked_add(DRAWS);
+        assert_eq!(maximum_lineage, Some(MAX_LINEAGE_ACTIONS));
+        assert!(maximum_lineage.is_some_and(|lineage| lineage < ACTION_LIMIT));
         let mut maximum = SOURCE_ACTIONS;
         record_lineage_actions(&mut maximum, MAX_LINEAGE_ACTIONS)
             .expect("registered maximum is allowed");
@@ -2088,18 +2089,18 @@ mod tests {
     #[test]
     fn champion_ranking_is_total_and_verdict_is_strict() {
         let ranked = rank_champion(vec![
-            candidate(0, 9, 113, 8, 0x10),
-            candidate(1, 8, 114, 12, 0xff),
-            candidate(2, 7, 114, 10, 0xff),
-            candidate(3, 6, 114, 10, 0x20),
-            candidate(4, 5, 114, 10, 0x20),
-            candidate(4, 4, 114, 10, 0x20),
+            candidate(0, 9, 153, 8, 0x10),
+            candidate(1, 8, 154, 12, 0xff),
+            candidate(2, 7, 154, 10, 0xff),
+            candidate(3, 6, 154, 10, 0x20),
+            candidate(4, 5, 154, 10, 0x20),
+            candidate(4, 4, 154, 10, 0x20),
         ])
         .expect("champion exists");
         assert_eq!((ranked.lane, ranked.id), (3, 6));
         assert_eq!(verdict_for(Some(&ranked)), Verdict::Adopt);
 
-        let equal = rank_champion(vec![candidate(0, 1, 113, 1, 0)]).expect("candidate exists");
+        let equal = rank_champion(vec![candidate(0, 1, 153, 1, 0)]).expect("candidate exists");
         assert_eq!(verdict_for(Some(&equal)), Verdict::Stop);
         assert_eq!(verdict_for(None), Verdict::Stop);
     }
@@ -2113,7 +2114,7 @@ mod tests {
             )),
             Verdict::Stop
         );
-        let current_level = candidate_at(1, 2, 7, 3, 114, 1, 0xff);
+        let current_level = candidate_at(1, 2, 7, 3, 154, 1, 0xff);
         let later_world = candidate_at(2, 3, 8, 0, 0, 1, 0xff);
         let ranked = rank_champion(vec![later_world, current_level, old_level])
             .expect("cross-level candidate exists");
