@@ -189,3 +189,44 @@ identity, recipe, worker, restore, evidence, hash, or work mismatch is an
 integrity STOP and authorizes nothing. There is one registered live run, no
 routine replay audit, no automatic rerun, no post-hoc ranking, and no adoption
 from any prior canary.
+
+## Result
+
+The one registered run completed successfully on `msr1` with verdict
+**ADOPT**. The temporary implementation was sealed at commit `fe5e2c75`, with
+binary-source SHA-256
+`758211b5ea937af286df5e3529737de3547cbeb95758a25efe9e1433d0fe1aa7`,
+module-source SHA-256
+`2c8b45b161a19edfe800db40c0013d75a2f36f281bdcbac3fc87cc2288a6df54`,
+and release-executable SHA-256
+`8324c837bc7292d8df54f74cd12040f0492ce44f8a179b1ee53d48cd60ae1ed3`.
+The frozen recipe SHA-256 was
+`19fe77bdd38e4516454e3ccc4467790d280428183a44bb1395d4c788bcb09735`.
+
+The canonical 17-line report is stored at
+`/root/harmony-smb-sol-endpoint-harvest-e3ca732b/results/c119-normal-endpoint-harvest-12x256.jsonl`.
+It is 51,802,752 bytes with body SHA-256
+`91e20f91c27ab79eb723b1c289d78888e2650b15bc1a1617246d21d897b1357e`
+and whole-file SHA-256
+`a3b744d6b61ea573fd9ac12205b38cf7d32be083d6e0b09d0577a16b565d2ce9`.
+Standard error was empty. Realized work was 389,711 frames: 155,148 source
+replay, 4,693 setup, 114,819 action, and 115,051 probe frames.
+
+Final lane watermarks, in lane order, were
+`[255, 270, 240, 270, 245, 253, 270, 253, 270, 245, 244, 253]` in world 8-1.
+The registered total order selected lane 8 entry 186, with lineage
+`[0, 1, 38, 43, 47, 57, 59, 68, 73, 75, 80, 120, 186]`. It is a live,
+probe-surviving, normally retained endpoint at progress 270 after 3,309
+actions and 155,855 absolute frames. Its semantic input SHA-256 is
+`9a71c1ab63f1f16eb9f34b38f66047e3cbfa8d0623a1219eda839393dab01921`,
+raw-WRAM SHA-256 is
+`37aca14a7115b7f9cc700e8754b1b1243f2635c205d4696242782aaa9e354908`,
+and snapshot SHA-256 is
+`382434bfb1bc83c70c2c074272a0e641238d48e4c3a5a9aa9efc0649e9d9877d`.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-endpoint-harvest-e3ca732b/results/adopted-progress-270-input.json`;
+its compact-file SHA-256 is the same semantic input hash above. This advances
+the retained C119 frontier from 236 to 270. Its required from-genesis
+verification will be the baseline phase of the separately preregistered next
+continuation, before that continuation materializes any live proposal.
