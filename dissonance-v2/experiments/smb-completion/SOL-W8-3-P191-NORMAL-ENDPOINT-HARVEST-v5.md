@@ -101,3 +101,32 @@ semantic input SHA ascending, lane, id. **ADOPT** iff strictly greater than
 `(7,2,191)`; later levels remain eligible. Embed the exact sole next-source
 input/evidence. Otherwise **STOP**. One run only; no rerun, relaxation, routine
 replay audit, or post-hoc candidate choice. Apply the terminal boundary above.
+
+## Registered result
+
+The registered run completed successfully under implementation `79c184c1`
+and executable SHA-256
+`e8a057cef4dfe58669b50d4acfadaad32f62ead4da0c41093b5b498d88abc38c`.
+The 792,277,013-byte report at
+`/root/harmony-smb-sol-w8-3-p191-harvest-52eadc8f/results/w8-3-p191-normal-endpoint-harvest-12x512.jsonl`
+has whole-file SHA-256
+`3feffad9255911dffc0278aaffbe5c45801db8b1aff1c03ff45cdb95f78bc7e3`
+and body SHA-256
+`0e572f9daa1b7dc155674169695872612e18f24ce8e54014303f86fde1a39cd8`.
+The service exited successfully with empty stderr. All 6,144 candidates and
+selections executed. Work reconciled to 4,693 setup, 164,814 replay, 45 source
+probe, 241,400 action, and 250,459 candidate-probe frames: 661,411 total.
+
+The verdict is **ADOPT** and the terminal decision is **REPEAT_ENDPOINT**.
+Lane 10 entry 237 at draw 265, parent 185, crossed the level boundary with
+lineage `[0,1,5,16,20,21,43,57,83,122,181,185,237]`. The exact 3,525-action
+candidate is alive and probe-surviving at **World 8-4 progress 0**, full
+watermark `(7,3,0)`, absolute frame 165,794. Mechanical state is
+`(world=7,level=3,progress=0,y_bucket=0,engine_state=0,dead=false,flag_active=false)`.
+Input, WRAM, and snapshot SHA-256 values are respectively
+`59f00e2dda00c730cda3c44e441fd94c65ee28c641be10e69be00c522522b706`,
+`495908631d94d76765a350ee6b17b40dfc0a02614090eee7c8c199f7cc5e251c`,
+and `620d9ee95be67da58fe943e44b9e94895cc1b4afc98243ad2e8a9a296364abf8`.
+The sole authorized next-source file is
+`/root/harmony-smb-sol-w8-3-p191-harvest-52eadc8f/results/adopted-world-8-4-progress-0-input.json`,
+113,193 bytes with the same input SHA-256.
