@@ -309,3 +309,69 @@ Based on the prior `msr1` canaries, expected live time is approximately 6–8
 minutes if prefix/probe sparsity resembles the salvage GO. The hard-work
 projection is approximately 10–11 minutes; allow 12–15 minutes operationally.
 Neither estimate is a stopping condition.
+
+## Sealed result
+
+Status: **INCONCLUSIVE**. The single registered run completed successfully on
+`msr1`; there was no rerun and no candidate was imported.
+
+- Implementation commit:
+  `7824d2516cd983594669019cc307c8238d58dafc`.
+- Stable commit archive SHA-256:
+  `e53fd59b10d5365e69e84cba6dd9016ec9ee1f11fef374ce2f7bf68a48e5ea3e`.
+- Temporary module SHA-256:
+  `f564cc6a7ce318bab6fc4a8ffe05a77202d7ec04843f738b364d9c5348d1bd4d`.
+- Temporary bin SHA-256:
+  `3c6337a0518359fdb5b64dfd1266a6d31195c852a3ad0332eeed4b5b940cd8dc`.
+- Release executable SHA-256:
+  `bd6ad7e4eb10bdcff8ed6907cd986fe5bc0b5cb5f89031caf95fdecc944268a5`.
+- Recipe SHA-256:
+  `3559134d69ce449e213ada1f3c03dcf74e71d293cff02c5f8e98fa2f18a979cf`.
+- Configuration SHA-256:
+  `af096a7595a9a53ab8df8c7cc1233341de3a7c48ce0f8ec2008ef783c3933bdb`.
+- Canonical report:
+  `/root/harmony-smb-sol-prefix-admission-782cbc6f/results/c119-paired-prefix-admission-8x128.jsonl`;
+  21 lines, 70,820,823 bytes; body SHA-256
+  `c6ee67648d2fcbf891489ffdfb453db08636871fcb168a92d1909648159cfda5`;
+  whole-file SHA-256
+  `9d567e8bf4d4b416318c4b6a1bcd4ef762eb7d9e22a46a5fba91981a52b77278`.
+- Standard output SHA-256:
+  `7f87b929a4abb0de1a878b3076b81360c3c1543417a65815ec916d2b2be7ab86`;
+  standard error was empty.
+
+The structural-chain gate passed strongly: 350 distinct prefix snapshots were
+normally admitted across all eight treatment pairs; 178 distinct admitted
+prefix snapshots across all eight pairs were selected later; they produced
+206 distinct ordinary full-action endpoint descendant snapshots; at least one
+descendant advanced beyond its prefix; and a direct descendant attained a
+treatment-winning maximum.
+
+The directional gate did not pass. Treatment won four pairs, control won two,
+and two tied. The exact conditional sign tail was `22/64`, above the frozen
+`1/20` threshold. Final stable ordinary endpoint maxima `(control,treatment)`
+were:
+
+```text
+pair 0: (248, 248)
+pair 1: (253, 253)
+pair 2: (236, 258)
+pair 3: (252, 254)
+pair 4: (269, 253)
+pair 5: (239, 251)
+pair 6: (251, 261)
+pair 7: (251, 244)
+```
+
+Thus bounded target-emitted prefixes are demonstrably admissible, selectable,
+and capable of producing ordinary retained descendants, but this run does not
+establish a directional advantage over endpoint-only search. The deepest
+stable endpoint, progress 269 in control pair 4, exceeds both the C119 retained
+frontier 236 and its historical transient maximum 248. That is evidence that
+compact state-compatible continuation from the exact tip remains productive;
+it is not evidence for prefix-policy promotion. Per the frozen decision, the
+post-hoc progress-269 candidate is not adopted.
+
+Realized work was 72,818 full-action frames, 78,525 endpoint-probe frames,
+8,510 prefix-reconstruction frames, 53,752 prefix-probe frames, 4,693 setup
+frames, and the 155,148-frame source replay: 373,446 frames total, below every
+registered cap.

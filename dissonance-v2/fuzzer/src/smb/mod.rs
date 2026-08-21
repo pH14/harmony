@@ -4,6 +4,4 @@
 
 pub mod archive;
 pub mod campaign;
-#[doc(hidden)]
-pub mod prefix_admission_canary;
 pub mod target;
