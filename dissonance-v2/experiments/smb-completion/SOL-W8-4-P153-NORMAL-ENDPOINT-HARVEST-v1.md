@@ -141,3 +141,47 @@ Emit create-new canonical NDJSON with header, baseline, recipes, 12 lane
 records, classification, and summary, binding prereg/source/ROM/executable/bin/
 module/config/recipe/trace/body/whole-file hashes. Paths, timestamps, and
 completion order must not enter canonical bytes.
+
+## Registered result
+
+Preregistration commit `3c264bf1aecc49cb6f04db70d41e05f9fac4b9fd` (document
+SHA-256 `3bacab814312ba9cccc439974015545e74af1981fb277ec8cd36818cfb0f70c5`)
+and implementation commit `d6690276acddd7d48a6f29ee8e1d67778fb8c288` used
+module SHA-256
+`a467553fa77385d8066408d6c31fa1471c5daceb6a804fadf5e08781aba9290d`,
+bin-source SHA-256
+`149e7d977b2dbb2c371ae4a8781f8f70ce982a2543b3926689b3d8ea06fb9113`,
+and release-executable SHA-256
+`542b378b82a315f73320db36d4553e0648990ce8f12aaab114b3e74e4bb48aac`,
+built once offline and locked from sealed source archive SHA-256
+`c5ee939e02cca70f4a84baefda74e73b3497943296b03963ddff9eecedf806fb`
+under `/root/harmony-smb-sol-w8-4-p153-harvest-d6690276`. The sealed recipe
+was 400,307 bytes with SHA-256
+`15c8fd2cfc37d10fd8e8b0ac7c9e0e4d15ba4c7857cb944b60dd2b113b0939fc`.
+The sole run (systemd unit `harmony-smb-sol-w8-4-p153-harvest-d6690276`,
+`Restart=no`) completed successfully and produced 17 NDJSON lines in
+registered order, 804,969,011 bytes, whole-file SHA-256
+`c4499e7a8af1e2c2683b0fb40c0923e9ace320fb930fa5597f3bd892128cd26f`,
+and body SHA-256
+`21d108f9ed22064f756c73c477816f58dc8d849bdd8bc6540011d41a04446796`.
+Standard error was empty and standard output bound the same report hash. The
+baseline reproduced every registered source datum, including WRAM, snapshot,
+Frozen key, final chord `(0x82,104)`, and the surviving mask-0 source probe.
+
+The registered verdict is **STOP**. All 6,144 scheduled candidates executed
+and were selected and accounted exactly once; 3,826 final-active ordinary
+entries were eligible and none exceeded the source watermark `(7,3,153)`. The
+deterministic best eligible entry is lane 2 id 154 (draw 189, parent 23,
+lineage `[0,23,154]`) at `(7,3,114)`, semantic input SHA-256
+`2a5c3b93cb490fb890936dfe14bd6b9ea3c52208fbe0b154777cf37a6f7a7f65`; it is
+below the source and is not adopted. Checked work was 4,693 setup + 168,594
+source replay + 45 source probe + 284,637 action + 276,484 probe =
+**734,453 frames**, below the 1,740,052-frame cap.
+
+Diagnostic only: all 4,572 draws whose parent was the source itself ended
+live at progress 89 through 107, with none at or above 153; every later
+lineage ended between 89 and 114. Two draws were terminal (dead) and no
+draw failed. The deepest lineage in any lane was 3,583 actions. This is the
+same target-reported progress regression shape that was registered at p73.
+No rerun, threshold change, or alternative ranking is authorized by this
+result. The p153 source remains the best verified retained position.
