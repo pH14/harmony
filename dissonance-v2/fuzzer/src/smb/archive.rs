@@ -1007,7 +1007,19 @@ pub enum SmbArchiveKeyPolicy {
         /// Registered room progress bucket.
         progress: u16,
     },
+    /// The frozen key plus `rooms`: the count of distinct room identities a
+    /// lineage has visited inside its current level. The room identity is
+    /// the byte pair at `ROOM_IDENTITY_BYTES`, read from the candidate's own
+    /// snapshot at insertion; a child in the same `(world, level)` as its
+    /// parent inherits the parent's room set, any other child starts a new
+    /// set. The search learns only that a value is new, never which value is
+    /// wanted.
+    FrozenRooms,
 }
+
+/// Work RAM addresses whose byte pair identifies the current room (area
+/// type and area data offset).
+pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
 
 /// Whether admission probes a candidate for viability before retaining it.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -1495,9 +1507,25 @@ pub(crate) struct Archive {
     /// report, so an archive written under either policy is byte-identical.
     frames_in_level: Vec<u64>,
     replacement_frames_displaced: u64,
+    key_policy: SmbArchiveKeyPolicy,
+    /// Sorted distinct room identities per entry, filled only under
+    /// `SmbArchiveKeyPolicy::FrozenRooms`; otherwise every entry holds an
+    /// empty set.
+    room_sets: Vec<Vec<(u8, u8)>>,
 }
 
 impl Archive {
+    pub(crate) fn set_key_policy(&mut self, policy: SmbArchiveKeyPolicy) {
+        self.key_policy = policy;
+    }
+
+    /// Distinct room identities a retained entry's lineage visited inside
+    /// its level, sorted; empty unless the rooms key policy is active.
+    #[must_use]
+    pub fn room_set(&self, id: usize) -> &[(u8, u8)] {
+        self.room_sets.get(id).map_or(&[], Vec::as_slice)
+    }
+
     pub(crate) fn set_selector_policy(&mut self, policy: SmbArchiveSelectorPolicy) {
         self.selector_accounting.policy = policy;
     }
@@ -1595,6 +1623,8 @@ impl Archive {
             replacement_policy: SmbArchiveReplacementPolicy::FewestActions,
             frames_in_level: Vec::new(),
             replacement_frames_displaced: 0,
+            key_policy: SmbArchiveKeyPolicy::Frozen,
+            room_sets: Vec::new(),
         }
     }
 
@@ -1644,12 +1674,19 @@ impl Archive {
     ) -> Result<Option<usize>, Box<dyn Error>> {
         let ArchiveCandidate {
             input,
-            key,
+            mut key,
             milestones,
         } = candidate;
         if let Some(existing) = self.input_ids.get(&input) {
             return Ok(Some(*existing));
         }
+        let room_set = if self.key_policy == SmbArchiveKeyPolicy::FrozenRooms {
+            let set = self.room_set_for(parent_id, key, snapshot.wram())?;
+            key.rooms = u8::try_from(set.len())?;
+            set
+        } else {
+            Vec::new()
+        };
         // Frames this candidate spent inside its own pair, derived from the
         // recorded action durations and the parent's recorded pair alone. It
         // is computed for every insertion under either policy so the counts
@@ -1714,6 +1751,7 @@ impl Archive {
         };
         self.entries.push(ArchiveEntry { report, snapshot });
         self.active.push(true);
+        self.room_sets.push(room_set);
         self.frames_in_level.push(candidate_frames_in_level);
         self.selected.push(0);
         self.productive.push(0);
@@ -1724,6 +1762,44 @@ impl Archive {
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
         Ok(Some(id))
+    }
+
+    /// The candidate's sorted room set: the parent's set when the candidate
+    /// stays in the parent's level, otherwise a fresh set, plus the room the
+    /// candidate's own work RAM reports.
+    fn room_set_for(
+        &self,
+        parent_id: Option<usize>,
+        key: SmbArchiveKey,
+        wram: &[u8],
+    ) -> Result<Vec<(u8, u8)>, Box<dyn Error>> {
+        let first = *wram
+            .get(ROOM_IDENTITY_BYTES[0])
+            .ok_or("room identity byte outside work RAM")?;
+        let second = *wram
+            .get(ROOM_IDENTITY_BYTES[1])
+            .ok_or("room identity byte outside work RAM")?;
+        let room = (first, second);
+        let mut set = match parent_id {
+            Some(parent) => {
+                let parent_key = self
+                    .entries
+                    .get(parent)
+                    .ok_or("room set parent is missing")?
+                    .report
+                    .key;
+                if (parent_key.world, parent_key.level) == (key.world, key.level) {
+                    self.room_set(parent).to_vec()
+                } else {
+                    Vec::new()
+                }
+            }
+            None => Vec::new(),
+        };
+        if let Err(slot) = set.binary_search(&room) {
+            set.insert(slot, room);
+        }
+        Ok(set)
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -5249,9 +5325,9 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
     // The decoded observation field keeps its recorded 0..=15 meaning; only the
     // key term carries the page, so both operator views stay true.
     let vertical = match policy {
-        SmbArchiveKeyPolicy::Frozen | SmbArchiveKeyPolicy::FrozenRoomX16 { .. } => {
-            state.player_y_bucket
-        }
+        SmbArchiveKeyPolicy::Frozen
+        | SmbArchiveKeyPolicy::FrozenRooms
+        | SmbArchiveKeyPolicy::FrozenRoomX16 { .. } => state.player_y_bucket,
         SmbArchiveKeyPolicy::VerticalPage => smb_death_bytes(wram)
             .vertical_page
             .saturating_mul(16)
@@ -5394,10 +5470,10 @@ fn entry_cost(entry: &SmbArchiveEntryReport) -> (usize, u64) {
 mod tests {
     use super::{
         Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
-        MAX_SMB_COMPLETION_ACTIONS, SELECTION_EXHAUSTION_THRESHOLD, SmbArchiveKey,
-        SmbArchiveReplacementPolicy, SmbArchiveSelectorPolicy, SmbArchiveWaypointPolicy,
-        SmbDeathBytes, SmbProgressWatermark, SmbSelectorDraw, SmbSelectorPath,
-        analyze_player_column, merge_progress_watermark,
+        MAX_SMB_COMPLETION_ACTIONS, ROOM_IDENTITY_BYTES, SELECTION_EXHAUSTION_THRESHOLD,
+        SmbArchiveKey, SmbArchiveKeyPolicy, SmbArchiveReplacementPolicy, SmbArchiveSelectorPolicy,
+        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbProgressWatermark, SmbSelectorDraw,
+        SmbSelectorPath, analyze_player_column, merge_progress_watermark,
     };
     use crate::{
         smb::target::{ButtonChord, SmbInput, SmbObservations, SmbSnapshot, SmbTarget},
@@ -5825,6 +5901,62 @@ mod tests {
         // fingerprint-free tuple), so it must receive a visible share rather
         // than the near-zero share the frontier walk would give it.
         assert!(lone_low_draws > 10, "lone low class drew {lone_low_draws}");
+    }
+
+    #[test]
+    fn frozen_rooms_counts_distinct_rooms_along_a_lineage_and_resets_on_level_change() {
+        let mut archive = Archive::new();
+        archive.set_key_policy(SmbArchiveKeyPolicy::FrozenRooms);
+        let genesis = selector_snapshot();
+        let room_snapshot = |room: (u8, u8)| -> SmbSnapshot {
+            let mut value = serde_json::to_value(&genesis).expect("serialize snapshot");
+            let wram = value["observation"]["wram"]
+                .as_array_mut()
+                .expect("snapshot work RAM");
+            wram[ROOM_IDENTITY_BYTES[0]] = serde_json::json!(room.0);
+            wram[ROOM_IDENTITY_BYTES[1]] = serde_json::json!(room.1);
+            serde_json::from_value(value).expect("rebuild snapshot")
+        };
+        let key = |world: u8, level: u8, progress: u16| SmbArchiveKey {
+            world,
+            level,
+            progress,
+            ..BASELINE_LIKE_KEY
+        };
+        let insert = |archive: &mut Archive, parent, actions: usize, key, room| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        input: SmbInput {
+                            actions: vec![ButtonChord::new(1, 2); actions],
+                        },
+                        key,
+                        milestones: crate::smb::target::SmbMilestones::default(),
+                    },
+                    room_snapshot(room),
+                )
+                .expect("insert")
+                .expect("retain")
+        };
+        let root = insert(&mut archive, None, 1, key(7, 3, 10), (3, 5));
+        assert_eq!(archive.entries[root].report.key.rooms, 1);
+        let same = insert(&mut archive, Some(root), 2, key(7, 3, 20), (3, 5));
+        assert_eq!(archive.entries[same].report.key.rooms, 1);
+        let pipe = insert(&mut archive, Some(same), 3, key(7, 3, 2), (2, 0));
+        assert_eq!(archive.entries[pipe].report.key.rooms, 2);
+        assert_eq!(archive.room_set(pipe), &[(2, 0), (3, 5)]);
+        let back = insert(&mut archive, Some(pipe), 4, key(7, 3, 30), (3, 5));
+        assert_eq!(archive.entries[back].report.key.rooms, 2);
+        let next_level = insert(&mut archive, Some(back), 5, key(8, 0, 0), (1, 1));
+        assert_eq!(archive.entries[next_level].report.key.rooms, 1);
+        assert_eq!(archive.room_set(next_level), &[(1, 1)]);
+
+        let mut frozen = Archive::new();
+        let plain = insert(&mut frozen, None, 1, key(7, 3, 10), (3, 5));
+        assert_eq!(frozen.entries[plain].report.key.rooms, 0);
+        assert!(frozen.room_set(plain).is_empty());
     }
 
     #[test]

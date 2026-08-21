@@ -1481,6 +1481,7 @@ pub fn key_policy_identifier(policy: SmbArchiveKeyPolicy) -> String {
     match policy {
         SmbArchiveKeyPolicy::Frozen => "frozen".to_owned(),
         SmbArchiveKeyPolicy::VerticalPage => "vertical_page".to_owned(),
+        SmbArchiveKeyPolicy::FrozenRooms => "frozen_rooms".to_owned(),
         SmbArchiveKeyPolicy::FrozenRoomX16 {
             world,
             level,
@@ -1500,6 +1501,9 @@ pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolic
     }
     if identifier == "vertical_page" {
         return Ok(SmbArchiveKeyPolicy::VerticalPage);
+    }
+    if identifier == "frozen_rooms" {
+        return Ok(SmbArchiveKeyPolicy::FrozenRooms);
     }
     if let Some(room) = identifier.strip_prefix("frozen_room_x_16:") {
         let mut parts = room.split(',');
@@ -1779,6 +1783,7 @@ impl CoordinatorCore {
     ) -> Self {
         let mut archive = Archive::new();
         archive.max_entries = archive_entry_limit;
+        archive.set_key_policy(key_policy);
         archive.set_selector_policy(selector_policy);
         archive.set_waypoint_policy(waypoint_policy);
         archive.set_replacement_policy(replacement_policy);

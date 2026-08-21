@@ -95,6 +95,12 @@ pub struct SmbSnapshot {
 }
 
 impl SmbSnapshot {
+    /// Work RAM captured with the snapshot.
+    #[must_use]
+    pub fn wram(&self) -> &[u8] {
+        &self.observation.wram
+    }
+
     /// Serialized emulator-state size in bytes, for diagnostics.
     #[must_use]
     pub fn emulator_state_len(&self) -> usize {
