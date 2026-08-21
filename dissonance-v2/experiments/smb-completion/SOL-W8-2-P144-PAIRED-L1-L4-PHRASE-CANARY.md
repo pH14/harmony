@@ -220,3 +220,50 @@ prefix depth. It is the sole authorized next source regardless of
 GO_L4/NO_GO_L4. Otherwise adoption verdict is **STOP** and nothing is
 adoptable. Any integrity mismatch authorizes nothing. There is one registered
 run, no routine replay audit, rerun, or post-hoc candidate choice.
+
+## Result
+
+The one registered run completed successfully on `msr1` with structural
+verdict **NO_GO_L4** and adoption verdict **ADOPT**. The implementation was
+sealed at commit `782081d4`, with binary-source SHA-256
+`01a71e23f275573387b533b47da9f4e93b9e39308f346468a98559bd305f178c`,
+module-source SHA-256
+`8449bd1dc5de94d3e50f096fafe6b0bcbe9e4dce84634e1576a950ee776e82cd`,
+and release-executable SHA-256
+`ba890e7658892d3ea711dea48d3aceba60eae21ef4676fb54a8633fc37be14a6`.
+The frozen recipe SHA-256 was
+`1ffca21f9ab3136fedb0e74abff3aaabc153a8393e799d4598453d53b9e3b2d1`.
+
+The canonical 22-line, 98,379,501-byte report is stored at
+`/root/harmony-smb-sol-w8-2-p144-l1-l4-e94d5027/results/w8-2-p144-paired-l1-l4-8x256.jsonl`.
+Its body SHA-256 is
+`ad9b65183318f5d536cfeb7047f7a22481a494bb0f017c781a21767bb29daa33`
+and whole-file SHA-256 is
+`fa57d9118790b97b81147835aa3caa6a5b88eb8126752aa63658cbdedc010242`.
+Realized work was 435,212 frames: 159,757 source replay, 123 source evidence
+probes, 4,693 setup, 72,476 live action, and 198,163 live probe frames.
+
+Pairs 0, 1, and 3 tied at source progress 144. L4 won pairs 2, 4, 5, 6,
+and 7 with maxima 165, 146, 146, 148, and 155 respectively; every L1 maximum
+was 144. Thus `n=5`, `w=5`, and the exact one-sided sign tail was `1/32`.
+Depth-2-through-4 strict L4 witnesses existed, but the preregistered `n>=7`
+sign gate did not pass, so L4 is not promoted.
+
+The independent adoption order selected pair 2, arm L4, entry 121, at recorded
+phrase-prefix depth 1, with lineage
+`[0,1,2,3,4,6,7,10,11,34,35,100,101,102,104,105,121]`. It is a live,
+probe-surviving, normally retained endpoint at full watermark
+`(world=7, level=1, progress=165)` after 3,429 actions and 160,502 absolute
+frames. Its mechanical state is `(7,1,165,y=11,engine=8,dead=false,
+flag=false)`, raw-WRAM SHA-256 is
+`83b7a658bd1c34828204840087b9c125456177155503eb7bfacbf7d3103f4185`,
+and snapshot SHA-256 is
+`fc69d5f71e7ac1d74c17b42eaa1fbf9bc0230bb109d23019cba8d99e7e853cba`.
+Its admission probe survived mask `0x00` for all 45 frames.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-w8-2-p144-l1-l4-e94d5027/results/adopted-world-8-2-progress-165-input.json`;
+its compact-file and semantic SHA-256 is
+`42d92ae8b8a4ed47465302c75c5800b79a54a4990d07b8e1306af75217ce7321`.
+This source is adoptable independently of the failed structural gate. No L4
+policy promotion or next experiment is authorized by this result note alone.
