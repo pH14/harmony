@@ -169,3 +169,38 @@ adoptable.
 There is one registered live run, no routine replay audit, no automatic rerun,
 no post-hoc ranking, and no adoption from any prior unregistered candidate.
 Any integrity mismatch authorizes nothing.
+
+## Result
+
+The one registered run completed successfully on `msr1` with verdict
+**ADOPT**. The sealed implementation commit was `a97a24d2`; release-executable
+SHA-256 was
+`2c1dda5dd45b1af1fb46226daf4cbfe53e9c8929c95b22175a37a79667a7c3c2`,
+and frozen recipe SHA-256 was
+`2149e9bb5abeb58c79ef4cbf6897a3e7cf881a30242242d01128069cc4f34d81`.
+
+The canonical 17-line report is
+`/root/harmony-smb-sol-p313-harvest-9a2176a5/results/p313-endpoint-harvest-12x512.jsonl`.
+It is 100,010,571 bytes with body SHA-256
+`1e3a9e746d97d7300681a60238b7ae518bf10f44b69fce7942ae5100d353880b`
+and whole-file SHA-256
+`b60f74128034a295819bccef6c9bde3f7675f663b5822fb968078205aaf7307c`.
+Standard error was empty. Realized work was 641,399 frames: 156,397 source
+replay, 45 source-probe, 4,693 setup, and 480,264 experimental frames.
+
+Final world 8-1 lane watermarks were
+`[348, 348, 351, 348, 348, 351, 347, 348, 349, 348, 350, 329]`.
+The registered order selected lane 2 entry 232, lineage
+`[0, 1, 2, 5, 6, 14, 15, 40, 44, 46, 48, 53, 55, 67, 91, 121, 182, 232]`.
+It is a live, probe-surviving normal endpoint at progress 351 after 3,343
+actions and 157,113 frames. Its semantic input SHA-256 is
+`432b52a21e283e2e3eff67e9e9a4cc4d1d6d2c1cebfa8afeb159d1de42fc3f40`,
+raw-WRAM SHA-256 is
+`2a3fc640d9de11a3ac2b674c46ad45abcb13231b7337193f2f73755236204f2c`,
+and snapshot SHA-256 is
+`276ea34bdeb81b8ca8e0f501365b34d76a31357c73c4c55f06618da80c685989`.
+
+The sole authorized input was extracted to
+`/root/harmony-smb-sol-p313-harvest-9a2176a5/results/adopted-progress-351-input.json`,
+whose file SHA-256 equals the semantic input hash. Its required verification
+is assigned to the next separately preregistered continuation's baseline.
