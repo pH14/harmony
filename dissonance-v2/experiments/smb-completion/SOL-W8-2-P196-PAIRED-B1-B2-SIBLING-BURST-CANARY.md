@@ -214,3 +214,52 @@ authorized next source regardless of structural classification. Otherwise
 verdict is **STOP** and nothing is adoptable. Any integrity mismatch authorizes
 nothing. There is one registered run, no routine replay audit, rerun, or
 post-hoc candidate choice.
+
+## Result
+
+The one registered run completed successfully on `msr1` with structural
+verdict **INCONCLUSIVE_SPARSE** and adoption verdict **ADOPT**. The
+implementation was sealed at commit `762a03a0`, with binary-source SHA-256
+`141e10e3d039943106e567a57ac9b26cb5b890867305ef366026213da05b185c`,
+module-source SHA-256
+`ac0264b75d7f967d4ccf1667029769012ec4f9b8476359635189529f9e787fde`,
+and release-executable SHA-256
+`1bb8496110da06dec250f2a6818c9501b6477bdf37eb7021434d979220ce7eaf`.
+The frozen 132,496-byte recipe SHA-256 was
+`806e5c4d3200d983c7043aded109bd516463e543bba66c2867b24dd3e0484131`.
+
+The canonical 38-line, 555,637,719-byte report is stored at
+`/root/harmony-smb-sol-w8-2-p196-b1-b2-ee578070/results/w8-2-p196-paired-b1-b2-16x128.jsonl`.
+Its body SHA-256 is
+`8e9c4bdd12d3bf9e06812c3610ff30eee6daf190873e5e02cca7c661ac58b64b`
+and whole-file SHA-256 is
+`a8f8edee757d5328c21cd3485f0671ad398540dcbd2668a9002661812d6aff21`.
+Realized work was 524,151 frames: 161,116 source replay, 45 source evidence
+probe, 4,693 setup, 122,773 live action, and 235,524 live probe frames.
+
+There were seven non-ties: B2 won five, B1 won two, and nine pairs tied. Thus
+`n=7`, `w=5`, and the exact one-sided sign tail was `29/128`. There were 107
+strict second-sibling B2 witnesses, but the exhaustive first gate classified
+the result INCONCLUSIVE_SPARSE because `n<8`. B2 is not promoted, B1 remains
+the registered policy, and the preregistered no-repeat rule closes this
+comparison.
+
+The independent adoption order selected pair 9, arm B2, entry 46, created at
+slot 105 in burst 52 as sibling offset 1, with lineage `[0,6,14,24,27,46]`.
+It is a live, probe-surviving, normally retained endpoint at full watermark
+`(world=7, level=1, progress=213)` after 3,450 actions and 161,449 absolute
+frames. Its mechanical state is
+`(7,1,213,y=11,engine=5,dead=false,flag=true)`, raw-WRAM SHA-256 is
+`6f1b96d92cfc62464fde03fc725a55334b1000a260f462e1cd63d067486e6e62`,
+and snapshot SHA-256 is
+`38b772afb3fd1cb73f344fca6bf79dd48eda663aebfc2e16418812793f17d367`.
+Its frozen key fingerprint is 47, final chord is
+`ButtonChord { buttons: 2, hold_frames: 103 }`, and its admission probe
+survived mask `0x00` for all 45 frames.
+
+The sole authorized input was extracted byte-for-byte to
+`/root/harmony-smb-sol-w8-2-p196-b1-b2-ee578070/results/adopted-world-8-2-progress-213-input.json`;
+its 110,764-byte compact-file and semantic SHA-256 is
+`18fe08991e9f53de44ca0231e71306101d3db6846d1f58d05bde74851aa76c7a`.
+This source is adoptable independently of the sparse structural result. No B2
+promotion or next experiment is authorized by this result note alone.
