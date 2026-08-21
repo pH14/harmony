@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Temporary entry point for the sealed World 8-4 p61 endpoint harvest.
+//! Temporary entry point for the corrected World 8-4 p61 endpoint harvest.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     fuzzer::smb::endpoint_frontier_harvest::run_from_process(
-        include_bytes!("smb-w8-4-p61-normal-endpoint-harvest-v2.rs"),
+        include_bytes!("smb-w8-4-p61-normal-endpoint-harvest-v3.rs"),
         include_bytes!("../smb/endpoint_frontier_harvest.rs"),
     )
 }
