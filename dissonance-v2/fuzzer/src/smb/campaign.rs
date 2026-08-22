@@ -1587,6 +1587,7 @@ pub fn key_policy_identifier(policy: SmbArchiveKeyPolicy) -> String {
         SmbArchiveKeyPolicy::FrozenRooms => "frozen_rooms".to_owned(),
         SmbArchiveKeyPolicy::FrozenRoom => "frozen_room".to_owned(),
         SmbArchiveKeyPolicy::FrozenArea => "frozen_area".to_owned(),
+        SmbArchiveKeyPolicy::FrozenAreaSpan => "frozen_area_span".to_owned(),
         SmbArchiveKeyPolicy::FrozenRoomX16 {
             world,
             level,
@@ -1615,6 +1616,9 @@ pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolic
     }
     if identifier == "frozen_area" {
         return Ok(SmbArchiveKeyPolicy::FrozenArea);
+    }
+    if identifier == "frozen_area_span" {
+        return Ok(SmbArchiveKeyPolicy::FrozenAreaSpan);
     }
     if let Some(room) = identifier.strip_prefix("frozen_room_x_16:") {
         let mut parts = room.split(',');
