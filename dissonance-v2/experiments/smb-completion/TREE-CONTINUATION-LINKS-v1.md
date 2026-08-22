@@ -178,8 +178,44 @@ Resume `whole_tree` from link 6 through its checkpoint, vocabulary
 `down_ten_mask`, key `frozen_room`, selector `room_uniform_128`. Seed
 11819261505613539993. First run writing the suffix archive.
 
-## Link 8 plan (source 35bace58)
+Result: stream SHA-256 `7844936b21108135…`, checkpoint `53fc101f2da05119…`.
+Archive 92 MB (link 6's was 29 GB). 133,959 entries; watermark (7, 3, 304)
+after 14,562 executions.
 
-Key `frozen_area`: the room changes only when the area bytes change, so
-same-area loop returns stay in the start room and 8-4 has two rooms (main
-and water) instead of nine. Resume from link 7 through its checkpoint.
+- The water room `[0 2 0]` exits at its page 3 into the main area at page
+  16 (86 such transitions), opening room `[3 5 16]`: 1,285 entries, best
+  304 (page 19), pages 16–19, 3,374 draws of about 46,000 room draws.
+- Nine of the ten 8-4 rooms walk the same pages 0–14.
+
+## Link 8 (source 35bace58)
+
+Key `frozen_area`: the room changes only when the area bytes change, so a
+same-area loop return stays in the room it left. Resume from link 7 through
+its checkpoint, selector `room_uniform_128`, vocabulary `down_ten_mask`.
+Seed 9678475058303591893. Stream SHA-256 `65bc5655ce821581…`, checkpoint
+`3d9ce7d04d7bf5a3…`.
+
+- Import: 97,282 kept, 36,676 refused as the nine same-area rooms folded
+  into one; 41 minutes wall for the whole link.
+- Three rooms: main `[3 5 0]` (71,111 entries, pages 0–14, 18,390 draws),
+  water `[0 2 0]` (10,158, pages 0–3, 13,324 draws), after-water
+  `[3 5 16]` (1,979, pages 16–19, 12,792 draws). Watermark (7, 3, 304).
+- The after-water room spent 12,570 of its 12,754 draws on the band
+  296–304 and retained 160 there; 15,572 candidates were refused. No
+  death was recorded. p304 is a loop returning to page 16, whose landing
+  cells are full, so returns are refused and the room's other pages
+  (256–295) received 184 draws. A trickle of new tip fingerprints kept the
+  band unexhausted, so the deepest-band walk never fell through.
+
+## Link 9 (source 35bace58)
+
+Same as link 8, resumed from link 8's checkpoint; seed
+13993258458984251027. Measures whether more budget alone moves p304.
+
+## Link 10 plan (source f218b79e)
+
+Selector `room_band_uniform_128`: the room is drawn uniformly as before,
+then one of the room's progress bands (8 wide) that still holds an
+unexhausted entry, uniformly, then the concentrated draw inside it. Each
+page of the after-water room gets an equal share instead of the tip taking
+98%. Resume from link 9 through its checkpoint.
