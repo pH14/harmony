@@ -68,7 +68,66 @@ pub enum SmbCampaignOrigin {
         file_sha256: String,
         /// The parsed source archive report.
         report: Box<SmbArchiveReport>,
+        /// Snapshot checkpoint of the source archive, when one was supplied.
+        checkpoint: Option<SmbCampaignCheckpoint>,
     },
+}
+
+/// A loaded snapshot checkpoint and the file identity recorded for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SmbCampaignCheckpoint {
+    /// Path string recorded verbatim in the stream header.
+    pub path: String,
+    /// SHA-256 of the checkpoint file bytes.
+    pub file_sha256: String,
+    /// The decoded snapshots.
+    pub snapshots: SmbSnapshotCheckpoint,
+}
+
+/// Format tag of the snapshot checkpoint file.
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-snapshot-checkpoint-v1";
+
+/// Every retained entry's emulator snapshot, keyed by archive identifier, so a
+/// whole-tree resume can restore the population instead of re-emulating it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbSnapshotCheckpoint {
+    /// Always [`SNAPSHOT_CHECKPOINT_FORMAT`].
+    pub format: String,
+    /// Snapshots in archive identifier order.
+    pub entries: Vec<SmbSnapshotCheckpointEntry>,
+}
+
+/// One archive entry's snapshot.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbSnapshotCheckpointEntry {
+    /// Archive identifier the snapshot belongs to.
+    pub id: u64,
+    /// The retained snapshot.
+    pub snapshot: SmbSnapshot,
+}
+
+impl SmbSnapshotCheckpoint {
+    /// Encode the checkpoint as bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the encoder fails.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        Ok(postcard::to_allocvec(self)?)
+    }
+
+    /// Decode a checkpoint, refusing any other format tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes do not decode or carry another format.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let checkpoint: Self = postcard::from_bytes(bytes)?;
+        if checkpoint.format != SNAPSHOT_CHECKPOINT_FORMAT {
+            return Err("snapshot checkpoint format is not recognized".into());
+        }
+        Ok(checkpoint)
+    }
 }
 
 /// Fixed configuration for one live campaign run.
@@ -140,6 +199,12 @@ pub struct SmbCampaignStreamHeader {
     pub origin_path: Option<String>,
     /// SHA-256 of the source archive file bytes for archive origins.
     pub origin_archive_sha256: Option<String>,
+    /// Snapshot checkpoint path when a whole-tree resume restored from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_checkpoint_path: Option<String>,
+    /// SHA-256 of the snapshot checkpoint file bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_checkpoint_sha256: Option<String>,
     /// SHA-256 of the serialized resume input.
     pub resume_input_sha256: String,
     /// Action count of the resume input.
@@ -308,6 +373,12 @@ pub struct SmbCampaignOriginRecord {
     pub path: Option<String>,
     /// SHA-256 of the source archive file bytes for archive origins.
     pub archive_sha256: Option<String>,
+    /// Snapshot checkpoint path when a whole-tree resume restored from one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_path: Option<String>,
+    /// SHA-256 of the snapshot checkpoint file bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_sha256: Option<String>,
     /// SHA-256 of the serialized resume input.
     pub resume_input_sha256: String,
     /// Action count of the resume input.
@@ -1939,7 +2010,20 @@ impl CoordinatorCore {
         &mut self,
         target: &mut SmbTarget,
         source: &SmbArchiveReport,
+        checkpoint: Option<&SmbSnapshotCheckpoint>,
     ) -> Result<SmbTreeImportCounts, Box<dyn Error>> {
+        let checkpointed: BTreeMap<u64, &SmbSnapshot> = checkpoint
+            .map(|checkpoint| {
+                checkpoint
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.id, &entry.snapshot))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The source watermark already covers every action interior the
+        // source run observed, so both import paths merge it whole.
+        self.watermark = self.watermark.max(source.progress_watermark);
         target.reset();
         let genesis_key = archive_key(target.wram(), self.key_policy);
         let genesis_snapshot = target
@@ -2006,39 +2090,56 @@ impl CoordinatorCore {
             };
             let parent_entry = &self.archive.entries[parent_id];
             let mut milestones = parent_entry.report.milestones;
-            let mut prefix = parent_entry.report.input.clone();
-            target.restore(&parent_entry.snapshot)?;
-            let mut terminal = false;
-            for action in &entry.input.actions[parent_input_len..] {
-                prefix.actions.push(*action);
-                target.apply(action);
-                merge_progress_watermark(&mut self.watermark, target.last_action_observations());
-                merge_action_milestones(&mut milestones, target)?;
-                merge_milestones(&mut self.aggregate, milestones);
-                update_first_inputs(
-                    &mut self.first_reached,
-                    &mut self.first_inputs,
-                    milestones,
-                    0,
-                    &prefix,
-                );
-                if milestone_key(milestones) > milestone_key(self.champion_milestones) {
-                    self.champion_milestones = milestones;
-                    self.champion_input = prefix.clone();
-                }
+            let prefix = entry.input.clone();
+            let snapshot = if let Some(snapshot) = checkpointed.get(&entry.id) {
+                // The source recorded the strongest milestones along this
+                // input, which is what replaying its actions would merge.
+                target.restore(snapshot)?;
+                merge_milestones(&mut milestones, entry.milestones);
+                counts.checkpointed = counts.checkpointed.saturating_add(1);
                 if target.is_dead() || target.exit_kind() != ExitKind::Ok {
-                    terminal = true;
-                    break;
+                    None
+                } else {
+                    Some((*snapshot).clone())
                 }
-            }
-            if terminal {
+            } else {
+                target.restore(&parent_entry.snapshot)?;
+                let mut terminal = false;
+                for action in &entry.input.actions[parent_input_len..] {
+                    target.apply(action);
+                    merge_action_milestones(&mut milestones, target)?;
+                    if target.is_dead() || target.exit_kind() != ExitKind::Ok {
+                        terminal = true;
+                        break;
+                    }
+                }
+                if terminal {
+                    None
+                } else {
+                    Some(
+                        target
+                            .snapshot()
+                            .ok_or("failed to snapshot campaign tree import")?,
+                    )
+                }
+            };
+            let Some(snapshot) = snapshot else {
                 counts.terminal = counts.terminal.saturating_add(1);
                 imported.push(None);
                 continue;
+            };
+            merge_milestones(&mut self.aggregate, milestones);
+            update_first_inputs(
+                &mut self.first_reached,
+                &mut self.first_inputs,
+                milestones,
+                0,
+                &prefix,
+            );
+            if milestone_key(milestones) > milestone_key(self.champion_milestones) {
+                self.champion_milestones = milestones;
+                self.champion_input = prefix.clone();
             }
-            let snapshot = target
-                .snapshot()
-                .ok_or("failed to snapshot campaign tree import")?;
             let key = archive_key(target.wram(), self.key_policy);
             let inserted_before = self.archive.entries.len();
             match self.archive.insert(
@@ -2259,6 +2360,13 @@ pub struct SmbTreeImportCounts {
     pub over_limit: u64,
     /// Source entries attached to an ancestor other than their recorded parent.
     pub rerooted: u64,
+    /// Source entries restored from the snapshot checkpoint instead of emulated.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub checkpointed: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 /// The resume input and origin record derived from a campaign origin.
@@ -2392,9 +2500,16 @@ fn bootstrap_core(
     resume_input: &SmbInput,
 ) -> Result<Option<SmbTreeImportCounts>, Box<dyn Error>> {
     match (resume_policy, origin) {
-        (SmbCampaignResumePolicy::WholeTree, SmbCampaignOrigin::Archive { report, .. }) => {
-            Ok(Some(core.import_tree(target, report)?))
-        }
+        (
+            SmbCampaignResumePolicy::WholeTree,
+            SmbCampaignOrigin::Archive {
+                report, checkpoint, ..
+            },
+        ) => Ok(Some(core.import_tree(
+            target,
+            report,
+            checkpoint.as_ref().map(|checkpoint| &checkpoint.snapshots),
+        )?)),
         _ => {
             core.bootstrap(target, std::slice::from_ref(resume_input))?;
             Ok(None)
@@ -2406,18 +2521,25 @@ fn resolve_origin(
     origin: &SmbCampaignOrigin,
     resume_policy: SmbCampaignResumePolicy,
 ) -> Result<ResolvedOrigin, Box<dyn Error>> {
-    let (kind, path, archive_sha256, resume_input) = match origin {
-        SmbCampaignOrigin::Genesis => ("genesis".to_owned(), None, None, SmbInput::default()),
+    let (kind, path, archive_sha256, checkpoint, resume_input) = match origin {
+        SmbCampaignOrigin::Genesis => ("genesis".to_owned(), None, None, None, SmbInput::default()),
         SmbCampaignOrigin::Archive {
             path,
             file_sha256,
             report,
-        } => (
-            "archive".to_owned(),
-            Some(path.clone()),
-            Some(file_sha256.clone()),
-            select_frontier_resume_input(report, resume_policy)?,
-        ),
+            checkpoint,
+        } => {
+            if checkpoint.is_some() && resume_policy != SmbCampaignResumePolicy::WholeTree {
+                return Err("a snapshot checkpoint requires the whole-tree resume policy".into());
+            }
+            (
+                "archive".to_owned(),
+                Some(path.clone()),
+                Some(file_sha256.clone()),
+                checkpoint.as_ref(),
+                select_frontier_resume_input(report, resume_policy)?,
+            )
+        }
     };
     let resume_input_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&resume_input)?));
     Ok(ResolvedOrigin {
@@ -2425,6 +2547,8 @@ fn resolve_origin(
             kind,
             path,
             archive_sha256,
+            checkpoint_path: checkpoint.map(|checkpoint| checkpoint.path.clone()),
+            checkpoint_sha256: checkpoint.map(|checkpoint| checkpoint.file_sha256.clone()),
             resume_input_sha256,
             resume_actions: resume_input.actions.len(),
         },
@@ -2446,6 +2570,8 @@ fn stream_header(
         origin_kind: origin.kind.clone(),
         origin_path: origin.path.clone(),
         origin_archive_sha256: origin.archive_sha256.clone(),
+        origin_checkpoint_path: origin.checkpoint_path.clone(),
+        origin_checkpoint_sha256: origin.checkpoint_sha256.clone(),
         resume_input_sha256: origin.resume_input_sha256.clone(),
         resume_actions: origin.resume_actions,
         execution_budget: config.execution_budget,
@@ -2528,7 +2654,19 @@ fn build_report(
     core: CoordinatorCore,
     counters: &CampaignCounters,
     stream_sha256: String,
-) -> SmbCampaignModeReport {
+) -> (SmbCampaignModeReport, SmbSnapshotCheckpoint) {
+    let checkpoint = SmbSnapshotCheckpoint {
+        format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+        entries: core
+            .archive
+            .entries
+            .iter()
+            .map(|entry| SmbSnapshotCheckpointEntry {
+                id: entry.report.id,
+                snapshot: entry.snapshot.clone(),
+            })
+            .collect(),
+    };
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
     let snap_refused = core.snap_refused;
@@ -2536,7 +2674,7 @@ fn build_report(
     let replacement_frames_displaced = core.archive.replacement_frames_displaced();
     let waypoint_snap_exempt = core.waypoint_snap_exempt;
     let archive = core.into_archive_report(header.campaign_seed);
-    SmbCampaignModeReport {
+    let report = SmbCampaignModeReport {
         mode: "campaign".to_owned(),
         campaign_seed: header.campaign_seed,
         workers: header.workers,
@@ -2576,7 +2714,8 @@ fn build_report(
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
         archive,
-    }
+    };
+    (report, checkpoint)
 }
 
 fn result_sha256(result: &SmbCampaignJobResult) -> Result<String, Box<dyn Error>> {
@@ -2661,8 +2800,25 @@ pub fn run_smb_campaign_with_progress(
     config: &SmbCampaignConfig,
     origin: &SmbCampaignOrigin,
     stream: &mut dyn Write,
-    mut progress: Option<&mut dyn Write>,
+    progress: Option<&mut dyn Write>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
+    run_smb_campaign_checkpointed(rom, config, origin, stream, progress).map(|(report, _)| report)
+}
+
+/// Run a campaign, also returning every retained entry's snapshot so a later
+/// whole-tree resume can restore the population instead of re-emulating it.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as
+/// [`run_smb_campaign_with_progress`].
+pub fn run_smb_campaign_checkpointed(
+    rom: &[u8],
+    config: &SmbCampaignConfig,
+    origin: &SmbCampaignOrigin,
+    stream: &mut dyn Write,
+    mut progress: Option<&mut dyn Write>,
+) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn Error>> {
     if config.workers == 0 {
         return Err("campaign mode requires at least one worker".into());
     }
@@ -2987,6 +3143,26 @@ pub fn replay_smb_campaign(
     stream_bytes: &[u8],
     origin_report: Option<&SmbArchiveReport>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
+    replay_smb_campaign_checkpointed(rom, stream_bytes, origin_report, None)
+        .map(|(report, _)| report)
+}
+
+/// Replay a recorded campaign, also returning the rebuilt snapshot checkpoint.
+///
+/// When the recorded header names a snapshot checkpoint, `origin_checkpoint`
+/// must be that file and its hash must match; a replay without it re-emulates
+/// the import and must still reach the same archive.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`replay_smb_campaign`], or
+/// when the supplied checkpoint is not the recorded one.
+pub fn replay_smb_campaign_checkpointed(
+    rom: &[u8],
+    stream_bytes: &[u8],
+    origin_report: Option<&SmbArchiveReport>,
+    origin_checkpoint: Option<&SmbCampaignCheckpoint>,
+) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn Error>> {
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let text = std::str::from_utf8(stream_bytes)?;
     let mut lines = text.lines();
@@ -3043,9 +3219,15 @@ pub fn replay_smb_campaign(
             path: header.origin_path.clone().unwrap_or_default(),
             file_sha256: header.origin_archive_sha256.clone().unwrap_or_default(),
             report: Box::new(report.clone()),
+            checkpoint: origin_checkpoint.cloned(),
         },
         None => SmbCampaignOrigin::Genesis,
     };
+    if let Some(checkpoint) = origin_checkpoint
+        && header.origin_checkpoint_sha256.as_deref() != Some(checkpoint.file_sha256.as_str())
+    {
+        return Err("campaign replay checkpoint does not match the recorded stream".into());
+    }
     let (mut chord_tables, replay_chord_header) =
         initial_chord_tables(replay_chord_policy, &chord_origin)?;
     if replay_chord_header != header.chord_table {
@@ -3258,6 +3440,8 @@ pub fn replay_smb_campaign(
         kind: header.origin_kind.clone(),
         path: header.origin_path.clone(),
         archive_sha256: header.origin_archive_sha256.clone(),
+        checkpoint_path: header.origin_checkpoint_path.clone(),
+        checkpoint_sha256: header.origin_checkpoint_sha256.clone(),
         resume_input_sha256: header.resume_input_sha256.clone(),
         resume_actions: header.resume_actions,
     };
@@ -4864,6 +5048,11 @@ mod tests {
 
     #[test]
     fn archive_origin_round_trips_through_replay() {
+        use super::{
+            SmbCampaignCheckpoint, SmbSnapshotCheckpoint, replay_smb_campaign_checkpointed,
+            run_smb_campaign_checkpointed,
+        };
+        use sha2::{Digest, Sha256};
         let rom = synthetic_nrom();
         let seed_config = SmbCampaignConfig {
             campaign_seed: 0x5eed_ca05,
@@ -4884,11 +5073,12 @@ mod tests {
             resume_policy: SmbCampaignResumePolicy::FrontierShortest,
         };
         let mut seed_stream = Vec::new();
-        let seed_campaign = run_smb_campaign(
+        let (seed_campaign, seed_checkpoint) = run_smb_campaign_checkpointed(
             &rom,
             &seed_config,
             &SmbCampaignOrigin::Genesis,
             &mut seed_stream,
+            None,
         )
         .expect("seed campaign");
         let source = seed_campaign.archive.clone();
@@ -4919,6 +5109,7 @@ mod tests {
                 path: "seed-archive.json".to_owned(),
                 file_sha256: source_sha.to_owned(),
                 report: Box::new(source.clone()),
+                checkpoint: None,
             },
             &mut stream,
         )
@@ -4943,6 +5134,7 @@ mod tests {
                 path: "seed-archive.json".to_owned(),
                 file_sha256: source_sha.to_owned(),
                 report: Box::new(source.clone()),
+                checkpoint: None,
             },
             &mut tree_stream,
         )
@@ -4963,6 +5155,85 @@ mod tests {
         );
         assert!(counts.imported >= 1);
         assert_eq!(counts.rerooted, 0);
+        assert_eq!(counts.checkpointed, 0);
+
+        // Restoring the source population from its snapshot checkpoint
+        // reaches the same archive as re-emulating it, records the
+        // checkpoint in the header, and replays with or without the file.
+        let checkpoint_bytes = seed_checkpoint.to_bytes().expect("encode checkpoint");
+        let checkpoint = SmbCampaignCheckpoint {
+            path: "seed-snapshots.bin".to_owned(),
+            file_sha256: format!("{:x}", Sha256::digest(&checkpoint_bytes)),
+            snapshots: SmbSnapshotCheckpoint::from_bytes(&checkpoint_bytes)
+                .expect("decode checkpoint"),
+        };
+        assert_eq!(checkpoint.snapshots.entries.len(), source.entries.len());
+        let mut restored_stream = Vec::new();
+        let (restored_live, restored_checkpoint) = run_smb_campaign_checkpointed(
+            &rom,
+            &tree_config,
+            &SmbCampaignOrigin::Archive {
+                path: "seed-archive.json".to_owned(),
+                file_sha256: source_sha.to_owned(),
+                report: Box::new(source.clone()),
+                checkpoint: Some(checkpoint.clone()),
+            },
+            &mut restored_stream,
+            None,
+        )
+        .expect("checkpoint-restored campaign");
+        assert_eq!(restored_live.archive, tree_live.archive);
+        assert_eq!(restored_live.bootstrap_frames, 0);
+        assert_eq!(
+            restored_live.origin.checkpoint_sha256.as_deref(),
+            Some(checkpoint.file_sha256.as_str())
+        );
+        let restored_counts = restored_live.tree_import.expect("restored counts");
+        assert_eq!(restored_counts.checkpointed, source_retained);
+        assert_eq!(
+            (
+                restored_counts.imported,
+                restored_counts.duplicate,
+                restored_counts.rejected
+            ),
+            (counts.imported, counts.duplicate, counts.rejected)
+        );
+        let (replayed_with, replayed_checkpoint) = replay_smb_campaign_checkpointed(
+            &rom,
+            &restored_stream,
+            Some(&source),
+            Some(&checkpoint),
+        )
+        .expect("replay with checkpoint");
+        assert_eq!(replayed_with, restored_live);
+        assert_eq!(replayed_checkpoint, restored_checkpoint);
+        let (replayed_without, _) =
+            replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), None)
+                .expect("replay without checkpoint");
+        assert_eq!(replayed_without.archive, restored_live.archive);
+        let wrong = SmbCampaignCheckpoint {
+            file_sha256: "00".to_owned(),
+            ..checkpoint.clone()
+        };
+        assert!(
+            replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), Some(&wrong))
+                .is_err()
+        );
+        let frontier_with_checkpoint = run_smb_campaign(
+            &rom,
+            &SmbCampaignConfig {
+                resume_policy: SmbCampaignResumePolicy::FrontierShortest,
+                ..tree_config
+            },
+            &SmbCampaignOrigin::Archive {
+                path: "seed-archive.json".to_owned(),
+                file_sha256: source_sha.to_owned(),
+                report: Box::new(source.clone()),
+                checkpoint: Some(checkpoint),
+            },
+            &mut Vec::new(),
+        );
+        assert!(frontier_with_checkpoint.is_err());
         let imported_inputs: std::collections::BTreeSet<_> = tree_live
             .archive
             .entries
@@ -5040,7 +5311,9 @@ mod tests {
             crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
         );
-        let counts = core.import_tree(&mut target, &source).expect("import");
+        let counts = core
+            .import_tree(&mut target, &source, None)
+            .expect("import");
         assert_eq!(counts.over_limit, 1);
         assert_eq!(counts.rerooted, 1);
         assert_eq!(counts.terminal, 0);

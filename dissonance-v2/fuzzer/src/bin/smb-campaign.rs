@@ -10,11 +10,12 @@ use fuzzer::{
         SmbArchiveSelectorPolicy,
     },
     smb::campaign::{
-        SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin, SmbCampaignVocabulary,
-        chord_policy_from_identifier, key_policy_from_identifier, replacement_from_identifier,
-        replay_smb_campaign, resume_from_identifier, retention_from_identifier,
-        run_smb_campaign_with_progress, selector_from_identifier, suffix_policy_from_identifier,
-        vocabulary_from_identifier, waypoint_from_identifier,
+        SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
+        SmbCampaignVocabulary, SmbSnapshotCheckpoint, chord_policy_from_identifier,
+        key_policy_from_identifier, replacement_from_identifier, replay_smb_campaign_checkpointed,
+        resume_from_identifier, retention_from_identifier, run_smb_campaign_checkpointed,
+        selector_from_identifier, suffix_policy_from_identifier, vocabulary_from_identifier,
+        waypoint_from_identifier,
     },
 };
 use serde::Serialize;
@@ -81,6 +82,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut resume_policy = fuzzer::smb::campaign::SmbCampaignResumePolicy::FrontierShortest;
     let mut suffix = fuzzer::smb::campaign::SmbCampaignSuffixPolicy::OneOrTwo;
     let mut chord = fuzzer::smb::campaign::SmbCampaignChordPolicy::Uniform;
+    let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -143,6 +145,10 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --resume value")?
                     .to_string_lossy(),
             )?;
+        } else if flag == "--checkpoint" {
+            checkpoint_path = Some(PathBuf::from(
+                args.next().ok_or("missing --checkpoint value")?,
+            ));
         } else if flag == "--replacement" {
             replacement_policy = replacement_from_identifier(
                 &args
@@ -159,7 +165,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     }
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
-    let origin = load_origin(&origin_arg.to_string_lossy())?;
+    let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
     let config = SmbCampaignConfig {
         campaign_seed,
         workers,
@@ -186,8 +192,8 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     // untouched by it.
     let mut progress = BufWriter::new(fs::File::create(output.join("progress-live.jsonl"))?);
     let started = std::time::Instant::now();
-    let report =
-        run_smb_campaign_with_progress(&rom, &config, &origin, &mut stream, Some(&mut progress))?;
+    let (report, checkpoint) =
+        run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, Some(&mut progress))?;
     let wall_seconds = started.elapsed().as_secs_f64();
     drop(stream);
 
@@ -197,6 +203,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         "archive-live.json",
         "campaign-report.json",
     )?;
+    fs::write(output.join("snapshots-live.bin"), checkpoint.to_bytes()?)?;
     let throughput = LiveThroughput {
         wall_seconds,
         executions_completed: report.executions_completed,
@@ -217,6 +224,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let origin_arg = args
         .next()
         .ok_or("missing origin (genesis or the recorded source archive path)")?;
+    let checkpoint_arg = args.next().map(PathBuf::from);
     if args.next().is_some() {
         return Err("unexpected extra replay argument".into());
     }
@@ -228,19 +236,30 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
             path,
         )?)?),
     };
-    let report = replay_smb_campaign(&rom, &stream_bytes, origin_report.as_ref())?;
+    let origin_checkpoint = checkpoint_arg.as_deref().map(load_checkpoint).transpose()?;
+    let (report, checkpoint) = replay_smb_campaign_checkpointed(
+        &rom,
+        &stream_bytes,
+        origin_report.as_ref(),
+        origin_checkpoint.as_ref(),
+    )?;
     write_report_files(
         &run_dir,
         &report,
         "archive-replay.json",
         "campaign-report-replay.json",
     )?;
+    fs::write(run_dir.join("snapshots-replay.bin"), checkpoint.to_bytes()?)?;
 
     let archive_live = fs::read(run_dir.join("archive-live.json"))?;
     let archive_replay = fs::read(run_dir.join("archive-replay.json"))?;
     let report_live = fs::read(run_dir.join("campaign-report.json"))?;
     let report_replay = fs::read(run_dir.join("campaign-report-replay.json"))?;
-    let replay_verified = archive_live == archive_replay && report_live == report_replay;
+    let snapshots_live = fs::read(run_dir.join("snapshots-live.bin"))?;
+    let snapshots_replay = fs::read(run_dir.join("snapshots-replay.bin"))?;
+    let replay_verified = archive_live == archive_replay
+        && report_live == report_replay
+        && snapshots_live == snapshots_replay;
     let verdict = serde_json::json!({
         "replay_verified": replay_verified,
         "archive_sha256": format!("{:x}", Sha256::digest(&archive_live)),
@@ -259,8 +278,14 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     Ok(())
 }
 
-fn load_origin(origin_arg: &str) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
+fn load_origin(
+    origin_arg: &str,
+    checkpoint_path: Option<&std::path::Path>,
+) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
     if origin_arg == "genesis" {
+        if checkpoint_path.is_some() {
+            return Err("a snapshot checkpoint needs a source archive origin".into());
+        }
         return Ok(SmbCampaignOrigin::Genesis);
     }
     let bytes = fs::read(origin_arg)?;
@@ -269,6 +294,16 @@ fn load_origin(origin_arg: &str) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
         path: origin_arg.to_owned(),
         file_sha256: format!("{:x}", Sha256::digest(&bytes)),
         report: Box::new(report),
+        checkpoint: checkpoint_path.map(load_checkpoint).transpose()?,
+    })
+}
+
+fn load_checkpoint(path: &std::path::Path) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    let bytes = fs::read(path)?;
+    Ok(SmbCampaignCheckpoint {
+        path: path.to_string_lossy().into_owned(),
+        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+        snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes)?,
     })
 }
 
