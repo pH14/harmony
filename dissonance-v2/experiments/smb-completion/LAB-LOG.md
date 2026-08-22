@@ -9110,3 +9110,27 @@ the operating mode at every one of its 174,969 frames.
   wall is measured for which mined chords are the falsifiable fix.
 - **Suffix decision (synthesis item 6).** The compiled `one_or_two` suffix
   stands; the winning link 12 header records it.
+
+### Local validation of 46b3d74c
+
+- The four quality gates pass on the Mac.
+- Smoke campaign from genesis: seed `0x5eed_0001`, 4 workers, 2,000
+  executions, watermark 1-1 progress 180, stream SHA-256
+  `b010792372ec1b66762b65f8bd27603db50706e789b0b17c97286f5f852dc8d7`,
+  `replay_verified` true.
+
+## Run 1 registration — one attempt from genesis
+
+- Source commit `46b3d74c`, seed `0x5eed_0822`, 12 workers, execution budget
+  1,500,000, action limit 8,192, entry limit 1,048,576, uniform chords,
+  host msr1, output `results/run1`, no wall budget.
+- Fixed rules compiled: `down_ten_mask`, `stratified` holds, `one_or_two`
+  suffix, `fewest_frames_in_level` replacement, `room_cell_uniform_128`
+  selector, `probe_at_admission_45` retention, `whole_tree` resume,
+  `frozen_area_span_center_x_16` key, victory decode
+  `$0770 == 2 && $075f == 7`.
+- Stop rule: the victory event ends the run and writes the winning input;
+  otherwise the run exhausts the budget, and no wall may be declared before
+  it does.
+- Success is the victory event in the recorded stream plus a byte-exact
+  replay; the record is the executions-to-entry curve per level.
