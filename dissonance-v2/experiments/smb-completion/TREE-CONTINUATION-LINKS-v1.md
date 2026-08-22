@@ -35,10 +35,11 @@ Resume `whole_tree` from link 1's archive under the arrival-page room
 identity (area bytes plus the level page the lineage arrived at; an arrival
 is a child more than one screen behind its parent inside one level). Seed
 3567950349743117301. Stream SHA-256
-`b1f3…` (see `results/link3/stream.jsonl`).
+`8e73ce954bc4f103b15bad0438c5e6215c61ec61d52f9d2fcd54c729e4efdb2a`.
 
 - Import rebuilt all 30,468 entries in 45 minutes on one core.
-- 50,000 executions; 62,817 entries; watermark still (7, 3, 153).
+- 50,000 executions at 10.3 per second; 62,817 entries; watermark still
+  (7, 3, 153).
 - 8-4 entries by `rooms`: 1: 12,295; 2: 10,549; 3: 11,007; 4: 13,981.
   Rooms 3 and 4 each reach progress 153 again.
 - Room arrivals inside 8-4, from parent page to child page: 9→5 (3,727),
