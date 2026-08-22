@@ -1132,6 +1132,12 @@ pub enum SmbArchiveSelectorPolicy {
     /// coordinate, so a room reached by a warp gets the same share as the
     /// room the level starts in.
     RoomUniform,
+    /// `RoomUniform` with the draw inside the chosen room spread evenly over
+    /// its progress bands (`FRONTIER_PROGRESS_BAND` wide) that still hold an
+    /// unexhausted entry, instead of always taking the deepest one. A band
+    /// that keeps admitting new fingerprints of the same screen no longer
+    /// monopolizes the room.
+    RoomBandUniform,
 }
 
 /// Whether a declared waypoint region receives auxiliary retention and
@@ -1241,6 +1247,10 @@ pub enum SmbSelectorPath {
     /// One room of the deepest pair chosen uniformly, then the frontier-band
     /// walk and the concentrated recency draw within it.
     RoomUniform,
+    /// One room of the deepest pair chosen uniformly, then one of its
+    /// unexhausted progress bands uniformly, then the concentrated recency
+    /// draw within it.
+    RoomBandUniform,
 }
 
 /// One corrected-selector draw, recorded so selection-time state is checkable.
@@ -2023,7 +2033,8 @@ impl Archive {
             SmbArchiveSelectorPolicy::ConcentratedRecency
             | SmbArchiveSelectorPolicy::PinnedWindow { .. }
             | SmbArchiveSelectorPolicy::ClassUniform
-            | SmbArchiveSelectorPolicy::RoomUniform => {
+            | SmbArchiveSelectorPolicy::RoomUniform
+            | SmbArchiveSelectorPolicy::RoomBandUniform => {
                 self.since_retained[id] < SELECTION_EXHAUSTION_THRESHOLD
             }
         }
@@ -2079,7 +2090,8 @@ impl Archive {
             SmbArchiveSelectorPolicy::ConcentratedRecency
             | SmbArchiveSelectorPolicy::YieldBudgeted(_)
             | SmbArchiveSelectorPolicy::ClassUniform
-            | SmbArchiveSelectorPolicy::RoomUniform => active,
+            | SmbArchiveSelectorPolicy::RoomUniform
+            | SmbArchiveSelectorPolicy::RoomBandUniform => active,
         };
         let mut counter_reset = false;
         let pool =
@@ -2194,6 +2206,22 @@ impl Archive {
                         id,
                         SmbSelectorDraw {
                             path: SmbSelectorPath::RoomUniform,
+                            classes_skipped,
+                            counter_reset,
+                            concentration,
+                            waypoint: false,
+                        },
+                    ));
+                }
+            } else if self.selector_accounting.policy == SmbArchiveSelectorPolicy::RoomBandUniform {
+                if let Some(class) =
+                    self.room_band_uniform_class(rand, &pool, &mut classes_skipped)?
+                {
+                    let (id, concentration) = self.draw_from_class(rand, class)?;
+                    return Ok((
+                        id,
+                        SmbSelectorDraw {
+                            path: SmbSelectorPath::RoomBandUniform,
                             classes_skipped,
                             counter_reset,
                             concentration,
@@ -2368,6 +2396,72 @@ impl Archive {
         Ok(None)
     }
 
+    /// The unexhausted members of every fixed-width progress band of
+    /// `members`, deepest band first; exhausted bands are counted as skipped.
+    fn unexhausted_bands(&self, members: &[usize], classes_skipped: &mut u64) -> Vec<Vec<usize>> {
+        let mut bands = BTreeMap::<Reverse<u16>, Vec<usize>>::new();
+        for id in members {
+            let band = self.entries[*id].report.key.progress / FRONTIER_PROGRESS_BAND;
+            bands.entry(Reverse(band)).or_default().push(*id);
+        }
+        let mut live = Vec::new();
+        for (_, band) in bands {
+            let unexhausted = band
+                .into_iter()
+                .filter(|id| self.selector_unexhausted(*id))
+                .collect::<Vec<_>>();
+            if unexhausted.is_empty() {
+                *classes_skipped = classes_skipped.saturating_add(1);
+            } else {
+                live.push(unexhausted);
+            }
+        }
+        live
+    }
+
+    /// One unexhausted band of one room: the room chosen uniformly among the
+    /// rooms of the deepest `(world, level)` pair with an unexhausted entry,
+    /// the band uniformly among that room's unexhausted bands; `None` when
+    /// every active entry is exhausted.
+    fn room_band_uniform_class(
+        &self,
+        rand: &mut StdRand,
+        active: &[usize],
+        classes_skipped: &mut u64,
+    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
+        let mut pairs = BTreeMap::<(u8, u8), BTreeMap<SmbRoomIdentity, Vec<usize>>>::new();
+        for id in active {
+            let key = self.entries[*id].report.key;
+            pairs
+                .entry((key.world, key.level))
+                .or_default()
+                .entry(key.room)
+                .or_default()
+                .push(*id);
+        }
+        for (_, rooms) in pairs.into_iter().rev() {
+            let mut live = Vec::new();
+            for (_, members) in rooms {
+                let mut skipped = 0_u64;
+                let bands = self.unexhausted_bands(&members, &mut skipped);
+                if bands.is_empty() {
+                    *classes_skipped = classes_skipped.saturating_add(skipped);
+                } else {
+                    live.push((bands, skipped));
+                }
+            }
+            let Some(count) = NonZeroUsize::new(live.len()) else {
+                continue;
+            };
+            let (mut bands, skipped) = live.swap_remove(rand.below(count));
+            *classes_skipped = classes_skipped.saturating_add(skipped);
+            let band = bands
+                .swap_remove(rand.below(NonZeroUsize::new(bands.len()).ok_or("empty band list")?));
+            return Ok(Some(band));
+        }
+        Ok(None)
+    }
+
     /// Uniform draw within the winning tie class; the H59 concentrated policy
     /// narrows it to the class's `CONCENTRATION_WINDOW` greatest-id members.
     ///
@@ -2412,7 +2506,8 @@ impl Archive {
             }
             SmbSelectorPath::TieClass
             | SmbSelectorPath::ClassUniform
-            | SmbSelectorPath::RoomUniform => {
+            | SmbSelectorPath::RoomUniform
+            | SmbSelectorPath::RoomBandUniform => {
                 self.selector_accounting.tie_class_selections = self
                     .selector_accounting
                     .tie_class_selections
@@ -6236,6 +6331,53 @@ mod tests {
     }
 
     #[test]
+    fn room_band_uniform_splits_a_room_over_its_unexhausted_bands() {
+        // One 8-4 room with 40 entries in the deepest band (progress 304),
+        // 20 in the band below it (300), and 40 and 10 in two shallow bands
+        // (256, 270). The deepest-band walk never leaves 304 while it stays
+        // unexhausted; the band rule gives each band a quarter of the draws.
+        let mut keys: Vec<(u8, u8, u16)> = Vec::new();
+        keys.extend(std::iter::repeat_n((7, 3, 304), 40));
+        keys.extend(std::iter::repeat_n((7, 3, 300), 20));
+        keys.extend(std::iter::repeat_n((7, 3, 256), 40));
+        keys.extend(std::iter::repeat_n((7, 3, 270), 10));
+        let mut archive = selector_archive(&keys);
+        for entry in &mut archive.entries {
+            entry.report.key.room = [3, 5, 16];
+        }
+        archive.set_selector_policy(SmbArchiveSelectorPolicy::RoomBandUniform);
+        let mut rand = StdRand::with_seed(0x5e1e_c7ee);
+        let mut per_band = std::collections::BTreeMap::<u16, u64>::new();
+        let mut band_draws = 0_u64;
+        for _ in 0..900 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("room-band selection");
+            let draw = draw.expect("room-band draw record");
+            if draw.path != SmbSelectorPath::RoomBandUniform {
+                continue;
+            }
+            band_draws += 1;
+            let key = archive.entries[id].report.key;
+            *per_band
+                .entry(key.progress / super::FRONTIER_PROGRESS_BAND)
+                .or_default() += 1;
+            archive.record_selection(id, &draw);
+            archive
+                .record_selection_outcome(id, true, 1)
+                .expect("outcome");
+        }
+        assert!(band_draws > 600);
+        assert_eq!(per_band.len(), 4, "bands drawn: {per_band:?}");
+        for share in per_band.values() {
+            assert!(
+                share * 4 > band_draws / 2 && share * 4 < band_draws * 3 / 2,
+                "uneven band shares: {per_band:?}"
+            );
+        }
+    }
+
+    #[test]
     fn frozen_room_keys_the_current_room_and_ignores_repeated_loops() {
         let mut archive = Archive::new();
         archive.set_key_policy(SmbArchiveKeyPolicy::FrozenRoom);
@@ -6531,7 +6673,9 @@ mod tests {
                 .expect("concentrated selection");
             let draw = draw.expect("concentrated draw record");
             match draw.path {
-                SmbSelectorPath::ClassUniform | SmbSelectorPath::RoomUniform => {
+                SmbSelectorPath::ClassUniform
+                | SmbSelectorPath::RoomUniform
+                | SmbSelectorPath::RoomBandUniform => {
                     panic!("concentrated policy took a uniform class path")
                 }
                 SmbSelectorPath::TieClass => {
