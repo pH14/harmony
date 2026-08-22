@@ -245,3 +245,28 @@ forward move past every known room still opens a room. Resume from link
 10 through its checkpoint, selector `room_band_uniform_128`, vocabulary
 `down_ten_mask`. Seed 13570450108844123233. Unit `smb-tree-link11`,
 results `/root/harmony-smb-campaign-tree-b9f7f837/results/link11`.
+Stream SHA-256 `2dd1d3a766060dbb…`, checkpoint `cdb046fd17162960…`.
+Watermark (7, 3, 304) held; 199,062 entries, 3,452 deaths, 19.9 exec/s.
+
+- The leak is closed: room `[3 5 16]` holds pages 16–19 only (6,934 /
+  2,165 / 3,258 / 514 entries); 13 same-area warps to page 1 landed in
+  the start room.
+- Every entry at progress 291–304 has vertical bucket 11 and engine state
+  8: one height, one state, across the last 14 progress units. Progress
+  280–286 holds buckets 2–8; 287–289 holds bucket 7 only, with 7 / 21 /
+  60 entries.
+- From parents at progress 304, 2,471 of 2,548 jobs were rejected (every
+  candidate hit a full cell) and 77 were retained at 304. No child of a
+  304 parent landed on any other page.
+- The concentrated draw inside a band starves thin cells: (286, y 3–5)
+  received 2 / 17 / 12 draws and (287, y 7) none, while (285, y 8) got 204
+  and the floor cells 291–296 got 197–465 each.
+
+## Link 12 (source a9acff00)
+
+Selector `room_cell_uniform_128`: room uniform, band uniform, then one of
+the band's cells (key without its fingerprint) uniformly among cells with
+an unexhausted entry, then the concentrated draw. Resume from link 11
+through its checkpoint, key `frozen_area_span`, vocabulary
+`down_ten_mask`. Seed 7113094308691776288. Unit `smb-tree-link12`,
+results `/root/harmony-smb-campaign-tree-a9acff00/results/link12`.
