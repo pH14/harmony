@@ -23,8 +23,8 @@ const SCREEN_PAGE_OFFSET: usize = 0x071a;
 const SCREEN_X_OFFSET: usize = 0x071c;
 const PLAYER_Y_OFFSET: usize = 0x00ce;
 const PLAYER_ENGINE_STATE_OFFSET: usize = 0x000e;
-/// Frozen player-engine state used by the terminal-death decoder.
-pub const PLAYER_KILLED_STATE: u8 = 0x0b;
+/// Player engine state the game sets when Mario is killed.
+const PLAYER_KILLED_STATE: u8 = 0x0b;
 const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
@@ -73,7 +73,7 @@ pub struct SmbObservations {
     /// Route-agnostic decoded state recorded directly in the trace.
     #[serde(default)]
     pub decoded: SmbMechanicalState,
-    /// Frozen campaign milestones decoded at this event.
+    /// Campaign milestones decoded at this event.
     #[serde(default)]
     pub milestones: SmbMilestones,
     /// Sorted work-RAM indices whose bytes changed since the previous observer event.
@@ -100,12 +100,6 @@ impl SmbSnapshot {
     pub fn wram(&self) -> &[u8] {
         &self.observation.wram
     }
-
-    /// Serialized emulator-state size in bytes, for diagnostics.
-    #[must_use]
-    pub fn emulator_state_len(&self) -> usize {
-        self.emulator_state.len()
-    }
 }
 
 /// Deterministic TetaNES-backed target used by the Super Mario Bros campaigns.
@@ -123,15 +117,6 @@ pub struct SmbTarget {
 }
 
 impl SmbTarget {
-    /// Load an iNES ROM from memory with deterministic RAM and no persistent SRAM access.
-    ///
-    /// # Errors
-    ///
-    /// Returns a TetaNES error if the ROM cannot be loaded or its genesis state cannot be saved.
-    pub fn from_rom_bytes(rom: &[u8]) -> tetanes_core::control_deck::Result<Self> {
-        Self::from_rom_bytes_with_mode(rom, HeadlessMode::NO_AUDIO)
-    }
-
     fn from_rom_bytes_with_mode(
         rom: &[u8],
         headless_mode: HeadlessMode,
@@ -490,14 +475,12 @@ pub fn smb_camera_pixels(wram: &[u8; WRAM_SIZE]) -> u32 {
     u32::from(wram[SCREEN_PAGE_OFFSET]) * 256 + u32::from(wram[SCREEN_X_OFFSET])
 }
 
-/// Lowest `$00b5` value D34 recorded only outside the play area.
-pub const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
+/// Lowest vertical page value that only occurs below the play area.
+const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
 
+/// Whether Mario is dead: the kill state, or a fall below the play area,
+/// which the engine state does not report before the life counter drops.
 fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
-    // The first clause is the frozen condition. The second is the M35 correction:
-    // D34 recorded `$00b5` never above 1 across 10,006 frames of live play and at
-    // or above 2 within 19 frames on every audited uncontrolled continuation, none
-    // of which the first clause detects at all.
     wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
         || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE
 }
@@ -522,7 +505,7 @@ pub struct SmbMilestones {
     pub reached_onward: bool,
 }
 
-/// First deterministic execution reaching each frozen milestone.
+/// First deterministic execution reaching each milestone.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbMilestoneTimes {
     /// First execution reaching a nonzero 1-1 scroll bucket.
@@ -535,7 +518,7 @@ pub struct SmbMilestoneTimes {
     pub onward: Option<u64>,
 }
 
-/// First testcase reaching each frozen ladder rung, retained for M7 films.
+/// First testcase reaching each milestone, retained for films.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbMilestoneInputs {
     /// First testcase making nonzero progress into 1-1.
@@ -559,7 +542,7 @@ pub struct SmbProgressWatermark {
     pub progress: u16,
 }
 
-/// Decode only the frozen milestone metrics from SMB work RAM.
+/// Decode the milestone metrics from SMB work RAM.
 #[must_use]
 pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
     let world = wram[WORLD_NUMBER_OFFSET];
@@ -607,49 +590,9 @@ pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalSt
     }
 }
 
-/// Work-RAM index of the byte the post-D29 diagnosis recorded decrementing at a death.
-const LIFE_COUNTER_OFFSET: usize = 0x075a;
-/// Work-RAM index of the byte the post-D29 diagnosis recorded rising as `$00ce` wraps.
+/// Work-RAM index of the player's vertical page, which rises as `$00ce` wraps
+/// below the play area.
 const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
-
-/// Raw work-RAM bytes recorded per frame by the terminal-death decode audit.
-///
-/// This is evidence collection, not a decoder: the fields are named for the
-/// bytes they read, and no meaning beyond the recorded diagnoses is asserted.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct SmbDeathBytes {
-    /// Byte `$000e`, whose value `$0b` is the frozen terminal condition.
-    pub engine_state: u8,
-    /// Byte `$075a`.
-    pub life_counter: u8,
-    /// Byte `$00b5`.
-    pub vertical_page: u8,
-    /// Byte `$00ce`.
-    pub vertical_low: u8,
-    /// Byte `$071a`.
-    pub screen_page: u8,
-    /// Byte `$071c`.
-    pub screen_x: u8,
-    /// Byte `$075f`.
-    pub world: u8,
-    /// Byte `$075c`.
-    pub level: u8,
-}
-
-/// Read the raw bytes the terminal-death decode audit records for one frame.
-#[must_use]
-pub fn smb_death_bytes(wram: &[u8; WRAM_SIZE]) -> SmbDeathBytes {
-    SmbDeathBytes {
-        engine_state: wram[PLAYER_ENGINE_STATE_OFFSET],
-        life_counter: wram[LIFE_COUNTER_OFFSET],
-        vertical_page: wram[PLAYER_VERTICAL_PAGE_OFFSET],
-        vertical_low: wram[PLAYER_Y_OFFSET],
-        screen_page: wram[SCREEN_PAGE_OFFSET],
-        screen_x: wram[SCREEN_X_OFFSET],
-        world: wram[WORLD_NUMBER_OFFSET],
-        level: wram[LEVEL_NUMBER_OFFSET],
-    }
-}
 
 fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
     let level = wram[LEVEL_NUMBER_OFFSET];
@@ -759,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn mechanical_state_is_decoded_from_frozen_offsets() {
+    fn mechanical_state_is_decoded_from_fixed_offsets() {
         let mut wram = [0_u8; WRAM_SIZE];
         wram[0x075f] = 2;
         wram[0x075c] = 3;

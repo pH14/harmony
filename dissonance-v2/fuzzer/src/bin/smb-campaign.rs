@@ -6,16 +6,13 @@ use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 
 use fuzzer::{
     smb::archive::{
-        MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, SmbArchiveRetentionPolicy,
-        SmbArchiveSelectorPolicy,
+        MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveKeyPolicy, SmbArchiveReport,
     },
     smb::campaign::{
-        SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
-        SmbCampaignVocabulary, SmbSnapshotCheckpoint, chord_policy_from_identifier,
-        key_policy_from_identifier, replacement_from_identifier, replay_smb_campaign_checkpointed,
-        resume_from_identifier, retention_from_identifier, run_smb_campaign_checkpointed,
-        selector_from_identifier, suffix_policy_from_identifier, vocabulary_from_identifier,
-        waypoint_from_identifier,
+        SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport,
+        SmbCampaignOrigin, SmbSnapshotCheckpoint, chord_policy_from_identifier,
+        key_policy_from_identifier, replay_smb_campaign_checkpointed,
+        run_smb_campaign_checkpointed,
     },
 };
 use serde::Serialize;
@@ -73,15 +70,8 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
-    let mut selector_policy = SmbArchiveSelectorPolicy::ConcentratedRecency;
-    let mut retention_policy = SmbArchiveRetentionPolicy::ProbeAtAdmission;
-    let mut vocabulary = SmbCampaignVocabulary::FrozenNineMask;
-    let mut key_policy = fuzzer::smb::archive::SmbArchiveKeyPolicy::Frozen;
-    let mut waypoint_policy = fuzzer::smb::archive::SmbArchiveWaypointPolicy::Absent;
-    let mut replacement_policy = fuzzer::smb::archive::SmbArchiveReplacementPolicy::FewestActions;
-    let mut resume_policy = fuzzer::smb::campaign::SmbCampaignResumePolicy::FrontierShortest;
-    let mut suffix = fuzzer::smb::campaign::SmbCampaignSuffixPolicy::OneOrTwo;
-    let mut chord = fuzzer::smb::campaign::SmbCampaignChordPolicy::Uniform;
+    let mut key_policy = SmbArchiveKeyPolicy::FrozenAreaSpan;
+    let mut chord = SmbCampaignChordPolicy::Uniform;
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
@@ -92,37 +82,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .to_string_lossy(),
             )?;
             wall_budget = Some(Duration::from_secs(seconds));
-        } else if flag == "--selector" {
-            selector_policy = selector_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --selector value")?
-                    .to_string_lossy(),
-            )?;
-        } else if flag == "--retention" {
-            retention_policy = retention_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --retention value")?
-                    .to_string_lossy(),
-            )?;
-        } else if flag == "--vocabulary" {
-            vocabulary = vocabulary_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --vocabulary value")?
-                    .to_string_lossy(),
-            )?;
         } else if flag == "--key" {
             key_policy = key_policy_from_identifier(
                 &args.next().ok_or("missing --key value")?.to_string_lossy(),
-            )?;
-        } else if flag == "--suffix" {
-            suffix = suffix_policy_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --suffix value")?
-                    .to_string_lossy(),
             )?;
         } else if flag == "--chord" {
             chord = chord_policy_from_identifier(
@@ -131,31 +93,10 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --chord value")?
                     .to_string_lossy(),
             )?;
-        } else if flag == "--waypoint" {
-            waypoint_policy = waypoint_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --waypoint value")?
-                    .to_string_lossy(),
-            )?;
-        } else if flag == "--resume" {
-            resume_policy = resume_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --resume value")?
-                    .to_string_lossy(),
-            )?;
         } else if flag == "--checkpoint" {
             checkpoint_path = Some(PathBuf::from(
                 args.next().ok_or("missing --checkpoint value")?,
             ));
-        } else if flag == "--replacement" {
-            replacement_policy = replacement_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --replacement value")?
-                    .to_string_lossy(),
-            )?;
         } else {
             return Err("unexpected run argument".into());
         }
@@ -173,16 +114,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         action_limit,
         host,
         wall_budget,
-        selector_policy,
-        retention_policy,
-        archive_entry_limit: fuzzer::smb::archive::MAX_ARCHIVE_ENTRIES,
-        vocabulary,
+        archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         key_policy,
-        waypoint_policy,
-        suffix,
         chord,
-        replacement_policy,
-        resume_policy,
     };
 
     let stream_path = output.join("stream.jsonl");
