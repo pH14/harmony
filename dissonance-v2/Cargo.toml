@@ -3,7 +3,7 @@
 # directory before working here.
 [workspace]
 resolver = "2"
-members = ["fuzzer", "instrumentor-agent", "triage-agent"]
+members = ["fuzzer"]
 
 [workspace.package]
 edition = "2024"

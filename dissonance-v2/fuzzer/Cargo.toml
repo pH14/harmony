@@ -5,12 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# Pinned for all phases; upgrade once, deliberately, at phase 5
-# (docs/LIBAFL-PLAN.md "Version churn").
+# Pinned for reproducibility; upgrade deliberately.
 libafl = "=0.15.4"
 libafl_bolts = "=0.15.4"
 postcard = { version = "=1.1.3", features = ["alloc"] }
-regex = "=1.13.1"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"
