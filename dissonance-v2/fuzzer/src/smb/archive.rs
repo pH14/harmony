@@ -26,11 +26,12 @@ use crate::{
     target::Target,
 };
 
-/// Compiled ceiling on archive entries. Raised from 32,768 by the same
-/// doctrine as the action ceiling: a ceiling is not an allocation, and
-/// memory tracks actual retention. Campaign runs register their own
-/// per-run bound at or below this.
-pub const MAX_ARCHIVE_ENTRIES: usize = 131_072;
+/// Compiled ceiling on archive entries. A ceiling is not an allocation:
+/// memory tracks actual retention (about 20 KB per entry with its snapshot),
+/// and a whole-tree resume inherits the source population in full, so the
+/// ceiling stays far above any run's retention. Campaign runs register their
+/// own per-run bound at or below this.
+pub const MAX_ARCHIVE_ENTRIES: usize = 1_048_576;
 const MAX_ENTRIES_PER_KEY: usize = 2;
 /// Auxiliary per-cell bound for cells inside a registered waypoint region.
 /// The waypoint's retention preference is exactly this widened cell: the
@@ -1440,6 +1441,11 @@ pub struct SmbArchiveReport {
     /// Current best clean-reset input.
     pub champion_input: SmbInput,
     /// Insertion and replacement records for retained testcases.
+    ///
+    /// On disk each entry carries only the actions past its parent's input;
+    /// the full inputs are rebuilt on load. Archives written with full inputs
+    /// still load.
+    #[serde(with = "entries_by_suffix")]
     pub entries: Vec<SmbArchiveEntryReport>,
     /// Fixed-interval deterministic progress curve.
     pub progress_curve: Vec<SmbArchiveProgressPoint>,
@@ -1455,6 +1461,110 @@ pub struct SmbArchiveReport {
     /// Selector accounting, omitted entirely under the frozen selector policy.
     #[serde(default, skip_serializing_if = "SmbSelectorAccounting::is_absent")]
     pub selector: SmbSelectorAccounting,
+}
+
+/// Serialized form of the entry list: every entry extends its parent, so the
+/// actions past the parent's length identify the input once the parent is
+/// rebuilt, at a small fraction of the size of the full input.
+mod entries_by_suffix {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+
+    use super::{SmbArchiveEntryReport, SmbArchiveKey, SmbEntrySelectorCounters};
+    use crate::smb::target::{ButtonChord, SmbInput, SmbMilestones};
+
+    #[derive(Deserialize, Serialize)]
+    struct Wire {
+        id: u64,
+        parent_id: Option<u64>,
+        created_execution: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<SmbInput>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_suffix: Option<Vec<ButtonChord>>,
+        key: SmbArchiveKey,
+        milestones: SmbMilestones,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selector: Option<SmbEntrySelectorCounters>,
+    }
+
+    pub fn serialize<S: Serializer>(
+        entries: &[SmbArchiveEntryReport],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let index_of: std::collections::BTreeMap<u64, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.id, index))
+            .collect();
+        let wires: Vec<Wire> = entries
+            .iter()
+            .map(|entry| {
+                let parent = entry
+                    .parent_id
+                    .and_then(|id| index_of.get(&id))
+                    .map(|index| &entries[*index].input.actions)
+                    .filter(|parent| entry.input.actions.starts_with(parent));
+                let (input, input_suffix) = match parent {
+                    Some(parent) => (None, Some(entry.input.actions[parent.len()..].to_vec())),
+                    None => (Some(entry.input.clone()), None),
+                };
+                Wire {
+                    id: entry.id,
+                    parent_id: entry.parent_id,
+                    created_execution: entry.created_execution,
+                    input,
+                    input_suffix,
+                    key: entry.key,
+                    milestones: entry.milestones,
+                    selector: entry.selector,
+                }
+            })
+            .collect();
+        wires.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<SmbArchiveEntryReport>, D::Error> {
+        let wires = Vec::<Wire>::deserialize(deserializer)?;
+        let mut entries: Vec<SmbArchiveEntryReport> = Vec::with_capacity(wires.len());
+        let mut index_of = std::collections::BTreeMap::<u64, usize>::new();
+        for wire in wires {
+            let input = match (wire.input, wire.input_suffix) {
+                (Some(input), None) => input,
+                (None, Some(suffix)) => {
+                    let mut actions = match wire.parent_id.and_then(|id| index_of.get(&id)) {
+                        Some(index) => entries[*index].input.actions.clone(),
+                        None => {
+                            return Err(D::Error::custom(format!(
+                                "archive entry {} carries an input suffix without a loaded parent",
+                                wire.id
+                            )));
+                        }
+                    };
+                    actions.extend(suffix);
+                    SmbInput { actions }
+                }
+                _ => {
+                    return Err(D::Error::custom(format!(
+                        "archive entry {} must carry exactly one of input and input_suffix",
+                        wire.id
+                    )));
+                }
+            };
+            index_of.insert(wire.id, entries.len());
+            entries.push(SmbArchiveEntryReport {
+                id: wire.id,
+                parent_id: wire.parent_id,
+                created_execution: wire.created_execution,
+                input,
+                key: wire.key,
+                milestones: wire.milestones,
+                selector: wire.selector,
+            });
+        }
+        Ok(entries)
+    }
 }
 
 /// Mechanical outcome of one fixed frontier-viability continuation.

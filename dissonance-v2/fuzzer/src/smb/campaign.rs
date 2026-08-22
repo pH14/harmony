@@ -5311,6 +5311,21 @@ mod tests {
             crate::smb::archive::SmbArchiveWaypointPolicy::Absent,
             crate::smb::archive::SmbArchiveReplacementPolicy::FewestActions,
         );
+        // The report stores each entry's actions past its parent and rebuilds
+        // the full inputs on load; an archive written with full inputs loads
+        // to the same report.
+        let suffix_json = serde_json::to_string(&source).expect("serialize");
+        assert!(suffix_json.contains("\"input_suffix\""));
+        let rebuilt: SmbArchiveReport = serde_json::from_str(&suffix_json).expect("load suffix");
+        assert_eq!(rebuilt, source);
+        let mut legacy: serde_json::Value = serde_json::from_str(&suffix_json).expect("value");
+        legacy["entries"] = serde_json::to_value(&source.entries).expect("full entries");
+        let legacy_json = legacy.to_string();
+        assert!(!legacy_json.contains("\"input_suffix\""));
+        let from_legacy: SmbArchiveReport =
+            serde_json::from_str(&legacy_json).expect("load legacy");
+        assert_eq!(from_legacy, source);
+        assert!(suffix_json.len() < legacy_json.len());
         let counts = core
             .import_tree(&mut target, &source, None)
             .expect("import");
