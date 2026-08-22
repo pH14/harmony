@@ -288,6 +288,22 @@ impl SmbTarget {
         self.dead
     }
 
+    /// Mutable work RAM, for tests that plant a game state.
+    #[cfg(test)]
+    pub(crate) fn wram_mut(&mut self) -> &mut [u8; WRAM_SIZE] {
+        self.deck.wram_mut()
+    }
+
+    /// Return whether the game is in its victory mode.
+    ///
+    /// Read from work RAM rather than carried as state: the operating mode
+    /// stays at the victory value once reached, so a restored snapshot
+    /// answers correctly without the snapshot format carrying the flag.
+    #[must_use]
+    pub fn is_victory(&self) -> bool {
+        smb_is_victory(self.deck.wram())
+    }
+
     /// Return the total frames this instance has emulated since construction.
     ///
     /// This is deterministic work accounting over the instance's whole life,
@@ -342,7 +358,7 @@ impl Target for SmbTarget {
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
-        if self.failed || self.dead {
+        if self.failed || self.dead || self.is_victory() {
             return;
         }
         let mut prior_observed_wram = self.deck.wram().to_owned();
@@ -360,7 +376,8 @@ impl Target for SmbTarget {
             self.frames_clocked = self.frames_clocked.saturating_add(1);
             let current_bucket = smb_scroll_bucket(self.deck.wram());
             self.dead = smb_player_is_dead(self.deck.wram());
-            if current_bucket != prior_bucket || self.dead {
+            let victory = self.is_victory();
+            if current_bucket != prior_bucket || self.dead || victory {
                 let observation = observation_from(
                     &self.deck,
                     self.observation.frame_count.saturating_add(executed_frames),
@@ -371,7 +388,7 @@ impl Target for SmbTarget {
                 prior_bucket = current_bucket;
                 self.action_observations.push(observation);
             }
-            if self.dead {
+            if self.dead || victory {
                 break;
             }
         }
@@ -483,6 +500,17 @@ const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
 fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
         || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE
+}
+
+/// Work-RAM index of the operating mode byte, `$0770`.
+const OPERATING_MODE_OFFSET: usize = 0x0770;
+/// Operating mode the game enters after the axe in 8-4: the ending sequence.
+const VICTORY_OPERATING_MODE: u8 = 2;
+
+/// Whether work RAM is in the game's victory mode.
+#[must_use]
+pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
+    wram[OPERATING_MODE_OFFSET] == VICTORY_OPERATING_MODE
 }
 
 fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
@@ -691,9 +719,10 @@ fn crc32(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, WRAM_SIZE, encode_smb_frame_png,
-        smb_mechanical_state_from_wram,
+        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE,
+        encode_smb_frame_png, smb_is_victory, smb_mechanical_state_from_wram,
     };
+    use crate::target::Target;
 
     #[test]
     fn chord_duration_is_total_and_bounded() {
@@ -714,6 +743,47 @@ mod tests {
         assert_eq!((decoded.world, decoded.level, decoded.progress), (2, 3, 66));
         assert_eq!(decoded.player_y_bucket, 3);
         assert_eq!(decoded.player_engine_state, 7);
+    }
+
+    #[test]
+    fn victory_is_decoded_from_the_operating_mode_byte() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        assert!(!smb_is_victory(&wram));
+        wram[0x0770] = 1;
+        assert!(!smb_is_victory(&wram));
+        wram[0x0770] = 2;
+        assert!(smb_is_victory(&wram));
+        wram[0x0770] = 3;
+        assert!(!smb_is_victory(&wram));
+    }
+
+    fn synthetic_nrom() -> Vec<u8> {
+        let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
+        rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let prg = &mut rom[16..16 + (16 * 1024)];
+        prg.fill(0xea);
+        prg[..3].copy_from_slice(&[0x4c, 0x00, 0x80]);
+        for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
+            prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
+        }
+        rom
+    }
+
+    #[test]
+    fn a_snapshot_in_victory_mode_reports_victory_and_takes_no_action() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        target.reset();
+        assert!(!target.is_victory());
+        target.wram_mut()[0x0770] = 2;
+        let won = target.snapshot().expect("snapshot victory state");
+        let mut restored = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        restored.restore(&won).expect("restore victory snapshot");
+        assert!(restored.is_victory());
+        let frames_before = restored.frames_clocked();
+        restored.apply(&ButtonChord::new(0x01, 10));
+        assert_eq!(restored.frames_clocked(), frames_before);
+        assert!(restored.last_action_observations().is_empty());
     }
 
     #[test]

@@ -15,6 +15,7 @@ use std::{
     error::Error,
     io::Write,
     num::NonZeroUsize,
+    path::PathBuf,
     time::Duration,
 };
 
@@ -152,6 +153,9 @@ pub struct SmbCampaignConfig {
     pub key_policy: SmbArchiveKeyPolicy,
     /// Chord policy for this run, recorded in the header and report.
     pub chord: SmbCampaignChordPolicy,
+    /// Live-only: where the first winning input is written the moment it is
+    /// admitted, before the in-flight jobs drain. Never recorded.
+    pub victory_input_path: Option<PathBuf>,
 }
 
 /// First line of the stream: everything a replay needs to know about the run.
@@ -236,6 +240,9 @@ pub enum SmbCampaignAdmissionDecision {
     Rejected,
     /// No fixed probe mask kept the candidate alive for the horizon.
     ProbeRefused,
+    /// The action reached the game's victory mode; the lineage ends here and
+    /// its input is the campaign's winning input.
+    Victory,
 }
 
 /// Stream record for one executed, admitted job.
@@ -379,6 +386,11 @@ pub struct SmbCampaignModeReport {
     pub duplicates_skipped: u64,
     /// Candidates refused by the admission probe.
     pub probe_refused: u64,
+    /// Actions that reached the game's victory mode.
+    pub victories: u64,
+    /// The first input that reached the victory mode, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub victory_input: Option<SmbInput>,
     /// Cell collisions the frames-in-level replacement rule decided.
     pub replacement_frames_displaced: u64,
     /// Executed jobs per worker index.
@@ -1081,6 +1093,7 @@ struct SmbCampaignActionResult {
     observations: Vec<SmbObservations>,
     milestones: SmbMilestones,
     dead: bool,
+    victory: bool,
     failed: bool,
     candidate: Option<SmbCampaignCandidate>,
 }
@@ -1115,7 +1128,7 @@ fn execute_job(
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     for action in suffix {
-        if target.is_dead() || length >= policies.max_actions {
+        if target.is_dead() || target.is_victory() || length >= policies.max_actions {
             break;
         }
         length = length.saturating_add(1);
@@ -1123,8 +1136,11 @@ fn execute_job(
         merge_action_milestones(&mut milestones, target)?;
         let observations = target.last_action_observations().to_vec();
         let dead = target.is_dead();
+        let victory = target.is_victory();
         let failed = target.exit_kind() != ExitKind::Ok;
-        let candidate = if dead || failed {
+        // A won game is terminal: nothing past it is searched, so no
+        // candidate is offered.
+        let candidate = if dead || victory || failed {
             None
         } else {
             let snapshot = target
@@ -1143,10 +1159,11 @@ fn execute_job(
             observations,
             milestones,
             dead,
+            victory,
             failed,
             candidate,
         });
-        if dead || failed {
+        if dead || victory || failed {
             break;
         }
     }
@@ -1167,6 +1184,8 @@ struct CoordinatorCore {
     champion_milestones: SmbMilestones,
     curve: Vec<SmbArchiveProgressPoint>,
     deaths: u64,
+    victories: u64,
+    victory_input: Option<SmbInput>,
     sequence: u64,
     probe_refused: u64,
     max_actions: usize,
@@ -1192,6 +1211,8 @@ impl CoordinatorCore {
             champion_milestones: SmbMilestones::default(),
             curve: Vec::new(),
             deaths: 0,
+            victories: 0,
+            victory_input: None,
             sequence: 0,
             probe_refused: 0,
             max_actions,
@@ -1423,6 +1444,11 @@ impl CoordinatorCore {
             }
             if action.dead {
                 self.deaths = self.deaths.saturating_add(1);
+            }
+            if action.victory {
+                self.victories = self.victories.saturating_add(1);
+                self.victory_input.get_or_insert_with(|| input.clone());
+                decisions.push(SmbCampaignAdmissionDecision::Victory);
             }
             if let Some(candidate) = &action.candidate {
                 if !candidate.viable {
@@ -1825,6 +1851,8 @@ fn build_report(
     };
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
+    let victories = core.victories;
+    let victory_input = core.victory_input.clone();
     let replacement_frames_displaced = core.archive.replacement_frames_displaced();
     let archive = core.into_archive_report(header.campaign_seed);
     let report = SmbCampaignModeReport {
@@ -1858,6 +1886,8 @@ fn build_report(
             .saturating_add(counters.job_frames),
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
+        victories,
+        victory_input,
         replacement_frames_displaced,
         jobs_per_worker: counters.jobs_per_worker.clone(),
         skips_per_worker: counters.skips_per_worker.clone(),
@@ -2059,7 +2089,7 @@ pub fn run_smb_campaign_checkpointed(
                           reserved: &mut u64,
                           worker: u32|
              -> Result<Option<(JobSpec, PendingJob)>, Box<dyn Error>> {
-                if *reserved >= config.execution_budget {
+                if *reserved >= config.execution_budget || core.victory_input.is_some() {
                     return Ok(None);
                 }
                 if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
@@ -2147,6 +2177,7 @@ pub fn run_smb_campaign_checkpointed(
                 let pending_job = pending[worker_index]
                     .take()
                     .ok_or("campaign worker replied without a pending job")?;
+                let victories_before = core.victories;
                 let (sequence, decisions) = core.admit_job(pending_job.parent_id, &result)?;
                 let parent_index = usize::try_from(pending_job.parent_id)?;
                 core.archive
@@ -2157,6 +2188,12 @@ pub fn run_smb_campaign_checkpointed(
                         matches!(decision, SmbCampaignAdmissionDecision::Retained { .. })
                     }),
                 );
+                if victories_before == 0
+                    && let (Some(path), Some(input)) =
+                        (&config.victory_input_path, &core.victory_input)
+                {
+                    std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
+                }
                 let chord_table_after =
                     finish_chord_stream_record(config.chord, &mut chord_tables, &core, &decisions)?;
                 writer.write_line(&SmbCampaignStreamRecord::Job(SmbCampaignJobRecord {
@@ -2513,7 +2550,8 @@ pub fn replay_smb_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::{
-        CoordinatorCore, SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignOrigin,
+        CoordinatorCore, SmbCampaignActionResult, SmbCampaignAdmissionDecision,
+        SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin,
         SmbCampaignStreamRecord, chord_policy_from_identifier, chord_policy_identifier,
         derive_suffix, derive_worker_seed, execute_job, key_policy_from_identifier,
         key_policy_identifier, replay_smb_campaign, run_smb_campaign,
@@ -2555,6 +2593,7 @@ mod tests {
             archive_entry_limit: 32_768,
             key_policy: SmbArchiveKeyPolicy::FrozenAreaSpan,
             chord: SmbCampaignChordPolicy::Uniform,
+            victory_input_path: None,
         }
     }
 
@@ -2695,6 +2734,75 @@ mod tests {
     }
 
     #[test]
+    fn a_job_from_a_won_snapshot_executes_nothing() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        target.reset();
+        target.wram_mut()[0x0770] = 2;
+        let won = target.snapshot().expect("snapshot won state");
+        let result = execute_job(
+            &mut target,
+            &won,
+            0,
+            SmbMilestones::default(),
+            &[ButtonChord::new(0x01, 4)],
+            super::SmbJobPolicies {
+                max_actions: 96,
+                key_policy: SmbArchiveKeyPolicy::FrozenAreaSpan,
+            },
+        )
+        .expect("execute job");
+        assert!(result.actions.is_empty());
+    }
+
+    #[test]
+    fn admission_counts_a_victory_and_keeps_the_first_winning_input() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        let mut core = CoordinatorCore::new(96, 32_768, SmbArchiveKeyPolicy::FrozenAreaSpan);
+        core.bootstrap(&mut target).expect("retain genesis");
+        let winning = ButtonChord::new(0x81, 7);
+        let result = SmbCampaignJobResult {
+            actions: vec![SmbCampaignActionResult {
+                action: winning,
+                observations: Vec::new(),
+                milestones: SmbMilestones::default(),
+                dead: false,
+                victory: true,
+                failed: false,
+                candidate: None,
+            }],
+        };
+        let (sequence, decisions) = core.admit_job(0, &result).expect("admit winning job");
+        assert_eq!(sequence, 1);
+        assert_eq!(decisions, vec![SmbCampaignAdmissionDecision::Victory]);
+        assert_eq!(core.victories, 1);
+        assert_eq!(
+            core.victory_input,
+            Some(SmbInput {
+                actions: vec![winning]
+            })
+        );
+        let later = SmbCampaignJobResult {
+            actions: vec![SmbCampaignActionResult {
+                action: ButtonChord::new(0x01, 9),
+                ..result.actions[0].clone()
+            }],
+        };
+        core.admit_job(0, &later)
+            .expect("admit a second winning job");
+        assert_eq!(core.victories, 2);
+        assert_eq!(
+            core.victory_input,
+            Some(SmbInput {
+                actions: vec![winning]
+            })
+        );
+        let report = core.into_archive_report(0);
+        assert_eq!(report.entries.len(), 1, "a won lineage is not extended");
+    }
+
+    #[test]
     fn live_campaign_replays_byte_identically() {
         let rom = synthetic_nrom();
         let config = genesis_config(0x5eed_ca03, 4, 32);
@@ -2703,6 +2811,8 @@ mod tests {
             .expect("live campaign");
         assert_eq!(live.executions_completed, 32);
         assert_eq!(live.jobs_per_worker.iter().sum::<u64>(), 32);
+        assert_eq!(live.victories, 0);
+        assert_eq!(live.victory_input, None);
         let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
         let header = text.lines().next().expect("header");
         for identifier in [

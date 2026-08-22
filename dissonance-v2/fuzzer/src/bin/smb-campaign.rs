@@ -117,6 +117,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         key_policy,
         chord,
+        victory_input_path: Some(output.join("victory-input.json")),
     };
 
     let stream_path = output.join("stream.jsonl");
@@ -273,6 +274,7 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "retained": report.archive.retained,
         "rejected": report.archive.rejected,
         "deaths": report.archive.deaths,
+        "victories": report.victories,
         "probe_refused": report.probe_refused,
         "duplicates_skipped": report.duplicates_skipped,
         "frames_emulated": report.frames_emulated,
