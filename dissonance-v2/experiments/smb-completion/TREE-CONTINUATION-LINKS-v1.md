@@ -64,3 +64,40 @@ is a child more than one screen behind its parent inside one level). Seed
   Which room to concentrate on is then a selector question; splitting draws
   evenly across the rooms of the deepest level, and concentrating at each
   room's own frontier inside it, gives the pipe room a fixed share.
+
+## Link 4 (source 3869dde5, root `/root/harmony-smb-campaign-tree-3869dde5`)
+
+Resume `whole_tree` from link 1's archive with key `frozen_room` (the room
+identity as a key coordinate, `rooms` count unused) and selector
+`room_uniform_128` (frontier draws split evenly across the rooms of the
+deepest pair, frontier-band walk and recency window inside the room). Seed
+18146079665610312082. Stream SHA-256
+`d2ab1018d001847b1251bba78ec5401101945d3dbbe6c48ba513806d723d1d10`.
+
+- 50,000 executions at 10.4 per second; 57,582 entries; watermark still
+  (7, 3, 153). No room was ever exhausted; room-draw retention fell from
+  58% to about 35% by the end.
+- 8-4 rooms (area bytes, arrival page): entries, of which new this link,
+  best progress, pages held:
+  - `[3 5 0]` start room: 13,633, 1,714 new, best 153, pages 0–4 and 7–9.
+  - `[3 5 5]`: 11,511, 6,255 new, best 153, pages 5–9.
+  - `[3 5 6]`: 9,020, 5,417 new, best 153, pages 6–9.
+  - `[3 5 7]`: 4,015, 4,004 new, best 153, pages 7–9.
+  - `[3 5 1]` pipe room: 4,220, 4,219 new, best 72, pages 1–4.
+- The start room holds no page-5 or page-6 states: the source lineage left
+  page 4 through a pipe and came out on page 7. Pages 5–6 entered the tree
+  only through the loop return.
+
+## What link 4 shows
+
+- Room as a coordinate removes the loop reward: repeated returns add no
+  room, and the pipe room receives a steady fifth of the frontier draws.
+- Three of the five rooms cover the same pages 5–9 and end at the same
+  wall; an even split spends three fifths of the budget on them. Rooms
+  whose cells overlap are one room arrived at three ways; the identity is
+  too fine, or allocation should follow retained yield per draw instead of
+  a flat share.
+- Throughput is the limit that matters now: 10 executions per second on
+  12 workers is about 215 emulated frames per second per worker, far below
+  what one emulator core does, so the coordinator or per-job overhead, not
+  emulation, bounds the budget.
