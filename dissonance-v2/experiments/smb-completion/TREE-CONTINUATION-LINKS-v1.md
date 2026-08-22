@@ -140,5 +140,46 @@ re-emulating them. Seed 18191268080075492392. Stream SHA-256
 
 Resume `whole_tree` from link 5's archive through its checkpoint, with
 vocabulary `down_ten_mask`; key and selector unchanged. Seed
-12023843674612131264. Measures the checkpointed bootstrap and gives the
-search the Down button.
+12023843674612131264. Stream SHA-256 `f755edb421efabf9…`, checkpoint
+`2b892c98fd76e20f…` (468 MB).
+
+- Checkpoint bootstrap: about 35 seconds for 77,970 entries; the 20 GB
+  origin parsed in about two minutes. Whole run 40 minutes wall, 50,000
+  executions at 20.7 per second including bootstrap.
+- Watermark (7, 3, 233) after 6,318 executions; 110,305 entries.
+- 8-4 rooms (entries, new this link, best, pages):
+  - `[3 5 0]` start: 18,816, 3,094, 233, pages 0–4, 7–9, 12–14.
+  - `[3 5 1]`: 9,411, 2,679, 152, pages 1–4, 7–9.
+  - `[3 5 5]` / `[3 5 6]` / `[3 5 7]`: 20,007 / 15,664 / 9,768 entries,
+    best 233 / 233 / 232, all also reaching pages 12–14.
+  - `[3 5 10]` / `[3 5 11]` / `[3 5 12]`: 4,743 / 5,358 / 686, all new,
+    best 233, pages 10–14.
+  - `[0 2 0]` water area: 999 entries, best 56, pages 0–3; entered 14
+    times from page 14 of the main area.
+- Transitions: pages 10–11 are skipped by a forward pipe from page 9 (not
+  an arrival under the room rule, since the screen moves forward); the
+  page-14 wall is a loop returning to pages 10–12; its exit is the water
+  pipe at page 14, which needs Down.
+- Every same-area room (`[3 5 1/5/6/7/10/11/12]`) walks pages the start
+  room already holds. The even split gives the water room one share in
+  nine.
+
+## Storage and the entry ceiling (source 556103c3)
+
+Link 6's archive was 29 GB and its report 32 GB because each entry carried
+its full input. Entries now serialize the actions past their parent
+(`input_suffix`) and are rebuilt on load; archives with full inputs still
+load. The archive ceiling rises from 131,072 to 1,048,576: link 6 ended at
+110,305 entries, and at the ceiling every candidate is refused.
+
+## Link 7 (source 556103c3)
+
+Resume `whole_tree` from link 6 through its checkpoint, vocabulary
+`down_ten_mask`, key `frozen_room`, selector `room_uniform_128`. Seed
+11819261505613539993. First run writing the suffix archive.
+
+## Link 8 plan (source 35bace58)
+
+Key `frozen_area`: the room changes only when the area bytes change, so
+same-area loop returns stay in the start room and 8-4 has two rooms (main
+and water) instead of nine. Resume from link 7 through its checkpoint.
