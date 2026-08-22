@@ -705,6 +705,7 @@ pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> String {
         SmbArchiveSelectorPolicy::ClassUniform => "class_uniform_128".to_owned(),
         SmbArchiveSelectorPolicy::RoomUniform => "room_uniform_128".to_owned(),
         SmbArchiveSelectorPolicy::RoomBandUniform => "room_band_uniform_128".to_owned(),
+        SmbArchiveSelectorPolicy::RoomCellUniform => "room_cell_uniform_128".to_owned(),
         SmbArchiveSelectorPolicy::PinnedWindow {
             world,
             level,
@@ -740,6 +741,9 @@ pub fn selector_from_identifier(
     }
     if identifier == "room_band_uniform_128" {
         return Ok(SmbArchiveSelectorPolicy::RoomBandUniform);
+    }
+    if identifier == "room_cell_uniform_128" {
+        return Ok(SmbArchiveSelectorPolicy::RoomCellUniform);
     }
     if let Some(window) = identifier.strip_prefix("pinned_window_128:") {
         let mut parts = window.split(',');
@@ -848,7 +852,8 @@ fn verify_selector_annotation(
             | SmbArchiveSelectorPolicy::YieldBudgeted(_)
             | SmbArchiveSelectorPolicy::ClassUniform
             | SmbArchiveSelectorPolicy::RoomUniform
-            | SmbArchiveSelectorPolicy::RoomBandUniform,
+            | SmbArchiveSelectorPolicy::RoomBandUniform
+            | SmbArchiveSelectorPolicy::RoomCellUniform,
             None,
         ) => Err("concentrated-selector stream is missing a selector annotation".into()),
         (
@@ -857,7 +862,8 @@ fn verify_selector_annotation(
             | SmbArchiveSelectorPolicy::YieldBudgeted(_)
             | SmbArchiveSelectorPolicy::ClassUniform
             | SmbArchiveSelectorPolicy::RoomUniform
-            | SmbArchiveSelectorPolicy::RoomBandUniform,
+            | SmbArchiveSelectorPolicy::RoomBandUniform
+            | SmbArchiveSelectorPolicy::RoomCellUniform,
             Some(draw),
         ) => {
             if draw.waypoint && waypoint_policy == SmbArchiveWaypointPolicy::Absent {
@@ -873,7 +879,8 @@ fn verify_selector_annotation(
                     SmbSelectorPath::TieClass
                     | SmbSelectorPath::ClassUniform
                     | SmbSelectorPath::RoomUniform
-                    | SmbSelectorPath::RoomBandUniform,
+                    | SmbSelectorPath::RoomBandUniform
+                    | SmbSelectorPath::RoomCellUniform,
                     None,
                 ) => Err("concentrated tie-class draw is missing its concentration record".into()),
                 (SmbSelectorPath::Uniform, Some(_)) => {

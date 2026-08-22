@@ -1157,6 +1157,13 @@ pub enum SmbArchiveSelectorPolicy {
     /// that keeps admitting new fingerprints of the same screen no longer
     /// monopolizes the room.
     RoomBandUniform,
+    /// `RoomBandUniform` with the draw inside the chosen band spread evenly
+    /// over its cells that still hold an unexhausted entry, where a cell is
+    /// the key without its state fingerprint. A cell with one entry gets the
+    /// same share as the cell that keeps admitting new fingerprints, so a
+    /// thinly retained position or height is extended as often as a crowded
+    /// one.
+    RoomCellUniform,
 }
 
 /// Whether a declared waypoint region receives auxiliary retention and
@@ -1270,6 +1277,11 @@ pub enum SmbSelectorPath {
     /// unexhausted progress bands uniformly, then the concentrated recency
     /// draw within it.
     RoomBandUniform,
+    /// One room of the deepest pair chosen uniformly, then one of its
+    /// unexhausted progress bands uniformly, then one of the band's
+    /// unexhausted cells uniformly, then the concentrated recency draw
+    /// within it.
+    RoomCellUniform,
 }
 
 /// One corrected-selector draw, recorded so selection-time state is checkable.
@@ -2062,7 +2074,8 @@ impl Archive {
             | SmbArchiveSelectorPolicy::PinnedWindow { .. }
             | SmbArchiveSelectorPolicy::ClassUniform
             | SmbArchiveSelectorPolicy::RoomUniform
-            | SmbArchiveSelectorPolicy::RoomBandUniform => {
+            | SmbArchiveSelectorPolicy::RoomBandUniform
+            | SmbArchiveSelectorPolicy::RoomCellUniform => {
                 self.since_retained[id] < SELECTION_EXHAUSTION_THRESHOLD
             }
         }
@@ -2119,7 +2132,8 @@ impl Archive {
             | SmbArchiveSelectorPolicy::YieldBudgeted(_)
             | SmbArchiveSelectorPolicy::ClassUniform
             | SmbArchiveSelectorPolicy::RoomUniform
-            | SmbArchiveSelectorPolicy::RoomBandUniform => active,
+            | SmbArchiveSelectorPolicy::RoomBandUniform
+            | SmbArchiveSelectorPolicy::RoomCellUniform => active,
         };
         let mut counter_reset = false;
         let pool =
@@ -2250,6 +2264,23 @@ impl Archive {
                         id,
                         SmbSelectorDraw {
                             path: SmbSelectorPath::RoomBandUniform,
+                            classes_skipped,
+                            counter_reset,
+                            concentration,
+                            waypoint: false,
+                        },
+                    ));
+                }
+            } else if self.selector_accounting.policy == SmbArchiveSelectorPolicy::RoomCellUniform {
+                if let Some(band) =
+                    self.room_band_uniform_class(rand, &pool, &mut classes_skipped)?
+                {
+                    let class = self.cell_uniform_class(rand, &band)?;
+                    let (id, concentration) = self.draw_from_class(rand, class)?;
+                    return Ok((
+                        id,
+                        SmbSelectorDraw {
+                            path: SmbSelectorPath::RoomCellUniform,
                             classes_skipped,
                             counter_reset,
                             concentration,
@@ -2490,6 +2521,35 @@ impl Archive {
         Ok(None)
     }
 
+    /// One cell of `members` chosen uniformly among the cells with an
+    /// unexhausted member; a cell is the key without its state fingerprint.
+    /// `members` must hold at least one unexhausted entry.
+    fn cell_uniform_class(
+        &self,
+        rand: &mut StdRand,
+        members: &[usize],
+    ) -> Result<Vec<usize>, Box<dyn Error>> {
+        let mut cells = BTreeMap::<(u16, u8, u8, u8), Vec<usize>>::new();
+        for id in members {
+            if !self.selector_unexhausted(*id) {
+                continue;
+            }
+            let key = self.entries[*id].report.key;
+            cells
+                .entry((
+                    key.progress,
+                    key.player_y_bucket,
+                    key.player_engine_state,
+                    key.room_x_bucket,
+                ))
+                .or_default()
+                .push(*id);
+        }
+        let mut cells = cells.into_values().collect::<Vec<_>>();
+        let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over an exhausted band")?;
+        Ok(cells.swap_remove(rand.below(count)))
+    }
+
     /// Uniform draw within the winning tie class; the H59 concentrated policy
     /// narrows it to the class's `CONCENTRATION_WINDOW` greatest-id members.
     ///
@@ -2535,7 +2595,8 @@ impl Archive {
             SmbSelectorPath::TieClass
             | SmbSelectorPath::ClassUniform
             | SmbSelectorPath::RoomUniform
-            | SmbSelectorPath::RoomBandUniform => {
+            | SmbSelectorPath::RoomBandUniform
+            | SmbSelectorPath::RoomCellUniform => {
                 self.selector_accounting.tie_class_selections = self
                     .selector_accounting
                     .tie_class_selections
@@ -6407,6 +6468,56 @@ mod tests {
     }
 
     #[test]
+    fn room_cell_uniform_splits_a_band_over_its_unexhausted_cells() {
+        // One band of one 8-4 room: 60 entries at (304, y 11), 3 at
+        // (303, y 7), 1 at (300, y 4). The band draw gives the crowded cell
+        // nearly every draw; the cell rule gives each cell a third.
+        let mut keys: Vec<(u8, u8, u16)> = Vec::new();
+        keys.extend(std::iter::repeat_n((7, 3, 304), 60));
+        keys.extend(std::iter::repeat_n((7, 3, 303), 3));
+        keys.push((7, 3, 300));
+        let mut archive = selector_archive(&keys);
+        for (index, entry) in archive.entries.iter_mut().enumerate() {
+            entry.report.key.room = [3, 5, 16];
+            entry.report.key.player_y_bucket = match index {
+                0..=59 => 11,
+                60..=62 => 7,
+                _ => 4,
+            };
+        }
+        archive.set_selector_policy(SmbArchiveSelectorPolicy::RoomCellUniform);
+        let mut rand = StdRand::with_seed(0xce11_0000);
+        let mut per_cell = std::collections::BTreeMap::<(u16, u8), u64>::new();
+        let mut cell_draws = 0_u64;
+        for _ in 0..900 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("room-cell selection");
+            let draw = draw.expect("room-cell draw record");
+            if draw.path != SmbSelectorPath::RoomCellUniform {
+                continue;
+            }
+            cell_draws += 1;
+            let key = archive.entries[id].report.key;
+            *per_cell
+                .entry((key.progress, key.player_y_bucket))
+                .or_default() += 1;
+            archive.record_selection(id, &draw);
+            archive
+                .record_selection_outcome(id, true, 1)
+                .expect("outcome");
+        }
+        assert!(cell_draws > 600);
+        assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
+        for share in per_cell.values() {
+            assert!(
+                share * 3 > cell_draws / 2 && share * 3 < cell_draws * 3 / 2,
+                "uneven cell shares: {per_cell:?}"
+            );
+        }
+    }
+
+    #[test]
     fn frozen_room_keys_the_current_room_and_ignores_repeated_loops() {
         let mut archive = Archive::new();
         archive.set_key_policy(SmbArchiveKeyPolicy::FrozenRoom);
@@ -6767,7 +6878,8 @@ mod tests {
             match draw.path {
                 SmbSelectorPath::ClassUniform
                 | SmbSelectorPath::RoomUniform
-                | SmbSelectorPath::RoomBandUniform => {
+                | SmbSelectorPath::RoomBandUniform
+                | SmbSelectorPath::RoomCellUniform => {
                     panic!("concentrated policy took a uniform class path")
                 }
                 SmbSelectorPath::TieClass => {
