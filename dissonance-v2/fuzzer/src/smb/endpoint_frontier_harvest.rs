@@ -129,6 +129,7 @@ const BASELINE_KEY: SmbArchiveKey = SmbArchiveKey {
     state_fingerprint: 9,
     room_x_bucket: 0,
     rooms: 1,
+    room: [0; 3],
 };
 const BASELINE_MILESTONES: SmbMilestones = SmbMilestones {
     max_1_1_scroll_bucket: 195,
@@ -2044,6 +2045,7 @@ mod tests {
             state_fingerprint: u8::try_from(progress % 64).expect("fingerprint fits u8"),
             room_x_bucket: 0,
             rooms: 0,
+            room: [0; 3],
         }
     }
 

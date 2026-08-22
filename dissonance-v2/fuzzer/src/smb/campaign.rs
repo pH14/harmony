@@ -632,6 +632,7 @@ pub fn selector_identifier(policy: SmbArchiveSelectorPolicy) -> String {
     match policy {
         SmbArchiveSelectorPolicy::ConcentratedRecency => "concentrated_recency_128".to_owned(),
         SmbArchiveSelectorPolicy::ClassUniform => "class_uniform_128".to_owned(),
+        SmbArchiveSelectorPolicy::RoomUniform => "room_uniform_128".to_owned(),
         SmbArchiveSelectorPolicy::PinnedWindow {
             world,
             level,
@@ -661,6 +662,9 @@ pub fn selector_from_identifier(
     }
     if identifier == "class_uniform_128" {
         return Ok(SmbArchiveSelectorPolicy::ClassUniform);
+    }
+    if identifier == "room_uniform_128" {
+        return Ok(SmbArchiveSelectorPolicy::RoomUniform);
     }
     if let Some(window) = identifier.strip_prefix("pinned_window_128:") {
         let mut parts = window.split(',');
@@ -767,14 +771,16 @@ fn verify_selector_annotation(
             SmbArchiveSelectorPolicy::ConcentratedRecency
             | SmbArchiveSelectorPolicy::PinnedWindow { .. }
             | SmbArchiveSelectorPolicy::YieldBudgeted(_)
-            | SmbArchiveSelectorPolicy::ClassUniform,
+            | SmbArchiveSelectorPolicy::ClassUniform
+            | SmbArchiveSelectorPolicy::RoomUniform,
             None,
         ) => Err("concentrated-selector stream is missing a selector annotation".into()),
         (
             SmbArchiveSelectorPolicy::ConcentratedRecency
             | SmbArchiveSelectorPolicy::PinnedWindow { .. }
             | SmbArchiveSelectorPolicy::YieldBudgeted(_)
-            | SmbArchiveSelectorPolicy::ClassUniform,
+            | SmbArchiveSelectorPolicy::ClassUniform
+            | SmbArchiveSelectorPolicy::RoomUniform,
             Some(draw),
         ) => {
             if draw.waypoint && waypoint_policy == SmbArchiveWaypointPolicy::Absent {
@@ -786,9 +792,12 @@ fn verify_selector_annotation(
                 return Err("waypoint draw claims the uniform path".into());
             }
             match (draw.path, draw.concentration) {
-                (SmbSelectorPath::TieClass | SmbSelectorPath::ClassUniform, None) => {
-                    Err("concentrated tie-class draw is missing its concentration record".into())
-                }
+                (
+                    SmbSelectorPath::TieClass
+                    | SmbSelectorPath::ClassUniform
+                    | SmbSelectorPath::RoomUniform,
+                    None,
+                ) => Err("concentrated tie-class draw is missing its concentration record".into()),
                 (SmbSelectorPath::Uniform, Some(_)) => {
                     Err("concentrated uniform draw carries a concentration record".into())
                 }
@@ -1498,6 +1507,7 @@ pub fn key_policy_identifier(policy: SmbArchiveKeyPolicy) -> String {
         SmbArchiveKeyPolicy::Frozen => "frozen".to_owned(),
         SmbArchiveKeyPolicy::VerticalPage => "vertical_page".to_owned(),
         SmbArchiveKeyPolicy::FrozenRooms => "frozen_rooms".to_owned(),
+        SmbArchiveKeyPolicy::FrozenRoom => "frozen_room".to_owned(),
         SmbArchiveKeyPolicy::FrozenRoomX16 {
             world,
             level,
@@ -1520,6 +1530,9 @@ pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolic
     }
     if identifier == "frozen_rooms" {
         return Ok(SmbArchiveKeyPolicy::FrozenRooms);
+    }
+    if identifier == "frozen_room" {
+        return Ok(SmbArchiveKeyPolicy::FrozenRoom);
     }
     if let Some(room) = identifier.strip_prefix("frozen_room_x_16:") {
         let mut parts = room.split(',');
@@ -4987,6 +5000,7 @@ mod tests {
                     state_fingerprint: 0,
                     room_x_bucket: 0,
                     rooms: 0,
+                    room: [0; 3],
                 },
                 milestones: SmbMilestones::default(),
                 selector: None,
@@ -5136,6 +5150,7 @@ mod tests {
             state_fingerprint: 0,
             room_x_bucket: 0,
             rooms: 0,
+            room: [0; 3],
         };
         // Two lineages through one pair. The deep one walks further on long
         // holds; the shallow one stops twenty buckets back having spent far
@@ -5289,6 +5304,7 @@ mod tests {
             state_fingerprint: 0,
             room_x_bucket: 0,
             rooms: 0,
+            room: [0; 3],
         };
         // C111's situation in miniature: a tip entry at the frontier, and a
         // shallower entry twenty buckets back that is cheaper where it stands
@@ -5641,6 +5657,7 @@ mod tests {
             state_fingerprint: 0,
             room_x_bucket: 0,
             rooms: 0,
+            room: [0; 3],
         };
         let candidate_key = SmbArchiveKey {
             progress: 10,

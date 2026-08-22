@@ -1015,6 +1015,11 @@ pub enum SmbArchiveKeyPolicy {
     /// set. The search learns only that a value is new, never which value is
     /// wanted.
     FrozenRooms,
+    /// The frozen key plus `room`: the room the entry stands in, as a cell
+    /// coordinate rather than a count. Each room is explored once, so a loop
+    /// that returns the lineage to a room it has already entered adds no
+    /// novelty; which room gets drawn is left to the selector.
+    FrozenRoom,
 }
 
 /// Work RAM addresses whose byte pair identifies the current area (area type
@@ -1114,6 +1119,13 @@ pub enum SmbArchiveSelectorPolicy {
     /// recency draw is applied within the chosen class, and exhaustion
     /// accounting is unchanged.
     ClassUniform,
+    /// The three-in-four frontier draws split evenly across the rooms of the
+    /// deepest occupied `(world, level)` pair that still holds an unexhausted
+    /// entry; inside the chosen room the promoted frontier-band walk and the
+    /// concentrated recency draw apply unchanged. A room is the key's `room`
+    /// coordinate, so a room reached by a warp gets the same share as the
+    /// room the level starts in.
+    RoomUniform,
 }
 
 /// Whether a declared waypoint region receives auxiliary retention and
@@ -1220,6 +1232,9 @@ pub enum SmbSelectorPath {
     /// One occupied state class chosen uniformly, then the concentrated
     /// recency draw within it.
     ClassUniform,
+    /// One room of the deepest pair chosen uniformly, then the frontier-band
+    /// walk and the concentrated recency draw within it.
+    RoomUniform,
 }
 
 /// One corrected-selector draw, recorded so selection-time state is checkable.
@@ -1352,10 +1367,19 @@ pub struct SmbArchiveKey {
     /// omitted from serialization so legacy keys stay byte-identical.
     #[serde(default, skip_serializing_if = "rooms_is_absent")]
     pub rooms: u8,
+    /// The room the entry stands in, see [`SmbRoomIdentity`]; all zero when
+    /// the producer does not track rooms, and omitted from serialization so
+    /// legacy keys stay byte-identical.
+    #[serde(default, skip_serializing_if = "room_is_absent")]
+    pub room: SmbRoomIdentity,
 }
 
 fn rooms_is_absent(rooms: &u8) -> bool {
     *rooms == 0
+}
+
+fn room_is_absent(room: &SmbRoomIdentity) -> bool {
+    *room == SmbRoomIdentity::default()
 }
 
 fn room_x_bucket_is_absent(bucket: &u8) -> bool {
@@ -1696,12 +1720,18 @@ impl Archive {
         if let Some(existing) = self.input_ids.get(&input) {
             return Ok(Some(*existing));
         }
-        let (room_set, current_room) = if self.key_policy == SmbArchiveKeyPolicy::FrozenRooms {
-            let (set, current) = self.room_set_for(parent_id, key, snapshot.wram())?;
-            key.rooms = u8::try_from(set.len())?;
-            (set, current)
-        } else {
-            (Vec::new(), SmbRoomIdentity::default())
+        let (room_set, current_room) = match self.key_policy {
+            SmbArchiveKeyPolicy::FrozenRooms => {
+                let (set, current) = self.room_set_for(parent_id, key, snapshot.wram())?;
+                key.rooms = u8::try_from(set.len())?;
+                (set, current)
+            }
+            SmbArchiveKeyPolicy::FrozenRoom => {
+                let (set, current) = self.room_set_for(parent_id, key, snapshot.wram())?;
+                key.room = current;
+                (set, current)
+            }
+            _ => (Vec::new(), SmbRoomIdentity::default()),
         };
         // Frames this candidate spent inside its own pair, derived from the
         // recorded action durations and the parent's recorded pair alone. It
@@ -1849,7 +1879,8 @@ impl Archive {
                 .is_ok_and(|budget| self.budget_draws[id] < budget),
             SmbArchiveSelectorPolicy::ConcentratedRecency
             | SmbArchiveSelectorPolicy::PinnedWindow { .. }
-            | SmbArchiveSelectorPolicy::ClassUniform => {
+            | SmbArchiveSelectorPolicy::ClassUniform
+            | SmbArchiveSelectorPolicy::RoomUniform => {
                 self.since_retained[id] < SELECTION_EXHAUSTION_THRESHOLD
             }
         }
@@ -1904,7 +1935,8 @@ impl Archive {
             }
             SmbArchiveSelectorPolicy::ConcentratedRecency
             | SmbArchiveSelectorPolicy::YieldBudgeted(_)
-            | SmbArchiveSelectorPolicy::ClassUniform => active,
+            | SmbArchiveSelectorPolicy::ClassUniform
+            | SmbArchiveSelectorPolicy::RoomUniform => active,
         };
         let mut counter_reset = false;
         let pool =
@@ -2012,6 +2044,20 @@ impl Archive {
                         },
                     ));
                 }
+            } else if self.selector_accounting.policy == SmbArchiveSelectorPolicy::RoomUniform {
+                if let Some(class) = self.room_uniform_class(rand, &pool, &mut classes_skipped)? {
+                    let (id, concentration) = self.draw_from_class(rand, class)?;
+                    return Ok((
+                        id,
+                        SmbSelectorDraw {
+                            path: SmbSelectorPath::RoomUniform,
+                            classes_skipped,
+                            counter_reset,
+                            concentration,
+                            waypoint: false,
+                        },
+                    ));
+                }
             } else if let Some(class) = self.best_unexhausted_class(&pool, &mut classes_skipped) {
                 let (id, concentration) = self.draw_from_class(rand, class)?;
                 return Ok((
@@ -2094,35 +2140,89 @@ impl Archive {
                 .or_default()
                 .push(*id);
         }
-        for (_, mut members) in pairs.into_iter().rev() {
-            members.sort_by_key(|id| (Reverse(self.entries[*id].report.key.progress), *id));
-            let mut start = 0;
-            while start < members.len() {
-                let anchor = self.entries[members[start]].report.key.progress;
-                let mut end = start;
-                while end < members.len()
-                    && self.entries[members[end]]
-                        .report
-                        .key
-                        .progress
-                        .saturating_add(FRONTIER_PROGRESS_BAND - 1)
-                        >= anchor
-                {
-                    end += 1;
-                }
-                let unexhausted = members[start..end]
-                    .iter()
-                    .copied()
-                    .filter(|id| self.selector_unexhausted(*id))
-                    .collect::<Vec<_>>();
-                if !unexhausted.is_empty() {
-                    return Some(unexhausted);
-                }
-                *classes_skipped = classes_skipped.saturating_add(1);
-                start = end;
+        for (_, members) in pairs.into_iter().rev() {
+            if let Some(unexhausted) = self.best_unexhausted_band(members, classes_skipped) {
+                return Some(unexhausted);
             }
         }
         None
+    }
+
+    /// The unexhausted members of the deepest surviving progress band among
+    /// `members`, walking successive `FRONTIER_PROGRESS_BAND` windows down
+    /// from the deepest progress; exhausted bands are counted and skipped.
+    fn best_unexhausted_band(
+        &self,
+        mut members: Vec<usize>,
+        classes_skipped: &mut u64,
+    ) -> Option<Vec<usize>> {
+        members.sort_by_key(|id| (Reverse(self.entries[*id].report.key.progress), *id));
+        let mut start = 0;
+        while start < members.len() {
+            let anchor = self.entries[members[start]].report.key.progress;
+            let mut end = start;
+            while end < members.len()
+                && self.entries[members[end]]
+                    .report
+                    .key
+                    .progress
+                    .saturating_add(FRONTIER_PROGRESS_BAND - 1)
+                    >= anchor
+            {
+                end += 1;
+            }
+            let unexhausted = members[start..end]
+                .iter()
+                .copied()
+                .filter(|id| self.selector_unexhausted(*id))
+                .collect::<Vec<_>>();
+            if !unexhausted.is_empty() {
+                return Some(unexhausted);
+            }
+            *classes_skipped = classes_skipped.saturating_add(1);
+            start = end;
+        }
+        None
+    }
+
+    /// The unexhausted members of the deepest band of one room, the room
+    /// chosen uniformly among the rooms of the deepest `(world, level)` pair
+    /// that still holds an unexhausted entry; `None` when every active entry
+    /// is exhausted. Pairs whose rooms are all exhausted are walked past and
+    /// their bands counted as skipped.
+    fn room_uniform_class(
+        &self,
+        rand: &mut StdRand,
+        active: &[usize],
+        classes_skipped: &mut u64,
+    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
+        let mut pairs = BTreeMap::<(u8, u8), BTreeMap<SmbRoomIdentity, Vec<usize>>>::new();
+        for id in active {
+            let key = self.entries[*id].report.key;
+            pairs
+                .entry((key.world, key.level))
+                .or_default()
+                .entry(key.room)
+                .or_default()
+                .push(*id);
+        }
+        for (_, rooms) in pairs.into_iter().rev() {
+            let mut live = Vec::new();
+            for (_, members) in rooms {
+                let mut skipped = 0_u64;
+                match self.best_unexhausted_band(members, &mut skipped) {
+                    Some(band) => live.push((band, skipped)),
+                    None => *classes_skipped = classes_skipped.saturating_add(skipped),
+                }
+            }
+            let Some(count) = NonZeroUsize::new(live.len()) else {
+                continue;
+            };
+            let (band, skipped) = live.swap_remove(rand.below(count));
+            *classes_skipped = classes_skipped.saturating_add(skipped);
+            return Ok(Some(band));
+        }
+        Ok(None)
     }
 
     /// Uniform draw within the winning tie class; the H59 concentrated policy
@@ -2167,7 +2267,9 @@ impl Archive {
                     .uniform_selections
                     .saturating_add(1);
             }
-            SmbSelectorPath::TieClass | SmbSelectorPath::ClassUniform => {
+            SmbSelectorPath::TieClass
+            | SmbSelectorPath::ClassUniform
+            | SmbSelectorPath::RoomUniform => {
                 self.selector_accounting.tie_class_selections = self
                     .selector_accounting
                     .tie_class_selections
@@ -5356,6 +5458,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
     let vertical = match policy {
         SmbArchiveKeyPolicy::Frozen
         | SmbArchiveKeyPolicy::FrozenRooms
+        | SmbArchiveKeyPolicy::FrozenRoom
         | SmbArchiveKeyPolicy::FrozenRoomX16 { .. } => state.player_y_bucket,
         SmbArchiveKeyPolicy::VerticalPage => smb_death_bytes(wram)
             .vertical_page
@@ -5385,6 +5488,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
         room_x_bucket,
         rooms: 0,
+        room: [0; 3],
     }
 }
 
@@ -5501,8 +5605,8 @@ mod tests {
         Archive, ArchiveCandidate, ContinuationRecording, EntryRecording,
         MAX_SMB_COMPLETION_ACTIONS, ROOM_IDENTITY_BYTES, SELECTION_EXHAUSTION_THRESHOLD,
         SmbArchiveKey, SmbArchiveKeyPolicy, SmbArchiveReplacementPolicy, SmbArchiveSelectorPolicy,
-        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbProgressWatermark, SmbSelectorDraw,
-        SmbSelectorPath, analyze_player_column, merge_progress_watermark,
+        SmbArchiveWaypointPolicy, SmbDeathBytes, SmbProgressWatermark, SmbRoomIdentity,
+        SmbSelectorDraw, SmbSelectorPath, analyze_player_column, merge_progress_watermark,
     };
     use crate::{
         smb::target::{ButtonChord, SmbInput, SmbObservations, SmbSnapshot, SmbTarget},
@@ -5833,6 +5937,7 @@ mod tests {
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
                 room_x_bucket: 0,
                 rooms: 0,
+                room: [0; 3],
             };
             archive
                 .insert(
@@ -5933,6 +6038,118 @@ mod tests {
     }
 
     #[test]
+    fn room_uniform_splits_frontier_draws_evenly_across_the_rooms_of_the_deepest_pair() {
+        // Deepest pair 8-4 with three rooms: the start room at progress 153
+        // (40 entries), a loop-return room at progress 150 (40 entries), and
+        // one pipe-arrival entry at progress 17. A shallower pair 8-3 at
+        // progress 200 must not be drawn while 8-4 has unexhausted entries.
+        let mut keys: Vec<(u8, u8, u16)> = Vec::new();
+        keys.extend(std::iter::repeat_n((7, 3, 153), 40));
+        keys.extend(std::iter::repeat_n((7, 3, 150), 40));
+        keys.push((7, 3, 17));
+        keys.extend(std::iter::repeat_n((7, 2, 200), 10));
+        let mut archive = selector_archive(&keys);
+        for id in 0..40 {
+            archive.entries[id].report.key.room = [3, 5, 0];
+        }
+        for id in 40..80 {
+            archive.entries[id].report.key.room = [3, 5, 5];
+        }
+        archive.entries[80].report.key.room = [3, 5, 1];
+        archive.set_selector_policy(SmbArchiveSelectorPolicy::RoomUniform);
+        let mut rand = StdRand::with_seed(0x5e1e_c7ed);
+        let mut per_room = std::collections::BTreeMap::<SmbRoomIdentity, u64>::new();
+        let mut room_draws = 0_u64;
+        for _ in 0..900 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("room-uniform selection");
+            let draw = draw.expect("room-uniform draw record");
+            if draw.path != SmbSelectorPath::RoomUniform {
+                continue;
+            }
+            room_draws += 1;
+            let key = archive.entries[id].report.key;
+            assert_eq!((key.world, key.level), (7, 3), "drew the shallower pair");
+            *per_room.entry(key.room).or_default() += 1;
+            // Every retained child keeps the counters fresh, so exhaustion
+            // never narrows the comparison.
+            archive.record_selection(id, &draw);
+            archive
+                .record_selection_outcome(id, true, 1)
+                .expect("outcome");
+        }
+        assert!(room_draws > 600);
+        let lone = per_room[&[3, 5, 1]];
+        let start = per_room[&[3, 5, 0]];
+        let loop_room = per_room[&[3, 5, 5]];
+        for share in [lone, start, loop_room] {
+            assert!(
+                share * 3 > room_draws / 2 && share * 3 < room_draws * 3 / 2,
+                "uneven room shares: {per_room:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_room_keys_the_current_room_and_ignores_repeated_loops() {
+        let mut archive = Archive::new();
+        archive.set_key_policy(SmbArchiveKeyPolicy::FrozenRoom);
+        let genesis = selector_snapshot();
+        let area_snapshot = |area: [u8; 2]| -> SmbSnapshot {
+            let mut value = serde_json::to_value(&genesis).expect("serialize snapshot");
+            let wram = value["observation"]["wram"]
+                .as_array_mut()
+                .expect("snapshot work RAM");
+            for (offset, byte) in ROOM_IDENTITY_BYTES.into_iter().zip(area) {
+                wram[offset] = serde_json::json!(byte);
+            }
+            serde_json::from_value(value).expect("rebuild snapshot")
+        };
+        let key = |progress: u16| SmbArchiveKey {
+            world: 7,
+            level: 3,
+            progress,
+            ..BASELINE_LIKE_KEY
+        };
+        let insert = |archive: &mut Archive, parent, actions: usize, key, area| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        input: SmbInput {
+                            actions: vec![ButtonChord::new(1, 2); actions],
+                        },
+                        key,
+                        milestones: crate::smb::target::SmbMilestones::default(),
+                    },
+                    area_snapshot(area),
+                )
+                .expect("insert")
+        };
+        let root = insert(&mut archive, None, 1, key(10), [3, 5]).expect("root");
+        assert_eq!(archive.entries[root].report.key.room, [3, 5, 0]);
+        assert_eq!(archive.entries[root].report.key.rooms, 0);
+        let deep = insert(&mut archive, Some(root), 2, key(150), [3, 5]).expect("deep");
+        assert_eq!(archive.entries[deep].report.key.room, [3, 5, 0]);
+        let looped = insert(&mut archive, Some(deep), 3, key(85), [3, 5]).expect("loop");
+        assert_eq!(archive.entries[looped].report.key.room, [3, 5, 5]);
+        let deep_again = insert(&mut archive, Some(looped), 4, key(150), [3, 5]).expect("deep");
+        assert_eq!(archive.entries[deep_again].report.key.room, [3, 5, 5]);
+        // A second loop lands in the same room, so the cell already holds an
+        // entry with the same key and fewer actions: no new cell, and the
+        // replacement rule refuses the longer input once the cell is full.
+        let looped_again =
+            insert(&mut archive, Some(deep_again), 5, key(85), [3, 5]).expect("loop");
+        assert_eq!(
+            archive.entries[looped_again].report.key,
+            archive.entries[looped].report.key
+        );
+        assert!(insert(&mut archive, Some(looped_again), 6, key(85), [3, 5]).is_none());
+    }
+
+    #[test]
     fn frozen_rooms_counts_distinct_rooms_along_a_lineage_and_resets_on_level_change() {
         let mut archive = Archive::new();
         archive.set_key_policy(SmbArchiveKeyPolicy::FrozenRooms);
@@ -6025,6 +6242,7 @@ mod tests {
         state_fingerprint: 9,
         room_x_bucket: 0,
         rooms: 0,
+        room: [0; 3],
     };
 
     #[test]
@@ -6117,7 +6335,9 @@ mod tests {
                 .expect("concentrated selection");
             let draw = draw.expect("concentrated draw record");
             match draw.path {
-                SmbSelectorPath::ClassUniform => panic!("concentrated policy took the class path"),
+                SmbSelectorPath::ClassUniform | SmbSelectorPath::RoomUniform => {
+                    panic!("concentrated policy took a uniform class path")
+                }
                 SmbSelectorPath::TieClass => {
                     tie_class_draws += 1;
                     assert!(
@@ -6183,6 +6403,7 @@ mod tests {
             state_fingerprint: 0,
             room_x_bucket: 0,
             rooms: 0,
+            room: [0; 3],
         }
     }
 
