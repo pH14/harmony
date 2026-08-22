@@ -32,30 +32,15 @@ const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 /// explicit per-run action limit that replay retains and validates under.
 pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 
-/// Which optional term the archive key carries beyond the area-span room.
+/// Identifier recorded for the archive key rule.
 ///
-/// Rooms always follow the area-span rule: a room opens when the area bytes
-/// change or when a lineage moves past every room it knows, and a same-area
+/// Rooms follow the area-span rule: a room opens when the area bytes change
+/// or when a lineage moves past every room it knows, and a same-area
 /// backward warp lands in the lineage's room of that area whose arrival page
-/// is the greatest one not past the landing page.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub enum SmbArchiveKeyPolicy {
-    /// The room is the only coordinate beyond the mechanical tuple.
-    #[default]
-    FrozenAreaSpan,
-    /// The room key plus a 16-pixel screen-x bucket, applied only to states
-    /// whose mechanical tuple equals the registered scroll-frozen room. The
-    /// scroll-locked room keeps one progress value while the player moves,
-    /// so without this term every position in it shares one cell.
-    FrozenRoomX16 {
-        /// Registered room world.
-        world: u8,
-        /// Registered room level.
-        level: u8,
-        /// Registered room progress bucket.
-        progress: u16,
-    },
-}
+/// is the greatest one not past the landing page. On top of the room, a
+/// 16-pixel on-screen x bucket joins the key wherever the camera has stopped
+/// following the player, detected mechanically by [`camera_stop_x_bucket`].
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_center_x_16";
 
 /// Work RAM addresses whose byte pair identifies the current area (area type
 /// and area data offset).
@@ -428,7 +413,6 @@ pub(crate) struct Archive {
     /// report.
     frames_in_level: Vec<u64>,
     replacement_frames_displaced: u64,
-    key_policy: SmbArchiveKeyPolicy,
     /// Sorted distinct room identities per entry.
     room_sets: Vec<Vec<SmbRoomIdentity>>,
     /// The room each entry currently stands in, aligned with `room_sets`.
@@ -436,10 +420,6 @@ pub(crate) struct Archive {
 }
 
 impl Archive {
-    pub(crate) fn set_key_policy(&mut self, policy: SmbArchiveKeyPolicy) {
-        self.key_policy = policy;
-    }
-
     /// Distinct room identities a retained entry's lineage visited inside
     /// its level, sorted.
     #[must_use]
@@ -516,7 +496,6 @@ impl Archive {
             },
             frames_in_level: Vec::new(),
             replacement_frames_displaced: 0,
-            key_policy: SmbArchiveKeyPolicy::FrozenAreaSpan,
             room_sets: Vec::new(),
             current_rooms: Vec::new(),
         }
@@ -934,6 +913,22 @@ impl Archive {
         self.selector_accounting
     }
 
+    /// Clone the entry reports, stamping per-entry selection counters.
+    pub(crate) fn entry_reports_snapshot(&self) -> Vec<SmbArchiveEntryReport> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(id, entry)| {
+                let mut report = entry.report.clone();
+                report.selector = Some(SmbEntrySelectorCounters {
+                    selected: self.selected[id],
+                    productive: self.productive[id],
+                });
+                report
+            })
+            .collect()
+    }
+
     /// Extract the entry reports, stamping per-entry selection counters.
     pub(crate) fn take_entry_reports(&mut self) -> Vec<SmbArchiveEntryReport> {
         std::mem::take(&mut self.entries)
@@ -983,23 +978,9 @@ pub(crate) fn merge_progress_watermark(
     }
 }
 
-pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> SmbArchiveKey {
+pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
     let state = smb_mechanical_state_from_wram(wram);
     let digest = Sha256::digest(wram);
-    let room_x_bucket = match policy {
-        SmbArchiveKeyPolicy::FrozenRoomX16 {
-            world,
-            level,
-            progress,
-        } if (state.world, state.level, state.progress) == (world, level, progress) => {
-            let player_x = u32::from(wram[PLAYER_ROOM_X_PAGE_OFFSET]) * 256
-                + u32::from(wram[PLAYER_ROOM_X_LOW_OFFSET]);
-            let camera = smb_camera_pixels(wram);
-            let screen_x = player_x.saturating_sub(camera).min(255);
-            u8::try_from(screen_x / 16).unwrap_or(15).saturating_add(1)
-        }
-        _ => 0,
-    };
     SmbArchiveKey {
         world: state.world,
         level: state.level,
@@ -1007,7 +988,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
         player_y_bucket: state.player_y_bucket,
         player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
-        room_x_bucket,
+        room_x_bucket: camera_stop_x_bucket(wram),
         room: [0; 3],
     }
 }
@@ -1016,6 +997,30 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
 const PLAYER_ROOM_X_PAGE_OFFSET: usize = 0x006d;
 /// SMB player horizontal position byte within the page, `$0086`.
 const PLAYER_ROOM_X_LOW_OFFSET: usize = 0x0086;
+/// Smallest on-screen player x that means the camera has stopped: one
+/// 16-pixel bucket right of screen center.
+const CAMERA_STOP_SCREEN_X: u32 = (crate::smb::target::FRAME_WIDTH as u32) / 2 + 16;
+
+/// The 16-pixel on-screen x bucket, offset by one, wherever the camera has
+/// stopped following the player; zero elsewhere.
+///
+/// A follow camera holds the player at or left of screen center, so a player
+/// standing more than one bucket right of center means the camera is not
+/// advancing there — a scroll-locked room, a corridor, or the clamped end of
+/// an area. In those regions the camera-derived progress coordinate keeps
+/// one value while the player moves, and without this term every position in
+/// the region shares one cell.
+fn camera_stop_x_bucket(wram: &[u8; 2_048]) -> u8 {
+    let player_x = u32::from(wram[PLAYER_ROOM_X_PAGE_OFFSET]) * 256
+        + u32::from(wram[PLAYER_ROOM_X_LOW_OFFSET]);
+    let screen_x = player_x.saturating_sub(smb_camera_pixels(wram));
+    if screen_x < CAMERA_STOP_SCREEN_X {
+        return 0;
+    }
+    u8::try_from(screen_x.min(255) / 16)
+        .unwrap_or(15)
+        .saturating_add(1)
+}
 
 /// The controller vocabulary: no button, Right, Left, B, A, A+Right,
 /// A+Left, A+Left+Right, Up, Down. Start and Select are excluded because

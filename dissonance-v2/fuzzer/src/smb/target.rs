@@ -504,13 +504,19 @@ fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
 
 /// Work-RAM index of the operating mode byte, `$0770`.
 const OPERATING_MODE_OFFSET: usize = 0x0770;
-/// Operating mode the game enters after the axe in 8-4: the ending sequence.
+/// Operating mode the game enters at every castle axe: the between-worlds
+/// sequence everywhere except the final world, the ending there.
 const VICTORY_OPERATING_MODE: u8 = 2;
+/// Zero-based world number of the game's final world.
+const FINAL_WORLD_NUMBER: u8 = 7;
 
-/// Whether work RAM is in the game's victory mode.
+/// Whether work RAM is in the game's victory mode: the axe sequence of the
+/// final world's castle. Earlier castles enter the same operating mode and
+/// then return to play, so the mode byte alone does not decide the game.
 #[must_use]
 pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[OPERATING_MODE_OFFSET] == VICTORY_OPERATING_MODE
+        && wram[WORLD_NUMBER_OFFSET] == FINAL_WORLD_NUMBER
 }
 
 fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
@@ -746,9 +752,12 @@ mod tests {
     }
 
     #[test]
-    fn victory_is_decoded_from_the_operating_mode_byte() {
+    fn victory_is_decoded_from_the_operating_mode_and_world_bytes() {
         let mut wram = [0_u8; WRAM_SIZE];
         assert!(!smb_is_victory(&wram));
+        wram[0x0770] = 2;
+        assert!(!smb_is_victory(&wram), "earlier castles enter mode 2 too");
+        wram[0x075f] = 7;
         wram[0x0770] = 1;
         assert!(!smb_is_victory(&wram));
         wram[0x0770] = 2;
@@ -776,6 +785,7 @@ mod tests {
         target.reset();
         assert!(!target.is_victory());
         target.wram_mut()[0x0770] = 2;
+        target.wram_mut()[0x075f] = 7;
         let won = target.snapshot().expect("snapshot victory state");
         let mut restored = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
         restored.restore(&won).expect("restore victory snapshot");

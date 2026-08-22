@@ -9066,3 +9066,47 @@ one variable of science only when a link stalls.
   `64ead1a337921aa357129f11277288d7863303274c4ea569633f713b8d3076b6` — the
   exact hash C66's registration launched from. The chain is fully audited
   through C65; no quarantine attaches to C66's origin.
+
+## 2026-08-22 — single-attempt preparation
+
+Diagnosis ran on recorded artifacts before any run: the recorded winning
+input was replayed frame by frame from the gameplay genesis snapshot on the
+Mac, dumping the camera position, the player position, the area bytes, and
+the operating mode at every one of its 174,969 frames.
+
+- **Victory decoder defect, found and fixed.** The operating-mode byte
+  equals 2 at every castle axe, not only in 8-4: the winning film enters
+  mode 2 at frames 16,760 (1-4), 42,458 (2-4), 62,971 (3-4), 93,630 (5-4),
+  120,334 (6-4), 150,529 (7-4), and 174,969 (8-4). The compiled victory rule
+  `$0770 == 2` would have stopped a genesis run at the first castle and
+  declared victory there. The rule now also requires the final world number:
+  `$0770 == 2 && $075f == 7`. Under the fixed rule the same full-film replay
+  runs all 174,969 frames and reports victory exactly once, at the last
+  frame. The film also shows the winning route used the 4-2 warp zone the
+  search found itself: worlds 1–3 complete, then 4-1, 4-2, warp, worlds 5–8
+  complete, so world 4's castle never enters mode 2.
+- **Scroll-lock key term made mechanical (synthesis item 4).** The
+  registered scroll-frozen room key was game-specific and is banned for this
+  program; without a replacement the 4-2 scroll-locked room aliases into a
+  handful of cells. Measured on the film: while the camera follows, the
+  player's on-screen x stays left of 144 at every frame of every level;
+  every region where the player stands at or past 144 has a stopped camera
+  — the 4-2 scroll-locked room, the shared underground exit corridors, the
+  water-level endings, the castle axe walks, and the clamped final screen of
+  each area. The key's x term is now a pure function of the current state:
+  a 16-pixel on-screen x bucket whenever the player stands more than one
+  bucket right of screen center, zero elsewhere. The registered room policy
+  and the key-policy switch are deleted; the recorded identifier is
+  `frozen_area_span_center_x_16`.
+- **Live whole-tree checkpoint (synthesis item 8 completion).** The run now
+  writes the archive report and the snapshot set beside the run every
+  25,000 executions, replacing the previous generation by atomic rename, so
+  an interruption of one binary's run loses at most one interval.
+  Previously the checkpoint existed only at normal completion.
+- **Chord policy decision (synthesis item 7).** Run 1 draws chords
+  uniformly. The winning link headers record uniform draws; the
+  self-derived table policy has never run live and does not debut in the
+  certification run. It stays available behind its recorded identifier if a
+  wall is measured for which mined chords are the falsifiable fix.
+- **Suffix decision (synthesis item 6).** The compiled `one_or_two` suffix
+  stands; the winning link 12 header records it.

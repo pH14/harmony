@@ -5,14 +5,11 @@
 use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 
 use fuzzer::{
-    smb::archive::{
-        MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveKeyPolicy, SmbArchiveReport,
-    },
+    smb::archive::{MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport},
     smb::campaign::{
         SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport,
         SmbCampaignOrigin, SmbSnapshotCheckpoint, chord_policy_from_identifier,
-        key_policy_from_identifier, replay_smb_campaign_checkpointed,
-        run_smb_campaign_checkpointed,
+        replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
 };
 use serde::Serialize;
@@ -70,7 +67,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
-    let mut key_policy = SmbArchiveKeyPolicy::FrozenAreaSpan;
     let mut chord = SmbCampaignChordPolicy::Uniform;
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
@@ -82,10 +78,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .to_string_lossy(),
             )?;
             wall_budget = Some(Duration::from_secs(seconds));
-        } else if flag == "--key" {
-            key_policy = key_policy_from_identifier(
-                &args.next().ok_or("missing --key value")?.to_string_lossy(),
-            )?;
         } else if flag == "--chord" {
             chord = chord_policy_from_identifier(
                 &args
@@ -115,9 +107,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         host,
         wall_budget,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-        key_policy,
         chord,
         victory_input_path: Some(output.join("victory-input.json")),
+        checkpoint_dir: Some(output.clone()),
     };
 
     let stream_path = output.join("stream.jsonl");

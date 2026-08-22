@@ -30,8 +30,8 @@ use crate::{
     },
     search::parallel::with_worker_pool,
     smb::archive::{
-        Archive, ArchiveCandidate, DOWN_TEN_BUTTON_MASKS, REPLACEMENT_IDENTIFIER,
-        RETENTION_IDENTIFIER, SELECTOR_IDENTIFIER, SmbArchiveKey, SmbArchiveKeyPolicy,
+        Archive, ArchiveCandidate, DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER,
+        REPLACEMENT_IDENTIFIER, RETENTION_IDENTIFIER, SELECTOR_IDENTIFIER, SmbArchiveKey,
         SmbArchiveProgressPoint, SmbArchiveReport, SmbSelectorDraw, SmbSelectorPath,
         admission_is_viable, archive_key, merge_action_milestones, merge_milestones,
         merge_progress_watermark, milestone_key, update_first_inputs,
@@ -149,14 +149,19 @@ pub struct SmbCampaignConfig {
     pub wall_budget: Option<Duration>,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
-    /// Archive key policy for this run, recorded in the header and report.
-    pub key_policy: SmbArchiveKeyPolicy,
     /// Chord policy for this run, recorded in the header and report.
     pub chord: SmbCampaignChordPolicy,
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<PathBuf>,
+    /// Live-only: directory receiving a whole-tree checkpoint every
+    /// [`LIVE_CHECKPOINT_INTERVAL`] executions, so an interrupted run of this
+    /// binary can be resumed instead of restarted. Never recorded.
+    pub checkpoint_dir: Option<PathBuf>,
 }
+
+/// Executions between live whole-tree checkpoint writes.
+pub const LIVE_CHECKPOINT_INTERVAL: u64 = 25_000;
 
 /// First line of the stream: everything a replay needs to know about the run.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -449,6 +454,11 @@ fn verify_fixed_rules(header: &SmbCampaignStreamHeader) -> Result<(), Box<dyn Er
             header.parent_scheduler.as_str(),
             SELECTOR_IDENTIFIER,
             "parent scheduler",
+        ),
+        (
+            header.key_policy.as_str(),
+            KEY_POLICY_IDENTIFIER,
+            "key policy",
         ),
         (
             header.retention_policy.as_str(),
@@ -1030,54 +1040,6 @@ where
         .parse()?)
 }
 
-/// Header identifier for an archive key policy.
-#[must_use]
-pub fn key_policy_identifier(policy: SmbArchiveKeyPolicy) -> String {
-    match policy {
-        SmbArchiveKeyPolicy::FrozenAreaSpan => "frozen_area_span".to_owned(),
-        SmbArchiveKeyPolicy::FrozenRoomX16 {
-            world,
-            level,
-            progress,
-        } => format!("frozen_room_x_16:{world},{level},{progress}"),
-    }
-}
-
-/// Archive key policy named by a recorded header identifier.
-///
-/// # Errors
-///
-/// Returns an error when the identifier names no known key policy.
-pub fn key_policy_from_identifier(identifier: &str) -> Result<SmbArchiveKeyPolicy, Box<dyn Error>> {
-    if identifier == "frozen_area_span" {
-        return Ok(SmbArchiveKeyPolicy::FrozenAreaSpan);
-    }
-    if let Some(room) = identifier.strip_prefix("frozen_room_x_16:") {
-        let mut parts = room.split(',');
-        let world = parts
-            .next()
-            .ok_or("room key identifier is missing its world")?
-            .parse()?;
-        let level = parts
-            .next()
-            .ok_or("room key identifier is missing its level")?
-            .parse()?;
-        let progress = parts
-            .next()
-            .ok_or("room key identifier is missing its progress")?
-            .parse()?;
-        if parts.next().is_some() {
-            return Err("room key identifier carries extra fields".into());
-        }
-        return Ok(SmbArchiveKeyPolicy::FrozenRoomX16 {
-            world,
-            level,
-            progress,
-        });
-    }
-    Err("campaign stream key policy is not recognized".into())
-}
-
 /// One candidate boundary inside a job result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct SmbCampaignCandidate {
@@ -1112,7 +1074,6 @@ struct SmbCampaignJobResult {
 #[derive(Clone, Copy, Debug)]
 struct SmbJobPolicies {
     max_actions: usize,
-    key_policy: SmbArchiveKeyPolicy,
 }
 
 fn execute_job(
@@ -1146,7 +1107,7 @@ fn execute_job(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
-            let key = archive_key(target.wram(), policies.key_policy);
+            let key = archive_key(target.wram());
             let viable = admission_is_viable(target, &snapshot)?;
             Some(SmbCampaignCandidate {
                 key,
@@ -1189,18 +1150,12 @@ struct CoordinatorCore {
     sequence: u64,
     probe_refused: u64,
     max_actions: usize,
-    key_policy: SmbArchiveKeyPolicy,
 }
 
 impl CoordinatorCore {
-    fn new(
-        max_actions: usize,
-        archive_entry_limit: usize,
-        key_policy: SmbArchiveKeyPolicy,
-    ) -> Self {
+    fn new(max_actions: usize, archive_entry_limit: usize) -> Self {
         let mut archive = Archive::new();
         archive.max_entries = archive_entry_limit;
-        archive.set_key_policy(key_policy);
         Self {
             archive,
             aggregate: SmbMilestones::default(),
@@ -1216,14 +1171,13 @@ impl CoordinatorCore {
             sequence: 0,
             probe_refused: 0,
             max_actions,
-            key_policy,
         }
     }
 
     /// Retain genesis at execution zero.
     fn bootstrap(&mut self, target: &mut SmbTarget) -> Result<(), Box<dyn Error>> {
         target.reset();
-        let genesis_key = archive_key(target.wram(), self.key_policy);
+        let genesis_key = archive_key(target.wram());
         let genesis_snapshot = target
             .snapshot()
             .ok_or("failed to snapshot campaign genesis")?;
@@ -1372,7 +1326,7 @@ impl CoordinatorCore {
                 self.champion_milestones = milestones;
                 self.champion_input = prefix.clone();
             }
-            let key = archive_key(target.wram(), self.key_policy);
+            let key = archive_key(target.wram());
             let inserted_before = self.archive.entries.len();
             match self.archive.insert(
                 Some(parent_id),
@@ -1526,6 +1480,26 @@ impl CoordinatorCore {
             }
         }
         true
+    }
+
+    /// Clone the archive into a report without ending the run, for the live
+    /// whole-tree checkpoint.
+    fn archive_report_snapshot(&self, campaign_seed: u64) -> SmbArchiveReport {
+        SmbArchiveReport {
+            seed: campaign_seed,
+            executions: self.sequence,
+            milestones: self.aggregate,
+            progress_watermark: self.watermark,
+            first_reached: self.first_reached,
+            first_inputs: self.first_inputs.clone(),
+            champion_input: self.champion_input.clone(),
+            entries: self.archive.entry_reports_snapshot(),
+            progress_curve: self.curve.clone(),
+            retained: self.archive.retained,
+            rejected: self.archive.rejected,
+            deaths: self.deaths,
+            selector: self.archive.selector_report(),
+        }
     }
 
     fn into_archive_report(mut self, campaign_seed: u64) -> SmbArchiveReport {
@@ -1762,7 +1736,7 @@ fn stream_header(
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
         controller_vocabulary: VOCABULARY_IDENTIFIER.to_owned(),
-        key_policy: key_policy_identifier(config.key_policy),
+        key_policy: KEY_POLICY_IDENTIFIER.to_owned(),
         duration_policy: DURATION_IDENTIFIER.to_owned(),
         suffix_policy: SUFFIX_IDENTIFIER.to_owned(),
         chord_policy: chord_policy_identifier(config.chord),
@@ -1828,6 +1802,53 @@ impl CampaignCounters {
             skips_per_worker: vec![0; workers as usize],
         }
     }
+}
+
+/// Write the whole retained tree beside the run so an interruption of this
+/// binary loses at most one interval. Both files land under temporary names
+/// first, then rename over the previous checkpoint generation.
+fn write_live_checkpoint(
+    core: &CoordinatorCore,
+    campaign_seed: u64,
+    directory: &std::path::Path,
+) -> Result<(), Box<dyn Error>> {
+    /// Borrowed mirror of [`SmbSnapshotCheckpointEntry`]; postcard encodes
+    /// both identically, so the multi-gigabyte snapshot set is serialized
+    /// without cloning it.
+    #[derive(Serialize)]
+    struct EntryRef<'a> {
+        id: u64,
+        snapshot: &'a SmbSnapshot,
+    }
+    /// Borrowed mirror of [`SmbSnapshotCheckpoint`].
+    #[derive(Serialize)]
+    struct CheckpointRef<'a> {
+        format: &'a str,
+        entries: Vec<EntryRef<'a>>,
+    }
+    let archive_tmp = directory.join("checkpoint-archive.json.tmp");
+    std::fs::write(
+        &archive_tmp,
+        serde_json::to_vec(&core.archive_report_snapshot(campaign_seed))?,
+    )?;
+    let entries = core
+        .archive
+        .entries
+        .iter()
+        .map(|entry| EntryRef {
+            id: entry.report.id,
+            snapshot: &entry.snapshot,
+        })
+        .collect();
+    let checkpoint = CheckpointRef {
+        format: SNAPSHOT_CHECKPOINT_FORMAT,
+        entries,
+    };
+    let snapshots_tmp = directory.join("checkpoint-snapshots.bin.tmp");
+    std::fs::write(&snapshots_tmp, postcard::to_allocvec(&checkpoint)?)?;
+    std::fs::rename(&archive_tmp, directory.join("checkpoint-archive.json"))?;
+    std::fs::rename(&snapshots_tmp, directory.join("checkpoint-snapshots.bin"))?;
+    Ok(())
 }
 
 fn build_report(
@@ -2017,11 +2038,7 @@ pub fn run_smb_campaign_checkpointed(
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
-    let mut core = CoordinatorCore::new(
-        config.action_limit,
-        config.archive_entry_limit,
-        config.key_policy,
-    );
+    let mut core = CoordinatorCore::new(config.action_limit, config.archive_entry_limit);
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = bootstrap_target.frames_clocked();
@@ -2056,7 +2073,6 @@ pub fn run_smb_campaign_checkpointed(
 
     let worker_policies = SmbJobPolicies {
         max_actions: config.action_limit,
-        key_policy: config.key_policy,
     };
     with_worker_pool(
         config.workers,
@@ -2212,6 +2228,12 @@ pub fn run_smb_campaign_checkpointed(
                     counters.jobs_per_worker[worker_index].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
                 in_flight -= 1;
+                if let Some(directory) = &config.checkpoint_dir
+                    && sequence > 0
+                    && sequence.is_multiple_of(LIVE_CHECKPOINT_INTERVAL)
+                {
+                    write_live_checkpoint(&core, config.campaign_seed, directory)?;
+                }
                 if let Some(sink) = progress.as_deref_mut() {
                     // Wall-clock gates the sidecar only. It selects nothing and
                     // enters no recorded artifact, so its nondeterminism cannot
@@ -2357,7 +2379,6 @@ pub fn replay_smb_campaign_checkpointed(
     }
 
     verify_fixed_rules(&header)?;
-    let replay_key_policy = key_policy_from_identifier(&header.key_policy)?;
     let replay_chord_policy = chord_policy_from_identifier(&header.chord_policy)?;
     let chord_origin = match origin_report {
         Some(report) => SmbCampaignOrigin::Archive {
@@ -2384,11 +2405,7 @@ pub fn replay_smb_campaign_checkpointed(
         &required_chord_versions,
         &mut chord_versions,
     );
-    let mut core = CoordinatorCore::new(
-        header.action_limit,
-        header.archive_entry_limit,
-        replay_key_policy,
-    );
+    let mut core = CoordinatorCore::new(header.action_limit, header.archive_entry_limit);
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = target.frames_clocked();
@@ -2457,7 +2474,6 @@ pub fn replay_smb_campaign_checkpointed(
                     &suffix,
                     SmbJobPolicies {
                         max_actions: header.action_limit,
-                        key_policy: replay_key_policy,
                     },
                 )?;
                 let frames = target.frames_clocked().saturating_sub(job_frames_before);
@@ -2550,18 +2566,16 @@ pub fn replay_smb_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::{
-        CoordinatorCore, SmbCampaignActionResult, SmbCampaignAdmissionDecision,
-        SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin,
-        SmbCampaignStreamRecord, chord_policy_from_identifier, chord_policy_identifier,
-        derive_suffix, derive_worker_seed, execute_job, key_policy_from_identifier,
-        key_policy_identifier, replay_smb_campaign, run_smb_campaign,
-        run_smb_campaign_with_progress,
+        CoordinatorCore, SNAPSHOT_CHECKPOINT_FORMAT, SmbCampaignActionResult,
+        SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
+        SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbSnapshotCheckpoint,
+        SmbSnapshotCheckpointEntry, chord_policy_from_identifier, chord_policy_identifier,
+        derive_suffix, derive_worker_seed, execute_job, replay_smb_campaign, run_smb_campaign,
+        run_smb_campaign_with_progress, write_live_checkpoint,
     };
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
-        smb::archive::{
-            SmbArchiveEntryReport, SmbArchiveKey, SmbArchiveKeyPolicy, SmbArchiveReport,
-        },
+        smb::archive::{SmbArchiveEntryReport, SmbArchiveKey, SmbArchiveReport},
         smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
         target::Target,
     };
@@ -2591,9 +2605,9 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             archive_entry_limit: 32_768,
-            key_policy: SmbArchiveKeyPolicy::FrozenAreaSpan,
             chord: SmbCampaignChordPolicy::Uniform,
             victory_input_path: None,
+            checkpoint_dir: None,
         }
     }
 
@@ -2677,26 +2691,6 @@ mod tests {
     }
 
     #[test]
-    fn key_policy_identifier_round_trips() {
-        let room = SmbArchiveKeyPolicy::FrozenRoomX16 {
-            world: 3,
-            level: 1,
-            progress: 208,
-        };
-        assert_eq!(key_policy_identifier(room), "frozen_room_x_16:3,1,208");
-        assert_eq!(
-            key_policy_from_identifier("frozen_room_x_16:3,1,208").expect("parse room key"),
-            room
-        );
-        assert_eq!(
-            key_policy_from_identifier("frozen_area_span").expect("parse area key"),
-            SmbArchiveKeyPolicy::FrozenAreaSpan
-        );
-        assert!(key_policy_from_identifier("frozen").is_err());
-        assert!(key_policy_from_identifier("frozen_room_x_16:3,1").is_err());
-    }
-
-    #[test]
     fn job_execution_is_pure_across_target_instances() {
         let rom = synthetic_nrom();
         let mut first = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load first target");
@@ -2708,10 +2702,7 @@ mod tests {
             .expect("derive suffix");
         // Disturb the first instance so the job must depend on the snapshot alone.
         first.apply(&ButtonChord::new(0x02, 30));
-        let policies = super::SmbJobPolicies {
-            max_actions: 96,
-            key_policy: SmbArchiveKeyPolicy::FrozenAreaSpan,
-        };
+        let policies = super::SmbJobPolicies { max_actions: 96 };
         let on_first = execute_job(
             &mut first,
             &snapshot,
@@ -2739,6 +2730,7 @@ mod tests {
         let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
         target.reset();
         target.wram_mut()[0x0770] = 2;
+        target.wram_mut()[0x075f] = 7;
         let won = target.snapshot().expect("snapshot won state");
         let result = execute_job(
             &mut target,
@@ -2746,10 +2738,7 @@ mod tests {
             0,
             SmbMilestones::default(),
             &[ButtonChord::new(0x01, 4)],
-            super::SmbJobPolicies {
-                max_actions: 96,
-                key_policy: SmbArchiveKeyPolicy::FrozenAreaSpan,
-            },
+            super::SmbJobPolicies { max_actions: 96 },
         )
         .expect("execute job");
         assert!(result.actions.is_empty());
@@ -2759,7 +2748,7 @@ mod tests {
     fn admission_counts_a_victory_and_keeps_the_first_winning_input() {
         let rom = synthetic_nrom();
         let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
-        let mut core = CoordinatorCore::new(96, 32_768, SmbArchiveKeyPolicy::FrozenAreaSpan);
+        let mut core = CoordinatorCore::new(96, 32_768);
         core.bootstrap(&mut target).expect("retain genesis");
         let winning = ButtonChord::new(0x81, 7);
         let result = SmbCampaignJobResult {
@@ -2800,6 +2789,41 @@ mod tests {
         );
         let report = core.into_archive_report(0);
         assert_eq!(report.entries.len(), 1, "a won lineage is not extended");
+    }
+
+    #[test]
+    fn live_checkpoint_files_round_trip() {
+        let rom = synthetic_nrom();
+        let mut core = CoordinatorCore::new(96, 32_768);
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        core.bootstrap(&mut target).expect("bootstrap genesis");
+        let directory =
+            std::env::temp_dir().join(format!("smb-live-checkpoint-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("create checkpoint directory");
+        write_live_checkpoint(&core, 7, &directory).expect("write live checkpoint");
+        let report: SmbArchiveReport = serde_json::from_slice(
+            &std::fs::read(directory.join("checkpoint-archive.json")).expect("read archive"),
+        )
+        .expect("parse archive report");
+        assert_eq!(report.entries.len(), core.archive.entries.len());
+        let decoded = SmbSnapshotCheckpoint::from_bytes(
+            &std::fs::read(directory.join("checkpoint-snapshots.bin")).expect("read snapshots"),
+        )
+        .expect("decode snapshot checkpoint");
+        let owned = SmbSnapshotCheckpoint {
+            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+            entries: core
+                .archive
+                .entries
+                .iter()
+                .map(|entry| SmbSnapshotCheckpointEntry {
+                    id: entry.report.id,
+                    snapshot: entry.snapshot.clone(),
+                })
+                .collect(),
+        };
+        assert_eq!(decoded, owned, "borrowed encoding matches the owned one");
+        std::fs::remove_dir_all(&directory).ok();
     }
 
     #[test]
@@ -3121,7 +3145,7 @@ mod tests {
             deaths: 0,
             selector: crate::smb::archive::SmbSelectorAccounting::default(),
         };
-        let mut core = CoordinatorCore::new(4, 32_768, SmbArchiveKeyPolicy::FrozenAreaSpan);
+        let mut core = CoordinatorCore::new(4, 32_768);
         // The report stores each entry's actions past its parent and rebuilds
         // the full inputs on load.
         let suffix_json = serde_json::to_string(&source).expect("serialize");
