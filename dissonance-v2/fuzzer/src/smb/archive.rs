@@ -1021,6 +1021,11 @@ pub enum SmbArchiveKeyPolicy {
     /// that returns the lineage to a room it has already entered adds no
     /// novelty; which room gets drawn is left to the selector.
     FrozenRoom,
+    /// `FrozenRoom` with the room changing only when the area bytes change.
+    /// A warp that returns the lineage to an earlier page of the same area
+    /// lands on screens that area already holds, so it stays in the same
+    /// room instead of opening one per arrival page.
+    FrozenArea,
 }
 
 /// Work RAM addresses whose byte pair identifies the current area (area type
@@ -1841,6 +1846,11 @@ impl Archive {
                 key.room = current;
                 (set, current)
             }
+            SmbArchiveKeyPolicy::FrozenArea => {
+                let (set, current) = self.area_room_set_for(parent_id, key, snapshot.wram())?;
+                key.room = current;
+                (set, current)
+            }
             _ => (Vec::new(), SmbRoomIdentity::default()),
         };
         // Frames this candidate spent inside its own pair, derived from the
@@ -1931,6 +1941,28 @@ impl Archive {
         key: SmbArchiveKey,
         wram: &[u8],
     ) -> Result<(Vec<SmbRoomIdentity>, SmbRoomIdentity), Box<dyn Error>> {
+        self.room_set_with(parent_id, key, wram, true)
+    }
+
+    fn area_room_set_for(
+        &self,
+        parent_id: Option<usize>,
+        key: SmbArchiveKey,
+        wram: &[u8],
+    ) -> Result<(Vec<SmbRoomIdentity>, SmbRoomIdentity), Box<dyn Error>> {
+        self.room_set_with(parent_id, key, wram, false)
+    }
+
+    /// Room set and current room of a candidate. With `warps_open_rooms` a
+    /// backward warp inside one area opens a room keyed by its arrival page;
+    /// without it only an area change does.
+    fn room_set_with(
+        &self,
+        parent_id: Option<usize>,
+        key: SmbArchiveKey,
+        wram: &[u8],
+        warps_open_rooms: bool,
+    ) -> Result<(Vec<SmbRoomIdentity>, SmbRoomIdentity), Box<dyn Error>> {
         let mut area = [0_u8; 2];
         for (slot, offset) in area.iter_mut().zip(ROOM_IDENTITY_BYTES) {
             *slot = *wram
@@ -1952,7 +1984,8 @@ impl Archive {
                 if (parent_key.world, parent_key.level) == (key.world, key.level) =>
             {
                 let same_area = parent_room[..2] == area;
-                let warped = parent_key.progress >= key.progress.saturating_add(ROOM_ARRIVAL_SNAP);
+                let warped = warps_open_rooms
+                    && parent_key.progress >= key.progress.saturating_add(ROOM_ARRIVAL_SNAP);
                 let current = if same_area && !warped {
                     parent_room
                 } else {
@@ -5569,6 +5602,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048], policy: SmbArchiveKeyPolicy) -> Sm
         SmbArchiveKeyPolicy::Frozen
         | SmbArchiveKeyPolicy::FrozenRooms
         | SmbArchiveKeyPolicy::FrozenRoom
+        | SmbArchiveKeyPolicy::FrozenArea
         | SmbArchiveKeyPolicy::FrozenRoomX16 { .. } => state.player_y_bucket,
         SmbArchiveKeyPolicy::VerticalPage => smb_death_bytes(wram)
             .vertical_page
@@ -6257,6 +6291,58 @@ mod tests {
             archive.entries[looped].report.key
         );
         assert!(insert(&mut archive, Some(looped_again), 6, key(85), [3, 5]).is_none());
+    }
+
+    #[test]
+    fn frozen_area_keeps_same_area_warps_in_one_room_and_opens_rooms_on_area_change() {
+        let mut archive = Archive::new();
+        archive.set_key_policy(SmbArchiveKeyPolicy::FrozenArea);
+        let genesis = selector_snapshot();
+        let area_snapshot = |area: [u8; 2]| -> SmbSnapshot {
+            let mut value = serde_json::to_value(&genesis).expect("serialize snapshot");
+            let wram = value["observation"]["wram"]
+                .as_array_mut()
+                .expect("snapshot work RAM");
+            for (offset, byte) in ROOM_IDENTITY_BYTES.into_iter().zip(area) {
+                wram[offset] = serde_json::json!(byte);
+            }
+            serde_json::from_value(value).expect("rebuild snapshot")
+        };
+        let key = |progress: u16| SmbArchiveKey {
+            world: 7,
+            level: 3,
+            progress,
+            ..BASELINE_LIKE_KEY
+        };
+        let insert = |archive: &mut Archive, parent, actions: usize, key, area| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        input: SmbInput {
+                            actions: vec![ButtonChord::new(1, 2); actions],
+                        },
+                        key,
+                        milestones: crate::smb::target::SmbMilestones::default(),
+                    },
+                    area_snapshot(area),
+                )
+                .expect("insert")
+        };
+        let root = insert(&mut archive, None, 1, key(10), [3, 5]).expect("root");
+        assert_eq!(archive.entries[root].report.key.room, [3, 5, 0]);
+        let deep = insert(&mut archive, Some(root), 2, key(150), [3, 5]).expect("deep");
+        // A warp back inside the same area stays in the area's room.
+        let looped = insert(&mut archive, Some(deep), 3, key(85), [3, 5]).expect("loop");
+        assert_eq!(archive.entries[looped].report.key.room, [3, 5, 0]);
+        // An area change opens a room keyed by its arrival page, and a
+        // return to the first area opens another.
+        let water = insert(&mut archive, Some(looped), 4, key(20), [0, 2]).expect("water");
+        assert_eq!(archive.entries[water].report.key.room, [0, 2, 1]);
+        let back = insert(&mut archive, Some(water), 5, key(170), [3, 5]).expect("back");
+        assert_eq!(archive.entries[back].report.key.room, [3, 5, 10]);
+        assert_eq!(archive.room_set(back), &[[0, 2, 1], [3, 5, 0], [3, 5, 10]]);
     }
 
     #[test]
