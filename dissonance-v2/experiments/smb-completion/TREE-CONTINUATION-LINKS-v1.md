@@ -210,12 +210,38 @@ Seed 9678475058303591893. Stream SHA-256 `65bc5655ce821581…`, checkpoint
 ## Link 9 (source 35bace58)
 
 Same as link 8, resumed from link 8's checkpoint; seed
-13993258458984251027. Measures whether more budget alone moves p304.
+13993258458984251027. Stream SHA-256 `cf57f5a3bd1a3000…`, checkpoint
+`b9d785bc51c52f7e…`. Watermark (7, 3, 304) held.
 
-## Link 10 plan (source f218b79e)
+- After-water room `[3 5 16]`: 2,827 entries (848 new), 12,643 draws, 231
+  retained. Main room 17,772 draws, water room 13,867. Budget alone does
+  not move p304.
+
+## Link 10 (source f218b79e)
 
 Selector `room_band_uniform_128`: the room is drawn uniformly as before,
 then one of the room's progress bands (8 wide) that still holds an
-unexhausted entry, uniformly, then the concentrated draw inside it. Each
-page of the after-water room gets an equal share instead of the tip taking
-98%. Resume from link 9 through its checkpoint.
+unexhausted entry, uniformly, then the concentrated draw inside it. Resume
+from link 9 through its checkpoint, key `frozen_area`, vocabulary
+`down_ten_mask`. Seed 2780745221170456762. Stream SHA-256
+`386c6ec497935d21…`, checkpoint `f65d5d35712f9e05…`. Watermark (7, 3, 304)
+held.
+
+- Retention in the after-water room rose from 231 to 5,931 on the same
+  12,529 draws; the room grew from 2,827 to 9,712 entries, spread over
+  pages 16–19 (4,144 / 1,227 / 1,928 / 394).
+- Defect found: 2,019 of those entries sit at pages 1–3. The pipes at
+  pages 16–18 warp to the start of the area; `frozen_area` keeps them in
+  room `[3 5 16]`, so each landing is a fresh cell there and the pipe
+  loop is rewarded.
+
+## Link 11 (source b9f7f837)
+
+Key `frozen_area_span`: a same-area backward warp lands in the lineage
+room of that area with the greatest arrival page at or below the landing
+page, so a pipe back to page 1 lands in the start room (full cells,
+refused) and a loop return to page 16 stays in the after-water room. A
+forward move past every known room still opens a room. Resume from link
+10 through its checkpoint, selector `room_band_uniform_128`, vocabulary
+`down_ten_mask`. Seed 13570450108844123233. Unit `smb-tree-link11`,
+results `/root/harmony-smb-campaign-tree-b9f7f837/results/link11`.
