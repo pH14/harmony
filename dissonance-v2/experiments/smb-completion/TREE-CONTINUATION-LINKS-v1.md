@@ -101,3 +101,44 @@ deepest pair, frontier-band walk and recency window inside the room). Seed
   12 workers is about 215 emulated frames per second per worker, far below
   what one emulator core does, so the coordinator or per-job overhead, not
   emulation, bounds the budget.
+
+## Throughput measurements (after link 4)
+
+- The emulator is the per-frame floor: tetanes-core clocks the PPU per dot
+  (about 12 ns per dot), 590 frames per second per core on the ARM box and
+  905 on the Mac. Restore, snapshot, hashing and serialization cost under
+  0.15 ms per job. Fat LTO with one codegen unit gains 1%.
+- Link 4's 80 minutes were 43 minutes of single-threaded whole-tree import,
+  37 minutes of jobs at 22.5 executions per second (398 frames per second
+  per worker, 67% of twelve cores), and one minute writing the archive.
+  The 10.4 per second figure in link 4's record averaged the import in.
+- On the Mac, 8 workers reach 87% of emulation capacity, so the
+  coordinator is not the limit there. The ARM box runs 13 threads on 12
+  cores; an 11-worker pilot is pending.
+- The origin archive (14.7 GB of JSON) parses in about 80 seconds.
+
+## Link 5 (source cf3697fd, root `/root/harmony-smb-campaign-tree-cf3697fd`)
+
+Same policies as link 4, resumed `whole_tree` from link 4's archive. The
+source commit adds the snapshot checkpoint: every run writes
+`snapshots-live.bin` (each retained entry's emulator snapshot), and
+`--checkpoint <file>` lets a whole-tree resume restore entries instead of
+re-emulating them. Seed 18191268080075492392. Stream SHA-256
+`58cc536dd691a24a…`, checkpoint SHA-256 `0024cd71c3d48f05…` (332 MB for
+77,970 entries).
+
+- Import: 57,581 entries, none rejected, 75 minutes (2.66 M frames).
+- Jobs: 50,000 at 21.8 per second; 77,970 entries; watermark (7, 3, 153).
+- Draws per room were even (8.5k–9.8k each) and no room exhausted. The
+  pipe room `[3 5 1]` took 8,831 draws, added 2,512 entries, and stayed at
+  progress 73: it is a loop as well (page 1 to page 4, then the same pipe).
+- Every link so far ran the default `frozen_nine_mask` vocabulary, which
+  has no Down button. Pipes entered from above were unreachable for all
+  250,000 executions. The `down_ten_mask` vocabulary already exists.
+
+## Link 6 (source cf3697fd)
+
+Resume `whole_tree` from link 5's archive through its checkpoint, with
+vocabulary `down_ten_mask`; key and selector unchanged. Seed
+12023843674612131264. Measures the checkpointed bootstrap and gives the
+search the Down button.
