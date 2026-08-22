@@ -270,3 +270,47 @@ an unexhausted entry, then the concentrated draw. Resume from link 11
 through its checkpoint, key `frozen_area_span`, vocabulary
 `down_ten_mask`. Seed 7113094308691776288. Unit `smb-tree-link12`,
 results `/root/harmony-smb-campaign-tree-a9acff00/results/link12`.
+Stream SHA-256 `92eb2dda8c7c211a…`, checkpoint `d76eb3a80cfe1bb1…`.
+Watermark (7, 3, 304) held; 226,016 entries, 3,924 deaths.
+
+- Every cell of the after-water room got its share: 40–77 draws per cell
+  at 280–286, 142–176 at 288–295, 244–322 at 296–303, 2,068 at 304. The
+  reachable shape is unchanged: 287 holds bucket 7 only, 291–304 hold
+  bucket 11 only, 304 is still the maximum.
+
+## What progress 304 is
+
+Direct replay of retained inputs (scratch tool, whole input from
+power-on, work RAM read after the last action):
+
+| entry | progress | frames in 8-4 | timer | page | x | y | `$0770` |
+|---|---|---|---|---|---|---|---|
+| link 12 id 83914 | 256 | 8,217 | 086 | 0 | 0 | 0 | – |
+| link 12 id 136701 | 280 | 9,112 | 053 | 17 | 244 | 128 | – |
+| link 12 id 136518 | 291 | 9,358 | 051 | 19 | 15 | 144 | – |
+| link 12 id 86837 | 300 | 9,461 | 051 | 19 | 126 | 176 | – |
+| link 12 id 86845 | 304 | 9,580 | 051 | 19 | 126 | 176 | 2 |
+
+The timer stops at 051 from progress 291 on and the player stands at
+x 126 from 300 on. The film of entry 86845 (one frame per action) shows
+the Bowser bridge at frame 3693, the jump over Bowser toward the axe at
+frame 3699 with 051 on the clock, and the "THANK YOU MARIO!" screen with
+Mario beside the princess at frame 3704. Work RAM `$0770` (operating
+mode) reads 2, the game's victory mode, with `$0772` (mode task) at 3.
+
+Progress 304 is the end of the game. The room's page-19 cells fill with
+fingerprints of the victory sequence, every candidate past them is
+refused, and the search has no predicate that recognizes the state.
+
+The first entry at (7, 3, 304) is link 7 id 118266, created at
+execution 14,466 of link 7: 3,704 actions, 175,374 frames from power-on.
+Inputs and film are preserved read-only under
+`/root/harmony-smb-completion-evidence/` on msr1:
+`link7-first-7-3-304-input-id118266.json` (SHA-256 `d16c723f8bfba385…`),
+`link12-7-3-304-input-id86845.json`, `film-link12-id86845/`.
+
+Completion is not declared here. The preregistered success rule needs a
+mechanically decoded victory state and an artifact-only replay of the
+full terminal trace; neither decoder nor replay exists in the tree. The
+candidate predicate is `$0770 == 2` read by the target after an action,
+frozen before any replay is scored.
