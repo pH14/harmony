@@ -9181,3 +9181,21 @@ the operating mode at every one of its 174,969 frames.
   `0x5eed_0823`, 12 workers, execution budget 1,500,000, action limit
   8,192, entry limit 1,048,576, uniform chords, host msr1, output
   `results/run2`, no wall budget. All other fixed rules as in run 1.
+
+### Run 2 corridor observation and a null replacement experiment
+
+- Run 2 spent 92k executions inside 1-3, most of it in the flag corridor,
+  then crossed, and crossed the whole of 1-4 in the next 8k. Corridor cost
+  under the compiled rules is heavy-tailed.
+- Hypothesis tested locally while run 2 continued: the fewest-frames
+  replacement rule blocks input-free waits (a child deeper in a wait always
+  costs more frames than its shallower sibling in the same cell, so only a
+  fresh fingerprint admits it). Candidate rule `cheapest_and_latest`: a full
+  cell keeps its cheapest entry and its latest visit displaces the other
+  slot unconditionally.
+- Test: two 30,000-execution resumes of run 2's 100k-execution whole-tree
+  checkpoint on the Mac, same seed, 5 workers each — the compiled rule
+  against the candidate. Neither arm crossed into 1-4; both watermarks
+  ended where they began. The candidate showed no advantage on the exact
+  stuck state, so no change is made. The candidate stays recorded here for
+  re-test at any future corridor stall with more seeds.
