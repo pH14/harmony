@@ -9199,3 +9199,54 @@ the operating mode at every one of its 174,969 frames.
   ended where they began. The candidate showed no advantage on the exact
   stuck state, so no change is made. The candidate stays recorded here for
   re-test at any future corridor stall with more seeds.
+
+### Run 2 at the 4-2 camera-stopped room, and a paired test of a full-width x term
+
+- Run 2 sat at (4-2, progress 208) from execution 838k to 990k. The 900k
+  checkpoint showed no starvation: 878 cells there across 66 (x bucket,
+  y bucket) pairs, 562 selections with 484 producing admitted children,
+  and new cells minted seconds before the checkpoint. Run 2 then crossed
+  into 4-3 on its own near 990k. The room cost ~152k executions.
+- The prior campaign's log records the same room as its link-9 stall. Its
+  census located the downward pipe's entry window at screen-x 64–96, and
+  the room fell only after a registered per-room 16-pixel x key covered
+  that window (crossing at 9,919 executions). The registered key is
+  banned here. The general follow-point term resolves only screen-x
+  ≥ 128; the pipe window lies in the collapsed left half.
+- Film measurement: bucketing the full width (16 buckets, screen-x/16)
+  raises distinct keys along the whole winning route 1.13× (11,825 →
+  13,347), because following-camera play concentrates at screen-x
+  112–127. The left half costs almost nothing where the camera moves and
+  buys 8 buckets wherever it is pinned.
+- Change under test: the x term buckets the full width unconditionally,
+  one global rule, identifier `frozen_area_span_screen_x_16`.
+- Paired test, round 1 (miscalibrated, recorded as a design error): both
+  arms resumed run 2's 985k checkpoint trimmed to the whole 4-2 subtree
+  (97,954 entries), seed `0x5eed_ab01`, 30k executions, 4 workers. Both
+  arms ended still in 4-2. Under room-band-cell selection the 208 band
+  receives roughly 1/200 of selections, so 30k bought ~150 corridor
+  selections against a 788-frame corridor; the round could not have
+  resolved the question for either arm.
+- Paired test, round 2: origin trimmed to the corridor itself — genesis
+  plus the 1,656 progress-208 entries, entry points expanded to full
+  inputs. Seed `0x5eed_ab02`, 30k executions, 4 workers per arm.
+  - Arm A (follow-point term): exhausted 30,000 executions, deepest cell
+    still (4-2, 208). Stream SHA-256
+    `103235a3115e189af08377afd21d033587a4b3608b3de5e749b2134c775818d1`.
+  - Arm B (full-width term): first world-5 cell at execution 17,095,
+    reached through the warp with x bucket 6 (screen-x 96–111), matching
+    the prior campaign's pipe-window census. Stream SHA-256
+    `4d2cbabc332eb2485711c22fb254b508f4016e644fdeb50699e020c302f92294`.
+- Decision: the full-width term is promoted. Run 2 is stopped for the
+  change without a wall declaration, and run 3 restarts from genesis
+  under the renamed identifier.
+
+## Run 3 registration — one attempt from genesis
+
+- Source commit: the full-width x-term commit after `c151a13c`, seed
+  `0x5eed_0824`, 12 workers, execution budget 1,500,000, action limit
+  8,192, entry limit 1,048,576, uniform chords, host msr1, output
+  `results/run3`, no wall budget. All other fixed rules as in run 2.
+- Stop rule: the victory event ends the run and writes the winning
+  input; otherwise the run exhausts the budget, and no wall may be
+  declared before it does.
