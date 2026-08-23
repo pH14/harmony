@@ -9250,3 +9250,24 @@ the operating mode at every one of its 174,969 frames.
 - Stop rule: the victory event ends the run and writes the winning
   input; otherwise the run exhausts the budget, and no wall may be
   declared before it does.
+
+### Run 2 result — stopped in 5-1 at 1,092,580 executions for the promoted key term
+
+- Seed `0x5eed_0823`, commit `e120ed5c`, host msr1, 12 workers. Stopped by
+  the operator after the round-2 paired test above promoted the full-width
+  x term; no wall is declared. Stream: 1,107,641 lines, SHA-256
+  `c860d8a6eaea5b369d698f797f2b8a0456186a2a44f5862dbad4f023e111ef75`.
+- First entry per level, from the final 1,075,000-execution checkpoint:
+  1-2 at 3,597; 1-3 at 33,328; 1-4 at 131,523; 2-1 at 137,213; 2-2 at
+  180,258; 2-3 at 399,257; 2-4 at 439,097; 3-1 at 469,884; 3-2 at
+  536,262; 3-3 at 570,676; 3-4 at 612,429; 4-1 at 636,116; 4-2 at
+  708,059; 4-3 at 984,652; 4-4 at 1,014,960. 5-1 entered after the last
+  checkpoint, first seen in the 60-second progress sample at 1,083,783.
+- The three dominant costs were camera-stopped or fingerprint-lottery
+  regions: 1-3's flag corridor (~92k), 2-2 water (~219k including a
+  self-resolving pause), 4-2's warp room (~152k). The promoted term
+  targets exactly these.
+- Run 3 launched from genesis at commit `47f51b13`, unit smb-run3, seed
+  `0x5eed_0824`, output `results/run3`; header records key policy
+  `frozen_area_span_screen_x_16` and the full fixed-rule set otherwise
+  unchanged.
