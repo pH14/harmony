@@ -9134,3 +9134,50 @@ the operating mode at every one of its 174,969 frames.
   it does.
 - Success is the victory event in the recorded stream plus a byte-exact
   replay; the record is the executions-to-entry curve per level.
+
+## Run 1 result — stopped at 669,955 executions for a measured key-term defect
+
+- Seed `0x5eed_0822`, commit `46b3d74c`, 12 workers on msr1, launched
+  2026-08-22 23:24 UTC. Throughput ~40 executions/s, twice the historical
+  rate. Live whole-tree checkpoints written every 25,000 executions as
+  designed. Stream preserved on the box under `results/run1`
+  (246,329,477 bytes, SHA-256 prefix `d393262343…`).
+- Executions at first entry per level: 1-2 at 14.5k, 1-3 at 50k, 1-4 at
+  74k, 2-1 at 81k, 2-2 at 170k, 2-3 at 359k, 2-4 at 400k, 3-1 at 434k,
+  3-2 at 461k, 3-3 at 488k, 3-4 at 502k, 4-1 at 556k. Both castle axes
+  crossed without a false victory stop, so the fixed victory rule holds
+  live.
+- The run then spent 114k executions inside 4-1's flag corridor without a
+  single frame reaching 4-2 (the per-frame watermark stayed at 4-1
+  progress 223). Diagnosis from the 650k-execution checkpoint and the
+  recorded film:
+  - The successful 3-1 crossing chained through corridor cells whose
+    on-screen x term had fired (buckets at x ≥ 144), giving the input-free
+    walk spatial coordinates.
+  - 4-1's corridor parks the player at on-screen x 139–148, straddling the
+    144 threshold; the run's walk states all keyed with x term zero. The
+    corridor collapsed to (progress, y, engine, fingerprint) cells: the
+    fingerprint churn from score and timer bytes minted ~2,400 sibling
+    cells in bands 216–223 (3-1's corridor needed ~130), cell-uniform
+    draws diluted across them, and the fewest-frames replacement rule
+    rejects deeper-walk children that land in a shallower sibling's cell,
+    because walking forward always costs frames.
+  - The film sets the true follow bound: while the camera can advance it
+    holds the player at or left of screen center (x 128); the 1,131 film
+    frames at x 128–143 during camera motion are brief mid-sprint
+    overshoots. A threshold at 144 was therefore one bucket too high, and
+    every remaining flag corridor would pay the same fingerprint-lottery
+    cost, an estimated 50–150k executions each across ten or more
+    remaining flags — past the budget.
+- Change: the x term fires at the camera follow point exactly
+  (on-screen x ≥ 128). Cost bound from the film: 0.6% of following-play
+  frames gain an x bucket. Identifier renamed to
+  `frozen_area_span_follow_point_x_16` so run 1's stream never replays
+  under the changed rule.
+
+## Run 2 registration — one attempt from genesis
+
+- Source commit: the follow-point commit after `9c49944e`, seed
+  `0x5eed_0823`, 12 workers, execution budget 1,500,000, action limit
+  8,192, entry limit 1,048,576, uniform chords, host msr1, output
+  `results/run2`, no wall budget. All other fixed rules as in run 1.

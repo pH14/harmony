@@ -40,7 +40,7 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// is the greatest one not past the landing page. On top of the room, a
 /// 16-pixel on-screen x bucket joins the key wherever the camera has stopped
 /// following the player, detected mechanically by [`camera_stop_x_bucket`].
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_center_x_16";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_follow_point_x_16";
 
 /// Work RAM addresses whose byte pair identifies the current area (area type
 /// and area data offset).
@@ -997,24 +997,27 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
 const PLAYER_ROOM_X_PAGE_OFFSET: usize = 0x006d;
 /// SMB player horizontal position byte within the page, `$0086`.
 const PLAYER_ROOM_X_LOW_OFFSET: usize = 0x0086;
-/// Smallest on-screen player x that means the camera has stopped: one
-/// 16-pixel bucket right of screen center.
-const CAMERA_STOP_SCREEN_X: u32 = (crate::smb::target::FRAME_WIDTH as u32) / 2 + 16;
+/// Screen x of the camera's follow point: the screen center the camera
+/// keeps the player at or left of while it can still advance.
+const CAMERA_FOLLOW_POINT_X: u32 = (crate::smb::target::FRAME_WIDTH as u32) / 2;
 
-/// The 16-pixel on-screen x bucket, offset by one, wherever the camera has
-/// stopped following the player; zero elsewhere.
+/// The 16-pixel on-screen x bucket, offset by one, wherever the player
+/// stands at or past the camera's follow point; zero elsewhere.
 ///
-/// A follow camera holds the player at or left of screen center, so a player
-/// standing more than one bucket right of center means the camera is not
-/// advancing there — a scroll-locked room, a corridor, or the clamped end of
-/// an area. In those regions the camera-derived progress coordinate keeps
-/// one value while the player moves, and without this term every position in
-/// the region shares one cell.
+/// While the camera can advance it holds the player at or left of the
+/// follow point, so standing past it means the camera is pinned — a
+/// scroll-locked room, a corridor, or the clamped end of an area — or
+/// briefly outrun mid-sprint. In pinned regions the camera-derived progress
+/// coordinate keeps one value while the player moves, and without this term
+/// every position in the region shares one cell. The threshold sits exactly
+/// at the follow point because level-exit corridors park the player only a
+/// few pixels past it; a term that starts one bucket later leaves whole
+/// corridors sharing single cells.
 fn camera_stop_x_bucket(wram: &[u8; 2_048]) -> u8 {
     let player_x = u32::from(wram[PLAYER_ROOM_X_PAGE_OFFSET]) * 256
         + u32::from(wram[PLAYER_ROOM_X_LOW_OFFSET]);
     let screen_x = player_x.saturating_sub(smb_camera_pixels(wram));
-    if screen_x < CAMERA_STOP_SCREEN_X {
+    if screen_x < CAMERA_FOLLOW_POINT_X {
         return 0;
     }
     u8::try_from(screen_x.min(255) / 16)
