@@ -7,7 +7,8 @@ use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 use fuzzer::{
     smb::archive::{
         MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, SmbRetentionPolicy,
-        SmbSelectorPolicy, retention_policy_from_identifier, selector_policy_from_identifier,
+        SmbRetireThresholds, SmbSelectorPolicy, retention_policy_from_identifier,
+        selector_policy_from_identifier,
     },
     smb::campaign::{
         SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport,
@@ -71,8 +72,18 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
     let mut chord = SmbCampaignChordPolicy::Uniform;
-    let mut retention = SmbRetentionPolicy::ProbeAtAdmission45;
-    let mut selector = SmbSelectorPolicy::RoomCellUniform128;
+    // Defaults are the current behavior; the older policies stay selectable
+    // so historical recordings keep replaying under their own identifiers.
+    // Retire thresholds are measured search statistics (99th-percentile
+    // picks-before-first-keeper per class) and should be re-measured for a
+    // new game rather than treated as universal constants.
+    let mut retention = SmbRetentionPolicy::AdmitAlive;
+    let mut selector = SmbSelectorPolicy::Retire(SmbRetireThresholds {
+        entry: 3,
+        cell: 6,
+        band: 12,
+        room: 2,
+    });
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {

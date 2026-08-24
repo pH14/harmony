@@ -9556,3 +9556,31 @@ the operating mode at every one of its 174,969 frames.
   `admit_alive` + `room_cell_uniform_128_retire:3,6,12,2`, on the fixed
   build. Score line unchanged: first retained entry with key world 4.
   The run is believed only after byte-exact replay.
+
+### Head-to-head P side B rerun result
+
+- Same conclusion on the fixed build: 50,000 executions, no world-4-key
+  entry retained. 178,983 retained, 14,665 rejects, 5,830 deaths,
+  309,719 retired-class skips, 2 pooled resets, 14 entries / 8 cells /
+  1 band / 4 rooms over threshold at end. Stream `ba9084d9…`. The P tie
+  stands; byte-exact replay of this rerun registered next.
+
+## Defaults promoted: no screening and the retiring selector
+
+- Ruling: no disabled-by-default features. The admission probe is
+  removed from default behavior — fixed button recipes are baked-in
+  game intuition — and the retiring selector becomes the default with
+  the measured thresholds 3, 6, 12, 2, which are search statistics to
+  re-measure per game, never universal constants. `smb-campaign run`
+  now defaults to `admit_alive` and
+  `room_cell_uniform_128_retire:3,6,12,2`; the older identifiers stay
+  selectable because historical recordings replay under their own
+  headers.
+- The input-shape sweep over every pair of runs 3 and 4 (28 samples,
+  `data/measure/shapes/`) shows the duration signal is universal:
+  dead-before-boundary first chords are 97.5–99.9 percent long-stratum
+  in every pair while keeper added actions are 31–44 percent, so the
+  planned feedback edge on the input draw keys on duration first.
+- Gates green; the standing reference reproduces stream `d0ca9f22…`
+  and archive `b3787b5e…` byte-identical when run with the old
+  policies named explicitly.
