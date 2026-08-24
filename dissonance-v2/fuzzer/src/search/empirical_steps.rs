@@ -342,6 +342,57 @@ where
     ///
     /// Returns an error if the registered weighted length overflows.
     pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
+        self.view().mixed_len()
+    }
+
+    /// Resolve one frequency-weighted mixed-table index.
+    #[must_use]
+    pub fn mixed_step(&self, index: usize) -> Option<&Step> {
+        self.view().mixed_step(index)
+    }
+
+    /// Borrowed view of the current visible tables.
+    #[must_use]
+    pub fn view(&self) -> EmpiricalStepTableRef<'_, Step> {
+        EmpiricalStepTableRef {
+            parameters: self.parameters,
+            recent: &self.recent,
+            all_history: &self.all_history,
+        }
+    }
+}
+
+/// Borrowed visible tables for one draw: the current fold state, or a
+/// historical version rebuilt from the append-only history plus a saved
+/// recent window.
+#[derive(Clone, Copy)]
+pub struct EmpiricalStepTableRef<'a, Step> {
+    parameters: EmpiricalStepParameters,
+    recent: &'a [Step],
+    all_history: &'a [Step],
+}
+
+impl<'a, Step> EmpiricalStepTableRef<'a, Step> {
+    /// Assemble a view from borrowed table slices.
+    #[must_use]
+    pub fn from_parts(
+        parameters: EmpiricalStepParameters,
+        recent: &'a [Step],
+        all_history: &'a [Step],
+    ) -> Self {
+        Self {
+            parameters,
+            recent,
+            all_history,
+        }
+    }
+
+    /// Frequency-weighted mixed-table length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the registered weighted length overflows.
+    pub fn mixed_len(&self) -> Result<usize, EmpiricalStepError> {
         self.recent
             .len()
             .checked_mul(self.parameters.recent_weight)
@@ -356,7 +407,7 @@ where
 
     /// Resolve one frequency-weighted mixed-table index.
     #[must_use]
-    pub fn mixed_step(&self, index: usize) -> Option<&Step> {
+    pub fn mixed_step(&self, index: usize) -> Option<&'a Step> {
         let recent_span = self
             .recent
             .len()

@@ -9709,3 +9709,14 @@ executions each:
 Streams: A da5ec46e…, B 6ff169e8…. The crossing edge is small on one seed;
 the depth edge (206 vs 171, 1.35x entries) is the substantive signal. Replays
 of both sides registered next; results believed only if byte-exact.
+
+## Replay memory fix: per-draw table versions stop cloning the fold (2026-08-24)
+
+The W2 side B replay was killed twice (exit 137, out of memory). Cause: replay
+kept a full clone of the chord tables for every recorded dispatch point —
+tens of MB times ~50,000 records with this origin. Versions are now stored as
+(checkpoint, history length, shared recent-window snapshot); draws rebuild a
+borrowed view over the append-only history, so version storage is a few KB per
+visible-table generation. No recorded bytes change; verification is identical.
+Gates green (fmt, clippy -D warnings, nextest 42/42, deny). Side B replay
+relaunched under the new binary.

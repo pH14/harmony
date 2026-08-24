@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     search::empirical_steps::{
         EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
-        EmpiricalStepTables,
+        EmpiricalStepTableRef, EmpiricalStepTables,
     },
     search::parallel::with_worker_pool,
     smb::archive::{
@@ -542,7 +542,7 @@ fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, Box<
 pub fn derive_suffix(
     mutation_seed: u64,
     chord_policy: SmbCampaignChordPolicy,
-    chord_tables: Option<&EmpiricalStepTables<ButtonChord>>,
+    chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = StdRand::with_seed(mutation_seed);
     let suffix_len = if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
@@ -1632,11 +1632,22 @@ fn current_chord_checkpoint(
         .map_err(Into::into)
 }
 
+/// One recorded table version, light enough to keep for every dispatch point:
+/// the append-only history is shared with the live fold and named by length,
+/// and only the bounded recent window is snapshotted (shared between versions
+/// whose visible tables did not change).
+struct SmbChordTableVersion {
+    checkpoint: EmpiricalStepCheckpoint,
+    history_len: usize,
+    recent: std::rc::Rc<Vec<ButtonChord>>,
+}
+
 fn recorded_chord_tables<'a>(
     policy: SmbCampaignChordPolicy,
     before: Option<&EmpiricalStepCheckpoint>,
-    versions: &'a BTreeMap<u64, EmpiricalStepTables<ButtonChord>>,
-) -> Result<Option<&'a EmpiricalStepTables<ButtonChord>>, Box<dyn Error>> {
+    versions: &'a BTreeMap<u64, SmbChordTableVersion>,
+    tables: Option<&'a EmpiricalStepTables<ButtonChord>>,
+) -> Result<Option<EmpiricalStepTableRef<'a, ButtonChord>>, Box<dyn Error>> {
     let SmbCampaignChordPolicy::DerivedHalf(_) = policy else {
         if before.is_some() {
             return Err("non-derived chord draw carries a table version".into());
@@ -1644,25 +1655,53 @@ fn recorded_chord_tables<'a>(
         return Ok(None);
     };
     let before = before.ok_or("derived chord draw is missing its table version")?;
-    let tables = versions
+    let version = versions
         .get(&before.records)
         .ok_or("derived chord draw names an unknown table version")?;
-    if tables.checkpoint()? != *before {
+    if version.checkpoint != *before {
         return Err("derived chord draw table hash does not match replay".into());
     }
-    Ok(Some(tables))
+    let tables = tables.ok_or("derived chord policy has no folded tables")?;
+    let history = tables
+        .all_history()
+        .get(..version.history_len)
+        .ok_or("derived chord version names history the fold does not hold")?;
+    Ok(Some(EmpiricalStepTableRef::from_parts(
+        tables.parameters(),
+        &version.recent,
+        history,
+    )))
 }
 
 fn remember_chord_version(
     tables: Option<&EmpiricalStepTables<ButtonChord>>,
     required: &BTreeSet<u64>,
-    versions: &mut BTreeMap<u64, EmpiricalStepTables<ButtonChord>>,
-) {
-    if let Some(tables) = tables
-        && required.contains(&tables.records())
-    {
-        versions.insert(tables.records(), tables.clone());
+    versions: &mut BTreeMap<u64, SmbChordTableVersion>,
+) -> Result<(), Box<dyn Error>> {
+    let Some(tables) = tables else {
+        return Ok(());
+    };
+    if !required.contains(&tables.records()) {
+        return Ok(());
     }
+    let checkpoint = tables.checkpoint()?;
+    let recent = versions
+        .last_key_value()
+        .filter(|(_, last)| {
+            last.checkpoint.table_sha256 == checkpoint.table_sha256
+                && last.history_len == tables.all_history().len()
+        })
+        .map(|(_, last)| std::rc::Rc::clone(&last.recent))
+        .unwrap_or_else(|| std::rc::Rc::new(tables.recent().to_vec()));
+    versions.insert(
+        tables.records(),
+        SmbChordTableVersion {
+            checkpoint,
+            history_len: tables.all_history().len(),
+            recent,
+        },
+    );
+    Ok(())
 }
 
 fn finish_chord_stream_record(
@@ -2153,7 +2192,11 @@ pub fn run_smb_campaign_checkpointed(
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let mutation_seed = rand.next();
                     let chord_table_before = current_chord_checkpoint(chord_tables.as_ref())?;
-                    let suffix = derive_suffix(mutation_seed, config.chord, chord_tables.as_ref())?;
+                    let suffix = derive_suffix(
+                        mutation_seed,
+                        config.chord,
+                        chord_tables.as_ref().map(EmpiricalStepTables::view),
+                    )?;
                     if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix)
                     {
@@ -2437,7 +2480,7 @@ pub fn replay_smb_campaign_checkpointed(
         chord_tables.as_ref(),
         &required_chord_versions,
         &mut chord_versions,
-    );
+    )?;
     let mut core = CoordinatorCore::new(header.action_limit, header.archive_entry_limit);
     core.archive.selector_policy = replay_selector;
     let mut counters = CampaignCounters::new(header.workers);
@@ -2458,6 +2501,7 @@ pub fn replay_smb_campaign_checkpointed(
                     replay_chord_policy,
                     skip.chord_table_before.as_ref(),
                     &chord_versions,
+                    chord_tables.as_ref(),
                 )?;
                 let suffix = derive_suffix(skip.mutation_seed, replay_chord_policy, draw_tables)?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
@@ -2481,7 +2525,7 @@ pub fn replay_smb_campaign_checkpointed(
                     chord_tables.as_ref(),
                     &required_chord_versions,
                     &mut chord_versions,
-                );
+                )?;
             }
             SmbCampaignStreamRecord::Job(job) => {
                 let parent_index = usize::try_from(job.parent_id)?;
@@ -2497,6 +2541,7 @@ pub fn replay_smb_campaign_checkpointed(
                     replay_chord_policy,
                     job.chord_table_before.as_ref(),
                     &chord_versions,
+                    chord_tables.as_ref(),
                 )?;
                 let suffix = derive_suffix(job.mutation_seed, replay_chord_policy, draw_tables)?;
                 let job_frames_before = target.frames_clocked();
@@ -2559,7 +2604,7 @@ pub fn replay_smb_campaign_checkpointed(
                     chord_tables.as_ref(),
                     &required_chord_versions,
                     &mut chord_versions,
-                );
+                )?;
                 verify_selector_annotation(&job.selector)?;
                 core.archive.record_selection(parent_index, &job.selector);
                 core.archive.record_selection_outcome(
