@@ -9848,3 +9848,13 @@ attributed to the vocabulary bug (no leftward jump).
 The recorded testW side A run (50,000 executions) replays byte-exact under
 the dependency-free binary: replay_verified true, stream 35b07136…, archive
 ef86acb7…, report 6e9c6521… — all identical to the pre-removal verification.
+
+## Test P rerun result: crossed at 25,452 (2026-08-24)
+
+The corrected-vocabulary rerun (seed 0x5eed_0904, defaults + nes_down_ten)
+crossed beyond (3,1) at execution 25,452, retaining 14,392 entries in (3,2)
+by budget end (deepest progress 20). Stream 7732c5af…. The same origin
+stalled at 50,000 executions on both prior sides under down_ten_mask, so the
+crossing is attributed to the vocabulary fix; the exit taken was the level's
+own exit rather than the warp pipe. Replay registered; believed when
+byte-exact.
