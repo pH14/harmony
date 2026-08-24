@@ -9795,3 +9795,27 @@ from a tree whose frontier sits near the level exit) and single-seed, so
 magnitudes are unreliable; directions were consistent across three restarts.
 Nothing built encodes a level: thresholds are measured search statistics and
 the feedback tables fold from whatever source filter a run registers.
+
+## Pipe-screen wall diagnosed: button-bit-order bug (2026-08-24)
+
+Visual inspection of the (3,1) frontier (progress 208) shows the stuck screen
+is the warp room whose only exit is entering the pipe downward. Probing it
+exposed the real wall: DOWN_TEN_BUTTON_MASKS uses the SMB-disassembly
+controller bit order (A=0x80, B=0x40, Left=0x02, Right=0x01) but TetaNES's
+JoypadBtnState uses the reverse (A=0x01, B=0x02, Left=0x40, Right=0x80), and
+apply() feeds the mask through raw. The chords the vocabulary comment calls
+Right/Left/B/A/A+Left/A+Left+Right actually press A/B/Left/Right/Right+B/
+Right+A+B. Consequences: three of ten chords move right and one moves left;
+no single chord jumps leftward.
+
+Proof both ways: with corrected bits a scripted walk-left, up-left jump onto
+the pipe, and down-press warps to the next world (screenshot on record); under
+the shipped vocabulary 174 scripted attempts using only expressible chords
+never mounted the pipe. The searcher cleared four worlds regardless because
+the game scrolls rightward.
+
+Fix path: the button vocabulary must become a recorded per-run policy before
+it can change — replay re-derives suffixes from seeds through the compiled
+mask table, so silently editing the table would break every existing
+recording. Correct vocabulary under a new identifier, keep the old table
+bound to the old identifier, re-run the head-to-head on the stuck screen.
