@@ -9682,3 +9682,16 @@ Registered next: relaunch W2 side B as
 `chord_draw_recorded_51:1,1,0,0,128,3,1,64,1024`, same seed 0x5eed_0903, same
 origin, 4 workers, 50k budget. Expectation: throughput within ~2x of side A
 (was ~9x slower under the full-JSON rule).
+
+## W2 side A result; incremental hash verified in service (2026-08-24)
+
+Side A (promoted defaults, uniform chords) finished 50,000 executions and
+first reached the (1,2) key at execution 526 (18,998 (1,2) entries retained).
+Third fresh-seed crossing under two orders of magnitude versus the recorded
+run-4 stall (~695k executions without crossing).
+
+Side B relaunched under `chord_draw_recorded_51` runs at 40.3 exec/s over its
+first 119 s (2.5 exec/s under the full-JSON rule — a 16x improvement) and its
+header records hash_rule IncrementalHistory with the same registered fold
+parameters. It crossed into (1,2) within its first 4,799 executions; the exact
+crossing execution is scored from the final report.
