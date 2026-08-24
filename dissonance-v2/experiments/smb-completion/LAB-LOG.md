@@ -9858,3 +9858,17 @@ stalled at 50,000 executions on both prior sides under down_ten_mask, so the
 crossing is attributed to the vocabulary fix; the exit taken was the level's
 own exit rather than the warp pipe. Replay registered; believed when
 byte-exact.
+
+## Test P rerun replay verified; corrected closing verdict (2026-08-24)
+
+replay_verified true: stream 7732c5af…, archive 882650be…, 50,000 executions.
+The crossing at execution 25,452 is believed.
+
+The closing-summary verdict on the pipe screen is amended: the stall was a
+harness defect (controller bit order), not a search-machinery gap. With the
+vocabulary corrected the same origin, budget, and defaults cross where two
+prior runs stalled. Both measured stalls are now broken; each fell to a
+different cause — accumulated selector state (water) and an inexpressible
+action (pipe screen). Standing follow-ups: whether energy prevents ruts
+within one long run, and whether the two-band hold-duration draw hides other
+inexpressible maneuvers (a 13-to-95-frame hold cannot be drawn as one chord).
