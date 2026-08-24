@@ -3106,7 +3106,11 @@ mod tests {
         .expect("seed campaign");
         let source = seed_campaign.archive.clone();
         let source_sha = "0000000000000000000000000000000000000000000000000000000000000000";
-        let tree_config = genesis_config(0x5eed_ca06, 3, 16);
+        // The re-emulated and checkpoint-restored campaigns below are two
+        // independent live runs whose archives are compared for equality;
+        // multi-worker draws are schedule-dependent, so one worker keeps
+        // the comparison sound.
+        let tree_config = genesis_config(0x5eed_ca06, 1, 16);
         let mut tree_stream = Vec::new();
         let tree_live = run_smb_campaign(
             &rom,
