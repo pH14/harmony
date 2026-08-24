@@ -18,11 +18,14 @@ use crate::{
 };
 
 /// Compiled ceiling on archive entries. A ceiling is not an allocation:
-/// memory tracks actual retention (about 20 KB per entry with its snapshot),
-/// and a whole-tree resume inherits the source population in full, so the
-/// ceiling stays far above any run's retention. Campaign runs register their
-/// own per-run bound at or below this.
-pub const MAX_ARCHIVE_ENTRIES: usize = 1_048_576;
+/// memory tracks actual retention (roughly 10–20 KB per entry with its
+/// snapshot), and a whole-tree resume inherits the source population in
+/// full. At the ceiling the archive rejects every admission, freezing the
+/// search, so the ceiling must exceed a full campaign's retention — a
+/// genesis-to-victory run retains a few entries per ten executions across
+/// millions of executions. Campaign runs register their own per-run bound
+/// at or below this.
+pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
 const MAX_ENTRIES_PER_KEY: usize = 2;
 const FRONTIER_PROGRESS_BAND: u16 = 8;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;

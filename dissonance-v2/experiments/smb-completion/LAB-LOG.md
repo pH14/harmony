@@ -9271,3 +9271,48 @@ the operating mode at every one of its 174,969 frames.
   `0x5eed_0824`, output `results/run3`; header records key policy
   `frozen_area_span_screen_x_16` and the full fixed-rule set otherwise
   unchanged.
+
+### Run 3 result — budget argument exhausted at 1,500,000 in the 4-2 warp room
+
+- Seed `0x5eed_0824`, commit `47f51b13`, host msr1, 12 workers, key policy
+  `frozen_area_span_screen_x_16`. The process stopped at its 1,500,000
+  budget argument. Stream: 1,529,985 lines, SHA-256
+  `46ecd356e49b7ca5f42c62b2b277f37585690a5c11d1ef25f019c6606d9520aa`.
+  Final whole-tree checkpoint at exactly 1,500,000 with 1,019,014 retained.
+- First entry per level: 1-2 at 13,564; 1-3 at 52,186; 1-4 at 89,004; 2-1
+  at 94,815; 2-2 at 167,267; 2-3 at 692,244; 2-4 at 733,942; 3-1 at
+  761,833; 3-2 at 914,015; 3-3 at 982,689; 3-4 at 1,041,865; 4-1 at
+  1,105,678; 4-2 at 1,160,865.
+- The full-width term held in the field: 1-3's flag corridor cost ~37k
+  against run 2's ~98k, and no level showed a corridor-shaped pause
+  through worlds 1–4. The two dominant costs were 2-2 water (~525k, a
+  seed-variance tail with progress advancing throughout) and the 4-2
+  warp room, uncrossed after ~339k. The warp-room coverage grew the
+  whole time — 535 cells over eleven x buckets at the 1,375,000
+  checkpoint, left-half buckets minting — but under whole-archive
+  selection the corridor received a small selection share, against a
+  crossing the isolated test bought in 17.8k under full concentration.
+- The run-ending defect is general: retention reached 1,019,014 of the
+  1,048,576 compiled archive ceiling (~0.65 entries per execution). At
+  the ceiling the archive rejects every admission and the search
+  freezes. A continuation would freeze within ~45k executions, and
+  worlds 5–8 need millions of further entries. Extrapolating both runs,
+  a full game needs roughly 3M entries; the ceiling binds mid-game in
+  every possible run of this binary.
+- Change: `MAX_ARCHIVE_ENTRIES` raised 1,048,576 → 4,194,304 (2^22).
+  Memory bound: ~10–20 KB per retained entry; 3M entries fits the
+  54 GB launch host. The integrator holds the admission-economy
+  question (what to evict, and when) open for a future rule; the raise
+  is the minimal general change that unblocks a full-game run.
+
+## Run 4 registration — one attempt from genesis
+
+- Source commit: the archive-ceiling commit after `bcd8c1ba`, seed
+  `0x5eed_0825`, 12 workers, execution budget 100,000,000 (registered as
+  effectively unbounded; the integrator ruled the 1.5M figure a floor
+  for wall claims, never a stop), action limit 8,192, entry limit
+  4,194,304, uniform chords, host msr1, output `results/run4`, no wall
+  budget. All other fixed rules as in run 3.
+- Stop rule: the victory event ends the run and writes the winning
+  input; otherwise the run continues until stopped for a measured
+  defect that a level cannot be completed without correcting.
