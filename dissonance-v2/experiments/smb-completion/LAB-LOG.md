@@ -9759,3 +9759,39 @@ Both W2 numbers are believed: side B (feedback chord draw) first (1,2) entry
 at execution 420 and deepest progress 206 versus side A (uniform) at 526 and
 171. W2 is closed with the feedback draw ahead on both measures at full
 throughput.
+
+## Goal closing summary (2026-08-24)
+
+Both registered changes are the defaults. Retention `admit_alive` replaced the
+admission probe; the energy selector (`retire:3,6,12,2`, thresholds = per-class
+99th-percentile picks-before-first-keeper measured on runs 3 and 4) replaced
+the plain selector. Vocabulary ruling: the mechanism is named energy; code
+rename tracked separately.
+
+Water stall: broken, with attribution. Every fresh-seed restart from the run-4
+tree crossed into (1,2) quickly — old rules at 98, new defaults at 345/526,
+feedback draw at 420 — against ~695k stalled executions live. The stall lived
+in the run's accumulated selector state, and the probe was innocent there.
+Restart dissolves it; whether the energy machinery prevents the rut within one
+long run is untested here and is the follow-up that matters.
+
+Pipe-screen stall: not broken. Head-to-head P was a tie at no-finish (50k
+each, max (3,1) progress 208 both sides). The energy selector concentrated
+2.01x on the stuck band (1.91x predicted) and found 2.7x new cells, so the
+mechanism works; the wall needs different machinery.
+
+Feedback chord draw: W2 win on one seed, both measures (420 vs 526; depth 206
+vs 171; 1.35x (1,2) entries), byte-exact verified both sides.
+
+Implementation results folded in along the way: incremental table hash
+(chord_draw_recorded_51, 16x throughput), lightweight replay table versions
+(replay OOM fixed), LibAFL dependency removed (in-house RomuDuoJr, pinned
+draws, old recordings verified), two schedule-dependent tests fixed (issue
+#190), stale-binary protocol (build before run; read policies from the run's
+own header).
+
+Caveats on the record: all water numbers are doorstep-relative (runs resume
+from a tree whose frontier sits near the level exit) and single-seed, so
+magnitudes are unreliable; directions were consistent across three restarts.
+Nothing built encodes a level: thresholds are measured search statistics and
+the feedback tables fold from whatever source filter a run registers.
