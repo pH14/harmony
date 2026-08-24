@@ -2,10 +2,18 @@
 
 //! Generic deterministic target interface shared by search workloads.
 
-use std::fmt::Debug;
+use std::{error::Error, fmt::Debug};
 
-use libafl::{Error, executors::ExitKind};
 use serde::{Serialize, de::DeserializeOwned};
+
+/// Outcome class of the actions applied since the last reset or restore.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExitKind {
+    /// The target is still executing normally.
+    Ok,
+    /// The target failed and its further observations are meaningless.
+    Crash,
+}
 
 /// The target seam required by deterministic search workloads.
 pub trait Target {
@@ -33,10 +41,8 @@ pub trait Target {
     }
 
     /// Restore a snapshot when supported.
-    fn restore(&mut self, _snapshot: &Self::Snapshot) -> Result<(), Error> {
-        Err(Error::not_implemented(
-            "target uses deterministic replay instead of snapshots",
-        ))
+    fn restore(&mut self, _snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
+        Err("target uses deterministic replay instead of snapshots".into())
     }
 }
 

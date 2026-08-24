@@ -19,8 +19,8 @@ use std::{
     time::Duration,
 };
 
-use libafl::executors::ExitKind;
-use libafl_bolts::rands::{Rand, StdRand};
+use crate::search::rand::RomuDuoJrRand;
+use crate::target::ExitKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -544,7 +544,7 @@ pub fn derive_suffix(
     chord_policy: SmbCampaignChordPolicy,
     chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-    let mut rand = StdRand::with_seed(mutation_seed);
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
     let suffix_len = if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
         2
     } else {
@@ -2122,7 +2122,7 @@ pub fn run_smb_campaign_checkpointed(
     let workers = config.workers as usize;
     let mut rands = Vec::with_capacity(workers);
     for index in 0..config.workers {
-        rands.push(StdRand::with_seed(derive_worker_seed(
+        rands.push(RomuDuoJrRand::with_seed(derive_worker_seed(
             config.campaign_seed,
             index,
         )?));
@@ -2170,7 +2170,7 @@ pub fn run_smb_campaign_checkpointed(
         |pool| -> Result<(), Box<dyn Error>> {
             // Select one job for one worker, recording skips, or report exhaustion.
             let select = |core: &mut CoordinatorCore,
-                          rands: &mut [StdRand],
+                          rands: &mut [RomuDuoJrRand],
                           chord_tables: &mut Option<EmpiricalStepTables<ButtonChord>>,
                           writer: &mut StreamWriter<'_>,
                           counters: &mut CampaignCounters,
@@ -2190,7 +2190,7 @@ pub fn run_smb_campaign_checkpointed(
                 let mut consecutive_skips = 0_u64;
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
-                    let mutation_seed = rand.next();
+                    let mutation_seed = rand.next_u64();
                     let chord_table_before = current_chord_checkpoint(chord_tables.as_ref())?;
                     let suffix = derive_suffix(
                         mutation_seed,

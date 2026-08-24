@@ -4,7 +4,7 @@
 
 use std::{cmp::Reverse, collections::BTreeMap, error::Error, num::NonZeroUsize};
 
-use libafl_bolts::rands::{Rand, StdRand};
+use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -885,7 +885,7 @@ impl Archive {
     /// the exhaustion counters reset once and the draw repeats.
     pub(crate) fn select_parent(
         &mut self,
-        rand: &mut StdRand,
+        rand: &mut RomuDuoJrRand,
         max_actions: usize,
     ) -> Result<(usize, SmbSelectorDraw), Box<dyn Error>> {
         let active = self.active_ids(max_actions);
@@ -969,7 +969,7 @@ impl Archive {
     /// every active entry is exhausted.
     fn room_band_uniform_class(
         &self,
-        rand: &mut StdRand,
+        rand: &mut RomuDuoJrRand,
         active: &[usize],
         classes_skipped: &mut u64,
         ignore_streaks: bool,
@@ -1012,7 +1012,7 @@ impl Archive {
     /// `members` must hold at least one unexhausted entry.
     fn cell_uniform_class(
         &self,
-        rand: &mut StdRand,
+        rand: &mut RomuDuoJrRand,
         members: &[usize],
         ignore_streaks: bool,
     ) -> Result<Vec<usize>, Box<dyn Error>> {
@@ -1046,7 +1046,7 @@ impl Archive {
     /// members exist, or immediately when it exhausts.
     fn draw_from_class(
         &mut self,
-        rand: &mut StdRand,
+        rand: &mut RomuDuoJrRand,
         mut class: Vec<usize>,
     ) -> Result<(usize, SmbConcentrationDraw), Box<dyn Error>> {
         class.sort_unstable();
@@ -1285,7 +1285,7 @@ pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
 /// Draw one chord: a uniform mask and a hold from one of two strata, short
 /// (2..=12 frames) for control and long (96..=120 frames) for time.
 pub(crate) fn sample_chord_from_masks(
-    rand: &mut StdRand,
+    rand: &mut RomuDuoJrRand,
     masks: &[u8],
 ) -> Result<ButtonChord, Box<dyn Error>> {
     let buttons =
@@ -1365,11 +1365,11 @@ mod tests {
         SELECTION_EXHAUSTION_THRESHOLD, SmbArchiveKey, SmbProgressWatermark, SmbSelectorDraw,
         SmbSelectorPath, merge_progress_watermark,
     };
+    use crate::search::rand::RomuDuoJrRand;
     use crate::{
         smb::target::{ButtonChord, SmbInput, SmbObservations, SmbSnapshot, SmbTarget},
         target::Target,
     };
-    use libafl_bolts::rands::StdRand;
 
     fn synthetic_nrom() -> Vec<u8> {
         let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
@@ -1468,7 +1468,7 @@ mod tests {
                 _ => 4,
             };
         }
-        let mut rand = StdRand::with_seed(0xce11_0000);
+        let mut rand = RomuDuoJrRand::with_seed(0xce11_0000);
         let mut per_cell = std::collections::BTreeMap::<(u16, u8), u64>::new();
         let mut cell_draws = 0_u64;
         for _ in 0..900 {
@@ -1582,7 +1582,7 @@ mod tests {
             concentration: None,
         };
         archive.record_selection(0, &barren_draw);
-        let mut rand = StdRand::with_seed(0x5eed_5e30);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e30);
         let mut fell_through = 0;
         for _ in 0..64 {
             let (id, draw) = archive
@@ -1642,7 +1642,7 @@ mod tests {
             concentration: None,
         };
         archive.record_selection(0, &barren_draw);
-        let mut rand = StdRand::with_seed(0x5eed_5e31);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e31);
         let mut reset_seen = false;
         for _ in 0..64 {
             let (_, draw) = archive
@@ -1672,7 +1672,7 @@ mod tests {
         for _ in 0..SELECTION_EXHAUSTION_THRESHOLD {
             archive.record_selection(0, &exhausting_draw);
         }
-        let mut rand = StdRand::with_seed(0x5eed_5e1f);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e1f);
         let mut fell_through = 0;
         for _ in 0..64 {
             let (id, draw) = archive
@@ -1710,7 +1710,7 @@ mod tests {
                 archive.record_selection(id, &exhausting_draw);
             }
         }
-        let mut rand = StdRand::with_seed(0x5eed_5e20);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e20);
         let mut reset_seen = false;
         for _ in 0..256 {
             let (id, draw) = archive
@@ -1740,7 +1740,7 @@ mod tests {
         for entry in &mut archive.entries {
             entry.report.key.player_y_bucket = 0;
         }
-        let mut rand = StdRand::with_seed(0x5eed_5e21);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e21);
         let mut cell_draws = 0;
         for _ in 0..256 {
             let (id, draw) = archive
@@ -1785,7 +1785,7 @@ mod tests {
                 archive.record_selection(id, &exhausting_draw);
             }
         }
-        let mut rand = StdRand::with_seed(0x5eed_5e22);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e22);
         let mut slid = false;
         for _ in 0..64 {
             let (id, draw) = archive

@@ -4,3 +4,4 @@
 
 pub mod empirical_steps;
 pub mod parallel;
+pub mod rand;

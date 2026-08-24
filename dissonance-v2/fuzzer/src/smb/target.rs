@@ -4,7 +4,7 @@
 
 use std::{error::Error, io::Cursor};
 
-use libafl::{Error as LibAflError, executors::ExitKind};
+use crate::target::ExitKind;
 use serde::{Deserialize, Serialize};
 use tetanes_core::{
     control_deck::{Config, ControlDeck, HeadlessMode},
@@ -441,10 +441,10 @@ impl Target for SmbTarget {
         })
     }
 
-    fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), LibAflError> {
+    fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
         self.deck
             .load_state(Cursor::new(&snapshot.emulator_state))
-            .map_err(|error| LibAflError::illegal_state(error.to_string()))?;
+            .map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.dead = snapshot.dead;

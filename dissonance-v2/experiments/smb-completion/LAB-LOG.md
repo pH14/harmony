@@ -9729,3 +9729,19 @@ This matches the registration (the stream-simulated counter state matched the
 live report), closing the earlier divergence as a stale-binary artifact. The
 test P result stands: tie at no-finish, with the recorded concentration and
 coverage differences unchanged.
+
+## LibAFL dependency removed (2026-08-24)
+
+Ruling: delete the dependency now rather than file a follow-up. The crate used
+three items: the RomuDuoJr generator, ExitKind, and the error type. The
+generator is now in-house (search/rand.rs) with splitmix64 seeding and the
+multiply-shift bounded draw; a unit test pins it to four 64-bit draws and four
+bounded draws captured from libafl_bolts 0.15.4 before removal. ExitKind
+{Ok, Crash} and a boxed error live in target.rs. libafl and libafl_bolts are
+gone from Cargo.toml.
+
+Determinism proof: the defaults-smoke recording (made before the removal)
+replays byte-exact under the new binary — replay_verified true, stream
+880cc9fe…. Gates green (fmt, clippy -D warnings, nextest 43/43, deny). A
+full-scale replay of the recorded testW side A run under the new binary is
+registered as belt-and-braces; expected to verify.
