@@ -844,7 +844,10 @@ impl Archive {
             .collect()
     }
 
-    fn selector_unexhausted(&self, id: usize) -> bool {
+    fn selector_unexhausted(&self, id: usize, ignore_streaks: bool) -> bool {
+        if ignore_streaks {
+            return true;
+        }
         if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
             return false;
         }
@@ -905,8 +908,10 @@ impl Archive {
         let mut counter_reset = false;
         let mut classes_skipped = 0_u64;
         loop {
-            if let Some(band) = self.room_band_uniform_class(rand, &active, &mut classes_skipped)? {
-                let class = self.cell_uniform_class(rand, &band)?;
+            if let Some(band) =
+                self.room_band_uniform_class(rand, &active, &mut classes_skipped, counter_reset)?
+            {
+                let class = self.cell_uniform_class(rand, &band, counter_reset)?;
                 let (id, concentration) = self.draw_from_class(rand, class)?;
                 return Ok((
                     id,
@@ -921,22 +926,23 @@ impl Archive {
             if counter_reset {
                 return Err("selection counter reset freed no entry".into());
             }
-            for counter in &mut self.since_retained {
-                *counter = 0;
-            }
-            // Retirement is soft: the deterministic all-exhausted reset also
-            // clears the pooled barren counters, so the search can never
-            // seal itself out.
-            self.cell_barren.clear();
-            self.band_barren.clear();
-            self.room_barren.clear();
+            // The reset draw selects as if every streak counter were zero;
+            // the durable clear happens when the reset-marked record is
+            // applied, so counter state stays a pure function of the record
+            // stream and live jobs still in flight at shutdown cannot leave
+            // state replay never sees.
             counter_reset = true;
         }
     }
 
     /// The unexhausted members of every fixed-width progress band of
     /// `members`, deepest band first; exhausted bands are counted as skipped.
-    fn unexhausted_bands(&self, members: &[usize], classes_skipped: &mut u64) -> Vec<Vec<usize>> {
+    fn unexhausted_bands(
+        &self,
+        members: &[usize],
+        classes_skipped: &mut u64,
+        ignore_streaks: bool,
+    ) -> Vec<Vec<usize>> {
         let mut bands = BTreeMap::<Reverse<u16>, Vec<usize>>::new();
         for id in members {
             let band = self.entries[*id].report.key.progress / FRONTIER_PROGRESS_BAND;
@@ -946,7 +952,7 @@ impl Archive {
         for (_, band) in bands {
             let unexhausted = band
                 .into_iter()
-                .filter(|id| self.selector_unexhausted(*id))
+                .filter(|id| self.selector_unexhausted(*id, ignore_streaks))
                 .collect::<Vec<_>>();
             if unexhausted.is_empty() {
                 *classes_skipped = classes_skipped.saturating_add(1);
@@ -966,6 +972,7 @@ impl Archive {
         rand: &mut StdRand,
         active: &[usize],
         classes_skipped: &mut u64,
+        ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         let mut pairs = BTreeMap::<(u8, u8), BTreeMap<SmbRoomIdentity, Vec<usize>>>::new();
         for id in active {
@@ -981,7 +988,7 @@ impl Archive {
             let mut live = Vec::new();
             for (_, members) in rooms {
                 let mut skipped = 0_u64;
-                let bands = self.unexhausted_bands(&members, &mut skipped);
+                let bands = self.unexhausted_bands(&members, &mut skipped, ignore_streaks);
                 if bands.is_empty() {
                     *classes_skipped = classes_skipped.saturating_add(skipped);
                 } else {
@@ -1007,10 +1014,11 @@ impl Archive {
         &self,
         rand: &mut StdRand,
         members: &[usize],
+        ignore_streaks: bool,
     ) -> Result<Vec<usize>, Box<dyn Error>> {
         let mut cells = BTreeMap::<(u16, u8, u8, u8), Vec<usize>>::new();
         for id in members {
-            if !self.selector_unexhausted(*id) {
+            if !self.selector_unexhausted(*id, ignore_streaks) {
                 continue;
             }
             let key = self.entries[*id].report.key;
@@ -1062,12 +1070,12 @@ impl Archive {
 
     /// Account one recorded selection of `id`.
     pub(crate) fn record_selection(&mut self, id: usize, draw: &SmbSelectorDraw) {
-        // The all-exhausted reset fires at selection time, which replay
-        // never runs, so under the retiring selector the reset is applied
-        // again here, in stream order, where live and replay walk the same
-        // records; the counter state at every stream position is then
-        // identical in both.
-        if draw.counter_reset && matches!(self.selector_policy, SmbSelectorPolicy::Retire(_)) {
+        // The reset-marked draw is the only place streak counters clear.
+        // Applying it here, in stream order, keeps counter state a pure
+        // function of the record stream, so live and replay agree at every
+        // stream position. Retirement is soft: the reset also clears the
+        // pooled barren counters, so the search can never seal itself out.
+        if draw.counter_reset {
             for counter in &mut self.since_retained {
                 *counter = 0;
             }

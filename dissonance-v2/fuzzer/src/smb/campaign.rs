@@ -3303,9 +3303,9 @@ mod tests {
     #[test]
     fn the_progress_sidecar_changes_no_recorded_bytes() {
         let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca0e, 2, 24);
+        let config = genesis_config(0x5eed_ca0e, 1, 24);
         let mut without = Vec::new();
-        let plain = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut without)
+        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut without)
             .expect("campaign without a sidecar");
         let mut with = Vec::new();
         let mut sidecar = Vec::new();
@@ -3317,10 +3317,9 @@ mod tests {
             Some(&mut sidecar),
         )
         .expect("campaign with a sidecar");
-        // A live campaign's schedule is not derivable from its seed, so the two
-        // runs may differ; what must not differ is that each replays exactly and
-        // that the sidecar adds nothing to either recorded artifact.
-        assert_eq!(plain.archive.entries.len(), observed.archive.entries.len());
+        // With one worker the schedule is derivable from the seed, so the
+        // sidecar run must record byte-identical stream bytes.
+        assert_eq!(without, with);
         assert!(!with.is_empty());
         assert!(
             std::str::from_utf8(&with)

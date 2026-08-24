@@ -9521,3 +9521,38 @@ the operating mode at every one of its 174,969 frames.
   executions.
 - Replay of the winner registered next; the win is believed only if
   side A's stream replays byte-for-byte.
+
+## Replay divergence found at scale and the selection-time mutation fix
+
+- The 50,000-execution replay of head-to-head P side B diverged from its
+  live run: every entry, decision, and stream-derived counter matched
+  (resets 14, skips 282,690), and only the report's end-state retirement
+  block differed (live 0/0/0/5 over threshold vs replay 159/43/2/2).
+  Cause: the all-exhausted reset cleared the streak counters durably at
+  selection time, and a reset-marked selection whose job was still in
+  flight when the budget ended never reaches the recorded stream, so the
+  live end state carries a clear replay cannot see.
+- Fix: selection is now read-only on streak state. A reset-marked draw
+  selects as if every streak counter were zero, and the durable clear
+  happens only when the reset-marked record is applied, in stream order,
+  for every policy. Counter state is then a pure function of the record
+  stream. The small-budget tests could not catch this; it needs jobs in
+  flight at shutdown.
+- The same suite loop surfaced a second unsound test,
+  `the_progress_sidecar_changes_no_recorded_bytes`, which compared entry
+  counts of two independent 2-worker live runs; it now runs one worker
+  and asserts byte-identical streams, which is stronger.
+- Gates green with the suite run six times consecutively; the standing
+  1-worker reference reproduces stream `d0ca9f22…` and archive
+  `b3787b5e…` byte-identical on the fixed build, so the compiled path is
+  unchanged. Head-to-head P side B is re-registered below on the fixed
+  build; the W winner's replay (side A, compiled rules) continues under
+  the binary that recorded it.
+
+### Head-to-head P side B rerun, registered before running
+
+- Same origin (`083902b8…` / `70e1ed7b…`), same seed `0x5eed_0901`,
+  4 workers, 50,000 executions, action limit 8,192,
+  `admit_alive` + `room_cell_uniform_128_retire:3,6,12,2`, on the fixed
+  build. Score line unchanged: first retained entry with key world 4.
+  The run is believed only after byte-exact replay.
