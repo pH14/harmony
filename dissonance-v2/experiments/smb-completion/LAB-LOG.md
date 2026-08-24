@@ -9750,3 +9750,12 @@ registered as belt-and-braces; expected to verify.
 
 replay_verified true: stream da5ec46e…, archive 3c2d234c…, 50,000 executions.
 The side A number (first (1,2) entry at execution 526) is believed.
+
+## W2 side B replay verified; W2 closed (2026-08-24)
+
+replay_verified true: stream 6ff169e8…, archive ae450f1d…, 50,000 executions,
+replayed under the incremental-hash binary with lightweight table versions.
+Both W2 numbers are believed: side B (feedback chord draw) first (1,2) entry
+at execution 420 and deepest progress 206 versus side A (uniform) at 526 and
+171. W2 is closed with the feedback draw ahead on both measures at full
+throughput.
