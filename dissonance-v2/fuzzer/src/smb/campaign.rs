@@ -154,6 +154,8 @@ pub struct SmbCampaignConfig {
     pub archive_entry_limit: usize,
     /// Chord policy for this run, recorded in the header and report.
     pub chord: SmbCampaignChordPolicy,
+    /// Controller vocabulary for this run, recorded in the header and report.
+    pub vocabulary: SmbButtonVocabulary,
     /// Admission rule for this run, recorded in the header and report.
     pub retention: SmbRetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
@@ -428,9 +430,52 @@ pub const SUFFIX_IDENTIFIER: &str = "one_or_two";
 /// [`crate::smb::archive::sample_chord_from_masks`].
 pub const DURATION_IDENTIFIER: &str = "stratified";
 
-/// Identifier recorded for the controller vocabulary, see
-/// [`DOWN_TEN_BUTTON_MASKS`].
-pub const VOCABULARY_IDENTIFIER: &str = "down_ten_mask";
+/// Controller vocabulary a campaign draws button masks from, recorded in
+/// the stream header per run.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SmbButtonVocabulary {
+    /// Masks written in the SMB-disassembly bit order the emulator reads
+    /// reversed; kept so its recordings replay byte-exact.
+    DownTenMask,
+    /// The intended chord set in the emulator's bit order.
+    #[default]
+    NesDownTen,
+}
+
+impl SmbButtonVocabulary {
+    /// Button masks this vocabulary draws from.
+    #[must_use]
+    pub fn masks(self) -> &'static [u8; 10] {
+        match self {
+            Self::DownTenMask => &DOWN_TEN_BUTTON_MASKS,
+            Self::NesDownTen => &crate::smb::archive::NES_DOWN_TEN_BUTTON_MASKS,
+        }
+    }
+}
+
+/// Header identifier for a controller vocabulary.
+#[must_use]
+pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static str {
+    match vocabulary {
+        SmbButtonVocabulary::DownTenMask => "down_ten_mask",
+        SmbButtonVocabulary::NesDownTen => "nes_down_ten",
+    }
+}
+
+/// Controller vocabulary named by a recorded header identifier.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no known vocabulary.
+pub fn button_vocabulary_from_identifier(
+    identifier: &str,
+) -> Result<SmbButtonVocabulary, Box<dyn Error>> {
+    match identifier {
+        "down_ten_mask" => Ok(SmbButtonVocabulary::DownTenMask),
+        "nes_down_ten" => Ok(SmbButtonVocabulary::NesDownTen),
+        _ => Err("campaign stream controller vocabulary is not recognized".into()),
+    }
+}
 
 /// A source archive's frontier identity: the shortest input among the entries
 /// at the deepest recorded `(world, level, progress)`, earliest id on ties.
@@ -485,11 +530,6 @@ fn verify_fixed_rules(
             DURATION_IDENTIFIER,
             "duration policy",
         ),
-        (
-            header.controller_vocabulary.as_str(),
-            VOCABULARY_IDENTIFIER,
-            "controller vocabulary",
-        ),
     ];
     for (recorded, compiled, name) in expected {
         if recorded != compiled {
@@ -542,6 +582,7 @@ fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, Box<
 pub fn derive_suffix(
     mutation_seed: u64,
     chord_policy: SmbCampaignChordPolicy,
+    vocabulary: SmbButtonVocabulary,
     chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
@@ -580,7 +621,7 @@ pub fn derive_suffix(
         }
         suffix.push(crate::smb::archive::sample_chord_from_masks(
             &mut rand,
-            &DOWN_TEN_BUTTON_MASKS,
+            vocabulary.masks(),
         )?);
     }
     Ok(suffix)
@@ -1805,7 +1846,7 @@ fn stream_header(
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
-        controller_vocabulary: VOCABULARY_IDENTIFIER.to_owned(),
+        controller_vocabulary: button_vocabulary_identifier(config.vocabulary).to_owned(),
         key_policy: KEY_POLICY_IDENTIFIER.to_owned(),
         duration_policy: DURATION_IDENTIFIER.to_owned(),
         suffix_policy: SUFFIX_IDENTIFIER.to_owned(),
@@ -2195,6 +2236,7 @@ pub fn run_smb_campaign_checkpointed(
                     let suffix = derive_suffix(
                         mutation_seed,
                         config.chord,
+                        config.vocabulary,
                         chord_tables.as_ref().map(EmpiricalStepTables::view),
                     )?;
                     if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
@@ -2456,6 +2498,7 @@ pub fn replay_smb_campaign_checkpointed(
 
     let (replay_retention, replay_selector) = verify_fixed_rules(&header)?;
     let replay_chord_policy = chord_policy_from_identifier(&header.chord_policy)?;
+    let replay_vocabulary = button_vocabulary_from_identifier(&header.controller_vocabulary)?;
     let chord_origin = match origin_report {
         Some(report) => SmbCampaignOrigin::Archive {
             path: header.origin_path.clone().unwrap_or_default(),
@@ -2503,7 +2546,12 @@ pub fn replay_smb_campaign_checkpointed(
                     &chord_versions,
                     chord_tables.as_ref(),
                 )?;
-                let suffix = derive_suffix(skip.mutation_seed, replay_chord_policy, draw_tables)?;
+                let suffix = derive_suffix(
+                    skip.mutation_seed,
+                    replay_chord_policy,
+                    replay_vocabulary,
+                    draw_tables,
+                )?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -2543,7 +2591,12 @@ pub fn replay_smb_campaign_checkpointed(
                     &chord_versions,
                     chord_tables.as_ref(),
                 )?;
-                let suffix = derive_suffix(job.mutation_seed, replay_chord_policy, draw_tables)?;
+                let suffix = derive_suffix(
+                    job.mutation_seed,
+                    replay_chord_policy,
+                    replay_vocabulary,
+                    draw_tables,
+                )?;
                 let job_frames_before = target.frames_clocked();
                 let result = execute_job(
                     &mut target,
@@ -2646,7 +2699,7 @@ pub fn replay_smb_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::{
-        CoordinatorCore, EmpiricalStepHashRule, SNAPSHOT_CHECKPOINT_FORMAT,
+        CoordinatorCore, EmpiricalStepHashRule, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary,
         SmbCampaignActionResult, SmbCampaignAdmissionDecision, SmbCampaignChordPolicy,
         SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord,
         SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, chord_policy_from_identifier,
@@ -2679,6 +2732,7 @@ mod tests {
         execution_budget: u64,
     ) -> SmbCampaignConfig {
         SmbCampaignConfig {
+            vocabulary: SmbButtonVocabulary::default(),
             campaign_seed,
             workers,
             execution_budget,
@@ -2709,10 +2763,20 @@ mod tests {
     #[test]
     fn suffix_derivation_is_pure_and_bounded() {
         for seed in [0_u64, 0x5eed_ca01, u64::MAX] {
-            let first =
-                derive_suffix(seed, SmbCampaignChordPolicy::Uniform, None).expect("derive suffix");
-            let second = derive_suffix(seed, SmbCampaignChordPolicy::Uniform, None)
-                .expect("derive suffix again");
+            let first = derive_suffix(
+                seed,
+                SmbCampaignChordPolicy::Uniform,
+                SmbButtonVocabulary::default(),
+                None,
+            )
+            .expect("derive suffix");
+            let second = derive_suffix(
+                seed,
+                SmbCampaignChordPolicy::Uniform,
+                SmbButtonVocabulary::default(),
+                None,
+            )
+            .expect("derive suffix again");
             assert_eq!(first, second);
             assert!((1..=2).contains(&first.len()));
             assert!(
@@ -2728,9 +2792,20 @@ mod tests {
     fn the_recorded_chord_draw_changes_the_suffix() {
         let differing = (0..64_u64)
             .filter(|seed| {
-                derive_suffix(*seed, SmbCampaignChordPolicy::Uniform, None).expect("uniform")
-                    != derive_suffix(*seed, SmbCampaignChordPolicy::RecordedHalf, None)
-                        .expect("recorded")
+                derive_suffix(
+                    *seed,
+                    SmbCampaignChordPolicy::Uniform,
+                    SmbButtonVocabulary::default(),
+                    None,
+                )
+                .expect("uniform")
+                    != derive_suffix(
+                        *seed,
+                        SmbCampaignChordPolicy::RecordedHalf,
+                        SmbButtonVocabulary::default(),
+                        None,
+                    )
+                    .expect("recorded")
             })
             .count();
         assert!(differing > 0, "no draw came from the recorded table");
@@ -2794,8 +2869,13 @@ mod tests {
         first.reset();
         first.apply(&ButtonChord::new(0x81, 12));
         let snapshot = first.snapshot().expect("snapshot prefix");
-        let suffix = derive_suffix(0x5eed_ca02, SmbCampaignChordPolicy::Uniform, None)
-            .expect("derive suffix");
+        let suffix = derive_suffix(
+            0x5eed_ca02,
+            SmbCampaignChordPolicy::Uniform,
+            SmbButtonVocabulary::default(),
+            None,
+        )
+        .expect("derive suffix");
         // Disturb the first instance so the job must depend on the snapshot alone.
         first.apply(&ButtonChord::new(0x02, 30));
         let policies = super::SmbJobPolicies {
@@ -2946,7 +3026,7 @@ mod tests {
             "probe_at_admission_45",
             "fewest_frames_in_level",
             "whole_tree",
-            "down_ten_mask",
+            "nes_down_ten",
             "frozen_area_span",
             "one_or_two",
             "stratified",
@@ -3115,7 +3195,7 @@ mod tests {
             ("probe_at_admission_45", "probe_at_admission_45_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
-            ("down_ten_mask", "frozen_nine_mask"),
+            ("nes_down_ten", "frozen_nine_mask"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(

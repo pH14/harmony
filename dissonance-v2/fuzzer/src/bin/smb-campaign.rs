@@ -11,9 +11,10 @@ use fuzzer::{
         selector_policy_from_identifier,
     },
     smb::campaign::{
-        SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport,
-        SmbCampaignOrigin, SmbSnapshotCheckpoint, chord_policy_from_identifier,
-        replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
+        SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig,
+        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
+        chord_policy_from_identifier, replay_smb_campaign_checkpointed,
+        run_smb_campaign_checkpointed,
     },
 };
 use serde::Serialize;
@@ -130,6 +131,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let rom = read_rom()?;
     let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
     let config = SmbCampaignConfig {
+        vocabulary: SmbButtonVocabulary::default(),
         campaign_seed,
         workers,
         execution_budget,

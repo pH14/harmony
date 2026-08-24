@@ -1276,11 +1276,19 @@ fn screen_x_bucket(wram: &[u8; 2_048]) -> u8 {
     u8::try_from(screen_x.min(255) / 16).unwrap_or(15)
 }
 
-/// The controller vocabulary: no button, Right, Left, B, A, A+Right,
-/// A+Left, A+Left+Right, Up, Down. Start and Select are excluded because
-/// either pauses or leaves the game.
+/// The original controller vocabulary. Its masks were written in the SMB
+/// disassembly's bit order, but the emulator reads the reverse order, so the
+/// chords it actually presses are: no button, A, B, Left, Right, A+Right,
+/// B+Right, A+B+Right, Up, Down — no leftward jump exists. It is kept only so
+/// recordings made under its identifier keep replaying byte-exact.
 pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x20];
+
+/// The controller vocabulary in the emulator's bit order: no button, Right,
+/// Left, B, A, A+Right, A+Left, A+Left+Right, Up, Down. Start and Select are
+/// excluded because either pauses or leaves the game.
+pub const NES_DOWN_TEN_BUTTON_MASKS: [u8; 10] =
+    [0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0xc1, 0x10, 0x20];
 
 /// Draw one chord: a uniform mask and a hold from one of two strata, short
 /// (2..=12 frames) for control and long (96..=120 frames) for time.

@@ -9819,3 +9819,17 @@ it can change — replay re-derives suffixes from seeds through the compiled
 mask table, so silently editing the table would break every existing
 recording. Correct vocabulary under a new identifier, keep the old table
 bound to the old identifier, re-run the head-to-head on the stuck screen.
+
+## Controller vocabulary is now a recorded per-run policy (2026-08-24)
+
+`controller_vocabulary` moves from the fixed-rule list to a per-run recorded
+policy. `down_ten_mask` keeps the historical table so old recordings replay
+byte-exact (defaults-smoke re-verified under the new binary). New default is
+`nes_down_ten`: the intended chord set — none, Right, Left, B, A, A+Right,
+A+Left, A+Left+Right, Up, Down — encoded in the emulator's bit order, which
+restores the leftward jump. Gates green (fmt, clippy -D warnings, nextest
+43/43, deny).
+
+Registered next, on request: re-run the stuck-screen head-to-head from the
+test P origin under the corrected vocabulary, same template (50k, 4 workers,
+fresh recorded seed), scored on first entry beyond the stuck pair.

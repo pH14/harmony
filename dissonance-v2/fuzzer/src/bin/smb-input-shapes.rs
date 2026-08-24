@@ -155,7 +155,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             .any(|d| matches!(d, SmbCampaignAdmissionDecision::Victory));
         if job.decisions.is_empty() && !victory {
             dead_jobs = dead_jobs.saturating_add(1);
-            let suffix = derive_suffix(job.mutation_seed, SmbCampaignChordPolicy::Uniform, None)?;
+            let suffix = derive_suffix(
+                job.mutation_seed,
+                SmbCampaignChordPolicy::Uniform,
+                fuzzer::smb::campaign::button_vocabulary_from_identifier(
+                    &header.controller_vocabulary,
+                )?,
+                None,
+            )?;
             if let Some(first) = suffix.first() {
                 dead_first_chords.record(*first);
             }
