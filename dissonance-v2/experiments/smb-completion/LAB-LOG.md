@@ -9584,3 +9584,28 @@ the operating mode at every one of its 174,969 frames.
 - Gates green; the standing reference reproduces stream `d0ca9f22…`
   and archive `b3787b5e…` byte-identical when run with the old
   policies named explicitly.
+
+## Head-to-head W2 — the feedback input draw on the water, registered before running
+
+- Ruling executed: the input draw gets a feedback edge, and the survey
+  found the mechanism already built — the folded chord policy
+  (`chord_draw_recorded_50:…`) folds keepers' presses into recent and
+  all-history tables during the run, draws the biased half from them,
+  keeps the uniform half as the floor, and verifies its tables against
+  recorded hashes at replay.
+- Registration: same origin as head-to-head W (`c856320d…` /
+  `c67f7066…`, 280,528 entries), fresh seed `0x5eed_0903`, 4 workers a
+  side, 50,000 executions, action limit 8,192, both sides on the
+  promoted defaults (`admit_alive`,
+  `room_cell_uniform_128_retire:3,6,12,2`). Side A draws chords
+  uniformly. Side B is `chord_draw_recorded_50:1,1,0,0,128,3,1,64,1024`:
+  fold the origin's pair (1, 1) keepers at any progress, no prefix skip
+  (the whole-tree origin has no single shared prefix), 128-success
+  recent window, recent weighted 3:1 over all-history, rebuild every
+  64 records, hash every 1,024. Window and mix are the values the
+  earlier water counterfactual measured; the cadences are declared
+  operator choices from the same precedent.
+- Score: executions completed at the first retained entry with key
+  (1, 2); the winner is believed only after byte-exact replay; both
+  streams kept. The input-shape sweep predicts the biased half should
+  cut the long-hold death waste; this run decides.
