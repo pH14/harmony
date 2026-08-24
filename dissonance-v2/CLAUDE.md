@@ -33,3 +33,7 @@ out.
   phase 5.
 - No LLM calls in unit tests. Model quality is measured in A/B campaigns,
   never in CI (see "Determinism and testing" in docs/LIBAFL-PLAN.md).
+- No disabled-by-default features. Per-run recorded switches exist to run
+  experiments; when an experiment concludes, the new behavior either
+  becomes the default or its switch is deleted. Never land a feature that
+  ships turned off.
