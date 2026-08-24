@@ -31,10 +31,12 @@ use crate::{
     search::parallel::with_worker_pool,
     smb::archive::{
         Archive, ArchiveCandidate, DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER,
-        REPLACEMENT_IDENTIFIER, RETENTION_IDENTIFIER, SELECTOR_IDENTIFIER, SmbArchiveKey,
-        SmbArchiveProgressPoint, SmbArchiveReport, SmbSelectorDraw, SmbSelectorPath,
+        REPLACEMENT_IDENTIFIER, SmbArchiveKey, SmbArchiveProgressPoint, SmbArchiveReport,
+        SmbRetentionPolicy, SmbSelectorDraw, SmbSelectorPath, SmbSelectorPolicy,
         admission_is_viable, archive_key, merge_action_milestones, merge_milestones,
-        merge_progress_watermark, milestone_key, update_first_inputs,
+        merge_progress_watermark, milestone_key, retention_policy_from_identifier,
+        retention_policy_identifier, selector_policy_from_identifier, selector_policy_identifier,
+        update_first_inputs,
     },
     smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
     target::Target,
@@ -151,6 +153,10 @@ pub struct SmbCampaignConfig {
     pub archive_entry_limit: usize,
     /// Chord policy for this run, recorded in the header and report.
     pub chord: SmbCampaignChordPolicy,
+    /// Admission rule for this run, recorded in the header and report.
+    pub retention: SmbRetentionPolicy,
+    /// Parent selector for this run, recorded in the header and report.
+    pub selector: SmbSelectorPolicy,
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<PathBuf>,
@@ -447,23 +453,16 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
         .ok_or_else(|| "source archive contains no frontier entries".into())
 }
 
-/// Reject a header whose fixed-rule identifiers differ from the compiled ones.
-fn verify_fixed_rules(header: &SmbCampaignStreamHeader) -> Result<(), Box<dyn Error>> {
+/// Reject a header whose fixed-rule identifiers differ from the compiled
+/// ones, and resolve its per-run retention and selector values.
+fn verify_fixed_rules(
+    header: &SmbCampaignStreamHeader,
+) -> Result<(SmbRetentionPolicy, SmbSelectorPolicy), Box<dyn Error>> {
     let expected = [
-        (
-            header.parent_scheduler.as_str(),
-            SELECTOR_IDENTIFIER,
-            "parent scheduler",
-        ),
         (
             header.key_policy.as_str(),
             KEY_POLICY_IDENTIFIER,
             "key policy",
-        ),
-        (
-            header.retention_policy.as_str(),
-            RETENTION_IDENTIFIER,
-            "retention policy",
         ),
         (
             header.replacement_policy.as_str(),
@@ -496,7 +495,10 @@ fn verify_fixed_rules(header: &SmbCampaignStreamHeader) -> Result<(), Box<dyn Er
             return Err(format!("campaign stream {name} is not recognized").into());
         }
     }
-    Ok(())
+    Ok((
+        retention_policy_from_identifier(&header.retention_policy)?,
+        selector_policy_from_identifier(&header.parent_scheduler)?,
+    ))
 }
 
 /// Reject a stream whose selector annotations disagree with the selector.
@@ -1080,6 +1082,7 @@ struct SmbCampaignJobResult {
 #[derive(Clone, Copy, Debug)]
 struct SmbJobPolicies {
     max_actions: usize,
+    retention: SmbRetentionPolicy,
 }
 
 fn execute_job(
@@ -1114,7 +1117,10 @@ fn execute_job(
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
             let key = archive_key(target.wram());
-            let viable = admission_is_viable(target, &snapshot)?;
+            let viable = match policies.retention {
+                SmbRetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
+                SmbRetentionPolicy::AdmitAlive => true,
+            };
             Some(SmbCampaignCandidate {
                 key,
                 viable,
@@ -1749,8 +1755,8 @@ fn stream_header(
         chord_table,
         replacement_policy: REPLACEMENT_IDENTIFIER.to_owned(),
         resume_policy: RESUME_IDENTIFIER.to_owned(),
-        retention_policy: RETENTION_IDENTIFIER.to_owned(),
-        parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
+        retention_policy: retention_policy_identifier(config.retention).to_owned(),
+        parent_scheduler: selector_policy_identifier(config.selector),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
@@ -2045,6 +2051,7 @@ pub fn run_smb_campaign_checkpointed(
     writer.write_line(&header)?;
 
     let mut core = CoordinatorCore::new(config.action_limit, config.archive_entry_limit);
+    core.archive.selector_policy = config.selector;
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = bootstrap_target.frames_clocked();
@@ -2079,6 +2086,7 @@ pub fn run_smb_campaign_checkpointed(
 
     let worker_policies = SmbJobPolicies {
         max_actions: config.action_limit,
+        retention: config.retention,
     };
     with_worker_pool(
         config.workers,
@@ -2384,7 +2392,7 @@ pub fn replay_smb_campaign_checkpointed(
         return Err("campaign replay resume input does not match the recorded stream".into());
     }
 
-    verify_fixed_rules(&header)?;
+    let (replay_retention, replay_selector) = verify_fixed_rules(&header)?;
     let replay_chord_policy = chord_policy_from_identifier(&header.chord_policy)?;
     let chord_origin = match origin_report {
         Some(report) => SmbCampaignOrigin::Archive {
@@ -2412,6 +2420,7 @@ pub fn replay_smb_campaign_checkpointed(
         &mut chord_versions,
     );
     let mut core = CoordinatorCore::new(header.action_limit, header.archive_entry_limit);
+    core.archive.selector_policy = replay_selector;
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = target.frames_clocked();
@@ -2480,6 +2489,7 @@ pub fn replay_smb_campaign_checkpointed(
                     &suffix,
                     SmbJobPolicies {
                         max_actions: header.action_limit,
+                        retention: replay_retention,
                     },
                 )?;
                 let frames = target.frames_clocked().saturating_sub(job_frames_before);
@@ -2612,6 +2622,8 @@ mod tests {
             wall_budget: None,
             archive_entry_limit: 32_768,
             chord: SmbCampaignChordPolicy::Uniform,
+            retention: super::SmbRetentionPolicy::ProbeAtAdmission45,
+            selector: super::SmbSelectorPolicy::RoomCellUniform128,
             victory_input_path: None,
             checkpoint_dir: None,
         }
@@ -2708,7 +2720,10 @@ mod tests {
             .expect("derive suffix");
         // Disturb the first instance so the job must depend on the snapshot alone.
         first.apply(&ButtonChord::new(0x02, 30));
-        let policies = super::SmbJobPolicies { max_actions: 96 };
+        let policies = super::SmbJobPolicies {
+            max_actions: 96,
+            retention: super::SmbRetentionPolicy::ProbeAtAdmission45,
+        };
         let on_first = execute_job(
             &mut first,
             &snapshot,
@@ -2744,7 +2759,10 @@ mod tests {
             0,
             SmbMilestones::default(),
             &[ButtonChord::new(0x01, 4)],
-            super::SmbJobPolicies { max_actions: 96 },
+            super::SmbJobPolicies {
+                max_actions: 96,
+                retention: super::SmbRetentionPolicy::ProbeAtAdmission45,
+            },
         )
         .expect("execute job");
         assert!(result.actions.is_empty());
@@ -2882,6 +2900,103 @@ mod tests {
             accounting.concentration.window_draws,
             accounting.cell_selections
         );
+    }
+
+    #[test]
+    fn admit_alive_campaign_probes_nothing_and_replays_byte_identically() {
+        let rom = synthetic_nrom();
+        let probing = genesis_config(0x5eed_ca20, 4, 32);
+        let mut probing_stream = Vec::new();
+        let probed = run_smb_campaign(
+            &rom,
+            &probing,
+            &SmbCampaignOrigin::Genesis,
+            &mut probing_stream,
+        )
+        .expect("probing campaign");
+        let mut config = genesis_config(0x5eed_ca20, 4, 32);
+        config.retention = crate::smb::archive::SmbRetentionPolicy::AdmitAlive;
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("admit-alive campaign");
+        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
+        let header = text.lines().next().expect("header");
+        assert!(header.contains("\"retention_policy\":\"admit_alive\""));
+        assert_eq!(live.probe_refused, 0);
+        assert!(
+            live.frames_emulated < probed.frames_emulated,
+            "skipping the probe must emulate fewer frames: {} against {}",
+            live.frames_emulated,
+            probed.frames_emulated
+        );
+        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay admit-alive");
+        assert_eq!(
+            serde_json::to_vec_pretty(&live).expect("serialize live"),
+            serde_json::to_vec_pretty(&replayed).expect("serialize replayed")
+        );
+    }
+
+    #[test]
+    fn retiring_selector_records_counters_and_replays_byte_identically() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca21, 4, 48);
+        config.selector = crate::smb::archive::SmbSelectorPolicy::Retire(
+            crate::smb::archive::SmbRetireThresholds {
+                entry: 2,
+                cell: 4,
+                band: 8,
+                room: 16,
+            },
+        );
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("retiring campaign");
+        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
+        let header = text.lines().next().expect("header");
+        assert!(header.contains("room_cell_uniform_128_retire:2,4,8,16"));
+        assert!(live.archive.selector.retirement.is_some());
+        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay retiring");
+        assert_eq!(
+            serde_json::to_vec_pretty(&live).expect("serialize live"),
+            serde_json::to_vec_pretty(&replayed).expect("serialize replayed")
+        );
+    }
+
+    #[test]
+    fn retention_and_selector_identifiers_round_trip() {
+        use crate::smb::archive::{
+            SmbRetentionPolicy, SmbRetireThresholds, SmbSelectorPolicy,
+            retention_policy_from_identifier, retention_policy_identifier,
+            selector_policy_from_identifier, selector_policy_identifier,
+        };
+        for policy in [
+            SmbRetentionPolicy::ProbeAtAdmission45,
+            SmbRetentionPolicy::AdmitAlive,
+        ] {
+            assert_eq!(
+                retention_policy_from_identifier(retention_policy_identifier(policy))
+                    .expect("retention round trip"),
+                policy
+            );
+        }
+        for policy in [
+            SmbSelectorPolicy::RoomCellUniform128,
+            SmbSelectorPolicy::Retire(SmbRetireThresholds {
+                entry: 3,
+                cell: 6,
+                band: 12,
+                room: 2,
+            }),
+        ] {
+            assert_eq!(
+                selector_policy_from_identifier(&selector_policy_identifier(policy))
+                    .expect("selector round trip"),
+                policy
+            );
+        }
+        assert!(retention_policy_from_identifier("no_probe").is_err());
+        assert!(selector_policy_from_identifier("room_cell_uniform_128_retire:3,6,12").is_err());
+        assert!(selector_policy_from_identifier("room_cell_uniform_128_retire:3,6,12,0").is_err());
     }
 
     #[test]

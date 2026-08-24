@@ -5,7 +5,10 @@
 use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 
 use fuzzer::{
-    smb::archive::{MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport},
+    smb::archive::{
+        MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, SmbRetentionPolicy,
+        SmbSelectorPolicy, retention_policy_from_identifier, selector_policy_from_identifier,
+    },
     smb::campaign::{
         SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport,
         SmbCampaignOrigin, SmbSnapshotCheckpoint, chord_policy_from_identifier,
@@ -68,6 +71,8 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
     let mut chord = SmbCampaignChordPolicy::Uniform;
+    let mut retention = SmbRetentionPolicy::ProbeAtAdmission45;
+    let mut selector = SmbSelectorPolicy::RoomCellUniform128;
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
@@ -83,6 +88,20 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                 &args
                     .next()
                     .ok_or("missing --chord value")?
+                    .to_string_lossy(),
+            )?;
+        } else if flag == "--retention" {
+            retention = retention_policy_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --retention value")?
+                    .to_string_lossy(),
+            )?;
+        } else if flag == "--selector" {
+            selector = selector_policy_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --selector value")?
                     .to_string_lossy(),
             )?;
         } else if flag == "--checkpoint" {
@@ -108,6 +127,8 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         wall_budget,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         chord,
+        retention,
+        selector,
         victory_input_path: Some(output.join("victory-input.json")),
         checkpoint_dir: Some(output.clone()),
     };

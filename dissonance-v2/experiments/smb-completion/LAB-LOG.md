@@ -9386,3 +9386,39 @@ the operating mode at every one of its 174,969 frames.
 - Raw outputs under `data/measure/` on the working tree (not committed):
   `run3-picks.json`, `run4-picks.json`, `run3-reach.json`,
   `run4-input-shapes.json`.
+
+## The two changes — no-screening retention and the retiring selector, both per-run recorded values
+
+- Registered before building: two new recorded identifiers, each selectable
+  per run and recorded in the stream header, with the compiled values
+  staying the defaults so every recorded artifact keeps replaying under its
+  own identifiers.
+- **`admit_alive`**, beside `probe_at_admission_45`: an alive endpoint is
+  admitted under the normal cell rules; the probe never runs on this path
+  and its frames are never emulated.
+- **`room_cell_uniform_128_retire:E,C,B,R`**, beside
+  `room_cell_uniform_128`: trailing barren-draw counters pooled at entry,
+  cell (fingerprint siblings share one counter), band, and room; a class
+  at or over its threshold is skipped in selection exactly as exhausted
+  classes are skipped. Retirement is soft — entries stay serialized, and
+  the deterministic all-exhausted reset also clears the pooled counters.
+  Counters surface in the report as an optional retirement block, absent
+  under the compiled selector so old reports keep their exact bytes.
+- One defect found and fixed during the build: the all-exhausted reset
+  fires at selection time, which replay never runs, so live and replayed
+  retirement counters diverged. The reset is now applied again when the
+  reset-marked draw is recorded — a stream-ordered operation both sides
+  walk identically — and the divergent test now passes.
+- `--retention` and `--selector` select the values per run in the
+  campaign binary.
+- Gates: fmt, clippy `-D warnings`, 39 tests (five new: identifier round
+  trips, admit-alive probes nothing and replays byte-identically, the
+  retiring selector records counters and replays byte-identically, a
+  pooled barren band is retired and a keeper frees it, a retired room
+  falls to the deterministic reset), `cargo deny` — all green.
+- Inertness: no prior reference reproduces at this branch head (the
+  recorded smoke predates the full-width key), so one was frozen on the
+  unchanged tree first — genesis, seed `0x5eed_0001`, 1 worker, 1,000
+  executions, stream `d0ca9f22…`, archive `b3787b5e…`, rerun-stable.
+  After both changes the same run reproduces both hashes byte-identical:
+  the default path is untouched.

@@ -83,6 +83,120 @@ pub const SELECTOR_IDENTIFIER: &str = "room_cell_uniform_128";
 /// three masks.
 pub const RETENTION_IDENTIFIER: &str = "probe_at_admission_45";
 
+/// Identifier recorded for the no-screening admission rule: an alive
+/// endpoint is admitted under the normal cell rules and the probe never
+/// runs.
+pub const RETENTION_ADMIT_ALIVE_IDENTIFIER: &str = "admit_alive";
+
+/// Per-run admission rule, recorded in the stream header; replay validates
+/// under the recorded value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SmbRetentionPolicy {
+    /// Admit an alive endpoint only if one of three fixed input
+    /// continuations survives the probe horizon from its snapshot.
+    ProbeAtAdmission45,
+    /// Admit every alive endpoint; the probe never runs on this path.
+    AdmitAlive,
+}
+
+/// The recorded identifier of an admission rule.
+#[must_use]
+pub fn retention_policy_identifier(policy: SmbRetentionPolicy) -> &'static str {
+    match policy {
+        SmbRetentionPolicy::ProbeAtAdmission45 => RETENTION_IDENTIFIER,
+        SmbRetentionPolicy::AdmitAlive => RETENTION_ADMIT_ALIVE_IDENTIFIER,
+    }
+}
+
+/// The admission rule a recorded identifier names.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no compiled admission rule.
+pub fn retention_policy_from_identifier(
+    identifier: &str,
+) -> Result<SmbRetentionPolicy, Box<dyn Error>> {
+    match identifier {
+        RETENTION_IDENTIFIER => Ok(SmbRetentionPolicy::ProbeAtAdmission45),
+        RETENTION_ADMIT_ALIVE_IDENTIFIER => Ok(SmbRetentionPolicy::AdmitAlive),
+        _ => Err(format!("retention policy {identifier} is not recognized").into()),
+    }
+}
+
+/// Give-up thresholds for the retiring selector, one per pooling level:
+/// consecutive barren draws at which the level's class is skipped in
+/// selection exactly as exhausted classes are skipped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SmbRetireThresholds {
+    /// One entry's own draws since its last retained descendant.
+    pub entry: u64,
+    /// Draws pooled over the entry's cell (its key without the fingerprint).
+    pub cell: u64,
+    /// Draws pooled over the entry's progress band within its room.
+    pub band: u64,
+    /// Draws pooled over the entry's room.
+    pub room: u64,
+}
+
+/// Per-run parent selector, recorded in the stream header; replay validates
+/// under the recorded value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SmbSelectorPolicy {
+    /// The compiled room, band, cell walk with the recency window.
+    RoomCellUniform128,
+    /// The same walk with barren classes retired at the given thresholds.
+    /// Retirement is soft: entries stay serialized and replayable, and the
+    /// deterministic all-exhausted reset also clears the barren counters,
+    /// so the search can never seal itself out.
+    Retire(SmbRetireThresholds),
+}
+
+/// The recorded identifier of a parent selector.
+#[must_use]
+pub fn selector_policy_identifier(policy: SmbSelectorPolicy) -> String {
+    match policy {
+        SmbSelectorPolicy::RoomCellUniform128 => SELECTOR_IDENTIFIER.to_owned(),
+        SmbSelectorPolicy::Retire(thresholds) => format!(
+            "{SELECTOR_IDENTIFIER}_retire:{},{},{},{}",
+            thresholds.entry, thresholds.cell, thresholds.band, thresholds.room
+        ),
+    }
+}
+
+/// The parent selector a recorded identifier names.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no compiled selector or its
+/// thresholds do not parse or contain a zero.
+pub fn selector_policy_from_identifier(
+    identifier: &str,
+) -> Result<SmbSelectorPolicy, Box<dyn Error>> {
+    if identifier == SELECTOR_IDENTIFIER {
+        return Ok(SmbSelectorPolicy::RoomCellUniform128);
+    }
+    let prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
+    let Some(values) = identifier.strip_prefix(&prefix) else {
+        return Err(format!("parent selector {identifier} is not recognized").into());
+    };
+    let parsed = values
+        .split(',')
+        .map(|value| value.parse::<u64>())
+        .collect::<Result<Vec<_>, _>>()?;
+    let [entry, cell, band, room] = parsed.as_slice() else {
+        return Err("retiring selector needs exactly four thresholds".into());
+    };
+    if [entry, cell, band, room].iter().any(|value| **value == 0) {
+        return Err("retiring selector thresholds must be nonzero".into());
+    }
+    Ok(SmbSelectorPolicy::Retire(SmbRetireThresholds {
+        entry: *entry,
+        cell: *cell,
+        band: *band,
+        room: *room,
+    }))
+}
+
 /// Selections since the last retained descendant at which a parent is exhausted.
 const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
 
@@ -142,6 +256,23 @@ pub struct SmbSelectorAccounting {
     pub counter_resets: u64,
     /// Concentrated-window accounting.
     pub concentration: SmbConcentrationAccounting,
+    /// Retirement accounting, present only under a retiring selector so
+    /// reports recorded under the compiled selector keep their exact bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement: Option<SmbRetirementAccounting>,
+}
+
+/// Retirement state at report time under a retiring selector.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbRetirementAccounting {
+    /// Entries whose own barren streak is at or over the entry threshold.
+    pub entries_over_threshold: u64,
+    /// Cells whose pooled barren streak is at or over the cell threshold.
+    pub cells_over_threshold: u64,
+    /// Bands whose pooled barren streak is at or over the band threshold.
+    pub bands_over_threshold: u64,
+    /// Rooms whose pooled barren streak is at or over the room threshold.
+    pub rooms_over_threshold: u64,
 }
 
 /// Per-campaign accounting for the concentrated recency window.
@@ -420,6 +551,39 @@ pub(crate) struct Archive {
     room_sets: Vec<Vec<SmbRoomIdentity>>,
     /// The room each entry currently stands in, aligned with `room_sets`.
     current_rooms: Vec<SmbRoomIdentity>,
+    /// Parent selector this archive selects under.
+    pub(crate) selector_policy: SmbSelectorPolicy,
+    /// Pooled barren streak per cell (key with the fingerprint zeroed).
+    cell_barren: BTreeMap<SmbArchiveKey, u64>,
+    /// Pooled barren streak per (pair, room, band).
+    band_barren: BTreeMap<(u8, u8, SmbRoomIdentity, u16), u64>,
+    /// Pooled barren streak per (pair, room).
+    room_barren: BTreeMap<(u8, u8, SmbRoomIdentity), u64>,
+}
+
+/// A key's cell identity: the key with its fingerprint zeroed, so all
+/// fingerprint siblings pool into one counter.
+fn cell_identity(key: SmbArchiveKey) -> SmbArchiveKey {
+    SmbArchiveKey {
+        state_fingerprint: 0,
+        ..key
+    }
+}
+
+/// A key's (pair, room, band) identity; the pair scopes the counter because
+/// two levels can reuse one area's bytes and arrival page.
+fn band_identity(key: SmbArchiveKey) -> (u8, u8, SmbRoomIdentity, u16) {
+    (
+        key.world,
+        key.level,
+        key.room,
+        key.progress / FRONTIER_PROGRESS_BAND,
+    )
+}
+
+/// A key's (pair, room) identity.
+fn room_identity(key: SmbArchiveKey) -> (u8, u8, SmbRoomIdentity) {
+    (key.world, key.level, key.room)
 }
 
 impl Archive {
@@ -501,6 +665,10 @@ impl Archive {
             replacement_frames_displaced: 0,
             room_sets: Vec::new(),
             current_rooms: Vec::new(),
+            selector_policy: SmbSelectorPolicy::RoomCellUniform128,
+            cell_barren: BTreeMap::new(),
+            band_barren: BTreeMap::new(),
+            room_barren: BTreeMap::new(),
         }
     }
 
@@ -677,7 +845,34 @@ impl Archive {
     }
 
     fn selector_unexhausted(&self, id: usize) -> bool {
-        self.since_retained[id] < SELECTION_EXHAUSTION_THRESHOLD
+        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
+            return false;
+        }
+        match self.selector_policy {
+            SmbSelectorPolicy::RoomCellUniform128 => true,
+            SmbSelectorPolicy::Retire(thresholds) => {
+                let key = self.entries[id].report.key;
+                self.since_retained[id] < thresholds.entry
+                    && self
+                        .cell_barren
+                        .get(&cell_identity(key))
+                        .copied()
+                        .unwrap_or(0)
+                        < thresholds.cell
+                    && self
+                        .band_barren
+                        .get(&band_identity(key))
+                        .copied()
+                        .unwrap_or(0)
+                        < thresholds.band
+                    && self
+                        .room_barren
+                        .get(&room_identity(key))
+                        .copied()
+                        .unwrap_or(0)
+                        < thresholds.room
+            }
+        }
     }
 
     /// Choose a parent: one in four draws is uniform over every expandable
@@ -729,6 +924,12 @@ impl Archive {
             for counter in &mut self.since_retained {
                 *counter = 0;
             }
+            // Retirement is soft: the deterministic all-exhausted reset also
+            // clears the pooled barren counters, so the search can never
+            // seal itself out.
+            self.cell_barren.clear();
+            self.band_barren.clear();
+            self.room_barren.clear();
             counter_reset = true;
         }
     }
@@ -861,8 +1062,31 @@ impl Archive {
 
     /// Account one recorded selection of `id`.
     pub(crate) fn record_selection(&mut self, id: usize, draw: &SmbSelectorDraw) {
+        // The all-exhausted reset fires at selection time, which replay
+        // never runs, so under the retiring selector the reset is applied
+        // again here, in stream order, where live and replay walk the same
+        // records; the counter state at every stream position is then
+        // identical in both.
+        if draw.counter_reset && matches!(self.selector_policy, SmbSelectorPolicy::Retire(_)) {
+            for counter in &mut self.since_retained {
+                *counter = 0;
+            }
+            self.cell_barren.clear();
+            self.band_barren.clear();
+            self.room_barren.clear();
+        }
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
+        if matches!(self.selector_policy, SmbSelectorPolicy::Retire(_)) {
+            let key = self.entries[id].report.key;
+            for counter in [
+                self.cell_barren.entry(cell_identity(key)).or_insert(0),
+                self.band_barren.entry(band_identity(key)).or_insert(0),
+                self.room_barren.entry(room_identity(key)).or_insert(0),
+            ] {
+                *counter = counter.saturating_add(1);
+            }
+        }
         match draw.path {
             SmbSelectorPath::Uniform => {
                 self.selector_accounting.uniform_selections = self
@@ -905,6 +1129,12 @@ impl Archive {
         }
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
+        if matches!(self.selector_policy, SmbSelectorPolicy::Retire(_)) {
+            let key = self.entries[id].report.key;
+            self.cell_barren.insert(cell_identity(key), 0);
+            self.band_barren.insert(band_identity(key), 0);
+            self.room_barren.insert(room_identity(key), 0);
+        }
         self.selector_accounting.productive_selections = self
             .selector_accounting
             .productive_selections
@@ -913,7 +1143,27 @@ impl Archive {
 
     /// The per-campaign selector accounting for the report.
     pub(crate) fn selector_report(&self) -> SmbSelectorAccounting {
-        self.selector_accounting
+        let mut accounting = self.selector_accounting;
+        if let SmbSelectorPolicy::Retire(thresholds) = self.selector_policy {
+            fn over<K>(map: &BTreeMap<K, u64>, threshold: u64) -> u64 {
+                u64::try_from(map.values().filter(|streak| **streak >= threshold).count())
+                    .unwrap_or(u64::MAX)
+            }
+            accounting.retirement = Some(SmbRetirementAccounting {
+                entries_over_threshold: u64::try_from(
+                    self.since_retained
+                        .iter()
+                        .zip(&self.active)
+                        .filter(|(streak, active)| **active && **streak >= thresholds.entry)
+                        .count(),
+                )
+                .unwrap_or(u64::MAX),
+                cells_over_threshold: over(&self.cell_barren, thresholds.cell),
+                bands_over_threshold: over(&self.band_barren, thresholds.band),
+                rooms_over_threshold: over(&self.room_barren, thresholds.room),
+            });
+        }
+        accounting
     }
 
     /// Clone the entry reports, stamping per-entry selection counters.
@@ -1302,6 +1552,104 @@ mod tests {
         room_x_bucket: 0,
         room: [0; 3],
     };
+
+    #[test]
+    fn a_pooled_barren_band_is_retired_and_the_reset_frees_it() {
+        // Two cells in one band at (1, 0) plus one band below. A single
+        // barren draw of entry 0 puts the whole band over a threshold of
+        // one, so cell draws must fall through to the lower band even
+        // though entry 1 was never drawn.
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
+        let mut archive = selector_archive(&keys);
+        archive.selector_policy = super::SmbSelectorPolicy::Retire(super::SmbRetireThresholds {
+            entry: 64,
+            cell: 64,
+            band: 1,
+            room: 64,
+        });
+        let barren_draw = SmbSelectorDraw {
+            path: SmbSelectorPath::RoomCellUniform,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        archive.record_selection(0, &barren_draw);
+        let mut rand = StdRand::with_seed(0x5eed_5e30);
+        let mut fell_through = 0;
+        for _ in 0..64 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("selection");
+            if draw.path == SmbSelectorPath::RoomCellUniform {
+                assert_eq!(id, 2, "cell draws must fall through to the 124 band");
+                assert_eq!(draw.classes_skipped, 1);
+                assert!(!draw.counter_reset);
+                fell_through += 1;
+            }
+        }
+        assert!(fell_through > 0);
+        // A retained descendant of the lower band's entry resets nothing in
+        // the retired band; a retained descendant of entry 1 clears the
+        // pooled counter and the band returns to selection.
+        archive.record_selection(1, &barren_draw);
+        archive.record_selection_outcome(1, true);
+        let mut upper_band_seen = false;
+        for _ in 0..64 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("selection after reset");
+            if draw.path == SmbSelectorPath::RoomCellUniform && (id == 0 || id == 1) {
+                upper_band_seen = true;
+            }
+        }
+        assert!(
+            upper_band_seen,
+            "a keeper must return its band to selection"
+        );
+        let accounting = archive.selector_report();
+        let retirement = accounting.retirement.expect("retirement accounting");
+        assert_eq!(retirement.bands_over_threshold, 0);
+    }
+
+    #[test]
+    fn a_retired_room_falls_to_the_reset_when_nothing_else_lives() {
+        // One room only: a single barren draw retires it at a room
+        // threshold of one, and the deterministic all-exhausted reset must
+        // clear the pooled counters and free it rather than seal the search.
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124)];
+        let mut archive = selector_archive(&keys);
+        for entry in &mut archive.entries {
+            entry.report.key.room = [3, 5, 0];
+        }
+        archive.selector_policy = super::SmbSelectorPolicy::Retire(super::SmbRetireThresholds {
+            entry: 64,
+            cell: 64,
+            band: 64,
+            room: 1,
+        });
+        let barren_draw = SmbSelectorDraw {
+            path: SmbSelectorPath::RoomCellUniform,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        archive.record_selection(0, &barren_draw);
+        let mut rand = StdRand::with_seed(0x5eed_5e31);
+        let mut reset_seen = false;
+        for _ in 0..64 {
+            let (_, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("selection under a retired room");
+            if draw.path == SmbSelectorPath::RoomCellUniform {
+                if draw.counter_reset {
+                    reset_seen = true;
+                    break;
+                }
+                panic!("a cell draw before the reset must not reach a retired room");
+            }
+        }
+        assert!(reset_seen, "the all-exhausted reset must free the room");
+    }
 
     #[test]
     fn the_selector_starves_exhausted_parents_and_falls_through() {
