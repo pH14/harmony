@@ -9745,3 +9745,8 @@ replays byte-exact under the new binary — replay_verified true, stream
 880cc9fe…. Gates green (fmt, clippy -D warnings, nextest 43/43, deny). A
 full-scale replay of the recorded testW side A run under the new binary is
 registered as belt-and-braces; expected to verify.
+
+## W2 side A replay verified (2026-08-24)
+
+replay_verified true: stream da5ec46e…, archive 3c2d234c…, 50,000 executions.
+The side A number (first (1,2) entry at execution 526) is believed.
