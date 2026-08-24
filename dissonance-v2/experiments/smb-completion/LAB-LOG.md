@@ -9695,3 +9695,17 @@ first 119 s (2.5 exec/s under the full-JSON rule — a 16x improvement) and its
 header records hash_rule IncrementalHistory with the same registered fold
 parameters. It crossed into (1,2) within its first 4,799 executions; the exact
 crossing execution is scored from the final report.
+
+## W2 result: feedback draw ahead on both measures (2026-08-24)
+
+Side B (defaults + `chord_draw_recorded_51:1,1,0,0,128,3,1,64,1024`) against
+side A (defaults + uniform chords), same seed 0x5eed_0903, same origin, 50,000
+executions each:
+
+- first (1,2) entry: side B 420 vs side A 526
+- (1,2) entries retained: 25,724 vs 18,998
+- deepest (1,2) progress: 206 vs 171
+
+Streams: A da5ec46e…, B 6ff169e8…. The crossing edge is small on one seed;
+the depth edge (206 vs 171, 1.35x entries) is the substantive signal. Replays
+of both sides registered next; results believed only if byte-exact.
