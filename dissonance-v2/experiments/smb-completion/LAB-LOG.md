@@ -9833,3 +9833,12 @@ restores the leftward jump. Gates green (fmt, clippy -D warnings, nextest
 Registered next, on request: re-run the stuck-screen head-to-head from the
 test P origin under the corrected vocabulary, same template (50k, 4 workers,
 fresh recorded seed), scored on first entry beyond the stuck pair.
+
+## Test P rerun registered: corrected vocabulary (2026-08-24)
+
+Run: test P origin (run-3 (3,1) subtree, archive 75c7fbed…/local copy), seed
+0x5eed_0904, 4 workers, 50,000 executions, laptop, defaults (admit_alive,
+retire:3,6,12,2, chord_uniform, nes_down_ten). Score: execution creating the
+first entry whose (world, level) exceeds (3,1) — the warp lands in a later
+world, so any advance counts. Prediction: it crosses; the prior tie is
+attributed to the vocabulary bug (no leftward jump).
