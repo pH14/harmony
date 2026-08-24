@@ -9609,3 +9609,46 @@ the operating mode at every one of its 174,969 frames.
   (1, 2); the winner is believed only after byte-exact replay; both
   streams kept. The input-shape sweep predicts the biased half should
   cut the long-hold death waste; this run decides.
+
+### Head-to-head W replay verdict
+
+- Side A's stream replayed byte-exact (`replay_verified: true`, stream
+  `35b07136…`, archive `ef86acb7…`): the registered W win — compiled
+  rules first to (1, 2) at execution 345 against 2,403 — is believed.
+
+## Stale binary incident — every run today used an 08:46 build
+
+- The rerun replay diverged again, in the retirement block only. An
+  independent Python simulation of the counter rules over the recorded
+  stream matched the live report exactly and the replay matched a
+  no-clears simulation exactly (185/63/2/4 on all four counters): the
+  replay applied no reset clears at all.
+- Cause: `cargo nextest run` does not rebuild the standalone campaign
+  binary. `target/release/smb-campaign` was compiled mid-development at
+  08:46, after the policy switches existed but before the record-time
+  reset fix, and every head-to-head, rerun, and replay today executed
+  that binary. The reference reruns still reproduced their hashes
+  because the compiled default path was identical in every build.
+- Consequences by artifact: the compiled-rules sides (P side A, W both
+  sides, the W replay verdict) are unaffected — the old path is the
+  same in that binary. P side B and its rerun ran with selection-time
+  clears; their scores stand (both no-finish ties) and the rerun's
+  recorded stream should verify under the current binary, registered
+  next. Head-to-head W2 launched under the stale binary's defaults, so
+  both sides recorded the old policies rather than the registered
+  promoted defaults: side B was stopped and its partial output set
+  aside (`sideB-stale-binary-abandoned/`), side A runs to completion as
+  an unregistered second sample of the old rules on the W origin.
+- Protocol now: `cargo build --release` before any run, and the run's
+  first check is reading the policies back from its own recorded
+  header. The current binary (`a5b87f66…`) records
+  `admit_alive` / `room_cell_uniform_128_retire:3,6,12,2`.
+- W2 relaunched on the current binary, headers read back and verified:
+  both sides `admit_alive` + `room_cell_uniform_128_retire:3,6,12,2`,
+  side B additionally `chord_draw_recorded_50:1,1,0,0,128,3,1,64,1024`.
+  The abandoned old-policy side A completed before teardown and is kept
+  as an unregistered second sample of the old rules on this origin:
+  first (1, 2) at execution 98 (stream `b69991de…`,
+  `data/testW2/old-rules-bonus-sample/`). The rerun-replay under the
+  current binary is registered: expected to verify, since the
+  stream-simulated counter state matches the live report exactly.
