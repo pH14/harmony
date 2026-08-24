@@ -2963,6 +2963,31 @@ mod tests {
     }
 
     #[test]
+    fn retiring_selector_reports_survive_a_seed_sweep() {
+        // The scale replays diverged only in end-state retirement counters,
+        // so this sweeps seeds under reset-heavy thresholds until a live
+        // report and its replay disagree.
+        let rom = synthetic_nrom();
+        for seed in 0..24_u64 {
+            let mut config = genesis_config(0x5eed_d000 + seed, 4, 64);
+            config.retention = crate::smb::archive::SmbRetentionPolicy::AdmitAlive;
+            config.selector = crate::smb::archive::SmbSelectorPolicy::Retire(
+                crate::smb::archive::SmbRetireThresholds {
+                    entry: 1,
+                    cell: 2,
+                    band: 2,
+                    room: 3,
+                },
+            );
+            let mut stream = Vec::new();
+            let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+                .expect("reset-heavy campaign");
+            let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay reset-heavy");
+            assert_eq!(live, replayed, "seed offset {seed} diverged");
+        }
+    }
+
+    #[test]
     fn retention_and_selector_identifiers_round_trip() {
         use crate::smb::archive::{
             SmbRetentionPolicy, SmbRetireThresholds, SmbSelectorPolicy,
