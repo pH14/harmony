@@ -9422,3 +9422,39 @@ the operating mode at every one of its 174,969 frames.
   executions, stream `d0ca9f22…`, archive `b3787b5e…`, rerun-stable.
   After both changes the same run reproduces both hashes byte-identical:
   the default path is untouched.
+
+## Head-to-head P — the world-4 pipe screen, registered before running
+
+- Origin built with the new `smb-trim-tree` binary: run 3's final
+  checkpoint trimmed to the pair (3, 1) subtree, snapshots streamed from
+  the box over ssh without landing whole on disk. Kept 138,079 entries
+  and their 138,079 snapshots. Source archive `364388cd…` and consumed
+  snapshot bytes `75c7fbed…` both match the recorded hashes exactly;
+  trimmed outputs are archive `083902b8…`, snapshots `70e1ed7b…`. Kept
+  entries whose parents were trimmed away have their parent ids cleared;
+  the whole-tree import re-roots them and the serialized inputs already
+  carry the full action lists.
+- Registration: two 50,000-execution runs from this origin, same fresh
+  campaign seed `0x5eed_0901`, 4 workers each, both at `nice -n 10` on
+  the laptop, action limit 8,192 as in run 3. Side A is the compiled
+  rules (`probe_at_admission_45`, `room_cell_uniform_128`). Side B is
+  `admit_alive` with `room_cell_uniform_128_retire:3,6,12,2`, the
+  thresholds set by measurement 1. The score is executions completed at
+  the first retained entry whose key world is 4 (world 5 on screen);
+  no such entry in 50,000 scores as no-finish. The winner is believed
+  only after its stream replays byte-for-byte; both streams are kept
+  either way.
+- The suite-parallel flake of `archive_origin_round_trips_through_replay`
+  recurred (twice in five full-suite runs, never alone): the assertion
+  compares the archives of two independent 3-worker live campaigns, and
+  the diverging fields are selector draw counters only — worker
+  completion order shifting one draw from the uniform path to the cell
+  path. Attribution run at the pre-change commit is recorded below.
+- Attribution: at the pre-change commit `0db76a33` the same failure
+  reproduces (1 of 6 full-suite runs, identical counter-only divergence).
+  The flake predates this program's changes and is filed as issue #190;
+  the equality it asserts between two independent 3-worker live
+  campaigns is schedule-dependent at draw granularity.
+- The test now runs its two compared campaigns with one worker, which
+  makes the asserted equality schedule-independent; issue #190 records
+  the flake and the fix rides this branch.
