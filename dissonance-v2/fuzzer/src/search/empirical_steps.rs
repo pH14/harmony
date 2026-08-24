@@ -7,6 +7,23 @@ use std::{collections::VecDeque, error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Registered rule producing the recorded table hash.
+///
+/// `FullJson` re-serializes both ordered tables on every visible update, so
+/// its cost grows with the never-deleted history and dominates the run once
+/// the source is large. `IncrementalHistory` feeds each appended contribution
+/// into a persistent hasher and re-serializes only the bounded recent window,
+/// keeping every update O(recent). The two rules produce different hashes for
+/// the same tables, so each is bound to its own recorded policy identifier.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum EmpiricalStepHashRule {
+    /// Hash the JSON of both complete ordered tables.
+    #[default]
+    FullJson,
+    /// Fold appended history into a running hasher; re-serialize only recent.
+    IncrementalHistory,
+}
+
 /// Registered parameters for one deterministic empirical-step fold.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EmpiricalStepParameters {
@@ -110,10 +127,12 @@ impl Error for EmpiricalStepError {
 #[derive(Clone, Debug)]
 pub struct EmpiricalStepTables<Step> {
     parameters: EmpiricalStepParameters,
+    hash_rule: EmpiricalStepHashRule,
     pending: Vec<Vec<Step>>,
     recent_sequences: VecDeque<Vec<Step>>,
     recent: Vec<Step>,
     all_history: Vec<Step>,
+    history_hasher: Sha256,
     table_sha256: String,
     records: u64,
     retained_successes: u64,
@@ -130,21 +149,47 @@ where
     ///
     /// Returns an error when the parameters are invalid.
     pub fn new(parameters: EmpiricalStepParameters) -> Result<Self, EmpiricalStepError> {
+        Self::with_hash_rule(parameters, EmpiricalStepHashRule::FullJson)
+    }
+
+    /// Start an empty deterministic fold under the named table-hash rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the parameters are invalid.
+    pub fn with_hash_rule(
+        parameters: EmpiricalStepParameters,
+        hash_rule: EmpiricalStepHashRule,
+    ) -> Result<Self, EmpiricalStepError> {
         parameters.validate()?;
-        let recent = Vec::new();
-        let all_history = Vec::new();
-        let table_sha256 = hash_tables(&recent, &all_history)?;
-        Ok(Self {
+        let mut tables = Self {
             parameters,
+            hash_rule,
             pending: Vec::new(),
             recent_sequences: VecDeque::new(),
-            recent,
-            all_history,
-            table_sha256,
+            recent: Vec::new(),
+            all_history: Vec::new(),
+            history_hasher: Sha256::new(),
+            table_sha256: String::new(),
             records: 0,
             retained_successes: 0,
             checkpoints: Vec::new(),
-        })
+        };
+        tables.table_sha256 = tables.hash_current_tables()?;
+        Ok(tables)
+    }
+
+    fn hash_current_tables(&self) -> Result<String, EmpiricalStepError> {
+        match self.hash_rule {
+            EmpiricalStepHashRule::FullJson => hash_tables(&self.recent, &self.all_history),
+            EmpiricalStepHashRule::IncrementalHistory => {
+                let mut hasher = self.history_hasher.clone();
+                let recent =
+                    serde_json::to_vec(&self.recent).map_err(EmpiricalStepError::Serialization)?;
+                hasher.update(&recent);
+                Ok(format!("{:x}", hasher.finalize()))
+            }
+        }
     }
 
     /// Fold one retained success sequence in stream order.
@@ -168,6 +213,13 @@ where
     }
 
     fn apply_contribution(&mut self, contribution: Vec<Step>) -> Result<(), EmpiricalStepError> {
+        if self.hash_rule == EmpiricalStepHashRule::IncrementalHistory {
+            // Each contribution is a complete JSON array, so the byte stream
+            // fed to the running hasher is framed unambiguously.
+            let bytes =
+                serde_json::to_vec(&contribution).map_err(EmpiricalStepError::Serialization)?;
+            self.history_hasher.update(&bytes);
+        }
         self.all_history.extend_from_slice(&contribution);
         self.recent.extend_from_slice(&contribution);
         self.recent_sequences.push_back(contribution);
@@ -200,8 +252,14 @@ where
         for contribution in pending {
             self.apply_contribution(contribution)?;
         }
-        self.table_sha256 = hash_tables(&self.recent, &self.all_history)?;
+        self.table_sha256 = self.hash_current_tables()?;
         Ok(())
+    }
+
+    /// Registered table-hash rule.
+    #[must_use]
+    pub fn hash_rule(&self) -> EmpiricalStepHashRule {
+        self.hash_rule
     }
 
     /// Finish one recorded stream record and emit its periodic hash if due.
@@ -399,6 +457,76 @@ mod tests {
             tables.checkpoint().expect("final checkpoint")
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn incremental_rule_folds_identically_and_reproducibly() {
+        use super::{EmpiricalStepHashRule, EmpiricalStepTables as Tables};
+        let run = || {
+            let mut tables =
+                Tables::with_hash_rule(parameters(), EmpiricalStepHashRule::IncrementalHistory)
+                    .expect("valid parameters");
+            for sequence in [vec![0_u8, 1, 2], vec![0, 3], vec![0, 4, 5]] {
+                tables.fold_retained(&sequence).expect("fold success");
+                let _ = tables.finish_record().expect("finish record");
+            }
+            tables.flush().expect("final update");
+            tables
+        };
+        let first = run();
+        let second = run();
+        assert_eq!(first.recent(), &[3, 4, 5]);
+        assert_eq!(first.all_history(), &[1, 2, 3, 4, 5]);
+        assert_eq!(
+            first.checkpoint().expect("first checkpoint"),
+            second.checkpoint().expect("second checkpoint")
+        );
+
+        let mut full = EmpiricalStepTables::new(parameters()).expect("valid parameters");
+        for sequence in [vec![0_u8, 1, 2], vec![0, 3], vec![0, 4, 5]] {
+            full.fold_retained(&sequence).expect("fold success");
+            let _ = full.finish_record().expect("finish record");
+        }
+        full.flush().expect("final update");
+        assert_eq!(full.recent(), first.recent());
+        assert_eq!(full.all_history(), first.all_history());
+        assert_ne!(
+            full.checkpoint()
+                .expect("full-json checkpoint")
+                .table_sha256,
+            first
+                .checkpoint()
+                .expect("incremental checkpoint")
+                .table_sha256,
+        );
+    }
+
+    #[test]
+    fn incremental_hash_ignores_history_reserialization() {
+        use super::{EmpiricalStepHashRule, EmpiricalStepTables as Tables};
+        let serializations = Rc::new(Cell::new(0));
+        let step = |value| CountingStep {
+            value,
+            serializations: Rc::clone(&serializations),
+        };
+        let mut tables =
+            Tables::with_hash_rule(parameters(), EmpiricalStepHashRule::IncrementalHistory)
+                .expect("valid parameters");
+        let flush_cost = |tables: &mut Tables<CountingStep>, value| {
+            tables
+                .fold_retained(&[step(0), step(value)])
+                .expect("fold success");
+            let before = serializations.get();
+            tables.flush().expect("make buffered success visible");
+            serializations.get() - before
+        };
+        let mut costs = Vec::new();
+        for round in 0..6_u8 {
+            costs.push(flush_cost(&mut tables, round));
+        }
+        // Once the recent window is full, per-flush serialization work is
+        // constant: history growth never re-enters the hash.
+        assert_eq!(costs[2], costs[5]);
     }
 
     #[test]

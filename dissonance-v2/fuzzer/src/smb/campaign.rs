@@ -26,7 +26,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     search::empirical_steps::{
-        EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTables,
+        EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
+        EmpiricalStepTables,
     },
     search::parallel::with_worker_pool,
     smb::archive::{
@@ -938,6 +939,10 @@ pub struct SmbChordTableDerivation {
     pub source_filter: SmbChordSourceFilter,
     /// Game-neutral extraction, mixture, update, and hash parameters.
     pub parameters: EmpiricalStepParameters,
+    /// Table-hash rule, bound to the policy identifier so historical
+    /// recordings keep verifying under the rule they were made with.
+    #[serde(default)]
+    pub hash_rule: EmpiricalStepHashRule,
 }
 
 /// Header provenance for a derived chord-table policy.
@@ -975,8 +980,12 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
             let source = derivation.source_filter;
             let parameters = derivation.parameters;
+            let prefix = match derivation.hash_rule {
+                EmpiricalStepHashRule::FullJson => "chord_draw_recorded_50",
+                EmpiricalStepHashRule::IncrementalHistory => "chord_draw_recorded_51",
+            };
             format!(
-                "chord_draw_recorded_50:{},{},{},{},{},{},{},{},{}",
+                "{prefix}:{},{},{},{},{},{},{},{},{}",
                 source.world,
                 source.level,
                 source.minimum_progress,
@@ -1005,7 +1014,15 @@ pub fn chord_policy_from_identifier(
     if identifier == "chord_draw_recorded_50" {
         return Ok(SmbCampaignChordPolicy::RecordedHalf);
     }
-    if let Some(fields) = identifier.strip_prefix("chord_draw_recorded_50:") {
+    let (fields, hash_rule) = if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_50:")
+    {
+        (Some(rest), EmpiricalStepHashRule::FullJson)
+    } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_51:") {
+        (Some(rest), EmpiricalStepHashRule::IncrementalHistory)
+    } else {
+        (None, EmpiricalStepHashRule::FullJson)
+    };
+    if let Some(fields) = fields {
         let mut fields = fields.split(',');
         let source_filter = SmbChordSourceFilter {
             world: parse_chord_field(&mut fields, "world")?,
@@ -1028,6 +1045,7 @@ pub fn chord_policy_from_identifier(
             SmbChordTableDerivation {
                 source_filter,
                 parameters,
+                hash_rule,
             },
         ));
     }
@@ -1570,7 +1588,8 @@ fn initial_chord_tables(
     let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy else {
         return Ok((None, None));
     };
-    let mut tables = EmpiricalStepTables::new(derivation.parameters)?;
+    let mut tables =
+        EmpiricalStepTables::with_hash_rule(derivation.parameters, derivation.hash_rule)?;
     let source_sha256 = match origin {
         SmbCampaignOrigin::Genesis => format!("{:x}", Sha256::digest([])),
         SmbCampaignOrigin::Archive {
@@ -2582,12 +2601,13 @@ pub fn replay_smb_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::{
-        CoordinatorCore, SNAPSHOT_CHECKPOINT_FORMAT, SmbCampaignActionResult,
-        SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
-        SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbSnapshotCheckpoint,
-        SmbSnapshotCheckpointEntry, chord_policy_from_identifier, chord_policy_identifier,
-        derive_suffix, derive_worker_seed, execute_job, replay_smb_campaign, run_smb_campaign,
-        run_smb_campaign_with_progress, write_live_checkpoint,
+        CoordinatorCore, EmpiricalStepHashRule, SNAPSHOT_CHECKPOINT_FORMAT,
+        SmbCampaignActionResult, SmbCampaignAdmissionDecision, SmbCampaignChordPolicy,
+        SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord,
+        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, chord_policy_from_identifier,
+        chord_policy_identifier, derive_suffix, derive_worker_seed, execute_job,
+        replay_smb_campaign, run_smb_campaign, run_smb_campaign_with_progress,
+        write_live_checkpoint,
     };
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
@@ -2686,6 +2706,7 @@ mod tests {
                 update_every_records: 2,
                 hash_every_records: 2,
             },
+            hash_rule: EmpiricalStepHashRule::default(),
         })
     }
 
@@ -2706,6 +2727,18 @@ mod tests {
             SmbCampaignChordPolicy::RecordedHalf
         );
         assert!(chord_policy_from_identifier("chord_draw_recorded_50:0").is_err());
+
+        let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy else {
+            panic!("derived policy expected");
+        };
+        derivation.hash_rule = EmpiricalStepHashRule::IncrementalHistory;
+        let incremental = SmbCampaignChordPolicy::DerivedHalf(derivation);
+        let identifier = chord_policy_identifier(incremental);
+        assert!(identifier.starts_with("chord_draw_recorded_51:"));
+        assert_eq!(
+            chord_policy_from_identifier(&identifier).expect("parse incremental policy"),
+            incremental
+        );
     }
 
     #[test]

@@ -9662,3 +9662,23 @@ initial fold of the 280k-entry whole-tree origin plus periodic re-folds makes
 kept at `data/testW2/sideB-abandoned-fold-cost/`. Verdict: the feedback draw
 needs an incremental table update before it can be head-to-head tested at this
 scale; the W2 comparison reduces to side A alone as a defaults confirmation run.
+
+## Chord-table hash made incremental (2026-08-24)
+
+Diagnosis from the abandoned W2 side B stream: frames per job matched side A
+(66 vs 64), so emulation cost was equal; the coordinator was spending the
+difference re-serializing the entire all-history chord table to JSON and
+SHA-256-hashing it on every visible update (every 64 records). The W2 origin
+folded 280,528 source sequences into that table, so every update was O(history).
+
+Fix: `EmpiricalStepHashRule::IncrementalHistory` — appended contributions feed
+a persistent hasher; only the bounded recent window is re-serialized per
+update. New recorded identifier `chord_draw_recorded_51:` binds the new rule;
+`chord_draw_recorded_50:` keeps the old full-JSON rule so historical
+recordings verify unchanged. Gates green (fmt, clippy -D warnings, nextest
+42/42, deny).
+
+Registered next: relaunch W2 side B as
+`chord_draw_recorded_51:1,1,0,0,128,3,1,64,1024`, same seed 0x5eed_0903, same
+origin, 4 workers, 50k budget. Expectation: throughput within ~2x of side A
+(was ~9x slower under the full-JSON rule).
