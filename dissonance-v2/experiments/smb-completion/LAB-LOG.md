@@ -9458,3 +9458,66 @@ the operating mode at every one of its 174,969 frames.
 - The test now runs its two compared campaigns with one worker, which
   makes the asserted equality schedule-independent; issue #190 records
   the flake and the fix rides this branch.
+
+## Head-to-head W — the water level, registered before running
+
+- Origin: run 4's live checkpoint trimmed to the pair (1, 1) with
+  creation bound 917,149 — the last execution before run 4's first
+  (1, 2) retention — kept 280,528 entries and their snapshots. The
+  source archive matches the verified copy `88fc7919…`; the streamed
+  snapshot bytes are a newer generation than that archive (the box
+  rewrites the checkpoint in place by atomic rename), so their hash
+  `ecac4eed…` is recorded as provenance and integrity rests on the
+  strict decode plus the one-to-one id match with the kept entries.
+  Trimmed outputs: archive `c856320d…`, snapshots `c67f7066…`.
+- Registration: identical template to head-to-head P — 50,000
+  executions per side, same fresh seed `0x5eed_0902`, 4 workers each at
+  `nice -n 10`, action limit 8,192; side A compiled rules, side B
+  `admit_alive` + `room_cell_uniform_128_retire:3,6,12,2`. The score is
+  executions completed at the first retained entry with key (1, 2).
+  Winner believed only after byte-exact stream replay; both streams
+  kept. Per the plan, if P wins and W does not, that is recorded as
+  water also needing the input-generation change sized by measurement 3.
+
+### Head-to-head P result
+
+- Both sides used their full 50,000 executions and neither retained a
+  world-4-key entry: the primary score is a tie at no-finish. Side A
+  (compiled rules) stream `248b0c95…`, 161,688 retained, 945 probe
+  refusals, 34,418 rejects. Side B (`admit_alive` +
+  `room_cell_uniform_128_retire:3,6,12,2`) stream `16ce7a25…`, 178,577
+  retained, 0 probe refusals, 14,932 rejects, 282,690 retired-class
+  skips, 14 pooled resets, 5 rooms retired at end.
+- Secondary distributions from the streams: the stuck screen's band drew
+  0.01826 of side B's selections against 0.00908 of side A's, 2.01×, in
+  line with the static 1.91× prediction. New entries on the stuck screen:
+  25,251 (B) vs 12,791 (A); new cells beyond the origin's 4,616 there:
+  1,072 (B) vs 401 (A). Maximum (3, 1) progress stayed 208 on both
+  sides — no candidate crossed the screen at all.
+- Read: the retiring selector concentrates as measured and admit-alive
+  widens what survives, but within this budget the pipe screen is not
+  input-reachable often enough for concentration alone to break it. No
+  winner, so no replay claim is made; both streams are kept.
+
+### Head-to-head W result
+
+- Side A (compiled rules) retained its first (1, 2) entry at execution
+  345; side B (`admit_alive` + retire) at execution 2,403. Side A wins
+  the registered score. Side A went on to reach (1, 3) at 20,397; side
+  B ended still in (1, 2). Streams: A `35b07136…`, B `ddb2751e…`; both
+  kept. Side A: 321,572 retained, 2,584 probe refusals, 10,826 rejects.
+  Side B: 322,178 retained, 0 refusals, 11,129 rejects, 260,249
+  retired-class skips, 441 entries / 111 cells / 2 rooms over threshold
+  at end, no pooled reset.
+- Both sides crossed the water two to three orders of magnitude faster
+  than run 4's live stall from the same population (~695,000 executions
+  between its first (1, 1) entry and its first (1, 2) entry). The
+  trimmed restart with a fresh seed dissolved the stall on its own;
+  neither change was needed from this origin, and the screening that
+  the water stall was blamed on refused only 2,584 of side A's 50,000.
+- The reports' top-level progress watermark is inherited unfiltered
+  from the source archive by `smb-trim-tree`; it reads as run 4's
+  watermark and is ignored for scoring, which uses per-entry creation
+  executions.
+- Replay of the winner registered next; the win is believed only if
+  side A's stream replays byte-for-byte.
