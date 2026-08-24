@@ -9720,3 +9720,12 @@ borrowed view over the append-only history, so version storage is a few KB per
 visible-table generation. No recorded bytes change; verification is identical.
 Gates green (fmt, clippy -D warnings, nextest 42/42, deny). Side B replay
 relaunched under the new binary.
+
+## Test P side B rerun replay verified (2026-08-24)
+
+The rerun replay under the current binary verified byte-exact:
+replay_verified true, stream ba9084d9…, archive 0e3a4712…, 50,000 executions.
+This matches the registration (the stream-simulated counter state matched the
+live report), closing the earlier divergence as a stale-binary artifact. The
+test P result stands: tie at no-finish, with the recorded concentration and
+coverage differences unchanged.
