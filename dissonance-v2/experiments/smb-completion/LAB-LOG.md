@@ -9842,3 +9842,9 @@ retire:3,6,12,2, chord_uniform, nes_down_ten). Score: execution creating the
 first entry whose (world, level) exceeds (3,1) — the warp lands in a later
 world, so any advance counts. Prediction: it crosses; the prior tie is
 attributed to the vocabulary bug (no leftward jump).
+
+## LibAFL removal confirmed at full scale (2026-08-24)
+
+The recorded testW side A run (50,000 executions) replays byte-exact under
+the dependency-free binary: replay_verified true, stream 35b07136…, archive
+ef86acb7…, report 6e9c6521… — all identical to the pre-removal verification.
