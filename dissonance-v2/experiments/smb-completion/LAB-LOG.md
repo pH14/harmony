@@ -9316,3 +9316,73 @@ the operating mode at every one of its 174,969 frames.
 - Stop rule: the victory event ends the run and writes the winning
   input; otherwise the run continues until stopped for a measured
   defect that a level cannot be completed without correcting.
+
+## No-gate-and-retirement program — data copy and the three pre-build measurements
+
+- Branch `exec/no-gate-retirement` cut from `goal/smb-single-attempt`. Every
+  step here reads copied recorded artifacts only; run 4 stays untouched on
+  its box.
+- Copy, verified by hash: run 2 stream `c860d8a6…` and run 3 stream
+  `46ecd356…` match their recorded values exactly. Run 3's final
+  whole-tree checkpoint archive `364388cd…`; run 4's checkpoint archive
+  `88fc7919…` hashed identically on the box before and after the copy, so
+  the atomic-rename generation was stable. Run 4's stream is a live prefix,
+  copied identity `dd8082ab…` (1,405,652 records parsed, zero truncated
+  tail lines). The two snapshot checkpoint binaries are deferred: the
+  laptop has 14 GB free against 9 GB of binaries, and no measurement needs
+  them; they are pulled before the head-to-head builds its starting trees.
+
+### Measurement 1 — picks before the first keeper (`smb-picks-before-keeper`)
+
+- Registered before running: for every parent that eventually produced a
+  retained child, the count of its selections before the first one, pooled
+  per entry, per cell, per band, per room; threshold = the smallest give-up
+  count cutting off fewer than 1 in 100 eventually-productive classes.
+- Validation: the walk re-hashes the stream bytes it parsed — run 3
+  recomputes `46ecd356…` exactly — and the per-entry distribution was
+  recomputed independently in Python on a 300,000-record prefix with
+  identical results (picked 104,178, productive 88,437, p50 0, p99 2,
+  max 36).
+- Run 3: entry p50 0 / p99 2 / max 66 → threshold 3; cell p99 5 → 6; band
+  p99 11 → 12; room p99 1 → 2. Run 4 (prefix): entry threshold 3, cell 6,
+  band 5, room 1. Taking the looser of the two per level: **entry 3,
+  cell 6, band 12, room 2**. Productive parents keep almost immediately;
+  the compiled 64-draw exhaustion threshold is two orders looser than any
+  measured need.
+
+### Measurement 2 — give-up reach on run 3's final checkpoint (`smb-give-up-reach`)
+
+- Active set reconstructed from the checkpoint by replaying the
+  displacement rule: 869,500 active, 149,514 displaced. Classes over the
+  full stream: 372,099 produced keepers, 49,907 all-rejected, 23,186
+  all-died, 424,308 never picked.
+- The literal ever-productive classification moves no share anywhere
+  (every band keeps a once-productive or unpicked member). Re-derived per
+  the plan's dull-measurement rule: retirement runs trailing barren-streak
+  counters, so the honest static simulation retires any entry whose own or
+  enclosing class streak at stream end is at or over the measured
+  thresholds {3, 6, 12, 2}.
+- Under streak retirement three stub rooms of the deepest pair retire
+  wholesale and the camera-stopped screen's band rises 0.00507 → 0.00970
+  of all draws, 1.91×, with every surviving band roughly doubling. The
+  registered several-fold prediction does not hold in this static
+  snapshot; the shortfall is measured and explained — the pair's older
+  bands keep minting fresh-fingerprint cells, so their pooled streaks
+  keep resetting. The compounding claim (retire → concentrate → keep
+  faster → retire more) is dynamic and is exactly what the head-to-head
+  decides; per the registration, the build proceeds.
+
+### Measurement 3 — input shapes where children die (`smb-input-shapes`)
+
+- Run 4, pair (1, 1), 623,737 jobs with parents there so far — the stall
+  is live and large. Of jobs whose child died before any boundary
+  (18,639), 97.9 percent drew a long-stratum first hold (96–120 frames),
+  against 39.9 percent long holds among the 325,838 added actions of
+  retained children and 50 percent under the uniform draw. Masks are
+  near-uniform among retained with a mild deficit of the A+direction
+  chords; deaths skew toward A+direction long holds. Fixed long holds are
+  what kills water candidates. Recorded only; this sizes the later
+  input-generation change and changes nothing here.
+- Raw outputs under `data/measure/` on the working tree (not committed):
+  `run3-picks.json`, `run4-picks.json`, `run3-reach.json`,
+  `run4-input-shapes.json`.

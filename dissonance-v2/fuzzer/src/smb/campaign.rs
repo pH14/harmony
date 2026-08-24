@@ -529,8 +529,14 @@ fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, Box<
 /// The suffix is sampled from a fresh RNG seeded with the mutation seed
 /// alone, so a job is a pure function of (parent snapshot, mutation seed).
 /// Under a recorded chord policy each chord comes from the table at even
-/// odds with the uniform draw.
-fn derive_suffix(
+/// odds with the uniform draw. Public so recorded-artifact diagnostics can
+/// re-derive the actions a stream's jobs executed.
+///
+/// # Errors
+///
+/// Returns an error when a draw bound is invalid or a recorded chord policy
+/// is missing its folded tables.
+pub fn derive_suffix(
     mutation_seed: u64,
     chord_policy: SmbCampaignChordPolicy,
     chord_tables: Option<&EmpiricalStepTables<ButtonChord>>,
