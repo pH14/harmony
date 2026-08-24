@@ -9652,3 +9652,13 @@ the operating mode at every one of its 174,969 frames.
   `data/testW2/old-rules-bonus-sample/`). The rerun-replay under the
   current binary is registered: expected to verify, since the
   stream-simulated counter state matches the live report exactly.
+
+## W2 side B abandoned on cost (2026-08-24)
+
+Side B (defaults + `chord_draw_recorded_50:1,1,0,0,128,3,1,64,1024`) stopped at
+2,233/50,000 executions after ~15 minutes (~2.5 exec/s vs side A ~22/s). The
+initial fold of the 280k-entry whole-tree origin plus periodic re-folds makes
+`EmpiricalStepTables` unusable on large origins as implemented. Partial output
+kept at `data/testW2/sideB-abandoned-fold-cost/`. Verdict: the feedback draw
+needs an incremental table update before it can be head-to-head tested at this
+scale; the W2 comparison reduces to side A alone as a defaults confirmation run.
