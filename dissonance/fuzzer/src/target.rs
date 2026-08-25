@@ -32,7 +32,7 @@ pub trait Target {
     fn observe(&self) -> Self::Observations;
     /// Return the deliberately coarse base-map feature.
     fn fingerprint(&self) -> u64;
-    /// Return the current LibAFL exit kind.
+    /// Return the current exit kind.
     fn exit_kind(&self) -> ExitKind;
 
     /// Optionally snapshot the target. `None` means replay from genesis.
