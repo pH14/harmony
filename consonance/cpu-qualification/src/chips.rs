@@ -192,8 +192,11 @@ pub struct ChipEntry {
     pub host_conditions: &'static [HostConditionKind],
     /// The determinism contract column for this chip.
     pub contract: Option<&'static str>,
-    /// The retired-lock-instructions event stage 0 uses to prove the speculative
-    /// lock-mapping workaround is actually in effect. Only AMD needs it.
+    /// The event stage 0 uses to prove the speculative lock-mapping workaround
+    /// is actually in effect: retired lock instructions of the speculative
+    /// lock-map-commit kind. With the workaround in force a `lock add` produces
+    /// none of them, so the probe's pass condition is a count of zero. Only AMD
+    /// needs it.
     pub lock_probe_event: Option<TableValue<u64>>,
 }
 
@@ -256,10 +259,12 @@ const AMD_ZEN: ChipEntry = ChipEntry {
         HostConditionKind::AvicOff,
     ],
     contract: Some("docs/cpu-msr-contract-amd-draft.toml"),
-    lock_probe_event: Some(TableValue::Absent {
-        reason: "the retired-lock-instructions event config is not recorded in this \
-                 repository; transcribe it from rr src/PerfCounters.cc before the AMD \
-                 lock probe can run",
+    // Event 0x25 is retired lock instructions; unit mask 0x08 selects the
+    // speculative lock-map-commit kind, and 0x51 is the enable and user/kernel
+    // control field rr carries in the raw config.
+    lock_probe_event: Some(TableValue::Recorded {
+        value: 0x0051_0825,
+        source: "rr src/PerfCounters.cc check_for_zen_speclockmap",
     }),
 };
 
@@ -542,10 +547,12 @@ mod tests {
     }
 
     #[test]
-    fn the_amd_lock_probe_event_is_absent_with_a_reason_and_no_other_entry_has_one() {
+    fn the_amd_lock_probe_event_is_rrs_and_no_other_entry_has_one() {
         let probe = AMD_ZEN.lock_probe_event.expect("AMD needs the lock probe");
-        assert_eq!(probe.value(), None);
-        assert!(probe.absent_reason().is_some_and(|r| r.contains("rr")));
+        assert_eq!(probe.value(), Some(0x0051_0825));
+        assert!(
+            matches!(probe, TableValue::Recorded { source, .. } if source.contains("rr src/PerfCounters.cc"))
+        );
         assert!(INTEL_06_9E.lock_probe_event.is_none());
         assert!(NEOVERSE_N1.lock_probe_event.is_none());
     }

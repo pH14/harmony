@@ -409,63 +409,105 @@ fn amd_perfmon_v2() -> bool {
     core::arch::x86_64::__cpuid(0x8000_0022).eax & 1 == 1
 }
 
-/// The row proving AMD's speculative lock-mapping workaround is actually in
-/// force: a `lock add` loop must move the retired lock-instructions counter.
+/// The rows proving AMD's speculative lock-mapping workaround is actually in
+/// force, by the probe rr runs at startup: with the workaround in force, a
+/// `lock add` commits no speculative lock map, so the counter reads zero.
+///
+/// Two rows, because one is not enough. A counter that reads zero because
+/// nothing counted at all looks exactly like a counter that reads zero because
+/// the workaround is in force, so the work clock counts the same payload run
+/// and must read nonzero. Only then does the zero say something about the
+/// workaround rather than about the performance-monitoring unit.
 ///
 /// Returns nothing for chips whose entry names no such probe.
 ///
 /// # Errors
 /// [`Stage0Error::ProbeUnavailable`] when the entry names the probe but the
-/// table records no event for it, [`Stage0Error::WorkClock`] when the event will
-/// not open.
-pub fn lock_probe_row(entry: &ChipEntry) -> Result<Option<Row>, Stage0Error> {
+/// table records no event for it, [`Stage0Error::WorkClock`] when either event
+/// will not open.
+pub fn lock_probe_rows(entry: &ChipEntry) -> Result<Vec<Row>, Stage0Error> {
     let Some(event) = entry.lock_probe_event else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let config = match event {
         TableValue::Recorded { value, .. } => value,
         TableValue::Absent { reason } => {
             return Err(Stage0Error::ProbeUnavailable {
-                probe: format!("the retired-lock-instructions probe on {}", entry.name),
+                probe: format!("the speculative lock-map probe on {}", entry.name),
                 reason: reason.to_string(),
             });
         }
     };
-    let spec = &payload::LOCKED;
-    let counter = PerfCounter::open_counting(config, Scope::HostUser).map_err(|e| {
-        Stage0Error::WorkClock {
+    let work_config = match entry.work_clock_config {
+        TableValue::Recorded { value, .. } => value,
+        TableValue::Absent { reason } => {
+            return Err(Stage0Error::ProbeUnavailable {
+                probe: format!("the speculative lock-map probe's control on {}", entry.name),
+                reason: reason.to_string(),
+            });
+        }
+    };
+
+    let open = |config: u64| -> Result<PerfCounter, Stage0Error> {
+        PerfCounter::open_counting(config, Scope::HostUser).map_err(|e| Stage0Error::WorkClock {
             config,
             detail: e.to_string(),
-        }
-    })?;
-    counter
-        .reset()
-        .and_then(|()| counter.enable())
-        .map_err(|e| Stage0Error::WorkClock {
+        })
+    };
+    let start = |counter: &PerfCounter, config: u64| -> Result<(), Stage0Error> {
+        counter
+            .reset()
+            .and_then(|()| counter.enable())
+            .map_err(|e| Stage0Error::WorkClock {
+                config,
+                detail: e.to_string(),
+            })
+    };
+
+    let spec = &payload::LOCKED;
+    let commits = open(config)?;
+    let control = open(work_config)?;
+    start(&commits, config)?;
+    start(&control, work_config)?;
+    let ran = payload::run(spec, WORK_CLOCK_PROBE_ITERATIONS);
+    for (counter, config) in [(&commits, config), (&control, work_config)] {
+        counter.disable().map_err(|e| Stage0Error::WorkClock {
             config,
             detail: e.to_string(),
         })?;
-    let ran = payload::run(spec, WORK_CLOCK_PROBE_ITERATIONS);
-    counter.disable().map_err(|e| Stage0Error::WorkClock {
-        config,
-        detail: e.to_string(),
-    })?;
+    }
     if ran.is_none() {
         return Err(Stage0Error::ProbeUnavailable {
-            probe: "the retired-lock-instructions probe".to_string(),
+            probe: "the speculative lock-map probe".to_string(),
             reason: format!("payload {} did not run on this architecture", spec.name),
         });
     }
-    let read = counter.read_timed().map_err(|e| Stage0Error::WorkClock {
-        config,
-        detail: e.to_string(),
-    })?;
-    Ok(Some(Row::new(
-        "retired-lock-instructions",
-        "host",
-        "nonzero",
-        if read.value > 0 { "nonzero" } else { "zero" },
-    )))
+    let read = |counter: &PerfCounter, config: u64| -> Result<u64, Stage0Error> {
+        counter
+            .read_timed()
+            .map(|r| r.value)
+            .map_err(|e| Stage0Error::WorkClock {
+                config,
+                detail: e.to_string(),
+            })
+    };
+    let commits_read = read(&commits, config)?;
+    let control_read = read(&control, work_config)?;
+
+    Ok(vec![
+        Row::new(
+            "spec-lock-map-commits",
+            "host",
+            "zero",
+            if commits_read > 0 { "nonzero" } else { "zero" },
+        ),
+        Row::new(
+            "spec-lock-map-probe-ran",
+            "host",
+            "nonzero",
+            if control_read > 0 { "nonzero" } else { "zero" },
+        ),
+    ])
 }
 
 /// Run stage 0 against a pack: read the chip, match it, probe the work clock,
@@ -481,7 +523,7 @@ pub fn run(pack: &Pack) -> Result<Stage0Outcome, Stage0Error> {
     let readings = read_conditions(entry, &cpus)?;
     let mut outcome = build_rows(entry, pack, &chip, &readings, &work_clock)?;
     outcome.add_rows(pmu_shape_row(entry)?);
-    outcome.add_rows(lock_probe_row(entry)?);
+    outcome.add_rows(lock_probe_rows(entry)?);
     Ok(outcome)
 }
 
@@ -497,12 +539,15 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_lock_probe_event_refuses_rather_than_passing() {
-        let amd = crate::chips::KNOWN_CHIPS
+    fn a_chip_with_no_lock_probe_produces_no_rows_for_one() {
+        let intel = crate::chips::KNOWN_CHIPS
             .iter()
-            .find(|e| e.vendor == Vendor::AuthenticAMD)
-            .expect("the table carries an AMD entry");
-        let error = lock_probe_row(amd).expect_err("the event has no recorded value");
-        assert!(matches!(error, Stage0Error::ProbeUnavailable { .. }));
+            .find(|e| e.vendor == Vendor::GenuineIntel)
+            .expect("the table carries an Intel entry");
+        assert!(
+            lock_probe_rows(intel)
+                .expect("no probe is not a refusal")
+                .is_empty()
+        );
     }
 }

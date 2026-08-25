@@ -89,9 +89,12 @@ checks every required host condition from the table entry, on every core: MSR st
 SMT state, NMI watchdog, governor, `/dev/kvm`, and the loaded KVM module's identity
 (stock or patched, by content hash). On AMD the MSR check covers SpecLockMap in
 `LS_CFG` on all cores, with the SSB mitigation mode pinned so the kernel cannot
-rewrite it. AMD also gets the probe rr uses: a `lock add` loop must move the retired
-lock-instructions counter. If the counter does not move, the workaround is not in
-effect, regardless of what the MSR read said.
+rewrite it. AMD also gets the probe rr uses: a `lock add` loop must leave the
+speculative-lock-map-commit counter at zero, because with the workaround in effect the
+lock is not speculatively mapped. If the counter moves, the workaround is not in effect,
+regardless of what the MSR read said. The work clock counts the same run and must read
+nonzero, so a zero that means "nothing counted at all" cannot pass for a zero that means
+"no speculative lock map".
 
 The output is a set of expect-vs-found rows. Every row is confirmed or explicitly
 dispositioned; a favorable deviation is still a deviation. For a full qualification

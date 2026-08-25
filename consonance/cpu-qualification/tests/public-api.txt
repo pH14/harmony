@@ -422,7 +422,7 @@ pub fn cpu_qualification::stage0::parse_cpu_list(&str) -> alloc::vec::Vec<usize>
 pub fn cpu_qualification::stage0::rows_differ(&[cpu_qualification::stage0::Row], &[cpu_qualification::stage0::Row]) -> alloc::vec::Vec<alloc::string::String>
 pub fn cpu_qualification::stage0::work_clock_rows(&cpu_qualification::pack::Pack, &cpu_qualification::stage0::WorkClockProbe) -> core::result::Result<alloc::vec::Vec<cpu_qualification::stage0::Row>, cpu_qualification::stage0::Stage0Error>
 pub mod cpu_qualification::stage0_sys
-pub fn cpu_qualification::stage0_sys::lock_probe_row(&cpu_qualification::chips::ChipEntry) -> core::result::Result<core::option::Option<cpu_qualification::stage0::Row>, cpu_qualification::stage0::Stage0Error>
+pub fn cpu_qualification::stage0_sys::lock_probe_rows(&cpu_qualification::chips::ChipEntry) -> core::result::Result<alloc::vec::Vec<cpu_qualification::stage0::Row>, cpu_qualification::stage0::Stage0Error>
 pub fn cpu_qualification::stage0_sys::online_cpus() -> core::result::Result<alloc::vec::Vec<usize>, cpu_qualification::stage0::Stage0Error>
 pub fn cpu_qualification::stage0_sys::pmu_shape_row(&cpu_qualification::chips::ChipEntry) -> core::result::Result<core::option::Option<cpu_qualification::stage0::Row>, cpu_qualification::stage0::Stage0Error>
 pub fn cpu_qualification::stage0_sys::probe_work_clock(&cpu_qualification::chips::ChipEntry) -> core::result::Result<cpu_qualification::stage0::WorkClockProbe, cpu_qualification::stage0::Stage0Error>
