@@ -152,6 +152,11 @@ pub enum HostConditionKind {
     /// The kernel's ceiling on sampling interrupts is raised past what a
     /// campaign produces, so no overflow is suppressed.
     PerfSampleCeiling,
+    /// The kernel does not schedule its own work on the measurement core.
+    /// Without this the overflow interrupt can be delayed far enough to carry
+    /// the guest past its deadline; on the qualification box the rate of that
+    /// is roughly fifty times higher on a core the kernel schedules on.
+    CoreIsolated,
 }
 
 impl HostConditionKind {
@@ -169,6 +174,7 @@ impl HostConditionKind {
             HostConditionKind::SsbMitigationPinned => "ssb-mitigation-pinned",
             HostConditionKind::AvicOff => "avic-off",
             HostConditionKind::PerfSampleCeiling => "perf-sample-ceiling",
+            HostConditionKind::CoreIsolated => "core-isolated",
         }
     }
 }
@@ -263,6 +269,7 @@ const AMD_ZEN: ChipEntry = ChipEntry {
         HostConditionKind::SsbMitigationPinned,
         HostConditionKind::AvicOff,
         HostConditionKind::PerfSampleCeiling,
+        HostConditionKind::CoreIsolated,
     ],
     contract: Some("docs/cpu-msr-contract-amd-draft.toml"),
     // Event 0x25 is retired lock instructions; unit mask 0x08 selects the

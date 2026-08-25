@@ -2,6 +2,7 @@ pub mod cpu_qualification
 pub mod cpu_qualification::chips
 pub enum cpu_qualification::chips::HostConditionKind
 pub cpu_qualification::chips::HostConditionKind::AvicOff
+pub cpu_qualification::chips::HostConditionKind::CoreIsolated
 pub cpu_qualification::chips::HostConditionKind::CorePinning
 pub cpu_qualification::chips::HostConditionKind::GovernorPinned
 pub cpu_qualification::chips::HostConditionKind::KvmModuleIdentity
@@ -543,6 +544,7 @@ pub fn cpu_qualification::pack::Field<T>::require(&self, &'static str) -> core::
 pub fn cpu_qualification::pack::Field<T>::value(&self) -> core::option::Option<&T>
 pub enum cpu_qualification::HostConditionKind
 pub cpu_qualification::HostConditionKind::AvicOff
+pub cpu_qualification::HostConditionKind::CoreIsolated
 pub cpu_qualification::HostConditionKind::CorePinning
 pub cpu_qualification::HostConditionKind::GovernorPinned
 pub cpu_qualification::HostConditionKind::KvmModuleIdentity

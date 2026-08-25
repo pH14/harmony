@@ -1,0 +1,396 @@
+=== supplement, all 15 shards 2026-08-25T09:05:22Z ===
+  core0.json: 24000 arms
+  core1.json: 24000 arms
+  core10.json: 24000 arms
+  core11.json: 24000 arms
+  core12.json: 24000 arms
+  core13.json: 24000 arms
+  core14.json: 24000 arms
+  core15.json: 24000 arms
+  core2.json: 24000 arms
+  core4.json: 24000 arms
+  core5.json: 24000 arms
+  core6.json: 24000 arms
+  core7.json: 24000 arms
+  core8.json: 24000 arms
+  core9.json: 24000 arms
+
+arms=360000 landings=720000 overflow_arms=360000
+landings through the deterministic exit: 720000 (720000 attested in the record, 0 inferred from a passing replay of an armed target)
+first-arm exact landings: 359971 of 360000
+failing arms: 56 of 360000
+  overflow arms exposed to overshoot: 720000
+  first-arm overshoot: 29  (1 in 24827)
+  replay-arm overshoot, recorded as such: 27  (1 in 26666)
+  replay landed inexactly for another reason: 0
+  replay landed exactly and the digest still differed: 29
+  replay mismatch whose cause this harness does not record: 0
+  all recorded overshoots: 56 in 720000 exposed arms (1 in 12857)
+arms re-primed after a premature interrupt: 0
+arms that took a host interrupt on the pinned core during the landing: 360000 of 360000; of the 56 failing arms, 56 did
+contiguous index runs: True
+
+guest-mode skid, n=720000 (every arm whose own skid the record carries)
+      p50 2909
+      p90 2969
+      p99 3019
+    p99.9 5674
+   p99.99 7962
+      max 86738   mean 2801.6   min 1194
+  beyond the sealed margin 16192: 56 of 720000
+
+failures by core: {0: 9, 10: 10, 12: 6, 14: 5, 2: 8, 4: 7, 6: 5, 8: 5, 9: 1}   arms by core: {0: 24000, 1: 24000, 10: 24000, 11: 24000, 12: 24000, 13: 24000, 14: 24000, 15: 24000, 2: 24000, 4: 24000, 5: 24000, 6: 24000, 7: 24000, 8: 24000, 9: 24000}
+  isolated cores: 168000 arms, 336000 exposed to overshoot, 1 overshot, 1 in 336000
+  co-tenant cores: 192000 arms, 384000 exposed to overshoot, 55 overshot, 1 in 6981
+
+digest model reproduces 56 of 56 first-arm landings whose work count the records state
+recovered replay landings:
+  core0 idx 4086 target 82012: replay stopped at work 82012 (step), +0 from the target
+  core0 idx 4273 target 47236: replay stopped at work 64970 (overflow), +17734 from the target, skid 33926
+  core0 idx 5122 target 64341: replay stopped at work 64341 (step), +0 from the target
+  core0 idx 7953 target 63339: replay stopped at work 97218 (overflow), +33879 from the target, skid 50071
+  core0 idx 11897 target 93013: replay stopped at work 93013 (step), +0 from the target
+  core0 idx 15989 target 30172: replay stopped at work 30881 (overflow), +709 from the target, skid 16901
+  core0 idx 19017 target 46759: replay stopped at work 64033 (overflow), +17274 from the target, skid 33466
+  core0 idx 19164 target 35174: replay stopped at work 35174 (step), +0 from the target
+  core0 idx 22941 target 98810: replay stopped at work 168185 (overflow), +69375 from the target, skid 85567
+  core10 idx 1234 target 75744: replay stopped at work 75744 (step), +0 from the target
+  core10 idx 5064 target 64611: replay stopped at work 64611 (step), +0 from the target
+  core10 idx 7776 target 53814: replay stopped at work 78161 (overflow), +24347 from the target, skid 40539
+  core10 idx 8086 target 85791: replay stopped at work 85791 (step), +0 from the target
+  core10 idx 10724 target 48650: replay stopped at work 67804 (overflow), +19154 from the target, skid 35346
+  core10 idx 11766 target 69319: replay stopped at work 69319 (step), +0 from the target
+  core10 idx 14893 target 89676: replay stopped at work 149881 (overflow), +60205 from the target, skid 76397
+  core10 idx 17443 target 74445: replay stopped at work 119431 (overflow), +44986 from the target, skid 61178
+  core10 idx 18042 target 82949: replay stopped at work 136422 (overflow), +53473 from the target, skid 69665
+  core10 idx 21854 target 44104: replay stopped at work 58699 (overflow), +14595 from the target, skid 30787
+  core12 idx 4327 target 80397: replay stopped at work 80397 (step), +0 from the target
+  core12 idx 6125 target 41721: replay stopped at work 41721 (step), +0 from the target
+  core12 idx 7332 target 94310: replay stopped at work 159200 (overflow), +64890 from the target, skid 81082
+  core12 idx 8825 target 31577: replay stopped at work 33704 (overflow), +2127 from the target, skid 18319
+  core12 idx 13339 target 73763: replay stopped at work 73763 (step), +0 from the target
+  core12 idx 21084 target 55566: replay stopped at work 55566 (step), +0 from the target
+  core14 idx 13469 target 99965: replay stopped at work 99965 (step), +0 from the target
+  core14 idx 15069 target 64178: replay stopped at work 64178 (step), +0 from the target
+  core14 idx 15886 target 67433: replay stopped at work 67433 (step), +0 from the target
+  core14 idx 17202 target 98667: replay stopped at work 98667 (step), +0 from the target
+  core14 idx 19277 target 64752: replay stopped at work 64752 (step), +0 from the target
+  core2 idx 3436 target 77431: replay stopped at work 125422 (overflow), +47991 from the target, skid 64183
+  core2 idx 5111 target 76907: replay stopped at work 76907 (step), +0 from the target
+  core2 idx 7281 target 81615: replay stopped at work 133804 (overflow), +52189 from the target, skid 68381
+  core2 idx 10256 target 70929: replay stopped at work 112423 (overflow), +41494 from the target, skid 57686
+  core2 idx 12193 target 32563: replay stopped at work 35682 (overflow), +3119 from the target, skid 19311
+  core2 idx 12274 target 48250: replay stopped at work 67051 (overflow), +18801 from the target, skid 34993
+  core2 idx 13767 target 46969: replay stopped at work 46969 (step), +0 from the target
+  core2 idx 20698 target 82116: replay stopped at work 134789 (overflow), +52673 from the target, skid 68865
+  core4 idx 1680 target 95526: replay stopped at work 161070 (overflow), +65544 from the target, skid 81736
+  core4 idx 4433 target 51533: replay stopped at work 51533 (step), +0 from the target
+  core4 idx 7608 target 83508: replay stopped at work 83508 (step), +0 from the target
+  core4 idx 8282 target 40997: replay stopped at work 52034 (overflow), +11037 from the target, skid 27229
+  core4 idx 9853 target 79678: replay stopped at work 129389 (overflow), +49711 from the target, skid 65903
+  core4 idx 13731 target 41818: replay stopped at work 41818 (step), +0 from the target
+  core4 idx 15703 target 80854: replay stopped at work 131748 (overflow), +50894 from the target, skid 67086
+  core6 idx 1768 target 46662: replay stopped at work 63427 (overflow), +16765 from the target, skid 32957
+  core6 idx 8110 target 71313: replay stopped at work 71313 (step), +0 from the target
+  core6 idx 11351 target 32186: replay stopped at work 32186 (step), +0 from the target
+  core6 idx 17039 target 41742: replay stopped at work 53487 (overflow), +11745 from the target, skid 27937
+  core6 idx 22935 target 82076: replay stopped at work 82076 (step), +0 from the target
+  core8 idx 2540 target 32621: replay stopped at work 32621 (step), +0 from the target
+  core8 idx 8018 target 75014: replay stopped at work 75014 (step), +0 from the target
+  core8 idx 11191 target 75498: replay stopped at work 121471 (overflow), +45973 from the target, skid 62165
+  core8 idx 11374 target 71284: replay stopped at work 71284 (step), +0 from the target
+  core8 idx 20531 target 82914: replay stopped at work 82914 (step), +0 from the target
+  core9 idx 21405 target 62788: replay stopped at work 84212 (overflow), +21424 from the target, skid 37616
+failing targets: [30172, 31577, 32186, 32563, 32621, 35174, 40997, 41721, 41742, 41818, 44104, 46662, 46759, 46969, 47236, 48250, 48650, 51533, 53814, 55566, 62788, 63339, 64178, 64341, 64611, 64752, 67433, 69319, 70929, 71284, 71313, 73763, 74445, 75014, 75498, 75744, 76907, 77431, 79678, 80397, 80854, 81615, 82012, 82076, 82116, 82914, 82949, 83508, 85791, 89676, 93013, 94310, 95526, 98667, 98810, 99965]
+  target range over the whole run: 16193 to 100000, median 58095
+  mean period, all overflow arms: 41907
+  mean period weighted by period: 55870
+  mean period, failing arms (n=56): 49649
+  share of all targets below the smallest failing target: 0.167
+
+branches per TSC tick during the run to the overflow: p1=0.157 p50=0.795 p99=0.970
+  failing arm core0 idx 4086: work 134530 in 147930 ticks = 0.909
+  failing arm core0 idx 4273: work 33939 in 47310 ticks = 0.717
+  failing arm core0 idx 5122: work 99208 in 117780 ticks = 0.842
+  failing arm core0 idx 7953: work 50040 in 58650 ticks = 0.853
+  failing arm core0 idx 11897: work 156578 in 169890 ticks = 0.922
+  failing arm core0 idx 15989: work 16905 in 32010 ticks = 0.528
+  failing arm core0 idx 19017: work 33507 in 47160 ticks = 0.710
+  failing arm core0 idx 19164: work 40918 in 71310 ticks = 0.574
+  failing arm core0 idx 22941: work 85519 in 87390 ticks = 0.979
+  failing arm core10 idx 1234: work 121999 in 137640 ticks = 0.886
+  failing arm core10 idx 5064: work 99711 in 121800 ticks = 0.819
+  failing arm core10 idx 7776: work 40504 in 53850 ticks = 0.752
+  failing arm core10 idx 8086: work 142079 in 153000 ticks = 0.929
+  failing arm core10 idx 10724: work 35356 in 50430 ticks = 0.701
+  failing arm core10 idx 11766: work 109189 in 125400 ticks = 0.871
+  failing arm core10 idx 14893: work 76362 in 81300 ticks = 0.939
+  failing arm core10 idx 17443: work 61154 in 68700 ticks = 0.890
+  failing arm core10 idx 18042: work 69683 in 76590 ticks = 0.910
+  failing arm core10 idx 21854: work 30784 in 44130 ticks = 0.698
+  failing arm core12 idx 4327: work 131381 in 142920 ticks = 0.919
+  failing arm core12 idx 6125: work 53983 in 86220 ticks = 0.626
+  failing arm core12 idx 7332: work 81034 in 86100 ticks = 0.941
+  failing arm core12 idx 8825: work 18320 in 34230 ticks = 0.535
+  failing arm core12 idx 13339: work 118117 in 135930 ticks = 0.869
+  failing arm core12 idx 21084: work 81702 in 105510 ticks = 0.774
+  failing arm core14 idx 13469: work 170511 in 175620 ticks = 0.971
+  failing arm core14 idx 15069: work 98936 in 116520 ticks = 0.849
+  failing arm core14 idx 15886: work 105446 in 122340 ticks = 0.862
+  failing arm core14 idx 17202: work 167920 in 174570 ticks = 0.962
+  failing arm core14 idx 19277: work 100088 in 118920 ticks = 0.842
+  failing arm core2 idx 3436: work 64191 in 73080 ticks = 0.878
+  failing arm core2 idx 5111: work 124393 in 138390 ticks = 0.899
+  failing arm core2 idx 7281: work 68383 in 77910 ticks = 0.878
+  failing arm core2 idx 10256: work 57695 in 66240 ticks = 0.871
+  failing arm core2 idx 12193: work 19316 in 35880 ticks = 0.538
+  failing arm core2 idx 12274: work 34976 in 50880 ticks = 0.687
+  failing arm core2 idx 13767: work 64492 in 92880 ticks = 0.694
+  failing arm core2 idx 20698: work 68875 in 74940 ticks = 0.919
+  failing arm core4 idx 1680: work 81710 in 85920 ticks = 0.951
+  failing arm core4 idx 4433: work 73047 in 95010 ticks = 0.769
+  failing arm core4 idx 7608: work 137053 in 150180 ticks = 0.913
+  failing arm core4 idx 8282: work 27192 in 42810 ticks = 0.635
+  failing arm core4 idx 9853: work 65898 in 73380 ticks = 0.898
+  failing arm core4 idx 13731: work 53663 in 88170 ticks = 0.609
+  failing arm core4 idx 15703: work 67057 in 73440 ticks = 0.913
+  failing arm core6 idx 1768: work 32879 in 47790 ticks = 0.688
+  failing arm core6 idx 8110: work 112684 in 126990 ticks = 0.887
+  failing arm core6 idx 11351: work 34372 in 70200 ticks = 0.490
+  failing arm core6 idx 17039: work 27939 in 42600 ticks = 0.656
+  failing arm core6 idx 22935: work 134192 in 146190 ticks = 0.918
+  failing arm core8 idx 2540: work 35765 in 69600 ticks = 0.514
+  failing arm core8 idx 8018: work 120552 in 137130 ticks = 0.879
+  failing arm core8 idx 11191: work 62169 in 70620 ticks = 0.880
+  failing arm core8 idx 11374: work 113081 in 136530 ticks = 0.828
+  failing arm core8 idx 20531: work 136298 in 151680 ticks = 0.899
+  failing arm core9 idx 21405: work 49491 in 61500 ticks = 0.805
+
+arms with a non-zero SMI-received delta: 0 of 360000
+re-arm after an overshoot: attempted on 56, landed exactly on 56
+
+=== isolated cores 1,5,7,9,11,13,15 (isolcpus, nohz_full, rcu_nocbs) ===
+  core1.json: 24000 arms
+  core11.json: 24000 arms
+  core13.json: 24000 arms
+  core15.json: 24000 arms
+  core5.json: 24000 arms
+  core7.json: 24000 arms
+  core9.json: 24000 arms
+
+arms=168000 landings=336000 overflow_arms=168000
+landings through the deterministic exit: 336000 (336000 attested in the record, 0 inferred from a passing replay of an armed target)
+first-arm exact landings: 168000 of 168000
+failing arms: 1 of 168000
+  overflow arms exposed to overshoot: 336000
+  first-arm overshoot: 0
+  replay-arm overshoot, recorded as such: 1  (1 in 336000)
+  replay landed inexactly for another reason: 0
+  replay landed exactly and the digest still differed: 0
+  replay mismatch whose cause this harness does not record: 0
+  all recorded overshoots: 1 in 336000 exposed arms (1 in 336000)
+arms re-primed after a premature interrupt: 0
+arms that took a host interrupt on the pinned core during the landing: 168000 of 168000; of the 1 failing arms, 1 did
+contiguous index runs: True
+
+guest-mode skid, n=336000 (every arm whose own skid the record carries)
+      p50 2908
+      p90 2972
+      p99 3024
+    p99.9 5614
+   p99.99 7539
+      max 37616   mean 2790.0   min 1206
+  beyond the sealed margin 16192: 1 of 336000
+
+failures by core: {9: 1}   arms by core: {1: 24000, 11: 24000, 13: 24000, 15: 24000, 5: 24000, 7: 24000, 9: 24000}
+
+digest model reproduces 1 of 1 first-arm landings whose work count the records state
+recovered replay landings:
+  core9 idx 21405 target 62788: replay stopped at work 84212 (overflow), +21424 from the target, skid 37616
+failing targets: [62788]
+  target range over the whole run: 16193 to 100000, median 58002
+  mean period, all overflow arms: 41854
+  mean period weighted by period: 55789
+  mean period, failing arms (n=1): 46596
+  share of all targets below the smallest failing target: 0.558
+
+branches per TSC tick during the run to the overflow: p1=0.157 p50=0.795 p99=0.968
+  failing arm core9 idx 21405: work 49491 in 61500 ticks = 0.805
+
+arms with a non-zero SMI-received delta: 0 of 168000
+re-arm after an overshoot: attempted on 1, landed exactly on 1
+
+=== ordinary cores 0,2,4,6,8,10,12,14 (the kernel schedules on these) ===
+  core0.json: 24000 arms
+  core10.json: 24000 arms
+  core12.json: 24000 arms
+  core14.json: 24000 arms
+  core2.json: 24000 arms
+  core4.json: 24000 arms
+  core6.json: 24000 arms
+  core8.json: 24000 arms
+
+arms=192000 landings=384000 overflow_arms=192000
+landings through the deterministic exit: 384000 (384000 attested in the record, 0 inferred from a passing replay of an armed target)
+first-arm exact landings: 191971 of 192000
+failing arms: 55 of 192000
+  overflow arms exposed to overshoot: 384000
+  first-arm overshoot: 29  (1 in 13241)
+  replay-arm overshoot, recorded as such: 26  (1 in 14769)
+  replay landed inexactly for another reason: 0
+  replay landed exactly and the digest still differed: 29
+  replay mismatch whose cause this harness does not record: 0
+  all recorded overshoots: 55 in 384000 exposed arms (1 in 6981)
+arms re-primed after a premature interrupt: 0
+arms that took a host interrupt on the pinned core during the landing: 192000 of 192000; of the 55 failing arms, 55 did
+contiguous index runs: True
+
+guest-mode skid, n=384000 (every arm whose own skid the record carries)
+      p50 2910
+      p90 2966
+      p99 3014
+    p99.9 5746
+   p99.99 35346
+      max 86738   mean 2811.7   min 1194
+  beyond the sealed margin 16192: 55 of 384000
+
+failures by core: {0: 9, 10: 10, 12: 6, 14: 5, 2: 8, 4: 7, 6: 5, 8: 5}   arms by core: {0: 24000, 10: 24000, 12: 24000, 14: 24000, 2: 24000, 4: 24000, 6: 24000, 8: 24000}
+
+digest model reproduces 55 of 55 first-arm landings whose work count the records state
+recovered replay landings:
+  core0 idx 4086 target 82012: replay stopped at work 82012 (step), +0 from the target
+  core0 idx 4273 target 47236: replay stopped at work 64970 (overflow), +17734 from the target, skid 33926
+  core0 idx 5122 target 64341: replay stopped at work 64341 (step), +0 from the target
+  core0 idx 7953 target 63339: replay stopped at work 97218 (overflow), +33879 from the target, skid 50071
+  core0 idx 11897 target 93013: replay stopped at work 93013 (step), +0 from the target
+  core0 idx 15989 target 30172: replay stopped at work 30881 (overflow), +709 from the target, skid 16901
+  core0 idx 19017 target 46759: replay stopped at work 64033 (overflow), +17274 from the target, skid 33466
+  core0 idx 19164 target 35174: replay stopped at work 35174 (step), +0 from the target
+  core0 idx 22941 target 98810: replay stopped at work 168185 (overflow), +69375 from the target, skid 85567
+  core10 idx 1234 target 75744: replay stopped at work 75744 (step), +0 from the target
+  core10 idx 5064 target 64611: replay stopped at work 64611 (step), +0 from the target
+  core10 idx 7776 target 53814: replay stopped at work 78161 (overflow), +24347 from the target, skid 40539
+  core10 idx 8086 target 85791: replay stopped at work 85791 (step), +0 from the target
+  core10 idx 10724 target 48650: replay stopped at work 67804 (overflow), +19154 from the target, skid 35346
+  core10 idx 11766 target 69319: replay stopped at work 69319 (step), +0 from the target
+  core10 idx 14893 target 89676: replay stopped at work 149881 (overflow), +60205 from the target, skid 76397
+  core10 idx 17443 target 74445: replay stopped at work 119431 (overflow), +44986 from the target, skid 61178
+  core10 idx 18042 target 82949: replay stopped at work 136422 (overflow), +53473 from the target, skid 69665
+  core10 idx 21854 target 44104: replay stopped at work 58699 (overflow), +14595 from the target, skid 30787
+  core12 idx 4327 target 80397: replay stopped at work 80397 (step), +0 from the target
+  core12 idx 6125 target 41721: replay stopped at work 41721 (step), +0 from the target
+  core12 idx 7332 target 94310: replay stopped at work 159200 (overflow), +64890 from the target, skid 81082
+  core12 idx 8825 target 31577: replay stopped at work 33704 (overflow), +2127 from the target, skid 18319
+  core12 idx 13339 target 73763: replay stopped at work 73763 (step), +0 from the target
+  core12 idx 21084 target 55566: replay stopped at work 55566 (step), +0 from the target
+  core14 idx 13469 target 99965: replay stopped at work 99965 (step), +0 from the target
+  core14 idx 15069 target 64178: replay stopped at work 64178 (step), +0 from the target
+  core14 idx 15886 target 67433: replay stopped at work 67433 (step), +0 from the target
+  core14 idx 17202 target 98667: replay stopped at work 98667 (step), +0 from the target
+  core14 idx 19277 target 64752: replay stopped at work 64752 (step), +0 from the target
+  core2 idx 3436 target 77431: replay stopped at work 125422 (overflow), +47991 from the target, skid 64183
+  core2 idx 5111 target 76907: replay stopped at work 76907 (step), +0 from the target
+  core2 idx 7281 target 81615: replay stopped at work 133804 (overflow), +52189 from the target, skid 68381
+  core2 idx 10256 target 70929: replay stopped at work 112423 (overflow), +41494 from the target, skid 57686
+  core2 idx 12193 target 32563: replay stopped at work 35682 (overflow), +3119 from the target, skid 19311
+  core2 idx 12274 target 48250: replay stopped at work 67051 (overflow), +18801 from the target, skid 34993
+  core2 idx 13767 target 46969: replay stopped at work 46969 (step), +0 from the target
+  core2 idx 20698 target 82116: replay stopped at work 134789 (overflow), +52673 from the target, skid 68865
+  core4 idx 1680 target 95526: replay stopped at work 161070 (overflow), +65544 from the target, skid 81736
+  core4 idx 4433 target 51533: replay stopped at work 51533 (step), +0 from the target
+  core4 idx 7608 target 83508: replay stopped at work 83508 (step), +0 from the target
+  core4 idx 8282 target 40997: replay stopped at work 52034 (overflow), +11037 from the target, skid 27229
+  core4 idx 9853 target 79678: replay stopped at work 129389 (overflow), +49711 from the target, skid 65903
+  core4 idx 13731 target 41818: replay stopped at work 41818 (step), +0 from the target
+  core4 idx 15703 target 80854: replay stopped at work 131748 (overflow), +50894 from the target, skid 67086
+  core6 idx 1768 target 46662: replay stopped at work 63427 (overflow), +16765 from the target, skid 32957
+  core6 idx 8110 target 71313: replay stopped at work 71313 (step), +0 from the target
+  core6 idx 11351 target 32186: replay stopped at work 32186 (step), +0 from the target
+  core6 idx 17039 target 41742: replay stopped at work 53487 (overflow), +11745 from the target, skid 27937
+  core6 idx 22935 target 82076: replay stopped at work 82076 (step), +0 from the target
+  core8 idx 2540 target 32621: replay stopped at work 32621 (step), +0 from the target
+  core8 idx 8018 target 75014: replay stopped at work 75014 (step), +0 from the target
+  core8 idx 11191 target 75498: replay stopped at work 121471 (overflow), +45973 from the target, skid 62165
+  core8 idx 11374 target 71284: replay stopped at work 71284 (step), +0 from the target
+  core8 idx 20531 target 82914: replay stopped at work 82914 (step), +0 from the target
+failing targets: [30172, 31577, 32186, 32563, 32621, 35174, 40997, 41721, 41742, 41818, 44104, 46662, 46759, 46969, 47236, 48250, 48650, 51533, 53814, 55566, 63339, 64178, 64341, 64611, 64752, 67433, 69319, 70929, 71284, 71313, 73763, 74445, 75014, 75498, 75744, 76907, 77431, 79678, 80397, 80854, 81615, 82012, 82076, 82116, 82914, 82949, 83508, 85791, 89676, 93013, 94310, 95526, 98667, 98810, 99965]
+  target range over the whole run: 16193 to 100000, median 58186
+  mean period, all overflow arms: 41953
+  mean period weighted by period: 55941
+  mean period, failing arms (n=55): 49704
+  share of all targets below the smallest failing target: 0.167
+
+branches per TSC tick during the run to the overflow: p1=0.156 p50=0.796 p99=0.972
+  failing arm core0 idx 4086: work 134530 in 147930 ticks = 0.909
+  failing arm core0 idx 4273: work 33939 in 47310 ticks = 0.717
+  failing arm core0 idx 5122: work 99208 in 117780 ticks = 0.842
+  failing arm core0 idx 7953: work 50040 in 58650 ticks = 0.853
+  failing arm core0 idx 11897: work 156578 in 169890 ticks = 0.922
+  failing arm core0 idx 15989: work 16905 in 32010 ticks = 0.528
+  failing arm core0 idx 19017: work 33507 in 47160 ticks = 0.710
+  failing arm core0 idx 19164: work 40918 in 71310 ticks = 0.574
+  failing arm core0 idx 22941: work 85519 in 87390 ticks = 0.979
+  failing arm core10 idx 1234: work 121999 in 137640 ticks = 0.886
+  failing arm core10 idx 5064: work 99711 in 121800 ticks = 0.819
+  failing arm core10 idx 7776: work 40504 in 53850 ticks = 0.752
+  failing arm core10 idx 8086: work 142079 in 153000 ticks = 0.929
+  failing arm core10 idx 10724: work 35356 in 50430 ticks = 0.701
+  failing arm core10 idx 11766: work 109189 in 125400 ticks = 0.871
+  failing arm core10 idx 14893: work 76362 in 81300 ticks = 0.939
+  failing arm core10 idx 17443: work 61154 in 68700 ticks = 0.890
+  failing arm core10 idx 18042: work 69683 in 76590 ticks = 0.910
+  failing arm core10 idx 21854: work 30784 in 44130 ticks = 0.698
+  failing arm core12 idx 4327: work 131381 in 142920 ticks = 0.919
+  failing arm core12 idx 6125: work 53983 in 86220 ticks = 0.626
+  failing arm core12 idx 7332: work 81034 in 86100 ticks = 0.941
+  failing arm core12 idx 8825: work 18320 in 34230 ticks = 0.535
+  failing arm core12 idx 13339: work 118117 in 135930 ticks = 0.869
+  failing arm core12 idx 21084: work 81702 in 105510 ticks = 0.774
+  failing arm core14 idx 13469: work 170511 in 175620 ticks = 0.971
+  failing arm core14 idx 15069: work 98936 in 116520 ticks = 0.849
+  failing arm core14 idx 15886: work 105446 in 122340 ticks = 0.862
+  failing arm core14 idx 17202: work 167920 in 174570 ticks = 0.962
+  failing arm core14 idx 19277: work 100088 in 118920 ticks = 0.842
+  failing arm core2 idx 3436: work 64191 in 73080 ticks = 0.878
+  failing arm core2 idx 5111: work 124393 in 138390 ticks = 0.899
+  failing arm core2 idx 7281: work 68383 in 77910 ticks = 0.878
+  failing arm core2 idx 10256: work 57695 in 66240 ticks = 0.871
+  failing arm core2 idx 12193: work 19316 in 35880 ticks = 0.538
+  failing arm core2 idx 12274: work 34976 in 50880 ticks = 0.687
+  failing arm core2 idx 13767: work 64492 in 92880 ticks = 0.694
+  failing arm core2 idx 20698: work 68875 in 74940 ticks = 0.919
+  failing arm core4 idx 1680: work 81710 in 85920 ticks = 0.951
+  failing arm core4 idx 4433: work 73047 in 95010 ticks = 0.769
+  failing arm core4 idx 7608: work 137053 in 150180 ticks = 0.913
+  failing arm core4 idx 8282: work 27192 in 42810 ticks = 0.635
+  failing arm core4 idx 9853: work 65898 in 73380 ticks = 0.898
+  failing arm core4 idx 13731: work 53663 in 88170 ticks = 0.609
+  failing arm core4 idx 15703: work 67057 in 73440 ticks = 0.913
+  failing arm core6 idx 1768: work 32879 in 47790 ticks = 0.688
+  failing arm core6 idx 8110: work 112684 in 126990 ticks = 0.887
+  failing arm core6 idx 11351: work 34372 in 70200 ticks = 0.490
+  failing arm core6 idx 17039: work 27939 in 42600 ticks = 0.656
+  failing arm core6 idx 22935: work 134192 in 146190 ticks = 0.918
+  failing arm core8 idx 2540: work 35765 in 69600 ticks = 0.514
+  failing arm core8 idx 8018: work 120552 in 137130 ticks = 0.879
+  failing arm core8 idx 11191: work 62169 in 70620 ticks = 0.880
+  failing arm core8 idx 11374: work 113081 in 136530 ticks = 0.828
+  failing arm core8 idx 20531: work 136298 in 151680 ticks = 0.899
+
+arms with a non-zero SMI-received delta: 0 of 192000
+re-arm after an overshoot: attempted on 55, landed exactly on 55
+
+=== digest inversion scored against records that state the landing ===
+replay arms whose landing the record states: 360000
+  inversion agrees with the record: 360000
+  inversion disagrees:              0
+  digest not in the dictionary:     0
+
+=== repetition: same work count, same landed state ===
+shards: 15
+distinct work counts landed on at all:      82709
+distinct work counts landed on >1 time:     82709
+  of those, landed on from >1 core:         76987
+  total landings at a repeated work count:  719915
+  most landings at one work count:          34
+work counts with two different landed states: 0

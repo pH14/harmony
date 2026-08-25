@@ -172,6 +172,30 @@ fn kvm_modules(vendor: Vendor) -> &'static [&'static str] {
     }
 }
 
+/// The CPUs the kernel command line keeps its own work off.
+///
+/// `isolcpus=` takes an optional list of flag words before the CPU list, and
+/// the list itself mixes single CPUs with ranges, so anything that is not a
+/// number or a range is skipped rather than treated as an error.
+fn isolated_cpus(cmdline: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for param in cmdline.split_whitespace() {
+        let Some(list) = param.strip_prefix("isolcpus=") else {
+            continue;
+        };
+        for item in list.split(',') {
+            if let Some((lo, hi)) = item.split_once('-') {
+                if let (Ok(lo), Ok(hi)) = (lo.parse::<usize>(), hi.parse::<usize>()) {
+                    out.extend(lo..=hi);
+                }
+            } else if let Ok(cpu) = item.parse::<usize>() {
+                out.push(cpu);
+            }
+        }
+    }
+    out
+}
+
 /// Read every condition the chip's entry requires.
 ///
 /// # Errors
@@ -196,6 +220,19 @@ pub fn read_conditions(entry: &ChipEntry, cpus: &[usize]) -> Result<Vec<Reading>
                     "/proc/sys/kernel/perf_cpu_time_max_percent",
                 )?;
                 readings.push(Reading::new(*kind, "cpu-time-max-percent", percent.trim()));
+            }
+            HostConditionKind::CoreIsolated => {
+                // An overflow interrupt that the kernel delays past the guest's
+                // deadline is what turns a landing into an overshoot, and the
+                // kernel's own work on the core is the thing that delays it.
+                // Pinning the measurement thread says nothing about whether the
+                // kernel keeps off that core, so the isolation is read from the
+                // command line and checked against the core actually in use.
+                let cmdline = read_file("the kernel command line", "/proc/cmdline")?;
+                let isolated = usize::try_from(current_core())
+                    .is_ok_and(|core| isolated_cpus(&cmdline).contains(&core));
+                let found = if isolated { "isolated" } else { "not isolated" };
+                readings.push(Reading::new(*kind, "host", found));
             }
             HostConditionKind::NmiWatchdogOff => {
                 let raw = read_file("NMI watchdog", "/proc/sys/kernel/nmi_watchdog")?;
@@ -547,6 +584,17 @@ pub fn run(pack: &Pack) -> Result<Stage0Outcome, Stage0Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_isolated_cpu_list_takes_singles_ranges_and_flag_words() {
+        assert_eq!(isolated_cpus("ro isolcpus=3 quiet"), vec![3]);
+        assert_eq!(isolated_cpus("isolcpus=1,3,5"), vec![1, 3, 5]);
+        assert_eq!(
+            isolated_cpus("isolcpus=domain,managed_irq,2-4"),
+            vec![2, 3, 4]
+        );
+        assert!(isolated_cpus("ro quiet").is_empty());
+    }
 
     #[test]
     fn the_vendor_module_is_read_before_the_shared_one() {
