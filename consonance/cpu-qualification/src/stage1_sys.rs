@@ -116,11 +116,19 @@ impl Load {
         }
     }
 
-    /// A thread walking a buffer larger than any cache, until the guard drops.
-    fn churning_memory() -> Load {
+    /// A thread on `core`, walking a buffer larger than any cache, until the
+    /// guard drops.
+    ///
+    /// A spawned thread inherits the measurement thread's affinity, so without
+    /// a pin of its own this load would run on the measured core and time-share
+    /// it. That is a scheduler contending for the core, not memory pressure
+    /// reaching it from elsewhere, and it leaves no window free of interrupts
+    /// to judge.
+    fn churning_memory(core: usize) -> Load {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
+            let _ = pin_to_core(core);
             let mut buffer = vec![0u8; PRESSURE_BYTES];
             let mut cursor = 0usize;
             while !flag.load(Ordering::Relaxed) {
@@ -162,7 +170,10 @@ fn start_load(condition: Interference, plan: &MeasurementPlan) -> Result<Load, S
             let sibling = smt_sibling(plan.core)?;
             Ok(Load::spinning_on(other_core(plan.core, sibling)?))
         }
-        Interference::MemoryPressure => Ok(Load::churning_memory()),
+        Interference::MemoryPressure => {
+            let sibling = smt_sibling(plan.core)?;
+            Ok(Load::churning_memory(other_core(plan.core, sibling)?))
+        }
     }
 }
 
