@@ -1,0 +1,1 @@
+{"schema":"amd-epyc-ae4-msr-v1","target_msr":"0xc0010015","user_space_msr_cap":1,"filter_installed":1,"rdmsr_trapped_to_vmm":1,"deny_gp_then_shutdown":0,"guest_hlt":0,"other_exit":0}
