@@ -869,51 +869,6 @@ where
             .collect()
     }
 
-    fn selector_unexhausted(&self, id: usize, ignore_streaks: bool) -> bool {
-        if ignore_streaks {
-            return true;
-        }
-        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
-            return false;
-        }
-        match &self.selector_policy {
-            SelectorPolicy::GroupUniform => true,
-            SelectorPolicy::Retire(thresholds) => {
-                let key = self.entries[id].report.key;
-                if self.since_retained[id] >= thresholds.entry {
-                    return false;
-                }
-                thresholds
-                    .groups
-                    .iter()
-                    .enumerate()
-                    .all(|(offset, threshold)| {
-                        self.group_barren
-                            .get(offset)
-                            .and_then(|map| map.get(&key.group(offset + 1)))
-                            .copied()
-                            .unwrap_or(0)
-                            < *threshold
-                    })
-            }
-        }
-    }
-
-    /// Exhausted classes in a member set, counted at the depth just above the
-    /// selection cell.
-    fn skipped_classes(&self, members: &[usize], ignore_streaks: bool) -> u64 {
-        let depth = 2.min(Self::coarsest_depth());
-        let mut classes = BTreeMap::<K::Group, bool>::new();
-        for id in members {
-            let live = self.selector_unexhausted(*id, ignore_streaks);
-            let class = classes
-                .entry(self.entries[*id].report.key.group(depth))
-                .or_insert(false);
-            *class |= live;
-        }
-        u64::try_from(classes.values().filter(|live| !**live).count()).unwrap_or(u64::MAX)
-    }
-
     /// Choose a parent: one in four draws is uniform over every expandable
     /// entry; the rest walk the group depths from the deepest coarsest class
     /// down to one selection cell, then sample the cell's recency window.
@@ -988,21 +943,35 @@ where
         classes_skipped: &mut u64,
         ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
+        let skip_depth = 2.min(Self::coarsest_depth());
         for cell_map in self.classes.values() {
-            let members = cell_map.values().flatten().copied().collect::<Vec<usize>>();
-            *classes_skipped =
-                classes_skipped.saturating_add(self.skipped_classes(&members, ignore_streaks));
             let mut cells = Vec::new();
-            for cell in cell_map.values() {
-                let live = cell
-                    .iter()
-                    .copied()
-                    .filter(|id| self.selector_unexhausted(*id, ignore_streaks))
-                    .collect::<Vec<usize>>();
+            let mut subclass_live = BTreeMap::<K::Group, bool>::new();
+            for members in cell_map.values() {
+                // Every member of a cell shares its groups, so the pooled
+                // barren thresholds are checked once per cell; only the
+                // per-entry streak varies inside.
+                let key = self.entries[members[0]].report.key;
+                let group_live = ignore_streaks || self.groups_unexhausted(key);
+                let live = if group_live {
+                    members
+                        .iter()
+                        .copied()
+                        .filter(|id| ignore_streaks || self.entry_unexhausted(*id))
+                        .collect::<Vec<usize>>()
+                } else {
+                    Vec::new()
+                };
+                let subclass = subclass_live.entry(key.group(skip_depth)).or_insert(false);
+                *subclass |= !live.is_empty();
                 if !live.is_empty() {
                     cells.push(live);
                 }
             }
+            *classes_skipped = classes_skipped.saturating_add(
+                u64::try_from(subclass_live.values().filter(|live| !**live).count())
+                    .unwrap_or(u64::MAX),
+            );
             if cells.is_empty() {
                 continue;
             }
@@ -1011,6 +980,39 @@ where
             return Ok(Some(cells.swap_remove(rand.below(count))));
         }
         Ok(None)
+    }
+
+    /// The per-entry half of the exhaustion rule.
+    fn entry_unexhausted(&self, id: usize) -> bool {
+        if self.since_retained[id] >= SELECTION_EXHAUSTION_THRESHOLD {
+            return false;
+        }
+        match &self.selector_policy {
+            SelectorPolicy::GroupUniform => true,
+            SelectorPolicy::Retire(thresholds) => self.since_retained[id] < thresholds.entry,
+        }
+    }
+
+    /// The pooled-group half of the exhaustion rule, shared by every member
+    /// of a selection cell.
+    fn groups_unexhausted(&self, key: K) -> bool {
+        match &self.selector_policy {
+            SelectorPolicy::GroupUniform => true,
+            SelectorPolicy::Retire(thresholds) => {
+                thresholds
+                    .groups
+                    .iter()
+                    .enumerate()
+                    .all(|(offset, threshold)| {
+                        self.group_barren
+                            .get(offset)
+                            .and_then(|map| map.get(&key.group(offset + 1)))
+                            .copied()
+                            .unwrap_or(0)
+                            < *threshold
+                    })
+            }
+        }
     }
 
     /// Uniform draw within the chosen cell, narrowed to the cell's
