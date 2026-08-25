@@ -16,7 +16,7 @@
 [pack]
 schema = "cpu-qualification-pack-v1"
 baseline = "det-zen3-v1"
-pack_hash = "a06deb72adbec59ce2bb1a0236c095cc4b481e2756864845f6b55793228bca27"
+pack_hash = "55653475e961162e96f12ef3d5b92356314812a5455d13d57a8a779584c38d36"
 
 [chip.vendor]
 source = "/proc/cpuinfo vendor_id on the qualification box; docs/CPU-QUALIFICATION.md known-chip table AMD row"
@@ -43,32 +43,53 @@ source = "consonance/cpu-qualification/src/perf_sys.rs PerfCounter, Scope::Guest
 value = "PERF_TYPE_RAW, pinned, guest-only (exclude_host), sampling mode"
 
 [skid.observed_max]
-absent = "no stage-1 skid campaign has run on this chip at this event; the maximum is measured, never carried over from another chip or another event"
+source = "stage-1 campaign A2 on the qualification box, 2026-08-25, 1244458 overflows delivered exactly once across five payload classes at periods 10000 and 100000; recomputed from the per-arm records in qualification-evidence/box/stage1-A2/stage1.jsonl"
+value = 8034
 
 [skid.margin]
-source = "provisional arming bound for the first stage-1 campaign: twice the Zen 2 maximum of 5043 recorded in spike/amd-epyc results/constants-pack.md, rounded up to a power of two"
-value = 16384
+source = "twice skid.observed_max"
+value = 16068
 
 [skid.derivation]
-source = "spike/amd-epyc results/constants-pack.md AE-1(d), pending re-measurement by stage 1 on this chip"
-value = "provisional. It is not derived from this chip: the Zen 2 spike measured a maximum skid of 5043 at event 0xc4, and this bound is that doubled and rounded up. It exists so the first stage-1 campaign has something to arm against. The final value is twice this chip's own observed maximum at 0x5100d1, from the stage-1 campaign recorded in this pack's skid.observed_max"
+source = "stage-1 campaign A2 on the qualification box"
+value = "twice the largest skid the campaign observed. Every delivered overflow reports the counter value at the interrupt; the skid is that value less the armed period, and the largest of the 1244458 was 8034, on the loop_backedge payload at a period of 10000. The distribution is concentrated far below it: the median bucket is 10 to 100 work units and the smallest skid seen was 26. The factor of two is headroom over a maximum that is itself a tail observation, not a fitted bound"
 
 [skid.overshoot]
 source = "consonance/vmm-backend/src/run_until.rs"
 value = "an overflow that stops at or past the deadline raises SkidExceeded, which surfaces as a loud backend error rather than a clamped landing"
 
 [count_offsets]
-absent = "no stage-1 run on this chip has recorded per-exit-class count offsets"
+absent = "a count offset is the work an exit of a given class contributes on top of the guest's own, which stage 2 measures by landing exits of each class; stage 2 is not built, so no run on this chip has produced one. Stage 1 measures a different quantity, the fixed count around a payload loop, which is 6 work units for every payload class here and 7 for straight_line"
 
 [event_density]
-absent = "no stage-1 run on this chip has recorded per-payload-class event density"
+source = "stage-1 campaign A2 on the qualification box, 2026-08-25: 320 interrupt-free exactness windows across five payload classes and three interference conditions, 320000000 work-clock events judged against the analytical oracle with no mismatch. The density is the differential (count at n2 less count at n1) divided by the iteration difference, identical in every window"
+
+[[event_density.value]]
+payload_class = "loop_backedge"
+events_per_iteration = 1
+
+[[event_density.value]]
+payload_class = "branch_dense"
+events_per_iteration = 1
+
+[[event_density.value]]
+payload_class = "call_ret"
+events_per_iteration = 1
+
+[[event_density.value]]
+payload_class = "straight_line"
+events_per_iteration = 1
+
+[[event_density.value]]
+payload_class = "locked"
+events_per_iteration = 1
 
 [single_step.mechanism]
 source = "spike/amd-epyc results/ae-2/single-step-ruling.md; consonance/vmm-backend/src/kvm_sys.rs enable_single_step"
 value = "KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP, which SVM implements through RFLAGS.TF and #DB. SVM has no monitor-trap facility, so the Intel MTF path does not exist on this chip"
 
 [single_step.work_per_step]
-absent = "no run on this chip has measured how many work-clock units one single step contributes"
+absent = "measuring this needs the work clock read across a single-stepped guest and across the same guest running free. The spike single-step harness counts debug exits against an instruction oracle and never opens the work clock, and the suite's stage 2 is not built, so no run on this chip has produced the number"
 
 [host_conditions]
 source = "the host conditions the AMD entry of the known-chip table requires, in the states this program's box discipline puts them in; the two KVM module identities are the stock Debian 6.12.95 modules read on the box"

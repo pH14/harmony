@@ -704,12 +704,7 @@ mod tests {
         let absent: Vec<&str> = pack.absent_fields().iter().map(|(n, _)| *n).collect();
         assert_eq!(
             absent,
-            vec![
-                "count_offsets",
-                "event_density",
-                "single_step.work_per_step",
-                "skid.observed_max",
-            ],
+            vec!["count_offsets", "single_step.work_per_step"],
             "a field no run has measured must be absent, not guessed"
         );
         for (name, reason) in pack.absent_fields() {
