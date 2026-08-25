@@ -629,9 +629,9 @@ where
         }
     }
 
-    /// The walk's class depth: the coarsest group, capped at depth 3.
+    /// The walk's class depth: the coarsest group.
     fn class_depth() -> usize {
-        Self::coarsest_depth().min(3)
+        Self::coarsest_depth()
     }
 
     /// Rebuild the selector index for `max_actions`.
@@ -931,12 +931,13 @@ where
         }
     }
 
-    /// Walk to one unexhausted selection cell. Classes at the depth just
-    /// above the pooled threshold depth are tried deepest first; within the
-    /// first class holding an unexhausted entry, cells are drawn uniformly,
-    /// pooling the depths between cell and class. Exhausted classes at the
-    /// pooled depth are counted as skipped. `None` when every active entry
-    /// is exhausted.
+    /// Walk to one unexhausted selection cell. The coarsest classes are
+    /// tried deepest first; within the first class holding an unexhausted
+    /// entry, each finer group depth down to the cell is drawn uniformly
+    /// among the groups still holding an unexhausted entry, so sparse deep
+    /// groups carry the same weight as dense shallow ones. Exhausted groups
+    /// at the pooled threshold depth are counted as skipped. `None` when
+    /// every active entry is exhausted.
     fn walk_to_cell(
         &self,
         rand: &mut RomuDuoJrRand,
@@ -965,7 +966,7 @@ where
                 let subclass = subclass_live.entry(key.group(skip_depth)).or_insert(false);
                 *subclass |= !live.is_empty();
                 if !live.is_empty() {
-                    cells.push(live);
+                    cells.push((key, live));
                 }
             }
             *classes_skipped = classes_skipped.saturating_add(
@@ -975,9 +976,20 @@ where
             if cells.is_empty() {
                 continue;
             }
+            for depth in (2..Self::coarsest_depth()).rev() {
+                let mut groups = cells
+                    .iter()
+                    .map(|(key, _)| key.group(depth))
+                    .collect::<Vec<_>>();
+                groups.sort_unstable();
+                groups.dedup();
+                let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
+                let chosen = groups.swap_remove(rand.below(count));
+                cells.retain(|(key, _)| key.group(depth) == chosen);
+            }
             let count =
                 NonZeroUsize::new(cells.len()).ok_or("cell draw over an exhausted class")?;
-            return Ok(Some(cells.swap_remove(rand.below(count))));
+            return Ok(Some(cells.swap_remove(rand.below(count)).1));
         }
         Ok(None)
     }
@@ -1245,9 +1257,11 @@ mod tests {
 
     #[test]
     fn the_walk_splits_a_class_over_its_unexhausted_cells() {
-        // One band of one 8-4 room: 60 entries at (304, y 11), 3 at
-        // (303, y 7), 1 at (300, y 4). The class draw gives the crowded cell
-        // nearly every draw; the cell rule gives each cell a third.
+        // Two bands of one 8-4 room: 60 entries at (304, y 11) fill band 38
+        // alone; 3 at (303, y 7) and 1 at (300, y 4) share band 37. The
+        // band draw is uniform, so the crowded cell gets half the draws
+        // despite holding 60 of 64 entries, and the band-37 cells split the
+        // other half evenly.
         let mut keys: Vec<(u8, u8, u16)> = Vec::new();
         keys.extend(std::iter::repeat_n((7, 3, 304), 60));
         keys.extend(std::iter::repeat_n((7, 3, 303), 3));
@@ -1281,10 +1295,16 @@ mod tests {
         }
         assert!(cell_draws > 600);
         assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
-        for share in per_cell.values() {
+        let crowded = per_cell[&(304, 11)];
+        assert!(
+            crowded * 5 > cell_draws * 2 && crowded * 5 < cell_draws * 3,
+            "crowded cell off its half share: {per_cell:?}"
+        );
+        for cell in [(303, 7), (300, 4)] {
+            let share = per_cell[&cell];
             assert!(
-                share * 3 > cell_draws / 2 && share * 3 < cell_draws * 3 / 2,
-                "uneven cell shares: {per_cell:?}"
+                share * 5 > cell_draws && share * 5 < cell_draws * 2,
+                "band-37 cell off its quarter share: {per_cell:?}"
             );
         }
     }
