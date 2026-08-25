@@ -25,10 +25,14 @@ execution (`consonance/cpu-qualification/src/perf.rs`, `Scope::HostUser`, used a
 total. Maximum skid 8,096; the pack's `skid.observed_max`, and its margin of 16,192, are
 twice that.
 
-**Guest-only sampling scope.** The stage-2 landing arms `exclude_host`, so only guest
-execution counts and the overflow's NMI has to travel out through a virtual-machine
-exit. Nothing in stage 1 measures this path: the suite's only guest-scope counter is a
-counting one, for the guest exactness payload.
+**Guest-only sampling scope.** The stage-2 landing harness sets `exclude_host = 1` and
+`exclude_hv = 1` on a sampling event (`spikes/amd-epyc/harness/ae3-forceexit.c`, the
+`perf_event_attr` setup), so only guest execution counts and the overflow's NMI has to
+travel out through a virtual-machine exit. Nothing in stage 1 measures this path: the
+suite's only guest-scope counter is a counting one, for the guest exactness payload
+(`consonance/cpu-qualification/src/guest_sys.rs`, `open_counting` with
+`Scope::GuestOnly`). Stage 1 therefore produces no guest-mode skid at all, and the two
+scopes are settled by code on both sides rather than inferred.
 
 The guest-mode tail is heavier, and that is the finding. Numbers below.
 
@@ -109,3 +113,22 @@ overshoots so far are on core 15. `/proc/interrupts` over the campaign gives cor
 its device-interrupt share is among the lowest; the count is dominated by the
 performance-monitoring interrupts the campaign itself arms. With two events the
 clustering is not yet distinguishable from chance.
+
+
+## Co-tenancy raises the rate; it does not cause the tail
+
+The same landing contract was run three times eight-wide before the campaign, twice on
+isolated cores and once on cores the scheduler could also use. Recomputed from the raw
+records:
+
+| run | cores | margin | arms | overflow arms exposed | overshoots | replay mismatches |
+| --- | --- | --- | --- | --- | --- | --- |
+| par-pilot | not isolated | 8192 | 4,000 | 7,332 | 1 (skid 24,779) | 1 |
+| par-pilot2 | isolated | 16192 | 4,000 | 7,332 | 0 | 0 |
+| par-pilot3 | isolated | 16192 | 4,000 | 6,680 | 0 | 0 |
+
+The co-tenant run's single overshoot is 1 in 7,332 exposed arms. Its skid of 24,779 also
+exceeds the sealed 16,192, so it would have overshot at the production margin as well.
+The isolated campaign's rate is smaller by more than an order of magnitude but is not
+zero, which is the point: isolation reduces the tail's frequency and does not remove it.
+That is why the handling, and not the margin, is what qualifies this chip.
