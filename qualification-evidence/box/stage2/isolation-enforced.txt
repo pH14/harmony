@@ -1,0 +1,10 @@
+=== core isolation as an enforced condition 2026-08-25T09:25:49Z ===
+--- on the isolated core the pack names
+ok        core-isolated[host]  expect "isolated"  found "isolated"
+ok        core-pinning[host]  expect "pinned to cpu3"  found "pinned to cpu3"
+check rc=0
+--- on a core the kernel schedules on
+DEVIATION  core-isolated[host]  expect "isolated"  found "not isolated"
+DEVIATION  core-pinning[host]  expect "pinned to cpu3"  found "pinned to cpu5"
+2 condition(s) deviate from pack det-zen3-v1 with no disposition
+check rc=2

@@ -1,0 +1,20 @@
+=== sampling ceiling as an enforced condition 2026-08-25T09:25:37Z ===
+--- as postured
+100000000
+0
+ok        perf-sample-ceiling[cpu-time-max-percent]  expect "0"  found "0"
+ok        perf-sample-ceiling[max-sample-rate]  expect "100000000"  found "100000000"
+check rc=0
+--- dropped to the stock ceiling
+100000000
+25
+DEVIATION  perf-sample-ceiling[cpu-time-max-percent]  expect "0"  found "25"
+ok        perf-sample-ceiling[max-sample-rate]  expect "100000000"  found "100000000"
+1 condition(s) deviate from pack det-zen3-v1 with no disposition
+check rc=2
+--- restored
+100000000
+0
+ok        perf-sample-ceiling[cpu-time-max-percent]  expect "0"  found "0"
+ok        perf-sample-ceiling[max-sample-rate]  expect "100000000"  found "100000000"
+check rc=0

@@ -1,0 +1,5 @@
+4a5
+> ok        core-isolated[host]  expect "isolated"  found "isolated"
+25a27,28
+> ok        perf-sample-ceiling[cpu-time-max-percent]  expect "0"  found "0"
+> ok        perf-sample-ceiling[max-sample-rate]  expect "100000000"  found "100000000"
