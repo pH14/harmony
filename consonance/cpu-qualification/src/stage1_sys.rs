@@ -387,7 +387,13 @@ pub fn run(config: u64, plan: &MeasurementPlan) -> Result<Stage1Outcome, Stage1E
         }
     }
 
-    let (guest_records, guest_unmeasured) = guest_half(config, plan)?;
+    // The host-side measurements above are finished and retained by the time the
+    // guest window opens. A guest half that refuses is a measurement this run did
+    // not make; it is not a reason to throw away the ones it did.
+    let (guest_records, guest_unmeasured) = match guest_half(config, plan) {
+        Ok(pair) => pair,
+        Err(e) => (Vec::new(), vec![format!("the guest half of stage 1: {e}")]),
+    };
     records.extend(guest_records);
     unmeasured.extend(guest_unmeasured);
 

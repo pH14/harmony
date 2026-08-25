@@ -367,7 +367,11 @@ impl GuestWindow {
         if read != entries.len() {
             return Err(GuestError::Kvm {
                 what: "KVM_GET_MSRS".to_string(),
-                detail: format!("{read} of {} MSRs were read", entries.len()),
+                detail: format!(
+                    "{read} of {} MSRs were read; the read stopped at {}",
+                    entries.len(),
+                    msr_name(&entries, read)
+                ),
             });
         }
         Ok(encode_msrs(msrs.as_slice()))
@@ -398,7 +402,11 @@ impl GuestWindow {
         if written != entries.len() {
             return Err(GuestError::Kvm {
                 what: "KVM_SET_MSRS".to_string(),
-                detail: format!("{written} of {} MSRs were written", entries.len()),
+                detail: format!(
+                    "{written} of {} MSRs were written; the write stopped at {}",
+                    entries.len(),
+                    msr_name(&entries, written)
+                ),
             });
         }
         Ok(())
@@ -411,6 +419,16 @@ impl Drop for GuestWindow {
         // once the vCPU and VM fds above have been dropped.
         unsafe { libc::munmap(self.ram.cast(), GUEST_RAM_BYTES) };
     }
+}
+
+/// The MSR a partial `KVM_GET_MSRS`/`KVM_SET_MSRS` stopped at. Both ioctls walk
+/// the list in order and return how many they got through, so the entry at that
+/// position is the one that refused.
+fn msr_name(entries: &[kvm_msr_entry], stopped_at: usize) -> String {
+    entries.get(stopped_at).map_or_else(
+        || "no entry: the count is past the end of the list".to_string(),
+        |entry| format!("MSR {:#010x}", entry.index),
+    )
 }
 
 /// An MSR list as bytes: each entry is a four-byte index then an eight-byte
