@@ -39,40 +39,40 @@ edits; `bash /root/kclose2.sh` restores the pristine file and names the stock re
 
 ## Next
 
-1. Wait for `progress.log` to report `alive=0`, then
-   `python3 /root/campaign-analysis.py /root/qual-evidence/stage2/campaign`.
-   It recomputes arms, landings, exits through KVM_EXIT_PREEMPT, the failing arms,
-   the guest-mode skid percentiles and the counts beyond the sealed margin, from the
-   per-arm records rather than from any summary line.
-2. Size the supplement from that output: the item-7 floor is a million landings that
-   went through the deterministic exit, and only about 83.8 percent of arms arm an
-   overflow at all (targets are uniform on [1,100000], margin 16192). Then
-   `bash /root/post-campaign.sh <targets-per-core>`: seven cores run `ae3-instr`
-   with `--retries 3`, while core 9 re-runs seed 109 to index 15257 under `ae3-diag`
-   to reproduce the replay mismatch.
-3. `bash /root/overshoot-demo.sh`. This is the named record the verdict turns on:
-   part A arms at margin 3072 so overshoot is common and measures how often re-arming
-   the same target recovers; part B re-arms the campaign's own overshot target 85981
-   at the sealed margin 16192.
-4. `bash /root/close-a.sh` while the patched kernel is still booted: `ae4-freeze` and
-   `ae4-msr` (the AMD draft contract column names `kernel-tag = "v6.18.35"`), plus
-   `ae5-gate --reps 1000` as supporting evidence. Stage 3 is out of scope.
-5. Final pack edit: rewrite `skid.derivation` to record both skid distributions
-   labelled and say which one the margin derives from and why, and `skid.overshoot`
-   to carry the detection-and-retry story with the measured recovery numbers. The
-   margin stays 16192; nothing here widens it. Reseal, gate, commit.
-6. Item 8: rsync evidence, `bash /root/kclose2.sh`, reboot, poll ssh,
-   `bash /root/posture.sh`, ship the final pack, `bash /root/stage0-recheck.sh`,
-   rsync again, final commit, final report.
+1. Wait for `/root/qual-evidence/stage2/campaign/progress.log` to say `alive=0`, then
+   `python3 /root/campaign-analysis.py /root/qual-evidence/stage2/campaign`. It
+   recomputes everything the verdict needs from the per-arm records, including the
+   digest inversion that recovers what a replay arm did.
+2. Size the supplement from that output. The item-7 floor is a million landings at
+   `work == target` with the mechanism attested, and only the first arm's exit reason is
+   in the campaign's records, so the attested count is about 419,000, not 838,000. Run
+   `bash /root/supplement.sh <targets-per-core> supplement <cores...>` 16-wide with
+   `ae3-instr`, which records the replay arm's exit reason. Cores 1-15 odd are the
+   isolated population and 0-14 even are a co-tenant one, reported separately.
+   Alongside it, `bash /root/repro-core9.sh <core>` reproduces seed 109 to index 15257.
+3. `bash /root/overshoot-demo.sh` for the recovery rate at a deliberately small margin.
+   The recovery itself is already demonstrated 5 times out of 5 in the campaign - see
+   `overshoot-anatomy.md` - so this measures the rate, not the fact.
+4. `bash /root/close-a.sh` while the patched kernel is booted: ae4-freeze, ae4-msr, the
+   single-step driver in both modes, the RDRAND probe, and ae5-gate.
+5. `bash /root/ceiling-control.sh` on a quiet box: drops the sampling ceiling, shows
+   `check` refuse, restores it, shows `check` accept. It changes a kernel setting every
+   measurement depends on, so never while anything is running.
+6. Final pack edit. `skid.observed_max` source must say the maximum comes from campaign
+   C and that 11,090 arms across C and A2 are unaccounted behind it. `skid.derivation`
+   must carry both distributions labelled and say which one the margin derives from and
+   why. `skid.overshoot` must carry the measured detection and recovery numbers. The
+   margin stays 16192. Reseal with `bash <scratchpad>/reseal.sh`, run the five gates,
+   commit.
+7. Item 8: rsync (gzip the shard files on the box first), `bash /root/kclose2.sh`,
+   reboot, poll ssh, `bash /root/posture.sh`, ship the pack, `bash /root/stage0-recheck.sh`,
+   rsync, final commit, final report.
 
 ## Recorded failures so far
 
-Two classes, both to be reported as rates with their denominators, never rounded away:
-
-- Overshoot: 2 arms, both core 15. Index 28164 target 85981 skid 37595; index 35919
-  target 27325 skid 27816. Both exceed the sealed margin 16192; the larger is 4.6x it.
-  On an isolated core, so not a co-tenancy artifact.
-- Replay-digest mismatch with a normal skid and an exact first landing: 3 arms, cores
-  5, 9 and 11.
-
-At 289571 arms judged this was 1 overshoot in 144785 arms and 1 mismatch in 96523.
+One class, not two. All five failing arms are overshoots; three of them are on the
+replay arm, whose landing the record does not describe and which was recovered by
+inverting the digest. Skids 27,816 / 37,595 / 50,432 / 52,737 / 56,725, so the
+guest-mode maximum is 56,725 and not the 37,595 the record shows on its face. Every one
+was rejected rather than accepted, and in every one the other arm of the same target
+landed exactly on the target. `overshoot-anatomy.md` is the write-up.
