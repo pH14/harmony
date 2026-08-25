@@ -685,15 +685,45 @@ mod tests {
             .host_conditions
             .value()
             .expect("the AMD entry's conditions are recorded");
-        // The three conditions the AMD entry adds to the Intel list.
+        // The conditions the AMD entry adds to the Intel list.
         for token in [
             "spec-lock-map-disabled",
             "ssb-mitigation-pinned",
             "avic-off",
+            "perf-sample-ceiling",
         ] {
             assert!(
                 conditions.iter().any(|c| c.condition == token),
                 "{token} must carry an expectation"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sampling_ceiling_is_stated_for_both_knobs_that_suppress_an_overflow() {
+        let pack = Pack::builtin("det-zen3-v1").expect("the embedded pack must load");
+        let conditions = pack
+            .host_conditions
+            .value()
+            .expect("the AMD entry's conditions are recorded");
+        // Stage 1 arms far above the stock per-tick ceiling, and an overflow the
+        // kernel suppresses is an arm the run cannot account for. Both knobs are
+        // stated so a later run on this baseline cannot measure under the stock
+        // one without stage 0 saying so.
+        let ceiling: Vec<&HostConditionExpectation> = conditions
+            .iter()
+            .filter(|c| c.condition == "perf-sample-ceiling")
+            .collect();
+        assert_eq!(ceiling.len(), 2, "{ceiling:?}");
+        for (scope, expect) in [
+            ("max-sample-rate", "100000000"),
+            ("cpu-time-max-percent", "0"),
+        ] {
+            assert!(
+                ceiling
+                    .iter()
+                    .any(|c| c.scope == scope && c.expect == expect),
+                "{scope} must expect {expect}, got {ceiling:?}"
             );
         }
     }

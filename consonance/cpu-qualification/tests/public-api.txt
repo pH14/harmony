@@ -7,6 +7,7 @@ pub cpu_qualification::chips::HostConditionKind::GovernorPinned
 pub cpu_qualification::chips::HostConditionKind::KvmModuleIdentity
 pub cpu_qualification::chips::HostConditionKind::KvmPresent
 pub cpu_qualification::chips::HostConditionKind::NmiWatchdogOff
+pub cpu_qualification::chips::HostConditionKind::PerfSampleCeiling
 pub cpu_qualification::chips::HostConditionKind::SmtPolicy
 pub cpu_qualification::chips::HostConditionKind::SpecLockMapDisabled
 pub cpu_qualification::chips::HostConditionKind::SsbMitigationPinned
@@ -547,6 +548,7 @@ pub cpu_qualification::HostConditionKind::GovernorPinned
 pub cpu_qualification::HostConditionKind::KvmModuleIdentity
 pub cpu_qualification::HostConditionKind::KvmPresent
 pub cpu_qualification::HostConditionKind::NmiWatchdogOff
+pub cpu_qualification::HostConditionKind::PerfSampleCeiling
 pub cpu_qualification::HostConditionKind::SmtPolicy
 pub cpu_qualification::HostConditionKind::SpecLockMapDisabled
 pub cpu_qualification::HostConditionKind::SsbMitigationPinned

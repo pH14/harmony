@@ -149,6 +149,9 @@ pub enum HostConditionKind {
     SsbMitigationPinned,
     /// The advanced virtual interrupt controller is off.
     AvicOff,
+    /// The kernel's ceiling on sampling interrupts is raised past what a
+    /// campaign produces, so no overflow is suppressed.
+    PerfSampleCeiling,
 }
 
 impl HostConditionKind {
@@ -165,6 +168,7 @@ impl HostConditionKind {
             HostConditionKind::SpecLockMapDisabled => "spec-lock-map-disabled",
             HostConditionKind::SsbMitigationPinned => "ssb-mitigation-pinned",
             HostConditionKind::AvicOff => "avic-off",
+            HostConditionKind::PerfSampleCeiling => "perf-sample-ceiling",
         }
     }
 }
@@ -258,6 +262,7 @@ const AMD_ZEN: ChipEntry = ChipEntry {
         HostConditionKind::SpecLockMapDisabled,
         HostConditionKind::SsbMitigationPinned,
         HostConditionKind::AvicOff,
+        HostConditionKind::PerfSampleCeiling,
     ],
     contract: Some("docs/cpu-msr-contract-amd-draft.toml"),
     // Event 0x25 is retired lock instructions; unit mask 0x08 selects the

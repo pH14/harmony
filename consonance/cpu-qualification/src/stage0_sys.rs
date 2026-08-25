@@ -180,6 +180,23 @@ pub fn read_conditions(entry: &ChipEntry, cpus: &[usize]) -> Result<Vec<Reading>
     let mut readings = Vec::new();
     for kind in entry.host_conditions {
         match kind {
+            HostConditionKind::PerfSampleCeiling => {
+                // Two knobs suppress sampling interrupts, and a campaign that
+                // arms at ten thousand work units trips both at their stock
+                // settings. The arms whose interrupt the kernel suppresses
+                // cannot be accounted for, so the pack states what each must
+                // read and stage 0 confirms it before stage 1 measures.
+                let rate = read_file(
+                    "the sampling rate ceiling",
+                    "/proc/sys/kernel/perf_event_max_sample_rate",
+                )?;
+                readings.push(Reading::new(*kind, "max-sample-rate", rate.trim()));
+                let percent = read_file(
+                    "the dynamic sampling throttle",
+                    "/proc/sys/kernel/perf_cpu_time_max_percent",
+                )?;
+                readings.push(Reading::new(*kind, "cpu-time-max-percent", percent.trim()));
+            }
             HostConditionKind::NmiWatchdogOff => {
                 let raw = read_file("NMI watchdog", "/proc/sys/kernel/nmi_watchdog")?;
                 let found = if raw.trim() == "0" { "off" } else { "on" };
