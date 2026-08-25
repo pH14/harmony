@@ -120,6 +120,20 @@ impl GuestWindow {
             .create_vcpu(0)
             .map_err(|e| kvm_error("KVM_CREATE_VCPU", &e))?;
 
+        // A vCPU with no CPUID model supports no optional feature, and KVM
+        // refuses to write an MSR whose feature the vCPU does not have — while
+        // still naming that MSR in the host-wide index list the fixpoint reads.
+        // Giving the vCPU the host's supported model makes the state the window
+        // captures the state it can also write back.
+        #[cfg(target_arch = "x86_64")]
+        {
+            let cpuid = kvm
+                .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+                .map_err(|e| kvm_error("KVM_GET_SUPPORTED_CPUID", &e))?;
+            vcpu.set_cpuid2(&cpuid)
+                .map_err(|e| kvm_error("KVM_SET_CPUID2", &e))?;
+        }
+
         let advertised = vm.check_extension_int(Cap::Xsave2);
         let xsave2_size = usize::try_from(advertised)
             .ok()
