@@ -68,6 +68,7 @@ smi_arms = 0
 seen_tsc = seen_smi = seen_retry = False
 idx_by_file = collections.defaultdict(list)
 all_targets = []
+periods = []
 any_replay = False
 
 for f, r in records(d):
@@ -79,6 +80,7 @@ for f, r in records(d):
     idx_by_file[f].append(r["idx"])
     if r["period"]:
         ovf_arms += 1
+        periods.append(r["period"])
         skids.append(r["skid"])
         if r.get("replay") and "replay_skid" in r and r.get("replay_preempt_exit"):
             skids.append(r["replay_skid"])
@@ -202,6 +204,17 @@ if fails:
     allt = sorted(t for t in all_targets)
     below = sum(1 for t in allt if t < min(ft))
     print(f"  target range over the whole run: {allt[0]} to {allt[-1]}, median {allt[len(allt)//2]}")
+    # An arm is exposed to a rare host event for as long as its guest runs to the
+    # overflow, which is its period. So if overshoot is a per-unit-time hazard rather
+    # than a per-arm one, overshooting arms should have longer periods than average:
+    # their mean period should sit near sum(p^2)/sum(p) rather than near mean(p).
+    fp = [r["period"] for r in fails if r["period"]]
+    if fp and periods:
+        sp = sum(periods)
+        print(f"  mean period, all overflow arms: {sp/len(periods):.0f}")
+        print(f"  mean period weighted by period: "
+              f"{sum(p*p for p in periods)/sp:.0f}")
+        print(f"  mean period, failing arms (n={len(fp)}): {sum(fp)/len(fp):.0f}")
     print(f"  share of all targets below the smallest failing target: "
           f"{below/len(allt):.3f}")
 if seen_tsc and ratios:
