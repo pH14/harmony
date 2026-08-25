@@ -1,0 +1,9 @@
+2026-08-25T02:30:15Z
+0.87 0.34 0.12 1/507 3000
+BOOT_IMAGE=/vmlinuz-6.12.95+deb13-amd64 root=UUID=b8ae6f2e-e068-4cb0-8ad0-211e900f3dc9 ro spec_store_bypass_disable=on isolcpus=3 nohz_full=3 rcu_nocbs=3 console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 scaleway
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root           1  8.5  0.0  23816 14680 ?        Ss   02:28   0:07 /sbin/init scaleway
+root        2972  2.4  0.0  21896 12308 ?        Ss   02:30   0:00 /usr/lib/systemd/systemd --user
+root         236  1.7  0.0      0     0 ?        P    02:28   0:01 [migration/30]
+root         244  1.7  0.0      0     0 ?        P    02:28   0:01 [migration/31]
+root         215  1.7  0.0      0     0 ?        P    02:28   0:01 [migration/27]

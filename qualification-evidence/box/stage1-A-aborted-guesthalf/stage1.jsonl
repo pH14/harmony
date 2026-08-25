@@ -1,0 +1,2 @@
+{"kind":"plan","baseline":"det-zen3-v1","stage":1,"floors":{"min_clean_reps":32,"min_overflow_arms":1250000,"skid_margin":16384}}
+{"kind":"end","stage":1,"rc":1}
