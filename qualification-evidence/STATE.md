@@ -10,7 +10,8 @@ session's own argv. Use PIDs from the run's `pids` file and `kill -0`.
 ## Done
 
 - Items 1, 2, 3, 4, 5 complete. Pack `docs/chips/det-zen3-v1.toml` sealed
-  `3fe74869c247f973d09490eabde9ffba9d4759dd73e4f2bca6a25e7026af46cb`.
+  `f375e8a12cb35ca4aea4ca2210b5c0ac6c43ba6f88a3da09a079cc36f41a6139` (commit 532f51b2),
+  carrying both skid distributions labelled and the measured overshoot handling.
 - Stage 1 campaign E passes: `report --evidence-dir /root/qual-evidence/stage1-E`
   exits 0, 36 of 36 checks. Independently recomputed outside the suite.
 - Item 6 complete: kernel 6.18.35 built with the re-anchored SVM patch (kernel commit
@@ -19,6 +20,12 @@ session's own argv. Use PIDs from the run's `pids` file and `kill -0`.
   GRUB one-shot after a QEMU pre-flight, and booted. One of the two permitted patch
   attempts was used.
 - Item 7 stock half complete: `qualification-evidence/stage2-stock-findings.md`.
+- Landing campaign (C/D) complete and recomputed: 500,000 targets, 1,000,000 landings,
+  419,007 attested deterministic exits. Shard exit codes explained from the records in
+  `qualification-evidence/shard-exit-codes-and-recovery.md`; digest inversion scored
+  7000 agree / 0 disagree.
+- Overshoot detection and recovery demonstrated: 113 of 113 recovered at margin 3072,
+  4000 of 4000 exact on the campaign's overshot target at the sealed margin.
 
 ## Box state now
 
@@ -31,48 +38,39 @@ edits; `bash /root/kclose2.sh` restores the pristine file and names the stock re
 
 ## Running
 
-- The landing campaign, since 04:26:09Z. 8 shards (`ae3-forceexit`, cores
-  1,3,5,7,9,11,13,15), 62500 targets each, `--replay`, margin 16192 which is the
-  pack's sealed value. Records `/root/qual-evidence/stage2/campaign/core<N>.json`,
-  PIDs in `.../campaign/pids`, per-minute counts in `.../campaign/progress.log`.
-  Rate about 2640 arms a minute; expected finish about 07:35Z.
+- The attested-exit supplement, since 07:43Z. 15 shards (`ae3-instr`, cores 0,1,2,4-15),
+  `--margin 16192 --min-target 16193 --arms 24000 --replay --retries 3`. Records
+  `/root/qual-evidence/stage2/supplement/core<N>.json`, PIDs in `.../supplement/pids`,
+  per-minute counts in `.../supplement/progress.log`. About 4,970 arms a minute. Stop at
+  about 301,000 arms, which puts total attested exits over a million; kill by PID from
+  the `pids` file.
+- `close-a.sh` on core 3 since 08:04Z, output `/root/qual-evidence/stage2/close-a.out`
+  and `patched-close.log`. The enforcement probes are done and the single-step records
+  are byte-identical to the stock ones; `ae5-gate --reps 1000` is still running.
 
 ## Next
 
-1. Wait for `/root/qual-evidence/stage2/campaign/progress.log` to say `alive=0`, then
-   `python3 /root/campaign-analysis.py /root/qual-evidence/stage2/campaign`. It
-   recomputes everything the verdict needs from the per-arm records, including the
-   digest inversion that recovers what a replay arm did.
-2. Size the supplement from that output. The item-7 floor is a million landings at
-   `work == target` with the mechanism attested, and only the first arm's exit reason is
-   in the campaign's records, so the attested count is about 419,000, not 838,000. Run
-   `bash /root/supplement.sh <targets-per-core> supplement <cores...>` 16-wide with
-   `ae3-instr`, which records the replay arm's exit reason. Cores 1-15 odd are the
-   isolated population and 0-14 even are a co-tenant one, reported separately.
-   Alongside it, `bash /root/repro-core9.sh <core>` reproduces seed 109 to index 15257.
-3. `bash /root/overshoot-demo.sh` for the recovery rate at a deliberately small margin.
-   The recovery itself is already demonstrated 5 times out of 5 in the campaign - see
-   `overshoot-anatomy.md` - so this measures the rate, not the fact.
-4. `bash /root/close-a.sh` while the patched kernel is booted: ae4-freeze, ae4-msr, the
-   single-step driver in both modes, the RDRAND probe, and ae5-gate.
-5. `bash /root/ceiling-control.sh` on a quiet box: drops the sampling ceiling, shows
+1. Poll the supplement to about 301,000 arms, kill by PID, then
+   `python3 /root/campaign-analysis.py /root/qual-evidence/stage2/supplement` and
+   `digest-validate.py`. Report the isolated cores and the co-tenant cores separately.
+2. `bash /root/ceiling-control.sh` on a quiet box: drops the sampling ceiling, shows
    `check` refuse, restores it, shows `check` accept. It changes a kernel setting every
    measurement depends on, so never while anything is running.
-6. Final pack edit. `skid.observed_max` source must say the maximum comes from campaign
-   C and that 11,090 arms across C and A2 are unaccounted behind it. `skid.derivation`
-   must carry both distributions labelled and say which one the margin derives from and
-   why. `skid.overshoot` must carry the measured detection and recovery numbers. The
-   margin stays 16192. Reseal with `bash <scratchpad>/reseal.sh`, run the five gates,
-   commit.
-7. Item 8: rsync (gzip the shard files on the box first), `bash /root/kclose2.sh`,
-   reboot, poll ssh, `bash /root/posture.sh`, ship the pack, `bash /root/stage0-recheck.sh`,
-   rsync, final commit, final report.
+3. Write up the patched-kernel enforcement half from `patched-close.log`.
+4. Item 8: `bash <scratchpad>/pull-campaign.sh` (gzips the shard files then rsyncs),
+   `bash /root/kclose2.sh`, reboot, poll ssh, `bash /root/posture.sh`,
+   `bash <scratchpad>/ship.sh`, `bash /root/stage0-recheck.sh`, rsync, final commit
+   (no push), final report from `<scratchpad>/report-draft.md`.
 
 ## Recorded failures so far
 
-One class, not two. All five failing arms are overshoots; three of them are on the
-replay arm, whose landing the record does not describe and which was recovered by
-inverting the digest. Skids 27,816 / 37,595 / 50,432 / 52,737 / 56,725, so the
-guest-mode maximum is 56,725 and not the 37,595 the record shows on its face. Every one
-was rejected rather than accepted, and in every one the other arm of the same target
-landed exactly on the target. `overshoot-anatomy.md` is the write-up.
+One class, not two: every failing arm is an overshoot, and every one was refused rather
+than accepted as a landing. Six of them across 838,014 arms, one in 139,669. Two are
+first arms, skids 27,816 and 37,595, which the record describes on its face. Four are
+replay arms, skids 29,884 / 50,432 / 52,737 / 56,725, which the record does not describe
+and which were recovered by inverting the state digest; the inversion is scored 7,000
+agree and 0 disagree against records that state the landing outright. So the guest-mode
+maximum is 56,725, not the 37,595 the records show unaided. In every case the other arm
+of the same target landed exactly on the target, and re-arming recovers: 6 of 6 in the
+campaign and 113 of 113 in the demonstration at a deliberately small margin.
+`overshoot-anatomy.md` and `shard-exit-codes-and-recovery.md` are the write-ups.
