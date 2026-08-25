@@ -476,6 +476,7 @@ pub cpu_qualification::stage1::MeasurementPlan::periods: alloc::vec::Vec<u64>
 pub cpu_qualification::stage1::MeasurementPlan::reps: u64
 impl cpu_qualification::stage1::MeasurementPlan
 pub fn cpu_qualification::stage1::MeasurementPlan::clean_reps_floor(&self) -> u64
+pub fn cpu_qualification::stage1::MeasurementPlan::for_baseline(usize, bool) -> cpu_qualification::stage1::MeasurementPlan
 pub fn cpu_qualification::stage1::MeasurementPlan::overflow_floor(&self, u64) -> u64
 pub fn cpu_qualification::stage1::MeasurementPlan::slice(&self, u64, u64) -> cpu_qualification::stage1::MeasurementPlan
 pub fn cpu_qualification::stage1::MeasurementPlan::standard(usize) -> cpu_qualification::stage1::MeasurementPlan

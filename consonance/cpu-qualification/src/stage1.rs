@@ -142,6 +142,23 @@ const STANDARD_PERIODS: [u64; 2] = [10_000, 100_000];
 const STANDARD_ARMS_PER_PERIOD: u64 = 125_000;
 
 impl MeasurementPlan {
+    /// The plan for a baseline, which is the standard plan narrowed to the
+    /// interference the baseline's own posture can produce.
+    ///
+    /// A baseline that requires simultaneous multithreading off has no sibling
+    /// thread for the sibling-interference condition to make busy, so that
+    /// condition is not one the plan can commit to. Narrowing here, from the
+    /// pack, fixes the plan before any measurement runs; a condition dropped
+    /// after a measurement refused would be a plan written to fit its result.
+    #[must_use]
+    pub fn for_baseline(core: usize, smt_expected_off: bool) -> MeasurementPlan {
+        let mut plan = MeasurementPlan::standard(core);
+        if smt_expected_off {
+            plan.conditions.retain(|c| *c != Interference::SmtSibling);
+        }
+        plan
+    }
+
     /// The plan the suite runs when nothing narrows it.
     #[must_use]
     pub fn standard(core: usize) -> MeasurementPlan {
@@ -486,6 +503,25 @@ ERR:          0
         assert_eq!(slice.reps, 128);
         assert_eq!(slice.clean_reps_floor(), 32);
         assert_eq!(slice.arms_per_period, 500_000);
+    }
+
+    #[test]
+    fn a_baseline_that_requires_no_sibling_thread_does_not_plan_to_disturb_one() {
+        let with_smt = MeasurementPlan::for_baseline(3, false);
+        assert_eq!(with_smt.conditions, Interference::all().to_vec());
+
+        let without = MeasurementPlan::for_baseline(3, true);
+        assert!(!without.conditions.contains(&Interference::SmtSibling));
+        // Every other condition survives: the posture removes one sibling
+        // thread, not the rest of the plan.
+        assert_eq!(without.conditions.len(), Interference::all().len() - 1);
+        for condition in [
+            Interference::Quiet,
+            Interference::CoTenant,
+            Interference::MemoryPressure,
+        ] {
+            assert!(without.conditions.contains(&condition), "{condition:?}");
+        }
     }
 
     #[test]

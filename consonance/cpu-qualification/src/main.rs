@@ -249,7 +249,15 @@ fn run_stage1(
     // A skid margin the pack does not record is a margin nothing can be judged
     // against, so the run refuses rather than choosing one.
     let skid_margin = *pack.skid.margin.require("skid.margin")?;
-    let plan = MeasurementPlan::standard(measurement_core()?);
+    // The pack states the simultaneous-multithreading policy this baseline
+    // requires; a baseline measured with it off has no sibling thread, and the
+    // plan says so before the run rather than after it.
+    let smt_off = pack.host_conditions.value().is_some_and(|conditions| {
+        conditions
+            .iter()
+            .any(|c| c.condition == "smt-policy" && c.expect == "off")
+    });
+    let plan = MeasurementPlan::for_baseline(measurement_core()?, smt_off);
     let payloads = cpu_qualification::payload::runnable().len() as u64;
 
     let mut records = vec![Record::Plan {
