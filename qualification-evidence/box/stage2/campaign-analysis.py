@@ -64,7 +64,7 @@ fail_by_core = collections.Counter()
 fails = []
 retry_attempted = retry_landed = inferred = 0
 replay_overshoot = digest_diverged = replay_inexact = 0
-smi_arms = 0
+smi_arms = rearmed = irq_dirty = fail_irq = 0
 seen_tsc = seen_smi = seen_retry = False
 idx_by_file = collections.defaultdict(list)
 all_targets = []
@@ -116,9 +116,12 @@ for f, r in records(d):
                 replay_inexact += 1
         elif not r["overshoot"]:
             mism += 1
+    rearmed += r.get("rearmed", 0)
+    irq_dirty += r.get("irq_dirty", 0)
     if not r["ok"]:
         fails.append(r)
         fail_by_core[r["core"]] += 1
+        fail_irq += r.get("irq_dirty", 0)
     if "tsc_to_preempt" in r:
         seen_tsc = True
         if r["period"] and r["tsc_to_preempt"]:
@@ -157,6 +160,10 @@ tot_over = overshoot + replay_overshoot
 if tot_over:
     print(f"  all recorded overshoots: {tot_over} in {exposed} exposed arms "
           f"(1 in {exposed // tot_over})")
+print(f"arms re-primed after a premature interrupt: {rearmed}")
+print(f"arms that took a host interrupt on the pinned core during the landing: "
+      f"{irq_dirty} of {arms}"
+      + (f"; of the {len(fails)} failing arms, {fail_irq} did" if fails else ""))
 print(f"contiguous index runs: "
       f"{all(v == list(range(len(v))) for v in idx_by_file.values())}")
 if skids:
