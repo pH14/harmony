@@ -105,8 +105,14 @@ pub struct MeasurementPlan {
     pub n1: u64,
     /// The larger scale of the exactness differential.
     pub n2: u64,
-    /// Repetitions per payload per interference condition.
+    /// Repetitions per payload per interference condition. A repetition that
+    /// catches an interrupt cannot be judged, so this is how many windows are
+    /// attempted, not how many the plan commits to judging.
     pub reps: u64,
+    /// Interrupt-free windows the plan commits to judging, per payload per
+    /// condition. Never larger than `reps`, and the two are separate because a
+    /// host that takes an interrupt in one window has not failed exactness.
+    pub min_clean_reps: u64,
     /// The overflow periods to arm at.
     pub periods: Vec<u64>,
     /// Arms per period.
@@ -116,12 +122,17 @@ pub struct MeasurementPlan {
 }
 
 /// The differential's smaller scale. Large enough that the fixed work around
-/// the loop is a rounding error beside the counted iterations.
-const STANDARD_N1: u64 = 1_000_000;
+/// the loop is a rounding error beside the counted iterations, and short enough
+/// that a window can complete between two timer interrupts on a busy host.
+const STANDARD_N1: u64 = 100_000;
 /// The differential's larger scale.
-const STANDARD_N2: u64 = 2_000_000;
-/// Exactness repetitions per payload per condition.
-const STANDARD_REPS: u64 = 32;
+const STANDARD_N2: u64 = 200_000;
+/// Exactness windows attempted per payload per condition. Most of the surplus
+/// over the floor is spent under the interference conditions, where a window
+/// that finishes without an interrupt is the exception.
+const STANDARD_REPS: u64 = 512;
+/// Interrupt-free windows required per payload per condition.
+const STANDARD_MIN_CLEAN_REPS: u64 = 32;
 /// Two periods apart by an order of magnitude, so the skid distribution is
 /// measured across the range the machinery arms at rather than at one point.
 const STANDARD_PERIODS: [u64; 2] = [10_000, 100_000];
@@ -139,16 +150,18 @@ impl MeasurementPlan {
             n1: STANDARD_N1,
             n2: STANDARD_N2,
             reps: STANDARD_REPS,
+            min_clean_reps: STANDARD_MIN_CLEAN_REPS,
             periods: STANDARD_PERIODS.to_vec(),
             arms_per_period: STANDARD_ARMS_PER_PERIOD,
             conditions: Interference::all().to_vec(),
         }
     }
 
-    /// How many exactness repetitions the plan commits to per payload.
+    /// How many interrupt-free exactness windows the plan commits to judging,
+    /// per payload per condition.
     #[must_use]
     pub fn clean_reps_floor(&self) -> u64 {
-        self.reps
+        self.min_clean_reps.min(self.reps)
     }
 
     /// How many overflows the plan commits to delivering, across `payloads`
@@ -164,8 +177,10 @@ impl MeasurementPlan {
     /// before a long campaign.
     #[must_use]
     pub fn slice(&self, reps: u64, arms: u64) -> MeasurementPlan {
+        let reps = reps.min(self.reps);
         MeasurementPlan {
-            reps: reps.min(self.reps),
+            reps,
+            min_clean_reps: self.min_clean_reps.min(reps),
             arms_per_period: arms.min(self.arms_per_period),
             ..self.clone()
         }
@@ -446,11 +461,15 @@ ERR:          0
             core: 3,
             n1: 1_000_000,
             n2: 2_000_000,
-            reps: 32,
+            reps: 128,
+            min_clean_reps: 32,
             periods: vec![10_000, 100_000],
             arms_per_period: 500_000,
             conditions: Interference::all().to_vec(),
         };
+        // The floor is the number of judgeable windows, not the number
+        // attempted: a host that takes an interrupt in one window has produced
+        // a window it cannot judge, which is not an exactness failure.
         assert_eq!(plan.clean_reps_floor(), 32);
         assert_eq!(plan.overflow_floor(1), 1_000_000);
         assert_eq!(plan.overflow_floor(4), 4_000_000);
@@ -459,10 +478,26 @@ ERR:          0
         assert_eq!(slice.reps, 4);
         assert_eq!(slice.arms_per_period, 1_000);
         assert_eq!(slice.core, plan.core);
+        // A slice that attempts fewer windows than the floor asks for cannot
+        // hold the campaign's floor, so it lowers with the attempts.
+        assert_eq!(slice.clean_reps_floor(), 4);
         // A slice never asks for more than the campaign it is a slice of.
         let slice = plan.slice(1_000, 10_000_000);
-        assert_eq!(slice.reps, 32);
+        assert_eq!(slice.reps, 128);
+        assert_eq!(slice.clean_reps_floor(), 32);
         assert_eq!(slice.arms_per_period, 500_000);
+    }
+
+    #[test]
+    fn the_standard_plan_attempts_more_windows_than_it_must_judge() {
+        let plan = MeasurementPlan::standard(3);
+        assert!(
+            plan.reps > plan.min_clean_reps,
+            "reps={} floor={}",
+            plan.reps,
+            plan.min_clean_reps
+        );
+        assert_eq!(plan.clean_reps_floor(), 32);
     }
 
     #[test]

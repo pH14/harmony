@@ -461,6 +461,7 @@ pub struct cpu_qualification::stage1::MeasurementPlan
 pub cpu_qualification::stage1::MeasurementPlan::arms_per_period: u64
 pub cpu_qualification::stage1::MeasurementPlan::conditions: alloc::vec::Vec<cpu_qualification::stage1::Interference>
 pub cpu_qualification::stage1::MeasurementPlan::core: usize
+pub cpu_qualification::stage1::MeasurementPlan::min_clean_reps: u64
 pub cpu_qualification::stage1::MeasurementPlan::n1: u64
 pub cpu_qualification::stage1::MeasurementPlan::n2: u64
 pub cpu_qualification::stage1::MeasurementPlan::periods: alloc::vec::Vec<u64>
