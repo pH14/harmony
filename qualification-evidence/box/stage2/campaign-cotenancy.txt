@@ -1,0 +1,39 @@
+=== ps snapshot 2026-08-25T06:52:44Z, campaign running ===
+    PID PSR STAT ELAPSED %CPU COMMAND
+   1819   1 Rl      8795 99.9 ae3-forceexit
+   1815   9 Rl      8795 99.9 ae3-forceexit
+   1816  11 Rl      8795 99.9 ae3-forceexit
+   1814   7 Rl      8795 99.9 ae3-forceexit
+   1812   3 Rl      8795 99.9 ae3-forceexit
+   1813   5 Rl      8795 99.9 ae3-forceexit
+   1817  13 Rl      8795 99.9 ae3-forceexit
+   1818  15 Rl      8795 99.9 ae3-forceexit
+  20562   0 Ss         0  1.0 sshd-session
+  19521   0 I        782  0.5 kworker/0:3-i40e
+  19886   0 I        444  0.1 kworker/0:2-events
+      1   6 Ss      9028  0.1 systemd
+  12065   0 I       1591  0.0 kworker/0:0-events
+   1072  10 Ss      9008  0.0 dbus-daemon
+    683   4 Ss      9016  0.0 systemd-udevd
+    233  30 P       9028  0.0 migration/30
+    241  31 P       9028  0.0 migration/31
+--- D-state:
+--- md1:
+frozen
+--- per-core busy (isolated cores only), 3s:
+cpu0 idle_delta=299
+cpu1 idle_delta=0
+cpu2 idle_delta=300
+cpu3 idle_delta=0
+cpu4 idle_delta=300
+cpu5 idle_delta=0
+cpu6 idle_delta=300
+cpu7 idle_delta=0
+cpu8 idle_delta=300
+cpu9 idle_delta=0
+cpu10 idle_delta=301
+cpu11 idle_delta=0
+cpu12 idle_delta=301
+cpu13 idle_delta=0
+cpu14 idle_delta=301
+cpu15 idle_delta=0

@@ -38,3 +38,17 @@ settings.
 Load average is not the quiet test used in this program. Each campaign records
 the state of the core it pins to and what else was running on the machine at
 the time.
+
+## What was running during the stage-2 landing campaign
+
+Snapshot taken mid-run and kept at `box/stage2/campaign-cotenancy.txt`. The eight
+`ae3-forceexit` shards are each pinned to their own isolated core, cores 1, 3, 5, 7, 9,
+11, 13 and 15, each at 99.9 percent of it. No process was in uninterruptible sleep and
+`md1` was still `frozen`. Over a three-second sample every isolated core recorded zero
+idle jiffies and every other core recorded a full three seconds of idle, apart from a
+little kworker and sshd activity on cpu0, which is where this session's own shell lands.
+
+Two short read-only analyses were run on cpu0 during the campaign, each a few seconds of
+Python over the record files, and a five-run CPUID and RDRAND probe that creates a
+microsecond-scale guest. They are on a core no shard uses and are recorded here rather
+than left implicit.
