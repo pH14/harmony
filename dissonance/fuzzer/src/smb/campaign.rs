@@ -598,14 +598,6 @@ pub fn derive_suffix(
         if recorded {
             let mined = match chord_policy {
                 SmbCampaignChordPolicy::Uniform => None,
-                SmbCampaignChordPolicy::RecordedHalf => {
-                    let index = rand.below(
-                        NonZeroUsize::new(RECORDED_CHORD_TABLE.len())
-                            .ok_or("empty recorded chord table")?,
-                    );
-                    let (buttons, hold) = RECORDED_CHORD_TABLE[index];
-                    Some(ButtonChord::new(buttons, hold))
-                }
                 SmbCampaignChordPolicy::DerivedHalf(_) => {
                     let tables = chord_tables.ok_or("derived chord policy has no folded tables")?;
                     let length = tables.mixed_len()?;
@@ -626,341 +618,6 @@ pub fn derive_suffix(
     }
     Ok(suffix)
 }
-
-/// Chords copied from the lineages that crossed the 7-4 castle checks, the
-/// machine's own recorded sample of maneuvers those checks reward. Drawing
-/// uniformly from the list reproduces the empirical distribution; duplicates
-/// carry the frequencies.
-const RECORDED_CHORD_TABLE: [(u8, u8); 328] = [
-    (131, 102),
-    (130, 4),
-    (64, 6),
-    (131, 108),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (130, 115),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (131, 4),
-    (130, 112),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (130, 9),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 118),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 118),
-    (64, 4),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (0, 96),
-    (129, 111),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (0, 96),
-    (129, 111),
-    (32, 115),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (16, 3),
-    (129, 107),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (0, 96),
-    (32, 8),
-    (129, 113),
-    (131, 7),
-    (1, 97),
-    (128, 119),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (1, 2),
-    (131, 103),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (0, 96),
-    (32, 8),
-    (128, 108),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (0, 96),
-    (32, 8),
-    (128, 108),
-    (16, 10),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (131, 4),
-    (1, 7),
-    (16, 99),
-    (2, 115),
-    (16, 119),
-    (16, 12),
-    (130, 108),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (131, 4),
-    (1, 7),
-    (16, 99),
-    (128, 102),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (16, 108),
-    (128, 106),
-    (131, 96),
-    (64, 99),
-    (2, 105),
-    (0, 3),
-    (16, 4),
-    (128, 116),
-    (131, 120),
-    (2, 11),
-    (131, 96),
-    (64, 99),
-    (2, 105),
-    (0, 3),
-    (16, 4),
-    (128, 116),
-    (131, 120),
-    (130, 11),
-    (16, 5),
-    (129, 12),
-    (129, 115),
-    (1, 105),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (64, 6),
-    (128, 119),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (129, 7),
-    (131, 100),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (16, 108),
-    (128, 4),
-    (128, 97),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (1, 2),
-    (130, 96),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (129, 11),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (16, 108),
-    (128, 4),
-    (128, 9),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (0, 100),
-    (1, 107),
-    (2, 118),
-    (128, 112),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (16, 3),
-    (130, 3),
-    (0, 10),
-    (128, 105),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (16, 3),
-    (130, 3),
-    (0, 10),
-    (128, 105),
-    (129, 11),
-    (32, 112),
-    (1, 5),
-    (128, 100),
-    (2, 9),
-    (131, 98),
-    (128, 110),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (32, 97),
-    (1, 8),
-    (131, 97),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (32, 97),
-    (1, 8),
-    (131, 2),
-    (1, 12),
-    (0, 6),
-    (129, 111),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (32, 97),
-    (1, 8),
-    (32, 103),
-    (32, 112),
-    (131, 115),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (0, 100),
-    (1, 107),
-    (2, 118),
-    (131, 10),
-    (129, 115),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (131, 4),
-    (1, 7),
-    (16, 99),
-    (2, 4),
-    (32, 115),
-    (64, 107),
-    (130, 114),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (131, 4),
-    (1, 7),
-    (16, 99),
-    (2, 4),
-    (32, 115),
-    (32, 4),
-    (129, 107),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (32, 97),
-    (1, 8),
-    (32, 110),
-    (131, 107),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (16, 3),
-    (130, 3),
-    (0, 10),
-    (128, 105),
-    (129, 4),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (129, 7),
-    (64, 118),
-    (16, 12),
-    (129, 99),
-    (16, 5),
-    (2, 5),
-    (131, 110),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (129, 7),
-    (129, 113),
-    (128, 104),
-    (129, 3),
-    (129, 99),
-    (64, 9),
-    (130, 12),
-    (1, 118),
-    (2, 9),
-    (32, 97),
-    (1, 8),
-    (32, 103),
-    (32, 112),
-    (2, 102),
-    (129, 117),
-];
 
 /// SMB-only filter preserving the existing deep-lineage extraction semantics.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1003,10 +660,6 @@ pub enum SmbCampaignChordPolicy {
     /// Every chord drawn uniformly from the vocabulary.
     #[default]
     Uniform,
-    /// Each chord comes from the compiled recorded table at even odds with
-    /// the uniform draw, so exploration mass stays while the sampled shape
-    /// follows the machine's own successes.
-    RecordedHalf,
     /// Derive recent and all-history tables from the recorded source, mixing
     /// their registered empirical weights into the biased half of each draw.
     DerivedHalf(SmbChordTableDerivation),
@@ -1017,7 +670,6 @@ pub enum SmbCampaignChordPolicy {
 pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
         SmbCampaignChordPolicy::Uniform => "chord_uniform".to_owned(),
-        SmbCampaignChordPolicy::RecordedHalf => "chord_draw_recorded_50".to_owned(),
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
             let source = derivation.source_filter;
             let parameters = derivation.parameters;
@@ -1051,9 +703,6 @@ pub fn chord_policy_from_identifier(
 ) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
     if identifier == "chord_uniform" {
         return Ok(SmbCampaignChordPolicy::Uniform);
-    }
-    if identifier == "chord_draw_recorded_50" {
-        return Ok(SmbCampaignChordPolicy::RecordedHalf);
     }
     let (fields, hash_rule) = if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_50:")
     {
@@ -2788,29 +2437,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_recorded_chord_draw_changes_the_suffix() {
-        let differing = (0..64_u64)
-            .filter(|seed| {
-                derive_suffix(
-                    *seed,
-                    SmbCampaignChordPolicy::Uniform,
-                    SmbButtonVocabulary::default(),
-                    None,
-                )
-                .expect("uniform")
-                    != derive_suffix(
-                        *seed,
-                        SmbCampaignChordPolicy::RecordedHalf,
-                        SmbButtonVocabulary::default(),
-                        None,
-                    )
-                    .expect("recorded")
-            })
-            .count();
-        assert!(differing > 0, "no draw came from the recorded table");
-    }
-
     fn derived_policy() -> SmbCampaignChordPolicy {
         SmbCampaignChordPolicy::DerivedHalf(super::SmbChordTableDerivation {
             source_filter: super::SmbChordSourceFilter {
@@ -2838,14 +2464,7 @@ mod tests {
             chord_policy_from_identifier(&identifier).expect("parse derived policy"),
             policy
         );
-        assert_eq!(
-            chord_policy_identifier(SmbCampaignChordPolicy::RecordedHalf),
-            "chord_draw_recorded_50"
-        );
-        assert_eq!(
-            chord_policy_from_identifier("chord_draw_recorded_50").expect("parse recorded policy"),
-            SmbCampaignChordPolicy::RecordedHalf
-        );
+        assert!(chord_policy_from_identifier("chord_draw_recorded_50").is_err());
         assert!(chord_policy_from_identifier("chord_draw_recorded_50:0").is_err());
 
         let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy else {
