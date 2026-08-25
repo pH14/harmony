@@ -16,7 +16,7 @@
 [pack]
 schema = "cpu-qualification-pack-v1"
 baseline = "det-zen3-v1"
-pack_hash = "ea23aaf6a9a47d79aaecfce134e1d7d61bffafd66c6879200ad29538f9a3538e"
+pack_hash = "e233f43ad4a6272a9a9cbebd9bc059b7407fd5e8018859680195e2ab68374be2"
 
 [chip.vendor]
 source = "/proc/cpuinfo vendor_id on the qualification box; docs/CPU-QUALIFICATION.md known-chip table AMD row"
@@ -43,7 +43,7 @@ source = "consonance/cpu-qualification/src/perf_sys.rs PerfCounter, Scope::Guest
 value = "PERF_TYPE_RAW, pinned, guest-only (exclude_host), sampling mode"
 
 [skid.observed_max]
-source = "the largest skid of this program's four stage-1 campaigns on the qualification box, 2026-08-25: A2 8034, C 8096, D 7991. Recomputed from the per-arm records in qualification-evidence/box/stage1-*/stage1.jsonl, outside the suite as well as inside it"
+source = "the largest skid of this program's four stage-1 campaigns on the qualification box, 2026-08-25: A2 8034, C 8096, D 7991, E 8007. Recomputed from the per-arm records in qualification-evidence/box/stage1-*/stage1.jsonl.gz, outside the suite as well as inside it"
 value = 8096
 
 [skid.margin]
@@ -51,7 +51,7 @@ source = "twice skid.observed_max"
 value = 16192
 
 [skid.derivation]
-source = "stage-1 campaign A2 on the qualification box"
+source = "the four stage-1 campaigns on the qualification box"
 value = "twice the largest skid this chip produced. Every delivered overflow reports the counter value at the interrupt; the skid is that value less the armed period. Across the campaigns the largest was 8096, on the loop_backedge payload at a period of 10000, and no campaign's maximum reached 8100. The distribution is concentrated far below it: every skid falls in the 10-to-10000 range with the bulk between 100 and 1000, and the smallest seen was 13. The factor of two is headroom over a maximum that is itself a tail observation, not a fitted bound. The campaigns themselves were judged against 16068, tighter than this, so the seal is not a bound widened to fit a result"
 
 [skid.overshoot]
@@ -62,7 +62,7 @@ value = "an overflow that stops at or past the deadline raises SkidExceeded, whi
 absent = "a count offset is the work an exit of a given class contributes on top of the guest's own, which stage 2 measures by landing exits of each class; stage 2 is not built, so no run on this chip has produced one. Stage 1 measures a different quantity, the fixed count around a payload loop, which is 6 work units for every payload class here and 7 for straight_line"
 
 [event_density]
-source = "stage-1 campaign A2 on the qualification box, 2026-08-25: 320 interrupt-free exactness windows across five payload classes and three interference conditions, 320000000 work-clock events judged against the analytical oracle with no mismatch. The density is the differential (count at n2 less count at n1) divided by the iteration difference, identical in every window"
+source = "stage-1 campaign E on the qualification box, 2026-08-25, the campaign whose report passes: 8136 interrupt-free exactness windows across five payload classes and three interference conditions plus the guest payload, 813600000 work-clock events judged against the analytical oracle with no mismatch. The density is the differential (count at n2 less count at n1) divided by the iteration difference, identical in every window; campaigns A2, C and D produced the same densities"
 
 [[event_density.value]]
 payload_class = "loop_backedge"
