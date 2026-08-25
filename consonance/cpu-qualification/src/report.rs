@@ -211,29 +211,37 @@ pub struct Verdict {
 pub fn recompute(records: &[Record]) -> Verdict {
     let mut checks = Vec::new();
 
-    let plan = records.iter().find_map(|r| match r {
-        Record::Plan {
-            baseline, floors, ..
-        } => Some((baseline.clone(), *floors)),
-        _ => None,
-    });
-    let plan_count = records
+    // A run reaching stage N retains one stream per stage it ran through, each
+    // with its own plan and its own terminal record. The floors come from the
+    // highest stage: it is the one the run set out to reach, and a lower stage
+    // commits to no floors at all.
+    let mut plans: Vec<(u8, String, Floors)> = records
         .iter()
-        .filter(|r| matches!(r, Record::Plan { .. }))
-        .count();
+        .filter_map(|r| match r {
+            Record::Plan {
+                baseline,
+                stage,
+                floors,
+            } => Some((*stage, baseline.clone(), *floors)),
+            _ => None,
+        })
+        .collect();
+    plans.sort_by_key(|(stage, _, _)| *stage);
+    let stages: BTreeSet<u8> = plans.iter().map(|(stage, _, _)| *stage).collect();
     checks.push(Check::new(
         "plan",
-        plan_count == 1,
-        format!("{plan_count} plan record(s); exactly one is required"),
+        !plans.is_empty() && plans.len() == stages.len(),
+        format!(
+            "{} plan record(s) over stage(s) {stages:?}; exactly one per stage is required",
+            plans.len()
+        ),
     ));
+    let plan = plans.last().map(|(_, baseline, f)| (baseline.clone(), *f));
 
     check_terminal(records, &mut checks);
     check_host_rows(records, &mut checks);
 
-    let stage = records.iter().find_map(|r| match r {
-        Record::Plan { stage, .. } => Some(*stage),
-        _ => None,
-    });
+    let stage = plans.last().map(|(stage, _, _)| *stage);
     let floors = plan.as_ref().map(|(_, f)| *f);
     match floors {
         Some(floors) => {
@@ -258,23 +266,20 @@ pub fn recompute(records: &[Record]) -> Verdict {
     }
 }
 
-/// Exactly one terminal record, and it must report success.
+/// Exactly one terminal record per stage the run retained, each reporting
+/// success. A stage that ended badly fails the run whichever stage it was.
 fn check_terminal(records: &[Record], checks: &mut Vec<Check>) {
-    let ends: Vec<i32> = records
-        .iter()
-        .filter_map(|r| match r {
-            Record::End { rc, .. } => Some(*rc),
-            _ => None,
-        })
-        .collect();
-    let ok = ends.len() == 1 && ends[0] == 0;
+    let mut ends: BTreeMap<u8, Vec<i32>> = BTreeMap::new();
+    for record in records {
+        if let Record::End { stage, rc } = record {
+            ends.entry(*stage).or_default().push(*rc);
+        }
+    }
+    let ok = !ends.is_empty() && ends.values().all(|codes| codes.len() == 1 && codes[0] == 0);
     checks.push(Check::new(
         "terminal",
         ok,
-        format!(
-            "{} terminal record(s), codes {ends:?}; exactly one with code 0 is required",
-            ends.len()
-        ),
+        format!("terminal codes by stage {ends:?}; exactly one with code 0 per stage is required"),
     ));
 }
 
@@ -810,6 +815,61 @@ mod tests {
         assert!(verdict.passed, "{:#?}", verdict.checks);
         assert_eq!(verdict.baseline.as_deref(), Some("sample-v1"));
         assert_eq!(verdict.floors, Some(FLOORS));
+    }
+
+    /// Stage 0's stream, as `run --stage 1` writes it alongside stage 1's: its
+    /// own plan committing to no floors, and its own terminal record.
+    fn stage0_stream() -> Vec<Record> {
+        vec![
+            Record::Plan {
+                baseline: "sample-v1".to_string(),
+                stage: 0,
+                floors: Floors {
+                    min_clean_reps: 0,
+                    min_overflow_arms: 0,
+                    skid_margin: 0,
+                },
+            },
+            Record::End { stage: 0, rc: 0 },
+        ]
+    }
+
+    #[test]
+    fn a_run_through_two_stages_is_judged_against_the_higher_stages_floors() {
+        let mut records = stage0_stream();
+        records.extend(passing_run());
+        let verdict = recompute(&records);
+        assert!(verdict.passed, "{:#?}", verdict.checks);
+        assert_eq!(
+            verdict.floors,
+            Some(FLOORS),
+            "stage 0 commits to no floors; judging stage 1's measurements against them              would pass anything"
+        );
+    }
+
+    #[test]
+    fn two_plans_for_the_same_stage_cannot_pass() {
+        let mut records = passing_run();
+        records.push(plan());
+        let verdict = recompute(&records);
+        assert!(!verdict.passed);
+        assert!(verdict.checks.iter().any(|c| c.name == "plan" && !c.passed));
+    }
+
+    #[test]
+    fn a_stage_that_ended_nonzero_fails_the_run_even_when_the_other_stage_passed() {
+        let mut records = stage0_stream();
+        records.retain(|r| !matches!(r, Record::End { .. }));
+        records.push(Record::End { stage: 0, rc: 2 });
+        records.extend(passing_run());
+        let verdict = recompute(&records);
+        assert!(!verdict.passed);
+        assert!(
+            verdict
+                .checks
+                .iter()
+                .any(|c| c.name == "terminal" && !c.passed)
+        );
     }
 
     #[test]
