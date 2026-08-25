@@ -9316,3 +9316,29 @@ the operating mode at every one of its 174,969 frames.
 - Stop rule: the victory event ends the run and writes the winning
   input; otherwise the run continues until stopped for a measured
   defect that a level cannot be completed without correcting.
+
+### Run 4 paused in 7-2 at 2,513,958 executions — box handed to other work
+
+- Seed `0x5eed_0825`, commit `0db76a33`, host msr1, 12 workers, unit
+  smb-run4. Stopped by the operator to free the machine; no wall is
+  declared. Stream: 2,544,017 lines, SHA-256
+  `6cbcf58d5b9fe06be01d1d7ba6240872fd5d90883f39d20d822267a2ffee18ed`.
+  Whole-tree checkpoint preserved at 2,500,000 executions with 1,754,790
+  retained (`results/run4/checkpoint-archive.json` +
+  `checkpoint-snapshots.bin`); resume from it continues this run under
+  the same binary.
+- First entry per level: 1-2 at 6,399; 1-3 at 33,248; 1-4 at 102,905;
+  2-1 at 107,800; 2-2 at 221,703; 2-3 at 917,150; 2-4 at 958,260; 3-1 at
+  1,003,441; 3-2 at 1,085,023; 3-3 at 1,185,153; 3-4 at 1,209,611; 4-1
+  at 1,228,789; 4-2 at 1,293,954; 4-3 at 1,346,539; 4-4 at 1,397,327;
+  5-1 at 1,441,024; 5-2 at 1,459,867; 5-3 at 1,558,928; 5-4 at
+  1,625,378; 6-1 at 1,654,737; 6-2 at 1,707,264; 6-3 at 1,902,110; 6-4
+  at 2,026,481; 7-1 at 2,035,521; 7-2 at 2,056,414.
+- Deepest run of the effort: 25 levels entered, farthest 7-2 at progress
+  158 after ~128k on that plateau (frontier diagnosed healthy at the
+  2,400,000 checkpoint: tip minting, film shows a plain swim there).
+- The full-width x term held everywhere it applies: 4-2 fell in ~53k
+  (run 3: 339k unfinished), every castle in 8–48k, every flag corridor
+  without a visible pause. Both water levels dominate cost (2-2 ~695k;
+  7-2 ~458k and unfinished at pause) — free-swimming precision is the
+  next general problem, held open by the integrator.
