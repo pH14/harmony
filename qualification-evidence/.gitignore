@@ -1,0 +1,3 @@
+# The program keeps its progress log and the box console logs here as evidence,
+# and the repository ignores *.log everywhere else.
+!*.log
