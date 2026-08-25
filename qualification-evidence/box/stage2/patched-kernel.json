@@ -1,0 +1,8 @@
+{
+  "image_deb": "/root/kbuild-618/linux-image-6.18.35_6.18.35-g52248ae11944-1_amd64.deb",
+  "image_deb_sha256": "8f9f151533a42763fbc9c4a0f611ed7d7f66b9607d165e6a3ee17aa6fc0c9d2a",
+  "kernelrelease": "6.18.35",
+  "kvm_amd_ko": "/root/kbuild-618/linux-6.18.35/arch/x86/kvm/kvm-amd.ko",
+  "kvm_amd_ko_sha256": "630998da04763e6f84a40f41d1bf352bcb3f800f0c4ff0cd17e194bd97948d1f",
+  "schema": "amd-epyc-patched-kernel-v1"
+}
