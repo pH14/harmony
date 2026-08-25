@@ -11,7 +11,7 @@
 //! refusal. Neither is a row that quietly passes.
 
 use crate::chips::{ChipEntry, ChipIdentity, HostConditionKind, Refusal};
-use crate::pack::{Pack, PackError};
+use crate::pack::{HostConditionExpectation, Pack, PackError};
 use crate::report::Record;
 
 /// A refusal from stage 0.
@@ -44,11 +44,14 @@ pub enum Stage0Error {
         /// The identity that was read.
         found: String,
     },
-    /// The pack records no expected state for a condition the table requires.
-    #[error("pack records no expected state for required condition {condition}")]
+    /// The pack records no expected state for a condition the table requires,
+    /// at the place it was read.
+    #[error("pack records no expected state for required condition {condition} at {scope}")]
     NoExpectation {
         /// The condition's token.
         condition: String,
+        /// Where the condition was read.
+        scope: String,
     },
     /// Nothing read a condition the table requires.
     #[error("nothing read required condition {condition}; stage 0 cannot confirm it")]
@@ -437,12 +440,10 @@ pub fn build_rows(
     let expectations = pack.host_conditions.require("host_conditions")?;
     for kind in entry.host_conditions {
         let token = kind.token();
-        let expectation = expectations
+        let for_condition: Vec<&HostConditionExpectation> = expectations
             .iter()
-            .find(|e| e.condition == token)
-            .ok_or_else(|| Stage0Error::NoExpectation {
-                condition: token.to_string(),
-            })?;
+            .filter(|e| e.condition == token)
+            .collect();
         let matching: Vec<&Reading> = readings.iter().filter(|r| r.condition == *kind).collect();
         if matching.is_empty() {
             return Err(Stage0Error::NoReading {
@@ -450,6 +451,22 @@ pub fn build_rows(
             });
         }
         for reading in matching {
+            // A condition can be read in more than one place — one row per
+            // online core, one per loaded KVM module — and those places do not
+            // have to share a state. An expectation naming the reading's scope
+            // wins; otherwise a lone expectation speaks for every place the
+            // condition was read, and several that name other places do not.
+            let expectation = for_condition
+                .iter()
+                .find(|e| e.scope == reading.scope)
+                .or(match for_condition.as_slice() {
+                    [only] => Some(only),
+                    _ => None,
+                })
+                .ok_or_else(|| Stage0Error::NoExpectation {
+                    condition: token.to_string(),
+                    scope: reading.scope.clone(),
+                })?;
             rows.push(Row::new(
                 token,
                 reading.scope.clone(),
@@ -696,8 +713,95 @@ mod tests {
             &intel_readings(),
             &good_probe(),
         ) {
-            Err(Stage0Error::NoExpectation { condition }) => assert_eq!(condition, "smt-policy"),
+            Err(Stage0Error::NoExpectation { condition, scope }) => {
+                assert_eq!(condition, "smt-policy");
+                assert_eq!(scope, "host");
+            }
             other => panic!("a missing expectation must refuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_condition_read_in_several_places_takes_the_expectation_naming_each() {
+        let mut expectations = intel_expectations();
+        expectations.retain(|e| e.condition != "kvm-module-identity");
+        expectations.push(expectation(
+            HostConditionKind::KvmModuleIdentity,
+            "vendor module",
+            "kvm_intel",
+        ));
+        expectations.push(expectation(
+            HostConditionKind::KvmModuleIdentity,
+            "shared module",
+            "kvm",
+        ));
+        let mut readings = intel_readings();
+        readings.retain(|r| r.condition != HostConditionKind::KvmModuleIdentity);
+        readings.push(Reading::new(
+            HostConditionKind::KvmModuleIdentity,
+            "kvm_intel",
+            "vendor module",
+        ));
+        readings.push(Reading::new(
+            HostConditionKind::KvmModuleIdentity,
+            "kvm",
+            "shared module",
+        ));
+        let pack = pack_with_conditions(expectations);
+        let outcome = build_rows(
+            intel_entry(),
+            &pack,
+            &intel_chip(),
+            &readings,
+            &good_probe(),
+        )
+        .expect("each place has its own expectation");
+        let rows: Vec<&Row> = outcome
+            .rows
+            .iter()
+            .filter(|r| r.condition == "kvm-module-identity")
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter().all(|r| r.confirmed),
+            "one expectation per place must not be compared against the other place: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_place_no_expectation_names_is_refused_rather_than_given_another_places_state() {
+        let mut expectations = intel_expectations();
+        expectations.retain(|e| e.condition != "kvm-module-identity");
+        expectations.push(expectation(
+            HostConditionKind::KvmModuleIdentity,
+            "vendor module",
+            "kvm_intel",
+        ));
+        expectations.push(expectation(
+            HostConditionKind::KvmModuleIdentity,
+            "shared module",
+            "kvm",
+        ));
+        let mut readings = intel_readings();
+        readings.retain(|r| r.condition != HostConditionKind::KvmModuleIdentity);
+        readings.push(Reading::new(
+            HostConditionKind::KvmModuleIdentity,
+            "kvm_something_else",
+            "a third module",
+        ));
+        let pack = pack_with_conditions(expectations);
+        match build_rows(
+            intel_entry(),
+            &pack,
+            &intel_chip(),
+            &readings,
+            &good_probe(),
+        ) {
+            Err(Stage0Error::NoExpectation { condition, scope }) => {
+                assert_eq!(condition, "kvm-module-identity");
+                assert_eq!(scope, "kvm_something_else");
+            }
+            other => panic!("an unnamed place must refuse, got {other:?}"),
         }
     }
 

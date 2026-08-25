@@ -358,6 +358,7 @@ pub mod cpu_qualification::stage0
 pub enum cpu_qualification::stage0::Stage0Error
 pub cpu_qualification::stage0::Stage0Error::NoExpectation
 pub cpu_qualification::stage0::Stage0Error::NoExpectation::condition: alloc::string::String
+pub cpu_qualification::stage0::Stage0Error::NoExpectation::scope: alloc::string::String
 pub cpu_qualification::stage0::Stage0Error::NoReading
 pub cpu_qualification::stage0::Stage0Error::NoReading::condition: alloc::string::String
 pub cpu_qualification::stage0::Stage0Error::Pack(cpu_qualification::pack::PackError)
@@ -603,6 +604,7 @@ pub cpu_qualification::Record::Projection::total_units: u64
 pub enum cpu_qualification::Stage0Error
 pub cpu_qualification::Stage0Error::NoExpectation
 pub cpu_qualification::Stage0Error::NoExpectation::condition: alloc::string::String
+pub cpu_qualification::Stage0Error::NoExpectation::scope: alloc::string::String
 pub cpu_qualification::Stage0Error::NoReading
 pub cpu_qualification::Stage0Error::NoReading::condition: alloc::string::String
 pub cpu_qualification::Stage0Error::Pack(cpu_qualification::pack::PackError)
