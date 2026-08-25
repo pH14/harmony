@@ -574,7 +574,19 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     group_barren: Vec<BTreeMap<K::Group, u64>>,
     /// Duration of one action in the cost unit the replacement rule uses.
     action_time: fn(&A) -> u64,
+    /// Action bound the selector index was built for; `None` until the first
+    /// selection. The index is derived state: rebuilding it from `entries`
+    /// and `active` yields the same draws, so it is never serialized.
+    frontier_cap: Option<usize>,
+    /// Active entry ids under the frontier cap, ascending.
+    active_list: Vec<usize>,
+    /// Active entries under the cap, pooled by walk class (deepest first)
+    /// and, inside each class, by selection cell.
+    classes: BTreeMap<Reverse<K::Group>, ClassCells<K>>,
 }
+
+/// Members of one walk class, ascending per selection cell.
+type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, Vec<usize>>;
 
 impl<A, K, M, S> Archive<A, K, M, S>
 where
@@ -611,6 +623,76 @@ where
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
             action_time,
+            frontier_cap: None,
+            active_list: Vec::new(),
+            classes: BTreeMap::new(),
+        }
+    }
+
+    /// The walk's class depth: the coarsest group, capped at depth 3.
+    fn class_depth() -> usize {
+        Self::coarsest_depth().min(3)
+    }
+
+    /// Rebuild the selector index for `max_actions`.
+    fn rebuild_selector_index(&mut self, max_actions: usize) {
+        self.frontier_cap = Some(max_actions);
+        self.active_list = self.active_ids(max_actions);
+        self.classes = BTreeMap::new();
+        let depth = Self::class_depth();
+        for id in &self.active_list {
+            let key = self.entries[*id].report.key;
+            self.classes
+                .entry(Reverse(key.group(depth)))
+                .or_default()
+                .entry(key.group(1))
+                .or_default()
+                .push(*id);
+        }
+    }
+
+    /// Add a fresh entry to the selector index. Ids only grow, so pushes
+    /// keep every list ascending.
+    fn index_insert(&mut self, id: usize) {
+        let Some(cap) = self.frontier_cap else {
+            return;
+        };
+        if self.entries[id].report.input.actions.len() >= cap {
+            return;
+        }
+        self.active_list.push(id);
+        let key = self.entries[id].report.key;
+        self.classes
+            .entry(Reverse(key.group(Self::class_depth())))
+            .or_default()
+            .entry(key.group(1))
+            .or_default()
+            .push(id);
+    }
+
+    /// Drop a displaced entry from the selector index.
+    fn index_remove(&mut self, id: usize) {
+        if self.frontier_cap.is_none() {
+            return;
+        }
+        if let Ok(position) = self.active_list.binary_search(&id) {
+            self.active_list.remove(position);
+        }
+        let key = self.entries[id].report.key;
+        let class = Reverse(key.group(Self::class_depth()));
+        let cell = key.group(1);
+        if let Some(cells) = self.classes.get_mut(&class) {
+            if let Some(members) = cells.get_mut(&cell) {
+                if let Ok(position) = members.binary_search(&id) {
+                    members.remove(position);
+                }
+                if members.is_empty() {
+                    cells.remove(&cell);
+                }
+            }
+            if cells.is_empty() {
+                self.classes.remove(&class);
+            }
         }
     }
 
@@ -723,19 +805,20 @@ where
         };
         K::record(&mut lineage, key);
         let candidate_time_in_group = self.time_in_group_of(parent_id, &input, key);
-        let slot = self.slots.entry(key.group(0)).or_default();
         // The costliest entry in the group's own clock loses to a candidate
         // that reached the same slot in strictly less time. The entry id
         // breaks ties so the choice stays a total order over the slot.
-        let replace = if slot.len() < MAX_ENTRIES_PER_KEY {
-            None
-        } else {
+        let slot = self.slots.entry(key.group(0)).or_default().clone();
+        let slot_full = slot.len() >= MAX_ENTRIES_PER_KEY;
+        let replace = if slot_full {
             slot.iter()
                 .copied()
                 .max_by_key(|id| (self.time_in_group[*id], self.entries[*id].report.id))
                 .filter(|id| candidate_time_in_group < self.time_in_group[*id])
+        } else {
+            None
         };
-        if slot.len() >= MAX_ENTRIES_PER_KEY && replace.is_none() {
+        if slot_full && replace.is_none() {
             self.rejected = self.rejected.saturating_add(1);
             return Ok(None);
         }
@@ -745,8 +828,11 @@ where
         }
         if let Some(replaced) = replace {
             self.active[replaced] = false;
-            slot.retain(|id| *id != replaced);
+            if let Some(slot) = self.slots.get_mut(&key.group(0)) {
+                slot.retain(|id| *id != replaced);
+            }
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
+            self.index_remove(replaced);
         }
         let id = self.entries.len();
         let report = ArchiveEntryReport {
@@ -766,9 +852,10 @@ where
         self.productive.push(0);
         self.since_retained.push(0);
         self.in_window_ever.push(false);
-        slot.push(id);
+        self.slots.entry(key.group(0)).or_default().push(id);
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
+        self.index_insert(id);
         Ok(Some(id))
     }
 
@@ -842,13 +929,16 @@ where
         rand: &mut RomuDuoJrRand,
         max_actions: usize,
     ) -> Result<(usize, SelectorDraw), Box<dyn Error>> {
-        let active = self.active_ids(max_actions);
-        if active.is_empty() {
+        if self.frontier_cap != Some(max_actions) {
+            self.rebuild_selector_index(max_actions);
+        }
+        if self.active_list.is_empty() {
             return Err("archive has no expandable entry".into());
         }
         let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
         if !use_walk {
-            let id = active[rand.below(NonZeroUsize::new(active.len()).ok_or("empty archive")?)];
+            let count = NonZeroUsize::new(self.active_list.len()).ok_or("empty archive")?;
+            let id = self.active_list[rand.below(count)];
             return Ok((
                 id,
                 SelectorDraw {
@@ -862,9 +952,7 @@ where
         let mut counter_reset = false;
         let mut classes_skipped = 0_u64;
         loop {
-            if let Some(cell) =
-                self.walk_to_cell(rand, &active, &mut classes_skipped, counter_reset)?
-            {
+            if let Some(cell) = self.walk_to_cell(rand, &mut classes_skipped, counter_reset)? {
                 let (id, concentration) = self.draw_from_cell(rand, cell)?;
                 return Ok((
                     id,
@@ -897,35 +985,27 @@ where
     fn walk_to_cell(
         &self,
         rand: &mut RomuDuoJrRand,
-        active: &[usize],
         classes_skipped: &mut u64,
         ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
-        let class_depth = Self::coarsest_depth().min(3);
-        let mut top = BTreeMap::<Reverse<K::Group>, Vec<usize>>::new();
-        for id in active {
-            let key = self.entries[*id].report.key;
-            top.entry(Reverse(key.group(class_depth)))
-                .or_default()
-                .push(*id);
-        }
-        for (_, members) in top {
+        for cell_map in self.classes.values() {
+            let members = cell_map.values().flatten().copied().collect::<Vec<usize>>();
             *classes_skipped =
                 classes_skipped.saturating_add(self.skipped_classes(&members, ignore_streaks));
-            let mut cells = BTreeMap::<K::Group, Vec<usize>>::new();
-            for id in members {
-                if !self.selector_unexhausted(id, ignore_streaks) {
-                    continue;
+            let mut cells = Vec::new();
+            for cell in cell_map.values() {
+                let live = cell
+                    .iter()
+                    .copied()
+                    .filter(|id| self.selector_unexhausted(*id, ignore_streaks))
+                    .collect::<Vec<usize>>();
+                if !live.is_empty() {
+                    cells.push(live);
                 }
-                cells
-                    .entry(self.entries[id].report.key.group(1))
-                    .or_default()
-                    .push(id);
             }
             if cells.is_empty() {
                 continue;
             }
-            let mut cells = cells.into_values().collect::<Vec<_>>();
             let count =
                 NonZeroUsize::new(cells.len()).ok_or("cell draw over an exhausted class")?;
             return Ok(Some(cells.swap_remove(rand.below(count))));
