@@ -339,7 +339,20 @@ pub fn run(config: u64, plan: &MeasurementPlan) -> Result<Stage1Outcome, Stage1E
         plan.reps * specs.len() as u64 * plan.conditions.len() as u64,
     ));
 
+    // An interference condition the host's posture cannot produce — no online
+    // simultaneous-multithreading sibling to make busy, for instance — is a
+    // measurement this run does not make. It is recorded as one, rather than
+    // aborting a stage whose other measurements the host can perfectly well
+    // provide.
+    let mut unmeasured = Vec::new();
     for condition in &plan.conditions {
+        if let Err(Stage1Error::Unavailable { what, detail }) = start_load(*condition, plan) {
+            unmeasured.push(format!(
+                "the {} interference condition: {what} is unavailable, {detail}",
+                condition.token()
+            ));
+            continue;
+        }
         for spec in &specs {
             records.extend(measure_exactness(config, spec, plan, *condition)?);
         }
@@ -374,8 +387,9 @@ pub fn run(config: u64, plan: &MeasurementPlan) -> Result<Stage1Outcome, Stage1E
         }
     }
 
-    let (guest_records, unmeasured) = guest_half(config, plan)?;
+    let (guest_records, guest_unmeasured) = guest_half(config, plan)?;
     records.extend(guest_records);
+    unmeasured.extend(guest_unmeasured);
 
     Ok(Stage1Outcome {
         records,
