@@ -1,0 +1,9 @@
+=== A: overshoot made common (margin 3072, just above the median skid) ===
+2026-08-25T07:49:29Z
+[ae3] arms=5000 preempt=5000 exact=4946 overshoot=54 skid_max=7764 smi_arms=0 recover=113/113 rc=1
+rc=1
+=== B: the campaign's own overshot target, re-armed at the sealed margin ===
+2026-08-25T07:49:55Z
+[ae3] arms=2000 preempt=2000 exact=2000 overshoot=0 skid_max=7253 smi_arms=0 recover=0/0 rc=0
+rc=0
+2026-08-25T07:56:20Z
