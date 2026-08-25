@@ -96,11 +96,16 @@ pub fn cpu_qualification::guest::StateCapture::total_bytes(&self) -> u64
 pub struct cpu_qualification::guest::StateComponent
 pub cpu_qualification::guest::StateComponent::bytes: alloc::vec::Vec<u8>
 pub cpu_qualification::guest::StateComponent::name: &'static str
+pub struct cpu_qualification::guest::StateDiff
+pub cpu_qualification::guest::StateDiff::differing: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::guest::StateDiff::time_bases: alloc::vec::Vec<alloc::string::String>
 pub const cpu_qualification::guest::GUEST_PHYS: u64
 pub const cpu_qualification::guest::GUEST_RAM_BYTES: usize
 pub const cpu_qualification::guest::LOOP_PAYLOAD_BYTES: usize
 pub const cpu_qualification::guest::REQUIRED_COMPONENTS: [&str; 6]
-pub fn cpu_qualification::guest::differing_components(&cpu_qualification::guest::StateCapture, &cpu_qualification::guest::StateCapture) -> alloc::vec::Vec<alloc::string::String>
+pub const cpu_qualification::guest::TIME_BASE_MSRS: [(u32, &str); 3]
+pub fn cpu_qualification::guest::compare_states(&cpu_qualification::guest::StateCapture, &cpu_qualification::guest::StateCapture) -> cpu_qualification::guest::StateDiff
+pub fn cpu_qualification::guest::decode_msr_pairs(&[u8]) -> core::result::Result<alloc::vec::Vec<(u32, u64)>, cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest::emit_loop_payload(u32) -> [u8; 11]
 pub fn cpu_qualification::guest::guest_oracle_delta(u64, u64) -> u64
 pub mod cpu_qualification::guest_sys
@@ -307,6 +312,7 @@ pub cpu_qualification::report::Record::Fixpoint::first_bytes: u64
 pub cpu_qualification::report::Record::Fixpoint::missing: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::Fixpoint::msrs_not_owned: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::Fixpoint::second_bytes: u64
+pub cpu_qualification::report::Record::Fixpoint::time_bases: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::HostRow
 pub cpu_qualification::report::Record::HostRow::condition: alloc::string::String
 pub cpu_qualification::report::Record::HostRow::confirmed: bool
@@ -573,6 +579,7 @@ pub cpu_qualification::Record::Fixpoint::first_bytes: u64
 pub cpu_qualification::Record::Fixpoint::missing: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::Fixpoint::msrs_not_owned: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::Fixpoint::second_bytes: u64
+pub cpu_qualification::Record::Fixpoint::time_bases: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::HostRow
 pub cpu_qualification::Record::HostRow::condition: alloc::string::String
 pub cpu_qualification::Record::HostRow::confirmed: bool

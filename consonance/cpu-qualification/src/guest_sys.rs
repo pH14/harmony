@@ -15,7 +15,7 @@ use kvm_bindings::{Msrs, kvm_msr_entry, kvm_userspace_memory_region, kvm_xsave};
 use kvm_ioctls::{Cap, Kvm, VcpuExit, VcpuFd, VmFd};
 
 use crate::guest::{
-    GUEST_PHYS, GUEST_RAM_BYTES, GuestError, StateCapture, differing_components, emit_loop_payload,
+    GUEST_PHYS, GUEST_RAM_BYTES, GuestError, StateCapture, compare_states, emit_loop_payload,
     guest_oracle_delta,
 };
 use crate::perf::Scope;
@@ -521,21 +521,7 @@ fn encode_msrs(entries: &[kvm_msr_entry]) -> Vec<u8> {
 
 /// Read back what [`encode_msrs`] wrote.
 fn decode_msrs(bytes: &[u8]) -> Result<Vec<(u32, u64)>, GuestError> {
-    if !bytes.len().is_multiple_of(12) {
-        return Err(GuestError::Kvm {
-            what: "decoding the saved MSR list".to_string(),
-            detail: format!("{} bytes is not a whole number of entries", bytes.len()),
-        });
-    }
-    Ok(bytes
-        .chunks_exact(12)
-        .map(|chunk| {
-            let index = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            let mut data = [0u8; 8];
-            data.copy_from_slice(&chunk[4..12]);
-            (index, u64::from_le_bytes(data))
-        })
-        .collect())
+    crate::guest::decode_msr_pairs(bytes)
 }
 
 /// Rebuild a state component from its saved bytes.
@@ -659,12 +645,14 @@ pub fn measure_fixpoint() -> Result<Record, Stage1Error> {
     window.restore_state(&first).map_err(guest_to_stage1)?;
     let second = window.save_state().map_err(guest_to_stage1)?;
 
+    let diff = compare_states(&first, &second);
     Ok(Record::Fixpoint {
         components: first.names(),
         missing: first.missing(),
         first_bytes: first.total_bytes(),
         second_bytes: second.total_bytes(),
-        differing: differing_components(&first, &second),
+        differing: diff.differing,
+        time_bases: diff.time_bases,
         msrs_not_owned: window.msrs_not_owned(),
     })
 }

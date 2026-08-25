@@ -150,29 +150,117 @@ impl StateCapture {
     }
 }
 
-/// Components whose bytes differ between two saves, and components present in
-/// one save but not the other.
+/// The registers that advance with time on their own. A save cannot reproduce
+/// one by writing it back, because the register has moved on by the time the
+/// next save reads it. They are the vCPU's clocks, not its state, so the
+/// fixpoint holds them to advancing rather than to staying put.
+pub const TIME_BASE_MSRS: [(u32, &str); 3] = [
+    (0x0000_0010, "IA32_TIME_STAMP_COUNTER"),
+    (0x4000_0010, "HV_X64_MSR_VP_RUNTIME"),
+    (0x4000_0020, "HV_X64_MSR_TIME_REF_COUNT"),
+];
+
+/// How two saves of the same vCPU compare.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StateDiff {
+    /// Everything that moved and should not have. A fixpoint requires this to
+    /// be empty.
+    pub differing: Vec<String>,
+    /// The time bases, and how far each advanced. A time base that did not
+    /// advance is reported in `differing` instead: a clock that stops, or runs
+    /// backwards, is not the reason a fixpoint comparison may skip it.
+    pub time_bases: Vec<String>,
+}
+
+/// Read one MSR component's bytes back as `index, data` pairs.
+///
+/// # Errors
+/// [`GuestError::Kvm`] when the byte count is not a whole number of entries.
+pub fn decode_msr_pairs(bytes: &[u8]) -> Result<Vec<(u32, u64)>, GuestError> {
+    if !bytes.len().is_multiple_of(12) {
+        return Err(GuestError::Kvm {
+            what: "decoding the saved MSR list".to_string(),
+            detail: format!("{} bytes is not a whole number of entries", bytes.len()),
+        });
+    }
+    Ok(bytes
+        .chunks_exact(12)
+        .map(|chunk| {
+            let index = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            let mut data = [0u8; 8];
+            data.copy_from_slice(&chunk[4..12]);
+            (index, u64::from_le_bytes(data))
+        })
+        .collect())
+}
+
+/// Compare two MSR captures, holding the time bases to advancing and everything
+/// else to being unchanged.
+fn compare_msrs(first: &[u8], second: &[u8], diff: &mut StateDiff) {
+    let (Ok(before), Ok(after)) = (decode_msr_pairs(first), decode_msr_pairs(second)) else {
+        diff.differing
+            .push("msrs: a capture could not be read back as entries".to_string());
+        return;
+    };
+    if before.len() != after.len() {
+        diff.differing.push(format!(
+            "msrs: {} entries then {} entries",
+            before.len(),
+            after.len()
+        ));
+        return;
+    }
+    for ((index, was), (also, now)) in before.iter().zip(after.iter()) {
+        if index != also {
+            diff.differing.push(format!(
+                "msrs: the saves list different registers at the same position, {index:#010x} \
+                 then {also:#010x}"
+            ));
+            return;
+        }
+        match TIME_BASE_MSRS.iter().find(|(i, _)| i == index) {
+            Some((_, name)) if now > was => diff
+                .time_bases
+                .push(format!("{name} ({index:#010x}): advanced by {}", now - was)),
+            Some((_, name)) => diff.differing.push(format!(
+                "{name} ({index:#010x}): a time base that did not advance, {was:#x} then {now:#x}"
+            )),
+            None if was != now => diff.differing.push(format!(
+                "msrs: {index:#010x} moved across the round trip, {was:#x} then {now:#x}"
+            )),
+            None => {}
+        }
+    }
+}
+
+/// How two saves of the same vCPU compare, component by component.
 #[must_use]
-pub fn differing_components(first: &StateCapture, second: &StateCapture) -> Vec<String> {
-    let mut differing = Vec::new();
+pub fn compare_states(first: &StateCapture, second: &StateCapture) -> StateDiff {
+    let mut diff = StateDiff::default();
     for component in &first.components {
         match second.components.iter().find(|c| c.name == component.name) {
+            Some(other) if component.name == "msrs" => {
+                compare_msrs(&component.bytes, &other.bytes, &mut diff);
+            }
             Some(other) if other.bytes == component.bytes => {}
-            Some(other) => differing.push(format!(
+            Some(other) => diff.differing.push(format!(
                 "{}: {} bytes then {} bytes, contents differ",
                 component.name,
                 component.bytes.len(),
                 other.bytes.len()
             )),
-            None => differing.push(format!("{}: absent from the second save", component.name)),
+            None => diff
+                .differing
+                .push(format!("{}: absent from the second save", component.name)),
         }
     }
     for component in &second.components {
         if !first.components.iter().any(|c| c.name == component.name) {
-            differing.push(format!("{}: absent from the first save", component.name));
+            diff.differing
+                .push(format!("{}: absent from the first save", component.name));
         }
     }
-    differing
+    diff
 }
 
 #[cfg(test)]
@@ -255,17 +343,90 @@ mod tests {
     fn two_identical_saves_differ_nowhere() {
         let a = capture(&[("regs", b"aaaa"), ("sregs", b"bbbb")]);
         let b = capture(&[("regs", b"aaaa"), ("sregs", b"bbbb")]);
-        assert!(differing_components(&a, &b).is_empty());
+        assert!(compare_states(&a, &b).differing.is_empty());
     }
 
     #[test]
     fn a_component_whose_bytes_moved_is_named_with_both_lengths() {
         let a = capture(&[("regs", b"aaaa")]);
         let b = capture(&[("regs", b"aaab")]);
-        let differing = differing_components(&a, &b);
+        let differing = compare_states(&a, &b).differing;
         assert_eq!(differing.len(), 1);
         assert!(differing[0].starts_with("regs:"), "{}", differing[0]);
         assert!(differing[0].contains("contents differ"), "{}", differing[0]);
+    }
+
+    /// An MSR component's bytes, in the `index, data` encoding a save uses.
+    fn msr_bytes(pairs: &[(u32, u64)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (index, data) in pairs {
+            out.extend_from_slice(&index.to_le_bytes());
+            out.extend_from_slice(&data.to_le_bytes());
+        }
+        out
+    }
+
+    fn msr_capture(pairs: &[(u32, u64)]) -> StateCapture {
+        let mut capture = StateCapture::default();
+        capture.push("msrs", msr_bytes(pairs));
+        capture
+    }
+
+    #[test]
+    fn a_time_base_that_advanced_is_reported_as_a_clock_not_a_difference() {
+        let a = msr_capture(&[(0x0000_0010, 100), (0x0000_0174, 8)]);
+        let b = msr_capture(&[(0x0000_0010, 4_200), (0x0000_0174, 8)]);
+        let diff = compare_states(&a, &b);
+        assert!(diff.differing.is_empty(), "{:?}", diff.differing);
+        assert_eq!(diff.time_bases.len(), 1);
+        assert!(
+            diff.time_bases[0].contains("IA32_TIME_STAMP_COUNTER")
+                && diff.time_bases[0].contains("4100"),
+            "{}",
+            diff.time_bases[0]
+        );
+    }
+
+    #[test]
+    fn a_time_base_that_stopped_or_ran_backwards_is_a_difference() {
+        for second in [100u64, 40] {
+            let a = msr_capture(&[(0x0000_0010, 100)]);
+            let b = msr_capture(&[(0x0000_0010, second)]);
+            let diff = compare_states(&a, &b);
+            assert!(diff.time_bases.is_empty(), "{:?}", diff.time_bases);
+            assert_eq!(diff.differing.len(), 1, "{:?}", diff.differing);
+            assert!(
+                diff.differing[0].contains("did not advance"),
+                "{}",
+                diff.differing[0]
+            );
+        }
+    }
+
+    #[test]
+    fn an_msr_that_is_not_a_time_base_is_named_by_index_when_it_moves() {
+        let a = msr_capture(&[(0x0000_0174, 8)]);
+        let b = msr_capture(&[(0x0000_0174, 9)]);
+        let diff = compare_states(&a, &b);
+        assert_eq!(diff.differing.len(), 1);
+        assert!(
+            diff.differing[0].contains("0x00000174") && diff.differing[0].contains("0x8"),
+            "{}",
+            diff.differing[0]
+        );
+    }
+
+    #[test]
+    fn two_saves_that_list_different_registers_are_not_compared_pairwise() {
+        let a = msr_capture(&[(0x0000_0174, 8)]);
+        let b = msr_capture(&[(0x0000_0175, 8)]);
+        let diff = compare_states(&a, &b);
+        assert_eq!(diff.differing.len(), 1);
+        assert!(
+            diff.differing[0].contains("different registers"),
+            "{}",
+            diff.differing[0]
+        );
     }
 
     #[test]
@@ -273,11 +434,11 @@ mod tests {
         let a = capture(&[("regs", b"aaaa"), ("xsave", b"cc")]);
         let b = capture(&[("regs", b"aaaa")]);
         assert_eq!(
-            differing_components(&a, &b),
+            compare_states(&a, &b).differing,
             vec!["xsave: absent from the second save".to_string()]
         );
         assert_eq!(
-            differing_components(&b, &a),
+            compare_states(&b, &a).differing,
             vec!["xsave: absent from the first save".to_string()]
         );
     }
