@@ -34,7 +34,10 @@ suite's only guest-scope counter is a counting one, for the guest exactness payl
 `Scope::GuestOnly`). Stage 1 therefore produces no guest-mode skid at all, and the two
 scopes are settled by code on both sides rather than inferred.
 
-The guest-mode tail is heavier, and that is the finding. Numbers below.
+The guest-mode tail is heavier, and that is the finding. Its maximum on this chip is
+56,725, 3.50 times the sealed margin; five events, each one detected and each one
+recovered by re-arming the same target. `overshoot-anatomy.md` has the derivation, the
+table and the recovery record.
 
 ## The margin is derived from the host distribution, deliberately
 
@@ -64,7 +67,9 @@ On silicon the same refusal holds structurally: the harness records
 `landed_exact = 0`, `overshoot = 1` and fails the arm. An overshoot cannot be mistaken
 for a landing at either layer.
 
-**Recovery is re-arming the same target.** Measured; numbers below.
+**Recovery is re-arming the same target.** Measured, five times out of five, in the
+campaign's own production data at the sealed margin: for every overshooting arm, the
+other arm of the same target landed exactly on it. See `overshoot-anatomy.md`.
 
 ## What a large skid was: measuring the cause
 
@@ -107,8 +112,9 @@ large skid predict opposite ratios:
 The normal ratio on this chip is about 0.7 to 0.94 guest conditional branches per
 time-stamp tick. The supplement and the reproduction both record it on every arm.
 
-**Interrupt load does not single out the core the overshoots landed on.** Both
-overshoots so far are on core 15. `/proc/interrupts` over the campaign gives core 15
+**Interrupt load does not single out any core.** The five overshoots are spread over
+cores 5, 9, 11 and 15, two of them on core 15. `/proc/interrupts` over the campaign
+gives core 15
 160,934 interrupts against 153,703 to 164,171 on the other seven isolated cores, and
 its device-interrupt share is among the lowest; the count is dominated by the
 performance-monitoring interrupts the campaign itself arms. With two events the
