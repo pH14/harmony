@@ -379,17 +379,23 @@ mod tests {
     use super::*;
     use crate::payload::{BRANCH_DENSE, LOOP_BACKEDGE};
 
+    /// How much `branch_dense` contributes per iteration depends on which
+    /// branches the architecture's work clock counts, so the expectations for
+    /// it are scaled by the spec rather than written as one architecture's
+    /// numbers. `payload.rs` holds the value itself to its own oracle.
+    const DENSE: u64 = BRANCH_DENSE.events_per_iteration;
+
     #[test]
     fn the_oracle_is_the_payload_analysis_scaled_by_the_iteration_difference() {
         assert_eq!(oracle_delta(&LOOP_BACKEDGE, 1_000, 2_000), 1_000);
-        assert_eq!(oracle_delta(&BRANCH_DENSE, 1_000, 2_000), 9_000);
+        assert_eq!(oracle_delta(&BRANCH_DENSE, 1_000, 2_000), 1_000 * DENSE);
         assert_eq!(oracle_delta(&BRANCH_DENSE, 7, 7), 0);
     }
 
     #[test]
     fn the_offset_is_what_the_smaller_window_counted_beyond_its_own_iterations() {
         assert_eq!(count_offset(&LOOP_BACKEDGE, 1_000, 1_004), 4);
-        assert_eq!(count_offset(&BRANCH_DENSE, 1_000, 9_000), 0);
+        assert_eq!(count_offset(&BRANCH_DENSE, 1_000, 1_000 * DENSE), 0);
         // An undercount is a negative offset, not a wrapped huge one.
         assert_eq!(count_offset(&LOOP_BACKEDGE, 1_000, 990), -10);
     }
@@ -397,9 +403,9 @@ mod tests {
     #[test]
     fn an_arm_runs_enough_iterations_to_cross_its_period() {
         assert_eq!(iterations_for(&LOOP_BACKEDGE, 1_000), 2_000);
-        assert_eq!(iterations_for(&BRANCH_DENSE, 900), 200);
+        assert_eq!(iterations_for(&BRANCH_DENSE, 100 * DENSE), 200);
         // A period that does not divide evenly rounds up before doubling.
-        assert_eq!(iterations_for(&BRANCH_DENSE, 901), 202);
+        assert_eq!(iterations_for(&BRANCH_DENSE, 100 * DENSE + 1), 202);
         // A zero period still runs one iteration, rather than arming a payload
         // that never executes.
         assert_eq!(iterations_for(&LOOP_BACKEDGE, 0), 1);
