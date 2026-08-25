@@ -25,19 +25,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    search::archive::{
+        ArchiveCandidate, RetentionPolicy, SelectorDraw, SelectorPath, SelectorPolicy,
+        retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
+    },
     search::empirical_steps::{
         EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
         EmpiricalStepTableRef, EmpiricalStepTables,
     },
     search::parallel::with_worker_pool,
     smb::archive::{
-        Archive, ArchiveCandidate, DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER,
-        REPLACEMENT_IDENTIFIER, SmbArchiveKey, SmbArchiveProgressPoint, SmbArchiveReport,
-        SmbRetentionPolicy, SmbSelectorDraw, SmbSelectorPath, SmbSelectorPolicy,
-        admission_is_viable, archive_key, merge_action_milestones, merge_milestones,
-        merge_progress_watermark, milestone_key, retention_policy_from_identifier,
-        retention_policy_identifier, selector_policy_from_identifier, selector_policy_identifier,
-        update_first_inputs,
+        DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, SmbArchive,
+        SmbArchiveKey, SmbArchiveProgressPoint, SmbArchiveReport, admission_is_viable, archive_key,
+        chord_time, merge_action_milestones, merge_milestones, merge_progress_watermark,
+        milestone_key, selector_policy_from_identifier, stamp_arrival_room, update_first_inputs,
     },
     smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot, SmbTarget},
     target::Target,
@@ -157,9 +158,9 @@ pub struct SmbCampaignConfig {
     /// Controller vocabulary for this run, recorded in the header and report.
     pub vocabulary: SmbButtonVocabulary,
     /// Admission rule for this run, recorded in the header and report.
-    pub retention: SmbRetentionPolicy,
+    pub retention: RetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
-    pub selector: SmbSelectorPolicy,
+    pub selector: SelectorPolicy,
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<PathBuf>,
@@ -277,7 +278,7 @@ pub struct SmbCampaignJobRecord {
     /// Ordered admission decisions for the job's candidates.
     pub decisions: Vec<SmbCampaignAdmissionDecision>,
     /// Selector draw record.
-    pub selector: SmbSelectorDraw,
+    pub selector: SelectorDraw,
     /// Derived table version used to draw this job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chord_table_before: Option<EmpiricalStepCheckpoint>,
@@ -296,7 +297,7 @@ pub struct SmbCampaignSkipRecord {
     /// Mutation seed whose full prefix chain was already archived.
     pub mutation_seed: u64,
     /// Selector draw record.
-    pub selector: SmbSelectorDraw,
+    pub selector: SelectorDraw,
     /// Derived table version used to draw this skipped job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chord_table_before: Option<EmpiricalStepCheckpoint>,
@@ -503,7 +504,7 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
 /// ones, and resolve its per-run retention and selector values.
 fn verify_fixed_rules(
     header: &SmbCampaignStreamHeader,
-) -> Result<(SmbRetentionPolicy, SmbSelectorPolicy), Box<dyn Error>> {
+) -> Result<(RetentionPolicy, SelectorPolicy), Box<dyn Error>> {
     let expected = [
         (
             header.key_policy.as_str(),
@@ -543,12 +544,12 @@ fn verify_fixed_rules(
 }
 
 /// Reject a stream whose selector annotations disagree with the selector.
-fn verify_selector_annotation(draw: &SmbSelectorDraw) -> Result<(), Box<dyn Error>> {
+fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
     match (draw.path, draw.concentration) {
-        (SmbSelectorPath::RoomCellUniform, None) => {
+        (SelectorPath::RoomCellUniform, None) => {
             Err("cell draw is missing its concentration record".into())
         }
-        (SmbSelectorPath::Uniform, Some(_)) => {
+        (SelectorPath::Uniform, Some(_)) => {
             Err("uniform draw carries a concentration record".into())
         }
         _ => Ok(()),
@@ -790,7 +791,7 @@ struct SmbCampaignJobResult {
 #[derive(Clone, Copy, Debug)]
 struct SmbJobPolicies {
     max_actions: usize,
-    retention: SmbRetentionPolicy,
+    retention: RetentionPolicy,
 }
 
 fn execute_job(
@@ -826,8 +827,8 @@ fn execute_job(
                 .ok_or("failed to snapshot campaign suffix")?;
             let key = archive_key(&target.wram());
             let viable = match policies.retention {
-                SmbRetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
-                SmbRetentionPolicy::AdmitAlive => true,
+                RetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
+                RetentionPolicy::AdmitAlive => true,
             };
             Some(SmbCampaignCandidate {
                 key,
@@ -856,7 +857,7 @@ fn execute_job(
 /// archive mutation happens here, in stream order, so the archive state at any
 /// stream position is identical in the live run and in replay.
 struct CoordinatorCore {
-    archive: Archive,
+    archive: SmbArchive,
     aggregate: SmbMilestones,
     watermark: crate::smb::target::SmbProgressWatermark,
     first_reached: crate::smb::target::SmbMilestoneTimes,
@@ -874,7 +875,7 @@ struct CoordinatorCore {
 
 impl CoordinatorCore {
     fn new(max_actions: usize, archive_entry_limit: usize) -> Self {
-        let mut archive = Archive::new();
+        let mut archive = SmbArchive::new(chord_time);
         archive.max_entries = archive_entry_limit;
         Self {
             archive,
@@ -897,7 +898,7 @@ impl CoordinatorCore {
     /// Retain genesis at execution zero.
     fn bootstrap(&mut self, target: &mut SmbTarget) -> Result<(), Box<dyn Error>> {
         target.reset();
-        let genesis_key = archive_key(&target.wram());
+        let genesis_key = stamp_arrival_room(archive_key(&target.wram()), &target.wram())?;
         let genesis_snapshot = target
             .snapshot()
             .ok_or("failed to snapshot campaign genesis")?;
@@ -1046,7 +1047,7 @@ impl CoordinatorCore {
                 self.champion_milestones = milestones;
                 self.champion_input = prefix.clone();
             }
-            let key = archive_key(&target.wram());
+            let key = stamp_arrival_room(archive_key(&target.wram()), &target.wram())?;
             let inserted_before = self.archive.entries.len();
             match self.archive.insert(
                 Some(parent_id),
@@ -1136,7 +1137,7 @@ impl CoordinatorCore {
                     sequence,
                     ArchiveCandidate {
                         input: input.clone(),
-                        key: candidate.key,
+                        key: stamp_arrival_room(candidate.key, candidate.snapshot.wram())?,
                         milestones: action.milestones,
                     },
                     candidate.snapshot.clone(),
@@ -1168,7 +1169,7 @@ impl CoordinatorCore {
             executions: self.sequence,
             milestones: self.aggregate,
             active_entries: self.archive.active.iter().filter(|active| **active).count(),
-            occupied_cells: self.archive.cells.len(),
+            occupied_cells: self.archive.slots.len(),
             deaths: self.deaths,
         });
     }
@@ -1504,7 +1505,7 @@ fn stream_header(
         replacement_policy: REPLACEMENT_IDENTIFIER.to_owned(),
         resume_policy: RESUME_IDENTIFIER.to_owned(),
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
-        parent_scheduler: selector_policy_identifier(config.selector),
+        parent_scheduler: selector_policy_identifier(&config.selector),
         executor_mode: "snapshot_resume_archive".to_owned(),
         worker_seed_derivation: "sha256(campaign_seed_le || worker_index_le)[0..8] as u64 le"
             .to_owned(),
@@ -1634,7 +1635,7 @@ fn build_report(
     let probe_refused = core.probe_refused;
     let victories = core.victories;
     let victory_input = core.victory_input.clone();
-    let replacement_frames_displaced = core.archive.replacement_frames_displaced();
+    let replacement_frames_displaced = core.archive.replacement_time_displaced();
     let archive = core.into_archive_report(header.campaign_seed);
     let report = SmbCampaignModeReport {
         mode: "campaign".to_owned(),
@@ -1694,7 +1695,7 @@ struct JobSpec {
 struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
-    selector: SmbSelectorDraw,
+    selector: SelectorDraw,
     chord_table_before: Option<EmpiricalStepCheckpoint>,
 }
 
@@ -1799,7 +1800,7 @@ pub fn run_smb_campaign_checkpointed(
     writer.write_line(&header)?;
 
     let mut core = CoordinatorCore::new(config.action_limit, config.archive_entry_limit);
-    core.archive.selector_policy = config.selector;
+    core.archive.selector_policy = config.selector.clone();
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = bootstrap_target.frames_clocked();
@@ -2015,8 +2016,13 @@ pub fn run_smb_campaign_checkpointed(
                         let unix_time = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map_or(0, |since| since.as_secs());
-                        let (world, level, bucket, cheapest, retained) =
-                            core.archive.live_progress();
+                        let ((world, level, bucket), cheapest, retained) = core
+                            .archive
+                            .live_progress()
+                            .map(|(key, cheapest, retained)| {
+                                ((key.world, key.level, key.progress), cheapest, retained)
+                            })
+                            .unwrap_or(((0, 0, 0), 0, 0));
                         let line = serde_json::to_string(&SmbCampaignProgressRecord {
                             unix_time,
                             executions: sequence,
@@ -2174,7 +2180,7 @@ pub fn replay_smb_campaign_checkpointed(
         &mut chord_versions,
     )?;
     let mut core = CoordinatorCore::new(header.action_limit, header.archive_entry_limit);
-    core.archive.selector_policy = replay_selector;
+    core.archive.selector_policy = replay_selector.clone();
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let frames_before = target.frames_clocked();
@@ -2390,8 +2396,8 @@ mod tests {
             wall_budget: None,
             archive_entry_limit: 32_768,
             chord: SmbCampaignChordPolicy::Uniform,
-            retention: super::SmbRetentionPolicy::ProbeAtAdmission45,
-            selector: super::SmbSelectorPolicy::RoomCellUniform128,
+            retention: super::RetentionPolicy::ProbeAtAdmission45,
+            selector: super::SelectorPolicy::GroupUniform,
             victory_input_path: None,
             checkpoint_dir: None,
         }
@@ -2499,7 +2505,7 @@ mod tests {
         first.apply(&ButtonChord::new(0x02, 30));
         let policies = super::SmbJobPolicies {
             max_actions: 96,
-            retention: super::SmbRetentionPolicy::ProbeAtAdmission45,
+            retention: super::RetentionPolicy::ProbeAtAdmission45,
         };
         let on_first = execute_job(
             &mut first,
@@ -2538,7 +2544,7 @@ mod tests {
             &[ButtonChord::new(0x01, 4)],
             super::SmbJobPolicies {
                 max_actions: 96,
-                retention: super::SmbRetentionPolicy::ProbeAtAdmission45,
+                retention: super::RetentionPolicy::ProbeAtAdmission45,
             },
         )
         .expect("execute job");
@@ -2692,7 +2698,7 @@ mod tests {
         )
         .expect("probing campaign");
         let mut config = genesis_config(0x5eed_ca20, 4, 32);
-        config.retention = crate::smb::archive::SmbRetentionPolicy::AdmitAlive;
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("admit-alive campaign");
@@ -2717,12 +2723,10 @@ mod tests {
     fn retiring_selector_records_counters_and_replays_byte_identically() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca21, 4, 48);
-        config.selector = crate::smb::archive::SmbSelectorPolicy::Retire(
-            crate::smb::archive::SmbRetireThresholds {
+        config.selector = crate::search::archive::SelectorPolicy::Retire(
+            crate::search::archive::RetireThresholds {
                 entry: 2,
-                cell: 4,
-                band: 8,
-                room: 16,
+                groups: vec![4, 8, 16],
             },
         );
         let mut stream = Vec::new();
@@ -2747,13 +2751,11 @@ mod tests {
         let rom = synthetic_nrom();
         for seed in 0..24_u64 {
             let mut config = genesis_config(0x5eed_d000 + seed, 4, 64);
-            config.retention = crate::smb::archive::SmbRetentionPolicy::AdmitAlive;
-            config.selector = crate::smb::archive::SmbSelectorPolicy::Retire(
-                crate::smb::archive::SmbRetireThresholds {
+            config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+            config.selector = crate::search::archive::SelectorPolicy::Retire(
+                crate::search::archive::RetireThresholds {
                     entry: 1,
-                    cell: 2,
-                    band: 2,
-                    room: 3,
+                    groups: vec![2, 2, 3],
                 },
             );
             let mut stream = Vec::new();
@@ -2766,14 +2768,14 @@ mod tests {
 
     #[test]
     fn retention_and_selector_identifiers_round_trip() {
-        use crate::smb::archive::{
-            SmbRetentionPolicy, SmbRetireThresholds, SmbSelectorPolicy,
-            retention_policy_from_identifier, retention_policy_identifier,
-            selector_policy_from_identifier, selector_policy_identifier,
+        use crate::search::archive::{
+            RetentionPolicy, RetireThresholds, SelectorPolicy, retention_policy_from_identifier,
+            retention_policy_identifier, selector_policy_identifier,
         };
+        use crate::smb::archive::selector_policy_from_identifier;
         for policy in [
-            SmbRetentionPolicy::ProbeAtAdmission45,
-            SmbRetentionPolicy::AdmitAlive,
+            RetentionPolicy::ProbeAtAdmission45,
+            RetentionPolicy::AdmitAlive,
         ] {
             assert_eq!(
                 retention_policy_from_identifier(retention_policy_identifier(policy))
@@ -2782,16 +2784,14 @@ mod tests {
             );
         }
         for policy in [
-            SmbSelectorPolicy::RoomCellUniform128,
-            SmbSelectorPolicy::Retire(SmbRetireThresholds {
+            SelectorPolicy::GroupUniform,
+            SelectorPolicy::Retire(RetireThresholds {
                 entry: 3,
-                cell: 6,
-                band: 12,
-                room: 2,
+                groups: vec![6, 12, 2],
             }),
         ] {
             assert_eq!(
-                selector_policy_from_identifier(&selector_policy_identifier(policy))
+                selector_policy_from_identifier(&selector_policy_identifier(&policy))
                     .expect("selector round trip"),
                 policy
             );
@@ -3070,7 +3070,7 @@ mod tests {
             retained: 0,
             rejected: 0,
             deaths: 0,
-            selector: crate::smb::archive::SmbSelectorAccounting::default(),
+            selector: crate::search::archive::SelectorAccounting::default(),
         };
         let mut core = CoordinatorCore::new(4, 32_768);
         // The report stores each entry's actions past its parent and rebuilds

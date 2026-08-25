@@ -31,12 +31,9 @@ const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
 const LEVEL_ADVANCED_FLAG_TASK: u8 = 0x05;
 
-/// A Super Mario Bros input replayed from the deterministic power-on state.
-#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct SmbInput {
-    /// Controller chords in execution order.
-    pub actions: Vec<ButtonChord>,
-}
+/// A Super Mario Bros input replayed from the deterministic power-on state:
+/// controller chords in execution order.
+pub type SmbInput = crate::search::archive::Input<ButtonChord>;
 
 /// Mechanical evidence captured at one NES observer event.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -5,11 +5,11 @@
 use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 
 use searcher::{
-    smb::archive::{
-        MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, SmbRetentionPolicy,
-        SmbRetireThresholds, SmbSelectorPolicy, retention_policy_from_identifier,
-        selector_policy_from_identifier,
+    search::archive::{
+        MAX_ARCHIVE_ENTRIES, RetentionPolicy, RetireThresholds, SelectorPolicy,
+        retention_policy_from_identifier,
     },
+    smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
         SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig,
         SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
@@ -78,12 +78,10 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     // Retire thresholds are measured search statistics (99th-percentile
     // picks-before-first-keeper per class) and should be re-measured for a
     // new game rather than treated as universal constants.
-    let mut retention = SmbRetentionPolicy::AdmitAlive;
-    let mut selector = SmbSelectorPolicy::Retire(SmbRetireThresholds {
+    let mut retention = RetentionPolicy::AdmitAlive;
+    let mut selector = SelectorPolicy::Retire(RetireThresholds {
         entry: 3,
-        cell: 6,
-        band: 12,
-        room: 2,
+        groups: vec![6, 12, 2],
     });
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
