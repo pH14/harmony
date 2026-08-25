@@ -1,0 +1,8 @@
+WARNING: event 'N/A' not valid (bits 16,20,22 of config '51002b' not supported by kernel)!
+
+ Performance counter stats for 'CPU(s) 15':
+
+                 0      r51002b                                                               
+
+     180.002343661 seconds time elapsed
+

@@ -1,0 +1,17 @@
+{
+ "build_id_kvm": "67bbe5141510528782b407b7c2728b3be5cbc2ae",
+ "build_id_kvm_amd": "5fbf9bc0c714acb76b323a297a82c489d226c516",
+ "image_deb_sha256": "8f9f151533a42763fbc9c4a0f611ed7d7f66b9607d165e6a3ee17aa6fc0c9d2a",
+ "kernel": "6.18.35",
+ "patch_markers": {
+  "cap_advertised": true,
+  "nmi_interception_force_exit": true,
+  "svm_rdtsc_intercept_under_gate": false
+ },
+ "path": "/lib/modules/6.18.35/kernel/arch/x86/kvm/kvm-amd.ko.xz",
+ "role": "patched",
+ "schema": "amd-epyc-kvm_amd-identity-v1",
+ "sha256": "573f95fab0b7211ed242b57963cd59759d164392f54eb24e403036aa275534b6",
+ "srcversion": "",
+ "vermagic": "6.18.35 SMP preempt mod_unload modversions"
+}
