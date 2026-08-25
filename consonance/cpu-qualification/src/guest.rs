@@ -281,7 +281,9 @@ pub fn decode_msr_pairs(bytes: &[u8]) -> Result<Vec<(u32, u64)>, GuestError> {
         });
     }
     Ok(bytes
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|chunk| {
             let index = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
             let mut data = [0u8; 8];
