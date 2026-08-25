@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use fuzzer::search::empirical_steps::{EmpiricalStepParameters, EmpiricalStepTables};
+use searcher::search::empirical_steps::{EmpiricalStepParameters, EmpiricalStepTables};
 
 const C120_APPROXIMATE_STEPS: usize = 1_690_000;
 

@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuzzer::smb::{
+use searcher::smb::{
     archive::SmbArchiveReport,
     campaign::{
         SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignStreamHeader,
@@ -158,7 +158,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let suffix = derive_suffix(
                 job.mutation_seed,
                 SmbCampaignChordPolicy::Uniform,
-                fuzzer::smb::campaign::button_vocabulary_from_identifier(
+                searcher::smb::campaign::button_vocabulary_from_identifier(
                     &header.controller_vocabulary,
                 )?,
                 None,

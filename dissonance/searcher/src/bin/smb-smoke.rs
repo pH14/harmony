@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeSet, env, error::Error, fs, path::PathBuf};
 
-use fuzzer::{
+use searcher::{
     smb::target::{
         ButtonChord, SmbMilestones, SmbObservations, SmbTarget, smb_milestones_from_wram,
     },

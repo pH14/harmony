@@ -75,7 +75,7 @@ containing only:
   progress);
 - the prompt file for the current call.
 
-Never `fuzzer/src` — the target source contains the planted blind spots and
+Never `searcher/src` — the target source contains the planted blind spots and
 the scripted triager's regex, and reading them would void the experiment.
 The sandbox is `read-only`; the wrapper copies/links evidence in, and all
 writes flow back through the structured response only.

@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuzzer::smb::{
+use searcher::smb::{
     archive::{SmbArchiveKey, SmbArchiveReport, SmbRoomIdentity},
     campaign::{SmbCampaignAdmissionDecision, SmbCampaignStreamHeader, SmbCampaignStreamRecord},
 };
@@ -55,7 +55,7 @@ struct PoolSummary {
     classes_productive: u64,
     /// Distribution of picks-before-first-keeper over productive classes.
     percentiles: BTreeMap<String, u64>,
-    /// Smallest give-up threshold at which fewer than one in a hundred
+    /// Smallest energy threshold at which fewer than one in a hundred
     /// productive classes would have been cut off before their first keeper.
     threshold_1_in_100: u64,
     /// Histogram of picks-before-first-keeper, bucketed by powers of two.

@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuzzer::{
+use searcher::{
     smb::archive::SmbArchiveReport,
     smb::target::{
         SmbInput, SmbMechanicalState, SmbMilestones, SmbObservations, SmbTarget,
@@ -152,7 +152,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write_frame(&output, 0, &target.frame_rgba(), &mut frames)?;
     for (index, action) in input.actions.iter().enumerate() {
         target.apply(action);
-        if target.exit_kind() != fuzzer::target::ExitKind::Ok {
+        if target.exit_kind() != searcher::target::ExitKind::Ok {
             return Err(format!("emulator failed while rendering action {index}").into());
         }
         for observation in target.last_action_observations() {

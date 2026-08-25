@@ -4,7 +4,7 @@
 
 use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 
-use fuzzer::{
+use searcher::{
     smb::archive::{
         MAX_ARCHIVE_ENTRIES, MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, SmbRetentionPolicy,
         SmbRetireThresholds, SmbSelectorPolicy, retention_policy_from_identifier,

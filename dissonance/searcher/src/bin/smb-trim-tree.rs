@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuzzer::smb::{
+use searcher::smb::{
     archive::SmbArchiveReport,
     campaign::{SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry},
 };
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let archive_sha256 = format!("{:x}", Sha256::digest(&archive_bytes));
     let mut archive: SmbArchiveReport = serde_json::from_slice(&archive_bytes)?;
     drop(archive_bytes);
-    let keep = |entry: &fuzzer::smb::archive::SmbArchiveEntryReport| -> bool {
+    let keep = |entry: &searcher::smb::archive::SmbArchiveEntryReport| -> bool {
         (entry.key.world, entry.key.level) == (world, level)
             && bound.is_none_or(|bound| entry.created_execution <= bound)
     };

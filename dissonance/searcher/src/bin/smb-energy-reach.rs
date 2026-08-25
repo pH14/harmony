@@ -22,7 +22,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuzzer::smb::{
+use searcher::smb::{
     archive::{SmbArchiveKey, SmbArchiveReport, SmbRoomIdentity},
     campaign::{SmbCampaignAdmissionDecision, SmbCampaignStreamHeader, SmbCampaignStreamRecord},
 };
@@ -95,7 +95,7 @@ type RoomClass = (u8, u8, SmbRoomIdentity);
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let stream_path = PathBuf::from(args.next().ok_or(
-        "usage: smb-give-up-reach <stream.jsonl> <archive.json> \
+        "usage: smb-energy-reach <stream.jsonl> <archive.json> \
          <entry-threshold> <cell-threshold> <band-threshold> <room-threshold> <output.json>",
     )?);
     let archive_path = PathBuf::from(args.next().ok_or("missing archive path")?);

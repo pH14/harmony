@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuzzer::{
+use searcher::{
     search::empirical_steps::{
         EmpiricalStepCheckpoint, EmpiricalStepParameters, EmpiricalStepTables,
     },

@@ -46,7 +46,7 @@ crates (`consonance/*`, `dissonance/*`) before phase 5. The directory's
 sketch, and not to read the old `dissonance/` crates — the rebuild must not
 inherit the old decomposition by accident.
 
-Modules inside the `fuzzer` crate, as they land: `input` (per-target input
+Modules inside the `searcher` crate, as they land: `input` (per-target input
 types and mutators), `executor` (per-target executors), `feedback` (the
 generated-code facades), `triage` (label schema and score), `harness` (the
 generate → build → restart loop).

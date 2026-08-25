@@ -6,7 +6,7 @@
 
 use std::{env, error::Error, fs, time::Instant};
 
-use fuzzer::{
+use searcher::{
     smb::target::{ButtonChord, SmbTarget},
     target::Target,
 };

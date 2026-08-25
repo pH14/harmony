@@ -11,7 +11,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use fuzzer::smb::target::{SmbInput, SmbTarget};
+use searcher::smb::target::{SmbInput, SmbTarget};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
