@@ -148,10 +148,10 @@ fn calibration_sequences(rom: &[u8]) -> Result<Vec<(String, SmbMilestones)>, Box
     let mut results = Vec::new();
     for (name, actions) in sequences {
         let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
-        let mut milestones = smb_milestones_from_wram(target.wram());
+        let mut milestones = smb_milestones_from_wram(&target.wram());
         for action in actions {
             target.apply(&action);
-            let current = smb_milestones_from_wram(target.wram());
+            let current = smb_milestones_from_wram(&target.wram());
             milestones.max_1_1_scroll_bucket = milestones
                 .max_1_1_scroll_bucket
                 .max(current.max_1_1_scroll_bucket);

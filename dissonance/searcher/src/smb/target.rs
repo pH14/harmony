@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Super Mario Bros target adapter and mechanical observation types.
+//! Super Mario Bros game layer: memory decoders, input encoding, and the
+//! machine-backed target adapter.
+//!
+//! Everything here decodes a few bytes of work RAM read through the machine
+//! boundary or encodes actions as controller inputs; the emulator itself sits
+//! behind [`machine::Machine`].
 
-use std::{error::Error, io::Cursor};
+use std::error::Error;
 
 use crate::target::ExitKind;
-use serde::{Deserialize, Serialize};
-use tetanes_core::{
-    control_deck::{Config, ControlDeck, HeadlessMode},
-    input::{JoypadBtnState, Player},
-    memory::RamState,
+use machine::{
+    Machine, MachineError, SnapId, StopConditions,
+    nes::{NesMachine, RenderMode},
 };
+use serde::{Deserialize, Serialize};
+
+pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
 use crate::target::Target;
-
-/// Size of the NES CPU work RAM exposed to an operator.
-pub const WRAM_SIZE: usize = 2 * 1024;
-/// Longest controller hold accepted from an input.
-pub const MAX_HOLD_FRAMES: u8 = 120;
 
 const SCREEN_PAGE_OFFSET: usize = 0x071a;
 const SCREEN_X_OFFSET: usize = 0x071c;
@@ -29,32 +30,6 @@ const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
 const LEVEL_ADVANCED_FLAG_TASK: u8 = 0x05;
-
-/// One total NES input action: an eight-button mask held for a bounded frame count.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct ButtonChord {
-    /// Standard NES controller bits: A, B, Select, Start, Up, Down, Left, Right.
-    pub buttons: u8,
-    /// Requested hold duration. Execution clamps this to `1..=MAX_HOLD_FRAMES`.
-    pub hold_frames: u8,
-}
-
-impl ButtonChord {
-    /// Construct a chord, normalizing its duration into the target's total domain.
-    #[must_use]
-    pub fn new(buttons: u8, hold_frames: u8) -> Self {
-        Self {
-            buttons,
-            hold_frames: hold_frames.clamp(1, MAX_HOLD_FRAMES),
-        }
-    }
-
-    /// Return the normalized hold duration used by execution.
-    #[must_use]
-    pub fn bounded_hold_frames(self) -> u8 {
-        self.hold_frames.clamp(1, MAX_HOLD_FRAMES)
-    }
-}
 
 /// A Super Mario Bros input replayed from the deterministic power-on state.
 #[derive(Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -102,95 +77,86 @@ impl SmbSnapshot {
     }
 }
 
-/// Deterministic TetaNES-backed target used by the Super Mario Bros campaigns.
+/// Fixed boot walk from power-on to gameplay genesis, encoded as staged
+/// controller inputs: the title screen settles, Start is pressed once, and
+/// the pre-level sequence plays out. Target setup rather than model-visible
+/// search guidance.
+const BOOT_WALK: [ButtonChord; 4] = [
+    ButtonChord {
+        buttons: 0,
+        hold_frames: 120,
+    },
+    ButtonChord {
+        buttons: 0x08,
+        hold_frames: 1,
+    },
+    ButtonChord {
+        buttons: 0,
+        hold_frames: 120,
+    },
+    ButtonChord {
+        buttons: 0,
+        hold_frames: 120,
+    },
+];
+
+/// Machine-backed target used by the Super Mario Bros campaigns.
 #[derive(Debug)]
 pub struct SmbTarget {
-    deck: ControlDeck,
-    genesis_state: Vec<u8>,
+    machine: NesMachine,
+    genesis: SnapId,
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
     dead: bool,
     failed: bool,
-    // Deterministic work accounting only: never campaign state, never part of a
-    // snapshot, and never touched by restore, so counting cannot alter replay.
-    frames_clocked: u64,
 }
 
 impl SmbTarget {
-    fn from_rom_bytes_with_mode(
-        rom: &[u8],
-        headless_mode: HeadlessMode,
-    ) -> tetanes_core::control_deck::Result<Self> {
-        let mut deck = ControlDeck::with_config(Config {
-            ram_state: RamState::AllZeros,
-            headless_mode,
-            sram_dir: None,
-            run_ahead: 0,
-            ..Config::default()
-        });
-        deck.load_rom("campaign.nes", &mut Cursor::new(rom))?;
-        let mut genesis_state = Vec::new();
-        deck.save_state(&mut genesis_state)?;
-        let observation = observation_from(&deck, 0, &[0; WRAM_SIZE], false);
+    fn from_smb_rom_bytes_with_mode(rom: &[u8], render: RenderMode) -> Result<Self, MachineError> {
+        let mut machine = NesMachine::from_rom_bytes(rom, render)?;
+        let power_on = machine.snapshot()?;
+        machine.branch(power_on, BOOT_WALK.to_vec())?;
+        machine.run(StopConditions::default())?;
+        machine.drop_snapshot(power_on)?;
+        let genesis = machine.snapshot()?;
+        let wram = wram_array(&machine)?;
+        let observation = SmbObservations {
+            frame_count: 0,
+            wram: wram.to_vec(),
+            decoded: smb_mechanical_state_from_wram(&wram),
+            milestones: smb_milestones_from_wram(&wram),
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: "frame=0 changed=[]".to_owned(),
+        };
         Ok(Self {
-            deck,
-            genesis_state,
+            machine,
+            genesis,
             action_observations: vec![observation.clone()],
             observation,
             dead: false,
             failed: false,
-            frames_clocked: 0,
         })
     }
 
     /// Load SMB and deterministically advance through its title screen to a gameplay genesis.
     ///
-    /// This fixed boot sequence is target setup rather than model-visible search guidance. The
-    /// campaign input begins at the resulting state, and `reset` returns to it exactly.
+    /// The campaign input begins at the resulting state, and `reset` returns to it exactly.
     ///
     /// # Errors
     ///
-    /// Returns a TetaNES error if ROM loading, frame execution, or state saving fails.
-    pub fn from_smb_rom_bytes(rom: &[u8]) -> tetanes_core::control_deck::Result<Self> {
-        Self::from_smb_rom_bytes_with_mode(rom, HeadlessMode::NO_AUDIO)
+    /// Returns a machine error if ROM loading, frame execution, or state capture fails.
+    pub fn from_smb_rom_bytes(rom: &[u8]) -> Result<Self, MachineError> {
+        Self::from_smb_rom_bytes_with_mode(rom, RenderMode::Video)
     }
 
     /// Load SMB at gameplay genesis with both audio and video work disabled for campaigns.
     ///
     /// # Errors
     ///
-    /// Returns a TetaNES error if ROM loading, frame execution, or state saving fails.
-    pub fn from_smb_rom_bytes_headless(rom: &[u8]) -> tetanes_core::control_deck::Result<Self> {
-        Self::from_smb_rom_bytes_with_mode(rom, HeadlessMode::NO_AUDIO | HeadlessMode::NO_VIDEO)
-    }
-
-    fn from_smb_rom_bytes_with_mode(
-        rom: &[u8],
-        headless_mode: HeadlessMode,
-    ) -> tetanes_core::control_deck::Result<Self> {
-        let mut target = Self::from_rom_bytes_with_mode(rom, headless_mode)?;
-        target.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
-        for _ in 0..120 {
-            let _ = target.deck.clock_frame()?;
-            target.frames_clocked = target.frames_clocked.saturating_add(1);
-        }
-        target.deck.joypad_mut(Player::One).buttons = JoypadBtnState::START;
-        let _ = target.deck.clock_frame()?;
-        target.frames_clocked = target.frames_clocked.saturating_add(1);
-        target.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
-        for _ in 0..240 {
-            let _ = target.deck.clock_frame()?;
-            target.frames_clocked = target.frames_clocked.saturating_add(1);
-        }
-        let mut genesis_state = Vec::new();
-        target.deck.save_state(&mut genesis_state)?;
-        target.genesis_state = genesis_state;
-        target.observation = observation_from(&target.deck, 0, target.deck.wram(), false);
-        target.observation.changed_indices.clear();
-        target.observation.log_line = "frame=0 changed=[]".to_owned();
-        target.action_observations = vec![target.observation.clone()];
-        target.dead = false;
-        Ok(target)
+    /// Returns a machine error if ROM loading, frame execution, or state capture fails.
+    pub fn from_smb_rom_bytes_headless(rom: &[u8]) -> Result<Self, MachineError> {
+        Self::from_smb_rom_bytes_with_mode(rom, RenderMode::Neither)
     }
 
     /// Load SMB at gameplay genesis with sound synthesis enabled, for film rendering only.
@@ -200,49 +166,50 @@ impl SmbTarget {
     ///
     /// # Errors
     ///
-    /// Returns a TetaNES error if ROM loading, frame execution, or state saving fails.
-    pub fn from_smb_rom_bytes_with_audio(rom: &[u8]) -> tetanes_core::control_deck::Result<Self> {
-        Self::from_smb_rom_bytes_with_mode(rom, HeadlessMode::empty())
+    /// Returns a machine error if ROM loading, frame execution, or state capture fails.
+    pub fn from_smb_rom_bytes_with_audio(rom: &[u8]) -> Result<Self, MachineError> {
+        Self::from_smb_rom_bytes_with_mode(rom, RenderMode::Both)
     }
 
     /// Return the latest RGBA frame for film generation.
     #[must_use]
     pub fn frame_rgba(&mut self) -> Vec<u8> {
-        self.deck.frame_buffer().to_vec()
+        self.machine.frame_rgba()
     }
 
     /// Return the sound samples mixed for the most recently clocked frame.
     ///
-    /// The deck clears this buffer at the start of every clock, so each read is exactly one
-    /// frame of audio: 48 kHz mono `f32` under the deck's default sample rate. Empty when the
-    /// target was constructed without audio.
+    /// Each read is exactly one frame of audio: 48 kHz mono `f32` under the
+    /// deck's default sample rate. Empty when the target was constructed
+    /// without audio.
     #[must_use]
     pub fn audio_samples(&self) -> &[f32] {
-        self.deck.audio_samples()
+        self.machine.audio_samples()
     }
 
     /// Advance exactly one video frame with the supplied raw controller mask.
     ///
-    /// This is the film-generation seam: campaign execution continues to use bounded
-    /// [`ButtonChord`] actions, while a renderer can capture every intermediate frame.
+    /// This is the film-generation boundary: campaign execution continues to
+    /// use bounded [`ButtonChord`] actions, while a renderer can capture every
+    /// intermediate frame.
     ///
     /// # Errors
     ///
-    /// Returns a TetaNES error if frame execution fails.
-    pub fn clock_frame_for_film(&mut self, buttons: u8) -> tetanes_core::control_deck::Result<()> {
+    /// Returns a machine error if frame execution fails.
+    pub fn clock_frame_for_film(&mut self, buttons: u8) -> Result<(), MachineError> {
         if self.dead {
             return Ok(());
         }
-        self.deck.joypad_mut(Player::One).buttons =
-            JoypadBtnState::from_bits_truncate(u16::from(buttons));
-        let result = self.deck.clock_frame();
-        if result.is_err() {
-            self.failed = true;
-        } else {
-            self.frames_clocked = self.frames_clocked.saturating_add(1);
-            self.dead = smb_player_is_dead(self.deck.wram());
+        match self.machine.clock_frame_with(buttons) {
+            Ok(()) => {
+                self.dead = self.read_dead();
+                Ok(())
+            }
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
         }
-        result.map(|_| ())
     }
 
     /// Clock one fixed mask for a bounded horizon and report whether the run stays alive.
@@ -254,32 +221,79 @@ impl SmbTarget {
         if self.failed || self.dead {
             return false;
         }
-        self.deck.joypad_mut(Player::One).buttons =
-            JoypadBtnState::from_bits_truncate(u16::from(buttons));
-        for _ in 0..frames {
-            if self.deck.clock_frame().is_err() {
-                self.failed = true;
-                return false;
+        let mut env = Vec::new();
+        let mut remaining = frames;
+        while remaining > 0 {
+            let hold = remaining.min(u16::from(MAX_HOLD_FRAMES));
+            env.push(ButtonChord::new(buttons, u8::try_from(hold).unwrap_or(1)));
+            remaining -= hold;
+        }
+        let Ok(start) = self.machine.snapshot() else {
+            self.failed = true;
+            return false;
+        };
+        let survived = self.probe_env(start, env);
+        let _ = self.machine.drop_snapshot(start);
+        survived
+    }
+
+    fn probe_env(&mut self, start: SnapId, env: Vec<ButtonChord>) -> bool {
+        if self.machine.branch(start, env).is_err() {
+            self.failed = true;
+            return false;
+        }
+        loop {
+            match self.run_one_frame() {
+                Ok(true) => {}
+                Ok(false) => return true,
+                Err(()) => return false,
             }
-            self.frames_clocked = self.frames_clocked.saturating_add(1);
-            if smb_player_is_dead(self.deck.wram()) {
+            if self.read_dead() {
                 self.dead = true;
                 return false;
             }
         }
-        self.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
-        true
+    }
+
+    /// Advance one frame of the staged environment. `Ok(true)` when a frame
+    /// was emulated, `Ok(false)` at quiescence, `Err` on a machine failure.
+    fn run_one_frame(&mut self) -> Result<bool, ()> {
+        let deadline = machine::Moment(self.machine.now().0.saturating_add(1));
+        match self.machine.run(StopConditions {
+            deadline: Some(deadline),
+        }) {
+            Ok(machine::StopReason::Deadline { .. }) => Ok(true),
+            Ok(machine::StopReason::Quiescent { .. }) => Ok(false),
+            Err(_) => {
+                self.failed = true;
+                Err(())
+            }
+        }
     }
 
     /// Release every controller button after a filmed chord.
     pub fn release_buttons_for_film(&mut self) {
-        self.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
+        self.machine.release_buttons();
     }
 
     /// Return the latest raw work RAM without semantic decoding.
     #[must_use]
-    pub fn wram(&self) -> &[u8; WRAM_SIZE] {
-        self.deck.wram()
+    pub fn wram(&self) -> [u8; WRAM_SIZE] {
+        wram_array(&self.machine).unwrap_or([0; WRAM_SIZE])
+    }
+
+    fn read_dead(&self) -> bool {
+        let engine_state = self.read_byte(PLAYER_ENGINE_STATE_OFFSET);
+        let vertical_page = self.read_byte(PLAYER_VERTICAL_PAGE_OFFSET);
+        engine_state == PLAYER_KILLED_STATE || vertical_page >= PLAYER_BELOW_PLAY_AREA_PAGE
+    }
+
+    fn read_byte(&self, addr: usize) -> u8 {
+        self.machine
+            .read(addr as u64, 1)
+            .ok()
+            .and_then(|bytes| bytes.first().copied())
+            .unwrap_or(0)
     }
 
     /// Return whether execution reached the first player-death frame.
@@ -288,10 +302,10 @@ impl SmbTarget {
         self.dead
     }
 
-    /// Mutable work RAM, for tests that plant a game state.
+    /// Plant one work-RAM byte, for tests that stage a game state.
     #[cfg(test)]
-    pub(crate) fn wram_mut(&mut self) -> &mut [u8; WRAM_SIZE] {
-        self.deck.wram_mut()
+    pub(crate) fn poke_wram(&mut self, addr: usize, byte: u8) {
+        self.machine.poke_wram(addr, byte);
     }
 
     /// Return whether the game is in its victory mode.
@@ -301,7 +315,8 @@ impl SmbTarget {
     /// answers correctly without the snapshot format carrying the flag.
     #[must_use]
     pub fn is_victory(&self) -> bool {
-        smb_is_victory(self.deck.wram())
+        self.read_byte(OPERATING_MODE_OFFSET) == VICTORY_OPERATING_MODE
+            && self.read_byte(WORLD_NUMBER_OFFSET) == FINAL_WORLD_NUMBER
     }
 
     /// Return the total frames this instance has emulated since construction.
@@ -311,7 +326,7 @@ impl SmbTarget {
     /// not carry it and `restore` does not touch it.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {
-        self.frames_clocked
+        self.machine.now().0
     }
 
     /// Return every observer event emitted by the most recently applied action.
@@ -319,13 +334,53 @@ impl SmbTarget {
     pub fn last_action_observations(&self) -> &[SmbObservations] {
         &self.action_observations
     }
+
+    fn observation_from(
+        &self,
+        wram: &[u8; WRAM_SIZE],
+        frame_count: u64,
+        prior_wram: &[u8; WRAM_SIZE],
+        dead: bool,
+    ) -> SmbObservations {
+        let changed_indices = wram
+            .iter()
+            .zip(prior_wram)
+            .enumerate()
+            .filter_map(|(index, (current, prior))| {
+                (current != prior)
+                    .then(|| u16::try_from(index).ok())
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let log_line = format!("frame={frame_count} changed={changed_indices:?}");
+        SmbObservations {
+            frame_count,
+            wram: wram.to_vec(),
+            decoded: smb_mechanical_state_from_wram(wram),
+            milestones: smb_milestones_from_wram(wram),
+            changed_indices,
+            dead,
+            log_line,
+        }
+    }
+}
+
+fn wram_array(machine: &NesMachine) -> Result<[u8; WRAM_SIZE], MachineError> {
+    let bytes = machine.read(0, u32::try_from(WRAM_SIZE).unwrap_or(0))?;
+    let mut wram = [0_u8; WRAM_SIZE];
+    if bytes.len() == WRAM_SIZE {
+        wram.copy_from_slice(&bytes);
+        Ok(wram)
+    } else {
+        Err(MachineError::ReadOutOfBounds)
+    }
 }
 
 /// Replay one SMB input from gameplay genesis and return its mechanical observation trace.
 pub fn observe_smb_input(
     rom: &[u8],
     input: &SmbInput,
-) -> tetanes_core::control_deck::Result<Vec<SmbObservations>> {
+) -> Result<Vec<SmbObservations>, MachineError> {
     let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
     let mut observations = vec![target.observe()];
     for action in &input.actions {
@@ -347,12 +402,10 @@ impl Target for SmbTarget {
     type Snapshot = SmbSnapshot;
 
     fn reset(&mut self) {
-        self.failed = self
-            .deck
-            .load_state(Cursor::new(&self.genesis_state))
-            .is_err();
+        self.failed = self.machine.replay(self.genesis).is_err();
         self.dead = false;
-        self.observation = observation_from(&self.deck, 0, &[0; WRAM_SIZE], false);
+        let wram = self.wram();
+        self.observation = self.observation_from(&wram, 0, &[0; WRAM_SIZE], false);
         self.action_observations = vec![self.observation.clone()];
     }
 
@@ -361,30 +414,45 @@ impl Target for SmbTarget {
         if self.failed || self.dead || self.is_victory() {
             return;
         }
-        let mut prior_observed_wram = self.deck.wram().to_owned();
-        let mut prior_bucket = smb_scroll_bucket(self.deck.wram());
-        self.deck.joypad_mut(Player::One).buttons =
-            JoypadBtnState::from_bits_truncate(u16::from(action.buttons));
+        let Ok(mut prior_observed_wram) = wram_array(&self.machine) else {
+            self.failed = true;
+            return;
+        };
+        let mut prior_bucket = smb_scroll_bucket(&prior_observed_wram);
+        let Ok(start) = self.machine.snapshot() else {
+            self.failed = true;
+            return;
+        };
+        if self.machine.branch(start, vec![*action]).is_err() {
+            self.failed = true;
+            let _ = self.machine.drop_snapshot(start);
+            return;
+        }
+        let _ = self.machine.drop_snapshot(start);
         let hold_frames = action.bounded_hold_frames();
         let mut executed_frames = 0_u64;
         for _ in 0..hold_frames {
-            if self.deck.clock_frame().is_err() {
-                self.failed = true;
-                break;
+            match self.run_one_frame() {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(()) => break,
             }
             executed_frames = executed_frames.saturating_add(1);
-            self.frames_clocked = self.frames_clocked.saturating_add(1);
-            let current_bucket = smb_scroll_bucket(self.deck.wram());
-            self.dead = smb_player_is_dead(self.deck.wram());
-            let victory = self.is_victory();
+            let Ok(wram) = wram_array(&self.machine) else {
+                self.failed = true;
+                break;
+            };
+            let current_bucket = smb_scroll_bucket(&wram);
+            self.dead = smb_player_is_dead(&wram);
+            let victory = smb_is_victory(&wram);
             if current_bucket != prior_bucket || self.dead || victory {
-                let observation = observation_from(
-                    &self.deck,
+                let observation = self.observation_from(
+                    &wram,
                     self.observation.frame_count.saturating_add(executed_frames),
                     &prior_observed_wram,
                     self.dead,
                 );
-                prior_observed_wram = self.deck.wram().to_owned();
+                prior_observed_wram = wram;
                 prior_bucket = current_bucket;
                 self.action_observations.push(observation);
             }
@@ -392,15 +460,15 @@ impl Target for SmbTarget {
                 break;
             }
         }
-        self.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
         let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
         let endpoint_already_recorded = self
             .action_observations
             .last()
             .is_some_and(|observation| observation.frame_count == endpoint_frame);
         if !endpoint_already_recorded {
-            self.action_observations.push(observation_from(
-                &self.deck,
+            let wram = self.wram();
+            self.action_observations.push(self.observation_from(
+                &wram,
                 endpoint_frame,
                 &prior_observed_wram,
                 self.dead,
@@ -416,7 +484,7 @@ impl Target for SmbTarget {
     }
 
     fn fingerprint(&self) -> u64 {
-        smb_fingerprint_from_wram(self.deck.wram())
+        smb_fingerprint_from_wram(&self.wram())
     }
 
     fn exit_kind(&self) -> ExitKind {
@@ -428,11 +496,16 @@ impl Target for SmbTarget {
     }
 
     fn snapshot(&mut self) -> Option<Self::Snapshot> {
-        let mut emulator_state = Vec::new();
-        if self.deck.save_state(&mut emulator_state).is_err() {
+        let Ok(snap) = self.machine.snapshot() else {
             self.failed = true;
             return None;
-        }
+        };
+        let exported = self.machine.export_snapshot(snap);
+        let _ = self.machine.drop_snapshot(snap);
+        let Ok(emulator_state) = exported else {
+            self.failed = true;
+            return None;
+        };
         Some(SmbSnapshot {
             emulator_state,
             observation: self.observation.clone(),
@@ -442,43 +515,15 @@ impl Target for SmbTarget {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        self.deck
-            .load_state(Cursor::new(&snapshot.emulator_state))
-            .map_err(|error| error.to_string())?;
+        let imported = self.machine.import_snapshot(&snapshot.emulator_state);
+        let restored = self.machine.replay(imported);
+        let _ = self.machine.drop_snapshot(imported);
+        restored.map_err(|error| error.to_string())?;
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.dead = snapshot.dead;
         self.failed = snapshot.failed;
         Ok(())
-    }
-}
-
-fn observation_from(
-    deck: &ControlDeck,
-    frame_count: u64,
-    prior_wram: &[u8; WRAM_SIZE],
-    dead: bool,
-) -> SmbObservations {
-    let wram = deck.wram();
-    let changed_indices = wram
-        .iter()
-        .zip(prior_wram)
-        .enumerate()
-        .filter_map(|(index, (current, prior))| {
-            (current != prior)
-                .then(|| u16::try_from(index).ok())
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    let log_line = format!("frame={frame_count} changed={changed_indices:?}");
-    SmbObservations {
-        frame_count,
-        wram: wram.to_vec(),
-        decoded: smb_mechanical_state_from_wram(wram),
-        milestones: smb_milestones_from_wram(wram),
-        changed_indices,
-        dead,
-        log_line,
     }
 }
 
@@ -636,6 +681,7 @@ fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
         level
     }
 }
+/// Rendered frame width in pixels.
 pub const FRAME_WIDTH: usize = 256;
 /// Rendered frame height in pixels.
 pub const FRAME_HEIGHT: usize = 240;
@@ -784,8 +830,8 @@ mod tests {
         let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
         target.reset();
         assert!(!target.is_victory());
-        target.wram_mut()[0x0770] = 2;
-        target.wram_mut()[0x075f] = 7;
+        target.poke_wram(0x0770, 2);
+        target.poke_wram(0x075f, 7);
         let won = target.snapshot().expect("snapshot victory state");
         let mut restored = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
         restored.restore(&won).expect("restore victory snapshot");

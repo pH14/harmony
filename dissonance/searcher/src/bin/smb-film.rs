@@ -203,8 +203,8 @@ fn film_boundary(action_count: usize, target: &SmbTarget) -> FilmBoundary {
     FilmBoundary {
         action_count,
         raw_wram: target.wram().to_vec(),
-        decoded: smb_mechanical_state_from_wram(target.wram()),
-        milestones: smb_milestones_from_wram(target.wram()),
+        decoded: smb_mechanical_state_from_wram(&target.wram()),
+        milestones: smb_milestones_from_wram(&target.wram()),
     }
 }
 

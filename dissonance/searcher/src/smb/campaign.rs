@@ -824,7 +824,7 @@ fn execute_job(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
-            let key = archive_key(target.wram());
+            let key = archive_key(&target.wram());
             let viable = match policies.retention {
                 SmbRetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
                 SmbRetentionPolicy::AdmitAlive => true,
@@ -897,7 +897,7 @@ impl CoordinatorCore {
     /// Retain genesis at execution zero.
     fn bootstrap(&mut self, target: &mut SmbTarget) -> Result<(), Box<dyn Error>> {
         target.reset();
-        let genesis_key = archive_key(target.wram());
+        let genesis_key = archive_key(&target.wram());
         let genesis_snapshot = target
             .snapshot()
             .ok_or("failed to snapshot campaign genesis")?;
@@ -1046,7 +1046,7 @@ impl CoordinatorCore {
                 self.champion_milestones = milestones;
                 self.champion_input = prefix.clone();
             }
-            let key = archive_key(target.wram());
+            let key = archive_key(&target.wram());
             let inserted_before = self.archive.entries.len();
             match self.archive.insert(
                 Some(parent_id),
@@ -2527,8 +2527,8 @@ mod tests {
         let rom = synthetic_nrom();
         let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
         target.reset();
-        target.wram_mut()[0x0770] = 2;
-        target.wram_mut()[0x075f] = 7;
+        target.poke_wram(0x0770, 2);
+        target.poke_wram(0x075f, 7);
         let won = target.snapshot().expect("snapshot won state");
         let result = execute_job(
             &mut target,

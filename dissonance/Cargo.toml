@@ -2,7 +2,7 @@
 # See CLAUDE.md in this directory before working here.
 [workspace]
 resolver = "2"
-members = ["searcher"]
+members = ["machine", "searcher"]
 
 [workspace.package]
 edition = "2024"
