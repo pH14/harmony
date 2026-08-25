@@ -13,8 +13,8 @@ use searcher::{
     smb::campaign::{
         SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint,
         SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
-        SmbSnapshotCheckpoint, chord_policy_from_identifier, replay_smb_campaign_checkpointed,
-        run_smb_campaign_checkpointed,
+        SmbSnapshotCheckpoint, button_vocabulary_from_identifier, chord_policy_from_identifier,
+        replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
 };
 use serde::Serialize;
@@ -83,6 +83,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         entry: 3,
         groups: vec![6, 12, 2],
     });
+    let mut vocabulary = SmbButtonVocabulary::default();
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
@@ -114,6 +115,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --selector value")?
                     .to_string_lossy(),
             )?;
+        } else if flag == "--vocabulary" {
+            vocabulary = button_vocabulary_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --vocabulary value")?
+                    .to_string_lossy(),
+            )?;
         } else if flag == "--checkpoint" {
             checkpoint_path = Some(PathBuf::from(
                 args.next().ok_or("missing --checkpoint value")?,
@@ -129,7 +137,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let rom = read_rom()?;
     let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
     let config = SmbCampaignConfig {
-        vocabulary: SmbButtonVocabulary::default(),
+        vocabulary,
         campaign_seed,
         workers,
         execution_budget,
