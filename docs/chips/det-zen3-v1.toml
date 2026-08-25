@@ -16,7 +16,7 @@
 [pack]
 schema = "cpu-qualification-pack-v1"
 baseline = "det-zen3-v1"
-pack_hash = "e233f43ad4a6272a9a9cbebd9bc059b7407fd5e8018859680195e2ab68374be2"
+pack_hash = "3fe74869c247f973d09490eabde9ffba9d4759dd73e4f2bca6a25e7026af46cb"
 
 [chip.vendor]
 source = "/proc/cpuinfo vendor_id on the qualification box; docs/CPU-QUALIFICATION.md known-chip table AMD row"
@@ -39,8 +39,8 @@ source = "AMD PPR family 19h PMCx0D1; rr src/PerfCounters.cc comment 'RETIRED_CO
 value = "ExRetCond, retired conditional branch instructions"
 
 [work_clock.counting_scope]
-source = "consonance/cpu-qualification/src/perf_sys.rs PerfCounter, Scope::GuestOnly"
-value = "PERF_TYPE_RAW, pinned, guest-only (exclude_host), sampling mode"
+source = "consonance/cpu-qualification/src/perf.rs Scope, and the three places stage 1 opens the counter: stage1_sys.rs open_counting(Scope::HostUser) and open_sampling(Scope::HostUser) for the host payloads and the overflow arms, guest_sys.rs open_counting(Scope::GuestOnly) for the guest payload"
+value = "PERF_TYPE_RAW, pinned, never multiplexed. Two scopes are measured. Host-user (exclude_kernel, exclude_hv) carries the host payloads' exactness windows and every overflow arm, so the skid distribution below is host-user sampling scope. Guest-only (exclude_host) carries the guest payload's exactness windows, in counting mode; no measurement in this pack arms a sampling counter in guest-only scope"
 
 [skid.observed_max]
 source = "the largest skid of this program's four stage-1 campaigns on the qualification box, 2026-08-25: A2 8034, C 8096, D 7991, E 8007. Recomputed from the per-arm records in qualification-evidence/box/stage1-*/stage1.jsonl.gz, outside the suite as well as inside it"
@@ -52,7 +52,7 @@ value = 16192
 
 [skid.derivation]
 source = "the four stage-1 campaigns on the qualification box"
-value = "twice the largest skid this chip produced. Every delivered overflow reports the counter value at the interrupt; the skid is that value less the armed period. Across the campaigns the largest was 8096, on the loop_backedge payload at a period of 10000, and no campaign's maximum reached 8100. The distribution is concentrated far below it: every skid falls in the 10-to-10000 range with the bulk between 100 and 1000, and the smallest seen was 13. The factor of two is headroom over a maximum that is itself a tail observation, not a fitted bound. The campaigns themselves were judged against 16068, tighter than this, so the seal is not a bound widened to fit a result"
+value = "twice the largest skid this chip produced. Every delivered overflow reports the counter value at the interrupt; the skid is that value less the armed period. Across the campaigns the largest was 8096, on the loop_backedge payload at a period of 10000, and no campaign's maximum reached 8100. The distribution is concentrated far below it: every skid falls in the 10-to-10000 range with the bulk between 100 and 1000, and the smallest seen was 13. The factor of two is headroom over a maximum that is itself a tail observation, not a fitted bound. The campaigns themselves were judged against 16068, tighter than this, so the seal is not a bound widened to fit a result. This bounds host-user sampling scope, which is the only scope stage 1 arms an overflow in. It does not bound the skid of a guest-only overflow taken through a virtual-machine exit: that path is longer and its tail is heavier. The stage-2 harness measured a guest-mode skid of 37595 on this chip, 4.6 times this margin, in about 240000 arms; the record is qualification-evidence/box/stage2/campaign/core15.json index 28164. A consumer landing a guest deadline needs a bound measured in that scope, which stage 1 does not produce"
 
 [skid.overshoot]
 source = "consonance/vmm-backend/src/run_until.rs"
