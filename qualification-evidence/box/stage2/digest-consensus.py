@@ -7,15 +7,24 @@ most target values recur, so the claim is testable against the records themselve
 it holds, a disagreeing arm can be attributed: the arm whose digest differs from every
 other arm that landed on the same target is the one that went wrong.
 """
-import collections, glob, json, sys
+import collections, glob, gzip, json, sys
+
+def shards(d):
+    """Shard records, plain or gzipped: they are gzipped for the mirror."""
+    return sorted(glob.glob(d + "/core*.json")
+                  + glob.glob(d + "/core*.json.gz"))
+
+
+def opener(f):
+    return gzip.open(f, "rt") if f.endswith(".gz") else open(f)
 
 d = sys.argv[1]
 by_target = collections.defaultdict(collections.Counter)
 rows = collections.defaultdict(list)
 fails = []
 
-for f in sorted(glob.glob(d + "/core*.json")):
-    for line in open(f):
+for f in shards(d):
+    for line in opener(f):
         line = line.strip().rstrip(",")
         if not (line.startswith("{") and line.endswith("}")):
             continue

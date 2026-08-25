@@ -5,9 +5,18 @@ The campaign harness records only the replay arm's digest, so the work count it 
 on had to be recovered by inverting that digest. `ae3-instr` records both the digest and
 the work count, so on its records the inversion can be scored rather than trusted.
 """
-import glob, json, struct, sys
+import glob, gzip, json, struct, sys
 
 N = 300000
+
+def shards(d):
+    """Shard records, plain or gzipped: they are gzipped for the mirror."""
+    return sorted(glob.glob(d + "/core*.json")
+                  + glob.glob(d + "/core*.json.gz"))
+
+
+def opener(f):
+    return gzip.open(f, "rt") if f.endswith(".gz") else open(f)
 
 def fnv(rip, rcx):
     h = 1469598103934665603
@@ -24,8 +33,8 @@ for w in range(0, N + 1):
 agree = disagree = missing = 0
 examples = []
 for d in sys.argv[1:]:
-    for f in sorted(glob.glob(d + "/core*.json")) or [d]:
-        for line in open(f):
+    for f in shards(d) or [d]:
+        for line in opener(f):
             line = line.strip().rstrip(",")
             if not (line.startswith("{") and line.endswith("}")):
                 continue

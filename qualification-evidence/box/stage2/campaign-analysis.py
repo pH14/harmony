@@ -5,10 +5,19 @@ Nothing here reads a summary line: totals, rates and percentiles all come from t
 per-arm records. Fields the instrumented harness adds (tsc_to_preempt, smi_delta,
 retry_*) are used when present and skipped when not.
 """
-import collections, glob, json, statistics, struct, sys
+import collections, glob, gzip, json, statistics, struct, sys
 
 N_LOOP = 300000
 
+
+def shards(d):
+    """Shard records, plain or gzipped: they are gzipped for the mirror."""
+    return sorted(glob.glob(d + "/core*.json")
+                  + glob.glob(d + "/core*.json.gz"))
+
+
+def opener(f):
+    return gzip.open(f, "rt") if f.endswith(".gz") else open(f)
 
 def _fnv(rip, rcx):
     h = 1469598103934665603
@@ -33,9 +42,9 @@ def digest_table():
 
 
 def records(d):
-    for f in sorted(glob.glob(d + "/core*.json")):
+    for f in shards(d):
         n = 0
-        for line in open(f):
+        for line in opener(f):
             line = line.strip().rstrip(",")
             if not (line.startswith("{") and line.endswith("}")):
                 continue
