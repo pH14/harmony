@@ -659,28 +659,39 @@ fn cross_check_summary(
     skid_max: u64,
     checks: &mut Vec<Check>,
 ) {
-    let Some(summary) = records
-        .iter()
-        .find(|r| matches!(r, Record::OverflowSummary { payload: p, .. } if p == payload))
-    else {
+    // A run writes one summary per payload per armed period, so the payload's
+    // tally is the sum of them. The recomputation covers every arm of the
+    // payload, and half a tally never agrees with all of the arms.
+    let (mut arms_total, mut delivered_once, mut s_lost, mut s_duplicated, mut s_skid_max) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut found = false;
+    for record in records {
+        if let Record::OverflowSummary {
+            payload: p,
+            arms_total: a,
+            delivered_once: d,
+            lost: l,
+            duplicated: u,
+            skid_max: k,
+        } = record
+            && p == payload
+        {
+            found = true;
+            arms_total += a;
+            delivered_once += d;
+            s_lost += l;
+            s_duplicated += u;
+            s_skid_max = s_skid_max.max(*k);
+        }
+    }
+    if !found {
         return;
-    };
-    let Record::OverflowSummary {
-        arms_total,
-        delivered_once,
-        lost: s_lost,
-        duplicated: s_duplicated,
-        skid_max: s_skid_max,
-        ..
-    } = summary
-    else {
-        return;
-    };
-    let agrees = *arms_total == arms
-        && *delivered_once == delivered
-        && *s_lost == lost
-        && *s_duplicated == duplicated
-        && *s_skid_max == skid_max;
+    }
+    let agrees = arms_total == arms
+        && delivered_once == delivered
+        && s_lost == lost
+        && s_duplicated == duplicated
+        && s_skid_max == skid_max;
     checks.push(Check::new(
         format!("overflow-summary-agrees[{payload}]"),
         agrees,
@@ -1288,6 +1299,42 @@ mod tests {
             .expect("the summary is cross-checked");
         assert!(!check.passed, "{}", check.detail);
         assert!(check.detail.contains("skid_max=100"), "{}", check.detail);
+    }
+
+    #[test]
+    fn the_summaries_of_every_armed_period_are_folded_into_one_tally() {
+        // A run arming two periods writes two summaries for the payload. Their
+        // sum is the payload's tally; either one alone is half the arms.
+        let mut records = passing_run();
+        records.push(Record::OverflowSummary {
+            payload: "loop_backedge".to_string(),
+            arms_total: 2,
+            delivered_once: 2,
+            lost: 0,
+            duplicated: 0,
+            skid_max: 100,
+        });
+        records.push(Record::OverflowSummary {
+            payload: "loop_backedge".to_string(),
+            arms_total: 1,
+            delivered_once: 1,
+            lost: 0,
+            duplicated: 0,
+            skid_max: 4,
+        });
+        let verdict = recompute(&records);
+        let check = verdict
+            .checks
+            .iter()
+            .find(|c| c.name == "overflow-summary-agrees[loop_backedge]")
+            .expect("the summary is cross-checked");
+        assert!(check.passed, "{}", check.detail);
+        assert!(
+            check.detail.contains("arms=3 delivered=3"),
+            "{}",
+            check.detail
+        );
+        assert!(verdict.passed, "{:#?}", verdict.checks);
     }
 
     #[test]
