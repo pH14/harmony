@@ -9,7 +9,7 @@ workspace.
 - `docs/DISSONANCE-FROM-SCRATCH.md` — the design
 - `docs/LIBAFL-PLAN.md` — the verified LibAFL surface and the phased plan
 - `docs/MODEL-IN-THE-LOOP-PLAN.md` — the current SMB Step 3 execution plan;
-  completed M0–M7 evidence is in `NOTES.md`
+  completed M0–M7 evidence is in git history (`NOTES.md`)
 
 ## Do not read the old stack
 
@@ -28,7 +28,6 @@ out.
 
 - Vocabulary: LibAFL's own terms only — testcase, corpus, input, executor,
   observer, feedback, scheduler, stage, metadata. Do not coin new terms.
-- `libafl` stays pinned at 0.15.4 until phase 5.
 - No dependencies on harmony crates (`consonance/*`, `dissonance/*`) before
   phase 5.
 - No LLM calls in unit tests. Model quality is measured in A/B campaigns,
