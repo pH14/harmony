@@ -25,20 +25,25 @@ Scratchpad: `/private/tmp/claude-501/-Users-phemberger-workspace-harmony/a54e77d
 
 ## Next
 
-1. Campaign running: `/root/qual-evidence/stage2/campaign/core{1,3,5,7,9,11,13,15}.json`,
-   8 cores x 62500 targets, `--replay`, margin 16192, launched 04:26Z, projected 3.3h.
-   PIDs in `/root/qual-evidence/stage2/campaign/pids`; alive check is `kill -0` per PID,
-   never a `-f` pattern. Tally with `python3 /root/tally.py
-   /root/qual-evidence/stage2/campaign`.
-2. Still on the patched kernel, re-run the enforcement demo there: the AMD draft
-   contract column names `kernel-tag = "v6.18.35"`, and the demo so far ran on stock
-   6.12.95. `cd /root/spike/spikes/amd-epyc/harness && taskset -c 3 ./ae4-freeze` and
-   `./ae4-msr`. Optionally `./ae5-gate` as supporting whole-stack evidence (stage 3 is
-   out of scope, so label it as such).
-3. Item 8: rsync, `bash /root/kclose2.sh` (restores the pristine command line and pins
-   the stock entry), reboot, poll ssh, `bash /root/posture.sh`, ship the final pack
-   (`ship.sh`, which replaces the box tree and rebuilds), `bash /root/stage0-recheck.sh`,
-   rsync, final commit, report.
+1. Campaign running since 04:26:09Z: `/root/qual-evidence/stage2/campaign/core{1,3,5,7,9,11,13,15}.json`,
+   8 cores x 62500 targets, `--replay` (so 500000 targets are 1000000 armed deadlines),
+   margin 16192 which is the pack's sealed value. Expected finish about 07:35Z.
+   Live view: `/root/qual-evidence/stage2/campaign/progress.log`, one line a minute with
+   a per-shard arm count and the failing count. PIDs in `.../campaign/pids`; alive check
+   is `kill -0` per PID, never a `-f` pattern.
+   Two recorded failures so far: core 9 index 15257 (replay digest mismatch) and core 15
+   index 28164 (overshoot, skid 37595). Neither is a reason to widen anything.
+2. Immediately after: `bash /root/post-campaign.sh <N>` where N is the supplement's
+   targets per core, sized so the count of landings through KVM_EXIT_PREEMPT passes
+   1000000 (about 83.8 percent of arms take that exit, since targets are uniform on
+   [1,100000] and the margin is 16192). It runs the supplement on seven cores and the
+   seed-109 reproduction of the core-9 mismatch on the eighth, using `ae3-diag`, a copy
+   of the harness that also records the replay arm's own landing.
+3. Still on the patched kernel: `bash /root/close-a.sh` re-runs the enforcement demo on
+   6.18.35, the kernel the AMD draft contract column names, and a 1000-repetition
+   whole-stack check as supporting evidence.
+4. Item 8: rsync, `bash /root/kclose2.sh`, reboot, poll ssh, `bash /root/posture.sh`,
+   ship the final pack, `bash /root/stage0-recheck.sh`, rsync, final commit, report.
 
 ## Standing facts
 
