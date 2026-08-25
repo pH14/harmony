@@ -25,20 +25,20 @@ Scratchpad: `/private/tmp/claude-501/-Users-phemberger-workspace-harmony/a54e77d
 
 ## Next
 
-1. `bash /root/kstage.sh` (install the .deb, arm the one-shot entry, trim
-   `GRUB_CMDLINE_LINUX_DEFAULT` to `panic=30`).
-2. Rsync `/root/qual-evidence/` into `qualification-evidence/box/`, then
-   `bash /root/spike/spikes/amd-epyc/host/stage-6.18-boot.sh reboot`. Poll ssh up to
-   10 minutes. Then `... verify`, then `bash /root/posture.sh` (every volatile setting
-   is lost across a reboot).
-3. `bash /root/stage2-patched.sh` — smoke (mechanism attestation, exit reason 42) then
-   a 200-target calibration. Read the skid distribution with
-   `python3 /root/skidstat.py /root/qual-evidence/stage2/ae3-calibration.json`, pick
-   the tightest margin above the observed guest skid, project the landing rate, then
-   run the volume campaign for at least 1e6 landings
-   (`--arms 500000 --replay` counts as 1e6). Overshoot is a recorded failure.
-4. Item 8: ship the final pack, `bash /root/kclose.sh` (restore stock), reboot,
-   `bash /root/posture.sh`, `bash /root/stage0-recheck.sh`, rsync, final commit.
+1. Campaign running: `/root/qual-evidence/stage2/campaign/core{1,3,5,7,9,11,13,15}.json`,
+   8 cores x 62500 targets, `--replay`, margin 16192, launched 04:26Z, projected 3.3h.
+   PIDs in `/root/qual-evidence/stage2/campaign/pids`; alive check is `kill -0` per PID,
+   never a `-f` pattern. Tally with `python3 /root/tally.py
+   /root/qual-evidence/stage2/campaign`.
+2. Still on the patched kernel, re-run the enforcement demo there: the AMD draft
+   contract column names `kernel-tag = "v6.18.35"`, and the demo so far ran on stock
+   6.12.95. `cd /root/spike/spikes/amd-epyc/harness && taskset -c 3 ./ae4-freeze` and
+   `./ae4-msr`. Optionally `./ae5-gate` as supporting whole-stack evidence (stage 3 is
+   out of scope, so label it as such).
+3. Item 8: rsync, `bash /root/kclose2.sh` (restores the pristine command line and pins
+   the stock entry), reboot, poll ssh, `bash /root/posture.sh`, ship the final pack
+   (`ship.sh`, which replaces the box tree and rebuilds), `bash /root/stage0-recheck.sh`,
+   rsync, final commit, report.
 
 ## Standing facts
 
