@@ -61,3 +61,51 @@ On silicon the same refusal holds structurally: the harness records
 for a landing at either layer.
 
 **Recovery is re-arming the same target.** Measured; numbers below.
+
+## What a large skid was: measuring the cause
+
+Three probes, of which one is unavailable on this chip and one is inconclusive.
+
+**`MSR_SMI_COUNT` (0x34) does not exist on AMD.** It is an Intel MSR. On this chip
+`rdmsr` refuses it on every core:
+
+    cpu0  rdmsr: CPU 0 cannot read MSR 0x00000034
+    cpu2  rdmsr: CPU 2 cannot read MSR 0x00000034      (same for cpu3, cpu9, cpu15)
+
+AMD publishes no architectural per-core system-management-interrupt counter, so the
+per-arm delta the direction asks for cannot be taken that way.
+
+**The AMD SMI-received PMC event reads zero.** AMD's PPR for family 19h has an
+SMI-received counter at PMCx02B; opened as raw `0x51002b` it counts nothing, while the
+work clock on the same command counts normally:
+
+                     0      r51002b
+                 47855      r5100d1
+           2.002202173 seconds time elapsed
+
+That is either "no system-management interrupts occurred" or "this is not the right
+encoding for this event on this part". Nothing available here separates the two — a
+deliberate system-management interrupt would settle it, and the only software route is
+a write to the ACPI command port, which runs firmware code of unknown effect on a box
+carrying a running campaign. The reading is recorded and treated as weak.
+
+**Timing separates the two hypotheses that matter.** The instrumented harness stamps
+the time-stamp counter immediately before the guest run that ends at the overflow and
+again when it returns, so each arm carries the wall-clock length of exactly that
+interval alongside the guest branches retired in it. The two candidate causes of a
+large skid predict opposite ratios:
+
+- the guest kept running and the overflow's interrupt was delivered late — branches and
+  ticks both large, their ratio the population's normal one;
+- the core was stopped, in system-management mode or otherwise — ticks large, branches
+  not, ratio far below the population.
+
+The normal ratio on this chip is about 0.7 to 0.94 guest conditional branches per
+time-stamp tick. The supplement and the reproduction both record it on every arm.
+
+**Interrupt load does not single out the core the overshoots landed on.** Both
+overshoots so far are on core 15. `/proc/interrupts` over the campaign gives core 15
+160,934 interrupts against 153,703 to 164,171 on the other seven isolated cores, and
+its device-interrupt share is among the lowest; the count is dominated by the
+performance-monitoring interrupts the campaign itself arms. With two events the
+clustering is not yet distinguishable from chance.
