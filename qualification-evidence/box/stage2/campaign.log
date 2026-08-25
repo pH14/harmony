@@ -1,0 +1,9 @@
+campaign rc=1
+[ae3] arms=62500 preempt=62500 exact=62500 overshoot=0 skid_max=13060 rc=0
+[ae3] arms=62500 preempt=62500 exact=62500 overshoot=0 skid_max=7998 rc=1
+[ae3] arms=62500 preempt=62500 exact=62500 overshoot=0 skid_max=8042 rc=0
+[ae3] arms=62500 preempt=62500 exact=62498 overshoot=2 skid_max=37595 rc=1
+[ae3] arms=62500 preempt=62500 exact=62500 overshoot=0 skid_max=14718 rc=1
+[ae3] arms=62500 preempt=62500 exact=62500 overshoot=0 skid_max=7026 rc=1
+[ae3] arms=62500 preempt=62500 exact=62500 overshoot=0 skid_max=7443 rc=0
+[ae3] arms=62500 preempt=62500 exact=62500 overshoot=0 skid_max=7423 rc=1

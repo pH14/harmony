@@ -1,5 +1,24 @@
+=== enforcement demo on the kernel the AMD draft contract column names ===
+uname -r: 6.18.35  (docs/cpu-msr-contract-amd-draft.toml kernel-tag = v6.18.35)
+2026-08-25T08:04:21Z
+ae4-freeze rc=0
+{"schema":"amd-epyc-ae4-freeze-v1","hlt_ok":1,"guest_vendor":"AuthenticAMD","vendor_frozen":1,"cleared_edx_bit":4,"host_has_bit":1,"guest_sees_bit":0,"below_host_freeze_demonstrated":1,"host_leaf1_edx":"0x078bfbff","guest_leaf1_edx":"0x078bfbef"}
+
+ae4-msr rc=0
+{"schema":"amd-epyc-ae4-msr-v1","target_msr":"0xc0010015","user_space_msr_cap":1,"filter_installed":1,"rdmsr_trapped_to_vmm":1,"deny_gp_then_shutdown":0,"guest_hlt":0,"other_exit":0}
+
+--- single-step driver re-run on the patched kernel ---
+singlestep tf rc=1
+singlestep btf rc=1
+--- what a frozen CPUID model does not enforce: RDRAND ---
 {"schema":"amd-epyc-ae6-rdrand-v1","hlt_ok":1,"other_exit":0,"host_leaf1_ecx":"0xf7fa3203","host_has_rdrand":1,"bare_host_rdrand":1,"guest_leaf1_ecx":"0xb7fa3203","guest_sees_rdrand":0,"ud_faulted":0,"executed":1,"cf1":1,"cf2":1,"value1":"0x121c513f","value2":"0xdbe6a59e","values_differ":1,"cpuid_mask_enforced_execution":0}
 {"schema":"amd-epyc-ae6-rdrand-v1","hlt_ok":1,"other_exit":0,"host_leaf1_ecx":"0xf7fa3203","host_has_rdrand":1,"bare_host_rdrand":1,"guest_leaf1_ecx":"0xb7fa3203","guest_sees_rdrand":0,"ud_faulted":0,"executed":1,"cf1":1,"cf2":1,"value1":"0x5a4c0f74","value2":"0x306f872a","values_differ":1,"cpuid_mask_enforced_execution":0}
 {"schema":"amd-epyc-ae6-rdrand-v1","hlt_ok":1,"other_exit":0,"host_leaf1_ecx":"0xf7fa3203","host_has_rdrand":1,"bare_host_rdrand":1,"guest_leaf1_ecx":"0xb7fa3203","guest_sees_rdrand":0,"ud_faulted":0,"executed":1,"cf1":1,"cf2":1,"value1":"0xa2d6c4eb","value2":"0x73a3dec5","values_differ":1,"cpuid_mask_enforced_execution":0}
 {"schema":"amd-epyc-ae6-rdrand-v1","hlt_ok":1,"other_exit":0,"host_leaf1_ecx":"0xf7fa3203","host_has_rdrand":1,"bare_host_rdrand":1,"guest_leaf1_ecx":"0xb7fa3203","guest_sees_rdrand":0,"ud_faulted":0,"executed":1,"cf1":1,"cf2":1,"value1":"0xccd2a55a","value2":"0x2b0e2de6","values_differ":1,"cpuid_mask_enforced_execution":0}
 {"schema":"amd-epyc-ae6-rdrand-v1","hlt_ok":1,"other_exit":0,"host_leaf1_ecx":"0xf7fa3203","host_has_rdrand":1,"bare_host_rdrand":1,"guest_leaf1_ecx":"0xb7fa3203","guest_sees_rdrand":0,"ud_faulted":0,"executed":1,"cf1":1,"cf2":1,"value1":"0x35144dfa","value2":"0x06bf9e23","values_differ":1,"cpuid_mask_enforced_execution":0}
+ae6-rdrand rc=0
+=== whole-stack repetition check (supporting evidence; stage 3 is out of scope) ===
+2026-08-25T08:04:21Z
+[ae5] reps=1000 preempt=1 hlt=1 identical=1 diverged_at=-1 rc=0
+ae5-gate rc=0
+2026-08-25T08:11:42Z
