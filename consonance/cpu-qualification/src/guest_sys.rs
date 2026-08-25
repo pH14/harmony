@@ -26,9 +26,11 @@ use crate::stage1::{MeasurementPlan, Stage1Error, interrupts_for_core};
 /// `_IOR(KVMIO, 0xcf, struct kvm_xsave)` — read the host-sized XSAVE image. The
 /// request number carries the base struct's size; the kernel copies however many
 /// bytes `KVM_CAP_XSAVE2` reports.
-/// How far below its current value a time base is written when the probe tests
-/// whether the write takes effect. Four billion ticks is well over a second of
-/// the slowest of them, so no elapsed time can account for the difference.
+/// How far past its current value a time base is written when the probe tests
+/// whether the write takes effect. Four billion ticks is over a second of even
+/// the slowest of them, so no elapsed time can account for the difference — and
+/// a fresh vCPU's counters start near zero, which leaves no room to displace
+/// one downwards.
 const TIME_BASE_DISPLACEMENT: u64 = 1 << 32;
 
 /// The timestamp-counter rate assumed when KVM will not report one. It only
@@ -188,9 +190,9 @@ impl GuestWindow {
 
     /// The time bases this vCPU accepts a write to and then ignores, named.
     ///
-    /// Each is written a value far below the one it holds — far enough that no
+    /// Each is written a value far past the one it holds — far enough that no
     /// elapsed time could account for the difference — and read back. A
-    /// register that comes back at or above where it started never took the
+    /// register that comes back short of the displaced value never took the
     /// write, whatever `KVM_SET_MSRS` reported.
     #[must_use]
     pub fn time_bases_that_ignore_a_write(&self) -> Vec<String> {
@@ -202,7 +204,7 @@ impl GuestWindow {
             let Some(held) = self.read_one_msr(base.index) else {
                 continue;
             };
-            let Some(displaced) = held.checked_sub(TIME_BASE_DISPLACEMENT) else {
+            let Some(displaced) = held.checked_add(TIME_BASE_DISPLACEMENT) else {
                 continue;
             };
             if !self.write_one_msr(base.index, displaced) {
@@ -215,10 +217,13 @@ impl GuestWindow {
             let Some(after) = self.read_one_msr(base.index) else {
                 continue;
             };
-            if after >= held {
+            // The register only advances, so a write it took reads back at or
+            // past the displaced value. One it ignored reads back near where it
+            // started, four billion ticks short.
+            if after < displaced {
                 ignored.push(format!(
                     "{} ({:#010x}): written {displaced:#x}, which is {TIME_BASE_DISPLACEMENT} \
-                     below the {held:#x} it held, and read back {after:#x}. The write was \
+                     past the {held:#x} it held, and read back {after:#x}. The write was \
                      accepted and ignored, so this register does not restore",
                     base.name, base.index
                 ));
