@@ -1,4 +1,4 @@
-# dissonance-v2
+# dissonance
 
 A from-scratch rebuild of the dissonance search loop on LibAFL. This
 directory is its own Cargo workspace, deliberately outside the harmony root

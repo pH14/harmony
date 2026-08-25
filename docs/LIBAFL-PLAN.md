@@ -3,7 +3,7 @@
 **Status: implementation plan, companion to `docs/DISSONANCE-FROM-SCRATCH.md`.**
 Phases 0–4b are complete in the prototype; current work is defined in
 `docs/MODEL-IN-THE-LOOP-PLAN.md`. Read the design first, then
-`dissonance-v2/CLAUDE.md` before working in `dissonance-v2/`.
+`dissonance/CLAUDE.md` before working in `dissonance/`.
 
 Every API claim below was checked against the **libafl 0.15.4** source (the
 crates.io release), not against docs or memory. File references are to that
@@ -38,8 +38,8 @@ behind the `Executor` trait).
 
 ### Where the code lives
 
-`dissonance-v2/` is a standalone Cargo workspace, deliberately outside the
-harmony root workspace (the same pattern as `dissonance/differential-lineage`).
+`dissonance/` is a standalone Cargo workspace, deliberately outside the
+harmony root workspace.
 `libafl` is pinned at 0.15.4 until phase 5. No dependencies on harmony
 crates (`consonance/*`, `dissonance/*`) before phase 5. The directory's
 `CLAUDE.md` tells agents working there to read only this plan and the design

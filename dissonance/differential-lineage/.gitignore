@@ -1,3 +1,0 @@
-# Build artifacts only — everything else in this spike is tracked by design
-# (tasks/120: committed fixtures, generator, benchmark report).
-/target

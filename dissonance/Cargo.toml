@@ -1,0 +1,9 @@
+# Standalone workspace root, deliberately outside the harmony root workspace.
+# See CLAUDE.md in this directory before working here.
+[workspace]
+resolver = "2"
+members = ["fuzzer"]
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"

@@ -2,7 +2,7 @@
 
 **Status: Step 3 execution plan, companion to
 `docs/DISSONANCE-FROM-SCRATCH.md` and `docs/LIBAFL-PLAN.md`.** M0–M7 are
-complete and are evidence, not instructions. Read `dissonance-v2/CLAUDE.md`
+complete and are evidence, not instructions. Read `dissonance/CLAUDE.md`
 before working here and obey its rules.
 
 ## Current status
@@ -10,7 +10,7 @@ before working here and obey its rules.
 The typed inputs, deterministic replay, labels, generated code, retirement,
 SMB executor, baseline, live-model campaign, and films are built. Step 3
 starts from the measured M6 plateau and changes only the existing SMB path.
-`dissonance-v2/NOTES.md` is the record of M0–M7 decisions and results.
+`dissonance/NOTES.md` is the record of M0–M7 decisions and results.
 
 ## The model harness
 
@@ -117,7 +117,7 @@ A/B's defense against "it worked once". Model quality is never asserted in
   confirms authorization before sending any expanded evidence.
 
 The detailed commands, thresholds, failures, results, and output locations
-are in `dissonance-v2/NOTES.md`. Do not rerun or refactor M0–M7 except where a
+are in `dissonance/NOTES.md`. Do not rerun or refactor M0–M7 except where a
 Step 3 change requires a regression test.
 
 ## Step 3 — improve SMB search, then scale (M8–M10, M12–M13)
@@ -292,7 +292,7 @@ around it silently.
 
 Work on this branch (`claude/agent-campaign-iteration-w28bl4`), rebased onto
 current `origin/main`, committing per milestone in the existing
-`dissonance-v2:` style and appending Decisions to `dissonance-v2/NOTES.md` as
+`dissonance:` style and appending Decisions to `dissonance/NOTES.md` as
 they are made. File follow-ups as GitHub issues. Before new model calls,
 confirm operator authorization for the evidence being sent and the stated
 call budget. At completion (or at a hard blocker), use the handoff flow: push

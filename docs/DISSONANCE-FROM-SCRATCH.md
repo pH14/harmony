@@ -1,11 +1,11 @@
 # Dissonance from scratch — a fuzzing-vocabulary design sketch
 
-**Status: governing design for the standalone `dissonance-v2` prototype.**
+**Status: governing design for the standalone `dissonance` prototype.**
 It uses LibAFL's vocabulary directly and has no translation layer to the old
 dissonance stack.
 
 The implementation plan that goes with this document is `docs/LIBAFL-PLAN.md`.
-The code lives in `dissonance-v2/`.
+The code lives in `dissonance/`.
 
 ## The idea in one paragraph
 
@@ -167,7 +167,7 @@ Guidelines, learned from fuzzing and property-based testing:
 
 ## Vocabulary
 
-Use the LibAFL terms listed in `dissonance-v2/CLAUDE.md` directly. There is no
+Use the LibAFL terms listed in `dissonance/CLAUDE.md` directly. There is no
 old-to-new translation table and no additional architectural vocabulary.
 
 ## How to test it without LLMs

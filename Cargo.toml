@@ -5,21 +5,17 @@ resolver = "2"
 # plus `consonance/unison` (the determinism harness, ex-`detharness`) and the
 # engine's contract surface, `consonance/environment` + `consonance/control-proto`
 # (the decision vocabulary and control-transport wire; relocated here from the
-# retired `dissonance/` tree, which they never should have lived under —
+# retired v1 tree of the same name, which they never should have lived under —
 # consonance is their only consumer). The v1 dissonance searcher was removed;
-# its rebuild lives in the standalone `dissonance-v2/` workspace.
+# its rebuild lives in the standalone `dissonance/` workspace.
 members = ["consonance/*"]
 # harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
 # payloads use custom targets/linker flags. Neither belongs to this workspace.
-# dissonance/differential-lineage is a standalone workspace root by design;
-# the exclusion lets workspace members path-depend on it (the revision
-# coordinator wires into its dataflow) without merging the two graphs.
-# dissonance-v2/ is a standalone workspace root by design (the LibAFL rebuild,
-# docs/LIBAFL-PLAN.md); it must not share this build graph before its phase 5.
+# dissonance/ is a standalone workspace root by design (the searcher rebuild,
+# docs/DISSONANCE-FROM-SCRATCH.md); it must not share this build graph.
 exclude = [
   "harmony-linux",
-  "dissonance/differential-lineage",
-  "dissonance-v2",
+  "dissonance",
 ]
 
 [workspace.package]
