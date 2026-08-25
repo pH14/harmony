@@ -22,8 +22,12 @@ pub const PACK_SCHEMA: &str = "cpu-qualification-pack-v1";
 /// source file; moving the pack breaks the build loudly.
 pub const DET_CFL_V1: &str = include_str!("../../../docs/chips/det-cfl-v1.toml");
 
+/// The `det-zen3-v1` pack, embedded at compile time.
+pub const DET_ZEN3_V1: &str = include_str!("../../../docs/chips/det-zen3-v1.toml");
+
 /// The checked-in packs this build carries, by baseline name.
-pub const BUILTIN_PACKS: &[(&str, &str)] = &[("det-cfl-v1", DET_CFL_V1)];
+pub const BUILTIN_PACKS: &[(&str, &str)] =
+    &[("det-cfl-v1", DET_CFL_V1), ("det-zen3-v1", DET_ZEN3_V1)];
 
 /// The embedded pack text for `baseline`, if this build carries one.
 #[must_use]
@@ -644,6 +648,69 @@ mod tests {
                 "skid.observed_max",
             ],
             "a field with no recorded source must be absent, not guessed"
+        );
+        for (name, reason) in pack.absent_fields() {
+            assert!(
+                reason.len() > 20,
+                "{name} must say why it has no value, got {reason:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_embedded_det_zen3_v1_pack_loads_and_its_hash_holds() {
+        let pack = Pack::builtin("det-zen3-v1").expect("the embedded pack must load");
+        assert_eq!(pack.pack.baseline, "det-zen3-v1");
+        assert_eq!(pack.pack.schema, PACK_SCHEMA);
+        assert_eq!(
+            pack.compute_hash().expect("hashes"),
+            pack.pack.pack_hash,
+            "the checked-in pack_hash must match the pack's own bytes"
+        );
+    }
+
+    #[test]
+    fn the_det_zen3_v1_pack_carries_the_event_this_program_pinned() {
+        let pack = Pack::builtin("det-zen3-v1").expect("the embedded pack must load");
+        assert_eq!(pack.work_clock.config().expect("recorded"), 0x0051_00d1);
+        assert_eq!(
+            pack.chip.vendor.value().map(String::as_str),
+            Some("AuthenticAMD")
+        );
+        assert_eq!(
+            pack.chip.identity.value().map(String::as_str),
+            Some("19_01_01")
+        );
+        let conditions = pack
+            .host_conditions
+            .value()
+            .expect("the AMD entry's conditions are recorded");
+        // The three conditions the AMD entry adds to the Intel list.
+        for token in [
+            "spec-lock-map-disabled",
+            "ssb-mitigation-pinned",
+            "avic-off",
+        ] {
+            assert!(
+                conditions.iter().any(|c| c.condition == token),
+                "{token} must carry an expectation"
+            );
+        }
+    }
+
+    #[test]
+    fn the_det_zen3_v1_pack_marks_the_unmeasured_fields_absent_with_reasons() {
+        let pack = Pack::builtin("det-zen3-v1").expect("the embedded pack must load");
+        let absent: Vec<&str> = pack.absent_fields().iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            absent,
+            vec![
+                "count_offsets",
+                "event_density",
+                "single_step.work_per_step",
+                "skid.observed_max",
+            ],
+            "a field no run has measured must be absent, not guessed"
         );
         for (name, reason) in pack.absent_fields() {
             assert!(

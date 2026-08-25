@@ -194,6 +194,7 @@ impl cpu_qualification::pack::WorkClockSection
 pub fn cpu_qualification::pack::WorkClockSection::config(&self) -> core::result::Result<u64, cpu_qualification::pack::PackError>
 pub const cpu_qualification::pack::BUILTIN_PACKS: &[(&str, &str)]
 pub const cpu_qualification::pack::DET_CFL_V1: &str
+pub const cpu_qualification::pack::DET_ZEN3_V1: &str
 pub const cpu_qualification::pack::PACK_SCHEMA: &str
 pub fn cpu_qualification::pack::builtin_pack(&str) -> core::option::Option<&'static str>
 pub mod cpu_qualification::payload

@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# det-zen3-v1 — the measured-constants pack for the AMD Zen 3 EPYC baseline.
+#
+# The chip is an EPYC 7313P, family 19h model 01h stepping 01h, microcode
+# 0xa0011a9. Values recorded here come either from a source in this repository,
+# from rr's production table, or from a stage of this suite run on the chip; each
+# field names which. A field no run has measured carries an `absent` marker and
+# the reason, so a consumer that needs it refuses rather than substituting a
+# default — in particular, never substituting Intel's.
+#
+# `pack_hash` is the SHA-256 of the pack's canonical serialization with that field
+# emptied, recomputed by `cpu-qualification` on load. Editing any value without
+# resealing makes the pack fail to load.
+
+[pack]
+schema = "cpu-qualification-pack-v1"
+baseline = "det-zen3-v1"
+pack_hash = "a06deb72adbec59ce2bb1a0236c095cc4b481e2756864845f6b55793228bca27"
+
+[chip.vendor]
+source = "/proc/cpuinfo vendor_id on the qualification box; docs/CPU-QUALIFICATION.md known-chip table AMD row"
+value = "AuthenticAMD"
+
+[chip.identity]
+source = "/proc/cpuinfo cpu family 25, model 1, stepping 1 on the qualification box"
+value = "19_01_01"
+
+[chip.microcode_rev]
+source = "/sys/devices/system/cpu/cpu0/microcode/version on the qualification box"
+value = "0x000000000a0011a9"
+
+[work_clock.event_config]
+source = "rr src/PerfCounters.cc pmu_configs AMDZen ticks event; ratified for this program in issue #180"
+value = "0x5100d1"
+
+[work_clock.event_name]
+source = "AMD PPR family 19h PMCx0D1; rr src/PerfCounters.cc comment 'RETIRED_CONDITIONAL_BRANCH_INSTRUCTIONS'"
+value = "ExRetCond, retired conditional branch instructions"
+
+[work_clock.counting_scope]
+source = "consonance/cpu-qualification/src/perf_sys.rs PerfCounter, Scope::GuestOnly"
+value = "PERF_TYPE_RAW, pinned, guest-only (exclude_host), sampling mode"
+
+[skid.observed_max]
+absent = "no stage-1 skid campaign has run on this chip at this event; the maximum is measured, never carried over from another chip or another event"
+
+[skid.margin]
+source = "provisional arming bound for the first stage-1 campaign: twice the Zen 2 maximum of 5043 recorded in spike/amd-epyc results/constants-pack.md, rounded up to a power of two"
+value = 16384
+
+[skid.derivation]
+source = "spike/amd-epyc results/constants-pack.md AE-1(d), pending re-measurement by stage 1 on this chip"
+value = "provisional. It is not derived from this chip: the Zen 2 spike measured a maximum skid of 5043 at event 0xc4, and this bound is that doubled and rounded up. It exists so the first stage-1 campaign has something to arm against. The final value is twice this chip's own observed maximum at 0x5100d1, from the stage-1 campaign recorded in this pack's skid.observed_max"
+
+[skid.overshoot]
+source = "consonance/vmm-backend/src/run_until.rs"
+value = "an overflow that stops at or past the deadline raises SkidExceeded, which surfaces as a loud backend error rather than a clamped landing"
+
+[count_offsets]
+absent = "no stage-1 run on this chip has recorded per-exit-class count offsets"
+
+[event_density]
+absent = "no stage-1 run on this chip has recorded per-payload-class event density"
+
+[single_step.mechanism]
+source = "spike/amd-epyc results/ae-2/single-step-ruling.md; consonance/vmm-backend/src/kvm_sys.rs enable_single_step"
+value = "KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP, which SVM implements through RFLAGS.TF and #DB. SVM has no monitor-trap facility, so the Intel MTF path does not exist on this chip"
+
+[single_step.work_per_step]
+absent = "no run on this chip has measured how many work-clock units one single step contributes"
+
+[host_conditions]
+source = "the host conditions the AMD entry of the known-chip table requires, in the states this program's box discipline puts them in; the two KVM module identities are the stock Debian 6.12.95 modules read on the box"
+
+[[host_conditions.value]]
+condition = "nmi-watchdog-off"
+expect = "off"
+scope = "host"
+
+[[host_conditions.value]]
+condition = "governor-pinned"
+expect = "performance"
+scope = "every-core"
+
+[[host_conditions.value]]
+condition = "smt-policy"
+expect = "off"
+scope = "host"
+
+[[host_conditions.value]]
+condition = "kvm-present"
+expect = "present, read-write"
+scope = "host"
+
+[[host_conditions.value]]
+condition = "kvm-module-identity"
+expect = "srcversion unrecorded, build-id 108ce949651645819c7b64a80808c9bccd7fe5c1"
+scope = "kvm_amd"
+
+[[host_conditions.value]]
+condition = "kvm-module-identity"
+expect = "srcversion unrecorded, build-id 61680f4470b7d6881ff0c25d941d35457316e90e"
+scope = "kvm"
+
+[[host_conditions.value]]
+condition = "core-pinning"
+expect = "pinned to cpu3"
+scope = "host"
+
+[[host_conditions.value]]
+condition = "spec-lock-map-disabled"
+expect = "disabled"
+scope = "every-core"
+
+[[host_conditions.value]]
+condition = "ssb-mitigation-pinned"
+expect = "on"
+scope = "host"
+
+[[host_conditions.value]]
+condition = "avic-off"
+expect = "off"
+scope = "host"
