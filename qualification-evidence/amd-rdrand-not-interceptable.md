@@ -30,7 +30,8 @@ guest, clears leaf 1 ECX bit 30 in the frozen CPUID model handed to the vCPU, in
 a real-mode #UD handler so that a fault and a successful execution are distinguishable
 rather than one of them being a hang, and then has the guest execute RDRAND twice.
 
-Five runs, `box/stage2/ae6-rdrand.json`, identical in every field that matters:
+Five runs on the patched kernel, 6.18.35, the release the AMD draft contract column
+names. `box/stage2/ae6-rdrand.json`, identical in every field that matters:
 
 - host leaf 1 ECX `0xf7fa3203`, bit 30 set.
 - guest leaf 1 ECX `0xb7fa3203`, bit 30 clear. The CPUID intercept enforced the frozen
