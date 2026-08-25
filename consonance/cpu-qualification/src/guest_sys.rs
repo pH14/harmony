@@ -740,6 +740,21 @@ pub fn measure_guest_exactness(
 
 /// Save the vCPU state, write it back, save again, and compare.
 ///
+/// What this demonstrates, and what it does not. The round trip restores a state
+/// onto the vCPU that already holds it, so for a register that holds still, a
+/// write that took effect and a write that was silently dropped look the same.
+/// The registers that move on their own are the ones where the difference shows,
+/// and those are written a displaced value and read back, which settles it. A
+/// register that neither moves on its own nor is displaced is covered by the
+/// byte comparison alone: its state reproduces, and whether the restore path
+/// mechanically reached it is not established here.
+///
+/// The must-restore set is the host's MSR index list less two kinds of register,
+/// each named in the record with its reason: the ones this vCPU does not own,
+/// which KVM refuses outright, and the ones
+/// [`crate::guest::READ_ONLY_MSRS`] declares read-only on the kernel's own
+/// statement that a host write to them is discarded.
+///
 /// # Errors
 /// Any KVM refusal from the round trip.
 pub fn measure_fixpoint() -> Result<Record, Stage1Error> {
