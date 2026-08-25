@@ -67,6 +67,9 @@ pub struct GuestWindow {
     xsave2_size: Option<usize>,
     /// The MSRs the host says it can save and restore.
     msr_indices: Vec<u32>,
+    /// The indices the host-wide list named that this vCPU refused to be
+    /// written, kept so the fixpoint can say what its scope excludes.
+    msr_indices_not_owned: Vec<u32>,
 }
 
 impl GuestWindow {
@@ -138,11 +141,18 @@ impl GuestWindow {
         let xsave2_size = usize::try_from(advertised)
             .ok()
             .filter(|n| *n > size_of::<kvm_xsave>());
-        let msr_indices = kvm
+        let listed = kvm
             .get_msr_index_list()
             .map_err(|e| kvm_error("KVM_GET_MSR_INDEX_LIST", &e))?
             .as_slice()
             .to_vec();
+        // The index list is the host's: every MSR this kernel can handle for
+        // some vCPU. This vCPU owns a subset of it, because an MSR whose
+        // feature this window does not configure is one KVM refuses to write.
+        // The subset is fixed here, on a vCPU that has not yet run, so the
+        // fixpoint's scope is a property of the window rather than a reaction
+        // to a refusal partway through a round trip.
+        let (msr_indices, msr_indices_not_owned) = partition_owned_msrs(&vcpu, &listed);
 
         Ok(GuestWindow {
             vcpu,
@@ -150,7 +160,18 @@ impl GuestWindow {
             _vm: vm,
             xsave2_size,
             msr_indices,
+            msr_indices_not_owned,
         })
+    }
+
+    /// The MSRs the host-wide index list names that this vCPU does not own, in
+    /// the order the list named them.
+    #[must_use]
+    pub fn msrs_not_owned(&self) -> Vec<String> {
+        self.msr_indices_not_owned
+            .iter()
+            .map(|index| format!("{index:#010x}"))
+            .collect()
     }
 
     /// Place the loop payload and point the vCPU at it, in real mode.
@@ -438,6 +459,47 @@ impl Drop for GuestWindow {
 /// The MSR a partial `KVM_GET_MSRS`/`KVM_SET_MSRS` stopped at. Both ioctls walk
 /// the list in order and return how many they got through, so the entry at that
 /// position is the one that refused.
+/// Split the host's MSR index list into the ones this vCPU owns and the ones it
+/// does not, by writing each MSR the value it already holds.
+///
+/// A write of an MSR's own value changes nothing when it succeeds. A refusal
+/// means the vCPU has no such register: KVM gates the paravirtual MSRs on
+/// features this window does not configure, while still naming them in the
+/// host-wide list.
+fn partition_owned_msrs(vcpu: &VcpuFd, listed: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let mut owned = Vec::with_capacity(listed.len());
+    let mut refused = Vec::new();
+    for index in listed {
+        if msr_round_trips(vcpu, *index) {
+            owned.push(*index);
+        } else {
+            refused.push(*index);
+        }
+    }
+    (owned, refused)
+}
+
+/// Whether this vCPU both reads and writes back one MSR.
+fn msr_round_trips(vcpu: &VcpuFd, index: u32) -> bool {
+    let entry = kvm_msr_entry {
+        index,
+        ..Default::default()
+    };
+    let Ok(mut read) = Msrs::from_entries(&[entry]) else {
+        return false;
+    };
+    if vcpu.get_msrs(&mut read) != Ok(1) {
+        return false;
+    }
+    let Some(held) = read.as_slice().first().copied() else {
+        return false;
+    };
+    let Ok(write) = Msrs::from_entries(&[held]) else {
+        return false;
+    };
+    vcpu.set_msrs(&write) == Ok(1)
+}
+
 fn msr_name(entries: &[kvm_msr_entry], stopped_at: usize) -> String {
     entries.get(stopped_at).map_or_else(
         || "no entry: the count is past the end of the list".to_string(),
@@ -603,6 +665,7 @@ pub fn measure_fixpoint() -> Result<Record, Stage1Error> {
         first_bytes: first.total_bytes(),
         second_bytes: second.total_bytes(),
         differing: differing_components(&first, &second),
+        msrs_not_owned: window.msrs_not_owned(),
     })
 }
 

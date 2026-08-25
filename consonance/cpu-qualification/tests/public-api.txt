@@ -106,6 +106,7 @@ pub fn cpu_qualification::guest::guest_oracle_delta(u64, u64) -> u64
 pub mod cpu_qualification::guest_sys
 pub struct cpu_qualification::guest_sys::GuestWindow
 impl cpu_qualification::guest_sys::GuestWindow
+pub fn cpu_qualification::guest_sys::GuestWindow::msrs_not_owned(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn cpu_qualification::guest_sys::GuestWindow::open() -> core::result::Result<cpu_qualification::guest_sys::GuestWindow, cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest_sys::GuestWindow::restore_state(&self, &cpu_qualification::guest::StateCapture) -> core::result::Result<(), cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest_sys::GuestWindow::save_state(&self) -> core::result::Result<cpu_qualification::guest::StateCapture, cpu_qualification::guest::GuestError>
@@ -304,6 +305,7 @@ pub cpu_qualification::report::Record::Fixpoint::components: alloc::vec::Vec<all
 pub cpu_qualification::report::Record::Fixpoint::differing: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::Fixpoint::first_bytes: u64
 pub cpu_qualification::report::Record::Fixpoint::missing: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::report::Record::Fixpoint::msrs_not_owned: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::Fixpoint::second_bytes: u64
 pub cpu_qualification::report::Record::HostRow
 pub cpu_qualification::report::Record::HostRow::condition: alloc::string::String
@@ -569,6 +571,7 @@ pub cpu_qualification::Record::Fixpoint::components: alloc::vec::Vec<alloc::stri
 pub cpu_qualification::Record::Fixpoint::differing: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::Fixpoint::first_bytes: u64
 pub cpu_qualification::Record::Fixpoint::missing: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::Record::Fixpoint::msrs_not_owned: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::Fixpoint::second_bytes: u64
 pub cpu_qualification::Record::HostRow
 pub cpu_qualification::Record::HostRow::condition: alloc::string::String

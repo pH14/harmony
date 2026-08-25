@@ -143,6 +143,11 @@ pub enum Record {
         second_bytes: u64,
         /// Components whose bytes moved across the round trip.
         differing: Vec<String>,
+        /// MSRs the host's index list names that this vCPU does not own, so the
+        /// round trip did not cover them. The scope of a fixpoint is only
+        /// readable beside the state it left out.
+        #[serde(default)]
+        msrs_not_owned: Vec<String>,
     },
     /// A duration projection from a short slice, written before a long campaign.
     Projection {
@@ -493,6 +498,7 @@ fn check_fixpoint(records: &[Record], stage: u8, checks: &mut Vec<Check>) {
             first_bytes,
             second_bytes,
             differing,
+            msrs_not_owned,
         } = record
         else {
             continue;
@@ -508,7 +514,8 @@ fn check_fixpoint(records: &[Record], stage: u8, checks: &mut Vec<Check>) {
             passed,
             format!(
                 "components={components:?} missing={missing:?} first_bytes={first_bytes} \
-                 second_bytes={second_bytes} differing={differing:?}"
+                 second_bytes={second_bytes} differing={differing:?} \
+                 msrs_not_owned={msrs_not_owned:?}"
             ),
         ));
     }
@@ -804,6 +811,7 @@ mod tests {
             first_bytes: 4096,
             second_bytes: 4096,
             differing: Vec::new(),
+            msrs_not_owned: Vec::new(),
         }
     }
 
@@ -1209,6 +1217,7 @@ mod tests {
             first_bytes: 144,
             second_bytes: 144,
             differing: Vec::new(),
+            msrs_not_owned: Vec::new(),
         });
         let verdict = recompute(&records);
         assert!(!verdict.passed);
@@ -1230,6 +1239,7 @@ mod tests {
             first_bytes: 0,
             second_bytes: 0,
             differing: Vec::new(),
+            msrs_not_owned: Vec::new(),
         });
         let verdict = recompute(&records);
         assert!(!verdict.passed);
@@ -1254,6 +1264,7 @@ mod tests {
             first_bytes: 4096,
             second_bytes: 4096,
             differing: vec!["xsave: contents differ".to_string()],
+            msrs_not_owned: Vec::new(),
         });
         let verdict = recompute(&records);
         assert!(!verdict.passed);
@@ -1263,6 +1274,28 @@ mod tests {
             .find(|c| c.name == "fixpoint[0]")
             .expect("the round trip is checked");
         assert!(check.detail.contains("xsave"), "{}", check.detail);
+    }
+
+    #[test]
+    fn a_fixpoint_names_the_state_its_round_trip_did_not_cover() {
+        let mut records = passing_run();
+        records.push(Record::Fixpoint {
+            components: vec!["regs".to_string()],
+            missing: Vec::new(),
+            first_bytes: 4096,
+            second_bytes: 4096,
+            differing: Vec::new(),
+            msrs_not_owned: vec!["0x4b564d06".to_string()],
+        });
+        let verdict = recompute(&records);
+        let check = verdict
+            .checks
+            .iter()
+            .find(|c| c.name == "fixpoint[1]")
+            .expect("the round trip is checked");
+        // The excluded state is not a failure, and it is never invisible.
+        assert!(check.passed, "{}", check.detail);
+        assert!(check.detail.contains("0x4b564d06"), "{}", check.detail);
     }
 
     #[test]
