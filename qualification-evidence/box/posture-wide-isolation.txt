@@ -1,0 +1,35 @@
+=== POSTURE 2026-08-25T04:22:53Z ===
+kernel: 6.18.35
+cmdline: BOOT_IMAGE=/vmlinuz-6.18.35 root=UUID=b8ae6f2e-e068-4cb0-8ad0-211e900f3dc9 ro spec_store_bypass_disable=on isolcpus=1,3,5,7,9,11,13,15 nohz_full=1,3,5,7,9,11,13,15 rcu_nocbs=1,3,5,7,9,11,13,15 console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 scaleway panic=30
+ls_cfg_before_cpu0: 0x4480000000000
+ls_cfg_target: 0x44480000000000
+--- ls_cfg per online cpu ---
+cpu0=0x44480000000000 bit54=1 bit10=0
+cpu1=0x44480000000000 bit54=1 bit10=0
+cpu2=0x44480000000000 bit54=1 bit10=0
+cpu3=0x44480000000000 bit54=1 bit10=0
+cpu4=0x44480000000000 bit54=1 bit10=0
+cpu5=0x44480000000000 bit54=1 bit10=0
+cpu6=0x44480000000000 bit54=1 bit10=0
+cpu7=0x44480000000000 bit54=1 bit10=0
+cpu8=0x44480000000000 bit54=1 bit10=0
+cpu9=0x44480000000000 bit54=1 bit10=0
+cpu10=0x44480000000000 bit54=1 bit10=0
+cpu11=0x44480000000000 bit54=1 bit10=0
+cpu12=0x44480000000000 bit54=1 bit10=0
+cpu13=0x44480000000000 bit54=1 bit10=0
+cpu14=0x44480000000000 bit54=1 bit10=0
+cpu15=0x44480000000000 bit54=1 bit10=0
+--- governor per online cpu ---
+     16 performance
+--- smt: off active=0
+--- online: 0-15
+--- nmi_watchdog: 0
+--- perf_cpu_time_max_percent: 0
+--- perf_event_max_sample_rate: 100000000
+--- spec_store_bypass: Mitigation: Speculative Store Bypass disabled
+--- avic: N
+--- kvm_amd build-id: 5fbf9bc0c714acb76b323a297a82c489d226c516
+--- kvm build-id: 67bbe5141510528782b407b7c2728b3be5cbc2ae
+--- md1 sync_action: frozen
+--- loadavg: 1.31 0.32 0.11 1/480 1554
