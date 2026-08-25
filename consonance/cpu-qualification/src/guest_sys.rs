@@ -188,19 +188,24 @@ impl GuestWindow {
             .map_or(NOMINAL_TSC_HZ, |khz| u64::from(khz) * 1_000)
     }
 
-    /// The time bases this vCPU accepts a write to and then ignores, named.
+    /// Test every time base against what it is declared to be: written a value
+    /// far past the one it holds — far enough that no elapsed time could account
+    /// for the difference — and read back.
     ///
-    /// Each is written a value far past the one it holds — far enough that no
-    /// elapsed time could account for the difference — and read back. A
-    /// register that comes back short of the displaced value never took the
-    /// write, whatever `KVM_SET_MSRS` reported.
+    /// Returns the registers confirmed read-only, and the failures. A register
+    /// [`crate::guest::READ_ONLY_MSRS`] declares is expected to ignore the
+    /// write, and taking one would mean the declaration is wrong. Every other
+    /// register is expected to take it, and ignoring one is a restore that
+    /// failed however `KVM_SET_MSRS` reported it.
     #[must_use]
-    pub fn time_bases_that_ignore_a_write(&self) -> Vec<String> {
-        let mut ignored = Vec::new();
+    pub fn probe_time_base_writes(&self) -> (Vec<String>, Vec<String>) {
+        let mut read_only = Vec::new();
+        let mut failures = Vec::new();
         for base in &crate::guest::TIME_BASE_MSRS {
             if !self.msr_indices.contains(&base.index) {
                 continue;
             }
+            let declared = crate::guest::read_only_reason(base.index);
             let Some(held) = self.read_one_msr(base.index) else {
                 continue;
             };
@@ -208,7 +213,7 @@ impl GuestWindow {
                 continue;
             };
             if !self.write_one_msr(base.index, displaced) {
-                ignored.push(format!(
+                failures.push(format!(
                     "{} ({:#010x}): refused a write of {displaced:#x} while holding {held:#x}",
                     base.name, base.index
                 ));
@@ -220,16 +225,29 @@ impl GuestWindow {
             // The register only advances, so a write it took reads back at or
             // past the displaced value. One it ignored reads back near where it
             // started, four billion ticks short.
-            if after < displaced {
-                ignored.push(format!(
+            let took_the_write = after >= displaced;
+            match (declared, took_the_write) {
+                (Some(reason), false) => read_only.push(format!(
+                    "{} ({:#010x}): written {displaced:#x}, {TIME_BASE_DISPLACEMENT} past the \
+                     {held:#x} it held, and read back {after:#x}, so the write was ignored as \
+                     declared. {reason}",
+                    base.name, base.index
+                )),
+                (Some(_), true) => failures.push(format!(
+                    "{} ({:#010x}): declared read-only, yet a write of {displaced:#x} took \
+                     effect and it read back {after:#x}. The declaration is wrong",
+                    base.name, base.index
+                )),
+                (None, false) => failures.push(format!(
                     "{} ({:#010x}): written {displaced:#x}, which is {TIME_BASE_DISPLACEMENT} \
                      past the {held:#x} it held, and read back {after:#x}. The write was \
                      accepted and ignored, so this register does not restore",
                     base.name, base.index
-                ));
+                )),
+                (None, true) => {}
             }
         }
-        ignored
+        (read_only, failures)
     }
 
     /// One MSR's current value, or nothing if this vCPU will not read it.
@@ -769,7 +787,8 @@ pub fn measure_fixpoint() -> Result<Record, Stage1Error> {
     // restore. Writing a value the register cannot have reached on its own
     // settles it — the read-back either reflects the displacement or it does
     // not.
-    differing.extend(window.time_bases_that_ignore_a_write());
+    let (read_only, write_failures) = window.probe_time_base_writes();
+    differing.extend(write_failures);
 
     Ok(Record::Fixpoint {
         components: first.names(),
@@ -778,6 +797,7 @@ pub fn measure_fixpoint() -> Result<Record, Stage1Error> {
         second_bytes: second.total_bytes(),
         differing,
         time_bases,
+        read_only,
         msrs_not_owned: window.msrs_not_owned(),
     })
 }

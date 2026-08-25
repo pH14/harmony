@@ -115,20 +115,22 @@ pub fn cpu_qualification::guest::TimeBaseReading::describe(self, u128) -> alloc:
 pub const cpu_qualification::guest::GUEST_PHYS: u64
 pub const cpu_qualification::guest::GUEST_RAM_BYTES: usize
 pub const cpu_qualification::guest::LOOP_PAYLOAD_BYTES: usize
+pub const cpu_qualification::guest::READ_ONLY_MSRS: [(u32, &str, &str); 1]
 pub const cpu_qualification::guest::REQUIRED_COMPONENTS: [&str; 6]
 pub const cpu_qualification::guest::TIME_BASE_MSRS: [cpu_qualification::guest::TimeBase; 3]
 pub fn cpu_qualification::guest::compare_states(&cpu_qualification::guest::StateCapture, &cpu_qualification::guest::StateCapture) -> cpu_qualification::guest::StateDiff
 pub fn cpu_qualification::guest::decode_msr_pairs(&[u8]) -> core::result::Result<alloc::vec::Vec<(u32, u64)>, cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest::emit_loop_payload(u32) -> [u8; 11]
 pub fn cpu_qualification::guest::guest_oracle_delta(u64, u64) -> u64
+pub fn cpu_qualification::guest::read_only_reason(u32) -> core::option::Option<&'static str>
 pub mod cpu_qualification::guest_sys
 pub struct cpu_qualification::guest_sys::GuestWindow
 impl cpu_qualification::guest_sys::GuestWindow
 pub fn cpu_qualification::guest_sys::GuestWindow::msrs_not_owned(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn cpu_qualification::guest_sys::GuestWindow::open() -> core::result::Result<cpu_qualification::guest_sys::GuestWindow, cpu_qualification::guest::GuestError>
+pub fn cpu_qualification::guest_sys::GuestWindow::probe_time_base_writes(&self) -> (alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
 pub fn cpu_qualification::guest_sys::GuestWindow::restore_state(&self, &cpu_qualification::guest::StateCapture) -> core::result::Result<(), cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest_sys::GuestWindow::save_state(&self) -> core::result::Result<cpu_qualification::guest::StateCapture, cpu_qualification::guest::GuestError>
-pub fn cpu_qualification::guest_sys::GuestWindow::time_bases_that_ignore_a_write(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn cpu_qualification::guest_sys::GuestWindow::tsc_hz(&self) -> u64
 impl core::ops::drop::Drop for cpu_qualification::guest_sys::GuestWindow
 pub fn cpu_qualification::guest_sys::GuestWindow::drop(&mut self)
@@ -326,6 +328,7 @@ pub cpu_qualification::report::Record::Fixpoint::differing: alloc::vec::Vec<allo
 pub cpu_qualification::report::Record::Fixpoint::first_bytes: u64
 pub cpu_qualification::report::Record::Fixpoint::missing: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::Fixpoint::msrs_not_owned: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::report::Record::Fixpoint::read_only: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::Fixpoint::second_bytes: u64
 pub cpu_qualification::report::Record::Fixpoint::time_bases: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::report::Record::HostRow
@@ -594,6 +597,7 @@ pub cpu_qualification::Record::Fixpoint::differing: alloc::vec::Vec<alloc::strin
 pub cpu_qualification::Record::Fixpoint::first_bytes: u64
 pub cpu_qualification::Record::Fixpoint::missing: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::Fixpoint::msrs_not_owned: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::Record::Fixpoint::read_only: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::Fixpoint::second_bytes: u64
 pub cpu_qualification::Record::Fixpoint::time_bases: alloc::vec::Vec<alloc::string::String>
 pub cpu_qualification::Record::HostRow

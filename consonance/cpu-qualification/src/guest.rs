@@ -194,6 +194,35 @@ impl TimeBase {
     }
 }
 
+/// Registers the vCPU state includes that a host write does not change, with
+/// the reason each is that way. A fixpoint cannot be demonstrated over one, and
+/// excluding it is a statement about the register rather than about the run, so
+/// each is declared here with its evidence and confirmed by measurement.
+///
+/// The declaration is checked both ways. A register named here that does take a
+/// write means this list is wrong; a register not named here that ignores one is
+/// a restore that failed.
+pub const READ_ONLY_MSRS: [(u32, &str, &str); 1] = [(
+    0x4000_0020,
+    "HV_X64_MSR_TIME_REF_COUNT",
+    "the Hyper-V reference counter, read-only in the Hyper-V specification: a guest \
+     reads elapsed reference time from it and never writes it. Linux v6.12.95 \
+     arch/x86/kvm/hyperv.c kvm_hv_set_msr_pw rejects a guest write and discards a \
+     host-initiated one, with the comment \"read-only, but still ignore it if \
+     host-initiated\"; the read path returns get_time_ref_counter(kvm), a computed \
+     value with no stored field behind it. Synthetic hypervisor state, not vCPU state \
+     the silicon owns",
+)];
+
+/// Whether `index` is declared read-only, and why.
+#[must_use]
+pub fn read_only_reason(index: u32) -> Option<&'static str> {
+    READ_ONLY_MSRS
+        .iter()
+        .find(|(i, _, _)| *i == index)
+        .map(|(_, _, reason)| *reason)
+}
+
 /// How two saves of the same vCPU compare.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StateDiff {
@@ -467,6 +496,33 @@ mod tests {
         let text = reading.describe(4_096);
         for part in ["IA32_TIME_STAMP_COUNTER", "0x1000", "0x1064", "100", "4096"] {
             assert!(text.contains(part), "{part} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn every_read_only_register_is_declared_with_its_evidence() {
+        for (index, name, reason) in READ_ONLY_MSRS {
+            assert_eq!(read_only_reason(index), Some(reason));
+            assert!(!name.is_empty());
+            // A register excluded from the must-restore set is excluded on
+            // evidence, so the reason has to name where that evidence is.
+            assert!(
+                reason.contains("arch/x86/kvm/") && reason.len() > 100,
+                "{name} needs the source that says it is read-only, got {reason:?}"
+            );
+        }
+        assert_eq!(read_only_reason(0x0000_0010), None);
+    }
+
+    #[test]
+    fn a_read_only_register_is_one_the_probe_actually_tests() {
+        // The write probe walks the time bases. A register declared read-only
+        // that is not among them would be excluded on a claim nothing checks.
+        for (index, name, _) in READ_ONLY_MSRS {
+            assert!(
+                TIME_BASE_MSRS.iter().any(|t| t.index == index),
+                "{name} is declared read-only but the probe never writes it"
+            );
         }
     }
 

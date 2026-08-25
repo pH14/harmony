@@ -148,6 +148,13 @@ pub enum Record {
         /// advancing rather than to staying put.
         #[serde(default)]
         time_bases: Vec<String>,
+        /// Registers the state includes that a host write does not change, each
+        /// with the evidence that it is that way by design. They are named
+        /// because the fixpoint's scope is only readable beside what it leaves
+        /// out, and excluded because a register nothing can write is not a
+        /// register a restore can fail to write.
+        #[serde(default)]
+        read_only: Vec<String>,
         /// MSRs the host's index list names that this vCPU does not own, so the
         /// round trip did not cover them. The scope of a fixpoint is only
         /// readable beside the state it left out.
@@ -504,6 +511,7 @@ fn check_fixpoint(records: &[Record], stage: u8, checks: &mut Vec<Check>) {
             second_bytes,
             differing,
             time_bases,
+            read_only,
             msrs_not_owned,
         } = record
         else {
@@ -521,7 +529,8 @@ fn check_fixpoint(records: &[Record], stage: u8, checks: &mut Vec<Check>) {
             format!(
                 "components={components:?} missing={missing:?} first_bytes={first_bytes} \
                  second_bytes={second_bytes} differing={differing:?} \
-                 time_bases={time_bases:?} msrs_not_owned={msrs_not_owned:?}"
+                 time_bases={time_bases:?} read_only={read_only:?} \
+                 msrs_not_owned={msrs_not_owned:?}"
             ),
         ));
     }
@@ -818,6 +827,7 @@ mod tests {
             second_bytes: 4096,
             differing: Vec::new(),
             time_bases: Vec::new(),
+            read_only: Vec::new(),
             msrs_not_owned: Vec::new(),
         }
     }
@@ -1225,6 +1235,7 @@ mod tests {
             second_bytes: 144,
             differing: Vec::new(),
             time_bases: Vec::new(),
+            read_only: Vec::new(),
             msrs_not_owned: Vec::new(),
         });
         let verdict = recompute(&records);
@@ -1248,6 +1259,7 @@ mod tests {
             second_bytes: 0,
             differing: Vec::new(),
             time_bases: Vec::new(),
+            read_only: Vec::new(),
             msrs_not_owned: Vec::new(),
         });
         let verdict = recompute(&records);
@@ -1274,6 +1286,7 @@ mod tests {
             second_bytes: 4096,
             differing: vec!["xsave: contents differ".to_string()],
             time_bases: Vec::new(),
+            read_only: Vec::new(),
             msrs_not_owned: Vec::new(),
         });
         let verdict = recompute(&records);
@@ -1296,6 +1309,7 @@ mod tests {
             second_bytes: 4096,
             differing: Vec::new(),
             time_bases: Vec::new(),
+            read_only: Vec::new(),
             msrs_not_owned: vec!["0x4b564d06".to_string()],
         });
         let verdict = recompute(&records);
