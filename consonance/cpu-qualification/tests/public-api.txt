@@ -98,12 +98,25 @@ pub cpu_qualification::guest::StateComponent::bytes: alloc::vec::Vec<u8>
 pub cpu_qualification::guest::StateComponent::name: &'static str
 pub struct cpu_qualification::guest::StateDiff
 pub cpu_qualification::guest::StateDiff::differing: alloc::vec::Vec<alloc::string::String>
-pub cpu_qualification::guest::StateDiff::time_bases: alloc::vec::Vec<alloc::string::String>
+pub cpu_qualification::guest::StateDiff::time_bases: alloc::vec::Vec<cpu_qualification::guest::TimeBaseReading>
+pub struct cpu_qualification::guest::TimeBase
+pub cpu_qualification::guest::TimeBase::hz: u64
+pub cpu_qualification::guest::TimeBase::index: u32
+pub cpu_qualification::guest::TimeBase::name: &'static str
+impl cpu_qualification::guest::TimeBase
+pub fn cpu_qualification::guest::TimeBase::ticks_in(self, u128, u64) -> u128
+pub struct cpu_qualification::guest::TimeBaseReading
+pub cpu_qualification::guest::TimeBaseReading::base: cpu_qualification::guest::TimeBase
+pub cpu_qualification::guest::TimeBaseReading::observed: u64
+pub cpu_qualification::guest::TimeBaseReading::restored: u64
+impl cpu_qualification::guest::TimeBaseReading
+pub fn cpu_qualification::guest::TimeBaseReading::advance(self) -> u64
+pub fn cpu_qualification::guest::TimeBaseReading::describe(self, u128) -> alloc::string::String
 pub const cpu_qualification::guest::GUEST_PHYS: u64
 pub const cpu_qualification::guest::GUEST_RAM_BYTES: usize
 pub const cpu_qualification::guest::LOOP_PAYLOAD_BYTES: usize
 pub const cpu_qualification::guest::REQUIRED_COMPONENTS: [&str; 6]
-pub const cpu_qualification::guest::TIME_BASE_MSRS: [(u32, &str); 3]
+pub const cpu_qualification::guest::TIME_BASE_MSRS: [cpu_qualification::guest::TimeBase; 3]
 pub fn cpu_qualification::guest::compare_states(&cpu_qualification::guest::StateCapture, &cpu_qualification::guest::StateCapture) -> cpu_qualification::guest::StateDiff
 pub fn cpu_qualification::guest::decode_msr_pairs(&[u8]) -> core::result::Result<alloc::vec::Vec<(u32, u64)>, cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest::emit_loop_payload(u32) -> [u8; 11]
@@ -115,6 +128,8 @@ pub fn cpu_qualification::guest_sys::GuestWindow::msrs_not_owned(&self) -> alloc
 pub fn cpu_qualification::guest_sys::GuestWindow::open() -> core::result::Result<cpu_qualification::guest_sys::GuestWindow, cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest_sys::GuestWindow::restore_state(&self, &cpu_qualification::guest::StateCapture) -> core::result::Result<(), cpu_qualification::guest::GuestError>
 pub fn cpu_qualification::guest_sys::GuestWindow::save_state(&self) -> core::result::Result<cpu_qualification::guest::StateCapture, cpu_qualification::guest::GuestError>
+pub fn cpu_qualification::guest_sys::GuestWindow::time_bases_that_ignore_a_write(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn cpu_qualification::guest_sys::GuestWindow::tsc_hz(&self) -> u64
 impl core::ops::drop::Drop for cpu_qualification::guest_sys::GuestWindow
 pub fn cpu_qualification::guest_sys::GuestWindow::drop(&mut self)
 pub fn cpu_qualification::guest_sys::measure_fixpoint() -> core::result::Result<cpu_qualification::report::Record, cpu_qualification::stage1::Stage1Error>

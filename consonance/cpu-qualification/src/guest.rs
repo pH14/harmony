@@ -154,11 +154,45 @@ impl StateCapture {
 /// one by writing it back, because the register has moved on by the time the
 /// next save reads it. They are the vCPU's clocks, not its state, so the
 /// fixpoint holds them to advancing rather than to staying put.
-pub const TIME_BASE_MSRS: [(u32, &str); 3] = [
-    (0x0000_0010, "IA32_TIME_STAMP_COUNTER"),
-    (0x4000_0010, "HV_X64_MSR_VP_RUNTIME"),
-    (0x4000_0020, "HV_X64_MSR_TIME_REF_COUNT"),
+pub const TIME_BASE_MSRS: [TimeBase; 3] = [
+    TimeBase {
+        index: 0x0000_0010,
+        name: "IA32_TIME_STAMP_COUNTER",
+        hz: 0,
+    },
+    TimeBase {
+        index: 0x4000_0010,
+        name: "HV_X64_MSR_VP_RUNTIME",
+        hz: 10_000_000,
+    },
+    TimeBase {
+        index: 0x4000_0020,
+        name: "HV_X64_MSR_TIME_REF_COUNT",
+        hz: 10_000_000,
+    },
 ];
+
+/// One free-running register, and how fast it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeBase {
+    /// The MSR index.
+    pub index: u32,
+    /// The vendor's name for it.
+    pub name: &'static str,
+    /// Its rate in ticks per second, or zero for the timestamp counter, whose
+    /// rate is a property of the part and is read from the vCPU.
+    pub hz: u64,
+}
+
+impl TimeBase {
+    /// The most this register can advance in `nanos`, with the rate of the
+    /// timestamp counter supplied by the caller.
+    #[must_use]
+    pub fn ticks_in(self, nanos: u128, tsc_hz: u64) -> u128 {
+        let hz = if self.hz == 0 { tsc_hz } else { self.hz };
+        nanos * u128::from(hz) / 1_000_000_000
+    }
+}
 
 /// How two saves of the same vCPU compare.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -166,10 +200,44 @@ pub struct StateDiff {
     /// Everything that moved and should not have. A fixpoint requires this to
     /// be empty.
     pub differing: Vec<String>,
-    /// The time bases, and how far each advanced. A time base that did not
-    /// advance is reported in `differing` instead: a clock that stops, or runs
-    /// backwards, is not the reason a fixpoint comparison may skip it.
-    pub time_bases: Vec<String>,
+    /// The time bases, with the value written back and the value read after. A
+    /// time base that did not advance is reported in `differing` instead: a
+    /// clock that stops, or runs backwards, is not the reason a fixpoint
+    /// comparison may skip it.
+    pub time_bases: Vec<TimeBaseReading>,
+}
+
+/// What one time base read after being written back the value it held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeBaseReading {
+    /// Which register.
+    pub base: TimeBase,
+    /// The value the restore wrote.
+    pub restored: u64,
+    /// The value the save after the restore read.
+    pub observed: u64,
+}
+
+impl TimeBaseReading {
+    /// How far the register moved between the restore and the save after it.
+    #[must_use]
+    pub fn advance(self) -> u64 {
+        self.observed.saturating_sub(self.restored)
+    }
+
+    /// This reading, with the bound it was judged against.
+    #[must_use]
+    pub fn describe(self, bound: u128) -> String {
+        format!(
+            "{} ({:#010x}): restored {:#x}, read {:#x}, advanced {} of at most {bound} \
+             the round trip could consume",
+            self.base.name,
+            self.base.index,
+            self.restored,
+            self.observed,
+            self.advance()
+        )
+    }
 }
 
 /// Read one MSR component's bytes back as `index, data` pairs.
@@ -218,12 +286,15 @@ fn compare_msrs(first: &[u8], second: &[u8], diff: &mut StateDiff) {
             ));
             return;
         }
-        match TIME_BASE_MSRS.iter().find(|(i, _)| i == index) {
-            Some((_, name)) if now > was => diff
-                .time_bases
-                .push(format!("{name} ({index:#010x}): advanced by {}", now - was)),
-            Some((_, name)) => diff.differing.push(format!(
-                "{name} ({index:#010x}): a time base that did not advance, {was:#x} then {now:#x}"
+        match TIME_BASE_MSRS.iter().find(|t| t.index == *index) {
+            Some(base) if now > was => diff.time_bases.push(TimeBaseReading {
+                base: *base,
+                restored: *was,
+                observed: *now,
+            }),
+            Some(base) => diff.differing.push(format!(
+                "{} ({index:#010x}): a time base that did not advance, {was:#x} then {now:#x}",
+                base.name
             )),
             None if was != now => diff.differing.push(format!(
                 "msrs: {index:#010x} moved across the round trip, {was:#x} then {now:#x}"
@@ -379,12 +450,38 @@ mod tests {
         let diff = compare_states(&a, &b);
         assert!(diff.differing.is_empty(), "{:?}", diff.differing);
         assert_eq!(diff.time_bases.len(), 1);
-        assert!(
-            diff.time_bases[0].contains("IA32_TIME_STAMP_COUNTER")
-                && diff.time_bases[0].contains("4100"),
-            "{}",
-            diff.time_bases[0]
+        assert_eq!(diff.time_bases[0].base.name, "IA32_TIME_STAMP_COUNTER");
+        assert_eq!(diff.time_bases[0].restored, 100);
+        assert_eq!(diff.time_bases[0].observed, 4_200);
+        assert_eq!(diff.time_bases[0].advance(), 4_100);
+    }
+
+    #[test]
+    fn a_readings_description_carries_both_values_and_the_bound() {
+        let reading = TimeBaseReading {
+            base: TIME_BASE_MSRS[0],
+            restored: 0x1000,
+            observed: 0x1064,
+        };
+        assert_eq!(reading.advance(), 100);
+        let text = reading.describe(4_096);
+        for part in ["IA32_TIME_STAMP_COUNTER", "0x1000", "0x1064", "100", "4096"] {
+            assert!(text.contains(part), "{part} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn a_time_bases_bound_is_its_own_rate_over_the_elapsed_time() {
+        let tsc = TIME_BASE_MSRS[0];
+        let hv = TIME_BASE_MSRS[2];
+        assert_eq!(
+            tsc.hz, 0,
+            "the timestamp counter's rate comes from the part"
         );
+        // A millisecond of a 3 GHz timestamp counter is three million ticks; the
+        // same millisecond of a 10 MHz reference counter is ten thousand.
+        assert_eq!(tsc.ticks_in(1_000_000, 3_000_000_000), 3_000_000);
+        assert_eq!(hv.ticks_in(1_000_000, 3_000_000_000), 10_000);
     }
 
     #[test]

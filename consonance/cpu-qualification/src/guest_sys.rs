@@ -26,6 +26,15 @@ use crate::stage1::{MeasurementPlan, Stage1Error, interrupts_for_core};
 /// `_IOR(KVMIO, 0xcf, struct kvm_xsave)` — read the host-sized XSAVE image. The
 /// request number carries the base struct's size; the kernel copies however many
 /// bytes `KVM_CAP_XSAVE2` reports.
+/// How far below its current value a time base is written when the probe tests
+/// whether the write takes effect. Four billion ticks is well over a second of
+/// the slowest of them, so no elapsed time can account for the difference.
+const TIME_BASE_DISPLACEMENT: u64 = 1 << 32;
+
+/// The timestamp-counter rate assumed when KVM will not report one. It only
+/// scales a sanity bound; the displacement probe is what settles a write.
+const NOMINAL_TSC_HZ: u64 = 3_000_000_000;
+
 const KVM_GET_XSAVE2: u64 = ioc(2, 0xAE, 0xCF, size_of::<kvm_xsave>() as u64);
 /// `_IOW(KVMIO, 0xa5, struct kvm_xsave)` — write the XSAVE image. One ioctl for
 /// both the legacy 4 KiB image and the larger one.
@@ -162,6 +171,82 @@ impl GuestWindow {
             msr_indices,
             msr_indices_not_owned,
         })
+    }
+
+    /// The rate of this vCPU's timestamp counter, in ticks per second.
+    ///
+    /// KVM reports it in kilohertz. A host that will not say falls back to a
+    /// nominal rate; the bound it feeds is a sanity bound, and the displacement
+    /// probe is what actually settles whether a write took effect.
+    #[must_use]
+    pub fn tsc_hz(&self) -> u64 {
+        self.vcpu
+            .get_tsc_khz()
+            .ok()
+            .map_or(NOMINAL_TSC_HZ, |khz| u64::from(khz) * 1_000)
+    }
+
+    /// The time bases this vCPU accepts a write to and then ignores, named.
+    ///
+    /// Each is written a value far below the one it holds — far enough that no
+    /// elapsed time could account for the difference — and read back. A
+    /// register that comes back at or above where it started never took the
+    /// write, whatever `KVM_SET_MSRS` reported.
+    #[must_use]
+    pub fn time_bases_that_ignore_a_write(&self) -> Vec<String> {
+        let mut ignored = Vec::new();
+        for base in &crate::guest::TIME_BASE_MSRS {
+            if !self.msr_indices.contains(&base.index) {
+                continue;
+            }
+            let Some(held) = self.read_one_msr(base.index) else {
+                continue;
+            };
+            let Some(displaced) = held.checked_sub(TIME_BASE_DISPLACEMENT) else {
+                continue;
+            };
+            if !self.write_one_msr(base.index, displaced) {
+                ignored.push(format!(
+                    "{} ({:#010x}): refused a write of {displaced:#x} while holding {held:#x}",
+                    base.name, base.index
+                ));
+                continue;
+            }
+            let Some(after) = self.read_one_msr(base.index) else {
+                continue;
+            };
+            if after >= held {
+                ignored.push(format!(
+                    "{} ({:#010x}): written {displaced:#x}, which is {TIME_BASE_DISPLACEMENT} \
+                     below the {held:#x} it held, and read back {after:#x}. The write was \
+                     accepted and ignored, so this register does not restore",
+                    base.name, base.index
+                ));
+            }
+        }
+        ignored
+    }
+
+    /// One MSR's current value, or nothing if this vCPU will not read it.
+    fn read_one_msr(&self, index: u32) -> Option<u64> {
+        let entry = kvm_msr_entry {
+            index,
+            ..Default::default()
+        };
+        let mut msrs = Msrs::from_entries(&[entry]).ok()?;
+        (self.vcpu.get_msrs(&mut msrs) == Ok(1))
+            .then(|| msrs.as_slice().first().map(|e| e.data))
+            .flatten()
+    }
+
+    /// Write one MSR, reporting whether the ioctl took it.
+    fn write_one_msr(&self, index: u32, data: u64) -> bool {
+        let entry = kvm_msr_entry {
+            index,
+            data,
+            ..Default::default()
+        };
+        Msrs::from_entries(&[entry]).is_ok_and(|msrs| self.vcpu.set_msrs(&msrs) == Ok(1))
     }
 
     /// The MSRs the host-wide index list names that this vCPU does not own, in
@@ -642,17 +727,52 @@ pub fn measure_fixpoint() -> Result<Record, Stage1Error> {
     window.run_to_halt().map_err(guest_to_stage1)?;
 
     let first = window.save_state().map_err(guest_to_stage1)?;
+    // not order-observable: the elapsed time bounds how far a free-running
+    // register can have moved between the restore and the save after it. It
+    // reaches the bound in a Fixpoint record and nothing else.
+    #[allow(clippy::disallowed_methods)]
+    let started = std::time::Instant::now();
     window.restore_state(&first).map_err(guest_to_stage1)?;
     let second = window.save_state().map_err(guest_to_stage1)?;
+    #[allow(clippy::disallowed_methods)]
+    let elapsed_nanos = started.elapsed().as_nanos();
 
     let diff = compare_states(&first, &second);
+    let tsc_hz = window.tsc_hz();
+    let mut differing = diff.differing;
+    let mut time_bases = Vec::new();
+    for reading in &diff.time_bases {
+        // A register that merely advanced proves nothing: the host's own clock
+        // advances too, so an ignored write reads back as a plausible advance.
+        // The advance must fit in the time the round trip took at the
+        // register's own rate, doubled for the coarseness of the two clocks.
+        let bound = reading.base.ticks_in(elapsed_nanos, tsc_hz) * 2 + 1_000;
+        time_bases.push(reading.describe(bound));
+        if u128::from(reading.advance()) > bound {
+            differing.push(format!(
+                "{} ({:#010x}): advanced {} across a round trip that took {elapsed_nanos}ns, \
+                 more than the {bound} its own rate allows, so the value written back did \
+                 not take effect",
+                reading.base.name,
+                reading.base.index,
+                reading.advance()
+            ));
+        }
+    }
+    // The bound above is a weak discriminator when the round trip is short:
+    // an ignored write and an honoured one differ only by the cost of the
+    // restore. Writing a value the register cannot have reached on its own
+    // settles it — the read-back either reflects the displacement or it does
+    // not.
+    differing.extend(window.time_bases_that_ignore_a_write());
+
     Ok(Record::Fixpoint {
         components: first.names(),
         missing: first.missing(),
         first_bytes: first.total_bytes(),
         second_bytes: second.total_bytes(),
-        differing: diff.differing,
-        time_bases: diff.time_bases,
+        differing,
+        time_bases,
         msrs_not_owned: window.msrs_not_owned(),
     })
 }
