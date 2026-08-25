@@ -37,21 +37,37 @@ pub const LOOP_BACKEDGE: PayloadSpec = PayloadSpec {
     x86_only: false,
 };
 
-/// Eight unconditional jumps to the next instruction, then the backedge. Every
-/// transfer retires as a branch, so this stresses per-instruction attribution
-/// while the instruction stream stays straight-line in effect.
+/// Eight unconditional jumps to the next instruction, then the backedge. The
+/// jumps retire as branches but not as *conditional* branches, so what one
+/// iteration contributes depends on which branches the architecture's work clock
+/// counts.
 pub const BRANCH_DENSE: PayloadSpec = PayloadSpec {
     name: "branch_dense",
-    events_per_iteration: 9,
-    derivation: "eight unconditional jumps plus the backedge",
+    events_per_iteration: if cfg!(target_arch = "x86_64") { 1 } else { 9 },
+    derivation: if cfg!(target_arch = "x86_64") {
+        "the x86 work clock counts retired conditional branches — 0x1c4 on Intel, \
+         0x5100d1 on AMD — and the eight jumps are unconditional, so only the \
+         backedge counts"
+    } else {
+        "the aarch64 work clock BR_RETIRED counts every retired branch, so the eight \
+         jumps and the backedge all count"
+    },
     x86_only: false,
 };
 
-/// A call to a subroutine that returns immediately, then the backedge.
+/// A call to a subroutine that returns immediately, then the backedge. Like
+/// `branch_dense`, what it contributes depends on which branches the work clock
+/// counts.
 pub const CALL_RET: PayloadSpec = PayloadSpec {
     name: "call_ret",
-    events_per_iteration: 3,
-    derivation: "the call, the return, and the backedge",
+    events_per_iteration: if cfg!(target_arch = "x86_64") { 1 } else { 3 },
+    derivation: if cfg!(target_arch = "x86_64") {
+        "the x86 work clock counts retired conditional branches, and neither the call \
+         nor the return is conditional, so only the backedge counts"
+    } else {
+        "the aarch64 work clock BR_RETIRED counts every retired branch, so the call, \
+         the return, and the backedge all count"
+    },
     x86_only: false,
 };
 
@@ -390,10 +406,38 @@ mod tests {
             assert!(!spec.derivation.is_empty(), "{}", spec.name);
         }
         assert_eq!(LOOP_BACKEDGE.events_per_iteration, 1);
-        assert_eq!(BRANCH_DENSE.events_per_iteration, 9);
-        assert_eq!(CALL_RET.events_per_iteration, 3);
         assert_eq!(STRAIGHT_LINE.events_per_iteration, 1);
         assert_eq!(LOCKED.events_per_iteration, 1);
+    }
+
+    /// The two classes whose bodies contain branches the work clock may or may
+    /// not count. Getting these wrong is not a small error: the same number sets
+    /// the exactness oracle and the iteration count an overflow arm needs, so a
+    /// wrong value both fails exactness and loses every overflow.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn the_x86_oracles_count_only_conditional_branches() {
+        assert_eq!(
+            BRANCH_DENSE.events_per_iteration, 1,
+            "eight unconditional jumps contribute nothing to a conditional-branch clock"
+        );
+        assert_eq!(
+            CALL_RET.events_per_iteration, 1,
+            "neither a call nor a return is a conditional branch"
+        );
+        for spec in [BRANCH_DENSE, CALL_RET] {
+            assert!(spec.derivation.contains("conditional"), "{}", spec.name);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn the_aarch64_oracles_count_every_retired_branch() {
+        assert_eq!(BRANCH_DENSE.events_per_iteration, 9);
+        assert_eq!(CALL_RET.events_per_iteration, 3);
+        for spec in [BRANCH_DENSE, CALL_RET] {
+            assert!(spec.derivation.contains("BR_RETIRED"), "{}", spec.name);
+        }
     }
 
     #[test]
