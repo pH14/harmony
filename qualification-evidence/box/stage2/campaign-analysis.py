@@ -70,6 +70,7 @@ arms = landings = exact = overshoot = mism = preempt = ovf_arms = 0
 skids, tscs, ratios = [], [], []
 by_core = collections.Counter()
 fail_by_core = collections.Counter()
+ovf_by_core = collections.Counter()
 fails = []
 retry_attempted = retry_landed = inferred = 0
 replay_overshoot = digest_diverged = replay_inexact = 0
@@ -90,6 +91,7 @@ for f, r in records(d):
     if r["period"]:
         ovf_arms += 1
         periods.append(r["period"])
+        ovf_by_core[r["core"]] += 1
         skids.append(r["skid"])
         if r.get("replay") and "replay_skid" in r and r.get("replay_preempt_exit"):
             skids.append(r["replay_skid"])
@@ -185,6 +187,18 @@ if skids:
     over_margin = sum(1 for s in skids if s > 16192)
     print(f"  beyond the sealed margin 16192: {over_margin} of {len(skids)}")
 print(f"\nfailures by core: {dict(fail_by_core)}   arms by core: {dict(by_core)}")
+# The odd cores carry isolcpus/nohz_full/rcu_nocbs on this box and the even ones do not,
+# so a run spread over all sixteen is two populations and their rates are not pooled.
+if any(c % 2 == 0 for c in by_core) and any(c % 2 for c in by_core):
+    for name, keep in (("isolated cores", lambda c: c % 2),
+                       ("co-tenant cores", lambda c: c % 2 == 0)):
+        a = sum(n for c, n in by_core.items() if keep(c))
+        e = sum(n for c, n in ovf_by_core.items() if keep(c)) * (2 if any_replay else 1)
+        o = sum(1 for r in fails
+                if keep(r["core"]) and (r["overshoot"] or r.get("replay_overshoot")
+                                        or not r["replay_match"]))
+        print(f"  {name}: {a} arms, {e} exposed to overshoot, {o} overshot"
+              + (f", 1 in {e // o}" if o else ""))
 if fails:
     # Recover what the replay arm did on records that carry only its digest. The model
     # is checked against every failing arm whose work count the record does state
