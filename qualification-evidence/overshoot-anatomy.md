@@ -46,9 +46,18 @@ describe, the inversion returns exactly the `work_at_preempt` the harness wrote 
 | 9 | 15257 | 67,121 | 50,929 | replay | 103,666 | +36,545 | 52,737 |
 | 11 | 33511 | 69,772 | 53,580 | replay | 110,305 | +40,533 | 56,725 |
 
-Every one stopped at RIP 0x1008, the overflow's stop point, never at a single-step
-landing. The largest guest-mode skid this chip produced is 56,725, which is 3.50 times
-the sealed margin of 16,192 - larger than the 37,595 the record showed on its face.
+What makes each of these an overshoot is the work count, not the stop point: a
+single-step walk halts when the work count equals the target and cannot carry on 40,533
+branches past it, so a stop that far past the target is the overflow's. The recovered
+RIP agrees, being the mid-iteration boundary rather than the boundary a single-step
+landing always ends on.
+
+The largest guest-mode skid this chip produced at the sealed margin is 56,725, which is
+3.50 times the margin - larger than the 37,595 the record showed on its face. The
+eight-wide pilot on cores the scheduler could also use produced one larger still: its
+one replay mismatch, core 9 index 255, target 64,861 at margin 8,192, inverts to a stop
+at work 116,241, a skid of 59,572. Its other failing arm, an overshoot on core 13,
+recovered on the replay with a landing exactly on the target, the same as the five here.
 
 ## Detection and recovery
 

@@ -5,7 +5,31 @@ Nothing here reads a summary line: totals, rates and percentiles all come from t
 per-arm records. Fields the instrumented harness adds (tsc_to_preempt, smi_delta,
 retry_*) are used when present and skipped when not.
 """
-import collections, glob, json, statistics, sys
+import collections, glob, json, statistics, struct, sys
+
+N_LOOP = 300000
+
+
+def _fnv(rip, rcx):
+    h = 1469598103934665603
+    for b in struct.pack("<QQ", rip, rcx & 0xFFFFFFFFFFFFFFFF):
+        h ^= b
+        h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return "%016x" % h
+
+
+def digest_table():
+    """digest -> (work, stop point) for the ae3 loop payload.
+
+    RIP 0x1006 with RCX = 300000 - work is a single-step landing; RIP 0x1008 with
+    RCX = 300000 - work - 1 is an overflow stop. Lets a replay arm's landing be
+    recovered on records that carry only its digest.
+    """
+    t = {}
+    for w in range(0, N_LOOP + 1):
+        t[_fnv(0x1006, N_LOOP - w)] = (w, "step")
+        t[_fnv(0x1008, N_LOOP - w - 1)] = (w, "overflow")
+    return t
 
 
 def records(d):
@@ -143,6 +167,35 @@ if skids:
     over_margin = sum(1 for s in skids if s > 16192)
     print(f"  beyond the sealed margin 16192: {over_margin} of {len(skids)}")
 print(f"\nfailures by core: {dict(fail_by_core)}   arms by core: {dict(by_core)}")
+if fails:
+    # Recover what the replay arm did on records that carry only its digest. The model
+    # is checked against every failing arm whose work count the record does state
+    # before any inversion is reported.
+    tab = digest_table()
+    checked = ok_model = 0
+    for r in fails:
+        if r["work_landed"]:
+            checked += 1
+            hit = tab.get(r["digest"])
+            if hit and hit[0] == r["work_landed"]:
+                ok_model += 1
+    print(f"\ndigest model reproduces {ok_model} of {checked} first-arm landings whose "
+          f"work count the records state")
+    if checked and ok_model == checked:
+        print("recovered replay landings:")
+        for r in fails:
+            hit = tab.get(r.get("replay_digest"))
+            if not hit:
+                print(f"  core{r['core']} idx {r['idx']} target {r['target']}: "
+                      f"replay digest not a reachable landing")
+                continue
+            w, stop = hit
+            # A single-step landing hides the overflow stop, so only an overflow stop
+            # carries a readable skid.
+            skid = f", skid {w - r['period']}" if stop == "overflow" and r["period"] else ""
+            print(f"  core{r['core']} idx {r['idx']} target {r['target']}: "
+                  f"replay stopped at work {w} ({stop}), {w - r['target']:+d} from the "
+                  f"target{skid}")
 if fails:
     ft = sorted(r["target"] for r in fails)
     print("failing targets:", ft)
