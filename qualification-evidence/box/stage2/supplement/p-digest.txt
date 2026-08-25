@@ -1,0 +1,4 @@
+replay arms whose landing the record states: 360000
+  inversion agrees with the record: 360000
+  inversion disagrees:              0
+  digest not in the dictionary:     0

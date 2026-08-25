@@ -1,0 +1,49 @@
+  core1.json: 24000 arms
+  core11.json: 24000 arms
+  core13.json: 24000 arms
+  core15.json: 24000 arms
+  core5.json: 24000 arms
+  core7.json: 24000 arms
+  core9.json: 24000 arms
+
+arms=168000 landings=336000 overflow_arms=168000
+landings through the deterministic exit: 336000 (336000 attested in the record, 0 inferred from a passing replay of an armed target)
+first-arm exact landings: 168000 of 168000
+failing arms: 1 of 168000
+  overflow arms exposed to overshoot: 336000
+  first-arm overshoot: 0
+  replay-arm overshoot, recorded as such: 1  (1 in 336000)
+  replay landed inexactly for another reason: 0
+  replay landed exactly and the digest still differed: 0
+  replay mismatch whose cause this harness does not record: 0
+  all recorded overshoots: 1 in 336000 exposed arms (1 in 336000)
+arms re-primed after a premature interrupt: 0
+arms that took a host interrupt on the pinned core during the landing: 168000 of 168000; of the 1 failing arms, 1 did
+contiguous index runs: True
+
+guest-mode skid, n=336000 (every arm whose own skid the record carries)
+      p50 2908
+      p90 2972
+      p99 3024
+    p99.9 5614
+   p99.99 7539
+      max 37616   mean 2790.0   min 1206
+  beyond the sealed margin 16192: 1 of 336000
+
+failures by core: {9: 1}   arms by core: {1: 24000, 11: 24000, 13: 24000, 15: 24000, 5: 24000, 7: 24000, 9: 24000}
+
+digest model reproduces 1 of 1 first-arm landings whose work count the records state
+recovered replay landings:
+  core9 idx 21405 target 62788: replay stopped at work 84212 (overflow), +21424 from the target, skid 37616
+failing targets: [62788]
+  target range over the whole run: 16193 to 100000, median 58002
+  mean period, all overflow arms: 41854
+  mean period weighted by period: 55789
+  mean period, failing arms (n=1): 46596
+  share of all targets below the smallest failing target: 0.558
+
+branches per TSC tick during the run to the overflow: p1=0.157 p50=0.795 p99=0.968
+  failing arm core9 idx 21405: work 49491 in 61500 ticks = 0.805
+
+arms with a non-zero SMI-received delta: 0 of 168000
+re-arm after an overshoot: attempted on 1, landed exactly on 1

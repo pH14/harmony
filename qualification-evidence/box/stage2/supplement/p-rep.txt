@@ -1,0 +1,7 @@
+shards: 15
+distinct work counts landed on at all:      82709
+distinct work counts landed on >1 time:     82709
+  of those, landed on from >1 core:         76987
+  total landings at a repeated work count:  719915
+  most landings at one work count:          34
+work counts with two different landed states: 0
