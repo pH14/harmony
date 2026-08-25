@@ -1,0 +1,2337 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/acceptance_suite-5c0a0be19d92ffb0)
+
+running 22 tests
+test manifest::tests::empty_manifest_parses_to_empty ... ok
+test manifest::tests::validate_rejects_conformance_without_golden ... ok
+test manifest::tests::validate_rejects_empty_corpus ... ok
+test oracle::tests::decode_hex32_assembles_nibbles_exactly ... ok
+test oracle::tests::oracle_token_round_trip ... ok
+test manifest::tests::deny_unknown_fields_catches_typos ... ok
+test registry::tests::stable_hash_is_content_and_order_sensitive ... ok
+test manifest::tests::a_row_without_the_host_axis_defaults_to_a_portable_l1_cell ... ok
+test manifest::tests::garbage_toml_is_err_not_panic ... ok
+test oracle::tests::one_run_not_halting_is_inconclusive_even_when_work_matches ... ok
+test manifest::tests::validate_rejects_item_with_no_oracles ... ok
+test manifest::tests::unknown_host_and_virt_tokens_are_errors_not_panics ... ok
+test oracle::tests::zero_limit_determinism_is_inconclusive_not_green ... ok
+test manifest::tests::round_trip_directed ... ok
+test report::tests::item_with_no_oracles_is_never_green ... ok
+test report::tests::unresolvable_golden_is_a_fail_not_an_error ... ok
+test registry::tests::stable_hash_matches_fnv1a_vectors ... ok
+test registry::tests::non_numeric_source_is_deterministic_and_distinct ... ok
+test oracle::tests::hex_round_trips_and_rejects_garbage ... ok
+test manifest::tests::validate_rejects_item_with_no_hosts ... ok
+test report::tests::run_item_runs_each_declared_oracle_in_order ... ok
+test report::tests::determinism_passes_on_a_generated_program ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/main.rs (target/debug/deps/acceptance_suite-5414d166668870bd)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/debug/deps/cli-85fae73439ebdcd9)
+
+running 15 tests
+test an_unknown_host_is_an_error_not_an_empty_run ... ok
+test colliding_user_seeds_are_rejected ... ok
+test item_filter_typo_fails_loudly ... ok
+test limit_zero_is_rejected ... ok
+test a_hardware_host_is_refused_loudly_rather_than_run_on_the_toy_registry ... ok
+test o3_under_default_seed_distinguishes_rng_from_pure ... ok
+test an_unknown_host_token_in_the_manifest_is_a_parse_error ... ok
+test item_with_no_oracles_is_rejected ... ok
+test a_cell_no_selected_host_satisfies_is_reported_unrun_never_passed ... ok
+test empty_and_typoed_manifests_fail_loudly ... ok
+test item_filter_runs_one_item ... ok
+test validate_accepts_good_and_rejects_missing_golden_and_empty ... ok
+test all_pass_exits_zero ... ok
+test one_failing_item_flips_exit_to_two ... ok
+test the_binary_runs_every_portable_cell_of_the_real_matrix ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/manifest_roundtrip.rs (target/debug/deps/manifest_roundtrip-bde2a3b2eea9c5ef)
+
+running 4 tests
+test field_order_is_fixed_and_readable ... ok
+test validate_rejects_conformance_without_golden ... ok
+test never_panics_on_arbitrary_text ... ok
+test round_trip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/o1_determinism.rs (target/debug/deps/o1_determinism-fedd4cf09e5dfbd6)
+
+running 2 tests
+test deterministic_factory_passes_o1 ... ok
+test across_spawn_divergence_localizes_t ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.01s
+
+     Running tests/o2_conformance.rs (target/debug/deps/o2_conformance-558277c1471f99d6)
+
+running 3 tests
+test flip_one_nibble_of_golden_fails ... ok
+test matches_own_golden_rejects_others ... ok
+test malformed_hex_is_fail_not_panic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/o3_seed_sensitivity.rs (target/debug/deps/o3_seed_sensitivity-b189e679016fbf7b)
+
+running 4 tests
+test equal_seeds_is_a_fail_not_a_panic ... ok
+test non_halting_divergence_does_not_pass ... ok
+test rng_consuming_passes_and_faked_determinism_fails ... ok
+test pure_passes_and_seed_leak_fails ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-075a7a7a738120d7)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/control_proto-7eac1f844cd9e4f4)
+
+running 5 tests
+test tests::wire_constants_are_pinned ... ok
+test types::tests::cap_flags_contains_and_with ... ok
+test types::tests::stop_mask_arm_sets_one_shifted_bit ... ok
+test types::tests::stop_mask_arm_is_idempotent_and_composes ... ok
+test types::tests::stop_mask_out_of_range_class_is_a_total_noop ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/adversarial.rs (target/debug/deps/adversarial-ec231d133e30e27c)
+
+running 12 tests
+test bad_magic_and_version_are_distinct_errors ... ok
+test inner_length_overrun_is_short_frame_not_overread ... ok
+test malformed_complete_body_is_short_frame ... ok
+test len_exactly_at_cap_is_need_more_not_bad_length ... ok
+test oversize_len_is_bad_length_before_buffering ... ok
+test retired_snapid_tag_is_rejected ... ok
+test snapshot_reply_hostile_bodies_are_rejected ... ok
+test single_byte_mutations_never_panic ... ok
+test truncations_of_every_length_need_more ... ok
+test reply_truncations_need_more ... ok
+test single_byte_mutations_of_reply_never_panic ... ok
+test decode_never_panics_on_arbitrary_bytes ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/golden.rs (target/debug/deps/golden-2e37cbb4850b3f9b)
+
+running 52 tests
+test class_bit_mirrors_decision_class ... ok
+test err_bad_env_version ... ok
+test err_not_synchronized ... ok
+test err_perturb_moment_taken ... ok
+test err_perturb_out_of_range ... ok
+test err_perturb_past_moment ... ok
+test err_protocol ... ok
+test err_perturb_reserved_vector ... ok
+test err_read_out_of_range ... ok
+test err_read_too_large ... ok
+test err_schedule_moment_unreachable ... ok
+test err_schedule_unsatisfiable ... ok
+test err_simple_unit_variants ... ok
+test err_tainted ... ok
+test err_unknown_snapshot ... ok
+test every_reply_variant_has_a_pinned_tag ... ok
+test reply_console ... ok
+test every_request_variant_has_a_pinned_tag ... ok
+test reply_exec_result ... ok
+test reply_hello ... ok
+test reply_hash ... ok
+test reply_bytes ... ok
+test reply_recorded ... ok
+test reply_stop_deadline ... ok
+test reply_stop_quiescent ... ok
+test reply_stop_snapshot_point ... ok
+test reply_regs ... ok
+test reply_sdk_events ... ok
+test reply_unit ... ok
+test req_branch ... ok
+test reply_console_empty_page ... ok
+test req_console ... ok
+test req_drop ... ok
+test req_exec ... ok
+test reply_stop_assertion ... ok
+test reply_stop_crash ... ok
+test reply_stop_decision ... ok
+test reply_snapshot_untainted_carries_the_cut ... ok
+test req_hash_whole_and_disk ... ok
+test req_hello ... ok
+test req_perturb ... ok
+test req_read ... ok
+test req_recorded_env ... ok
+test req_regs ... ok
+test reply_snapshot_tainted_carries_the_cut ... ok
+test req_run_without_deadline_or_resolve ... ok
+test req_hash_region ... ok
+test snapshot_full_frame_is_byte_exact ... ok
+test req_run_with_deadline_and_resolve ... ok
+test req_sdk_events ... ok
+test req_replay ... ok
+test req_snapshot ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-829c4ec236b85719)
+
+running 2 tests
+test loopback_exercises_every_verb_with_expected_replies ... ok
+test two_identical_sessions_produce_byte_identical_transcripts ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/negotiation.rs (target/debug/deps/negotiation-e07b117b8a84230f)
+
+running 4 tests
+test disjoint_env_range_is_detectable_from_caps ... ok
+test in_range_hello_is_accepted ... ok
+test off_version_env_blob_decodes_and_carries_the_version ... ok
+test wrong_protocol_version_is_detectable_from_caps ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-7eabd6bcd8b822a3)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/roundtrip.rs (target/debug/deps/roundtrip-06e58f41c6a6c8f4)
+
+running 7 tests
+test oversize_request_body_is_bad_length_and_leaves_buf_untouched ... ok
+test oversize_reply_body_is_bad_length ... ok
+test body_exactly_at_cap_is_accepted ... ok
+test caps_and_env_carry_exactly ... ok
+test request_round_trips ... ok
+test reply_round_trips ... ok
+test decode_stops_at_the_first_frame_boundary ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/streaming.rs (target/debug/deps/streaming-434fc5f53dd6d0a7)
+
+running 2 tests
+test requests_stream_same_as_whole ... ok
+test replies_stream_same_as_whole ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running unittests src/lib.rs (target/debug/deps/cpu_qualification-33a0ab61bbd62dac)
+
+running 138 tests
+test chips::tests::a_departure_from_rr_carries_a_reason_and_a_match_does_not ... ok
+test chips::tests::amd_requires_the_three_conditions_intel_does_not ... ok
+test chips::tests::an_unmatched_chip_is_refused_with_what_was_found ... ok
+test chips::tests::an_entry_whose_match_rule_has_no_recorded_value_never_matches_and_says_why ... ok
+test chips::tests::every_entry_names_a_pmu_shape_and_at_least_one_host_condition ... ok
+test chips::tests::the_amd_lock_probe_event_is_rrs_and_no_other_entry_has_one ... ok
+test chips::tests::condition_tokens_are_distinct_and_kebab_case ... ok
+test chips::tests::contract_columns_are_the_intel_file_the_amd_draft_and_nothing_for_arm ... ok
+test chips::tests::the_table_carries_the_three_specified_entries_with_their_event_configs ... ok
+test chips::tests::the_amd_entry_covers_families_17h_through_1ah_and_nothing_outside ... ok
+test chips::tests::the_intel_entry_matches_its_family_and_model_and_ignores_stepping ... ok
+test chips::tests::vendor_cpuid_strings_are_the_leaf_zero_spellings ... ok
+test guest::tests::a_capture_of_nothing_is_missing_everything ... ok
+test guest::tests::a_component_present_in_only_one_save_is_named ... ok
+test guest::tests::a_component_whose_bytes_moved_is_named_with_both_lengths ... ok
+test guest::tests::a_read_only_register_is_one_the_probe_actually_tests ... ok
+test guest::tests::a_capture_that_covers_every_required_component_is_missing_nothing ... ok
+test guest::tests::a_readings_description_carries_both_values_and_the_bound ... ok
+test guest::tests::a_time_bases_bound_is_its_own_rate_over_the_elapsed_time ... ok
+test guest::tests::a_time_base_that_advanced_is_reported_as_a_clock_not_a_difference ... ok
+test guest::tests::every_read_only_register_is_declared_with_its_evidence ... ok
+test guest::tests::an_msr_that_is_not_a_time_base_is_named_by_index_when_it_moves ... ok
+test guest::tests::an_empty_component_counts_as_missing_rather_than_captured ... ok
+test guest::tests::a_time_base_that_stopped_or_ran_backwards_is_a_difference ... ok
+test guest::tests::the_guest_oracle_is_the_iteration_difference ... ok
+test guest::tests::the_payload_fits_the_guest_ram_it_is_placed_in ... ok
+test guest::tests::two_identical_saves_differ_nowhere ... ok
+test guest::tests::two_saves_that_list_different_registers_are_not_compared_pairwise ... ok
+test guest::tests::the_payload_encodes_its_iteration_count_little_endian ... ok
+test guest_sys::tests::a_truncated_msr_component_is_refused_rather_than_read_short ... ok
+test guest_sys::tests::a_component_of_the_right_length_restores_the_bytes_it_was_saved_from ... ok
+test guest_sys::tests::an_msr_list_round_trips_through_its_byte_encoding ... ok
+test guest_sys::tests::the_ioctl_encoding_matches_the_numbers_the_uapi_defines ... ok
+test guest_sys::tests::a_component_of_the_wrong_length_is_refused_rather_than_reinterpreted ... ok
+test pack::tests::hex_is_lowercase_and_two_digits_per_byte ... ok
+test pack::tests::an_unknown_baseline_has_no_embedded_pack ... ok
+test pack::tests::parse_hex_reads_both_prefix_spellings_and_rejects_the_rest ... ok
+test pack::tests::absent_fields_lists_every_absence_with_its_reason ... ok
+test pack::tests::require_names_the_field_and_repeats_the_stated_reason ... ok
+test pack::tests::canonical_bytes_ignore_the_recorded_hash ... ok
+test pack::tests::the_det_cfl_v1_pack_marks_the_unmeasured_fields_absent_with_reasons ... ok
+test pack::tests::a_pack_round_trips_through_toml_with_absent_and_recorded_fields ... ok
+test pack::tests::the_det_cfl_v1_pack_carries_the_transcribed_constants ... ok
+test pack::tests::parse_refuses_an_unreadable_schema_token ... ok
+test payload::tests::class_names_are_distinct_and_findable ... ok
+test payload::tests::every_class_states_its_oracle_and_why ... ok
+test pack::tests::parse_checks_the_recorded_hash ... ok
+test payload::tests::a_zero_iteration_run_does_nothing_rather_than_looping_forever ... ok
+test payload::tests::every_runnable_body_executes_its_iterations ... ok
+test payload::tests::the_locked_class_is_the_only_one_confined_to_x86 ... ok
+test payload::tests::the_x86_oracles_count_only_conditional_branches ... ok
+test perf::tests::a_corrupt_header_stops_the_walk_without_spinning ... ok
+test perf::tests::a_counting_attr_is_pinned_timed_and_scoped ... ok
+test perf::tests::a_header_claiming_more_than_was_published_is_refused ... ok
+test perf::tests::a_sampling_attr_carries_the_value_at_the_interrupt_and_wakes_once ... ok
+test perf::tests::a_header_only_sample_is_counted_without_a_value ... ok
+test perf::tests::bit_constants_are_the_exact_uapi_values ... ok
+test perf::tests::a_sample_whose_value_sits_past_the_wrap_is_read_whole ... ok
+test perf::tests::corrupt_cursors_are_refused_before_any_record_is_read ... ok
+test perf::tests::every_unset_attr_field_stays_zero ... ok
+test perf::tests::records_on_both_sides_of_the_wrap_are_counted ... ok
+test perf::tests::the_walk_counts_each_record_type_and_keeps_the_last_sample_value ... ok
+test report::tests::a_complete_run_passes_every_recomputed_check ... ok
+test report::tests::a_contaminated_window_is_accounted_but_not_held_to_the_oracle ... ok
+test report::tests::a_fixpoint_names_the_state_its_round_trip_did_not_cover ... ok
+test report::tests::a_missing_repetition_fails_the_totality_check ... ok
+test report::tests::a_count_that_moves_under_interference_fails ... ok
+test report::tests::a_lost_overflow_fails_and_a_duplicate_overflow_fails ... ok
+test report::tests::a_missing_terminal_record_cannot_pass ... ok
+test pack::tests::work_clock_config_parses_hex_and_refuses_anything_else ... ok
+test report::tests::a_moving_prologue_offset_fails ... ok
+test report::tests::a_projection_scales_the_slice_rate_and_survives_a_zero_slice ... ok
+test report::tests::a_recorded_oracle_that_disagrees_with_the_analysis_cannot_stand_in_for_it ... ok
+test report::tests::a_round_trip_over_no_bytes_is_not_a_fixpoint ... ok
+test report::tests::a_multiplexed_window_fails ... ok
+test report::tests::a_run_that_ended_nonzero_cannot_pass ... ok
+test report::tests::a_partial_state_capture_cannot_read_as_a_full_fixpoint ... ok
+test report::tests::a_run_that_retained_no_measurements_fails_every_committed_floor ... ok
+test report::tests::a_run_through_two_stages_is_judged_against_the_higher_stages_floors ... ok
+test report::tests::a_stage_one_run_with_no_round_trip_fails_the_fixpoint ... ok
+test report::tests::a_skid_past_the_margin_fails ... ok
+test report::tests::a_stage_that_ended_nonzero_fails_the_run_even_when_the_other_stage_passed ... ok
+test report::tests::a_state_component_that_moved_across_the_round_trip_fails ... ok
+test report::tests::a_summary_that_disagrees_with_the_records_fails ... ok
+test report::tests::an_all_contaminated_run_fails_the_clean_repetition_floor ... ok
+test report::tests::a_summary_that_matches_the_records_passes_but_is_not_what_grants_the_pass ... ok
+test report::tests::an_empty_record_set_never_passes ... ok
+test report::tests::an_arm_the_kernel_dropped_records_for_cannot_be_read_as_a_delivery ... ok
+test report::tests::an_overflow_below_its_period_is_a_premature_delivery ... ok
+test report::tests::an_undispositioned_host_deviation_fails_and_a_dispositioned_one_does_not ... ok
+test report::tests::exactness_is_recomputed_from_the_counts_not_from_a_verdict_field ... ok
+test report::tests::the_summaries_of_every_armed_period_are_folded_into_one_tally ... ok
+test report::tests::too_few_delivered_overflows_fails_the_volume_floor ... ok
+test report::tests::two_plan_records_cannot_pass ... ok
+test pack::tests::the_embedded_det_cfl_v1_pack_loads_and_its_hash_holds ... ok
+test report::tests::two_plans_for_the_same_stage_cannot_pass ... ok
+test report::tests::records_round_trip_through_the_line_format ... ok
+test stage0::tests::a_revision_normalizes_to_the_spelling_the_contract_uses ... ok
+test stage0::tests::a_condition_nothing_read_is_refused_not_skipped ... ok
+test pack::tests::the_det_zen3_v1_pack_carries_the_event_this_program_pinned ... ok
+test stage0::tests::a_condition_read_in_several_places_takes_the_expectation_naming_each ... ok
+test stage0::tests::a_condition_with_no_expectation_is_refused_not_skipped ... ok
+test stage0::tests::a_matching_host_produces_confirmed_rows_for_every_required_condition ... ok
+test stage0::tests::a_pack_for_different_silicon_is_refused ... ok
+test pack::tests::the_det_zen3_v1_pack_marks_the_unmeasured_fields_absent_with_reasons ... ok
+test stage0::tests::a_place_no_expectation_names_is_refused_rather_than_given_another_places_state ... ok
+test stage0::tests::a_row_present_in_only_one_run_is_named ... ok
+test stage0::tests::a_pack_with_absent_host_conditions_refuses_rather_than_confirming_nothing ... ok
+test stage0::tests::a_module_parameter_spelling_the_table_does_not_know_passes_through ... ok
+test stage0::tests::an_unknown_chip_becomes_a_refusal_naming_what_was_found ... ok
+test stage0::tests::identity_text_is_the_contract_spelling_on_x86_and_the_midr_on_aarch64 ... ok
+test stage0::tests::the_first_processor_stanza_is_the_one_read ... ok
+test stage0_sys::tests::a_chip_with_no_lock_probe_produces_no_rows_for_one ... ok
+test stage0_sys::tests::the_isolated_cpu_list_takes_singles_ranges_and_flag_words ... ok
+test stage0_sys::tests::the_vendor_module_is_read_before_the_shared_one ... ok
+test stage1::tests::a_baseline_that_requires_no_sibling_thread_does_not_plan_to_disturb_one ... ok
+test stage1::tests::a_plans_floors_are_what_it_committed_to_measuring ... ok
+test stage1::tests::a_cores_interrupt_column_is_summed_across_every_row_that_has_one ... ok
+test stage1::tests::a_projection_scales_the_slice_to_the_whole_campaign ... ok
+test stage0::tests::a_deviating_reading_is_a_row_that_is_not_confirmed ... ok
+test stage1::tests::an_arm_runs_enough_iterations_to_cross_its_period ... ok
+test stage1::tests::a_window_with_an_interrupt_in_either_half_is_not_clean ... ok
+test stage1::tests::every_interference_condition_has_a_distinct_token ... ok
+test stage1::tests::every_skid_lands_in_the_bucket_its_magnitude_names ... ok
+test stage0::tests::a_row_that_changed_between_runs_is_named_with_both_values ... ok
+test stage1::tests::an_empty_distribution_reports_no_minimum_rather_than_zero ... ok
+test stage1::tests::the_offset_is_what_the_smaller_window_counted_beyond_its_own_iterations ... ok
+test stage0::tests::one_deviating_core_out_of_many_is_its_own_row ... ok
+test stage0::tests::rows_become_records_that_carry_the_whole_comparison ... ok
+test stage1::tests::the_oracle_is_the_payload_analysis_scaled_by_the_iteration_difference ... ok
+test stage1::tests::the_standard_plan_attempts_more_windows_than_it_must_judge ... ok
+test stage1::tests::the_standard_plan_meets_the_specified_overflow_floor ... ok
+test stage0::tests::two_runs_with_the_same_rows_differ_nowhere ... ok
+test stage1_sys::tests::a_load_that_was_never_started_still_stops_cleanly ... ok
+test stage1::tests::the_margin_is_twice_the_observed_maximum_and_says_so ... ok
+test stage1_sys::tests::a_spinning_load_stops_when_its_guard_drops ... ok
+test pack::tests::the_sampling_ceiling_is_stated_for_both_knobs_that_suppress_an_overflow ... ok
+test pack::tests::the_embedded_det_zen3_v1_pack_loads_and_its_hash_holds ... ok
+
+test result: ok. 138 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/deps/cpu_qualification-eabec0456994cb75)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-ff31d299468d7e32)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/environment-a914a236ca11a2a6)
+
+running 10 tests
+test envcodec::tests::free_non_guest_slot_returns_the_drawn_word_not_default ... ok
+test envcodec::tests::free_non_guest_slot_skips_a_guest_occupied_slot_exactly ... ok
+test envcodec::tests::host_fault_from_arm0_is_exact_skewtime ... ok
+test envcodec::tests::host_fault_from_arm1_is_exact_setclockrate ... ok
+test envcodec::tests::host_fault_from_arm2_is_exact_corruptmemory ... ok
+test envcodec::tests::generated_interrupt_identities_stay_inside_the_admissible_range ... ok
+test envcodec::tests::host_fault_from_arm3_is_exact_inject_interrupt ... ok
+test envcodec::tests::mutate_insert_branch_adds_a_second_host_override ... ok
+test envcodec::tests::mutate_move_branch_relocates_preserving_count_and_action ... ok
+test envcodec::tests::mutate_remove_branch_deletes_the_sole_host_override ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/buggify.rs (target/debug/deps/buggify-9a233010c00db38d)
+
+running 5 tests
+test buggify_never_disturbs_the_supply_stream ... ok
+test buggify_point_admits_only_nominal_or_buggify_fire ... ok
+test per_point_biasing_reproduces_a_golden_sequence ... ok
+test set_class_rejects_buggify_and_policy_round_trips ... ok
+test stream_state_resumes_both_streams_exactly ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/codec.rs (target/debug/deps/codec-9966e8f8e444f4b1)
+
+running 14 tests
+test action_from_plane_conversions ... ok
+test decode_rejects_non_ascending_moments ... ok
+test dev1_magic_is_rejected ... ok
+test host_fault_decode_rejects_zero_clock_rate_denominator ... ok
+test perturb_and_record_stamp_one_action_per_moment ... ok
+test trailing_bytes_are_rejected ... ok
+test truncations_of_a_valid_blob_never_panic ... ok
+test host_fault_round_trips ... ok
+test answer_round_trips ... ok
+test action_round_trips ... ok
+test envspec_decode_never_panics ... ok
+test catalog_decode_never_panics ... ok
+test off_version_is_bad_version ... ok
+test envspec_round_trips ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/determinism.rs (target/debug/deps/determinism-ccf491cbbf0ebd73)
+
+running 6 tests
+test eligible_order_does_not_reach_policy_bytes ... ok
+test override_map_permutation_is_byte_identical ... ok
+test standing_vec_permutation_is_byte_identical ... ok
+test override_map_build_order_does_not_reach_bytes ... ok
+test standing_order_does_not_reach_bytes ... ok
+test override_map_build_order_does_not_reach_answers ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/envcodec.rs (target/debug/deps/envcodec-1d2b61891488b43c)
+
+running 22 tests
+test compose_fails_closed_on_standing_seed_or_policy_mismatch ... ok
+test compose_offset_overflow_is_rejected ... ok
+test compose_override_only_reproduces_at_nonzero ... ok
+test compose_prefix_filter_is_strict_less_than ... ok
+test compose_rejects_reseed_rekey_overflow ... ok
+test compose_rejects_seeded_input ... ok
+test compose_rekeys_at_nonzero_concrete ... ok
+test compose_splices_reseed_markers_positionally_like_overrides ... ok
+test compose_tail_rekeys_onto_dropped_base_moment ... ok
+test materialized_recorded_default_moment_is_zero ... ok
+test mutate_of_empty_inserts_one_host_fault ... ok
+test mutate_never_disturbs_a_guest_only_spec ... ok
+test set_moment_is_reflected_by_moment_accessor ... ok
+test seeded_is_a_pure_seeded_env ... ok
+test mutate_preserves_reseed_markers_verbatim ... ok
+test non_ascending_reseed_table_is_rejected_on_decode ... ok
+test record_reseed_promotes_and_round_trips ... ok
+test compose_override_only_replays_bit_identical ... ok
+test compose_rejects_any_standing_fault ... ok
+test mutate_preserves_every_guest_override ... ok
+test mutate_is_deterministic_and_legal ... ok
+test compose_rekeys_overrides_at_any_offset ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/golden.rs (target/debug/deps/golden-2c4e2b124b5e170c)
+
+running 5 tests
+test golden_action_wire_format ... ok
+test golden_host_fault_wire_format ... ok
+test golden_covers_every_class_with_faults ... ok
+test golden_answer_sequence ... ok
+test golden_recorded_blob_with_host_overrides ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mutation_kills.rs (target/debug/deps/mutation_kills-f8948b994075e686)
+
+running 5 tests
+test block_torn_bound_is_inclusive_at_len ... ok
+test entropy_supply_is_exactly_the_requested_length ... ok
+test payload_supply_is_exactly_the_requested_length ... ok
+test scheduler_selection_bound_is_strict ... ok
+test supply_length_bound_is_exclusive_at_max ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/net_flow.rs (target/debug/deps/net_flow-23c7f9548dbd15e7)
+
+running 9 tests
+test every_net_fault_is_netflow_class_and_admissible ... ok
+test a_v4_blob_is_rejected_at_the_version_gate ... ok
+test net_fault_wire_bytes_are_pinned ... ok
+test netflow_discriminant_is_four ... ok
+test retired_net_tags_reject_on_every_ungated_decode_path ... ok
+test stale_v2_blob_is_rejected_not_reinterpreted ... ok
+test stopmask_arming_network_class_selects_netflow_only ... ok
+test netflow_recorded_replays_bit_identically ... ok
+test netflow_catalog_round_trips ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/overrides.rs (target/debug/deps/overrides-1e439efa269418b5)
+
+running 14 tests
+test block_torn_within_bounds_is_admissible_oversize_ignored ... ok
+test exact_length_supply_is_admissible ... ok
+test host_action_at_a_decision_moment_is_ignored_by_decide ... ok
+test nominal_on_fault_class_is_admissible ... ok
+test same_class_fault_is_admissible ... ok
+test scheduler_in_range_index_is_admissible ... ok
+test scheduler_out_of_range_index_is_ignored ... ok
+test scheduler_three_byte_supply_is_ignored ... ok
+test supply_on_fault_class_is_ignored ... ok
+test override_fires_at_its_moment_only ... ok
+test supply_length_mismatch_is_ignored ... ok
+test wrong_class_fault_is_ignored ... ok
+test admits_matches_reference ... ok
+test override_wins_iff_admissible ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/policy.rs (target/debug/deps/policy-b93349ea14973531)
+
+running 11 tests
+test duplicate_eligible_faults_are_deduplicated ... ok
+test equal_policies_built_differently_encode_identically ... ok
+test from_bytes_rejects_off_version ... ok
+test from_bytes_rejects_bad_magic_and_trailing_bytes ... ok
+test from_bytes_rejects_zero_denominator ... ok
+test from_bytes_rejects_stale_v1_net_policy ... ok
+test is_enforceable_only_admits_buggify_and_net_but_not_block_or_process ... ok
+test is_enforceable_only_rejects_fractional_netloss_but_keeps_binary ... ok
+test set_class_rejects_misuse ... ok
+test from_bytes_never_panics ... ok
+test policy_round_trips ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-12c216ce5edaf0e4)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/replay.rs (target/debug/deps/replay-daeb2dbeddb3c2cf)
+
+running 5 tests
+test host_overrides_never_leak_into_guest_answers ... ok
+test seeded_and_seeded_recorded_baseline_agree ... ok
+test recorded_env_reproduces_exactly ... ok
+test two_seeded_envs_agree ... ok
+test mixed_host_guest_replays_bit_identically ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running unittests src/lib.rs (target/debug/deps/gicv3-07eeaf479792be9d)
+
+running 14 tests
+test device::tests::bad_offsets_error_and_unmodeled_offsets_deny_ignore ... ok
+test device::tests::config_invariants_are_enforced ... ok
+test device::tests::arbitration_picks_highest_priority_then_lowest_intid ... ok
+test device::tests::cntv_ctl_reads_back_istatus ... ok
+test device::tests::config_reports_the_construction_parameters ... ok
+test device::tests::masked_or_disabled_timer_has_no_deadline ... ok
+test device::tests::pmr_masks_delivery ... ok
+test device::tests::reset_state_delivers_nothing ... ok
+test device::tests::restore_rejects_an_unreachable_timer_latch ... ok
+test device::tests::sgi_zero_delivers_when_programmed ... ok
+test device::tests::restore_rejects_state_past_the_implemented_range ... ok
+test device::tests::timer_latches_pending_and_reports_deadline ... ok
+test device::tests::snapshot_restores_bit_identically ... ok
+test device::tests::unimplemented_intids_are_rejected_and_writes_masked ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/arbitration.rs (target/debug/deps/arbitration-42760c9a35cfff61)
+
+running 3 tests
+test peek_matches_the_reference_model ... ok
+test take_eoi_drains_in_reference_order ... ok
+test snapshot_preserves_arbitration ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-fddff5bb0dc2c11f)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/hypercall_doorbell-ccd2b866dd4e30c7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/loopback.rs (target/debug/deps/loopback-74bbf450cc469dfb)
+
+running 8 tests
+test hostile_response_is_rejected_without_panic_or_overcopy ... ok
+test loopback_dispatches_only_exposed_request_bytes ... ok
+test loopback_rejects_bad_port ... ok
+test five_client_calls_round_trip_through_loopback ... ok
+test request_larger_than_page_is_rejected ... ok
+test client_survives_garbage_host ... ok
+test exchange_classifies_any_response_page ... ok
+test round_trip_arbitrary_payloads ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-77ee822dc7710fba)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/hypercall_proto-473be1f1337d691b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocol.rs (target/debug/deps/protocol-bcbaa3ebb5b5d9b0)
+
+running 29 tests
+test buggify_decide_without_sdk_service_is_a_clean_status ... ok
+test buggify_decide_round_trips_the_fire_flag ... ok
+test client_rejects_out_of_bounds_transport_length ... ok
+test entropy_restore_rejects_zero_state ... ok
+test dispatcher_failed_restore_preserves_state ... ok
+test golden_net_decide_request_bytes ... ok
+test golden_request_bytes_for_every_service_opcode ... ok
+test event_emit_never_fragments ... ok
+test net_decide_rejects_an_undersized_out_buffer ... ok
+test net_decide_round_trips_the_flow_policy ... ok
+test malformed_dispatch_edge_cases ... ok
+test net_decider_rejects_bad_opcode_and_payload ... ok
+test end_to_end_loopback_and_identical_transcripts ... ok
+test pvclock_register_round_trips_the_abi_version ... ok
+test pvclock_register_without_service_is_a_clean_status ... ok
+test net_decider_state_round_trips ... ok
+test pvclock_registrar_state_round_trips ... ok
+test net_decide_without_the_service_is_a_clean_status ... ok
+test sdk_buggify_state_round_trips ... ok
+test pvclock_registrar_rejects_bad_frames ... ok
+test service_ids_are_a_stable_additive_registry ... ok
+test pvclock_registrar_restore_revalidates_the_gpa ... ok
+test golden_response_bytes_for_every_service_opcode ... ok
+test net_flow_point_decodes_the_fixed_wire_form ... ok
+test snapshot_round_trip_restores_entropy_stream ... ok
+test net_decide_round_trip_is_faithful ... ok
+test adversarial_single_byte_mutations ... ok
+test round_trip_valid_frames ... ok
+test adversarial_decode_and_dispatch_never_panic ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-93c4ff50e0cf74e3)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stateful.rs (target/debug/deps/stateful-a93ba8b1d552ecf7)
+
+running 1 test
+test dispatcher_matches_model ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running unittests src/lib.rs (target/debug/deps/lapic-e45db8965baf817b)
+
+running 31 tests
+test device::tests::all_divide_encodings_legal ... ok
+test device::tests::all_including_self_ipi_raises_vector ... ok
+test device::tests::bad_offsets_rejected ... ok
+test device::tests::armed_timer_deliverable_gates_on_active_vector_and_priority ... ok
+test device::tests::all_excluding_self_ipi_is_noop ... ok
+test device::tests::changing_timer_mode_to_tsc_deadline_cancels ... ok
+test device::tests::deny_ignore_write_to_readonly ... ok
+test device::tests::enabling_apic_arms_loaded_timer ... ok
+test device::tests::eoi_on_empty_is_noop ... ok
+test device::tests::eoi_via_mmio_retires_isr ... ok
+test device::tests::esr_write_clears ... ok
+test device::tests::fired_oneshot_not_rearmed_by_gating_writes ... ok
+test device::tests::id_register_reflects_config_and_is_readonly ... ok
+test device::tests::logical_mode_no_shorthand_ipi_is_noop ... ok
+test device::tests::masking_running_timer_cancels_it ... ok
+test device::tests::non_fixed_delivery_mode_self_ipi_is_noop ... ok
+test device::tests::physical_non_matching_destination_is_noop ... ok
+test device::tests::physical_self_ipi_matches_apic_id ... ok
+test device::tests::periodic_advance_idempotent_at_saturated_vtime ... ok
+test device::tests::physical_self_ipi_matches_nonzero_apic_id ... ok
+test device::tests::rejects_zero_timer_hz ... ok
+test device::tests::reserved_vector_raise_errors ... ok
+test device::tests::reserved_vector_self_ipi_sets_esr ... ok
+test device::tests::restore_reads_back_isr_tmr_irr_words ... ok
+test device::tests::software_disabled_blocks_delivery ... ok
+test device::tests::self_ipi_raises_vector ... ok
+test device::tests::stateful_registers_round_trip_through_mmio ... ok
+test device::tests::tdcr_bit2_dropped_not_stored ... ok
+test device::tests::tmict_while_masked_arms_on_unmask ... ok
+test device::tests::tdcr_change_midcount_reanchors_not_retroactive ... ok
+test device::tests::version_register_is_fixed ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/delivery.rs (target/debug/deps/delivery-87157d9aadca99f2)
+
+running 2 tests
+test lifo_nesting ... ok
+test matches_naive_model ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-602ce92b4fc435d5)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/registers.rs (target/debug/deps/registers-81bdfddf5b1fa6ae)
+
+running 3 tests
+test restore_rejects_each_reserved_bit ... ok
+test restore_matches_validator ... ok
+test mmio_writes_never_set_reserved_bits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+
+     Running tests/reset.rs (target/debug/deps/reset-14959db091daf6ff)
+
+running 6 tests
+test apic_is_software_disabled_at_reset ... ok
+test counts_and_priorities_zero_at_reset ... ok
+test id_and_version_at_reset ... ok
+test all_lvt_entries_masked_at_reset ... ok
+test nothing_deliverable_until_enabled ... ok
+test timer_stopped_at_reset ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/snapshot.rs (target/debug/deps/snapshot-d45022b6ba644e7c)
+
+running 6 tests
+test ppr_offset_is_exposed ... ok
+test restore_enforces_anchor_count_bound ... ok
+test restore_rejects_inconsistent_timer ... ok
+test restore_rejects_bad_version ... ok
+test snapshot_is_deterministic_across_runs ... ok
+test snapshot_restore_observationally_identical ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running tests/timer.rs (target/debug/deps/timer-4cdaa361cf4235d5)
+
+running 8 tests
+test unrepresentable_deadline_is_none_and_never_fires ... ok
+test masked_load_then_unmask_arms ... ok
+test oneshot_fires_once ... ok
+test deadline_and_count_round_trip ... ok
+test disarm_and_masked_paths ... ok
+test periodic_fires_each_period ... ok
+test advance_to_is_idempotent ... ok
+test timer_lifecycle_matches_reference ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running unittests src/lib.rs (target/debug/deps/snapshot_store-f41876954656952a)
+
+running 18 tests
+test mapping::anon_tests::anonymous_base_is_4kib_aligned ... ok
+test mapping::anon_tests::anonymous_len_is_exact_not_page_rounded ... ok
+test mapping::anon_tests::anonymous_is_zero_filled_and_writes_are_visible ... ok
+test mapping::tests::populate_of_a_zero_length_image_is_a_no_op ... ok
+test mapping::anon_tests::anonymous_zero_length_is_empty ... ok
+test mapping::tests::populate_leaves_untouched_pages_as_holes ... ok
+test mapping::tests::populate_rejects_a_page_outside_the_image ... ok
+test tests::abandoned_builder_leaks_nothing ... ok
+test mapping::tests::populate_writes_each_page_at_its_gfn_offset ... ok
+test tests::empty_store_and_zero_sized_image ... ok
+test tests::overwrite_in_builder_releases_old_content ... ok
+test tests::released_snapshot_behaves_as_unknown ... ok
+test tests::resolve_memoizes_along_the_path ... ok
+test tests::zero_write_over_buffered_data_releases_the_content ... ok
+test tests::zero_write_over_data_is_owned_but_unstored ... ok
+test tests::zero_writes_are_never_stored ... ok
+test tests::zero_shortcut_matches_hash_comparison ... ok
+test tests::page_hash_hasher_backs_a_working_map ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bench.rs (target/debug/deps/bench-6c3c5ae32443b597)
+
+running 2 tests
+test bench_read_page_at_chain_depth_64 ... ignored, informational bench; run with --release --ignored --nocapture
+test bench_seal_1000_dirty_page_delta ... ignored, informational bench; run with --release --ignored --nocapture
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bench_production_shape.rs (target/debug/deps/bench_production_shape-bab6f9fbbfe7ff16)
+
+running 5 tests
+test base_seal ... ignored, informational bench; run with --release --ignored --nocapture
+test dirty_delta_seal ... ignored, informational bench; run with --release --ignored --nocapture
+test full_rescan_delta_seal ... ignored, informational bench; run with --release --ignored --nocapture
+test gc_reap ... ignored, informational bench; run with --release --ignored --nocapture
+test materialize_sweep ... ignored, informational bench; run with --release --ignored --nocapture
+
+test result: ok. 0 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gates.rs (target/debug/deps/gates-2dede7d21b57fd33)
+
+running 8 tests
+test error_paths ... ok
+test gc_preserves_live_chains_then_reclaims ... ok
+test gc_with_shared_ancestor_fanout ... ok
+test dedup_identical_rewrites ... ok
+test mapping_writes_never_reach_the_store ... ok
+test sparse_one_gib_materialize_stays_sparse ... ok
+test zero_pages_at_every_depth ... ok
+test sealed_images_are_immutable ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/mutation_kills.rs (target/debug/deps/mutation_kills-96510dad6d418467)
+
+running 1 test
+test seal_assigns_a_fresh_id_each_time ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/oracle.rs (target/debug/deps/oracle-506bb33c502c25a8)
+
+running 3 tests
+test oracle_wide_fanout ... ok
+test oracle_deep_chain ... ok
+test oracle ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-104bd2dcd315ffd5)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stateful.rs (target/debug/deps/stateful-274c0edbdcbbaee4)
+
+running 1 test
+test store_matches_model ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running unittests src/lib.rs (target/debug/deps/telemetry-e8e2e427e917ff9b)
+
+running 31 tests
+test event::tests::checkpoint_hash_roundtrips ... ok
+test event::tests::console_roundtrips_through_ndjson ... ok
+test event::tests::counts_total_saturates ... ok
+test observer::tests::flush_forwards_to_the_underlying_writer ... ok
+test observer::tests::null_observer_is_a_zero_sized_no_op ... ok
+test event::tests::decode_rejects_garbage ... ok
+test observer::tests::recorder_records_first_error_and_does_not_panic ... ok
+test server::tests::advance_idle_increments_then_fires_on_cadence ... ok
+test observer::tests::recorder_writes_one_line_per_event ... ok
+test server::tests::extract_data_frame_finds_an_immediate_frame ... ok
+test server::tests::extract_data_frame_recombines_a_marker_split_across_reads ... ok
+test server::tests::extract_data_frame_skips_a_leading_keepalive ... ok
+test server::tests::parse_request_rejects_an_empty_stream ... ok
+test server::tests::read_sse_data_frame_retains_bytes_across_reads ... ok
+test server::tests::extract_data_frame_waits_on_an_unterminated_marker ... ok
+test server::tests::hub_fans_out_and_unsubscribe_stops_delivery ... ok
+test server::tests::read_sse_data_frame_panics_with_accumulated_bytes_on_budget_exhaustion - should panic ... ok
+test sink::tests::drops_dont_block_and_are_surfaced_once ... ok
+test sink::tests::is_empty_and_capacity_report_exact_values ... ok
+test server::tests::extract_data_frame_waits_when_only_comments_are_complete ... ok
+test server::tests::extract_data_frame_skips_several_leading_keepalives ... ok
+test sink::tests::clones_share_one_queue ... ok
+test sink::tests::zero_capacity_drops_everything_without_deadlock ... ok
+test server::tests::parse_request_drains_exactly_through_the_blank_line ... ok
+test sink::tests::buffers_then_drains_in_order ... ok
+test server::tests::parse_request_rejects_unterminated_oversized_headers ... ok
+test server::tests::dropping_the_server_stops_the_listener ... ok
+test server::tests::config_reports_mode_and_recording ... ok
+test server::tests::serves_the_embedded_html_at_root ... ok
+test server::tests::recording_404s_when_absent ... ok
+test server::tests::streams_events_as_sse_frames ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/deps/console-d3997946d7f4b027)
+
+running 1 test
+test tests::parses_source_forms ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/ndjson_roundtrip.rs (target/debug/deps/ndjson_roundtrip-02c20395d1d5f4fa)
+
+running 2 tests
+test ndjson_roundtrips ... ok
+test ndjson_stream_roundtrips ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.74s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-e81032293f710656)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/server_loopback.rs (target/debug/deps/server_loopback-4b5e8404183fe51d)
+
+running 2 tests
+test replay_serves_a_recorded_file_byte_for_byte ... ok
+test serves_html_and_streams_a_scripted_run_in_order ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/unison-91d7cde7012ba7c6)
+
+running 34 tests
+test flaky::tests::force_halt_stops_at_the_boundary ... ok
+test flaky::tests::max_sentinel_never_perturbs_even_at_work_u64_max ... ok
+test flaky::tests::sentinel_guard_is_narrow_sub_max_boundaries_still_fire ... ok
+test flaky::tests::observable_digest_delegates_to_inner_and_varies_with_output ... ok
+test tests::divergence_point_hex_json_round_trips ... ok
+test tests::zero_checkpoint_interval_is_an_error ... ok
+test tests::a_wholly_observable_machine_states_that_its_digests_coincide ... ok
+test toy::tests::halt_exactly_at_target_reports_halted ... ok
+test tests::empty_interval_is_an_error ... ok
+test toy::tests::alu_semantics ... ok
+test toy::tests::jnz_taken_and_not_taken ... ok
+test toy::tests::generator_is_deterministic ... ok
+test tests::zero_limit_compares_nothing ... ok
+test toy::tests::observable_digest_is_pure ... ok
+test toy::tests::load_store_round_trip_with_address_wrap ... ok
+test toy::tests::out_appends_little_endian ... ok
+test toy::tests::observable_digest_tracks_rng_output ... ok
+test toy::tests::register_indices_wrap_modulo_8 ... ok
+test toy::tests::running_off_the_end_halts_without_work ... ok
+test toy::tests::run_to_backwards_is_an_error ... ok
+test toy::tests::wrapping_arithmetic_does_not_panic ... ok
+test toy::tests::generated_programs_run_at_least_min_work ... ok
+test flaky::tests::max_diverge_at_behaves_identically_to_inner ... ok
+test tests::non_divergent_pair_is_a_documented_error ... ok
+test flaky::tests::perturbation_is_applied_only_once_and_path_independent ... ok
+test toy::tests::observable_digest_excludes_latent_prng_state ... ok
+test flaky::tests::clean_before_boundary_perturbed_at_it ... ok
+test flaky::tests::diverge_at_zero_perturbs_at_spawn ... ok
+test flaky::tests::halt_before_boundary_is_never_perturbed ... ok
+test flaky::tests::halt_exactly_at_boundary_is_perturbed ... ok
+test tests::bad_bracket_lo_is_an_error ... ok
+test toy::tests::state_hash_is_pure_and_state_sensitive ... ok
+test flaky::tests::perturbs_exactly_at_boundary_even_when_target_lands_beyond ... ok
+test toy::tests::rand_is_seed_deterministic_and_zero_seed_maps_to_constant ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/main.rs (target/debug/deps/unison-057aceff4d865ef7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bisector.rs (target/debug/deps/bisector-dde19dad1189972d)
+
+running 5 tests
+test forced_early_halt_yields_halt_mismatch ... ok
+test bisector_exact_for_register_perturbation ... ok
+test no_divergence_path ... ok
+test bisector_exact_on_directed_edge_cases ... ok
+test bisector_finds_exact_divergence_point ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.41s
+
+     Running tests/cli.rs (target/debug/deps/cli-60f8c38703e09fa2)
+
+running 4 tests
+test toy_compare_detects_divergence_with_exit_code_2 ... ok
+test toy_compare_identical_with_exit_code_0 ... ok
+test toy_bisect_without_divergence_reports_null_point ... ok
+test toy_bisect_point_round_trips ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/determinism.rs (target/debug/deps/determinism-7fdec7c161337bde)
+
+running 2 tests
+test same_seed_is_bit_identical_at_every_checkpoint ... ok
+test compare_runs_of_identical_factories_is_identical ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.52s
+
+     Running tests/mutation_kills.rs (target/debug/deps/mutation_kills-9c9f9cf0dff9bf65)
+
+running 5 tests
+test deserialize_accepts_uppercase_hex ... ok
+test halt_checkpoint_is_counted_exactly ... ok
+test bisect_trusts_lo_zero_as_start_of_time ... ok
+test bisect_runs_executed_is_exact ... ok
+test reached_target_checkpoints_are_counted_exactly ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-ecf1e1ab6a4c75a8)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/vm_state-373bb5307e570837)
+
+running 9 tests
+test arm64::tests::foreign_arch_tags_are_rejected_both_ways ... ok
+test arm64::tests::decode_rejects_a_fractional_ratio_symmetrically_with_encode ... ok
+test arm64::tests::fractional_ratio_is_refused_at_encode ... ok
+test arm64::tests::round_trips_byte_deterministically ... ok
+test arm64::tests::snapshot_records_surface_matches_the_inherent_codec ... ok
+test arm64::tests::strict_decode_rejects_malformed_blobs ... ok
+test records::tests::trait_encode_rejects_fractional_ratio ... ok
+test records::tests::trait_codec_is_the_inherent_codec ... ok
+test arm64::tests::decode_never_panics_on_arbitrary_prefixes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/determinism.rs (target/debug/deps/determinism-b007323ad9fa26ae)
+
+running 10 tests
+test canonical_timer_queue_round_trips_in_seq_order ... ok
+test duplicate_key_timer_queue_is_rejected ... ok
+test duplicate_token_timer_queue_is_rejected ... ok
+test encode_is_byte_identical_twice ... ok
+test msr_insertion_order_is_irrelevant ... ok
+test out_of_order_timer_queue_is_rejected ... ok
+test seq_at_or_above_next_seq_is_rejected ... ok
+test encode_accepts_iff_timers_valid ... ok
+test encode_rejects_duplicate_token_or_high_seq ... ok
+test encode_is_pure ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/golden.rs (target/debug/deps/golden-db11a33973524a6c)
+
+running 3 tests
+test print_golden ... ignored, run with --ignored --nocapture to regenerate GOLDEN_HEX
+test golden_blob_round_trips ... ok
+test golden_encoding_is_stable ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-da7bb580c7b277bc)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/roundtrip.rs (target/debug/deps/roundtrip-382438eb4ce28ff4)
+
+running 1 test
+test roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/strict_decode.rs (target/debug/deps/strict_decode-d688a5ced8ce7aac)
+
+running 16 tests
+test bad_magic ... ok
+test bad_mp_state_byte ... ok
+test duplicate_tag ... ok
+test foreign_arch_tag_is_rejected_not_reinterpreted ... ok
+test dropped_required_section ... ok
+test out_of_order_tags ... ok
+test oversized_section_len ... ok
+test section_count_zero_is_missing_section ... ok
+test tag_ordering_boundary ... ok
+test trailing_bytes ... ok
+test truncated_body ... ok
+test truncated_header ... ok
+test unknown_tag ... ok
+test wrong_version ... ok
+test mutated_valid_blob_never_panics ... ok
+test arbitrary_bytes_never_panic ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/version_ratio.rs (target/debug/deps/version_ratio-a710a4962d8caad2)
+
+running 4 tests
+test fractional_ratio_is_rejected_at_encode ... ok
+test current_version_round_trips_and_peeks ... ok
+test future_version_is_rejected_but_peekable ... ok
+test zero_ratio_den_is_also_rejected ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/vmm_backend-46d343954ab752db)
+
+running 94 tests
+test arch::arm64::tests::arm64_caps_answer_the_neutral_clock_question ... ok
+test arch::arm64::tests::gic_intid_classes_are_the_gicv3_identity_space ... ok
+test arch::arm64::tests::sysreg_exit_reason_and_completion_staging ... ok
+test arm64_kvm::tests::control_and_failclosed_reasons ... ok
+test arm64_kvm::tests::backend_orders_ioctls_and_installs_policy ... ok
+test arm64_kvm::tests::kvm_uapi_constants_match_the_headers ... ok
+test arm64_kvm::tests::map_memory_forwards_a_validated_region_through_the_seam ... ok
+test arm64_kvm::tests::mmio_load_completion_stages_data_for_the_next_run ... ok
+test arm64_kvm::tests::mmio_rejects_non_architectural_widths ... ok
+test arm64_kvm::tests::patched_arms_exist_but_are_never_stock ... ok
+test arm64_kvm::tests::run_page_loopback_over_a_synthetic_buffer ... ok
+test arm64_kvm::tests::save_restore_round_trips_through_the_reg_table ... ok
+test arm64_kvm::tests::stock_is_unsupported_where_it_must_be_and_honestly_undeterministic ... ok
+test arm64_kvm::tests::stock_surface_decodes_mmio_and_shutdown_only ... ok
+test kvm::tests::apply_complete_fault_and_ok_set_msr_error ... ok
+test arm64_kvm::tests::vcpu_init_advertises_psci_0_2 ... ok
+test kvm::tests::apply_complete_read_routes_by_pending ... ok
+test kvm::tests::classify_irq_window_is_reenter ... ok
+test kvm::tests::classify_in_kernel_force_exit_is_preempt ... ok
+test kvm::tests::classify_single_step_trap ... ok
+test kvm::tests::classify_overflow_signal ... ok
+test kvm::tests::complete_determinism_rdtscp_writes_value_and_aux ... ok
+test kvm::tests::classify_genuine_guest_exits ... ok
+test kvm::tests::complete_determinism_rng_writes_value_and_sets_cf ... ok
+test kvm::tests::decode_error_and_unknown_exits_fail_closed ... ok
+test kvm::tests::decode_io_in_arms_pending ... ok
+test kvm::tests::complete_determinism_tsc_writes_value_only ... ok
+test kvm::tests::decode_io_out_offset_past_page_is_error_not_ub ... ok
+test kvm::tests::complete_determinism_without_pending_is_no_pending_read ... ok
+test kvm::tests::decode_io_out_reads_value_via_run_buf ... ok
+test kvm::tests::decode_io_rep_string_fails_closed ... ok
+test kvm::tests::decode_mmio_store_and_load ... ok
+test kvm::tests::cpuid_entries_maps_fields_and_significant_flag ... ok
+test kvm::tests::decode_determinism_maps_each_insn ... ok
+test kvm::tests::decode_determinism_unknown_insn_fails_closed ... ok
+test kvm::tests::decode_stale_force_exit_and_det_step_are_swallowed ... ok
+test kvm::tests::decode_rdmsr_and_wrmsr ... ok
+test kvm::tests::decode_terminal_and_control_exits ... ok
+test kvm::tests::interrupt_fields_round_trip_through_vcpu_events ... ok
+test kvm::tests::kvm_capabilities_are_honestly_false ... ok
+test kvm::tests::mp_state_round_trips ... ok
+test kvm::tests::msr_count_checks_fail_closed_on_short_count ... ok
+test kvm::tests::plan_irq_entry_queues_when_ready ... ok
+test kvm::tests::plan_irq_entry_clears_window_when_nothing_pending ... ok
+test kvm::tests::plan_irq_entry_requests_window_when_not_ready ... ok
+test kvm::tests::regs_sregs_events_round_trip ... ok
+test kvm::tests::validate_restore_shape_keys_and_xsave_len ... ok
+test kvm::tests::xcr0_round_trips_and_defaults_to_zero ... ok
+test pmu::tests::bit_constants_are_the_exact_uapi_values ... ok
+test pmu::tests::branch_counter_attr_is_the_exact_br_cond_sampling_config ... ok
+test pmu::tests::drain_counts_across_the_ring_wrap ... ok
+test pmu::tests::drain_counts_each_record_type_and_advances_tail_to_head ... ok
+test kvm::tests::xsave_bytes_round_trip_and_length_check ... ok
+test pmu::tests::drain_refuses_a_record_claiming_more_than_published ... ok
+test pmu::tests::drain_stops_defensively_on_a_corrupt_header_but_still_drains ... ok
+test pmu::tests::drain_refuses_corrupt_cursors_without_walking ... ok
+test pmu::tests::overflow_stats_add_is_field_wise ... ok
+test region::tests::dirty_bitmap_decodes_bit_positions_to_absolute_gfns ... ok
+test region::tests::degenerate_regions_yield_no_slots ... ok
+test region::tests::dirty_bitmap_ignores_padding_bits_past_the_slot ... ok
+test region::tests::dirty_bitmap_two_split_slots_translate_back_disjointly ... ok
+test region::tests::hole_at_an_edge_drops_the_empty_remainder ... ok
+test region::tests::insert_overlap_and_adjacency_boundaries ... ok
+test region::tests::insert_rejects_a_wrapping_region ... ok
+test region::tests::insert_validates_and_assigns_slots ... ok
+test region::tests::lapic_hole_splits_8gib_guest_into_two_slots ... ok
+test region::tests::no_overlap_returns_the_single_full_region ... ok
+test region::tests::out_of_range_access_is_an_error_never_ub ... ok
+test region::tests::read_write_round_trip_within_region ... ok
+test region::tests::rollback_last_removes_the_just_inserted_region ... ok
+test run_buf::tests::byte_round_trip ... ok
+test run_buf::tests::out_of_bounds_is_an_error_never_ub ... ok
+test run_until::reset_discipline_stateful::preconditions_reject_a_non_rebaselined_reenter ... ok
+test run_until::tests::backend_failure_surfaces_as_an_error ... ok
+test run_until::tests::classify_run_until_covers_every_deadline_vs_current_case ... ok
+test run_until::tests::early_guest_exit_delivered_at_or_past_deadline_fails_closed ... ok
+test run_until::tests::exit_poison_fails_closed_until_an_exit_is_delivered ... ok
+test run_until::tests::exit_poison_survives_until_the_final_delivery ... ok
+test run_until::tests::first_entry_reset_fires_once_then_only_after_rearm ... ok
+test run_until::tests::free_run_decision_stops_only_at_or_past_armed ... ok
+test run_until::tests::overflow_landing_exactly_on_deadline_is_skid_exceeded_not_raw_deadline ... ok
+test run_until::tests::stalled_guest_fails_closed_not_hung ... ok
+test run_until::tests::target_in_past_delivers_immediately ... ok
+test run_until::tests::skid_past_margin_is_a_loud_determinism_error ... ok
+test run_until::tests::post_deadline_io_is_not_executed_across_signal_timing ... ok
+test run_until::tests::drive_run_until_classifies_any_guest_exit ... ok
+test run_until::tests::exit_free_region_overshoot_fails_closed_regardless_of_skid ... ok
+test run_until::tests::returns_the_guest_exit_when_one_occurs_before_the_deadline ... ok
+test region::tests::sub_hole_guest_is_one_region ... ok
+test region::tests::split_around_hole_holds_its_contract ... ok
+test region::tests::dirty_bitmap_decode_matches_a_naive_bit_scan ... ok
+test run_until::reset_discipline_stateful::first_entry_reset_excludes_foreign_branches ... ok
+test run_until::tests::run_until_is_count_neutral_and_exact ... ok
+test run_until::tests::lands_exactly_at_deadline_with_no_guest_exit ... ok
+
+test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/contract_kvm.rs (target/debug/deps/contract_kvm-c2039362a05b5679)
+
+running 2 tests
+test patched_kvm_backend_passes_the_contract_exam ... ignored, live patched KVM; run on the determinism box with --ignored (see file header)
+test stock_kvm_backend_passes_the_contract_exam ... ignored, live KVM; run on the determinism box with --ignored (see file header)
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/contract_mock.rs (target/debug/deps/contract_mock-137e4099ba2cac2e)
+
+running 3 tests
+test a_limited_backend_declines_honestly_and_the_declines_are_recorded ... ok
+test mock_backend_passes_the_full_contract_exam ... ok
+test the_exam_actually_fails_a_backend_that_breaks_the_contract ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dyn_backend.rs (target/debug/deps/dyn_backend-913672379b7e69f2)
+
+running 2 tests
+test boxed_backend_forwards_every_method ... ok
+test injection_forwards_through_box ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/exhaustive.rs (target/debug/deps/exhaustive-efacfd4370e2d752)
+
+running 2 tests
+test classify_agrees_with_reason_for_every_variant ... ok
+test exit_counts_entries_cover_every_reason_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/kvm_smoke.rs (target/debug/deps/kvm_smoke-2696f26e64df92d3)
+
+running 4 tests
+test bringup_smoke_out_then_hlt ... ignored, live KVM; run on the determinism box with --ignored (see file header)
+test capabilities_are_honest ... ignored, live KVM; run on the determinism box with --ignored
+test msr_filter_is_loud ... ignored, live KVM; run on the determinism box with --ignored
+test save_restore_round_trips_on_real_kvm ... ignored, live KVM; run on the determinism box with --ignored
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_preemption.rs (target/debug/deps/live_preemption-c06ffc7e549f3502)
+
+running 10 tests
+test guest_exit_before_deadline_returns_that_exit ... ignored, live KVM + perf; run on the box with --ignored
+test restore_re_arms_pmu_reset_excluding_foreign_branches ... ignored, live KVM + perf; run on the box with --ignored
+test run_until_advances_monotonically_within_a_run ... ignored, live KVM + perf; run on the box with --ignored
+test run_until_at_current_deadline_preserves_owed_completion ... ignored, live KVM + perf; run on the box with --ignored
+test run_until_at_current_deadline_takes_zero_steps ... ignored, live KVM + perf; run on the box with --ignored
+test run_until_is_deterministic_twice ... ignored, live KVM + perf; run on the box with --ignored
+test run_until_lands_exactly_at_the_deadline ... ignored, live KVM + perf; run on the box (stock KVM ok) with --ignored (see header)
+test run_until_past_deadline_fires_immediately ... ignored, live KVM + perf; run on the box with --ignored
+test save_restore_roundtrip_re_zeroes_the_run_until_counter ... ignored, live KVM + perf; run on the box with --ignored
+test zero_step_run_until_keeps_first_entry_reset_pending ... ignored, live KVM + perf; run on the box with --ignored
+
+test result: ok. 0 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/n2_nested_hammer.rs (target/debug/deps/n2_nested_hammer-2602c0d4ec369665)
+
+running 2 tests
+test n2_deadline_hammer ... ignored, SPIKE(nested-x86) live hammer; run via the N-2 appliance harness
+test guest_mem_alloc_slice_drop_is_miri_clean ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-4a063da2081b13c9)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/run_loop.rs (target/debug/deps/run_loop-c53e497abda28c1a)
+
+running 20 tests
+test complete_read_without_pending_errors ... ok
+test counters_increment_per_reason_and_reset ... ok
+test deferred_accept_holds_irq_pending ... ok
+test drain_default_declines_and_box_forwards_to_the_inner_impl ... ok
+test each_run_until_leg_folds_its_own_scripted_reached_independently ... ok
+test hypercall_and_cpuid_completions_are_typed ... ok
+test inject_records_events ... ok
+test missed_completion_is_pending_completion ... ok
+test mock_map_memory_validation_errors ... ok
+test mock_observability_and_config_getters ... ok
+test out_exit_needs_no_completion ... ok
+test rdmsr_accepts_read_or_fault ... ok
+test run_before_configured_fails_closed ... ok
+test run_passes_deadline_verbatim_while_run_until_folds ... ok
+test run_until_folds_a_late_reached_past_the_requested_deadline ... ok
+test run_until_folds_an_at_or_before_reached_up_to_the_deadline ... ok
+test set_pending_irq_overwrites_single_slot ... ok
+test wrmsr_accepts_ok_or_fault_but_not_read ... ok
+test counts_match_histogram ... ok
+test discipline_is_enforced ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/vcpu_state.rs (target/debug/deps/vcpu_state-c11bbd04f81ec336)
+
+running 1 test
+test restore_save_round_trips ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running unittests src/lib.rs (target/debug/deps/vmm_core-121773a0939a4f47)
+
+running 497 tests
+test control::tests::a_beyond_deadline_fault_not_yet_crossed_stays_staged ... ok
+test control::tests::a_fault_at_current_vtime_with_an_expired_deadline_is_not_poisoned ... ok
+test control::tests::a_late_landing_refusal_latches_the_poison ... ok
+test control::tests::a_genuine_late_landing_overshoots_then_is_refused_loud ... ok
+test control::tests::an_exact_clock_arm_clamps_on_grid_so_the_arm_seam_guard_is_inert ... ok
+test control::tests::arm_arrival_rounds_an_off_grid_moment_up_not_declines ... ok
+test control::tests::an_sdk_stop_with_a_staged_reseed_poisons_loud ... ok
+test control::tests::arrival_lands_at_the_exact_moment_and_in_order ... ok
+test control::tests::a_fault_at_the_deferred_snapshot_boundary_drains_before_the_seal ... ok
+test control::tests::a_future_fault_keeps_deferring_the_snapshot_point_until_the_schedule_drains ... ok
+test control::tests::any_verb_before_hello_is_unsupported ... ok
+test control::tests::a_future_reseed_keeps_deferring_the_snapshot_point_until_it_drains ... ok
+test control::tests::a_terminal_stop_with_a_staged_fault_poisons_loud ... ok
+test control::tests::branch_accepts_host_overrides_but_rejects_guest_or_standing_or_policy ... ok
+test control::tests::a_branch_env_moment_occupies_the_schedule_for_ruling_b ... ok
+test control::tests::a_late_landing_refusal_latch_clears_on_rewind ... ok
+test control::tests::branch_carries_the_pvclock_registration ... ok
+test control::tests::branch_and_replay_from_a_tainted_snapshot_stay_tainted ... ok
+test control::tests::a_failed_factory_is_session_fatal_and_poisons_the_server ... ok
+test control::tests::corrupt_memory_lands_the_exact_xor_at_the_gpa ... ok
+test control::tests::exec_taints_and_recorded_env_then_fails_loud ... ok
+test control::tests::hello_negotiates_the_pinned_caps ... ok
+test control::tests::branch_validates_the_env_before_touching_the_vm ... ok
+test control::tests::a_rejected_branch_env_fault_is_side_effect_free ... ok
+test control::tests::hash_whole_matches_the_vmm_and_other_scopes_are_unsupported ... ok
+test control::tests::branch_into_an_unoffered_composition_fails_loud ... ok
+test control::tests::observations_before_hello_are_unsupported ... ok
+test control::tests::branch_remap_and_memcpy_agree_bit_for_bit ... ok
+test control::tests::branch_env_host_faults_go_through_the_same_validation_as_perturb ... ok
+test control::tests::branch_and_replay_preserve_the_captured_sdk_prefix_length ... ok
+test control::tests::off_grid_staged_moment_is_refused_at_the_arm_without_overshooting ... ok
+test control::tests::overshooting_a_staged_moment_fails_loud ... ok
+test control::tests::page_console_paging_math ... ok
+test control::tests::branch_run_hash_is_deterministic_per_seed_end_to_end ... ok
+test control::tests::a_net_flow_fault_branch_is_accepted_and_replays_at_a_stable_moment ... ok
+test control::tests::off_grid_refusal_latch_clears_on_rewind ... ok
+test control::tests::perturb_corrupt_memory_stage_time_resolves_high_arm_gpas ... ok
+test control::tests::perturb_inject_interrupt_reserved_vector_is_rejected_at_stage_time ... ok
+test control::tests::perturb_inject_interrupt_on_a_no_lapic_vm_is_unsupported ... ok
+test control::tests::perturb_on_an_unarmable_backend_is_unsupported ... ok
+test control::tests::perturb_stages_faults_and_rejects_the_unenforceable ... ok
+test control::tests::a_buggify_decision_after_a_mid_run_reseed_folds_to_the_sequential_branch ... ok
+test control::tests::read_and_regs_on_a_poisoned_server_are_session_fatal ... ok
+test control::tests::read_out_of_range_is_loud ... ok
+test control::tests::read_oversized_len_is_loud ... ok
+test control::tests::read_returns_the_guest_bytes ... ok
+test control::tests::regs_reports_the_versioned_view_at_the_current_moment ... ok
+test control::tests::observations_do_not_perturb_hash_or_recorded_env ... ok
+test control::tests::perturb_after_a_terminal_stop_is_rejected_not_synchronized ... ok
+test control::tests::reperturb_at_an_applied_moment_is_rejected ... ok
+test control::tests::inspection_mid_materialization_does_not_perturb_the_continuation ... ok
+test control::tests::console_drain_is_determinism_neutral ... ok
+test control::tests::restore_mode_is_memcpy_until_a_remap_factory_installs ... ok
+test control::tests::branch_reseeds_and_replay_does_not ... ok
+test control::tests::reseed_marker_behind_the_restore_floor_is_rejected ... ok
+test control::tests::recoverable_restore_failure_clears_the_stale_schedule ... ok
+test control::tests::recorded_env_replays_to_the_same_hash ... ok
+test control::tests::run_resolve_is_always_resolve_without_decision ... ok
+test control::tests::run_stops_at_a_vtime_deadline_without_entering_when_already_past ... ok
+test control::tests::perturb_after_a_synchronized_deadline_stop_reproduces ... ok
+test control::tests::restore_substrate_failure_is_session_fatal_and_poisons_the_server ... ok
+test control::tests::branch_with_a_floor_marker_reseeds_from_the_marker_not_the_env_seed ... ok
+test control::tests::remap_restore_failure_keeps_a_usable_session ... ok
+test control::tests::sdk_events_verb_is_routed_to_the_capture ... ok
+test control::tests::restore_validation_rejection_is_recoverable_and_keeps_the_fresh_vm ... ok
+test control::tests::replay_restores_the_buggify_policy ... ok
+test control::tests::same_moment_fixture_cuts_by_prefix_length_not_moment ... ok
+test control::tests::schedule_poison_persists_until_a_rewind ... ok
+test control::tests::second_fault_at_one_moment_is_loudly_rejected ... ok
+test control::tests::seal_derives_from_tracked_parent_and_reproduces_the_image ... ok
+test control::tests::seal_falls_back_after_a_wholesale_host_write ... ok
+test control::tests::snapshot_at_an_unsynchronized_point_is_not_quiescent ... ok
+test control::tests::rewind_to_an_untainted_ancestor_clears_the_live_taint ... ok
+test control::tests::same_schedule_run_twice_is_bit_identical_and_control_differs ... ok
+test control::tests::seal_falls_back_to_base_when_the_parent_was_dropped ... ok
+test control::tests::snapshot_point_defers_past_an_rng_boundary_to_the_next_clean_seal ... ok
+test control::tests::mid_run_reseed_marker_applies_at_its_moment_and_recorded_env_reproduces ... ok
+test control::tests::serve_speaks_frames_over_an_in_memory_stream ... ok
+test control::tests::stop_mask_gates_the_sdk_snapshot_point_and_assertion ... ok
+test control::tests::snapshot_mints_fresh_handles_and_drop_releases_them ... ok
+test control::tests::replay_derives_recorded_seed_from_the_restored_stream ... ok
+test control::tests::snapshot_reply_carries_the_taint ... ok
+test corpus::tests::coexisting_spawns_are_determinism_identical_despite_a_shared_work_counter ... ok
+test control::tests::seal_flattens_at_the_chain_bound ... ok
+test corpus::tests::determinism_oracle_sees_a_clean_pass ... ok
+test corpus::tests::machine_runs_to_terminal_and_reports_halted ... ok
+test corpus::tests::observable_digest_overrides_state_hash_for_o3 ... ok
+test corpus::tests::run_to_rejects_a_rewind_below_current_work ... ok
+test corpus::tests::shared_work_counter_without_run_start_reset_diverges ... ok
+test control::tests::run_maps_terminals_workload_blind ... ok
+test exec::tests::injection_wraps_the_command_with_a_sentinel_echo ... ok
+test corpus::tests::o1_catches_a_report_stream_only_divergence ... ok
+test exec::tests::nonzero_exit_status_is_parsed ... ok
+test exec::tests::marker_without_digits_never_completes ... ok
+test exec::tests::sentinel_split_across_feeds_is_detected ... ok
+test exec::tests::sentinel_wins_over_a_same_step_timeout ... ok
+test exec::tests::sentinel_with_digits_completes_and_the_literal_echo_does_not ... ok
+test control::tests::snapshot_with_a_staged_reseed_is_snapshot_while_armed ... ok
+test exec::tests::timeout_without_sentinel_is_not_ok ... ok
+test exec::tests::unterminated_session_yields_a_timeout_outcome ... ok
+test seal_rate::tests::build_dedups_colliding_busy_centers ... ok
+test seal_rate::tests::build_n64_split ... ok
+test seal_rate::tests::build_no_windows_all_uniform ... ok
+test seal_rate::tests::build_rejects_degenerate ... ok
+test seal_rate::tests::depth_ratio_basic ... ok
+test seal_rate::tests::depth_rejects_nonmonotonic ... ok
+test seal_rate::tests::determinism_summary_is_honest_about_the_subset ... ok
+test seal_rate::tests::jitter_u64_max_does_not_overflow ... ok
+test seal_rate::tests::jitter_zero_is_identity ... ok
+test seal_rate::tests::mock_attempt_at_u64_max_does_not_overflow ... ok
+test seal_rate::tests::ppm_percent_formats ... ok
+test seal_rate::tests::predicate_quality_hand_built ... ok
+test control::tests::snapshot_while_a_fault_is_staged_is_rejected ... ok
+test exec::tests::resume_scan_finds_the_sentinel_after_lots_of_chatty_output ... ok
+test control::tests::untracked_seals_always_full_scan ... ok
+test seal_rate::tests::prop_depth_ratio ... ok
+test control::tests::terminal_with_a_staged_reseed_poisons_and_rewind_recovers ... ok
+test control::tests::the_cut_is_identical_across_same_seed_sessions ... ok
+test seal_rate::tests::prop_sealable_monotone ... ok
+test seal_rate::tests::rate_ppm_edges ... ok
+test seal_rate::tests::ruling_go_dense ... ok
+test seal_rate::tests::ruling_grid_when_coarse ... ok
+test seal_rate::tests::ruling_nogo_on_determinism_gap ... ok
+test control::tests::moment_address_materializes_identically_twice ... ok
+test seal_rate::tests::ruling_nogo_on_low_rate ... ok
+test seal_rate::tests::ruling_nogo_on_insufficient_adversarial_coverage ... ok
+test seal_rate::tests::ruling_nogo_on_zero_determinism_checks ... ok
+test seal_rate::tests::sealable_truth_table ... ok
+test snapshot::tests::base_then_derive_stores_only_dirtied_pages ... ok
+test snapshot::tests::derive_with_dirty_hint_matches_full_capture ... ok
+test snapshot::tests::engine_mem_pages_retain_release_gc ... ok
+test snapshot::tests::materialize_reproduces_the_full_image ... ok
+test snapshot::tests::out_of_range_dirty_gfn_is_rejected ... ok
+test snapshot::tests::vm_state_blob_seals_and_decodes ... ok
+test snapshot::tests::wrong_image_length_is_rejected ... ok
+test vendor::arm64::bringup::tests::compose_loads_image_places_dtb_and_sets_entry ... ok
+test vendor::arm64::bringup::tests::compose_rejects_an_image_that_does_not_fit ... ok
+test vendor::arm64::contract::tests::contract_hash_is_deterministic_and_row_sensitive ... ok
+test vendor::arm64::contract::tests::policy_skeleton_is_empty_and_default_deny_shaped ... ok
+test vendor::arm64::devices::tests::config_writes_shadow_and_read_back ... ok
+test vendor::arm64::devices::tests::dr_writes_are_captured_in_order ... ok
+test vendor::arm64::devices::tests::fr_reports_tx_empty_and_rx_state ... ok
+test vendor::arm64::devices::tests::restore_overwrites_residuals_and_clears_input ... ok
+test vendor::arm64::devices::tests::unmodeled_offsets_read_absent_and_drop_writes ... ok
+test vendor::arm64::dtb::tests::build_is_deterministic ... ok
+test vendor::arm64::dtb::tests::header_is_well_formed ... ok
+test snapshot::tests::n_views_share_one_read_only_base ... ok
+test vendor::arm64::dtb::tests::parse_rejects_size_dt_struct_short_of_fdt_end ... ok
+test vendor::arm64::dtb::tests::parse_rejects_tokens_outside_the_declared_struct_block ... ok
+test vendor::arm64::dtb::tests::round_trips_structure_and_properties ... ok
+test vendor::arm64::entry::tests::apply_entry_overlays_core_regs_keeps_template_sysregs ... ok
+test vendor::arm64::entry::tests::boot_entry_matches_the_arm64_protocol ... ok
+test vendor::arm64::hostassert::tests::report_is_well_formed_and_enforce_agrees ... ok
+test vendor::arm64::hostassert::tests::verdict_is_ok_iff_all_outcomes_pass ... ok
+test seal_rate::tests::prop_rule_monotone_in_rate ... ok
+test exec::tests::capture_is_bounded ... ok
+test vendor::arm64::image_loader::tests::image_size_reserves_bss_past_the_file ... ok
+test vendor::arm64::image_loader::tests::load_never_panics_on_arbitrary_prefixes ... ok
+test vendor::arm64::image_loader::tests::parses_and_loads_a_valid_image ... ok
+test vendor::arm64::image_loader::tests::rejects_garbage_and_truncation ... ok
+test vendor::arm64::image_loader::tests::wrap_image_round_trips_through_the_parser ... ok
+test vendor::arm64::image_loader::tests::wrap_image_entry_branches_over_the_header_onto_the_payload ... ok
+test vendor::arm64::records::tests::device_blob_decode_is_strict_and_total ... ok
+test vendor::arm64::records::tests::decode_rejects_a_doorbell_version_with_the_wrong_doorbell_length ... ok
+test vendor::arm64::records::tests::device_blob_round_trips ... ok
+test vendor::arm64::records::tests::vcpu_conversions_are_lossless_mirrors ... ok
+test vendor::x86::bringup::tests::apply_entry_overlays_registers_segments_and_control_regs ... ok
+test vendor::x86::bringup::tests::apply_linux_entry_overlays_long_mode_state_gdtr_and_efer_msr ... ok
+test vendor::x86::bringup::tests::boot_runs_the_host_assert_then_composes ... ok
+test vendor::x86::bringup::tests::compose_drives_guestram_and_unsafe_map_memory ... ok
+test vendor::arm64::dtb::tests::parse_never_panics_on_arbitrary_prefixes ... ok
+test vendor::x86::bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping ... ok
+test vendor::x86::bringup::tests::compose_restore_target_maps_the_snapshot_without_loading ... ok
+test vendor::x86::contract::canonical::tests::cell_renders_each_disposition_shape ... ok
+test vendor::arm64::image_loader::tests::honors_a_nonzero_text_offset ... ok
+test vendor::x86::bringup::tests::image_kind_detects_linux_multiboot_and_garbage ... ok
+test vendor::x86::contract::canonical::tests::reg_and_subleaf_tokens_render ... ok
+test vendor::x86::contract::parse::tests::cpuid_row_single_and_range_leaf ... ok
+test vendor::x86::contract::canonical::tests::subleaf_sort_key_is_the_lowest_covered_subleaf ... ok
+test vendor::x86::contract::parse::tests::dispositions_reads_tokens_and_optional_params ... ok
+test vendor::x86::contract::parse::tests::hex32_parses_hex_and_decimal ... ok
+test vendor::x86::contract::parse::tests::index_spec_indices_expands_and_sorts ... ok
+test vendor::x86::contract::parse::tests::msr_row_single_range_and_members ... ok
+test vendor::x86::contract::parse::tests::parse_raw_sections_arrays_and_stray_keys ... ok
+test vendor::x86::contract::parse::tests::parse_value_classifies_every_token ... ok
+test vendor::x86::contract::parse::tests::parse_full_synthetic_contract ... ok
+test vendor::x86::bringup::tests::compose_linux_loads_kernel_and_wires_lapic ... ok
+test vendor::x86::contract::parse::tests::reg_field_base_is_exact ... ok
+test vendor::x86::contract::parse::tests::reg_field_parses_const_and_dyn_tokens ... ok
+test vendor::x86::contract::parse::tests::strip_comment_respects_quoted_hashes ... ok
+test vendor::x86::contract::parse::tests::subleaf_parses_all_forms ... ok
+test vendor::x86::contract::parse::tests::toml_value_accessors_and_fallbacks ... ok
+test seal_rate::tests::prop_schedule_invariants ... ok
+test vendor::x86::contract::tests::amd_canonical_form_matches_golden ... ok
+test vendor::x86::contract::tests::amd_carries_both_pmu_models_unresolved ... ok
+test vendor::x86::contract::tests::amd_canonical_form_well_formed ... ok
+test vendor::x86::contract::tests::amd_draft_is_unreachable_from_the_live_path ... ok
+test vendor::x86::contract::tests::amd_contract_hash_matches_committed ... ok
+test seal_rate::tests::prop_predicate_quality ... ok
+test vendor::x86::contract::tests::amd_draft_loads_and_canonicalizes ... ok
+test vendor::x86::contract::tests::amd_every_enforcement_row_is_verify_on_silicon ... ok
+test vendor::x86::contract::tests::amd_leaf0_max_basic_leaf_is_the_transfer_bound ... ok
+test vendor::x86::contract::tests::amd_msr_index_set_is_disjoint ... ok
+test vendor::x86::contract::tests::amd_msr_shared_allowlist_is_disjoint_and_portable ... ok
+test vendor::x86::contract::parse::tests::prop_int_token_roundtrips ... ok
+test vendor::x86::contract::tests::canonical_form_well_formed ... ok
+test seal_rate::tests::prop_jitter_preserves_invariants ... ok
+test vendor::x86::contract::tests::contract_hash_matches_committed_registry ... ok
+test control::tests::sdk_events_pages_bound_to_the_frame_limit ... ok
+test vendor::x86::contract::tests::canonical_form_matches_golden ... ok
+test seal_rate::tests::prop_sealstats_consistent ... ok
+test vendor::x86::contract::tests::cpuid_model_masks_and_hides ... ok
+test vendor::x86::contract::tests::cpuid_model_subleaf_significance_is_exact ... ok
+test vendor::x86::contract::tests::loader_refuses_malformed_leaf0 ... ok
+test vendor::x86::contract::tests::live_contract_is_the_intel_column ... ok
+test vendor::x86::contract::tests::loader_refuses_mixed_vendor_artifact ... ok
+test vendor::x86::contract::tests::loader_refuses_present_but_invalid_vendor_token ... ok
+test vendor::x86::contract::tests::msr_filter_allow_is_the_stateful_set ... ok
+test vendor::x86::contract::tests::loader_refuses_noncanonical_leaf0_shapes ... ok
+test vendor::x86::contract::tests::msr_index_set_is_disjoint_and_complete ... ok
+test vendor::x86::contract::tests::msr_dispositions_match_contract ... ok
+test vendor::x86::contract::tests::contract_hash_is_stable ... ok
+test vendor::x86::contract::tests::regen_amd_golden ... ignored, writes testdata/canonical-amd-draft.txt; run manually on a reviewed AMD-column change
+test vendor::x86::contract::tests::regen_golden ... ignored, writes src/vendor/x86/contract/testdata/canonical-v4.txt; run manually on a reviewed §6 bump
+test vendor::x86::contract::tests::resolve_cpuid_bit_math_is_exact ... ok
+test vendor::x86::contract::tests::resolve_cpuid_overlays_dynamic_cells ... ok
+test vendor::x86::devices::tests::divisor_latch_read_back_with_dlab_set ... ok
+test vendor::x86::devices::tests::i8042_status_reports_obf_set_so_the_probe_fails_fast ... ok
+test vendor::x86::contract::tests::user_space_mask_is_filter_unknown_inval ... ok
+test vendor::x86::devices::tests::ier_preserved_across_divisor_latch_window ... ok
+test vendor::x86::devices::tests::iir_reports_thre_interrupt_only_when_thri_enabled ... ok
+test vendor::x86::devices::tests::irq_masked_reads_the_right_imr_bit ... ok
+test vendor::x86::devices::tests::injected_input_is_consumed_fifo_with_data_ready ... ok
+test vendor::x86::devices::tests::legacy_only_dword_write_to_cf8_latches ... ok
+test vendor::x86::devices::tests::legacy_owns_the_curated_ports_only ... ok
+test vendor::x86::devices::tests::legacy_pci_config_address_round_trips_and_data_reads_no_device ... ok
+test vendor::x86::devices::tests::legacy_reads_give_absent_idle_values ... ok
+test vendor::x86::devices::tests::lsr_reports_thr_empty ... ok
+test vendor::x86::devices::tests::out_of_range_ports_not_owned ... ok
+test vendor::x86::devices::tests::owns_is_the_com1_block_only ... ok
+test vendor::x86::devices::tests::pic_imr_latches_so_probe_8259a_sees_a_real_pic ... ok
+test vendor::x86::devices::tests::receive_interrupt_asserts_only_when_enabled_and_queued ... ok
+test seal_rate::tests::prop_overshoot_ordered ... ok
+test vendor::x86::devices::tests::serial_input_is_inert_until_injected ... ok
+test vendor::x86::devices::tests::shadow_regs_and_dlab_reflect_writes ... ok
+test vendor::x86::devices::tests::task04_init_order_does_not_capture_divisor ... ok
+test vendor::x86::devices::tests::thr_capture_independent_of_thri ... ok
+test vendor::x86::devices::tests::thr_writes_captured_in_order_dlab_clear ... ok
+test vendor::x86::devices::tests::thri_ignored_while_dlab_selects_the_divisor_latch ... ok
+test vendor::x86::entry::tests::entry_state_matches_multiboot_contract ... ok
+test vendor::x86::entry::tests::long_mode_entry_matches_64bit_boot_protocol ... ok
+test vendor::x86::entry::tests::write_boot_info_rejects_tiny_ram ... ok
+test vendor::x86::entry::tests::write_boot_info_zeroes_and_returns_gpa ... ok
+test vendor::x86::hostassert::probe::tests::bit_extracts_the_right_position ... ok
+test vendor::x86::hostassert::probe::tests::fmt_fms_decodes_family_model_stepping ... ok
+test vendor::x86::hostassert::probe::tests::insn_present_known_and_unknown ... ok
+test vendor::x86::hostassert::probe::tests::parse_microcode_hex_total ... ok
+test vendor::x86::hostassert::tests::verdict_is_ok_iff_all_outcomes_pass ... ok
+test vendor::x86::devices::tests::restore_clears_injected_input ... ok
+test vendor::x86::hostassert::tests::report_is_well_formed_and_enforce_agrees ... ok
+test vendor::x86::linux_loader::tests::boot_params_field_offsets ... ok
+test vendor::x86::linux_loader::tests::e820_lapic_reservation::doorbell_pages_are_reserved_for_every_ram_size ... ok
+test vendor::x86::linux_loader::tests::acpi_tables_are_byte_exact ... ok
+test vendor::x86::linux_loader::tests::e820_lapic_reservation::eight_gib_guest_reserves_the_lapic_page ... ok
+test vendor::x86::linux_loader::tests::e820_lapic_reservation::page_aligned_boundaries ... ok
+test vendor::x86::linux_loader::tests::e820_lapic_reservation::sub_page_guest_is_four_entries ... ok
+test vendor::x86::linux_loader::tests::caps_cmdline_against_header_cmdline_size ... ok
+test vendor::x86::linux_loader::tests::kernel_end_equal_to_ram_fits ... ok
+test vendor::x86::linux_loader::tests::honors_initrd_addr_max ... ok
+test vendor::x86::linux_loader::tests::lapic_hole_placement::initramfs_above_the_hole_is_kept_high ... ok
+test vendor::x86::linux_loader::tests::lapic_hole_placement::initramfs_straddling_the_hole_is_relocated_below ... ok
+test vendor::x86::linux_loader::tests::lapic_hole_placement::initramfs_that_cannot_fit_below_the_hole_is_rejected ... ok
+test vendor::x86::linux_loader::tests::lapic_hole_placement::overlaps_lapic_mmio_page_detects_straddle ... ok
+test vendor::x86::linux_loader::tests::parses_a_valid_bzimage ... ok
+test vendor::x86::linux_loader::tests::page_tables_identity_map_with_2mib_pages ... ok
+test vendor::x86::linux_loader::tests::protocol_version_boundary_is_inclusive ... ok
+test vendor::x86::contract::parse::tests::prop_parse_value_never_panics ... ok
+test vendor::x86::linux_loader::tests::ram_exactly_high_ram_start_is_too_small ... ok
+test vendor::x86::linux_loader::tests::rejects_kernel_that_does_not_fit ... ok
+test vendor::x86::linux_loader::tests::rejects_no_64bit_entry ... ok
+test vendor::x86::linux_loader::tests::rejects_non_bzimage ... ok
+test vendor::x86::linux_loader::tests::rejects_old_protocol ... ok
+test vendor::x86::linux_loader::tests::rejects_overlong_cmdline ... ok
+test vendor::x86::linux_loader::tests::rejects_kernel_too_small_for_64bit_entry ... ok
+test vendor::x86::linux_loader::tests::rejects_initramfs_overlap ... ok
+test vendor::x86::linux_loader::tests::setup_header_field_offsets ... ok
+test vendor::x86::contract::tests::report_contract_hash ... ok
+test vendor::x86::linux_loader::tests::rejects_tiny_ram ... ok
+test vendor::x86::multiboot::tests::bad_checksum_rejected ... ok
+test vendor::x86::multiboot::tests::load_address_field_validation ... ok
+test vendor::x86::multiboot::tests::load_region_exact_fit_is_accepted ... ok
+test vendor::x86::multiboot::tests::full_override_formula_header_addr_ne_load_addr ... ok
+test vendor::x86::multiboot::tests::missing_address_override_flag_rejected ... ok
+test vendor::x86::linux_loader::tests::rejects_pref_address_below_high_ram ... ok
+test vendor::x86::multiboot::tests::missing_magic_is_no_header ... ok
+test vendor::x86::multiboot::tests::region_too_large_for_ram_is_out_of_range ... ok
+test vendor::x86::multiboot::tests::truncated_header_is_image_too_small ... ok
+test vendor::x86::multiboot::tests::parses_and_loads_current_payload_shape ... ok
+test vendor::x86::records::tests::canonical_events_collapses_residuals_and_reconstructs_flags ... ok
+test vendor::x86::records::tests::canonical_events_zeroes_value_fields_when_their_validity_bit_is_clear ... ok
+test vendor::x86::records::tests::device_blob_lapic_restores_through_lapic_crate ... ok
+test vendor::x86::records::tests::device_blob_decode_is_total_on_garbage ... ok
+test vendor::x86::records::tests::device_blob_round_trips_all_fields ... ok
+test vendor::x86::records::tests::device_blob_round_trips_a_full_in_flight_events_record ... ok
+test vendor::x86::records::tests::device_blob_round_trips_without_optional_devices ... ok
+test vendor::x86::records::tests::events_for_restore_clears_stale_target_state_regardless_of_freshness ... ok
+test vendor::x86::records::tests::fill_vcpu_state_canonicalizes_the_typed_events_record ... ok
+test vendor::x86::records::tests::fill_vcpu_state_leaves_timer_queue_empty ... ok
+test vendor::x86::linux_loader::tests::load_pins_every_computed_value ... ok
+test vendor::x86::records::tests::has_inflight_injection_flags_exactly_the_non_quiescent_fields ... ok
+test vendor::x86::records::tests::has_active_event_injection_flags_only_genuine_injections_not_residuals ... ok
+test vendor::x86::records::tests::segment_dpl_distinguishes_all_four_levels ... ok
+test vendor::x86::records::tests::segment_pack_unpack_round_trips_every_bit ... ok
+test vendor::x86::records::tests::unoffered_pvclock_encodes_the_v3_shape_byte_for_byte ... ok
+test vendor::x86::records::tests::unrepresentable_state_fails_closed_on_cap_gated_event_fields ... ok
+test vendor::x86::records::tests::vcpu_state_round_trips_through_vm_state ... ok
+test vendor::x86::linux_loader::tests::writes_boot_gdt ... ok
+test vmm::tests::accepted_vector_moves_irr_to_isr ... ok
+test vmm::tests::apic_mmio_serviced_only_when_lapic_wired ... ok
+test vmm::tests::a_net_draw_advances_the_shared_stream_seen_by_buggify ... ok
+test vmm::tests::arm_arrival_rejects_a_past_moment_and_cannot_rewind_published_vns ... ok
+test vmm::tests::classify_sdk_event_payload_matrix ... ok
+test vendor::x86::contract::parse::tests::prop_quoted_string_roundtrips ... ok
+test vmm::tests::arm64_save_restore_preserves_the_doorbell_pages ... ok
+test vmm::tests::doorbell_is_total_on_edge_requests ... ok
+test vmm::tests::doorbell_rejects_a_non_request_frame ... ok
+test vmm::tests::doorbell_rejects_malformed_sdk_event_payloads ... ok
+test vmm::tests::doorbell_request_header_validation_matrix ... ok
+test vmm::tests::doorbell_response_write_is_drained_as_host_dirty ... ok
+test vmm::tests::doorbell_routes_entropy_deterministically ... ok
+test vmm::tests::doorbell_services_events_buggify_and_surfaces_stops ... ok
+test vmm::tests::doorbell_unknown_service_returns_an_unknown_service_frame ... ok
+test vmm::tests::arrival_deadline_is_cleared_on_restore ... ok
+test vmm::tests::drain_declines_without_backend_tracking ... ok
+test vmm::tests::drain_rebases_high_base_gfns_and_excludes_the_doorbell_slot ... ok
+test vmm::tests::drain_unions_backend_log_with_host_writes_and_drains ... ok
+test vmm::tests::emulate_vtime_tsc_msr_unwired_fails_closed ... ok
+test vmm::tests::emulate_vtime_tsc_msr_write_paths ... ok
+test vmm::tests::entropy_fill_and_rdrand_share_one_stream ... ok
+test vmm::tests::expected_draw_matches_completion_for_each_width ... ok
+test vmm::tests::has_active_event_injection_reflects_the_live_vcpu ... ok
+test vendor::x86::contract::tests::prop_canonical_form_invariant_to_formatting ... ok
+test vmm::tests::has_inflight_event_injection_reflects_the_live_vcpu ... ok
+test vmm::tests::has_pending_guest_interrupt_reflects_a_pending_lapic_vector ... ok
+test vmm::tests::hlt_without_armed_timer_is_terminal_even_with_if ... ok
+test vendor::x86::contract::tests::loader_refuses_vendor_axis_disagreement ... ok
+test vmm::tests::idle_discriminator_save_error_fails_closed ... ok
+test vmm::tests::idle_hlt_before_a_staged_arrival_wakes_at_the_arrival_not_the_timer ... ok
+test vmm::tests::idle_hlt_on_stock_backend_is_terminal ... ok
+test vmm::tests::branch_restores_then_forks_the_entropy_stream ... ok
+test vmm::tests::doorbell_uses_a_dedicated_memslot_when_ram_is_based_high ... ok
+test vmm::tests::doorbell_bad_entropy_opcode_is_unknown_opcode ... ok
+test vmm::tests::idle_hlt_with_if_and_armed_timer_jumps_to_deadline_and_fires ... ok
+test vmm::tests::idle_hlt_with_no_lapic_wakes_at_a_staged_arrival ... ok
+test vmm::tests::idle_hlt_with_no_timer_wakes_at_a_staged_arrival ... ok
+test vmm::tests::doorbell_probe_on_a_channel_less_vm_answers_unknown_service ... ok
+test vmm::tests::idle_hlt_with_undeliverable_timer_is_terminal ... ok
+test vmm::tests::idle_jump_rebases_work_epoch_so_next_tick_is_future ... ok
+test vmm::tests::idle_hlt_without_if_is_terminal ... ok
+test vmm::tests::injected_vector_stays_in_irr_until_accepted ... ok
+test vmm::tests::lapic_now_vns_fails_closed_on_work_error ... ok
+test vmm::tests::lapic_timer_current_count_tracks_vtime ... ok
+test vmm::tests::lapic_timer_delivers_off_intercept_anchor_on_deterministic_backend ... ok
+test vmm::tests::lapic_vector_outranks_the_serial_line ... ok
+test vmm::tests::legacy_io_serviced_only_when_wired ... ok
+test vmm::tests::lapic_timer_delivers_on_stock_off_live_work ... ok
+test vmm::tests::idle_resume_is_immune_to_hlt_work_skid ... ok
+test vmm::tests::mmio_just_past_apic_page_fails_closed ... ok
+test vmm::tests::lookup_cpuid_exact_leaf_only_and_default ... ok
+test vmm::tests::mmio_outside_apic_page_fails_closed_even_on_linux_path ... ok
+test vmm::tests::lapic_register_state_is_in_the_hash ... ok
+test vmm::tests::msr_dir_renders_direction_and_exit_reason ... ok
+test vendor::x86::linux_loader::tests::e820_lapic_reservation::reserved_page_is_never_typed_ram ... ok
+test vmm::tests::net_continuation_resumes_via_the_shared_sdk_stream ... ok
+test vmm::tests::net_decide_without_enable_net_is_unknown_service_and_leaves_the_stream ... ok
+test vmm::tests::no_injection_when_lapic_unwired ... ok
+test vmm::tests::net_doorbell_rejects_malformed_requests ... ok
+test vmm::tests::observable_digest_also_covers_the_serial_banner ... ok
+test vmm::tests::overdue_landing_classifies_against_the_target_not_the_skidded_count ... ok
+test vmm::tests::buggify_decisions_are_independent_of_an_entropy_reseed ... ok
+test vmm::tests::observable_digest_tracks_report_stream_but_state_hash_does_not ... ok
+test vmm::tests::no_entry_zero_step_deadline_keeps_entry_side_state ... ok
+test vmm::tests::net_doorbell_decides_records_and_replays ... ok
+test vmm::tests::pending_irr_then_sti_hlt_resumes_and_delivers_not_terminal ... ok
+test vmm::tests::overdue_deadline_anchors_to_target_and_is_not_synchronized ... ok
+test vmm::tests::pvclock_decode_rejects_registered_but_non_registrable ... ok
+test vmm::tests::periodic_timer_idle_loop_advances_vtime_each_tick ... ok
+test vmm::tests::preemption_deadline_is_none_off_the_determinism_path ... ok
+test vmm::tests::pvclock_doorbell_rejects_bad_frames ... ok
+test vmm::tests::linux_platform_state_in_hash_only_when_wired ... ok
+test vmm::tests::pvclock_forced_landings_do_not_count_a_timer_tick ... ok
+test vmm::tests::pvclock_gpa_helpers_resolve_a_high_ram_base ... ok
+test vmm::tests::pvclock_handshake_arms_only_on_a_counter_read ... ok
+test vmm::tests::pvclock_forced_refresh_bounds_staleness_within_delta ... ok
+test vmm::tests::pvclock_handshake_gates_the_forced_refresh_arm ... ok
+test vmm::tests::pvclock_natural_exits_refresh_with_the_anchor_value ... ok
+test vmm::tests::pvclock_forced_refresh_is_not_a_preemption_landing ... ok
+test vmm::tests::pvclock_re_registration_is_rejected_one_shot ... ok
+test vmm::tests::pvclock_oracle_check_fails_on_a_corrupted_page ... ok
+test vmm::tests::pvclock_only_composition_rejects_unoffered_doorbell_services ... ok
+test vmm::tests::pvclock_channel_configuration_reaches_state_identity ... ok
+test vmm::tests::pvclock_registration_is_pending_and_the_handshake_stamps ... ok
+test vmm::tests::pvclock_refresh_tracks_the_trap_oracle_through_intercepts ... ok
+test vmm::tests::pvclock_registration_rejects_the_lapic_mmio_hole ... ok
+test vmm::tests::pvclock_registration_requires_the_determinism_path ... ok
+test vmm::tests::pvclock_registration_rejects_bad_gpas ... ok
+test vmm::tests::pvclock_restored_registration_arms_immediately ... ok
+test vmm::tests::pvclock_unavailable_answers_unknown_service_before_classifying ... ok
+test vmm::tests::pvclock_same_seed_runs_are_bit_identical_with_the_page_on ... ok
+test vmm::tests::pvclock_state_hash_separates_registrable_from_unregistrable ... ok
+test vmm::tests::rdrand_rdseed_draw_from_the_seeded_stream ... ok
+test vmm::tests::rdtsc_completes_with_vtime_tsc_not_host ... ok
+test vmm::tests::rdtsc_is_strictly_monotonic_when_work_advances ... ok
+test vmm::tests::rdtscp_completes_with_vtime_tsc ... ok
+test vmm::tests::report_port_non_dword_fails_closed ... ok
+test vmm::tests::rdmsr_ia32_tsc_matches_rdtsc_instruction_and_is_deterministic ... ok
+test vmm::tests::report_port_out_appends_values_in_order ... ok
+test vmm::tests::pvclock_registration_does_not_synchronize_off_the_pio ... ok
+test vmm::tests::pvclock_seal_never_touches_the_live_page ... ok
+test vmm::tests::high_ram_base_resolves_absolute_gpas_and_hashes_the_doorbell ... ok
+test vmm::tests::reseed_entropy_requires_a_wired_stream ... ok
+test vmm::tests::restore_guest_memory_overwrites_the_backing_and_checks_length ... ok
+test vmm::tests::pvclock_seal_is_verbatim_and_restore_carries_the_registration ... ok
+test vmm::tests::pvclock_unregistered_guest_is_guest_identical_and_differs_only_in_pvck ... ok
+test vmm::tests::report_stream_round_trips_through_save_restore ... ok
+test vmm::tests::restore_canonicalizes_raw_events_from_an_external_blob ... ok
+test vmm::tests::restore_vm_state_rearms_the_first_entry_work_prepare ... ok
+test vmm::tests::restore_vm_state_rejects_a_non_empty_timer_queue ... ok
+test vmm::tests::restore_into_unwired_vm_rejects_a_vtime_bearing_blob ... ok
+test vmm::tests::restore_vtime_atomic_on_backend_failure ... ok
+test vmm::tests::restore_vm_state_rejects_a_legacy_wiring_mismatch ... ok
+test vmm::tests::restore_vtime_fails_closed_at_rng_mid_exit_boundary ... ok
+test vmm::tests::restore_vtime_failure_leaves_counter_a_not_rearmed ... ok
+test vmm::tests::restore_vtime_leaves_a_pending_registration_unstamped ... ok
+test vmm::tests::restore_vtime_rearms_counter_a_first_entry_baseline ... ok
+test vmm::tests::restore_vtime_restamps_the_armed_page_to_the_restored_timeline ... ok
+test vmm::tests::restore_vm_state_rejects_a_staged_non_rng_completion ... ok
+test vmm::tests::restore_vtime_rejects_bad_snapshot_atomically ... ok
+test vmm::tests::restored_and_fresh_at_same_effective_vtime_hash_identically ... ok
+test vmm::tests::rng_exit_advances_the_vtim_work_anchor ... ok
+test vmm::tests::rng_width_only_accepts_architectural_2_4_8 ... ok
+test vmm::tests::run_error_leaves_vtime_desynchronized ... ok
+test vmm::tests::run_does_not_cache_the_vcpu_on_a_resumable_sdk_stop ... ok
+test vmm::tests::run_stops_on_an_sdk_assertion_not_the_later_terminal ... ok
+test vmm::tests::run_until_deadline_advances_anchor_and_fires_the_timer ... ok
+test vmm::tests::restore_vm_state_rejects_a_different_contract_atomically ... ok
+test vmm::tests::save_vm_state_fails_closed_on_backend_save_error ... ok
+test vmm::tests::save_vm_state_fails_closed_on_unrepresentable_sregs ... ok
+test vmm::tests::restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation ... ok
+test vmm::tests::save_vm_state_captures_the_uart_dlm ... ok
+test vmm::tests::restore_vm_state_rejects_a_clock_rate_mismatch ... ok
+test vmm::tests::save_vm_state_fails_closed_at_rng_and_non_synchronized_boundaries ... ok
+test vmm::tests::save_vm_state_rejects_a_pending_pvclock_registration ... ok
+test vmm::tests::restore_vm_state_reproduces_the_blob_byte_for_byte ... ok
+test vmm::tests::restore_vm_state_resumes_tsc_and_forked_entropy_exactly ... ok
+test vmm::tests::save_vtime_anchors_vns_to_last_intercept_not_live_work ... ok
+test vmm::tests::save_vtime_fails_closed_at_non_intercept_exit ... ok
+test vmm::tests::save_vtime_fails_closed_at_rng_mid_exit_boundary ... ok
+test vmm::tests::save_vtime_is_none_when_unwired ... ok
+test vmm::tests::serial_and_exit_counts_accessors_reflect_the_run ... ok
+test vmm::tests::serial_irq_suppressed_while_8259_masks_it ... ok
+test vmm::tests::serial_acceptance_takes_no_lapic_isr_transition ... ok
+test vmm::tests::sdk_snapshot_restore_resumes_the_seeded_streams ... ok
+test vmm::tests::serial_thre_interrupt_injects_com1_vector ... ok
+test vmm::tests::snapshot_restore_continues_the_clock_and_rng_exactly ... ok
+test vmm::tests::stale_vector_re_arbitrated_away_after_tpr_raise ... ok
+test vmm::tests::start_run_fires_once_at_first_guest_entry_via_step_or_run ... ok
+test vmm::tests::save_vm_state_round_trips_through_the_codec ... ok
+test vmm::tests::snapshot_hashing_is_gated_off_by_default ... ok
+test vmm::tests::state_hash_does_not_read_the_live_work_counter ... ok
+test vmm::tests::tsc_adjust_access_records_work_in_the_hash ... ok
+test vmm::tests::tsc_adjust_state_is_in_the_hash ... ok
+test vmm::tests::unwired_rdtsc_and_rdrand_fail_closed ... ok
+test vmm::tests::vtim_is_deterministic_twice_despite_terminal_skid ... ok
+test vmm::tests::state_components_breakdown_is_stable_and_covers_state ... ok
+test vmm::tests::vtime_snapshot_round_trips_tsc_adjust ... ok
+test vmm::tests::pvclock_restore_mismatch_fails_loud ... ok
+test vmm::tests::vtime_wiring_rejects_fractional_ratio ... ok
+test vmm::tests::wholesale_host_write_poisons_the_drain_until_reset ... ok
+test work::tests::default_start_run_is_a_no_op ... ok
+test work::tests::scripted_advances_resets_and_saturates ... ok
+test work::tests::scripted_at_starts_offset ... ok
+test work::tests::work_source_is_object_safe ... ok
+test vmm::tests::vtime_state_is_hashed_and_distinguishes_seed_and_vns_base ... ok
+test vmm::tests::snapshot_restore_re_derives_the_in_flight_lapic_irq ... ok
+test vmm::tests::sdk_snapshot_round_trips_the_pending_deferred_point_hash ... ok
+test vmm::tests::save_vm_state_captures_in_flight_events_at_a_non_quiescent_point ... ok
+test vmm::tests::state_hash_folds_the_active_buggify_policy ... ok
+test vmm::tests::wiring_snapshot_hashing_folds_the_canonical_blob_into_the_hash ... ok
+test vmm::tests::state_components_localizes_a_doorbell_only_divergence ... ok
+test vmm::tests::state_hash_folds_the_sdk_stream_and_is_absent_when_unwired ... ok
+test vendor::x86::contract::tests::prop_amd_canonical_form_invariant_to_formatting ... ok
+test control::tests::arbitrary_schedule_applied_twice_is_identical ... ok
+test control::tests::verb_sequence_recorded_env_reproduces_live_hash ... ok
+test control::tests::idle_hlt_before_fault_recorded_env_reproduces ... ok
+test control::tests::observations_never_change_hash_or_stop_outcomes ... ok
+test control::tests::taint_propagates_exactly_along_ancestry ... ok
+
+test result: ok. 495 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.26s
+
+     Running tests/arm64_skeleton.rs (target/debug/deps/arm64_skeleton-01dbdb9db7690c9d)
+
+running 14 tests
+test arm64_dispatch_fails_closed_on_unruled_surface ... ok
+test arm64_interrupt_seams_report_no_fabric ... ok
+test arm64_boot_composes_a_ready_vmm ... ok
+test arm64_restore_rejects_a_foreign_blob ... ok
+test arm64_generic_timer_feeds_the_deadline_seam ... ok
+test arm64_serial_capture_rides_the_snapshot ... ok
+test arm64_restore_rejects_a_contract_mismatch ... ok
+test mock_arm64_backend_enforces_the_run_loop_contract ... ok
+test engine_drives_the_arm64_vendor_through_common_exits ... ok
+test arm64_board_mmio_routes_pl011_doorbell_and_gic ... ok
+test arm64_unwired_restore_requires_the_full_vtime_sentinel ... ok
+test arm64_gic_fabric_arbitrates_and_rides_the_snapshot ... ok
+test arm64_snapshot_round_trip_is_restore_transparent ... ok
+test arm64_state_components_localizes_a_gic_only_divergence ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/arm64_tcg_smoke.rs (target/debug/deps/arm64_tcg_smoke-f304d818253bfa87)
+
+running 1 test
+test image_and_dtb_boot_on_qemu_tcg ... ignored, needs clang + llvm-objcopy + qemu-system-aarch64; runs via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/box_corpus.rs (target/debug/deps/box_corpus-da5b76aaf96120c4)
+
+running 3 tests
+test c1_corpus_o1_diagnostic ... ignored, box-only O1 localizer (needs patched KVM + built C1 payloads); run on the box with `-- --ignored --nocapture`
+test c1_corpus_o1_o2_on_the_patched_backend ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host + built C1 payloads; run on the box with `-- --ignored --nocapture`
+test c1_corpus_o1_repeat_diagnostic ... ignored, box-only N-run O1 localizer for insn-rdtsc / insn-rng (needs patched KVM + built C1 payloads); run on the box with `-- --ignored --nocapture`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/corpus_oracle_mock.rs (target/debug/deps/corpus_oracle_mock-e05be26da711ba86)
+
+running 3 tests
+test acceptance_suite_o2_digest_matches_the_observable_golden ... ok
+test acceptance_suite_o1_passes_over_the_vmm_bridge ... ok
+test acceptance_suite_o1_over_the_boxed_bridge_compiles_and_passes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/event_loop.rs (target/debug/deps/event_loop-01c0ad4e826f0d01)
+
+running 19 tests
+test guest_ram_validation_and_accessors ... ok
+test deadline_exit_fails_closed ... ok
+test hello_serial_and_clean_exit ... ok
+test non_byte_io_to_modeled_ports_fails_closed ... ok
+test cpuid_exit_serviced_from_frozen_model ... ok
+test step_after_terminal_is_idempotent ... ok
+test hlt_and_shutdown_are_terminal ... ok
+test state_hash_covers_msrs_xsave_and_mp_state ... ok
+test unmodeled_in_port_fails_closed ... ok
+test deny_gp_msr_injects_fault ... ok
+test allow_stateful_msr_surfacing_fails_closed ... ok
+test unmodeled_exits_fail_closed ... ok
+test isa_debug_exit_codes_distinguished ... ok
+test wrmsr_dispositions_serviced ... ok
+test allow_fixed_msr_returns_constant ... ok
+test state_hash_distinguishes_segment_and_event_fields ... ok
+test state_hash_masks_only_an_unusable_segments_type ... ok
+test emulate_vtime_msr_fails_closed_both_directions ... ok
+test state_hash_is_pure_and_covers_every_component ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/linux_loader_proptest.rs (target/debug/deps/linux_loader_proptest-fc5e2d77fb284119)
+
+running 4 tests
+test truncated_valid_image_total ... ok
+test valid_magic_load_total ... ok
+test parse_header_total ... ok
+test load_total ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s
+
+     Running tests/live_branching_demo.rs (target/debug/deps/live_branching_demo-e49ade4ffe0a01e8)
+
+running 2 tests
+test branching_demo_reproducibility_and_divergence ... ignored, box-only branching demo (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test scan_snapshot_points ... ignored, diagnostic, box-only: scans for snapshummable points across a live Postgres run
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_determinism.rs (target/debug/deps/live_determinism-a9bf3cb495f59b49)
+
+running 2 tests
+test p6_rdtsc_rng_are_deterministic_and_vtime_backed ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on `ssh <det-box>` with `-- --ignored`
+test p6_snapshot_restore_resumes_both_clocks_exactly ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on `ssh <det-box>` with `-- --ignored`
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_dirty_remap.rs (target/debug/deps/live_dirty_remap-6cce596aa65d442e)
+
+running 3 tests
+test a0_dirty_logging_is_guest_inert ... ignored, box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run per docs/BOX-PINNING.md
+test a_harvested_derive_matches_full_scan_capture ... ignored, box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run per docs/BOX-PINNING.md
+test b_remap_and_memcpy_restores_agree ... ignored, box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run per docs/BOX-PINNING.md
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_exec_improvisation.rs (target/debug/deps/live_exec_improvisation-3537d54bdefe110a)
+
+running 2 tests
+test exec_improvisation_is_off_the_record_and_costs_the_search_nothing ... ignored, box-only improvisation gate (LOADED patched KVM + built image + det-cfl-v1 host); run per docs/BOX-PINNING.md
+test smoke_exec_channel_boots_injects_and_scrapes_a_sentinel ... ignored, box-only smoke probe of the exec serial channel (exec-capable image); run per docs/BOX-PINNING.md before the full gate
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_host_plane.rs (target/debug/deps/live_host_plane-f89421449402967a)
+
+running 1 test
+test host_plane_record_replay_closure ... ignored, box-only host-plane enforcement gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run per docs/BOX-PINNING.md
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_k3s_postgres.rs (target/debug/deps/live_k3s_postgres-0fd1355d23ce4b17)
+
+running 3 tests
+test k1_k3s_cluster_postgres_client_streams_patched ... ignored, box-only live gate (LOADED patched KVM + built k3s image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test k2_k3s_postgres_deterministic_twice_patched ... ignored, MILESTONE gate (task 49): same-seed bit-identical k3s Postgres client->server run; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+test k3_k3s_postgres_seed_sensitivity_patched ... ignored, box-only seed-sensitivity gate (task 42/49): different seed ⇒ different UUIDs through the k3s cluster; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_linux_boot.rs (target/debug/deps/live_linux_boot-e40bdd8945fded7d)
+
+running 3 tests
+test a_linux_boots_to_userspace_stock ... ignored, box-only live gate (real KVM + built guest image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test c_linux_boot_deterministic_twice_patched ... ignored, box-only determinism gate (LOADED patched KVM + built guest image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test gate3_linux_guest_ready_and_clean_poweroff ... ignored, MILESTONE gate (task 30 gate 3): GUEST_READY + clean poweroff via the Phase B interrupt-injection seam; run on the box with `-- --ignored --nocapture`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_m1_m2.rs (target/debug/deps/live_m1_m2-d77f88ba8d3a2e0b)
+
+running 4 tests
+test host_assert_report ... ignored, box-only host-baseline diagnostic; run on `ssh <det-box>` with `-- --ignored`
+test m1_hello_boots_and_prints ... ignored, box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored`
+test m2_compute_deterministic_twice ... ignored, box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored`
+test m2_hello_deterministic_twice ... ignored, box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored`
+
+test result: ok. 0 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_moment_address.rs (target/debug/deps/live_moment_address-fc9bd0afeb29e9cc)
+
+running 1 test
+test moment_address_materializes_identically_twice ... ignored, box-only moment-address gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run per docs/BOX-PINNING.md
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_nonquiescent_snapshot.rs (target/debug/deps/live_nonquiescent_snapshot-09b6915f2d45894c)
+
+running 3 tests
+test gate1_nonquiescent_point_is_snapshottable ... ignored, box-only non-quiescent snapshot gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test gate2_mid_postgres_roundtrip_is_deterministic ... ignored, box-only non-quiescent snapshot gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test gate3_branching_from_a_mid_postgres_snapshot ... ignored, box-only non-quiescent branching gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_postgres.rs (target/debug/deps/live_postgres-09ef258f210cea1c)
+
+running 3 tests
+test p1_postgres_runs_and_streams_patched ... ignored, box-only live gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test p2_postgres_deterministic_twice_patched ... ignored, MILESTONE gate (task 37): same-seed bit-identical Postgres run; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+test p3_postgres_seed_sensitivity_patched ... ignored, box-only seed-sensitivity gate (task 42): different seed ⇒ different UUIDs; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_postgres_docker.rs (target/debug/deps/live_postgres_docker-d74a73efd801c0d3)
+
+running 3 tests
+test p1_docker_postgres_runs_and_streams_patched ... ignored, box-only live gate (LOADED patched KVM + built Docker image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test p2_docker_postgres_deterministic_twice_patched ... ignored, MILESTONE gate (task 38): same-seed bit-identical Postgres-in-Docker run; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+test p3_docker_postgres_seed_sensitivity_patched ... ignored, box-only seed-sensitivity gate (task 42): different seed ⇒ different UUIDs through the container; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_preemption.rs (target/debug/deps/live_preemption-28714baa12744d39)
+
+running 2 tests
+test busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice ... ignored, box-only gate 2: LOADED patched KVM + perf + built irq-landing; run on the box with `-- --ignored --nocapture` (see header)
+test preemption_instant_is_a_pure_function_of_the_seed ... ignored, box-only gate 2: LOADED patched KVM + perf + built irq-landing-rng; run on the box with `-- --ignored --nocapture` (see header)
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_pvclock.rs (target/debug/deps/live_pvclock-4e97186aaaed8321)
+
+running 6 tests
+test g0_smoke_boot_registers_and_reads_sane_time ... ignored, box-only: needs /dev/kvm (patched), perf_event, det-cfl-v1, and the pvclock kernel build (see the Environment section)
+test g1_same_seed_state_hash_bit_identical_page_on ... ignored, box-only (see g0); run g0 first — smoke-fire-once
+test g2_page_matches_trap_oracle_at_refresh_moments ... ignored, box-only (see g0); run g0 first — smoke-fire-once
+test g3_busy_wait_on_page_time_terminates_within_delta ... ignored, box-only (see g0); needs initramfs-exec.cpio.gz + INITRAMFS_EXEC_SHA256; run g0 first
+test n4_perf_postgres_window_page_off_vs_page_on ... ignored, box-only (see g0); long — run after g0/g1; needs initramfs-postgres.cpio.gz
+test n4_perf_rdtsc_exit_rate_page_off_vs_page_on ... ignored, box-only (see g0); run g0 first — smoke-fire-once
+
+test result: ok. 0 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_runc_postgres.rs (target/debug/deps/live_runc_postgres-d6d0b6d48a7de05e)
+
+running 3 tests
+test r1_runc_postgres_runs_and_streams_patched ... ignored, box-only live gate (LOADED patched KVM + built Docker image + det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`
+test r2_runc_postgres_deterministic_twice_patched ... ignored, MILESTONE gate (task 48): same-seed bit-identical real-runc Postgres-OCI run; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+test r3_runc_postgres_seed_sensitivity_patched ... ignored, box-only seed-sensitivity gate (task 42/48): different seed ⇒ different UUIDs through the real-runc container; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_sdk.rs (target/debug/deps/live_sdk-153a6b6952512efd)
+
+running 3 tests
+test box_gate_a_sdk_run_is_deterministic ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host
+test box_gate_b_buggify_violation_replays_n_of_n ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host
+test box_gate_c_never_fired_detection ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/live_snapshot_branch.rs (target/debug/deps/live_snapshot_branch-8a9713284447ee12)
+
+running 3 tests
+test gate1_restore_replays_bit_identical ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on `ssh <det-box>` with `-- --ignored`
+test gate2_capture_is_dirty_set_proportional ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on `ssh <det-box>` with `-- --ignored`
+test gate3_n_vms_share_one_read_only_base ... ignored, box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on `ssh <det-box>` with `-- --ignored`
+
+test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/loader_proptest.rs (target/debug/deps/loader_proptest-f9aa97b9978aa5e7)
+
+running 3 tests
+test aligned_magic_total ... ok
+test parse_header_total ... ok
+test load_total ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.63s
+
+     Running tests/n3_repeat_gate.rs (target/debug/deps/n3_repeat_gate-9c07690745c50b77)
+
+running 1 test
+test n3_repeat_gate ... ignored, SPIKE(nested-x86) live repeat gate; run via the N-3 appliance harness
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/protocol.rs (target/debug/deps/protocol-e747d252b62be59f)
+
+running 5 tests
+test a_dangling_snapshot_handle_is_an_error ... ok
+test dropping_a_snapshot_releases_it_from_the_store ... ok
+test a_dropped_snapshot_is_no_longer_branchable_and_double_drop_is_an_error ... ok
+test the_neutrality_test_is_not_comparing_a_constant ... ok
+test observing_a_run_does_not_change_its_state_hash ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-5c1050932c60bb1c)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/seal_rate_sweep.rs (target/debug/deps/seal_rate_sweep-42e0ff8d3302f653)
+
+running 1 test
+test seal_rate_sweep ... ignored, box-only seal-rate measurement (LOADED patched KVM + Postgres image + det-cfl-v1 host); run pinned to core 2 with `-- --ignored --nocapture`, then revert KVM to stock 1396736
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/snapshot_branch.rs (target/debug/deps/snapshot_branch-84b52896b5c86fd2)
+
+running 8 tests
+test derive_captures_only_pages_dirtied_since_the_parent ... ok
+test non_quiescent_in_flight_events_round_trip_through_the_engine ... ok
+test snapshot_then_restore_round_trips_a_running_vm ... ok
+test snapshot_hashing_round_trips_at_a_residual_events_point ... ok
+test snapshot_hashing_makes_restore_reproduce_the_state_hash ... ok
+test vmst_chunk_masks_an_unusable_segments_type ... ok
+test task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact ... ok
+test n_branches_share_one_boot_image_and_fork_entropy ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (target/debug/deps/vtime-fab0889d98386d28)
+
+running 52 tests
+test clock::tests::advance_idle_saturates ... ok
+test clock::tests::rejects_immediate_saturation_but_accepts_exact_max ... ok
+test clock::tests::rejects_zero_den ... ok
+test clock::tests::rejects_zero_num ... ok
+test clock::tests::snapshot_vns_equals_vns ... ok
+test clock::tests::tsc_matches_formula ... ok
+test clock::tests::vns_matches_formula ... ok
+test clock::tests::work_for_vns_edges ... ok
+test clock::tests::work_for_vns_unreachable_saturates ... ok
+test error::tests::backend_error_message_is_preserved ... ok
+test error::tests::skid_exceeded_carries_diagnostics ... ok
+test idle::tests::at_deadline_is_zero_jump ... ok
+test idle::tests::far_future_deadline_saturates_without_wrap ... ok
+test idle::tests::future_deadline_lands_exactly_at_d ... ok
+test idle::tests::invariants_hold_for_representative_pairs ... ok
+test idle::tests::overdue_deadline_is_zero_jump ... ok
+test planner::tests::backend_errors_propagate ... ok
+test planner::tests::contract_violating_step_is_loud ... ok
+test planner::tests::long_distance_arms_then_steps ... ok
+test planner::tests::overflow_exactly_on_target_is_skid_exceeded ... ok
+test planner::tests::overflow_one_before_target_single_steps_to_exact ... ok
+test planner::tests::overshoot_after_arm_is_skid_exceeded ... ok
+test planner::tests::permanent_stall_fails_closed_instead_of_hanging ... ok
+test planner::tests::short_distance_steps_only ... ok
+test planner::tests::sparse_but_progressing_stream_does_not_trip ... ok
+test planner::tests::stall_after_overflow_fails_closed ... ok
+test planner::tests::target_equals_now_is_immediate ... ok
+test planner::tests::target_in_past_is_reported ... ok
+test pvclock::tests::a_verbatim_sealed_page_keeps_restored_and_continued_runs_in_lockstep ... ok
+test pvclock::tests::canonical_is_total_function_of_values ... ok
+test pvclock::tests::canonical_reset_would_be_an_aba_on_a_live_page ... ok
+test pvclock::tests::read_refuses_odd_seq_and_bad_abi ... ok
+test pvclock::tests::seq_epoch_wraps_deterministically ... ok
+test pvclock::tests::short_slices_are_total_no_ops ... ok
+test pvclock::tests::stamp_epoch_forces_straddling_reader_retry ... ok
+test pvclock::tests::stamp_is_value_keyed_idempotent ... ok
+test pvclock::tests::stamp_repairs_guest_scribbles_in_fixed_fields ... ok
+test pvclock::tests::stamp_publishes_all_fields_le ... ok
+test queue::tests::empty_queue ... ok
+test queue::tests::cancel_periodic ... ok
+test queue::tests::catchup_interleaves_with_other_timers ... ok
+test queue::tests::rearm_overflow_drops_timer ... ok
+test queue::tests::reschedule_replaces ... ok
+test queue::tests::zero_period_rejected ... ok
+test sim::tests::density_one_counts_every_instruction ... ok
+test sim::tests::overflow_respects_contract ... ok
+test sim::tests::rejects_bad_density ... ok
+test queue::tests::oneshot_fires_once ... ok
+test sim::tests::reset_work_counter_keeps_stream_state ... ok
+test sim::tests::overflow_at_passed_count_stops_immediately ... ok
+test sim::tests::same_seed_same_behavior ... ok
+test sim::tests::zero_seed_is_usable ... ok
+
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/arithmetic.rs (target/debug/deps/arithmetic-9482cb5ef82c74d7)
+
+running 7 tests
+test saturation_ratio_one_to_one ... ok
+test saturation_tsc_huge_hz ... ok
+test saturation_work_max_everywhere ... ok
+test saturation_huge_num_den_one ... ok
+test roundtrip_from_work ... ok
+test roundtrip_from_time ... ok
+test vns_tsc_monotonic_and_match_formula ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/e2e.rs (target/debug/deps/e2e-d331590510bf0a64)
+
+running 1 test
+test thousand_firings_exact_and_replayable ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/idle_resume.rs (target/debug/deps/idle_resume-6110fa097b387faa)
+
+running 2 tests
+test idle_and_execute_track_independent_model ... ok
+test same_ops_are_deterministic_twice ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/planner.rs (target/debug/deps/planner-1936748d979b6de7)
+
+running 5 tests
+test skid_exceeding_margin_is_loud ... ok
+test skid_draws_cover_zero_and_max ... ok
+test sparse_stream_steps_many_instructions_per_event ... ok
+test boundary_distances_are_exact ... ok
+test planner_always_stops_exactly ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/public_api.rs (target/debug/deps/public_api-02c552a8a631694f)
+
+running 1 test
+test public_api_matches_snapshot ... ignored, needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pvclock.rs (target/debug/deps/pvclock-9b6b60001f69c39e)
+
+running 4 tests
+test stamp_read_round_trip ... ok
+test short_slices_never_panic ... ok
+test canonical_erases_history ... ok
+test page_bytes_are_schedule_independent ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/queue.rs (target/debug/deps/queue-56645e93726623a1)
+
+running 5 tests
+test fifo_tie_break_for_equal_deadlines ... ok
+test nothing_due_pops_nothing ... ok
+test periodic_rearm_has_no_drift ... ok
+test reschedule_moves_to_back_of_fifo_class ... ok
+test replay_produces_identical_firing_sequence ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/restore.rs (target/debug/deps/restore-d0487181137e0a7f)
+
+running 3 tests
+test restored_clock_continues_without_discontinuity ... ok
+test advance_idle_keeps_monotonicity_and_tsc_formula ... ok
+test restored_run_matches_unsnapshotted_reference ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+   Doc-tests acceptance_suite
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests control_proto
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests cpu_qualification
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests environment
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests gicv3
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hypercall_doorbell
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hypercall_proto
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests lapic
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests snapshot_store
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests telemetry
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests unison
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vm_state
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vmm_backend
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vmm_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vtime
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

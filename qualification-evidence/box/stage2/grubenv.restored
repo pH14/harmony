@@ -5,3 +5,4 @@ saved_entry=gnulinux-6.12.95+deb13-amd64-advanced-b8ae6f2e-e068-4cb0-8ad0-211e90
 6:GRUB_DEFAULT=saved
 9:GRUB_CMDLINE_LINUX_DEFAULT=""
 10:GRUB_CMDLINE_LINUX="spec_store_bypass_disable=on isolcpus=3 nohz_full=3 rcu_nocbs=3 console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 scaleway"
+saved_entry=gnulinux-advanced-b8ae6f2e-e068-4cb0-8ad0-211e900f3dc9>gnulinux-6.12.95+deb13-amd64-advanced-b8ae6f2e-e068-4cb0-8ad0-211e900f3dc9

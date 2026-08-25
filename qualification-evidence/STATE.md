@@ -29,38 +29,32 @@ session's own argv. Use PIDs from the run's `pids` file and `kill -0`.
 
 ## Box state now
 
-Kernel `6.18.35` (patched). SMT off, nmi_watchdog 0, governor performance,
-`spec_store_bypass_disable=on`, SpecLockMap disabled, AVIC off, md1 resync frozen,
-`perf_event_max_sample_rate` 100000000 with `perf_cpu_time_max_percent` 0.
-Cores 1,3,5,7,9,11,13,15 isolated. `/etc/default/grub` still carries the patched-kernel
-edits; `bash /root/kclose2.sh` restores the pristine file and names the stock release
-`6.12.95` explicitly rather than deriving it from `uname -r`.
+Closed. Kernel `6.12.95+deb13-amd64`, the stock Debian kernel the pack seals, booted from
+the restored pristine `/etc/default/grub` with the GRUB default pinned to it in the
+two-level submenu form. Posture re-applied and recorded in
+`qualification-evidence/box/posture-close.txt`. Nothing running.
+
+That kernel had to be reinstalled: item 6's build dependencies pulled Debian's
+`linux-image-amd64` forward to 6.12.101 and removed 6.12.95's image. See
+`stock-kernel-moved-under-the-program.md`.
 
 ## Running
 
-- The attested-exit supplement, since 07:43Z. 15 shards (`ae3-instr`, cores 0,1,2,4-15),
-  `--margin 16192 --min-target 16193 --arms 24000 --replay --retries 3`. Records
-  `/root/qual-evidence/stage2/supplement/core<N>.json`, PIDs in `.../supplement/pids`,
-  per-minute counts in `.../supplement/progress.log`. About 4,970 arms a minute. Stop at
-  about 301,000 arms, which puts total attested exits over a million; kill by PID from
-  the `pids` file.
-- `close-a.sh` on core 3 since 08:04Z, output `/root/qual-evidence/stage2/close-a.out`
-  and `patched-close.log`. The enforcement probes are done and the single-step records
-  are byte-identical to the stock ones; `ae5-gate --reps 1000` is still running.
+Nothing.
 
 ## Next
 
-1. Poll the supplement to about 301,000 arms, kill by PID, then
-   `python3 /root/campaign-analysis.py /root/qual-evidence/stage2/supplement` and
-   `digest-validate.py`. Report the isolated cores and the co-tenant cores separately.
-2. `bash /root/ceiling-control.sh` on a quiet box: drops the sampling ceiling, shows
-   `check` refuse, restores it, shows `check` accept. It changes a kernel setting every
-   measurement depends on, so never while anything is running.
-3. Write up the patched-kernel enforcement half from `patched-close.log`.
-4. Item 8: `bash <scratchpad>/pull-campaign.sh` (gzips the shard files then rsyncs),
-   `bash /root/kclose2.sh`, reboot, poll ssh, `bash /root/posture.sh`,
-   `bash <scratchpad>/ship.sh`, `bash /root/stage0-recheck.sh`, rsync, final commit
-   (no push), final report from `<scratchpad>/report-draft.md`.
+The program is complete. Every item is closed and the report has been delivered. What is
+left for someone else:
+
+1. The four `chunks_exact` sites that fail the clippy gate on Linux with current stable,
+   and the unpinned toolchain behind them: `linux-clippy-on-current-stable.md`.
+2. The backend's hardcoded `SKID_MARGIN` of 256, which no consumer reads the pack for:
+   `backend-margin-not-from-the-pack.md`.
+3. The determinism series' RDTSC intercept, wired only on the other vendor:
+   `amd-determinism-kernel-gap.md`.
+4. `count_offsets` and `single_step.work_per_step` stay absent until the suite's stage 2
+   is built.
 
 ## Recorded failures so far
 
