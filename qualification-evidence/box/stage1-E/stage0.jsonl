@@ -1,0 +1,55 @@
+{"kind":"plan","baseline":"det-zen3-v1","stage":0,"floors":{"min_clean_reps":0,"min_overflow_arms":0,"skid_margin":0}}
+{"kind":"chip_identity","vendor":"AuthenticAMD","identity":"19_01_01","microcode_rev":"0x000000000a0011a9","table_entry":"AuthenticAMD families 17h-1Ah"}
+{"kind":"host_row","condition":"avic-off","scope":"host","expect":"off","found":"off","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"chip-identity","scope":"host","expect":"19_01_01","found":"19_01_01","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"chip-microcode-rev","scope":"host","expect":"0x000000000a0011a9","found":"0x000000000a0011a9","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"chip-vendor","scope":"host","expect":"AuthenticAMD","found":"AuthenticAMD","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"core-pinning","scope":"host","expect":"pinned to cpu3","found":"pinned to cpu3","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu0","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu1","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu10","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu11","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu12","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu13","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu14","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu15","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu2","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu3","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu4","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu5","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu6","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu7","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu8","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu9","expect":"performance","found":"performance","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"kvm-module-identity","scope":"kvm","expect":"srcversion unrecorded, build-id 61680f4470b7d6881ff0c25d941d35457316e90e","found":"srcversion unrecorded, build-id 61680f4470b7d6881ff0c25d941d35457316e90e","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"kvm-module-identity","scope":"kvm_amd","expect":"srcversion unrecorded, build-id 108ce949651645819c7b64a80808c9bccd7fe5c1","found":"srcversion unrecorded, build-id 108ce949651645819c7b64a80808c9bccd7fe5c1","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"kvm-present","scope":"host","expect":"present, read-write","found":"present, read-write","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"nmi-watchdog-off","scope":"host","expect":"off","found":"off","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"perf-sample-ceiling","scope":"cpu-time-max-percent","expect":"0","found":"0","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"perf-sample-ceiling","scope":"max-sample-rate","expect":"100000000","found":"100000000","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"pmu-shape","scope":"host","expect":"AMD core performance monitoring","found":"AMD core performance monitoring","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"smt-policy","scope":"host","expect":"off","found":"off","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-commits","scope":"host","expect":"zero","found":"zero","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu0","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu1","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu10","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu11","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu12","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu13","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu14","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu15","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu2","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu3","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu4","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu5","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu6","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu7","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu8","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu9","expect":"disabled","found":"disabled","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-probe-ran","scope":"host","expect":"nonzero","found":"nonzero","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"ssb-mitigation-pinned","scope":"host","expect":"on","found":"on","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-counts","scope":"host","expect":"nonzero","found":"nonzero","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-event-config","scope":"host","expect":"0x5100d1","found":"0x5100d1","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-guest-only","scope":"host","expect":"openable","found":"openable","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-non-multiplexed","scope":"host","expect":"non-multiplexed","found":"non-multiplexed","confirmed":true,"disposition":null}
+{"kind":"end","stage":0,"rc":0}

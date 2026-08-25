@@ -1,0 +1,13 @@
+2026-08-25T03:21:32Z
+0.36 0.69 0.73 1/454 14850
+    PID STAT %CPU COMMAND
+  14829 Ss   36.1 systemd
+  14823 Ss    0.8 sshd-session
+    990 I     0.5 kworker/0:2-rcu_gp
+      1 Ss    0.2 systemd
+   7168 I     0.1 kworker/0:0-events
+100000000
+0
+md1 : active raid1 nvme0n1p4[0] nvme1n1p3[1]
+      1869988864 blocks super 1.2 [2/2] [UU]
+      	resync=PENDING

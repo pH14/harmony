@@ -1,0 +1,25 @@
+{
+  "kind": "fixpoint",
+  "components": [
+    "regs",
+    "sregs",
+    "xsave",
+    "xcrs",
+    "msrs",
+    "vcpu-events"
+  ],
+  "missing": [],
+  "first_bytes": 6040,
+  "second_bytes": 6040,
+  "differing": [
+    "HV_X64_MSR_TIME_REF_COUNT (0x40000020): written 0x100002136, which is 4294967296 past the 0x2136 it held, and read back 0x214c. The write was accepted and ignored, so this register does not restore"
+  ],
+  "time_bases": [
+    "IA32_TIME_STAMP_COUNTER (0x00000010): restored 0xfc26a, read 0x11a40e, advanced 123300 of at most 222158 the round trip could consume",
+    "HV_X64_MSR_TIME_REF_COUNT (0x40000020): restored 0x1ea1, read 0x203a, advanced 409 of at most 1738 the round trip could consume",
+    "HV_X64_MSR_VP_RUNTIME (0x40000010): restored 0x6c24, read 0x6cce, advanced 170 of at most 1738 the round trip could consume"
+  ],
+  "msrs_not_owned": [
+    "0x4b564d06"
+  ]
+}

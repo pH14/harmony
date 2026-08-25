@@ -1,0 +1,9 @@
+{
+  "kernel": "6.12.95+deb13-amd64",
+  "path": "/lib/modules/6.12.95+deb13-amd64/kernel/arch/x86/kvm/kvm-amd.ko.xz",
+  "role": "stock",
+  "schema": "amd-epyc-kvm_amd-identity-v1",
+  "sha256": "f47394d960a6c60ba139965c1719d142e43abd1adc4c5a7cf87eb11b238d338d",
+  "srcversion": "",
+  "vermagic": "6.12.95+deb13-amd64 SMP preempt mod_unload modversions"
+}

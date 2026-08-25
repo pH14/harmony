@@ -1,0 +1,17 @@
+=== build harnesses ===
+cc -O2 -g -Wall -Wextra -std=gnu11 -o ae3-forceexit ae3-forceexit.c
+cc -O2 -g -Wall -Wextra -std=gnu11 -o ae5-gate ae5-gate.c
+ae5-gate.c:156:31: warning: "/*" within comment [-Wcomment]
+  156 |  * Returns 0 and fills *digest/*preempt/*hlt; -1 on harness error. */
+ae5-gate.c:156:40: warning: "/*" within comment [-Wcomment]
+=== singlestep-driver --mode tf ===
+rc=1
+=== singlestep-driver --mode btf ===
+rc=1
+=== ae4-freeze (CPUID freeze below host) ===
+rc=0
+=== ae4-msr (MSR default-deny trap) ===
+rc=0
+=== ae3-forceexit --smoke on the STOCK kernel (expected to refuse) ===
+ENABLE_CAP DETERMINISTIC_INTERCEPTS failed: Invalid argument (stock/unpatched kvm_amd? AE-3 needs the patched 6.18.35)
+rc=3

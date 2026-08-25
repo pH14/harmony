@@ -1,0 +1,11 @@
+0.30 0.67 0.60 1/452 10870
+    PID STAT %CPU COMMAND
+  10853 Ss    1.0 sshd-session
+    990 I     0.5 kworker/0:2-events
+   9648 Ss    0.3 systemd
+      1 Ss    0.3 systemd
+   7168 I     0.1 kworker/0:0-events
+Personalities : [raid1] [raid0] [raid6] [raid5] [raid4] [raid10] 
+md1 : active raid1 nvme0n1p4[0] nvme1n1p3[1]
+      1869988864 blocks super 1.2 [2/2] [UU]
+      	resync=PENDING

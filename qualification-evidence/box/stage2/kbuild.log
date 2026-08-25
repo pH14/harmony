@@ -1,0 +1,23 @@
+=== deps ===
+Setting up libdw-dev:amd64 (0.192-4) ...
+Processing triggers for man-db (2.13.1-1) ...
+Processing triggers for libc-bin (2.41-12+deb13u3) ...
+=== record stock kvm_amd ===
+[build-6.18] recorded stock kvm_amd identity -> /root/qual-evidence/stage2/stock-kvm_amd.json
+=== fetch ===
+linux-6.18.35.tar.xz: OK
+[build-6.18] source tarball sha256 verified against the pin
+[build-6.18] extracted + git-tagged v6.18.35-pristine
+=== apply ===
+[build-6.18] in-repo series absent (standalone box copy); using pre-staged patches in /root/kbuild-618/patches
+Applying: KVM: x86: add KVM_EXIT_DETERMINISM userspace exit ABI
+Applying: KVM: x86: emulate intercepted RDTSC/RDTSCP/RDRAND/RDSEED to userspace
+Applying: KVM: VMX: enable RDTSC/RDRAND/RDSEED exiting for the deterministic backend
+Applying: KVM: x86: add KVM_EXIT_PREEMPT in-kernel force-exit preemption
+Applying: KVM: VMX: MTF-based deterministic single-step (patch 0005, 6.18 port)
+[build-6.18] canonical determinism series 0001-0005 applied (git am clean)
+error: corrupt patch at line 107
+[build-6.18] AMD svm.c hunk did NOT apply to 6.18.35 — nmi_interception context drift:
+2049:static int nmi_interception(struct kvm_vcpu *vcpu)
+3231:	[SVM_EXIT_NMI]				= nmi_interception,
+[build-6.18] STOP: re-anchor the hunk against 6.18.35 svm.c (do not force-fuzz)
