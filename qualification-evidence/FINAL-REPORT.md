@@ -244,7 +244,7 @@ Stage 0 run 3 on it: exit 0, 53 rows, 3 added versus runs 1 and 2 and 0 removed,
 3 added are exactly the sampling-ceiling pair from item 4 and core-isolated from item 7.
 `check --baseline det-zen3-v1` on the box: exit 0. `report` on the qualifying stage-1
 campaign against the pack as finally sealed: exit 0. Evidence synced to
-qualification-evidence/box. Final pack commit FINAL_SHA, not pushed.
+qualification-evidence/box. Final commit ac7fe893, not pushed; the pack itself is sealed 61a0829b and was last changed in d35050cc.
 
 Code changed, and why each one was in scope
 Only the pack, plus defects the box exposed, one commit each.
