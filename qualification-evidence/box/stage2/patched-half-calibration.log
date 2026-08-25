@@ -1,0 +1,17 @@
+=== identity ===
+6.18.35
+6.18.35 SMP preempt mod_unload modversions 
+avic=N nested=1
+=== ae3 smoke (one arm, mechanism attestation) ===
+2026-08-25T04:12:18Z
+[ae3] arms=1 preempt=1 exact=1 overshoot=0 skid_max=2993 rc=0
+smoke rc=0
+=== ae3 calibration (400 targets, replay, margin 16192) ===
+2026-08-25T04:12:19Z
+[ae3] arms=400 preempt=400 exact=400 overshoot=0 skid_max=5642 rc=0
+
+real	1m12.463s
+user	0m23.364s
+sys	0m49.120s
+calibration rc=0
+2026-08-25T04:13:31Z

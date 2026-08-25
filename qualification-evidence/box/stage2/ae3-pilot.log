@@ -1,0 +1,16 @@
+=== pilot: 2000 targets at margin 8192 ===
+2026-08-25T04:14:45Z
+[ae3] arms=2000 preempt=2000 exact=2000 overshoot=0 skid_max=5284 rc=0
+
+real	2m31.843s
+user	0m48.093s
+sys	1m43.694s
+pilot rc=0
+targets=2000 landings=4000 (replay doubles each target)
+landed_exact=2000 overshoot=0 preempt_exit=1828 replay_match=2000 irq_dirty=1836 rearmed=0
+work_landed==target on 2000 of 2000
+skid min=0 max=5284 mean=2714.2 p99=3461
+single-steps per arm: min=2908 max=6681 mean=5222.4
+margin used=8192 event=0x5100d1 harness rc=0
+arms failing the harness conjunction: 0
+2026-08-25T04:17:17Z

@@ -1,0 +1,4 @@
+[
+  {"kind":"arm","idx":0,"target":50000,"margin":16192,"period":33808,"work_at_preempt":36801,"skid":2993,"work_landed":50000,"preempt_exit":1,"landed_exact":1,"overshoot":0,"irq_dirty":1,"rearmed":0,"digest":"35c9171d38f6c44e","replay":0,"replay_digest":"0000000000000000","replay_match":1,"core":3,"ok":1},
+  {"kind":"end","arms":1,"n_preempt":1,"n_exact":1,"n_overshoot":0,"skid_max":2993,"event":5308625,"rc":0}
+]
