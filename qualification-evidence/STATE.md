@@ -43,27 +43,52 @@ into `qualification-evidence/box/`), `posture.sh` (also on the box at `/root/pos
 
 ## Running
 
-Stage 1 campaign B: `/root/qual-evidence/stage1-B`, PID 8655, launched 02:55Z, pinned to
-cpu3, console at `/root/qual-evidence/stage1-B/console.txt`. Nothing else runs on the box.
-Campaign A2's verdict, for comparison: skid n=1244458 min=26 max=8034, zero mismatches,
-zero lost, zero duplicated, zero premature, zero over margin.
+Stage 1 campaign D: `/root/qual-evidence/stage1-D`, PID 14854, launched 03:21Z, pinned to
+cpu3, about nine minutes. Nothing else runs on the box.
+
+## Where campaign C left the verdict
+
+Campaign C (`/root/qual-evidence/stage1-C`, report.txt) passed every check except two, and
+both had one cause. Passing: plan, terminal (both stages rc 0, so nothing went unmeasured),
+50 host rows with no deviation, all 19 exactness checks including the guest half at 502 to
+511 interrupt-free windows of 512 with zero mismatches, all 5 interference checks, all 5
+summary cross-checks, and the fixpoint. Failing: the five `overflow[payload]` checks and
+`overflow-volume`, on 5,548 arms of 1,250,000 the kernel throttled. The posture fix for that
+is verified on a slice; campaign D is the run judged with it in place.
+
+Skid so far: campaign A2 maximum 8034, campaign C maximum 8096, neither over the sealed
+margin of 16068.
+
+## Findings to carry into the report
+
+- `HV_X64_MSR_TIME_REF_COUNT` (0x40000020) accepts a write and drops it: written a value
+  2^32 ticks past the one it held, it read back where it started. One register of the vCPU
+  state KVM presents does not restore. The timestamp counter and `HV_X64_MSR_VP_RUNTIME`
+  both take the write. Record: `box/time-base-displacement-probe.json`. This makes the
+  stage-1 fixpoint check fail, and it is a KVM behaviour rather than a silicon one.
+- `MSR_KVM_ASYNC_PF_INT` (0x4b564d06) is the one MSR of the host-wide index list this
+  window's vCPU does not own; KVM gates it on an in-kernel local APIC the window does not
+  create.
+- `smt-sibling` interference is not in the plan for this baseline, because the baseline
+  requires simultaneous multithreading off and there is then no sibling to disturb.
 
 ## Next
 
-- Item 5: seal the pack with the observed skid maximum and margin = 2 × it, from campaign
-  B; then campaign C is the qualifying run judged against the sealed margin.
-- Item 6: patched kernel 6.18.35. `apt-get install bc bison flex dwarves libssl-dev
-  libelf-dev debhelper` is still outstanding; patches staged at `/root/kbuild-618/patches/`;
-  build with `/root/spike/spikes/amd-epyc/host/build-6.18-kernel.sh`. Do not build while a
-  campaign is measuring: the box must be quiet for the clean windows.
-- Item 7: stage-2 measurements through the spike C harnesses at event 0x5100d1.
+- Item 5: reseal with the maximum observed across the program and margin twice it; ship;
+  `check` on the box exits 0 (already true for the current seal).
+- Item 6: `bash /root/kbuild.sh` on the box (deps, record stock kvm_amd, fetch, apply,
+  config, build), then `/root/spike/spikes/amd-epyc/host/stage-6.18-boot.sh install` and
+  the GRUB one-shot. Do not build while a campaign is measuring.
+- Item 7: `bash /root/stage2-stock.sh` runs the half that needs no patched kernel
+  (singlestep-driver, the two AE-4 enforcement demos). `ae3-forceexit` needs the patched
+  kernel.
 - Item 8: stock boot, stage 0 re-pass, evidence synced, final pack commit.
 
-## Known permanent gap
+## Known permanent gaps
 
-`smt-sibling` interference cannot be measured: the baseline requires SMT off, which removes
-the sibling. `report` therefore cannot exit 0 for stage 1 on this posture. This is recorded,
-not worked around.
+- `smt-sibling` interference, as above.
+- `count_offsets` and `single_step.work_per_step` stay absent: both need a stage 2 the
+  suite does not have, and the goal forbids implementing it.
 
 ## Resume commands
 
