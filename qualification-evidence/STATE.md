@@ -43,45 +43,36 @@ into `qualification-evidence/box/`), `posture.sh` (also on the box at `/root/pos
 
 ## Running
 
-Stage 1 campaign D: `/root/qual-evidence/stage1-D`, PID 14854, launched 03:21Z, pinned to
-cpu3, about nine minutes. Nothing else runs on the box.
+Stage 1 campaign E: `/root/qual-evidence/stage1-E`, PID 17416, launched 03:32Z, about nine
+minutes. The final qualifying run. Nothing else runs on the box.
 
-## Where campaign C left the verdict
+## Campaign D, the run before it
 
-Campaign C (`/root/qual-evidence/stage1-C`, report.txt) passed every check except two, and
-both had one cause. Passing: plan, terminal (both stages rc 0, so nothing went unmeasured),
-50 host rows with no deviation, all 19 exactness checks including the guest half at 502 to
-511 interrupt-free windows of 512 with zero mismatches, all 5 interference checks, all 5
-summary cross-checks, and the fixpoint. Failing: the five `overflow[payload]` checks and
-`overflow-volume`, on 5,548 arms of 1,250,000 the kernel throttled. The posture fix for that
-is verified on a slice; campaign D is the run judged with it in place.
+35 of 36 checks passed. Every arm accounted: 1,250,000 overflows delivered exactly once,
+nothing throttled, dropped, lost, duplicated, premature or over margin. Skid min 34, max
+7991. All 19 exactness checks, all 5 interference checks, all 5 summary cross-checks, the
+plan, the terminal codes and the 50 host rows passed. The single failure was `fixpoint[0]`,
+on `HV_X64_MSR_TIME_REF_COUNT`, which the kernel source shows is read-only by design;
+campaign E is the same measurement with that register classified.
 
-Skid so far: campaign A2 maximum 8034, campaign C maximum 8096, neither over the sealed
-margin of 16068.
+## Findings for the report
 
-## Findings to carry into the report
-
-- `HV_X64_MSR_TIME_REF_COUNT` (0x40000020) accepts a write and drops it: written a value
-  2^32 ticks past the one it held, it read back where it started. One register of the vCPU
-  state KVM presents does not restore. The timestamp counter and `HV_X64_MSR_VP_RUNTIME`
-  both take the write. Record: `box/time-base-displacement-probe.json`. This makes the
-  stage-1 fixpoint check fail, and it is a KVM behaviour rather than a silicon one.
-- `MSR_KVM_ASYNC_PF_INT` (0x4b564d06) is the one MSR of the host-wide index list this
-  window's vCPU does not own; KVM gates it on an in-kernel local APIC the window does not
-  create.
-- `smt-sibling` interference is not in the plan for this baseline, because the baseline
-  requires simultaneous multithreading off and there is then no sibling to disturb.
+- `HV_X64_MSR_TIME_REF_COUNT` (0x40000020): read-only synthetic hypervisor state. Excluded
+  from the must-restore set on the kernel's own comment. Not a silicon finding, not a KVM
+  defect. Evidence: `hyperv-time-ref-count-classification.md` and `hyperv-6.12.95.c`.
+- `MSR_KVM_ASYNC_PF_INT` (0x4b564d06): the one MSR of the host-wide index list this vCPU
+  does not own, gated on an in-kernel local APIC the measurement window does not create.
+- The kernel's sampling ceiling is now a standing host condition in the pack and in
+  `check`, at both knobs, so a later run cannot measure under the stock ceiling silently.
+- `smt-sibling` interference is not planned for this baseline: it requires the sibling
+  thread the baseline turns off.
 
 ## Next
 
-- Item 5: reseal with the maximum observed across the program and margin twice it; ship;
-  `check` on the box exits 0 (already true for the current seal).
-- Item 6: `bash /root/kbuild.sh` on the box (deps, record stock kvm_amd, fetch, apply,
-  config, build), then `/root/spike/spikes/amd-epyc/host/stage-6.18-boot.sh install` and
-  the GRUB one-shot. Do not build while a campaign is measuring.
-- Item 7: `bash /root/stage2-stock.sh` runs the half that needs no patched kernel
-  (singlestep-driver, the two AE-4 enforcement demos). `ae3-forceexit` needs the patched
-  kernel.
+- Item 6: `bash /root/kbuild.sh` on the box, then
+  `/root/spike/spikes/amd-epyc/host/stage-6.18-boot.sh install` and the GRUB one-shot.
+- Item 7: `bash /root/stage2-stock.sh` for the half needing no patched kernel;
+  `ae3-forceexit --event 0x5100d1` needs the patched kernel.
 - Item 8: stock boot, stage 0 re-pass, evidence synced, final pack commit.
 
 ## Known permanent gaps
