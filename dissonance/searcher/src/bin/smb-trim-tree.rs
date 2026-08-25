@@ -84,7 +84,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         snapshot_bytes = fs::read(PathBuf::from(&snapshots_arg))?;
     }
     let snapshots_sha256 = format!("{:x}", Sha256::digest(&snapshot_bytes));
-    let checkpoint = SmbSnapshotCheckpoint::from_bytes(&snapshot_bytes)?;
+    let checkpoint = SmbSnapshotCheckpoint::from_bytes(
+        &snapshot_bytes,
+        searcher::smb::campaign::SNAPSHOT_CHECKPOINT_FORMAT,
+    )?;
     drop(snapshot_bytes);
     let kept_snapshots: Vec<SmbSnapshotCheckpointEntry> = checkpoint
         .entries

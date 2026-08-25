@@ -11,9 +11,9 @@ use searcher::{
     },
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
-        SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignChordPolicy, SmbCampaignConfig,
-        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
-        chord_policy_from_identifier, replay_smb_campaign_checkpointed,
+        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint,
+        SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
+        SmbSnapshotCheckpoint, chord_policy_from_identifier, replay_smb_campaign_checkpointed,
         run_smb_campaign_checkpointed,
     },
 };
@@ -262,7 +262,7 @@ fn load_checkpoint(path: &std::path::Path) -> Result<SmbCampaignCheckpoint, Box<
     Ok(SmbCampaignCheckpoint {
         path: path.to_string_lossy().into_owned(),
         file_sha256: format!("{:x}", Sha256::digest(&bytes)),
-        snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes)?,
+        snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes, SNAPSHOT_CHECKPOINT_FORMAT)?,
     })
 }
 

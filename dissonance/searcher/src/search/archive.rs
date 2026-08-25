@@ -341,6 +341,22 @@ pub struct ConcentrationAccounting {
     pub draws_per_parent_milli: u64,
 }
 
+/// Deterministic progress sample from one archive campaign.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound = "M: Serialize + DeserializeOwned")]
+pub struct ProgressPoint<M> {
+    /// Completed target executions.
+    pub executions: u64,
+    /// Strongest milestone state observed so far.
+    pub milestones: M,
+    /// Number of active retained archive entries.
+    pub active_entries: usize,
+    /// Number of occupied quality-diversity slots.
+    pub occupied_cells: usize,
+    /// Number of terminal death transitions seen so far.
+    pub deaths: u64,
+}
+
 /// Per-entry selection counters.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EntrySelectorCounters {

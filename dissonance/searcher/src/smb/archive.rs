@@ -201,20 +201,8 @@ impl ArchiveKey for SmbArchiveKey {
     }
 }
 
-/// Deterministic progress sample from one archive campaign.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SmbArchiveProgressPoint {
-    /// Completed target executions.
-    pub executions: u64,
-    /// Strongest milestone state observed so far.
-    pub milestones: SmbMilestones,
-    /// Number of active retained archive entries.
-    pub active_entries: usize,
-    /// Number of occupied quality-diversity slots.
-    pub occupied_cells: usize,
-    /// Number of terminal death transitions seen so far.
-    pub deaths: u64,
-}
+/// The SMB progress-curve point instantiation.
+pub type SmbArchiveProgressPoint = crate::search::archive::ProgressPoint<SmbMilestones>;
 
 /// The SMB entry report instantiation.
 pub type SmbArchiveEntryReport = ArchiveEntryReport<ButtonChord, SmbArchiveKey, SmbMilestones>;
