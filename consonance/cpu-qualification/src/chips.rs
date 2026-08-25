@@ -6,7 +6,8 @@
 //! never trusted. A chip that matches no entry is refused with a machine-readable
 //! record of what was found; the suite never guesses an event for unknown silicon.
 //!
-//! Event configs are traceable to rr's `src/PerfCounters.cc`. Where a value here
+//! Event configs are traceable to rr's `src/PerfCounters.cc`, and the AMD lock
+//! probe to `src/PerfCounters_x86.h`. Where a value here
 //! departs from rr's, the entry records what differs.
 
 use serde::{Deserialize, Serialize};
@@ -264,7 +265,7 @@ const AMD_ZEN: ChipEntry = ChipEntry {
     // control field rr carries in the raw config.
     lock_probe_event: Some(TableValue::Recorded {
         value: 0x0051_0825,
-        source: "rr src/PerfCounters.cc check_for_zen_speclockmap",
+        source: "rr src/PerfCounters_x86.h check_for_zen_speclockmap",
     }),
 };
 
@@ -551,7 +552,7 @@ mod tests {
         let probe = AMD_ZEN.lock_probe_event.expect("AMD needs the lock probe");
         assert_eq!(probe.value(), Some(0x0051_0825));
         assert!(
-            matches!(probe, TableValue::Recorded { source, .. } if source.contains("rr src/PerfCounters.cc"))
+            matches!(probe, TableValue::Recorded { source, .. } if source == "rr src/PerfCounters_x86.h check_for_zen_speclockmap")
         );
         assert!(INTEL_06_9E.lock_probe_event.is_none());
         assert!(NEOVERSE_N1.lock_probe_event.is_none());
