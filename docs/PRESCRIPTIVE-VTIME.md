@@ -181,7 +181,52 @@ Additions:
   so it adds exits (places where time advances and timers deliver) at kernel
   event density. The counter N is a contract constant.
 
-### 2.4 SDK path
+### 2.4 Closing the untrusted instruction surface
+
+An instruction threatens determinism when its result depends on anything
+outside (seed, guest state, exit stream): time (`RDTSC`, `CNTVCT`, the
+physical counter channel), entropy (`RDRAND`/`RDSEED`, `RNDR`), machine
+measurement (`RDPMC`, the PMU sysregs), or implementation identity (CPUID,
+the ID registers, and — read by every libc at startup to pick memcpy/memset
+variants — `CTR_EL0`/`DCZID_EL0`). Each such instruction is closed at one of
+four layers, and every closure is recorded per-ISA in a disposition table
+(the arm64 analogue of `docs/cpu-msr-contract.toml`, seeded by M1's probe):
+
+1. **Protocol.** Conforming code never executes them: time comes from the
+   pvclock page, entropy from `/dev/harmony`, identity from the pinned
+   CPUID/ID-register model the backend installs — which must virtualize
+   `CTR_EL0`/`DCZID_EL0` to the baseline (`HCR_EL2.TID2` on KVM; probe
+   coverage on Hypervisor.framework).
+2. **Image audit.** Every executable byte of the kernel and initramfs is
+   statically scanned (the existing x86 `rdtsc-allowlist` and arm64 opcode
+   checks).
+3. **Guest-kernel traps for userspace.** Unaudited binaries — including
+   code a JIT emits at runtime, which no static scan can see — are covered
+   by the guest kernel trapping its own EL0/ring-3: `CR4.TSD` and
+   `CR4.PCE=0` on x86, `CNTKCTL_EL1.EL0VCTEN=0` on arm64. The kernel's
+   handler completes each read from the pvclock page, deterministically, on
+   any substrate; each trapped read is also a kernel entry, adding exit
+   density exactly where unaudited time-polling code needs it.
+4. **Substrate hardening where available.** On hosts carrying the patched
+   KVM, the instruction exits stay enabled so a stray operation is a loud
+   error instead of a silent leak.
+
+What no layer reaches is the residual: instructions with no user-mode
+disable and no stock-substrate exit (`RDRAND`/`RDSEED` on x86; `RNDR` where
+the silicon implements it), executable by a binary that ignores the pinned
+feature bits. The disposition table records these under the cooperative
+posture `AGENTS.md` already defines, per ISA, explicitly.
+
+One entry is a candidate relaxation rather than a closure: the arm64 LL/SC
+prohibition exists because spurious exclusive-monitor clears change retired
+branch counts — a descriptive-clock concern. Under exit-only delivery, a
+spurious retry between exits re-converges to identical architectural state
+before the next observation point, so unaudited userspace LL/SC (any
+ARMv8.0-compiled container binary) is a candidate for admission. The
+convergence argument gets made in the disposition table before anything
+relies on it; the kernel image keeps its audit either way.
+
+### 2.5 SDK path
 
 `harmony-linux/libvoidstar` already speaks the Antithesis SDK ABI to
 `/dev/harmony` (assertion JSON, deterministic entropy). The coverage callback —
@@ -191,7 +236,7 @@ hypervisor at the previous exit rings the doorbell. For the first workload below
 only the SDK input-fetch call is needed; the threshold protocol lands with the
 instrumented-payload milestone (M4).
 
-### 2.5 First workload: the NES searcher
+### 2.6 First workload: the NES searcher
 
 The `dissonance` searcher (PR #193) is written against a `Machine` trait that
 mirrors the control-protocol verb set — snapshot / drop / branch / replay / run /
@@ -283,8 +328,9 @@ cannot catch and the placement checker must.
 
 **M1 — the M1 Max boots deterministically.**
 *Build:* first a probe binary that confirms the required Hypervisor.framework
-surface on this macOS version — WFI exit control, sysreg trap coverage,
-injection timing, and **save/restore coverage**: which of the retained state
+surface on this macOS version — WFI exit control, sysreg trap coverage
+(including `CTR_EL0`/`DCZID_EL0` and `CNTHCTL` virtualization, seeding the
+§2.4 disposition table), injection timing, and **save/restore coverage**: which of the retained state
 classes (general registers, SIMD/FP, sysregs including timer registers,
 pending exception and debug state) the HVF get/set API captures on this
 hardware — its findings recorded in the backend's docs; then `HvfBackend`
@@ -310,7 +356,7 @@ prohibition) is documented as canonicalized at every sealable boundary instead,
 with the audit that enforces the prohibition cited as the evidence.
 
 **M2 — NES campaign on the M1 Max.**
-*Build:* the §2.5 payload and the control-proto `Machine` client; run
+*Build:* the §2.6 payload and the control-proto `Machine` client; run
 `smb-smoke`, then a campaign of meaningful length.
 *Passes when:* (a) two same-seed campaigns produce identical archive hashes;
 (b) every archived lineage, replayed through the hypervisor, reproduces its
@@ -337,7 +383,9 @@ GIC/device field of a stored snapshot (rule 3 applied to the restore path).
 
 **M3 — liveness on a real payload.**
 *Build:* the postgres container payload from the acceptance suite, booted and
-driven under prescriptive V-time with the paravirtual tick.
+driven under prescriptive V-time with the paravirtual tick and §2.4's
+guest-kernel userspace traps active — this is the first milestone whose
+payload carries unaudited binaries, so layer 3 is load-bearing here.
 *Passes when:* the payload's existing acceptance checks pass; no run hit the
 liveness watchdog; dmesg is free of RCU-stall and soft-lockup reports; the
 inter-exit vns gap histogram is recorded and its maximum stays under the tick
@@ -348,7 +396,7 @@ a payload that "passes" with an unbounded quiet stretch or a 100× slowdown is
 a finding, and the report must be capable of showing it.
 
 **M4 — instrumented concurrency payload (absolute finding measurement).**
-*Build:* the SDK threshold protocol of §2.4; a small suite of deliberately racy
+*Build:* the SDK threshold protocol of §2.5; a small suite of deliberately racy
 instrumented Go/Rust programs, each with a known bug and a known reproducing
 schedule.
 *Passes when:* (a) the searcher, given the schedule vocabulary of instrumented
