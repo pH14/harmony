@@ -1,0 +1,181 @@
+From feaa110f01b433aab64c9501e25299809bfff3b7 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Tue, 25 Aug 2026 16:11:34 +0000
+Subject: [PATCH] KVM: SVM: apply a guest's host/guest counting filter to its
+ own guest
+
+A guest that programs a counter with GuestOnly or HostOnly gets neither: the
+bits are stripped as reserved on the way in, and the backing event counts
+everything the vCPU runs. Hardware cannot help, because a guest and any guest
+it runs in turn are inside the same VMRUN. Keep the bits, and start and stop
+the backing event at the nested transitions so the filter the guest asked for
+is the filter it gets.
+---
+ arch/x86/kvm/pmu.c        | 53 ++++++++++++++++++++++++++++++++++++++-
+ arch/x86/kvm/pmu.h        |  1 +
+ arch/x86/kvm/svm/nested.c |  4 +++
+ arch/x86/kvm/svm/pmu.c    |  8 +++++-
+ 4 files changed, 64 insertions(+), 2 deletions(-)
+
+diff --git a/arch/x86/kvm/pmu.c b/arch/x86/kvm/pmu.c
+index 487ad19a2..a94581054 100644
+--- a/arch/x86/kvm/pmu.c
++++ b/arch/x86/kvm/pmu.c
+@@ -20,6 +20,7 @@
+ #include <asm/cpu_device_id.h>
+ #include "x86.h"
+ #include "cpuid.h"
++#include "kvm_cache_regs.h"
+ #include "lapic.h"
+ #include "pmu.h"
+ 
+@@ -230,6 +231,35 @@ static u64 get_sample_period(struct kvm_pmc *pmc, u64 counter_value)
+ 	return sample_period;
+ }
+ 
++/*
++ * Whether the guest asked for a counter that runs in one mode only. Setting
++ * neither bit or both means count always, which is the rule hardware itself
++ * applies to the pair.
++ */
++static bool pmc_has_mode_filter(struct kvm_pmc *pmc)
++{
++	return !!(pmc->eventsel & AMD64_EVENTSEL_GUESTONLY) !=
++	       !!(pmc->eventsel & AMD64_EVENTSEL_HOSTONLY);
++}
++
++/*
++ * Whether a counter should be running right now.
++ *
++ * Hardware applies GuestOnly and HostOnly relative to VMRUN. A guest and any
++ * guest it runs in turn are both inside the same VMRUN, so hardware cannot tell
++ * them apart and a guest asking to count only its own guest would otherwise
++ * count itself as well. KVM applies the filter for it, by starting and stopping
++ * the backing event at the nested transitions.
++ */
++static bool pmc_counts_in_current_mode(struct kvm_pmc *pmc)
++{
++	if (!pmc_has_mode_filter(pmc))
++		return true;
++
++	return !!(pmc->eventsel & AMD64_EVENTSEL_GUESTONLY) ==
++	       is_guest_mode(pmc->vcpu);
++}
++
+ static int pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type, u64 config,
+ 				 bool exclude_user, bool exclude_kernel,
+ 				 bool intr)
+@@ -249,6 +279,7 @@ static int pmc_reprogram_counter(struct kvm_pmc *pmc, u32 type, u64 config,
+ 	bool pebs = test_bit(pmc->idx, (unsigned long *)&pmu->pebs_enable);
+ 
+ 	attr.sample_period = get_sample_period(pmc, pmc->counter);
++	attr.disabled = !pmc_counts_in_current_mode(pmc);
+ 
+ 	if ((attr.config & HSW_IN_TX_CHECKPOINTED) &&
+ 	    (boot_cpu_has(X86_FEATURE_RTM) || boot_cpu_has(X86_FEATURE_HLE))) {
+@@ -326,7 +357,10 @@ static bool pmc_resume_counter(struct kvm_pmc *pmc)
+ 		return false;
+ 
+ 	/* reuse perf_event to serve as pmc_reprogram_counter() does*/
+-	perf_event_enable(pmc->perf_event);
++	if (pmc_counts_in_current_mode(pmc))
++		perf_event_enable(pmc->perf_event);
++	else
++		perf_event_disable(pmc->perf_event);
+ 	pmc->is_paused = false;
+ 
+ 	return true;
+@@ -585,6 +619,23 @@ void kvm_pmu_recalc_pmc_emulation(struct kvm_pmu *pmu, struct kvm_pmc *pmc)
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_pmu_recalc_pmc_emulation);
+ 
++/*
++ * Re-evaluate the mode-filtered counters after the guest entered or left a guest
++ * of its own. The work is deferred to the reprogram pass, which runs before the
++ * next entry and in a context where stopping and starting an event is allowed.
++ */
++void kvm_pmu_nested_transition(struct kvm_vcpu *vcpu)
++{
++	struct kvm_pmu *pmu = vcpu_to_pmu(vcpu);
++	struct kvm_pmc *pmc;
++	unsigned int i;
++
++	kvm_for_each_pmc(pmu, pmc, i, pmu->all_valid_pmc_idx)
++		if (pmc_has_mode_filter(pmc))
++			kvm_pmu_request_counter_reprogram(pmc);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_pmu_nested_transition);
++
+ void kvm_pmu_handle_event(struct kvm_vcpu *vcpu)
+ {
+ 	DECLARE_BITMAP(bitmap, X86_PMC_IDX_MAX);
+diff --git a/arch/x86/kvm/pmu.h b/arch/x86/kvm/pmu.h
+index 5c3939e91..a453aeee2 100644
+--- a/arch/x86/kvm/pmu.h
++++ b/arch/x86/kvm/pmu.h
+@@ -215,6 +215,7 @@ static inline bool pmc_is_globally_enabled(struct kvm_pmc *pmc)
+ 
+ void kvm_pmu_deliver_pmi(struct kvm_vcpu *vcpu);
+ void kvm_pmu_handle_event(struct kvm_vcpu *vcpu);
++void kvm_pmu_nested_transition(struct kvm_vcpu *vcpu);
+ int kvm_pmu_rdpmc(struct kvm_vcpu *vcpu, unsigned pmc, u64 *data);
+ int kvm_pmu_check_rdpmc_early(struct kvm_vcpu *vcpu, unsigned int idx);
+ bool kvm_pmu_is_valid_msr(struct kvm_vcpu *vcpu, u32 msr);
+diff --git a/arch/x86/kvm/svm/nested.c b/arch/x86/kvm/svm/nested.c
+index 66b8955a1..842117e31 100644
+--- a/arch/x86/kvm/svm/nested.c
++++ b/arch/x86/kvm/svm/nested.c
+@@ -30,6 +30,7 @@
+ #include "lapic.h"
+ #include "svm.h"
+ #include "hyperv.h"
++#include "pmu.h"
+ 
+ #define CC KVM_NESTED_VMENTER_CONSISTENCY_CHECK
+ 
+@@ -745,6 +746,7 @@ static void nested_vmcb02_prepare_control(struct vcpu_svm *svm)
+ 
+ 	/* Enter Guest-Mode */
+ 	enter_guest_mode(vcpu);
++	kvm_pmu_nested_transition(vcpu);
+ 
+ 	/*
+ 	 * Filled at exit: exit_code, exit_code_hi, exit_info_1, exit_info_2,
+@@ -1176,6 +1178,7 @@ int nested_svm_vmexit(struct vcpu_svm *svm)
+ 
+ 	/* Exit Guest-Mode */
+ 	leave_guest_mode(vcpu);
++	kvm_pmu_nested_transition(vcpu);
+ 	svm->nested.vmcb12_gpa = 0;
+ 	WARN_ON_ONCE(svm->nested.nested_run_pending);
+ 
+@@ -1391,6 +1394,7 @@ void svm_leave_nested(struct kvm_vcpu *vcpu)
+ 		svm->nested.vmcb12_gpa = INVALID_GPA;
+ 
+ 		leave_guest_mode(vcpu);
++		kvm_pmu_nested_transition(vcpu);
+ 
+ 		svm_switch_vmcb(svm, &svm->vmcb01);
+ 
+diff --git a/arch/x86/kvm/svm/pmu.c b/arch/x86/kvm/svm/pmu.c
+index bc062285f..17976feb6 100644
+--- a/arch/x86/kvm/svm/pmu.c
++++ b/arch/x86/kvm/svm/pmu.c
+@@ -205,7 +205,13 @@ static void amd_pmu_refresh(struct kvm_vcpu *vcpu)
+ 	}
+ 
+ 	pmu->counter_bitmask[KVM_PMC_GP] = BIT_ULL(48) - 1;
+-	pmu->reserved_bits = 0xfffffff000280000ull;
++	/*
++	 * Bits 40 and 41 (GuestOnly, HostOnly) stay writable so that a guest
++	 * hypervisor's own counting filter survives the trap into KVM. They
++	 * never reach hardware: the config handed to perf is masked with
++	 * raw_event_mask, which excludes them. See pmc_counts_in_current_mode().
++	 */
++	pmu->reserved_bits = 0xfffffcf000280000ull;
+ 	pmu->raw_event_mask = AMD64_RAW_EVENT_MASK;
+ 	/* not applicable to AMD; but clean them to prevent any fall out */
+ 	pmu->counter_bitmask[KVM_PMC_FIXED] = 0;
+-- 
+2.47.3
+

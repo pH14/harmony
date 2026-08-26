@@ -29,14 +29,21 @@ session's own argv. Use PIDs from the run's `pids` file and `kill -0`.
 
 ## Box state now
 
-Closed. Kernel `6.12.95+deb13-amd64`, the stock Debian kernel the pack seals, booted from
-the restored pristine `/etc/default/grub` with the GRUB default pinned to it in the
-two-level submenu form. Posture re-applied and recorded in
-`qualification-evidence/box/posture-close.txt`. Nothing running.
+Gone. The machine was released after the nested phase and its address reassigned; the
+address above no longer reaches it, and an ssh attempt will present an unfamiliar host
+key. Everything that phase produced is committed under `nested/` and `rdtsc/`.
+
+Before that, at the close of the first phase, it was left on kernel
+`6.12.95+deb13-amd64`, the stock Debian kernel the pack seals, booted from the restored
+pristine `/etc/default/grub` with the GRUB default pinned to it in the two-level submenu
+form. Posture re-applied and recorded in `qualification-evidence/box/posture-close.txt`.
 
 That kernel had to be reinstalled: item 6's build dependencies pulled Debian's
 `linux-image-amd64` forward to 6.12.101 and removed 6.12.95's image. See
 `stock-kernel-moved-under-the-program.md`.
+
+The nested phase then ran on a rebuilt 6.18.35 host with kernel patches `0006` through
+`0009` applied; `nested/verify/00-posture.txt` records the posture it ran under.
 
 ## Running
 
@@ -44,17 +51,24 @@ Nothing.
 
 ## Next
 
-The program is complete. Every item is closed and the report has been delivered. What is
-left for someone else:
+Both programs are complete. Item 2 and most of item 3 have since been closed by the
+nested phase; `nested/README.md` is its report. What is left:
 
-1. The four `chunks_exact` sites that fail the clippy gate on Linux with current stable,
-   and the unpinned toolchain behind them: `linux-clippy-on-current-stable.md`.
-2. The backend's hardcoded `SKID_MARGIN` of 256, which no consumer reads the pack for:
-   `backend-margin-not-from-the-pack.md`.
-3. The determinism series' RDTSC intercept, wired only on the other vendor:
-   `amd-determinism-kernel-gap.md`.
+1. The `chunks_exact` sites that fail the clippy gate on Linux with current stable, and
+   the unpinned toolchain behind them: `linux-clippy-on-current-stable.md`, filed as
+   issue #194.
+2. Choosing a smaller landing margin, which needs an automatic re-arm that does not
+   exist. `run_until` raises `SkidExceeded` and stops; recovery means restore-and-retry
+   above the backend trait. `backend-margin-not-from-the-pack.md` has the cost curve.
+3. A real CPUID model. Every call site passes an empty `CpuidModel::default()`, so a
+   guest on this chip is told the randomness instructions exist and can execute them.
+   Masking does not enforce anything on its own, but leaving the bits set advertises
+   what the host cannot intercept: `amd-rdrand-not-interceptable.md`.
 4. `count_offsets` and `single_step.work_per_step` stay absent until the suite's stage 2
    is built.
+5. Gates and checks that need a Linux host, listed in `nested/README.md`: the full
+   workspace gates, regenerating `consonance/vmm-backend/tests/public-api.txt`, and the
+   live contract exam against the per-backend margin.
 
 ## Recorded failures so far
 

@@ -1,0 +1,9 @@
+{
+  "supported_mask": 5,
+  "enable_errno": { "rng": 22, "all_three": 22, "zero": 22, "tsc": 0, "unknown_bit": 22 },
+  "opted_in": { "determinism_exits": 2, "rdtsc": "0x1122334455667788", "rdtscp": "0x99aabbccddeeff00", "rdtscp_ecx": "0x5a5a5a5a", "ud": 0, "hlt": 1, "other_exit": 0 },
+  "control": { "determinism_exits": 0, "rdtsc": "0x000000000003b1b4", "rdtscp": "0x0000000000000000", "rdtscp_ecx": "0x00000000", "ud": 57005, "hlt": 1, "other_exit": 0 },
+  "checks": { "advertises_tsc_and_preempt_only": 1, "refuses_rng_and_unknown": 1, "accepts_tsc": 1,
+                "tsc_and_tscp_come_from_userspace": 1, "control_reads_host_counter": 1 },
+  "pass": 1
+}

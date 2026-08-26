@@ -1,0 +1,28 @@
+{"kind":"plan","baseline":"det-zen3-v1","stage":0,"floors":{"min_clean_reps":0,"min_overflow_arms":0,"skid_margin":0}}
+{"kind":"chip_identity","vendor":"AuthenticAMD","identity":"19_01_01","microcode_rev":"0x000000000a0011a9","table_entry":"AuthenticAMD families 17h-1Ah"}
+{"kind":"host_row","condition":"avic-off","scope":"host","expect":"off","found":"off","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"chip-identity","scope":"host","expect":"19_01_01","found":"19_01_01","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"chip-microcode-rev","scope":"host","expect":"0x000000000a0011a9","found":"0x000000000a0011a9","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"chip-vendor","scope":"host","expect":"AuthenticAMD","found":"AuthenticAMD","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"core-isolated","scope":"host","expect":"isolated","found":"isolated","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"core-pinning","scope":"host","expect":"pinned to cpu3","found":"pinned to cpu1","confirmed":false,"disposition":"cpu1 is this guest's isolated processor, and the virtual processor behind it is pinned to host core 3, which is the core the pack's value names"}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu0","expect":"performance","found":"unreadable","confirmed":false,"disposition":"a guest has no frequency driver, so there is nothing here to read; the core's frequency is the host's to pin and the host run confirms it pinned to performance"}
+{"kind":"host_row","condition":"governor-pinned","scope":"cpu1","expect":"performance","found":"unreadable","confirmed":false,"disposition":"a guest has no frequency driver, so there is nothing here to read; the core's frequency is the host's to pin and the host run confirms it pinned to performance"}
+{"kind":"host_row","condition":"kvm-module-identity","scope":"kvm","expect":"srcversion unrecorded, build-id 5cb8ae6a19c6b3e74ebeb7e35d25029afe77b611","found":"srcversion unrecorded, build-id 5cb8ae6a19c6b3e74ebeb7e35d25029afe77b611","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"kvm-module-identity","scope":"kvm_amd","expect":"srcversion unrecorded, build-id 3b96ce3a518f95c96edaf5ecbb7b0d97ddab4643","found":"srcversion unrecorded, build-id 3b96ce3a518f95c96edaf5ecbb7b0d97ddab4643","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"kvm-present","scope":"host","expect":"present, read-write","found":"present, read-write","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"nmi-watchdog-off","scope":"host","expect":"off","found":"off","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"perf-sample-ceiling","scope":"cpu-time-max-percent","expect":"0","found":"0","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"perf-sample-ceiling","scope":"max-sample-rate","expect":"100000000","found":"100000000","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"pmu-shape","scope":"host","expect":"AMD core performance monitoring","found":"AMD core performance monitoring","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"smt-policy","scope":"host","expect":"off","found":"notsupported","confirmed":false,"disposition":"a guest is not told which of its processors share a core; the sibling thread is the host's to disable and the host run confirms it off"}
+{"kind":"host_row","condition":"spec-lock-map-commits","scope":"host","expect":"zero","found":"zero","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu0","expect":"disabled","found":"unreadable: cannot read MSR 0xc0011020 on cpu0 (/dev/cpu/0/msr): Input/output error (os error 5)","confirmed":false,"disposition":"KVM refuses this register to a guest; the probe in this same run counts zero speculative lock-map commits, which is the behaviour the register produces when the workaround is in force"}
+{"kind":"host_row","condition":"spec-lock-map-disabled","scope":"cpu1","expect":"disabled","found":"unreadable: cannot read MSR 0xc0011020 on cpu1 (/dev/cpu/1/msr): Input/output error (os error 5)","confirmed":false,"disposition":"KVM refuses this register to a guest; the probe in this same run counts zero speculative lock-map commits, which is the behaviour the register produces when the workaround is in force"}
+{"kind":"host_row","condition":"spec-lock-map-probe-ran","scope":"host","expect":"nonzero","found":"nonzero","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"ssb-mitigation-pinned","scope":"host","expect":"on","found":"on","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-counts","scope":"host","expect":"nonzero","found":"nonzero","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-event-config","scope":"host","expect":"0x5100d1","found":"0x5100d1","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-guest-only","scope":"host","expect":"openable","found":"openable","confirmed":true,"disposition":null}
+{"kind":"host_row","condition":"work-clock-non-multiplexed","scope":"host","expect":"non-multiplexed","found":"non-multiplexed","confirmed":true,"disposition":null}
+{"kind":"end","stage":0,"rc":0}

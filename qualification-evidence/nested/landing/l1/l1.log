@@ -1,0 +1,12 @@
+kernel: 6.18.35+  cpus: 1
+2026-08-25T16:56:19Z
+--- A: 5000 arms, margin 16192, replay ---
+[ae3] arms=5000 preempt=5000 exact=5000 overshoot=0 skid_max=7376 rc=0
+A rc=0
+A wall=3673327 ms
+--- B: 2000 arms, margin 3072, tail probe ---
+[ae3] arms=2000 preempt=2000 exact=1986 overshoot=14 skid_max=6704 rc=1
+B rc=1
+B wall=12774 ms
+2026-08-25T17:57:45Z
+=== L1 campaign done ===

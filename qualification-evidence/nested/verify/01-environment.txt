@@ -1,0 +1,82 @@
+date: Tue Aug 25 14:18:31 UTC 2026
+uname: Linux em-serene-montalcini 6.18.35+ #3 SMP PREEMPT_DYNAMIC Tue Aug 25 11:17:15 UTC 2026 x86_64 GNU/Linux
+
+--- kvm params ---
+/sys/module/kvm/parameters/flush_on_reuse:N
+/sys/module/kvm/parameters/force_emulation_prefix:0
+/sys/module/kvm/parameters/halt_poll_ns_shrink:2
+/sys/module/kvm/parameters/report_ignored_msrs:Y
+/sys/module/kvm/parameters/enable_vmware_backdoor:N
+/sys/module/kvm/parameters/enable_pmu:Y
+/sys/module/kvm/parameters/nx_huge_pages_recovery_period_ms:0
+/sys/module/kvm/parameters/halt_poll_ns:200000
+/sys/module/kvm/parameters/kvmclock_periodic_sync:Y
+/sys/module/kvm/parameters/allow_unsafe_mappings:N
+/sys/module/kvm/parameters/enable_virt_at_load:Y
+/sys/module/kvm/parameters/halt_poll_ns_grow_start:10000
+/sys/module/kvm/parameters/ignore_msrs:N
+/sys/module/kvm/parameters/eager_page_split:Y
+/sys/module/kvm/parameters/nx_huge_pages_recovery_ratio:60
+/sys/module/kvm/parameters/tsc_tolerance_ppm:250
+/sys/module/kvm/parameters/min_timer_period_us:200
+/sys/module/kvm/parameters/tdp_mmu:Y
+/sys/module/kvm/parameters/vector_hashing:Y
+/sys/module/kvm/parameters/mmio_caching:Y
+/sys/module/kvm/parameters/halt_poll_ns_grow:2
+/sys/module/kvm/parameters/lapic_timer_advance:Y
+/sys/module/kvm/parameters/mitigate_smt_rsb:N
+/sys/module/kvm/parameters/pi_inject_timer:1
+/sys/module/kvm/parameters/nx_huge_pages:N
+--- kvm_amd params ---
+/sys/module/kvm_amd/parameters/force_avic:N
+/sys/module/kvm_amd/parameters/debug_swap:N
+/sys/module/kvm_amd/parameters/enable_device_posted_irqs:N
+/sys/module/kvm_amd/parameters/sev_es:N
+/sys/module/kvm_amd/parameters/vls:1
+/sys/module/kvm_amd/parameters/tsc_scaling:1
+/sys/module/kvm_amd/parameters/enable_ipiv:N
+/sys/module/kvm_amd/parameters/pause_filter_count_max:65535
+/sys/module/kvm_amd/parameters/sev_snp:N
+/sys/module/kvm_amd/parameters/nrips:1
+/sys/module/kvm_amd/parameters/pause_filter_count_grow:2
+/sys/module/kvm_amd/parameters/pause_filter_count_shrink:0
+/sys/module/kvm_amd/parameters/npt:Y
+/sys/module/kvm_amd/parameters/sev:N
+/sys/module/kvm_amd/parameters/vgif:1
+/sys/module/kvm_amd/parameters/lbrv:1
+/sys/module/kvm_amd/parameters/nested:1
+/sys/module/kvm_amd/parameters/vnmi:N
+/sys/module/kvm_amd/parameters/dump_invalid_vmcb:N
+/sys/module/kvm_amd/parameters/ciphertext_hiding_asids:0
+/sys/module/kvm_amd/parameters/pause_filter_thresh:128
+/sys/module/kvm_amd/parameters/pause_filter_count:3000
+/sys/module/kvm_amd/parameters/intercept_smi:Y
+/sys/module/kvm_amd/parameters/avic:N
+
+--- config diff stock 6.18.35 vs patched + ---
+(diff rc=0)
+
+--- dmesg kvm/perf lines ---
+[    1.170609] x86/fpu: Supporting XSAVE feature 0x1000: 'Control-flow Kernel registers (KVM only)'
+[    1.370840] Performance Events: Fam17h+ core perfctr, AMD PMU driver.
+[    1.438637] NMI watchdog: Enabled. Permanently consumes one hw-PMU counter.
+[    4.772993] pci 0000:c0:00.2: AMD-Vi: IOMMU performance counters supported
+[    4.925897] pci 0000:80:00.2: AMD-Vi: IOMMU performance counters supported
+[    5.013063] pci 0000:40:00.2: AMD-Vi: IOMMU performance counters supported
+[    5.099773] pci 0000:00:00.2: AMD-Vi: IOMMU performance counters supported
+[    5.285550] perf: AMD IBS detected (0x000003ff)
+[    5.300302] perf/amd_iommu: Detected AMD IOMMU #0 (2 banks, 4 counters/bank).
+[    5.307446] perf/amd_iommu: Detected AMD IOMMU #1 (2 banks, 4 counters/bank).
+[    5.314584] perf/amd_iommu: Detected AMD IOMMU #2 (2 banks, 4 counters/bank).
+[    5.321726] perf/amd_iommu: Detected AMD IOMMU #3 (2 banks, 4 counters/bank).
+[   12.728917] RAPL PMU: API unit is 2^-32 Joules, 2 fixed counters, 163840 ms ovfl timer
+[   12.737172] RAPL PMU: hw unit of domain package 2^-16 Joules
+[   12.783477] RAPL PMU: hw unit of domain core 2^-16 Joules
+[   13.184588] kvm_amd: TSC scaling supported
+[   13.188695] kvm_amd: Nested Virtualization enabled
+[   13.193498] kvm_amd: Nested Paging enabled
+[   13.197607] kvm_amd: LBR virtualization supported
+[   13.202319] kvm_amd: Virtual VMLOAD VMSAVE supported
+[   13.211027] kvm_amd: Virtual GIF supported
+[   32.449135] perf: Dynamic interrupt throttling disabled, can hang your system!
+[ 9746.487537] perf: Dynamic interrupt throttling disabled, can hang your system!

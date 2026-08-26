@@ -1,0 +1,7 @@
+=== POSTURE 2026-08-25T16:12:01Z ===
+kernel: 6.18.35+
+cmdline: BOOT_IMAGE=/vmlinuz-6.18.35+ root=UUID=b8ae6f2e-e068-4cb0-8ad0-211e900f3dc9 ro spec_store_bypass_disable=on isolcpus=3 nohz_full=3 rcu_nocbs=3 console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 scaleway
+kvm modules:
+ls_cfg cpu3: 44480000000000
+smt: 0
+kvm commit: feaa110f0 KVM: SVM: apply a guest's host/guest counting filter to its own guest

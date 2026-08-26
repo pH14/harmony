@@ -36,3 +36,22 @@ It is a gap in issue #174's patch series, not a property of the chip. The pack
 records nothing about it because the pack has no field for it; the two fields stage 2
 would fill, `count_offsets` and `single_step.work_per_step`, remain absent for the
 separate reason that the suite's stage 2 is not built.
+
+## Two thirds of this is now closed
+
+Patches `0006` through `0008` add the SVM half: the force-exit analogue with its
+capability advertisement, a per-class opt-in mask so a host can state the classes it
+covers, and `INTERCEPT_RDTSC` / `INTERCEPT_RDTSCP` for a VM that asked for the
+time-stamp class. Demonstrated on silicon in
+`rdtsc/the-time-stamp-intercepts-on-svm.md`: a guest reads the sentinels userspace
+supplies, and the control VM reads the host counter.
+
+The randomness third stays open and always will on this part, because SVM has no
+`RDRAND` or `RDSEED` intercept control to wire —
+`amd-rdrand-not-interceptable.md`. The per-class mask is how a caller finds that out:
+this host advertises `0x5`, and a request for the randomness class is refused with
+`EINVAL` rather than quietly narrowed.
+
+`count_offsets` and `single_step.work_per_step` remain absent, for the separate reason
+that the suite's stage 2 is not built.
+

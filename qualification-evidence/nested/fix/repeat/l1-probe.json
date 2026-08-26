@@ -1,0 +1,6 @@
+{
+  "counting": { "c1": 10000002, "c2": 20000002, "c3": 30000002, "d1": 10000000, "d2": 10000000, "expected_delta": 10000000, "exact": 1 },
+  "spec_lock_map": { "event_opened": 1, "commits": 0, "branches_same_run": 1000004, "workaround_in_effect": 1 },
+  "overflow": { "opened": 1, "samples": 40, "expected_about": 40, "lost": 0, "throttle": 0, "delivered": 1 },
+  "pass": 1
+}

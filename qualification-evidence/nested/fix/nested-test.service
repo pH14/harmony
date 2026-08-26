@@ -1,0 +1,11 @@
+[Unit]
+Description=Nested counter measurement runner
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/nested-test/run.sh
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

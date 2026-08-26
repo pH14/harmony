@@ -1,0 +1,85 @@
+# Sample IPs from 26-l1-attrib.txt (patched L1, guest-only counter, PERF_SAMPLE_IP)
+# resolved against 27-l1-kallsyms.txt (same boot). cpumode 4=guest, 1=L1 kernel, 2=L1 user.
+totals by cpumode: {1: 128, 2: 1, 4: 193}
+ 190 guest 0x1008
+  22 clear_page_rep+0xb
+  11 __kvm_mmu_topup_memory_cache+0xa9 [kvm]
+   3 svm_prepare_switch_to_guest+0x58 [kvm_amd]
+   3 guest 0x1000
+   2 __kmalloc_node_noprof+0x8c
+   2 restore_fpregs_from_fpstate+0x4a
+   2 __kvm_mmu_topup_memory_cache+0x66 [kvm]
+   2 __memcg_kmem_charge_page+0x177
+   2 kmem_cache_alloc_noprof+0x2fd
+   2 native_read_msr+0x9
+   2 memset_orig+0x52
+   2 __memcg_slab_post_alloc_hook+0x1f7
+   2 get_free_pages_noprof+0x14
+   2 __memcg_slab_post_alloc_hook+0x17a
+   2 svm_vcpu_run+0x24a [kvm_amd]
+   2 get_random_u64+0x2e
+   2 __memcg_slab_post_alloc_hook+0x1ef
+   2 __rcu_read_unlock+0x20
+   2 alloc_pages_noprof+0x4
+   2 refill_obj_stock+0x130
+   1 memset_orig+0x3e
+   1 idr_get_free+0x4
+   1 pcpu_block_update_hint_alloc+0x254
+   1 proc_fork_connector+0x2d
+   1 psi_task_change+0x78
+   1 kvm_check_and_inject_events+0xcd [kvm]
+   1 kmem_cache_alloc_noprof+0x42f
+   1 __memcg_slab_post_alloc_hook+0x1a6
+   1 __memcg_slab_post_alloc_hook+0x2f
+   1 __account_obj_stock+0x1a
+   1 is_page_fault_stale+0x40 [kvm]
+   1 kvm_tdp_page_fault+0xd6 [kvm]
+   1 copy_process+0x1ce
+   1 is_rlimit_overlimit+0x79
+   1 idr_alloc_u32+0x2a
+   1 _raw_spin_unlock_irqrestore+0x4
+   1 psi_task_change+0x5c
+   1 kvm_apic_has_interrupt+0x22 [kvm]
+   1 kmem_cache_alloc_noprof+0x2b
+   1 __memcg_slab_post_alloc_hook+0x186
+   1 __rcu_read_unlock+0x18
+   1 prep_new_page+0x63
+   1 __rcu_read_unlock+0x11
+   1 get_free_pages_noprof+0x11
+   1 __alloc_frozen_pages_noprof+0x2b
+   1 __memcg_kmem_charge_page+0x11f
+   1 alloc_pages_mpol+0x81
+   1 ___slab_alloc+0x4f6
+   1 __kvm_mmu_topup_memory_cache+0x5a [kvm]
+   1 __memcg_slab_post_alloc_hook+0xea
+   1 gup_fast_fallback+0x5
+   1 mark_page_accessed+0x4
+   1 timerqueue_add+0x3b
+   1 update_deadline+0x49
+   1 arch_release_task_struct+0x4
+   1 pick_next_task_fair+0x13c
+   1 L1-user 0x55b1c719e626
+   1 set_pte_range+0xea
+   1 memset_orig+0x1c
+   1 srso_alias_safe_ret+0x0
+   1 copy_process+0x1422
+   1 enqueue_task_fair+0x6b8
+   1 save_fpregs_to_fpstate+0x49
+   1 kvm_msr_allowed+0x51 [kvm]
+   1 __memcg_slab_post_alloc_hook+0x105
+   1 policy_nodemask+0x13b
+   1 __memcg_kmem_charge_page+0xa0
+   1 __memcg_kmem_charge_page+0x124
+   1 __kvm_mmu_topup_memory_cache+0x92 [kvm]
+   1 __alloc_frozen_pages_noprof+0x179
+   1 __rcu_read_lock+0x17
+   1 get_free_pages_noprof+0x1d
+   1 __memcg_kmem_charge_page+0x116
+   1 __memcg_slab_post_alloc_hook+0x110
+   1 __memcg_slab_post_alloc_hook+0x44
+   1 kvm_follow_pfn+0xf [kvm]
+   1 kvm_tdp_mmu_map+0x6aa [kvm]
+   1 enqueue_hrtimer+0x5
+   1 place_entity+0x1f
+   1 __dequeue_entity+0x549
+   1 security_file_ioctl+0x62

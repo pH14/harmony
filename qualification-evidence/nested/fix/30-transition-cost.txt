@@ -1,0 +1,10 @@
+# Nested transition cost, same box, same L1 image, same binaries.
+# Only the two KVM modules on the host differ. 20 reps per line.
+
+## pre-patch host modules
+iters=10000 exits=0 reps=20 : 301 ms
+iters=10000 exits=1000 reps=20 : 419 ms
+
+## patched host modules
+iters=10000 exits=0 reps=20 : 308 ms
+iters=10000 exits=1000 reps=20 : 499 ms

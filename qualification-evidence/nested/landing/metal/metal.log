@@ -1,0 +1,12 @@
+=== metal landing campaign ===
+2026-08-25T16:40:26Z
+--- A: 5000 arms, margin 16192, replay ---
+[ae3] arms=5000 preempt=5000 exact=5000 overshoot=0 skid_max=6878 rc=0
+A rc=0
+A wall=897167 ms
+--- B: 2000 arms, margin 3072, tail probe ---
+[ae3] arms=2000 preempt=2000 exact=1974 overshoot=26 skid_max=6775 rc=1
+B rc=1
+B wall=5590 ms
+2026-08-25T16:55:29Z
+=== metal done ===

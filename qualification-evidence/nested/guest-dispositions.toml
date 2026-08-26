@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Acceptances for a stage-0 and stage-1 run of the suite inside a virtual machine
+# on the det-zen3-v1 host.
+#
+# Every condition here describes the physical machine. A guest either cannot read
+# it or reads its own copy of it, so the run below accepts the reading and names
+# what confirms the condition instead — in every case a run of the same suite on
+# the host, plus, for speculative lock mapping, a probe in this same run that
+# observes the behaviour the register controls.
+#
+# The KVM a guest loads is not among them. Stage 1 opens a guest of its own for
+# the fixpoint check, so the module doing that is part of what the run measures;
+# the guest image carries the build the pack names.
+
+schema = "cpu-qualification-dispositions-v1"
+
+[[disposition]]
+condition = "governor-pinned"
+found = "unreadable"
+why = "a guest has no frequency driver, so there is nothing here to read; the core's frequency is the host's to pin and the host run confirms it pinned to performance"
+
+[[disposition]]
+condition = "smt-policy"
+scope = "host"
+found = "notsupported"
+why = "a guest is not told which of its processors share a core; the sibling thread is the host's to disable and the host run confirms it off"
+
+[[disposition]]
+condition = "core-pinning"
+scope = "host"
+found = "pinned to cpu1"
+why = "cpu1 is this guest's isolated processor, and the virtual processor behind it is pinned to host core 3, which is the core the pack's value names"
+
+[[disposition]]
+condition = "spec-lock-map-disabled"
+scope = "cpu0"
+found = "unreadable: cannot read MSR 0xc0011020 on cpu0 (/dev/cpu/0/msr): Input/output error (os error 5)"
+why = "KVM refuses this register to a guest; the probe in this same run counts zero speculative lock-map commits, which is the behaviour the register produces when the workaround is in force"
+
+[[disposition]]
+condition = "spec-lock-map-disabled"
+scope = "cpu1"
+found = "unreadable: cannot read MSR 0xc0011020 on cpu1 (/dev/cpu/1/msr): Input/output error (os error 5)"
+why = "KVM refuses this register to a guest; the probe in this same run counts zero speculative lock-map commits, which is the behaviour the register produces when the workaround is in force"

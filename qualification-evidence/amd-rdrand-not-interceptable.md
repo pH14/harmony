@@ -55,3 +55,19 @@ that guest reads non-reproducible bits and nothing in the hypervisor sees it hap
 The honest scope statement for the AMD lane is therefore: the work clock and the landing
 mechanism are the parts this program qualifies, and instruction-level entropy denial is
 not available here at the virtualisation layer for RDRAND and RDSEED.
+
+## The backend claimed otherwise
+
+Found later, while running the machinery inside a virtual machine.
+`vmm-backend`'s `patched_capabilities()` returned `deterministic_rng: true` for any host
+that took the patched path, so on this chip it advertised a guarantee the silicon cannot
+give. The enable path already knew better — it asks `KVM_CHECK_EXTENSION` for the
+classes the host covers and requests only those, and it carries a comment saying a guest
+`RDRAND` on SVM reaches the hardware unseen — and the capability report ignored the
+answer.
+
+The report now derives from the mask the host granted. Confirmed on the box before it
+was spun down: the patched backend reports `rng=false tsc=true`, and `ae7-rdtsc`
+independently shows the host advertising `0x5`, the time-stamp and preemption classes
+only. See `rdtsc/the-time-stamp-intercepts-on-svm.md` and `nested/README.md`.
+

@@ -26,6 +26,32 @@ The campaign was spread across eight cores instead, which is the same primitive 
 eight times independently rather than a change to it. Eight cores at margin 16192
 deliver 84 landings a second, putting the floor at about 3.3 hours.
 
+## The same cost in milliseconds, and against the other vendor
+
+Recomputed from the per-arm records in `nested/landing/metal/`, 6,091 arms at the
+sealed margin: mean 12,402 steps at 7.18 microseconds each, **89.7 ms per landing**.
+About 1.3 ms of that is fixed harness cost rather than stepping — it does not scale
+with how far the guest free-runs first, which run B confirms by free-running 48,896
+units to run A's 36,910 for the same per-arm total.
+
+Inside a virtual machine the same landing costs **367 ms**, a step costing 29.6
+microseconds instead of 7.18. Patch `0009` accounts for most of that: it stops and
+starts the backing counter at every nested transition, and a step is one transition.
+The full comparison is in `nested/landing-in-a-virtual-machine.md`.
+
+The other vendor's baseline seals a margin of 256 against this chip's 16,192, sixty-three
+times smaller, because its skid is that much tighter. Its landing is the same walk over
+a shorter distance: at a comparable microsecond cost per step, 128 to 256 steps is
+**0.9 to 1.8 ms**. That is the gap the two numbers describe — a factor of about fifty in
+what an exact landing costs, and it comes from the skid distribution, not from the clock
+speed of either part.
+
+The gap narrows if the margin does. Guest-scope skid on this chip has a median of 2,907
+and a standard deviation of 166, so the sealed 16,192 sits about eighty standard
+deviations out; 3,072 would cost 1.2 ms and overshoot 1.7% of arms in that sample.
+`backend-margin-not-from-the-pack.md` carries the curve and the reason the smaller
+margins are not available yet.
+
 ## The isolation requirement
 
 The first eight-way pilot ran on cores 1, 3, 5, 7, 9, 11, 13 and 15 while only core 3

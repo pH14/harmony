@@ -1,0 +1,31 @@
+date: Tue Aug 25 14:23:33 UTC 2026
+uname: Linux em-serene-montalcini 6.18.35+ #3 SMP PREEMPT_DYNAMIC Tue Aug 25 11:17:15 UTC 2026 x86_64 GNU/Linux
+cmdline: root=/dev/vda rw console=ttyS0,115200 net.ifnames=0 nokaslr
+nproc: 1
+crw-rw---- 1 root kvm 10, 232 Aug 25 14:21 /dev/kvm
+sample_rate: 100000000
+nmi_watchdog: 0
+/sys/module/kvm_amd/parameters/force_avic:N
+/sys/module/kvm_amd/parameters/debug_swap:N
+/sys/module/kvm_amd/parameters/enable_device_posted_irqs:N
+/sys/module/kvm_amd/parameters/sev_es:N
+/sys/module/kvm_amd/parameters/vls:1
+/sys/module/kvm_amd/parameters/tsc_scaling:1
+/sys/module/kvm_amd/parameters/enable_ipiv:N
+/sys/module/kvm_amd/parameters/pause_filter_count_max:65535
+/sys/module/kvm_amd/parameters/sev_snp:N
+/sys/module/kvm_amd/parameters/nrips:1
+/sys/module/kvm_amd/parameters/pause_filter_count_grow:2
+/sys/module/kvm_amd/parameters/pause_filter_count_shrink:0
+/sys/module/kvm_amd/parameters/npt:Y
+/sys/module/kvm_amd/parameters/sev:N
+/sys/module/kvm_amd/parameters/vgif:1
+/sys/module/kvm_amd/parameters/lbrv:1
+/sys/module/kvm_amd/parameters/nested:1
+/sys/module/kvm_amd/parameters/vnmi:N
+/sys/module/kvm_amd/parameters/dump_invalid_vmcb:N
+/sys/module/kvm_amd/parameters/ciphertext_hiding_asids:0
+/sys/module/kvm_amd/parameters/pause_filter_thresh:128
+/sys/module/kvm_amd/parameters/pause_filter_count:3000
+/sys/module/kvm_amd/parameters/intercept_smi:Y
+/sys/module/kvm_amd/parameters/avic:N

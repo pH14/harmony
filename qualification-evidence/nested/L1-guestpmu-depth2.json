@@ -1,0 +1,14 @@
+{
+  "counter_msrs_accepted": 1,
+  "counter_moved": 1,
+  "runs": [
+    { "iterations": 10000, "count": 10294, "hlt": 1, "other_exit": 0 },
+    { "iterations": 20000, "count": 20294, "hlt": 1, "other_exit": 0 },
+    { "iterations": 30000, "count": 30294, "hlt": 1, "other_exit": 0 },
+    { "iterations": 40000, "count": 40294, "hlt": 1, "other_exit": 0 }
+  ],
+  "deltas": [ 10000, 10000, 10000 ],
+  "expected_delta": 10000,
+  "deltas_exact": 1,
+  "pass": 1
+}

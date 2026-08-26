@@ -33,11 +33,44 @@ measured-constants pack is the correct answer to that, and the measurement now e
 
 ## Scope
 
-Reported, not fixed. Wiring the pack into the backend is a design change and this
-program's terms allow code changes only to the pack itself and to defects the box
-exposes in the suite. The gap is named here so it is not mistaken for something this
-program's numbers already cover.
+Reported, not fixed, at the time: wiring the pack into the backend is a design change
+and that program's terms allowed code changes only to the pack itself and to defects
+the box exposed in the suite. The gap is named here so it is not mistaken for something
+that program's numbers already cover.
 
 The consequence for the verdict is narrow: it is a software gap, not a property of the
-chip. Every landing number in this program was measured with the margin the pack seals,
+chip. Every landing number in that program was measured with the margin the pack seals,
 16,192, supplied to the measurement harness directly.
+
+## Fixed
+
+The constant is now `DEFAULT_SKID_MARGIN`, documented as the Coffee Lake baseline's
+number, and `KvmBackend::set_skid_margin` sets the chip's. The live contract exam reads
+the running chip's sealed margin from its pack, which is what made the gap visible as a
+failure rather than as prose: on this chip the exam raises `SkidExceeded` on its first
+landing at the default. See `nested/README.md`.
+
+What the fix does not decide is which margin to use. 16,192 is twice the maximum skid
+of the host-user sampling scope, and landings happen in the guest scope, where skid is
+tightly concentrated — median 2,907, standard deviation 166 over the 6,091 arms pooled
+from `nested/landing/metal/`. Stepping is `margin - skid`, so headroom is what costs,
+and the sealed margin sits about eighty standard deviations above the median:
+
+| margin | arms that overshoot | milliseconds of stepping |
+|---:|---:|---:|
+| 3,072 | 1.7% | 1.2 |
+| 3,500 | 1.0% | 4.3 |
+| 4,000 | 0.4% | 7.8 |
+| 5,000 | 0.15% | 15.0 |
+| 16,192 | none in that sample | 89 |
+
+That sample is 6,091 arms and cannot resolve a rate rarer than about one in six
+thousand; the larger campaigns put guest-scope p99.9 at 5,371 to 5,674 and the maximum
+at 37,616 on isolated cores.
+
+Choosing a smaller margin needs the re-arm to be automatic, and it is not: `run_until`
+raises `SkidExceeded` and stops there. The re-arm cannot be local either — an overshot
+guest has already run past the target, so recovery means restoring and re-running, which
+belongs above this trait. Note that re-arming is already required at the sealed margin:
+`skid.overshoot` in the pack records 62 of 1,558,014 arms overshooting at 16,192. The
+larger margin buys a lower rate, not a bound.
