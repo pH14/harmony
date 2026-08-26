@@ -229,10 +229,12 @@ work was begun before this evidence was recorded.
   initramfs. The composition root places the initramfs in checked guest RAM and
   publishes its exact range in `/chosen`. An entitlement-signed, event-bounded
   `hvf_boot` run reaches Linux 6.18.35 on `harmony-arm64-virt`; it currently
-  stops at the first ARM pvclock registration write after Linux reports that no
-  GIC distributor was detected. These are precise modeled-surface failures,
-  not a claimed boot pass. The new prescriptive paravirtual tick patch and
-  `/init` ready marker remain outstanding.
+  identifies the userspace GICv3 distributor, its single redistributor, and 64
+  SPIs. Exact PIDR2, 64-bit GICR_TYPER, and single-affinity GICD_IROUTER
+  behavior were added from those fail-closed exits; the live run now stops at
+  the first ARM pvclock registration write. These are precise modeled-surface
+  failures, not a claimed boot pass. The new prescriptive paravirtual tick
+  patch and `/init` ready marker remain outstanding.
 - **FAIL — ten same-seed full-boot normalized logs:** not started.
 - **FAIL — placement checker green for every boot:** not started.
 - **FAIL — no liveness-watchdog abort:** not started.

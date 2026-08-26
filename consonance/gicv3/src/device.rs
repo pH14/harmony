@@ -40,6 +40,8 @@ pub struct GicConfig {
 const GICD_CTLR: u64 = 0x0000;
 const GICD_TYPER: u64 = 0x0004;
 const GICD_IIDR: u64 = 0x0008;
+/// Peripheral ID register 2. `ArchRev=3` identifies a GICv3 distributor.
+const GICD_PIDR2: u64 = 0xFFE8;
 const IGROUPR_BASE: u64 = 0x0080;
 const ISENABLER_BASE: u64 = 0x0100;
 const ICENABLER_BASE: u64 = 0x0180;
@@ -67,6 +69,10 @@ const GICR_IIDR: u64 = 0x0004;
 const GICR_TYPER_LO: u64 = 0x0008;
 const GICR_TYPER_HI: u64 = 0x000C;
 const GICR_WAKER: u64 = 0x0014;
+/// Peripheral ID register 2 in the redistributor RD frame.
+const GICR_PIDR2: u64 = 0xFFE8;
+/// `GIC_PIDR2_ARCH_GICv3`: bits [7:4] carry architectural revision 3.
+const GIC_PIDR2_ARCH_GICV3: u32 = 3 << 4;
 /// The SGI frame starts one 64 KiB frame above the RD frame.
 const SGI_FRAME_BASE: u64 = 0x1_0000;
 
@@ -212,6 +218,7 @@ impl Gicv3 {
             GICD_CTLR => self.gicd_ctlr | GICD_CTLR_ARE,
             GICD_TYPER => self.gicd_typer(),
             GICD_IIDR => 0,
+            GICD_PIDR2 => GIC_PIDR2_ARCH_GICV3,
             _ => {
                 // The banked-per-INTID files: the distributor owns SPIs only
                 // (word index ≥ 1 / priority byte ≥ 32); the SGI/PPI bank is
@@ -315,6 +322,7 @@ impl Gicv3 {
                 GICR_TYPER_LO => GICR_TYPER_LAST,
                 GICR_TYPER_HI => 0,
                 GICR_WAKER => 0, // awake: ProcessorSleep=0, ChildrenAsleep=0
+                GICR_PIDR2 => GIC_PIDR2_ARCH_GICV3,
                 _ => 0,
             };
         }
@@ -997,6 +1005,16 @@ mod tests {
         // TYPER encodes the configured limit: (32+64)/32 - 1 = 2.
         let typer = g.mmio_read(GicFrame::Dist, GICD_TYPER, 0).unwrap();
         assert_eq!(typer & 0x1F, 2);
+        // Linux validates both frames by reading PIDR2.ArchRev before it
+        // touches their operational register files.
+        assert_eq!(
+            g.mmio_read(GicFrame::Dist, GICD_PIDR2, 0).unwrap(),
+            GIC_PIDR2_ARCH_GICV3
+        );
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, GICR_PIDR2, 0).unwrap(),
+            GIC_PIDR2_ARCH_GICV3
+        );
     }
 
     #[test]

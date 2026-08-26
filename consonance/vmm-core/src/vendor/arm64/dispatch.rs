@@ -48,6 +48,18 @@ fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
     addr >= frame.0 && addr < frame.0 + frame.1
 }
 
+/// Whether `addr` is an implemented SPI's 64-bit `GICD_IROUTERn` register.
+/// The uniprocessor model has one fixed affinity target (Aff0..3 = 0), so the
+/// register is stateless and its only supported value is zero.
+fn is_gicd_irouter(addr: u64) -> bool {
+    use super::board::{GICD, IMPL_SPIS};
+
+    const IROUTER_BASE: u64 = 0x6000;
+    let first_spi = GICD.0 + IROUTER_BASE + 32 * 8;
+    let end = first_spi + u64::from(IMPL_SPIS) * 8;
+    (first_spi..end).contains(&addr) && addr.is_multiple_of(8)
+}
+
 /// The arm64 per-VM device state
 /// ([`Vendor::Devices`](crate::vendor::Vendor::Devices)): the PL011 UART
 /// (always present — the serial console) and the optional GICv3 +
@@ -141,7 +153,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             // The model is single-security-state Group-1-only. The binary
             // point/priority controls Linux writes are accepted at their only
             // supported values; reads return that fixed interface shape.
-            (ICC_IGRPEN1_EL1, Some(0 | 1)) | (ICC_BPR1_EL1, Some(0)) => {
+            (ICC_IGRPEN1_EL1, Some(value)) if value <= 1 => {
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            (ICC_BPR1_EL1 | ICC_CTLR_EL1, Some(0)) => {
                 self.backend.complete_ok()?;
                 Ok(Step::Continued)
             }
@@ -167,7 +183,8 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             _ => {
                 let dir = if write.is_some() { "write" } else { "read" };
                 Err(VmmError::ContractViolation(format!(
-                    "trapped GIC CPU-interface sysreg {dir} ({sysreg:#010x}) has no ruled value"
+                    "trapped GIC CPU-interface sysreg {dir} ({sysreg:#010x}, value={write:?}) \
+                     has no ruled value"
                 )))
             }
         }
@@ -196,8 +213,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // arm64 device is range-checked before touching state. GIC and the
         // doorbell are strict 32-bit word ABIs. PL011 registers remain
         // word-addressed but architecturally admit 8/16/32-bit transfers at the
-        // register base; Linux earlycon uses an 8-bit UARTDR store. Anything
-        // else fails closed (never a silent truncation or cross-frame access).
+        // register base; Linux earlycon uses an 8-bit UARTDR store. The one
+        // 64-bit GIC access modeled here is GICR_TYPER at offset 0x8, whose
+        // architectural width Linux uses while discovering redistributors.
+        // Anything else fails closed (never a silent truncation or cross-frame
+        // access).
         if let Some((frame_name, frame)) = [
             ("PL011", PL011),
             ("doorbell", DOORBELL),
@@ -222,10 +242,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                      registers are word-addressed; a misaligned access is unmodeled (fail closed)"
                 )));
             }
-            let valid_width = if frame_name == "PL011" {
-                matches!(size, 1 | 2 | 4)
-            } else {
-                size == 4
+            let valid_width = match frame_name {
+                "PL011" => matches!(size, 1 | 2 | 4),
+                "GICR" => size == 4 || (size == 8 && addr - frame.0 == 0x8),
+                "GICD" => size == 4 || (size == 8 && is_gicd_irouter(addr)),
+                _ => size == 4,
             };
             if !valid_width {
                 return Err(VmmError::ContractViolation(format!(
@@ -272,8 +293,8 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
 
         // The GICv3 distributor / redistributor frames (width already checked
-        // above — the modeled register files are 32-bit-accessed; 64-bit GIC
-        // registers like IROUTERn/GICR_TYPER are unmodeled, `TODO(AA-6)`).
+        // above). GICR_TYPER is composed from its two 32-bit halves so the
+        // device model retains one canonical register-access primitive.
         if in_frame(addr, GICD) || in_frame(addr, GICR) {
             let (frame, base) = if in_frame(addr, GICD) {
                 (gicv3::GicFrame::Dist, GICD.0)
@@ -287,18 +308,53 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                      stock-backend boot never wires it"
                 )));
             }
+            // GICD_IROUTERn is 64-bit. This uniprocessor machine exposes only
+            // affinity zero, so it reads zero and accepts exactly zero. A
+            // nonzero affinity would promise routing the model cannot perform.
+            if size == 8 && is_gicd_irouter(addr) {
+                return match write {
+                    None => {
+                        self.backend.complete_read(0)?;
+                        Ok(Step::Continued)
+                    }
+                    Some(0) => Ok(Step::Continued),
+                    Some(value) => Err(VmmError::ContractViolation(format!(
+                        "GICD_IROUTER at {addr:#x} requests unsupported affinity {value:#x}; \
+                         the single-vCPU machine routes only to affinity zero"
+                    ))),
+                };
+            }
             let now_vns = self.now_vns()?;
             let offset = addr - base;
             let gic = self.devices.gic.as_mut().expect("is_none checked above");
             return match write {
                 None => {
-                    let v = gic.mmio_read(frame, offset, now_vns).map_err(|e| {
+                    let lo = gic.mmio_read(frame, offset, now_vns).map_err(|e| {
                         VmmError::ContractViolation(format!("GICv3 read {offset:#x}: {e}"))
                     })?;
-                    self.backend.complete_read(u64::from(v))?;
+                    let value = if size == 8 {
+                        let hi_offset = offset.checked_add(4).ok_or_else(|| {
+                            VmmError::ContractViolation(
+                                "GICv3 64-bit read offset overflow".to_string(),
+                            )
+                        })?;
+                        let hi = gic.mmio_read(frame, hi_offset, now_vns).map_err(|e| {
+                            VmmError::ContractViolation(format!("GICv3 read {hi_offset:#x}: {e}"))
+                        })?;
+                        u64::from(lo) | (u64::from(hi) << 32)
+                    } else {
+                        u64::from(lo)
+                    };
+                    self.backend.complete_read(value)?;
                     Ok(Step::Continued)
                 }
                 Some(v) => {
+                    if size == 8 {
+                        return Err(VmmError::ContractViolation(format!(
+                            "arm64 GICR MMIO write at {addr:#x} has unmodeled 64-bit direction \
+                             (GICR_TYPER is read-only; fail closed)"
+                        )));
+                    }
                     gic.mmio_write(frame, offset, v as u32, now_vns)
                         .map_err(|e| {
                             VmmError::ContractViolation(format!("GICv3 write {offset:#x}: {e}"))

@@ -208,6 +208,10 @@ fn canonical_sysreg(iss: u64) -> u32 {
     ((iss & 0x003f_ffff) & !(0x1f << 5) & !1) as u32
 }
 
+fn sysreg_rt(iss: u64) -> u32 {
+    ((iss >> 5) & 0x1f) as u32
+}
+
 /// Hypervisor.framework backend for the measured Apple Silicon bring-up host.
 pub struct HvfBackend {
     vcpu: u64,
@@ -406,9 +410,18 @@ impl HvfBackend {
                 }
                 ESR_EC_SYSREG => {
                     let iss = raw.exception.syndrome & 0x01ff_ffff;
-                    let reg = ((iss >> 5) & 0x1f) as u32;
+                    let reg = sysreg_rt(iss);
                     let read = iss & 1 != 0;
-                    let write = if read { None } else { Some(self.reg(reg)?) };
+                    // Rt=31 is XZR for MSR/MRS, not an index into HVF's
+                    // register enum (where numeric 31 names PC). Linux uses
+                    // `msr ICC_BPR1_EL1, xzr` during GIC CPU-interface init.
+                    let write = if read {
+                        None
+                    } else if reg == 31 {
+                        Some(0)
+                    } else {
+                        Some(self.reg(reg)?)
+                    };
                     self.advance_pc()?;
                     self.pending = if read {
                         Pending::SysregRead { reg }
@@ -848,6 +861,10 @@ mod tests {
         assert_eq!(canonical_sysreg(eoir), 0x0032_3018);
         assert_eq!(canonical_sysreg(pmr_write), 0x0030_100c);
         assert_eq!(canonical_sysreg(pmr_read), canonical_sysreg(pmr_write));
+        assert_eq!(sysreg_rt(eoir), 1);
+        let bpr1_xzr = 0x0036_3018u64 | (31 << 5);
+        assert_eq!(sysreg_rt(bpr1_xzr), 31);
+        assert_eq!(canonical_sysreg(bpr1_xzr), 0x0036_3018);
     }
 
     #[test]

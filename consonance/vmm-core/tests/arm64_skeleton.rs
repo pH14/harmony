@@ -503,8 +503,9 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
     })]);
     assert!(format!("{}", v.step().unwrap_err()).contains("unmodeled size 8"));
 
-    // GIC and doorbell remain exact 32-bit word ABIs. The width guard precedes
-    // unwired-fabric / doorbell dispatch, so it surfaces regardless.
+    // GIC and doorbell are exact-width ABIs. Operational registers and the
+    // doorbell are 32-bit; GICR_TYPER alone admits its architectural 64-bit
+    // read. The width guard precedes unwired-fabric / doorbell dispatch.
     for (name, gpa) in [
         ("GICD", 0x0800_0000u64),
         ("GICR", 0x080A_0000),
@@ -557,6 +558,43 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
             "{name} last-word size-8 must fail closed on straddle: {err}"
         );
     }
+
+    // Linux discovers the single redistributor with a 64-bit GICR_TYPER load.
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x080A_0008),
+        size: 8,
+        write: None,
+    })]);
+    v.wire_gic(vmm_core::vendor::arm64::board::new_gic());
+    assert_eq!(v.step().unwrap(), Step::Continued);
+
+    // That exception is read-only and offset-exact; a store fails closed.
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x080A_0008),
+        size: 8,
+        write: Some(0),
+    })]);
+    v.wire_gic(vmm_core::vendor::arm64::board::new_gic());
+    assert!(format!("{}", v.step().unwrap_err()).contains("read-only"));
+
+    // Each implemented SPI has a 64-bit IROUTER register. On this one-vCPU
+    // machine affinity zero is the exact and only supported route.
+    for write in [None, Some(0)] {
+        let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0x0800_6100), // GICD_IROUTER32
+            size: 8,
+            write,
+        })]);
+        v.wire_gic(vmm_core::vendor::arm64::board::new_gic());
+        assert_eq!(v.step().unwrap(), Step::Continued);
+    }
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x0800_6100),
+        size: 8,
+        write: Some(1),
+    })]);
+    v.wire_gic(vmm_core::vendor::arm64::board::new_gic());
+    assert!(format!("{}", v.step().unwrap_err()).contains("unsupported affinity"));
 
     // PL011 has the same alignment and frame-boundary discipline even though
     // it accepts sub-word widths at a register base.
