@@ -1518,6 +1518,30 @@ mod tests {
     }
 
     #[test]
+    fn energy_selector_records_counters_and_replays_byte_identically() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca22, 4, 48);
+        config.selector = crate::search::archive::SelectorPolicy::Energy(
+            crate::search::archive::RetireThresholds {
+                entry: 2,
+                groups: vec![4, 8, 16],
+            },
+        );
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("energy campaign");
+        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
+        let header = text.lines().next().expect("header");
+        assert!(header.contains("room_cell_uniform_128_energy:2,4,8,16"));
+        assert!(live.archive.selector.retirement.is_some());
+        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
+        assert_eq!(
+            serde_json::to_vec_pretty(&live).expect("serialize live"),
+            serde_json::to_vec_pretty(&replayed).expect("serialize replayed")
+        );
+    }
+
+    #[test]
     fn retiring_selector_reports_survive_a_seed_sweep() {
         // The scale replays diverged only in end-state retirement counters,
         // so this sweeps seeds under reset-heavy thresholds until a live
@@ -1560,6 +1584,10 @@ mod tests {
         for policy in [
             SelectorPolicy::GroupUniform,
             SelectorPolicy::Retire(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12, 2],
+            }),
+            SelectorPolicy::Energy(RetireThresholds {
                 entry: 3,
                 groups: vec![6, 12, 2],
             }),
