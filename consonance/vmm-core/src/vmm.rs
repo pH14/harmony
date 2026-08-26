@@ -1927,6 +1927,7 @@ where
         // already stamped at (or beyond) the interrupt's own V-time. A no-op
         // unless a page is registered.
         self.pvclock_refresh()?;
+        <B::A as Vendor>::post_exit(self)?;
         Ok(step)
     }
 
@@ -3624,11 +3625,12 @@ where
     pub(crate) fn now_vns(&self) -> Result<u64, VmmError> {
         match &self.vtime {
             Some(vt) => {
-                let work = if self.backend.capabilities().arch.deterministic_clock() {
-                    vt.last_intercept_work
-                } else {
-                    vt.work.work()?
-                };
+                let work =
+                    if vt.prescriptive || self.backend.capabilities().arch.deterministic_clock() {
+                        vt.last_intercept_work
+                    } else {
+                        vt.work.work()?
+                    };
                 Ok(vt.clock.snapshot_vns(work))
             }
             None => Ok(0),

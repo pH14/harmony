@@ -184,12 +184,51 @@ const DEVICE_BLOB_VERSION_GIC: u16 = 2;
 const DEVICE_BLOB_VERSION_DOORBELL: u16 = 3;
 /// v2 + the doorbell record: the GIC **and** the doorbell pages.
 const DEVICE_BLOB_VERSION_GIC_DOORBELL: u16 = 4;
+/// v1 plus the ARM pvclock channel and its PPI20 clockevent state.
+const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
+/// v2 plus the ARM pvclock/clockevent record.
+const DEVICE_BLOB_VERSION_GIC_PVCLOCK: u16 = 6;
+/// v3 plus the ARM pvclock/clockevent record.
+const DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK: u16 = 7;
+/// v4 plus the ARM pvclock/clockevent record.
+const DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK: u16 = 8;
 /// The exact byte length of the doorbell record on a doorbell-bearing version:
 /// the two ABI pages (`REQ`/`RESP`) `Vmm::map_doorbell_pages` allocates
 /// (`2 · HC_PAGE`, `HC_PAGE = 4096`). A v3/v4 blob whose doorbell length is
 /// anything else (notably `0`) contradicts the version's wiring flag and is
 /// rejected (review r16).
 const DOORBELL_BLOB_LEN: usize = 2 * 4096;
+
+/// Guest-visible state of the ARM paravirtual clockevent transport.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Arm64ClockeventState {
+    /// Pending absolute deadline in pvclock `guest_clock` ticks.
+    pub deadline: Option<u64>,
+    /// Whether the dedicated PPI20 device input is currently high.
+    pub line_asserted: bool,
+    /// Number of distinct low-to-high assertions.
+    pub assertions: u64,
+    /// Number of guest ACK operations that consumed an assertion.
+    pub acknowledgements: u64,
+}
+
+/// The generic pvclock channel record paired with ARM's clockevent transport.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Arm64PvclockState {
+    /// Staleness cadence identity; prescriptive mode stores its configured
+    /// nonzero sentinel even though it never calls `run_until`.
+    pub delta_work: u64,
+    /// Guest-selected page GPA, when registration has occurred.
+    pub gpa: Option<u64>,
+    /// Whether this composition can accept a registration.
+    pub registrable: bool,
+    /// `true` for assigned-at-exit V-time. This is snapshot identity, so a
+    /// descriptive target cannot silently adopt a prescriptive timeline (or
+    /// vice versa) merely because their numeric clock rates match.
+    pub prescriptive: bool,
+    /// Deadline, external line, and diagnostic counters.
+    pub clockevent: Arm64ClockeventState,
+}
 
 /// Everything the vmm-core arm64 device blob carries.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -216,10 +255,27 @@ pub(crate) struct Arm64DeviceState {
     /// (review r11). Empty exactly when the VM never mapped them (x86-style /
     /// unwired composition); non-empty ⇒ exactly `2 · HC_PAGE` bytes.
     pub doorbell: Vec<u8>,
+    /// ARM pvclock offer/registration plus the clockevent state. `None` is the
+    /// exact old v1-v4 shape for a composition that did not offer pvclock.
+    pub pvclock: Option<Arm64PvclockState>,
 }
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Append clockevent state in the canonical hash/snapshot order.
+pub(crate) fn encode_clockevent_state(out: &mut Vec<u8>, state: Arm64ClockeventState) {
+    match state.deadline {
+        Some(deadline) => {
+            out.push(1);
+            out.extend_from_slice(&deadline.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+    out.push(u8::from(state.line_asserted));
+    out.extend_from_slice(&state.assertions.to_le_bytes());
+    out.extend_from_slice(&state.acknowledgements.to_le_bytes());
 }
 
 /// Encode a [`gicv3::GicState`] in fixed declaration order (all POD, LE; the
@@ -291,11 +347,15 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     put_u32(&mut v, DEVICE_BLOB_MAGIC);
     // The version IS the wiring flag (the x86 pvclock-blob pattern), now over two
     // independent optional records: the GIC and the doorbell pages.
-    let version = match (d.gic.is_some(), !d.doorbell.is_empty()) {
-        (false, false) => DEVICE_BLOB_VERSION_BASE,
-        (true, false) => DEVICE_BLOB_VERSION_GIC,
-        (false, true) => DEVICE_BLOB_VERSION_DOORBELL,
-        (true, true) => DEVICE_BLOB_VERSION_GIC_DOORBELL,
+    let version = match (d.gic.is_some(), !d.doorbell.is_empty(), d.pvclock.is_some()) {
+        (false, false, false) => DEVICE_BLOB_VERSION_BASE,
+        (true, false, false) => DEVICE_BLOB_VERSION_GIC,
+        (false, true, false) => DEVICE_BLOB_VERSION_DOORBELL,
+        (true, true, false) => DEVICE_BLOB_VERSION_GIC_DOORBELL,
+        (false, false, true) => DEVICE_BLOB_VERSION_PVCLOCK,
+        (true, false, true) => DEVICE_BLOB_VERSION_GIC_PVCLOCK,
+        (false, true, true) => DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK,
+        (true, true, true) => DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK,
     };
     v.extend_from_slice(&version.to_le_bytes());
     v.extend_from_slice(&d.clock_offset.to_le_bytes());
@@ -316,6 +376,19 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
     if !d.doorbell.is_empty() {
         put_u32(&mut v, d.doorbell.len() as u32);
         v.extend_from_slice(&d.doorbell);
+    }
+    if let Some(pv) = d.pvclock {
+        v.extend_from_slice(&pv.delta_work.to_le_bytes());
+        match pv.gpa {
+            Some(gpa) => {
+                v.push(1);
+                v.extend_from_slice(&gpa.to_le_bytes());
+            }
+            None => v.push(0),
+        }
+        v.push(u8::from(pv.registrable));
+        v.push(u8::from(pv.prescriptive));
+        encode_clockevent_state(&mut v, pv.clockevent);
     }
     vm_state::DeviceBlob(v)
 }
@@ -366,11 +439,15 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         return Err(SnapshotError::DeviceBlob("bad arm64 device-blob magic"));
     }
     let version = c.u16()?;
-    let (has_gic, has_doorbell) = match version {
-        DEVICE_BLOB_VERSION_BASE => (false, false),
-        DEVICE_BLOB_VERSION_GIC => (true, false),
-        DEVICE_BLOB_VERSION_DOORBELL => (false, true),
-        DEVICE_BLOB_VERSION_GIC_DOORBELL => (true, true),
+    let (has_gic, has_doorbell, has_pvclock) = match version {
+        DEVICE_BLOB_VERSION_BASE => (false, false, false),
+        DEVICE_BLOB_VERSION_GIC => (true, false, false),
+        DEVICE_BLOB_VERSION_DOORBELL => (false, true, false),
+        DEVICE_BLOB_VERSION_GIC_DOORBELL => (true, true, false),
+        DEVICE_BLOB_VERSION_PVCLOCK => (false, false, true),
+        DEVICE_BLOB_VERSION_GIC_PVCLOCK => (true, false, true),
+        DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK => (false, true, true),
+        DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK => (true, true, true),
         _ => {
             return Err(SnapshotError::DeviceBlob(
                 "unsupported arm64 device-blob version",
@@ -410,6 +487,68 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     } else {
         Vec::new()
     };
+    let pvclock = if has_pvclock {
+        let delta_work = c.u64()?;
+        if delta_work == 0 {
+            return Err(SnapshotError::DeviceBlob("zero pvclock delta"));
+        }
+        let gpa = match c.take(1)?[0] {
+            0 => None,
+            1 => Some(c.u64()?),
+            _ => return Err(SnapshotError::DeviceBlob("bad pvclock gpa flag")),
+        };
+        let registrable = match c.take(1)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err(SnapshotError::DeviceBlob("bad pvclock registrable flag")),
+        };
+        if gpa.is_some() && !registrable {
+            return Err(SnapshotError::DeviceBlob(
+                "registered pvclock page is marked non-registrable",
+            ));
+        }
+        let prescriptive = match c.take(1)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err(SnapshotError::DeviceBlob("bad V-time mode flag")),
+        };
+        let deadline = match c.take(1)?[0] {
+            0 => None,
+            1 => Some(c.u64()?),
+            _ => return Err(SnapshotError::DeviceBlob("bad clockevent deadline flag")),
+        };
+        let line_asserted = match c.take(1)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err(SnapshotError::DeviceBlob("bad clockevent line flag")),
+        };
+        if deadline.is_some() && line_asserted {
+            return Err(SnapshotError::DeviceBlob(
+                "clockevent cannot retain a deadline while its line is asserted",
+            ));
+        }
+        let assertions = c.u64()?;
+        let acknowledgements = c.u64()?;
+        if acknowledgements > assertions {
+            return Err(SnapshotError::DeviceBlob(
+                "clockevent ACK count exceeds assertion count",
+            ));
+        }
+        Some(Arm64PvclockState {
+            delta_work,
+            gpa,
+            registrable,
+            prescriptive,
+            clockevent: Arm64ClockeventState {
+                deadline,
+                line_asserted,
+                assertions,
+                acknowledgements,
+            },
+        })
+    } else {
+        None
+    };
     if c.pos != bytes.len() {
         return Err(SnapshotError::DeviceBlob("trailing bytes"));
     }
@@ -420,6 +559,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         uart_regs,
         gic,
         doorbell,
+        pvclock,
     })
 }
 
@@ -435,6 +575,7 @@ mod tests {
             uart_regs: [13, 1, 0x70, 0x301, 0x10],
             gic: None,
             doorbell: Vec::new(),
+            pvclock: None,
         }
     }
 
@@ -464,19 +605,47 @@ mod tests {
         }
     }
 
+    fn sample_with_pvclock() -> Arm64DeviceState {
+        Arm64DeviceState {
+            pvclock: Some(Arm64PvclockState {
+                delta_work: 1,
+                gpa: Some(0x4031_1000),
+                registrable: true,
+                prescriptive: true,
+                clockevent: Arm64ClockeventState {
+                    deadline: None,
+                    line_asserted: true,
+                    assertions: 7,
+                    acknowledgements: 6,
+                },
+            }),
+            ..sample()
+        }
+    }
+
     #[test]
     fn device_blob_round_trips() {
-        // All four version shapes: base (v1), gic (v2), doorbell (v3), gic +
-        // doorbell (v4) — the version is the two-flag wiring witness.
+        // All eight version shapes: the existing GIC/doorbell combinations and
+        // each corresponding shape with the ARM pvclock record appended.
         let gic_and_doorbell = Arm64DeviceState {
             doorbell: sample_with_doorbell().doorbell,
             ..sample_with_gic()
         };
+        let mut gic_and_pvclock = sample_with_gic();
+        gic_and_pvclock.pvclock = sample_with_pvclock().pvclock;
+        let mut doorbell_and_pvclock = sample_with_doorbell();
+        doorbell_and_pvclock.pvclock = sample_with_pvclock().pvclock;
+        let mut all = gic_and_doorbell.clone();
+        all.pvclock = sample_with_pvclock().pvclock;
         for d in [
             sample(),
             sample_with_gic(),
             sample_with_doorbell(),
             gic_and_doorbell,
+            sample_with_pvclock(),
+            gic_and_pvclock,
+            doorbell_and_pvclock,
+            all,
         ] {
             let blob = encode_device_blob(&d);
             assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
@@ -526,6 +695,24 @@ mod tests {
                 "a doorbell version with a zero-length doorbell record must fail closed"
             );
         }
+    }
+
+    #[test]
+    fn decode_rejects_impossible_clockevent_and_pvclock_flags() {
+        let good = encode_device_blob(&sample_with_pvclock()).0;
+        // The trailing record ends with deadline flag, line flag, and two u64
+        // counters. Rebuild a sample with both mutually exclusive states set.
+        let mut impossible = sample_with_pvclock();
+        let pv = impossible.pvclock.as_mut().unwrap();
+        pv.clockevent.deadline = Some(9);
+        let impossible = encode_device_blob(&impossible).0;
+        assert!(decode_device_blob(&impossible).is_err());
+
+        // Boolean fields are canonical 0/1, never truthy bytes.
+        let mut bad_bool = good;
+        let line_flag = bad_bool.len() - 17;
+        bad_bool[line_flag] = 2;
+        assert!(decode_device_blob(&bad_bool).is_err());
     }
 
     #[test]

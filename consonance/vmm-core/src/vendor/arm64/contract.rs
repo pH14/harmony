@@ -28,6 +28,10 @@ pub const SERIAL_EXIT_VNS: u64 = 1_000;
 pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
 /// Assigned duration of a trapped counter-shaped time read.
 pub const TRAPPED_TIME_READ_VNS: u64 = 1;
+/// Assigned duration of a deterministic architectural-control trap that is
+/// neither a device access nor a time read (for example Linux clearing the
+/// OS debug lock at boot).
+pub const ARCH_CONTROL_EXIT_VNS: u64 = 1_000;
 
 /// The normative arm64 prescriptive timing row set. Production composition
 /// never uses `PrescriptiveTiming::default()`'s M0 placeholders.
@@ -111,5 +115,6 @@ mod tests {
         assert_eq!(timing.serial_mmio_vns, 1_000);
         assert_eq!(timing.paravirtual_device_mmio_vns, 1_000);
         assert_eq!(timing.trapped_time_read_vns, 1);
+        assert_eq!(ARCH_CONTROL_EXIT_VNS, 1_000);
     }
 }

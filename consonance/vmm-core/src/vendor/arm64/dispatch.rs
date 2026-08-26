@@ -23,7 +23,9 @@ use crate::snapshot::SnapshotError;
 use crate::vendor::InterruptReject;
 use crate::vendor::arm64::contract;
 use crate::vendor::arm64::devices::Pl011;
-use crate::vendor::arm64::records::{self, Arm64DeviceState};
+use crate::vendor::arm64::records::{
+    self, Arm64ClockeventState, Arm64DeviceState, Arm64PvclockState,
+};
 use crate::vmm::{Step, Vmm, VmmError};
 
 /// `PSTATE.I` (IRQ mask, bit 7): set ⇒ maskable interrupts are masked — the
@@ -42,6 +44,11 @@ const ICC_BPR1_EL1: u32 = 0x0036_3018;
 const ICC_CTLR_EL1: u32 = 0x0038_3018;
 const ICC_RPR_EL1: u32 = 0x0036_3016;
 const ICC_HPPIR1_EL1: u32 = 0x0034_3018;
+// OSDLR_EL1 (S2_0_C1_C3_4). Linux writes zero during debug-monitors boot
+// initialization. HVF traps that access even though it is not a GIC sysreg.
+const OSDLR_EL1: u32 = 0x0028_0406;
+// OSLAR_EL1 (S2_0_C1_C0_4), the companion OS lock access register.
+const OSLAR_EL1: u32 = 0x0028_0400;
 
 /// `true` iff `addr` lies inside the `(base, len)` device frame.
 fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
@@ -73,6 +80,8 @@ pub struct Arm64Devices {
     /// `TODO(AA-6)`, the vGICv3 round-trip verdict), so wiring it is a
     /// test/mock composition today, never a silicon claim.
     pub(crate) gic: Option<gicv3::Gicv3>,
+    /// Paravirtual clockevent deadline and its dedicated PPI20 input level.
+    pub(crate) clockevent: Arm64ClockeventState,
 }
 
 impl Arm64Devices {
@@ -81,6 +90,7 @@ impl Arm64Devices {
         Self {
             uart: Pl011::new(),
             gic: None,
+            clockevent: Arm64ClockeventState::default(),
         }
     }
 }
@@ -108,12 +118,35 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 | ICC_CTLR_EL1
                 | ICC_RPR_EL1
                 | ICC_HPPIR1_EL1
+                | OSDLR_EL1
+                | OSLAR_EL1
         );
         if !ruled {
             let dir = if write.is_some() { "write" } else { "read" };
             return Err(VmmError::ContractViolation(format!(
                 "trapped sysreg {dir} ({sysreg:#010x}) has no ruled disposition for HVF"
             )));
+        }
+        if matches!(sysreg, OSDLR_EL1 | OSLAR_EL1) {
+            if self.prescriptive_vtime_enabled() {
+                self.advance_prescriptive_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
+            }
+            return match write {
+                Some(0) => {
+                    // The deterministic zero write only clears the OS debug
+                    // lock. The retained debug register file remains the sole
+                    // guest-visible debug state and already rides snapshots.
+                    self.backend.complete_ok()?;
+                    Ok(Step::Continued)
+                }
+                Some(value) => Err(VmmError::ContractViolation(format!(
+                    "OS debug-lock register {sysreg:#010x} supports only Linux's deterministic \
+                     zero unlock, got {value:#x}"
+                ))),
+                None => Err(VmmError::ContractViolation(format!(
+                    "OS debug-lock register {sysreg:#010x} read has no ruled disposition"
+                ))),
+            };
         }
         if self.devices.gic.is_none() {
             return Err(VmmError::ContractViolation(format!(
@@ -139,6 +172,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 gic.eoi(intid).map_err(|e| {
                     VmmError::ContractViolation(format!("ICC_EOIR1_EL1 rejected: {e}"))
                 })?;
+                // PPI20 is a level input. If a broken guest EOIs without first
+                // ACKing the device, the still-high line becomes pending again.
+                if intid == super::board::PVCLOCK_PPI && self.devices.clockevent.line_asserted {
+                    gic.raise(intid).map_err(|e| {
+                        VmmError::ContractViolation(format!(
+                            "PPI20 level reassertion after EOI failed: {e}"
+                        ))
+                    })?;
+                }
                 self.backend.complete_ok()?;
                 Ok(Step::Continued)
             }
@@ -340,12 +382,19 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     self.backend.complete_read(u64::from(abi))?;
                     Ok(Step::Continued)
                 }
-                (0x010, Some(_)) => Err(VmmError::ContractViolation(
-                    "arm64 pvclock deadline protocol is not wired yet".to_string(),
-                )),
-                (0x018, Some(_)) => Err(VmmError::ContractViolation(
-                    "arm64 pvclock control protocol is not wired yet".to_string(),
-                )),
+                (0x010, Some(deadline)) => {
+                    self.arm_clockevent_program(deadline)?;
+                    Ok(Step::Continued)
+                }
+                (0x018, Some(control)) => {
+                    let control = u32::try_from(control).map_err(|_| {
+                        VmmError::ContractViolation(
+                            "arm64 pvclock control value exceeds u32".to_string(),
+                        )
+                    })?;
+                    self.arm_clockevent_control(control)?;
+                    Ok(Step::Continued)
+                }
                 _ => Err(VmmError::ContractViolation(
                     "arm64 pvclock exact-shape validation disagreed with dispatch".to_string(),
                 )),
@@ -431,6 +480,105 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             "unmodeled MMIO at {addr:#x} (size {size}); only the PL011 console, the GICv3 \
              frames, the pvclock frame, and the hypercall doorbell are modeled on the arm64 board"
         )))
+    }
+
+    /// Replace the pending absolute clockevent deadline. Programming while the
+    /// PPI20 device input is high is a protocol fault; the guest must ACK or
+    /// DISARM first.
+    fn arm_clockevent_program(&mut self, deadline: u64) -> Result<(), VmmError> {
+        if self.devices.clockevent.line_asserted {
+            return Err(VmmError::ContractViolation(
+                "arm64 clockevent deadline write while PPI20 is asserted".to_string(),
+            ));
+        }
+        self.devices.clockevent.deadline = Some(deadline);
+        Ok(())
+    }
+
+    /// Apply the exact clockevent control protocol (`1 = DISARM`, `2 = ACK`).
+    fn arm_clockevent_control(&mut self, control: u32) -> Result<(), VmmError> {
+        use super::board::PVCLOCK_PPI;
+
+        match control {
+            1 => {
+                self.devices.clockevent.deadline = None;
+                if self.devices.clockevent.line_asserted {
+                    let gic = self.devices.gic.as_mut().ok_or_else(|| {
+                        VmmError::ContractViolation(
+                            "arm64 clockevent DISARM with no GIC wired".to_string(),
+                        )
+                    })?;
+                    gic.lower(PVCLOCK_PPI).map_err(|e| {
+                        VmmError::ContractViolation(format!(
+                            "arm64 clockevent DISARM could not lower PPI20: {e}"
+                        ))
+                    })?;
+                    self.devices.clockevent.line_asserted = false;
+                }
+                Ok(())
+            }
+            2 if self.devices.clockevent.line_asserted => {
+                let gic = self.devices.gic.as_mut().ok_or_else(|| {
+                    VmmError::ContractViolation(
+                        "arm64 clockevent ACK with no GIC wired".to_string(),
+                    )
+                })?;
+                gic.lower(PVCLOCK_PPI).map_err(|e| {
+                    VmmError::ContractViolation(format!(
+                        "arm64 clockevent ACK could not lower PPI20: {e}"
+                    ))
+                })?;
+                self.devices.clockevent.line_asserted = false;
+                self.devices.clockevent.acknowledgements =
+                    self.devices.clockevent.acknowledgements.saturating_add(1);
+                Ok(())
+            }
+            2 => Err(VmmError::ContractViolation(
+                "arm64 clockevent ACK while PPI20 is not asserted".to_string(),
+            )),
+            value => Err(VmmError::ContractViolation(format!(
+                "arm64 clockevent control value {value} is not DISARM(1) or ACK(2)"
+            ))),
+        }
+    }
+
+    /// After the exit's page publication, assert PPI20 iff the registered
+    /// guest-clock value has reached the one pending absolute deadline.
+    pub(crate) fn service_arm_clockevent_due(&mut self) -> Result<(), VmmError> {
+        use super::board::PVCLOCK_PPI;
+
+        let Some(deadline) = self.devices.clockevent.deadline else {
+            return Ok(());
+        };
+        // Deadlines may be programmed before page registration, but the device
+        // cannot evaluate or deliver them until the one-shot page is active.
+        if self.pvclock_registration().is_none() {
+            return Ok(());
+        }
+        let Some(vt) = self.vtime.as_ref() else {
+            return Err(VmmError::ContractViolation(
+                "arm64 clockevent deadline without V-time wiring".to_string(),
+            ));
+        };
+        let guest_clock = vt.guest_clock(vt.last_intercept_work);
+        if guest_clock < deadline {
+            return Ok(());
+        }
+        if self.devices.clockevent.line_asserted {
+            return Err(VmmError::ContractViolation(
+                "arm64 clockevent retained a deadline while PPI20 was already asserted".to_string(),
+            ));
+        }
+        let gic = self.devices.gic.as_mut().ok_or_else(|| {
+            VmmError::ContractViolation("arm64 clockevent became due with no GIC wired".to_string())
+        })?;
+        gic.raise(PVCLOCK_PPI).map_err(|e| {
+            VmmError::ContractViolation(format!("arm64 clockevent could not assert PPI20: {e}"))
+        })?;
+        self.devices.clockevent.deadline = None;
+        self.devices.clockevent.line_asserted = true;
+        self.devices.clockevent.assertions = self.devices.clockevent.assertions.saturating_add(1);
+        Ok(())
     }
 
     /// Wire the userspace GICv3 + generic-timer fabric. **Arbitration and
@@ -602,6 +750,13 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 .as_ref()
                 .map(|db| db.as_bytes().to_vec())
                 .unwrap_or_default(),
+            pvclock: self.pvclock_snapshot().map(|pv| Arm64PvclockState {
+                delta_work: pv.delta_work,
+                gpa: pv.gpa,
+                registrable: pv.registrable,
+                prescriptive: self.prescriptive_vtime_enabled(),
+                clockevent: self.devices.clockevent,
+            }),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -698,12 +853,43 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 ));
             }
         }
-        // The arm64 skeleton blob carries **no pvclock channel record** (the
-        // arm64 clock-page protocol is `hm-rk5`'s; this skeleton only reserves
-        // the seam). Validate that symmetrically against this VM's
-        // composition: a pvclock-wired restore target fails loud rather than
-        // silently forking the sealed timeline.
-        self.pvclock_validate_restore(None)?;
+        let pvclock_record = dev
+            .pvclock
+            .map(|pv| (pv.delta_work, pv.gpa, pv.registrable));
+        self.pvclock_validate_restore(pvclock_record.as_ref())?;
+        if let Some(pv) = dev.pvclock {
+            if pv.prescriptive != self.prescriptive_vtime_enabled() {
+                return Err(VmmError::ContractViolation(
+                    "restore_vm_state: ARM V-time mode mismatch (snapshot and target disagree on \
+                     assigned-at-exit/prescriptive mode) — restore into a VM composed like the \
+                     snapshot source."
+                        .to_string(),
+                ));
+            }
+            if pv.clockevent.acknowledgements > pv.clockevent.assertions {
+                return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                    "clockevent ACK count exceeds assertion count",
+                )));
+            }
+            if pv.clockevent.line_asserted {
+                if pv.gpa.is_none() {
+                    return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                        "asserted clockevent line without a registered pvclock page",
+                    )));
+                }
+                let Some(gs) = dev.gic.as_ref() else {
+                    return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                        "asserted clockevent line without a GIC record",
+                    )));
+                };
+                let mask = 1u32 << super::board::PVCLOCK_PPI;
+                if (gs.pending[0] | gs.active[0]) & mask == 0 {
+                    return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                        "asserted clockevent line absent from GIC pending/active state",
+                    )));
+                }
+            }
+        }
         let vcpu = records::vcpu_state_from(s);
         let clock_offset = dev.clock_offset;
         Ok((vcpu, clock_offset, Arm64RestorePrep { gic: new_gic, dev }))
@@ -727,7 +913,13 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         {
             db.as_mut_bytes().copy_from_slice(&dev.doorbell);
         }
-        self.pvclock_commit_restore(None);
+        let pvclock_record = dev
+            .pvclock
+            .map(|pv| (pv.delta_work, pv.gpa, pv.registrable));
+        self.devices.clockevent = dev
+            .pvclock
+            .map_or_else(Arm64ClockeventState::default, |pv| pv.clockevent);
+        self.pvclock_commit_restore(pvclock_record.as_ref());
         self.report_stream = dev.report_stream;
     }
 }
@@ -825,6 +1017,11 @@ pub(crate) fn device_components(devices: &Arm64Devices, out: &mut Vec<(&'static 
         let mut bytes = Vec::new();
         records::encode_gic_state(&mut bytes, &gic.snapshot());
         out.push(("gic", dig(&bytes)));
+    }
+    if devices.clockevent != Arm64ClockeventState::default() {
+        let mut bytes = Vec::new();
+        records::encode_clockevent_state(&mut bytes, devices.clockevent);
+        out.push(("arm-clockevent", dig(&bytes)));
     }
 }
 

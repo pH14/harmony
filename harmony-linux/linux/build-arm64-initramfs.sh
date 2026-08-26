@@ -57,6 +57,7 @@ pack_initramfs() {
     cat >"$spec" <<EOF
 dir /dev 0755 0 0
 nod /dev/console 0600 0 0 c 5 1
+nod /dev/kmsg 0600 0 0 c 1 11
 dir /sys 0755 0 0
 file /init $init_elf 0755 0 0
 EOF

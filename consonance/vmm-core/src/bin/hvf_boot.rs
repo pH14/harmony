@@ -11,7 +11,9 @@ fn main() -> std::process::ExitCode {
     use vmm_core::vendor::arm64::bringup;
     use vmm_core::vmm::Step;
 
-    const READY: &[u8] = b"HARMONY_AA5_READY\n";
+    // Kernel-console newline translation inserts `\r` before `\n`. Match the
+    // complete semantic marker rather than one transport's line ending.
+    const READY: &[u8] = b"HARMONY_AA5_READY";
     const DEFAULT_RAM: usize = 128 * 1024 * 1024;
     const DEFAULT_MAX_EVENTS: u64 = 1_000_000;
     const ENTRY_WATCHDOG: Duration = Duration::from_secs(5);

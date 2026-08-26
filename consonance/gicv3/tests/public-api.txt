@@ -27,6 +27,7 @@ pub gicv3::GicState::timer_intid: u32
 pub gicv3::GicState::version: u32
 pub struct gicv3::Gicv3
 impl gicv3::Gicv3
+pub fn gicv3::Gicv3::active_interrupt(&self) -> core::option::Option<u32>
 pub fn gicv3::Gicv3::advance_to(&mut self, u64) -> bool
 pub fn gicv3::Gicv3::armed_timer_deliverable(&self) -> bool
 pub fn gicv3::Gicv3::config(&self) -> gicv3::GicConfig
@@ -34,6 +35,7 @@ pub fn gicv3::Gicv3::eoi(&mut self, u32) -> core::result::Result<(), gicv3::GicE
 pub fn gicv3::Gicv3::has_deliverable(&self) -> bool
 pub fn gicv3::Gicv3::implemented(&self, u32) -> bool
 pub fn gicv3::Gicv3::intid_limit(&self) -> u32
+pub fn gicv3::Gicv3::lower(&mut self, u32) -> core::result::Result<(), gicv3::GicError>
 pub fn gicv3::Gicv3::mmio_read(&self, gicv3::GicFrame, u64, u64) -> core::result::Result<u32, gicv3::GicError>
 pub fn gicv3::Gicv3::mmio_write(&mut self, gicv3::GicFrame, u64, u32, u64) -> core::result::Result<(), gicv3::GicError>
 pub fn gicv3::Gicv3::new(gicv3::GicConfig) -> core::result::Result<gicv3::Gicv3, gicv3::GicError>

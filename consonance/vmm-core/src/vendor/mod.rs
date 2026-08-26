@@ -119,6 +119,13 @@ pub trait Vendor: Arch + Sized {
         write: Option<u64>,
     ) -> Result<Step, VmmError>;
 
+    /// Vendor-specific work after the engine has published the exit's pvclock
+    /// frame and before the next entry. ARM uses this to compare the published
+    /// guest clock with its paravirtual clockevent deadline.
+    fn post_exit<B: Backend<A = Self>>(_vmm: &mut Vmm<B>) -> Result<(), VmmError> {
+        Ok(())
+    }
+
     // --- interrupt fabric ----------------------------------------------------
 
     /// Advance the fabric to the current V-time and hand the backend the one

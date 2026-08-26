@@ -65,6 +65,26 @@ dependency rather than silently weakening the criterion.
     the timer node's nonzero `clock-frequency` property directly before accepting
     the page. The live run prints the accepted page and proceeds to the first
     clockevent control write.
+11. **The ARM clockevent is a snapshotted level input, not an edge helper.** Its
+    absolute guest-clock deadline, PPI20 line level, assertion/ACK counters, and
+    prescriptive-mode bit ride the ARM device blob and hash. EOI without device
+    ACK re-pends the interrupt; ACK/DISARM lower pending state but leave an
+    already-active interrupt for architectural EOI. Malformed combinations and
+    descriptive/prescriptive restore mismatches fail before mutation.
+12. **HVF traps Linux's two OS debug-lock zero writes.** Live fail-closed boots
+    identified canonical sysregs `0x00280406` and `0x00280400`; reconstructing
+    and disassembling their architectural encodings identified `OSDLR_EL1` and
+    `OSLAR_EL1`. The contract accepts only Linux's deterministic zero unlock,
+    assigns the explicit architectural-control exit duration, and rejects reads
+    or nonzero writes. Retained debug registers remain the only stateful debug
+    surface.
+13. **The minimal init reports through `/dev/kmsg`.** This board retains PL011
+    as the early boot console and intentionally has no registered ttyAMA console,
+    so PID 1 inherits closed standard descriptors. The owned freestanding init
+    falls back to a reproducibly packed `/dev/kmsg` node; printk forwards its
+    deterministic readiness markers to the captured early console. The boot
+    harness matches the complete marker independent of kernel `LF -> CRLF`
+    transport translation.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -236,7 +256,7 @@ work was begun before this evidence was recorded.
   The HVF root deliberately omits the legacy 8-KiB doorbell mapping because HVF
   requires 16-KiB mappings and M1 has no control channel. Integration with the
   prescriptive `IdlePlanner` remains outstanding.
-- **IN PROGRESS — paravirtual tick patch and `/init` boot:** the pinned
+- **PASS — paravirtual tick patch and one complete `/init` boot:** the pinned
   Linux 6.18.35 arm64 Image and initramfs now build natively in the audited
   container. The maintained counter/timer and exclusive-instruction scanners
   reject planted live instructions before accepting the real Image, vDSO, and
@@ -248,12 +268,25 @@ work was begun before this evidence was recorded.
   behavior were added from those fail-closed exits. The host now discovers the
   page's checked DT placement (`0x40311000`), stamps it at prescriptive exits,
   and Linux reports `Harmony pvclock: registered page 0x40311000 (ABI 1)`.
-  The live run then fails closed at event 7526 on the first clockevent `DISARM`
-  because deadline/control/PPI20 state is not wired yet. This is a precise next
-  modeled-surface failure, not a claimed boot pass.
+  The exact deadline/DISARM/ACK protocol now drives level-triggered PPI20 through
+  the userspace GIC; portable tests cover EOI-without-ACK reassertion, fail-closed
+  protocol misuse, state hashing, snapshot/restore, and mode mismatch. Live
+  fail-closed iteration then identified Linux's OSDLR/OSLAR zero writes. With
+  those exact dispositions and deterministic `/dev/kmsg` init output, the signed
+  HVF run reaches `HARMONY_AA5_CLOCKSOURCE_OK` and `HARMONY_AA5_READY` at event
+  14,140 before the watchdog.
+
+  ```text
+  Image sha256:     41cea2eb60e4155b31ac70300ff9c15205b1533a7b7ab9fb7642bdb17628a3c7
+  initramfs sha256: 6194ec4be99b08e68a61f9020fcedd7aae515b00fa63d38a44b9070a23fea053
+  HVF_BOOT_READY event=14140
+  state_hash=6949042e3fd067b9610c2ed46fffcb720ae04462bfafb340533ea54cb43a1e60
+  exit status 0; liveness watchdog did not fire
+  ```
 - **FAIL — ten same-seed full-boot normalized logs:** not started.
 - **FAIL — placement checker green for every boot:** not started.
-- **FAIL — no liveness-watchdog abort:** not started.
+- **IN PROGRESS — no liveness-watchdog abort:** one complete boot passed; the
+  required ten-run corpus is not yet recorded.
 - **FAIL — one-exit-late tick comparator and consistent-error placement negatives:**
   not started.
 - **IN PROGRESS — every retained state class perturbs the hash and round-trips

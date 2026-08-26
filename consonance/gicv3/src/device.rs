@@ -430,6 +430,21 @@ impl Gicv3 {
         Ok(())
     }
 
+    /// Drive an external interrupt input low by clearing an unaccepted pending
+    /// assertion. An already-active interrupt remains active until EOI; this is
+    /// the GIC level-line behavior needed when a device deasserts from inside
+    /// its handler.
+    ///
+    /// # Errors
+    /// [`GicError::BadIntId`] outside the implemented identity space.
+    pub fn lower(&mut self, intid: u32) -> Result<(), GicError> {
+        if !self.implemented(intid) {
+            return Err(GicError::BadIntId(intid));
+        }
+        self.pending[(intid / 32) as usize] &= !(1 << (intid % 32));
+        Ok(())
+    }
+
     /// The running priority: the highest priority (lowest value) among active
     /// interrupts, or the idle priority when none is active.
     fn running_priority(&self) -> u16 {
@@ -822,6 +837,24 @@ mod tests {
         assert_eq!(g.take_interrupt(), Some(42));
         g.eoi(42).unwrap();
         assert_eq!(g.take_interrupt(), Some(40));
+    }
+
+    #[test]
+    fn lowering_a_level_clears_pending_but_not_active() {
+        let mut g = gic();
+        arm(&mut g, 20, 0x40);
+        g.raise(20).unwrap();
+        assert_eq!(g.peek_interrupt(), Some(20));
+        g.lower(20).unwrap();
+        assert_eq!(g.peek_interrupt(), None);
+
+        g.raise(20).unwrap();
+        assert_eq!(g.take_interrupt(), Some(20));
+        g.lower(20).unwrap();
+        assert_eq!(g.active_interrupt(), Some(20));
+        g.eoi(20).unwrap();
+        assert_eq!(g.active_interrupt(), None);
+        assert_eq!(g.lower(96), Err(GicError::BadIntId(96)));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 #define AT_FDCWD (-100)
 #define O_RDONLY 0
+#define O_WRONLY 1
 
 #define NR_MOUNT 40
 #define NR_OPENAT 56
@@ -70,10 +71,27 @@ static unsigned long string_length(const char *string)
 
 static void write_all(const char *string)
 {
+	static long output_fd = 1;
+	static const char kmsg_path[] = "/dev/kmsg";
 	unsigned long length = string_length(string);
 
 	while (length != 0) {
-		long written = syscall3(NR_WRITE, 1, (long)string, (long)length);
+		long written = syscall3(NR_WRITE, output_fd, (long)string,
+					(long)length);
+
+		/* The minimal HVF board intentionally keeps the PL011 as an early
+		 * boot console; no ttyAMA console is registered, so PID 1 starts with
+		 * fd 1 closed. Route owned readiness/failure markers through /dev/kmsg,
+		 * which printk forwards to the still-live early console. This is still
+		 * guest-originated deterministic output and the syscall-entry tick
+		 * supplies the exit density; host time never participates.
+		 */
+		if (written < 0 && output_fd == 1) {
+			output_fd = syscall3(NR_OPENAT, AT_FDCWD,
+					     (long)kmsg_path, O_WRONLY);
+			if (output_fd >= 0)
+				continue;
+		}
 
 		if (written <= 0)
 			break;

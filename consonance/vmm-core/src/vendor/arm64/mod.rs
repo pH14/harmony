@@ -74,6 +74,10 @@ impl Vendor for Arm64 {
         vmm.dispatch_mmio_arm64(gpa, size, write)
     }
 
+    fn post_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
+        vmm.service_arm_clockevent_due()
+    }
+
     fn service_pending_irqs<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
         vmm.service_pending_irqs_arm64()
     }
@@ -156,6 +160,11 @@ impl Vendor for Arm64 {
             let mut bytes = Vec::new();
             records::encode_gic_state(&mut bytes, &gic.snapshot());
             crate::vmm::put_chunk(out, b"GICV", &bytes);
+        }
+        if devices.clockevent != records::Arm64ClockeventState::default() {
+            let mut bytes = Vec::new();
+            records::encode_clockevent_state(&mut bytes, devices.clockevent);
+            crate::vmm::put_chunk(out, b"PVCE", &bytes);
         }
     }
 

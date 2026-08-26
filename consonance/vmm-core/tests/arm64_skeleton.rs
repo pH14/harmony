@@ -70,6 +70,30 @@ fn arm64_dispatch_fails_closed_on_unruled_surface() {
     assert!(msg.contains("no ruled disposition"), "{msg}");
 }
 
+/// HVF traps Linux's OSDLR_EL1 zero write during debug-monitor setup. Only
+/// that deterministic unlock is ruled; nonzero writes and reads stay denied.
+#[test]
+fn arm64_os_debug_lock_accepts_only_the_boot_unlock() {
+    const OSDLR_EL1: u32 = 0x0028_0406;
+    const OSLAR_EL1: u32 = 0x0028_0400;
+
+    for sysreg in [OSDLR_EL1, OSLAR_EL1] {
+        let mut accepted = vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
+            sysreg,
+            write: Some(0),
+        })]);
+        wire_prescriptive_clock(&mut accepted);
+        assert_eq!(accepted.step().unwrap(), Step::Continued);
+
+        for write in [Some(1), None] {
+            let mut rejected = vmm(vec![Exit::Arch(Arm64Exit::Sysreg { sysreg, write })]);
+            wire_prescriptive_clock(&mut rejected);
+            let err = rejected.step().unwrap_err();
+            assert!(format!("{err}").contains("debug-lock"), "{err}");
+        }
+    }
+}
+
 /// The interrupt seams answer honestly with no fabric wired: stage-time
 /// validation refuses every identity, injection fails loud, and nothing is
 /// pending — mirroring the x86 unwired-LAPIC posture.
@@ -669,6 +693,237 @@ fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
         assert!(format!("{}", bad.step().unwrap_err()).contains("protocol fault"));
         assert_eq!(bad.pvclock_registration(), None);
     }
+}
+
+/// Build the M1 userspace fabric with the dedicated pvclock PPI configured as
+/// a deliverable Group-1 level interrupt.
+fn clockevent_gic() -> gicv3::Gicv3 {
+    use gicv3::GicFrame;
+    use vmm_core::vendor::arm64::board::{self, PVCLOCK_PPI};
+
+    let mut gic = board::new_gic();
+    gic.mmio_write(GicFrame::Dist, 0x0000, 0b10, 0).unwrap();
+    let sgi = 0x1_0000;
+    gic.mmio_write(GicFrame::Redist, sgi + 0x0080, 1 << PVCLOCK_PPI, 0)
+        .unwrap();
+    gic.mmio_write(GicFrame::Redist, sgi + 0x0100, 1 << PVCLOCK_PPI, 0)
+        .unwrap();
+    gic.set_pmr(0xff);
+    gic
+}
+
+/// Compose the exact assigned-at-exit clock used by the M1 board tests.
+fn wire_prescriptive_clock(v: &mut Vmm<MockArm64Backend>) {
+    use vmm_core::vendor::arm64::board::CNTFRQ_HZ;
+    use vmm_core::vmm::VtimeWiring;
+    use vtime::VClockConfig;
+
+    v.wire_vtime(
+        VtimeWiring::new_prescriptive(
+            VClockConfig {
+                ratio_num: 1,
+                ratio_den: 1,
+                guest_hz: CNTFRQ_HZ,
+                guest_base: 0,
+                vns_base: 0,
+            },
+            7,
+        )
+        .unwrap(),
+    );
+    v.enable_pvclock(1);
+    v.wire_gic(clockevent_gic());
+}
+
+/// The paravirtual clockevent is an absolute-deadline, one-shot, level PPI:
+/// reaching the deadline asserts PPI20, EOI without device ACK re-pends it,
+/// ACK lowers it, and the complete in-flight state survives a snapshot.
+#[test]
+fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::{PVCLOCK, PVCLOCK_PPI};
+
+    const ICC_IAR1_EL1: u32 = 0x0030_3018;
+    const ICC_EOIR1_EL1: u32 = 0x0032_3018;
+    let page_gpa = 0x1000;
+    // The first MMIO exit assigns 1,000 vns (62 ticks); the deadline write
+    // assigns another 1,000 vns, reaching exactly tick 125.
+    let mut v = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(page_gpa),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(125),
+        }),
+        Exit::Arch(Arm64Exit::Sysreg {
+            sysreg: ICC_IAR1_EL1,
+            write: None,
+        }),
+        Exit::Arch(Arm64Exit::Sysreg {
+            sysreg: ICC_EOIR1_EL1,
+            write: Some(u64::from(PVCLOCK_PPI)),
+        }),
+        Exit::Arch(Arm64Exit::Sysreg {
+            sysreg: ICC_IAR1_EL1,
+            write: None,
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x18),
+            size: 4,
+            write: Some(2), // ACK
+        }),
+        Exit::Arch(Arm64Exit::Sysreg {
+            sysreg: ICC_EOIR1_EL1,
+            write: Some(u64::from(PVCLOCK_PPI)),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x18),
+            size: 4,
+            write: Some(2), // a second ACK must fail
+        }),
+    ]);
+    wire_prescriptive_clock(&mut v);
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(v.has_pending_guest_interrupt().unwrap());
+    assert!(
+        v.state_components()
+            .iter()
+            .any(|(label, _)| *label == "arm-clockevent"),
+        "non-default clockevent state must be independently localizable"
+    );
+
+    // Snapshot while the external line is high and pending. The target must
+    // retain both the GIC pending bit and the device's level/counters.
+    let snapshot = v.save_vm_state().unwrap();
+
+    // Equal numeric clock rates are not enough: the snapshot carries the
+    // assigned-at-exit mode bit and a descriptive target must reject it.
+    let mut descriptive = vmm(vec![]);
+    descriptive.wire_vtime(
+        vmm_core::vmm::VtimeWiring::new(
+            vtime::VClockConfig {
+                ratio_num: 1,
+                ratio_den: 1,
+                guest_hz: vmm_core::vendor::arm64::board::CNTFRQ_HZ,
+                guest_base: 0,
+                vns_base: 0,
+            },
+            Box::new(vmm_core::work::ScriptedWork::new()),
+            7,
+        )
+        .unwrap(),
+    );
+    descriptive.enable_pvclock(1);
+    descriptive.wire_gic(clockevent_gic());
+    let err = descriptive.restore_vm_state(&snapshot).unwrap_err();
+    assert!(format!("{err}").contains("V-time mode mismatch"));
+
+    let mut restored = vmm(vec![]);
+    wire_prescriptive_clock(&mut restored);
+    restored
+        .restore_snapshot(v.guest_memory(), &snapshot)
+        .unwrap();
+    assert!(restored.has_pending_guest_interrupt().unwrap());
+    assert_eq!(restored.state_hash(), v.state_hash());
+
+    // Accept then EOI without ACK. Because the device line remains high,
+    // PPI20 immediately becomes pending again.
+    assert_eq!(v.step().unwrap(), Step::Continued); // IAR: pending -> active
+    assert_eq!(v.step().unwrap(), Step::Continued); // EOI: level reasserts
+    assert!(v.has_pending_guest_interrupt().unwrap());
+    assert_eq!(v.step().unwrap(), Step::Continued); // IAR again
+
+    // Device ACK lowers the level; the architectural EOI then drains active.
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(!v.has_pending_guest_interrupt().unwrap());
+    let err = v.step().unwrap_err();
+    assert!(format!("{err}").contains("ACK while PPI20 is not asserted"));
+}
+
+/// Protocol misuse is rejected rather than silently changing the one-shot
+/// state, while DISARM before expiry cancels both the deadline and delivery.
+#[test]
+fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::PVCLOCK;
+
+    let page_gpa = 0x1000;
+    let mut disarm = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(page_gpa),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(10_000),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x18),
+            size: 4,
+            write: Some(1), // DISARM
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 8),
+            size: 4,
+            write: None,
+        }),
+    ]);
+    wire_prescriptive_clock(&mut disarm);
+    for _ in 0..4 {
+        assert_eq!(disarm.step().unwrap(), Step::Continued);
+    }
+    assert!(!disarm.has_pending_guest_interrupt().unwrap());
+    assert!(
+        !disarm
+            .state_components()
+            .iter()
+            .any(|(label, _)| *label == "arm-clockevent"),
+        "a fully disarmed never-fired device returns to canonical default state"
+    );
+
+    for control in [0, 3, u64::from(u32::MAX) + 1] {
+        let mut bad = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x18),
+            size: 4,
+            write: Some(control),
+        })]);
+        wire_prescriptive_clock(&mut bad);
+        assert!(bad.step().is_err(), "control {control} must fail closed");
+    }
+
+    // Once due, the guest must consume the assertion before replacing the
+    // deadline. This negative proves the line-high guard is observable.
+    let mut asserted = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(page_gpa),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(125),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(250),
+        }),
+    ]);
+    wire_prescriptive_clock(&mut asserted);
+    assert_eq!(asserted.step().unwrap(), Step::Continued);
+    assert_eq!(asserted.step().unwrap(), Step::Continued);
+    let err = asserted.step().unwrap_err();
+    assert!(format!("{err}").contains("deadline write while PPI20 is asserted"));
 }
 
 /// Review r5 P2(b): the GICv3 state feeds `state_hash` (the `GICV` chunk), so
