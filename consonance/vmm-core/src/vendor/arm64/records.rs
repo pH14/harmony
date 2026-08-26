@@ -193,11 +193,11 @@ const DEVICE_BLOB_VERSION_DOORBELL_PVCLOCK: u16 = 7;
 /// v4 plus the ARM pvclock/clockevent record.
 const DEVICE_BLOB_VERSION_GIC_DOORBELL_PVCLOCK: u16 = 8;
 /// The exact byte length of the doorbell record on a doorbell-bearing version:
-/// the two ABI pages (`REQ`/`RESP`) `Vmm::map_doorbell_pages` allocates
-/// (`2 · HC_PAGE`, `HC_PAGE = 4096`). A v3/v4 blob whose doorbell length is
+/// the canonical 16-KiB arm64 memslot whose upper two pages are the `REQ`/`RESP`
+/// ABI pages. A doorbell-bearing blob whose doorbell length is
 /// anything else (notably `0`) contradicts the version's wiring flag and is
 /// rejected (review r16).
-const DOORBELL_BLOB_LEN: usize = 2 * 4096;
+const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 
 /// Guest-visible state of the ARM paravirtual clockevent transport.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -253,7 +253,7 @@ pub(crate) struct Arm64DeviceState {
     /// separate arm64 memslot (RAM is high), so their bytes are **not** in the
     /// main-RAM snapshot and must ride here to survive save/restore/branch
     /// (review r11). Empty exactly when the VM never mapped them (x86-style /
-    /// unwired composition); non-empty ⇒ exactly `2 · HC_PAGE` bytes.
+    /// unwired composition); non-empty ⇒ exactly `4 · HC_PAGE` bytes.
     pub doorbell: Vec<u8>,
     /// ARM pvclock offer/registration plus the clockevent state. `None` is the
     /// exact old v1-v4 shape for a composition that did not offer pvclock.
@@ -473,7 +473,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     };
     let doorbell = if has_doorbell {
         // The version flag asserts the doorbell pages are wired, so the record
-        // MUST carry the full 2-page ABI region. A crafted blob declaring v3/v4
+        // MUST carry the full 16-KiB arm64 transport region. A crafted blob declaring v3/v4
         // with a zero (or short/long) length would otherwise decode to an empty
         // vector that restore validation reads back as *doorbell-less* — a
         // contradiction with the version. Fail closed (review r16).
@@ -597,10 +597,10 @@ mod tests {
         }
     }
 
-    /// A doorbell-bearing sample: distinctive 2-page ABI-page bytes (review r11).
+    /// A doorbell-bearing sample: distinctive full control-slot bytes (review r11).
     fn sample_with_doorbell() -> Arm64DeviceState {
         Arm64DeviceState {
-            doorbell: (0..8192u32).map(|i| i as u8).collect(),
+            doorbell: (0..DOORBELL_BLOB_LEN as u32).map(|i| i as u8).collect(),
             ..sample()
         }
     }

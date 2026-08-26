@@ -57,6 +57,15 @@ const RESP_GPA: usize = 0x0000_F000;
 /// The hypercall shared-page size (one frame per page). Mirrors
 /// `hypercall_doorbell::PAGE_SIZE` == `hypercall_proto::MAX_FRAME`.
 const HC_PAGE: usize = 4096;
+/// Base of the dedicated arm64 transport memslot. Apple HVF requires both the
+/// GPA and length of a mapped region to use the host's 16-KiB page granule, so
+/// the two ABI pages at `0xE000`/`0xF000` ride the upper half of one canonical
+/// 16-KiB slot starting at `0xC000`. The lower two pages are retained guest
+/// state too: they are mapped, hashed, snapshotted, and restored, never padding
+/// hidden from the determinism surface.
+const DOORBELL_MAP_GPA: usize = 0x0000_C000;
+/// The arm64 control memslot is exactly one 16-KiB HVF page.
+const DOORBELL_MAP_LEN: usize = 4 * HC_PAGE;
 
 // The SDK event-id wire layout (task 73), mirrored from `harmony-linux/sdk/src/wire.rs`
 // (the canonical source). The doorbell needs only enough to route a stop: the
@@ -1083,23 +1092,25 @@ where
         self.vtime.as_ref().is_some_and(|vt| vt.prescriptive)
     }
 
-    /// Map the two hypercall-transport ABI pages (`REQ_GPA`/`RESP_GPA`) as a
-    /// **dedicated low-GPA memslot**, backed by a buffer this `Vmm` owns. For a
+    /// Map the hypercall-transport ABI pages (`REQ_GPA`/`RESP_GPA`) in a
+    /// **dedicated 16-KiB low-GPA memslot**, backed by a buffer this `Vmm` owns. For a
     /// machine whose main RAM does not start at GPA 0 (arm64, RAM at `RAM_BASE`)
     /// the absolute ABI GPAs fall below the RAM and cannot be its offset
     /// `REQ_GPA`; mapping them here keeps the transport magic unchanged
     /// (`tasks/112`) with no per-arch GPA translation. The arm64 composition root
     /// calls this; x86 keeps the pages inside its GPA-0 RAM and never does.
     pub(crate) fn map_doorbell_pages(&mut self) -> Result<(), VmmError> {
-        let mut pages = GuestRam::new(2 * HC_PAGE)?;
+        let mut pages = GuestRam::new(DOORBELL_MAP_LEN)?;
         // SAFETY: `pages` is moved into `self.doorbell_pages` below; its backing
         // is pinned (an mmap/Vec that does not move when `self` moves) and lives
         // for the backend's lifetime because `self` owns it, and the run loop
         // holds `&mut self` so it is never aliased mid-run — the `map_memory`
         // contract, exactly as the main RAM mapping upholds it.
         unsafe {
-            self.backend
-                .map_memory(vmm_backend::Gpa(REQ_GPA as u64), pages.as_mut_bytes())?;
+            self.backend.map_memory(
+                vmm_backend::Gpa(DOORBELL_MAP_GPA as u64),
+                pages.as_mut_bytes(),
+            )?;
         }
         self.doorbell_pages = Some(pages);
         Ok(())
@@ -3217,7 +3228,7 @@ where
     /// Resolve an absolute guest `[gpa, gpa+len)` to a read-only host slice across
     /// **every** mapped RAM-class region — the main RAM (based at `ram_base_gpa`)
     /// and the dedicated low-GPA doorbell memslot ([`Self::doorbell_pages`], at
-    /// `[REQ_GPA, REQ_GPA + 2·HC_PAGE)`). `None` if the range is not backed by a
+    /// `[DOORBELL_MAP_GPA, DOORBELL_MAP_GPA + 4·HC_PAGE)`). `None` if the range is not backed by a
     /// single region. Every absolute-GPA path — the doorbell, the control-plane
     /// `read`, `corrupt_memory` — routes through this, so a GPA resolves
     /// identically on every arch (x86: RAM at base 0, so a low GPA *is* its own
@@ -3227,7 +3238,7 @@ where
             return self.ram.as_bytes().get(off..off.checked_add(len)?);
         }
         let db = self.doorbell_pages.as_ref()?;
-        let off = usize::try_from(gpa.checked_sub(REQ_GPA as u64)?).ok()?;
+        let off = usize::try_from(gpa.checked_sub(DOORBELL_MAP_GPA as u64)?).ok()?;
         db.as_bytes().get(off..off.checked_add(len)?)
     }
 
@@ -3239,7 +3250,7 @@ where
             return self.ram.as_mut_bytes().get_mut(off..end);
         }
         let db = self.doorbell_pages.as_mut()?;
-        let off = usize::try_from(gpa.checked_sub(REQ_GPA as u64)?).ok()?;
+        let off = usize::try_from(gpa.checked_sub(DOORBELL_MAP_GPA as u64)?).ok()?;
         let end = off.checked_add(len)?;
         db.as_mut_bytes().get_mut(off..end)
     }
@@ -4758,13 +4769,17 @@ mod tests {
         let mut buf = [0u8; HC_PAGE];
         let n =
             hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut buf).unwrap();
-        vmm.doorbell_pages.as_mut().unwrap().as_mut_bytes()[..n].copy_from_slice(&buf[..n]);
+        let req_off = REQ_GPA - DOORBELL_MAP_GPA;
+        vmm.doorbell_pages.as_mut().unwrap().as_mut_bytes()[req_off..req_off + n]
+            .copy_from_slice(&buf[..n]);
 
         let step = vmm.service_doorbell(n as u32).unwrap();
         assert_eq!(step, Step::Continued);
 
         // The response landed in the dedicated slot, one page past the request.
-        let resp = vmm.doorbell_pages.as_ref().unwrap().as_bytes()[HC_PAGE..2 * HC_PAGE].to_vec();
+        let resp_off = RESP_GPA - DOORBELL_MAP_GPA;
+        let resp =
+            vmm.doorbell_pages.as_ref().unwrap().as_bytes()[resp_off..resp_off + HC_PAGE].to_vec();
         let (hdr, _) = decode(&resp).expect("a valid response frame in the dedicated page");
         assert_eq!(hdr.status, Status::Ok as u16);
 

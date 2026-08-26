@@ -9,7 +9,7 @@ so the hypercall channel works on **stock KVM with no kernel patch**. The `excha
 the `TransportError` set, and the load-bearing `u64`-bounds-check-before-cast invariant are
 preserved verbatim; only the doorbell primitive changed.
 
-## Chosen mechanism — port-I/O doorbell (not VMCALL, not MMIO)
+## Chosen mechanisms — x86 port I/O and arm64 MMIO (not VMCALL)
 
 **Why not `VMCALL` (integrator ruling, 2026-06-23).** Stock KVM services `VMCALL` *in-kernel*:
 `kvm_emulate_hypercall` returns `-ENOSYS` to the guest for our magic number (`0x3150_4348`) and
@@ -18,7 +18,8 @@ resumes — it never surfaces a `KVM_EXIT_HYPERCALL` to userspace for a custom n
 21). A port `OUT` to a magic port, by contrast, **is** surfaced by stock KVM as
 `KVM_EXIT_IO` → the existing `Exit::Io` — so the channel works with **zero** kernel patch.
 
-**Why port-I/O over MMIO** (the spec's default; MMIO only if "materially cleaner" — it isn't):
+**Why port-I/O over MMIO on x86** (the spec's default; MMIO only if "materially cleaner" — it
+isn't on that architecture):
 
 - `OUT` is a single instruction and `Exit::Io { port, size, write }` carries exactly what the
   doorbell needs: the `OUT` value *is* the request length (`write: Some(len)`). The protocol maps
@@ -28,7 +29,21 @@ resumes — it never surfaces a `KVM_EXIT_HYPERCALL` to userspace for a custom n
   region with MMIO semantics. A port keeps the request/response pages as plain RAM (simplest for
   the future guest driver) and keeps the doorbell a distinct, unmistakable signal.
 
-No `[question]` was raised: port-I/O is the spec's recommended default and MMIO is not cleaner.
+No `[question]` was raised for x86: port-I/O is the spec's recommended default and MMIO is not
+cleaner there.
+
+**Why MMIO on arm64 (prescriptive V-time M2).** AArch64 has no port-I/O instruction. The M1 Max
+composition therefore exposes the same logical doorbell as the board's reserved 32-bit MMIO
+register. `MmioDoorbell` implements the existing `IoDoorbell` seam with exactly one volatile
+32-bit store of `req_len`; it accepts only the frozen `DOORBELL_PORT` identity so a caller cannot
+silently ring an unrelated mapping. The request and response page ABI is unchanged. The VMM maps
+the canonical four-page control slot at GPA `0xC000`; the ABI pages remain at `0xE000` and
+`0xF000`, while the MMIO trap itself remains the board doorbell frame at `0x0A00_0000`.
+
+This does not replace the x86 decision or overload the shared data pages with device semantics.
+It is the architecture-native implementation of the same one-exit, synchronous `IoDoorbell`
+contract. The production guest maps the board register as device memory and passes its address to
+the unsafe `MmioDoorbell::new` constructor.
 
 **Single `OUT`, no `IN` (revised in PR #44 review — atomicity).** An earlier revision used a
 two-exit `OUT`/`IN` doorbell (the `IN` returned the response length via `complete_read`). The
@@ -173,7 +188,7 @@ transport that swapped or mis-set them. The doorbell carries **no pointer** (pag
 constants the host knows independently), so that GPA-mispassing failure mode no longer exists —
 `loopback_rejects_bad_port` guards the one thing that *can* go wrong (a wrong port → rejection).
 
-## `cfg(target_arch)` handling for the `OUT` doorbell
+## Architecture-specific doorbell primitives
 
 Port I/O is an x86-64 facility, so `RealIoDoorbell::ring` has two bodies behind a
 `target_arch`/`miri` split (intrinsic to the hardware — **not** a `cfg(target_os)` logic fork). The
@@ -192,6 +207,13 @@ build (even on the x86-64 box) to the stub — Miri interprets MIR and cannot ex
   `ring` is reachable through the *safe* `Transport::exchange` API, so "never reached off a VM" is a
   caller assumption, not a guarantee — a `panic!`/`unreachable!`/`todo!` there would be a panic on
   the safe path; doing nothing keeps the safe API total and deterministic.
+
+`MmioDoorbell` has no architecture `cfg`: its primitive is a volatile store through a
+caller-supplied raw pointer, which is portable Rust and is exercised on every host. Its unsafe
+constructor requires a live, aligned, read/write device mapping for the VMM's doorbell register.
+The implementation performs no read, retry, allocation, or host-time operation. A mismatched
+abstract port returns without touching the mapping; the matching identity performs exactly one
+volatile `u32` store.
 
 ## Safety model
 
@@ -216,10 +238,10 @@ build (even on the x86-64 box) to the stub — Miri interprets MIR and cannot ex
   reads by the rung length. Step 3 zeroes the whole response page before the doorbell so the
   rejection sentinel is well-defined (an unwritten page reads magic 0) and a host that writes a
   response shorter than the page leaves zeros in the tail, never a stale prior frame.
-- **`unsafe` is confined to the two granted purposes**, each with a `// SAFETY:` comment: (a) the
-  `OUT` `asm!` in `RealIoDoorbell`, and (b) reading/writing the shared pages through their GPAs (in
-  `exchange` — including the in-page header read — and the same in the loopback/scripted test
-  hosts).
+- **`unsafe` is confined to three granted purposes**, each with a `// SAFETY:` comment: (a) the
+  `OUT` `asm!` in `RealIoDoorbell`, (b) the one volatile device-register write in `MmioDoorbell`,
+  and (c) reading/writing the shared pages through their GPAs (in `exchange` — including the
+  in-page header read — and the same in the loopback/scripted test hosts).
 - **No `Default` for `VmcallTransport`** (only for the invariant-free `RealIoDoorbell`): a safe
   `Default` would manufacture a transport without the unsafe GPA/page invariants, after which safe
   `exchange()` could reach UB.
@@ -250,14 +272,17 @@ every property test to 16 cases.
 - `loopback_dispatches_only_exposed_request_bytes` — the PR #44 fidelity fix: a request rung with a
   length one byte short of its encoded frame is answered `BadRequest` (seen as truncated), not
   zero-padded into a valid call.
+- `mmio_doorbell_writes_only_the_frozen_identity` — proves a wrong abstract port
+  leaves the mapped register unchanged and the frozen identity performs the exact one-store
+  update. This drives the raw-pointer MMIO path under native tests and Miri.
 
 ## Miri (UB validation — quality-g)
 
 The crate carries raw-pointer `unsafe`, so it runs under the **Miri** gate (the unsafe⇒Miri
 review-bar rule). Behavioral tests cannot see UB that does not surface as a wrong value or a panic;
 Miri can. The crate is *designed* for it: the privileged `OUT` sits behind the `IoDoorbell` seam,
-so the loopback suite drives **all** the unsafe pointer code (including the in-page header read)
-with no inline asm (which Miri cannot interpret).
+so the loopback suite drives the unsafe shared-page code (including the in-page header read) with
+no inline asm, while the dedicated MMIO unit test drives the volatile raw-pointer store directly.
 
 **Command** (matches the `miri` job in `.github/workflows/quality.yml` and `.githooks/pre-push`,
 where `hypercall-doorbell` is already in the `-p` list — the crate name is unchanged by this task):
@@ -300,9 +325,11 @@ vacuous.
 
 ## Deviations considered and rejected
 
-- **MMIO doorbell instead of port-I/O** — rejected. Port-I/O is the spec's recommended default;
-  MMIO is not materially cleaner (it needs a separate *unmapped* magic GPA and overloads the data
-  region with MMIO semantics), so no `[question]` was raised. See "Chosen mechanism".
+- **MMIO doorbell instead of port-I/O on x86** — rejected. Port-I/O is the spec's recommended
+  default there; MMIO is not materially cleaner (it needs a separate *unmapped* magic GPA and
+  overloads the data region with MMIO semantics), so no `[question]` was raised. Arm64's distinct
+  MMIO implementation is required because that ISA has no port-I/O instruction; see "Chosen
+  mechanisms".
 - **Two-exit `OUT`/`IN` doorbell (length returned by the `IN`)** — **adopted then reverted in PR
   #44 review.** It was initially chosen to keep `exchange` frame-format-agnostic, but the cross-model
   pass showed it is *not atomic*: the guest resumes between the two exits while the host owes a

@@ -61,9 +61,10 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
 }
 
 /// Shared arm64 composition with an explicit control-channel mapping choice.
-/// HVF maps guest memory in 16-KiB host-page units, while the legacy doorbell
-/// transport is an 8-KiB low-GPA region. The M1 Linux boot has no control
-/// channel, so its HVF root deliberately omits that incompatible mapping.
+/// The control mapping is a canonical 16-KiB low-GPA region, matching Apple
+/// HVF's measured mapping granule while retaining the fixed request/response
+/// page GPAs in its upper half. The M1 boot omits it because that milestone has
+/// no SDK control channel; M2 opts in through [`boot_hvf_control`].
 fn compose_inner<B: Backend<A = Arm64>>(
     mut backend: B,
     image: &[u8],
@@ -226,6 +227,45 @@ pub fn boot_hvf(
     )?);
     // Prescriptive mode stamps at exits and never uses the descriptive Δ
     // `run_until` path; the nonzero value remains part of snapshot identity.
+    vmm.enable_pvclock(1);
+    Ok(vmm)
+}
+
+/// Compose the measured macOS/arm64 backend with the canonical 16-KiB control
+/// memslot required by the M2 cooperating payload. All other wiring is exactly
+/// [`boot_hvf`]'s: userspace GICv3, assigned-at-exit V-time, and pvclock.
+///
+/// # Errors
+/// Returns the same fail-closed composition errors as [`boot_hvf`], including
+/// any HVF rejection of the measured control mapping.
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+pub fn boot_hvf_control(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<vmm_backend::HvfBackend>, VmmError> {
+    hostassert::enforce()?;
+    let backend = vmm_backend::HvfBackend::new()?;
+    let mut vmm = compose_inner(
+        backend,
+        image,
+        Some(initramfs),
+        bootargs,
+        guest_ram_len,
+        true,
+    )?;
+    vmm.wire_gic(super::board::new_gic());
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
+        vtime::VClockConfig {
+            ratio_num: 1,
+            ratio_den: 1,
+            guest_hz: super::board::CNTFRQ_HZ,
+            guest_base: 0,
+            vns_base: 0,
+        },
+        0,
+    )?);
     vmm.enable_pvclock(1);
     Ok(vmm)
 }

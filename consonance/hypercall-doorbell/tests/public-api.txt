@@ -5,6 +5,11 @@ pub hypercall_doorbell::TransportError::HostRejected
 pub hypercall_doorbell::TransportError::RequestTooLarge
 impl core::fmt::Display for hypercall_doorbell::TransportError
 pub fn hypercall_doorbell::TransportError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct hypercall_doorbell::MmioDoorbell
+impl hypercall_doorbell::MmioDoorbell
+pub unsafe fn hypercall_doorbell::MmioDoorbell::new(*mut u32) -> Self
+impl hypercall_doorbell::IoDoorbell for hypercall_doorbell::MmioDoorbell
+pub unsafe fn hypercall_doorbell::MmioDoorbell::ring(&mut self, u16, u32)
 pub struct hypercall_doorbell::RealIoDoorbell
 impl hypercall_doorbell::RealIoDoorbell
 pub const fn hypercall_doorbell::RealIoDoorbell::new() -> Self
@@ -25,5 +30,7 @@ pub const hypercall_doorbell::REQ_GPA: u64
 pub const hypercall_doorbell::RESP_GPA: u64
 pub trait hypercall_doorbell::IoDoorbell
 pub unsafe fn hypercall_doorbell::IoDoorbell::ring(&mut self, u16, u32)
+impl hypercall_doorbell::IoDoorbell for hypercall_doorbell::MmioDoorbell
+pub unsafe fn hypercall_doorbell::MmioDoorbell::ring(&mut self, u16, u32)
 impl hypercall_doorbell::IoDoorbell for hypercall_doorbell::RealIoDoorbell
 pub unsafe fn hypercall_doorbell::RealIoDoorbell::ring(&mut self, u16, u32)

@@ -10,6 +10,28 @@ All Mac-local gates are green; the real-KVM boot + `state_hash` determinism
 gates are **specified and edged to `hm-7pb`** (the Altra) — there is no local
 KVM loop (`hm-8l3` REFUSE).
 
+## Prescriptive M2 control slot (measured on HVF)
+
+The M1 Max control composition maps one canonical 16-KiB memory slot at guest
+physical `0xC000`. The frozen request and response pages remain at `0xE000` and
+`0xF000`; the lower two pages are reserved control padding so the complete slot
+has the host page-size alignment HVF requires. The entire four-page allocation,
+including the padding, is ordinary retained RAM: it participates in snapshot
+records and `state_hash`, so the alignment accommodation creates no hidden state.
+
+`boot_hvf_control` is additive to the M1 `boot_hvf` root. It maps this slot and
+requires the `doorbell` component; the M1 boot remains doorbell-free so its sealed
+corpus is not silently changed. The entitlement-signed `hvf_control_probe` ran
+the production composition on the M1 Max and reported:
+
+```text
+HVF_CONTROL_MAP_OK bytes=16384 component=doorbell state_hash=0766544d87f6924a70fc1bb9755be1846f12f08b02a353d28677e66a7701eea4
+```
+
+This measured result supersedes the untested 8-KiB shape that HVF rejected for
+host-page alignment. The guest rings the board MMIO doorbell at `0x0A00_0000`;
+that device frame is separate from the mapped control RAM.
+
 ## What landed, by milestone
 
 - **M0 — the snapshot-state seam (the one sanctioned spine edit), x86-only.**

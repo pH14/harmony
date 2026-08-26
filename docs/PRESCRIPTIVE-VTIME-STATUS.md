@@ -120,6 +120,15 @@ dependency rather than silently weakening the criterion.
     handled analogously but more strictly: `save` and `restore` reject any
     staged backend completion, while the retained interrupt class carries the
     externally asserted IRQ/FIQ levels exactly.
+18. **The arm64 hypercall control slot is one fully retained 16-KiB mapping.**
+    HVF requires the guest-memory slot to follow the host's 16-KiB page shape;
+    the earlier 8-KiB request/response-only proposal is not mappable on the
+    measured M1 Max. The canonical allocation starts at GPA `0xC000`, preserving
+    the frozen request and response GPAs `0xE000`/`0xF000`. All four pages,
+    including the alignment padding, enter snapshots and `state_hash`. The
+    entitlement-signed production-composition probe accepted the mapping and
+    reported `HVF_CONTROL_MAP_OK bytes=16384` with state hash
+    `0766544d87f6924a70fc1bb9755be1846f12f08b02a353d28677e66a7701eea4`.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -477,7 +486,13 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
 
 ## M2 — NES campaign on the M1 Max
 
-- **FAIL — guest payload and control-protocol `Machine` client:** not started.
+- **IN PROGRESS — guest payload and control-protocol `Machine` client:** the
+  architecture-native arm64 `MmioDoorbell` and the HVF-aligned, fully retained
+  control-memory composition are implemented. The focused portable suite passed
+  583/583 tests (5 skipped), and the signed live probe produced the measured
+  `HVF_CONTROL_MAP_OK` evidence recorded in decision 18. Payload delivery and the
+  generic control-protocol `Machine` client remain open, so this criterion is not
+  yet a pass.
 - **FAIL — two same-seed archive hashes:** not started.
 - **FAIL — every archived lineage replays byte-for-byte:** not started.
 - **FAIL — snapshot restore counter and uninterrupted-continuation hash oracle:**

@@ -5,8 +5,8 @@
 //! Task 01 (`hypercall-proto`) defined the wire protocol and a `Client<T: Transport>` but left
 //! the `Transport` abstract. This crate implements that `Transport` over the **INTEGRATION.md §1
 //! hypercall-doorbell ABI**: it marshals a request frame into a shared, page-aligned
-//! guest-physical request page, rings a magic **port-I/O doorbell** ([`DOORBELL_PORT`]) with a
-//! single `OUT`, and reads the host's response frame back out of the response page — its length
+//! guest-physical request page, rings the architecture's one-exit doorbell (x86 port I/O or
+//! arm64 MMIO) through [`IoDoorbell`], and reads the host's response frame back out of the response page — its length
 //! taken from the frame header and bounded so a hostile host can never make the shim read past a
 //! page, write past the caller's buffer, or panic. A `Client<VmcallTransport>` is then a complete
 //! guest hypercall client that composes with the task-01 `Client` unchanged.
@@ -125,6 +125,47 @@ impl RealIoDoorbell {
     /// Construct the production doorbell primitive.
     pub const fn new() -> Self {
         Self
+    }
+}
+
+/// Production doorbell primitive for architectures whose VMM exposes the
+/// hypercall doorbell as a 32-bit MMIO register (arm64 in particular).
+///
+/// The caller maps the board's reserved doorbell frame into its address space
+/// and constructs this value from that mapping. [`IoDoorbell::ring`] then makes
+/// one volatile 32-bit store of the request-frame length. The transport's
+/// request/response shared pages remain unchanged; only the trap instruction
+/// differs from x86 port I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MmioDoorbell {
+    register: *mut u32,
+}
+
+impl MmioDoorbell {
+    /// Construct an MMIO doorbell over a mapped 32-bit register.
+    ///
+    /// # Safety
+    /// `register` must be non-null, naturally aligned, mapped read/write as a
+    /// device register, and valid for every later [`IoDoorbell::ring`] call.
+    /// The mapping must name the VMM's hypercall doorbell and be exclusively
+    /// owned for volatile stores by this transport.
+    pub unsafe fn new(register: *mut u32) -> Self {
+        Self { register }
+    }
+}
+
+impl IoDoorbell for MmioDoorbell {
+    unsafe fn ring(&mut self, port: u16, req_len: u32) {
+        // `VmcallTransport` names the abstract doorbell with the frozen x86
+        // port constant on every architecture. Refuse a mismatched identity
+        // consistently instead of writing an unrelated device register.
+        if port != DOORBELL_PORT {
+            return;
+        }
+        // SAFETY: the constructor requires a valid, aligned device mapping for
+        // this register and the IoDoorbell caller guarantees it remains live
+        // across this single atomic exchange. Volatile is required for MMIO.
+        unsafe { ptr::write_volatile(self.register, req_len) };
     }
 }
 
@@ -364,5 +405,27 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
             ptr::copy_nonoverlapping(self.resp_page, resp.as_mut_ptr(), len);
         }
         Ok(len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DOORBELL_PORT, IoDoorbell, MmioDoorbell};
+
+    #[test]
+    fn mmio_doorbell_writes_only_the_frozen_identity() {
+        let mut register = 0_u32;
+        // SAFETY: `register` is an aligned live u32 exclusively used by this
+        // test for the lifetime of the primitive.
+        let mut doorbell = unsafe { MmioDoorbell::new(core::ptr::addr_of_mut!(register)) };
+
+        // SAFETY: the test-owned register satisfies the constructor and ring
+        // contracts; no alias is accessed while either call is in progress.
+        unsafe { doorbell.ring(DOORBELL_PORT ^ 1, 7) };
+        assert_eq!(register, 0, "a foreign doorbell identity must be inert");
+
+        // SAFETY: same live, exclusively-owned register.
+        unsafe { doorbell.ring(DOORBELL_PORT, 0x1234_5678) };
+        assert_eq!(register, 0x1234_5678);
     }
 }
