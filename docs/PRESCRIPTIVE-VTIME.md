@@ -49,6 +49,27 @@ Hypervisor.framework, on any Apple Silicon generation, and on unpinned shared
 machines, and it makes recordings and snapshots portable across hosts of the same
 ISA baseline.
 
+**The deviation, stated plainly.** Descriptive V-time can preempt the guest at
+any retired-branch boundary: the counter lets a timer interrupt land mid-stream,
+at an exact instruction, anywhere in the guest — including inside a stretch of
+code that performs no I/O and takes no trap. Prescriptive V-time gives that
+capability up, deliberately. Interrupt delivery stays fully deterministic — the
+placement contract of §2.1 fixes every delivery to an exact, reproducible
+instruction boundary — but the set of boundaries available is the guest's exit
+stream, at the density the guest supplies, rather than every branch. We accept
+this because the preemption capability is precisely what binds the design to an
+exact vPMU, a pinned single-tenant host, and a patched kernel — the whole cost
+side of §1 — while the interleavings it uniquely reaches are those inside
+exit-free stretches, and the platform's bug-finding leverage concentrates
+elsewhere: schedule permutation over kernel-mediated events and instrumented
+code (where exit density is high and steerable), device-level and crash-recovery
+faults (which live at exits by nature), and workload permutation. Where the
+instrumented and kernel-supplied exit density thins out, M3 measures the gap and
+the liveness monitor reports the stretches; where an exact vPMU exists — the
+x86 box — descriptive V-time retains the full capability. The two modes are the
+same VMM making a different trade per host, and M4's suite is the standing
+instrument for measuring what the trade costs in found bugs.
+
 x86 descriptive V-time on the box continues unchanged. Prescriptive V-time is how
 consonance runs everywhere else, arm64 first.
 
