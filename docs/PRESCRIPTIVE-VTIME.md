@@ -1,8 +1,10 @@
 # Prescriptive V-time — assigned virtual time, and consonance on ARM
 
 Plan of record for bringing up consonance with **prescriptive V-time** — virtual time
-the run loop *assigns* at VM exits — on two ARM hosts: `msr1` (arm64 Linux/KVM, via
-ssh) and an M1 Max (macOS, Hypervisor.framework). The term comes from the existing
+the run loop *assigns* at VM exits — on ARM, with the M1 Max (macOS,
+Hypervisor.framework) as the development and bring-up host. The `msr1` box (arm64
+Linux/KVM, via ssh) joins as a second host in the follow-up work of §5 when it goes
+idle; the plan's milestones run entirely on the M1. The term comes from the existing
 clock documentation: `consonance/vtime/src/idle.rs` describes the idle jump as a
 prescriptive advance layered on the descriptive base clock. This plan makes the
 prescriptive path carry all of V-time.
@@ -89,17 +91,17 @@ side of the clock protocol is untouched.
 The `Backend` trait (`consonance/vmm-backend/src/backend.rs`) is reused as-is:
 one impl per (substrate, arch) pair, nothing above it branching on substrate.
 
-- **`Arm64KvmBackend` (msr1).** The existing stock-KVM/arm64 skeleton
-  (`arm64_kvm.rs`) grows the pieces its `capabilities()` currently reports
-  absent: interrupt injection and `run_until`. Interrupt state lives in the
-  userspace `consonance/gicv3` model; injection happens at exits. This takes up
-  the work the arm64 delivery ruling in `AGENTS.md` deferred — that deferral is
-  superseded by this plan.
-- **`HvfBackend` (M1 Max).** A new impl of the same trait over
-  Hypervisor.framework: `hv_vcpu_run`, WFI/MMIO/sysreg exits, interrupt
-  injection before reentry. It uses the same userspace `gicv3` crate as the KVM
-  backend, so interrupt behavior is decided by shared code and is identical
-  across substrates by construction.
+- **`HvfBackend` (M1 Max) — the bring-up backend.** A new impl of the trait
+  over Hypervisor.framework: `hv_vcpu_run`, WFI/MMIO/sysreg exits, interrupt
+  injection before reentry. Interrupt state lives in the userspace
+  `consonance/gicv3` model; injection happens at exits.
+- **`Arm64KvmBackend` (msr1, follow-up §5).** The existing stock-KVM/arm64
+  skeleton (`arm64_kvm.rs`) grows the pieces its `capabilities()` currently
+  reports absent — interrupt injection and `run_until` — reusing the same
+  userspace `gicv3` model, so interrupt behavior is decided by shared code and
+  is identical across substrates by construction. This takes up the work the
+  arm64 delivery ruling in `AGENTS.md` deferred — that deferral is superseded
+  by this plan.
 
 The run loop drives either through `run_until` with prescriptive advancement; the
 `WorkSource` in use reads zero, and the injection planner's overflow/single-step
@@ -114,10 +116,10 @@ only), and it carries the pvclock page clocksource and `/dev/harmony`
 
 Additions:
 
-- **ISA baseline.** One pinned feature set both hosts implement (ARMv8.2-class +
-  LSE; the intersection of M1 and msr1's core, captured in the ID-register policy
-  and asserted by the kernel build). One image, byte-identical on both hosts,
-  attested by `MANIFEST.sha256`.
+- **ISA baseline.** One pinned feature set, chosen conservatively so later hosts
+  can run the same image (ARMv8.2-class + LSE — implemented by the M1 and by
+  common server cores; captured in the ID-register policy and asserted by the
+  kernel build). One image, attested by `MANIFEST.sha256`.
 - **Paravirtual tick.** A kernel patch that rings the doorbell at deterministic
   points in the kernel's own execution — timer-tick processing sites, every Nth
   syscall entry, context switch. Each ring is a pure function of guest execution,
@@ -132,7 +134,7 @@ currently inert — becomes the userspace yield: each instrumented basic block
 increments a per-thread counter, and crossing a threshold prescribed by the
 hypervisor at the previous exit rings the doorbell. For the first workload below,
 only the SDK input-fetch call is needed; the threshold protocol lands with the
-instrumented-payload milestone (M6).
+instrumented-payload milestone (M4).
 
 ### 2.5 First workload: the NES searcher
 
@@ -156,9 +158,8 @@ repeat.
   than today's: `vns_base` carries the whole clock, with no counter reset and no
   sub-nanosecond remainder.
 
-The searcher binary runs on the host (M1 or the msr1 login), speaking
-control-proto to the VMM; archive, energy selection, and parent policy are
-unchanged code.
+The searcher binary runs on the M1 host, speaking control-proto to the VMM;
+archive, energy selection, and parent policy are unchanged code.
 
 ## 3. Verification
 
@@ -198,18 +199,21 @@ divergence at the exact index for perturbed scripts.
 *Does not count unless:* the comparator's failure cases (rule 2) are themselves
 committed tests.
 
-**M1 — msr1 boots deterministically.**
-*Build:* `Arm64KvmBackend` interrupt injection + `run_until`; userspace GICv3
-delivery at exits; WFI via `IdlePlanner`; the paravirtual tick patch; boot the
-arm64 image to `/init`.
+**M1 — the M1 Max boots deterministically.**
+*Build:* first a probe binary that confirms the required Hypervisor.framework
+surface (WFI exit control, sysreg trap coverage, injection timing) on this
+macOS version, its findings recorded in the backend's docs; then `HvfBackend`
+with `run_until`, userspace GICv3 delivery at exits, and WFI via `IdlePlanner`;
+the paravirtual tick patch; boot the arm64 image to `/init`.
 *Passes when:* ten same-seed boots produce one event log: identical exit
 sequences, identical vns at every exit, identical interrupt placements,
 identical memory hash at every checkpoint and at `/init`.
 *Does not count unless:* the log covers the full boot (first entry to `/init`),
-interrupt placements are in the log, and the comparator was first shown to catch
-a one-exit-late tick injection on this workload.
+interrupt placements are in the log, `capabilities()` reports the backend's
+honest surface, and the comparator was first shown to catch a one-exit-late
+tick injection on this workload.
 
-**M2 — NES campaign on msr1.**
+**M2 — NES campaign on the M1 Max.**
 *Build:* the §2.5 payload and the control-proto `Machine` client; run
 `smb-smoke`, then a campaign of meaningful length.
 *Passes when:* (a) two same-seed campaigns produce identical archive hashes;
@@ -224,28 +228,7 @@ churn at real scale (thousands of branch/replay cycles, non-quiescent
 snapshots), and the archive-hash comparator was shown to catch a seeded
 divergence (one chord altered in one lineage).
 
-**M3 — HvfBackend brings up the same image on the M1 Max.**
-*Build:* first a probe binary that confirms the required Hypervisor.framework
-surface (WFI exit control, sysreg trap coverage, injection timing) on this
-macOS version; then the `Backend` impl; then M1-boot with the M1 as host.
-*Passes when:* the M1 passes milestone M1's oracle verbatim: ten same-seed
-boots, one event log, on the same image bytes as msr1.
-*Does not count unless:* the probe's findings are recorded in the backend's
-docs (which traps exist, which required emulation), and `capabilities()`
-reports the backend's honest surface.
-
-**M4 — cross-host determinism, the portability claim itself.**
-*Build:* nothing new — the experiment.
-*Passes when:* with byte-identical image, payload, and seed: (a) msr1 and the
-M1 Max produce **identical event logs** for the boot and for an NES campaign,
-and identical archive hashes; (b) a snapshot taken mid-lineage on msr1,
-restored on the M1, continues to the same archive key, and vice versa.
-*Does not count unless:* rule 3 held (bytes attested on both sides before the
-run), the comparison is the full log (rule 1), and at least one seeded
-cross-host divergence was demonstrated to be caught (rule 2, run once with an
-increment constant deliberately differing between hosts).
-
-**M5 — liveness on a real payload.**
+**M3 — liveness on a real payload.**
 *Build:* the postgres container payload from the acceptance suite, booted and
 driven under prescriptive V-time with the paravirtual tick.
 *Passes when:* the payload's existing acceptance checks pass; dmesg is free of
@@ -257,7 +240,7 @@ same payload.
 a payload that "passes" with an unbounded quiet stretch or a 100× slowdown is
 a finding, and the report must be capable of showing it.
 
-**M6 — instrumented concurrency payload (absolute finding measurement).**
+**M4 — instrumented concurrency payload (absolute finding measurement).**
 *Build:* the SDK threshold protocol of §2.4; a small suite of deliberately racy
 instrumented Go/Rust programs, each with a known bug and a known reproducing
 schedule.
@@ -274,24 +257,45 @@ suite there produces the comparative measurement.
 ## 4. Risks and their measurements
 
 - **Quiet stretches delay timer delivery.** A long computation with no exits
-  delivers its due timers late (at its next exit). Measured directly by M5's
+  delivers its due timers late (at its next exit). Measured directly by M3's
   gap histogram; bounded by the paravirtual tick density and, for instrumented
   payloads, by the SDK threshold. A payload that exceeds the bound is reported
   by the run, with the gap and the guest PC range.
 - **Hypervisor.framework surface unknowns.** Which sysregs trap, WFI exit
-  behavior, and injection timing vary by macOS version. M3's probe binary
+  behavior, and injection timing vary by macOS version. M1's probe binary
   resolves this before backend work starts, and the findings are recorded.
-- **ISA baseline drift between M1 and msr1.** Implementation-defined behavior
+- **ISA baseline drift between hosts.** Implementation-defined behavior
   outside the pinned baseline (ID registers, FP corner behavior) would surface
-  as an M4 log divergence; `compare_runs` brackets it to an instruction range.
-  The NES payload is integer-pure, which keeps M4's first pass free of FP
-  questions; FP-heavy payloads extend the baseline audit when they arrive.
+  as a log divergence in the §5 cross-host experiment; `compare_runs` brackets
+  it to an instruction range. The NES payload is integer-pure, which keeps that
+  experiment's first pass free of FP questions; FP-heavy payloads extend the
+  baseline audit when they arrive.
 - **Snapshot rate under searcher churn.** VM snapshots are large and the
   searcher branches constantly. M2's report includes branch/replay throughput;
   optimization (dirty-page tracking, copy-on-write) is scheduled by that
   number, and the determinism oracles are unaffected by it.
 
-## 5. In-tree placement
+## 5. Follow-up: msr1 and the portability claim
+
+When the msr1 box goes idle, two pieces of deferred work turn the single-host
+result into the portability claim. They reuse everything above unchanged.
+
+**F1 — `Arm64KvmBackend` completes.** Interrupt injection and `run_until` on
+the stock-KVM/arm64 skeleton, per §2.2, sharing the userspace `gicv3` model
+with `HvfBackend`. Passes milestone M1's oracle verbatim on msr1 (ten
+same-seed boots, one event log), on the same image bytes the M1 Max runs.
+
+**F2 — cross-host determinism, the portability claim itself.**
+*Passes when:* with byte-identical image, payload, and seed: (a) msr1 and the
+M1 Max produce **identical event logs** for the boot and for an NES campaign,
+and identical archive hashes; (b) a snapshot taken mid-lineage on one host,
+restored on the other, continues to the same archive key, in both directions.
+*Does not count unless:* rule 3 held (bytes attested on both sides before the
+run), the comparison is the full log (rule 1), and at least one seeded
+cross-host divergence was demonstrated to be caught (rule 2, run once with an
+increment constant deliberately differing between hosts).
+
+## 6. In-tree placement
 
 Everything lands in the existing crates: advancement and delivery in
 `vmm-core`'s run loop, the two backends in `vmm-backend`, interrupt state in
