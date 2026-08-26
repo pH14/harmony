@@ -636,7 +636,7 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   one payload per chord, mirrors complete WRAM, and reports cumulative frames at
   chord boundaries. Its live Linux/aarch64 `/dev/mem` composition and separate
   fail-closed image builder are present. The external ROM is now located and its
-  real in-process smoke is green. The native Altra image build and live M1-Max
+  real in-process smoke is green. The native Linux/aarch64 image build on msr1 and live M1-Max
   execution remain open, so this criterion is not yet a pass. The
   searcher now exposes the same campaign through `--control-socket`, requires
   exactly one worker per mutable VMM session, records a distinct durable remote

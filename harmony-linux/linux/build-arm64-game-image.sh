@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the M2 arm64 TetaNES initramfs natively on the pinned Altra host. Every
+# Build the M2 arm64 TetaNES initramfs natively on the Linux/aarch64 build host.
+# The current validated host is msr1. Every
 # shipped executable and shared object is scanned for live counters and LL/SC.
 set -euo pipefail
 

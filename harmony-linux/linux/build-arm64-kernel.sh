@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the pinned AA-5(c) arm64 kernel natively on the pinned Altra box.
+# Build the pinned AA-5(c) arm64 kernel natively on Linux/aarch64 (msr1).
 # Publication is fail-closed behind the zero-live-counter and zero-LL/SC scans.
 set -euo pipefail
 
@@ -149,7 +149,7 @@ fi
 echo "== arm64 kernel: building Image + vmlinux"
 make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Image
 
-# ARM has no generic-counter trap on the reachable N1 silicon. Unlike x86's
+# ARM has no generic-counter trap on the reachable execution target. Unlike x86's
 # reviewed allowlist, one reachable CNTVCT/CNTPCT opcode is a determinism hole.
 # The canonical Image is therefore published only after the empty-allowlist
 # scanner accepts the symbolized vmlinux.

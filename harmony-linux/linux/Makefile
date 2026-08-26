@@ -12,7 +12,7 @@ initramfs:
 
 image: kernel initramfs
 
-# AA-5(c) artifacts build natively on the pinned Linux/aarch64 Altra box and
+# AA-5(c) artifacts build natively on the validated Linux/aarch64 host and
 # land under harmony-linux/build/arm64/, isolated from the established x86 image.
 arm64-kernel:
 	./build-arm64-kernel.sh

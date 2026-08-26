@@ -4,7 +4,7 @@
 # Shared setup for the guest Linux image scripts. Source from
 # harmony-linux/linux/ with CWD = harmony-linux/linux/. Every entry point selects
 # its native build host explicitly: the established x86 image uses Linux/x86_64;
-# the AA-5(c) image uses Linux/aarch64 on the pinned Altra box.
+# the AA-5(c) image uses the validated native Linux/aarch64 host (msr1).
 
 # shellcheck source=../scripts/lib.sh disable=SC1091
 . ../scripts/lib.sh
@@ -26,7 +26,7 @@ require_linux_amd64() {
 require_linux_aarch64() {
     if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "aarch64" ]; then
         echo "FAIL: the AA-5(c) guest image builds only on Linux/aarch64." >&2
-        echo "      Run it natively on the pinned Altra box — see docs/ARM-ALTRA.md." >&2
+        echo "      Run it natively on the validated Linux/aarch64 host (msr1)." >&2
         exit 1
     fi
 }

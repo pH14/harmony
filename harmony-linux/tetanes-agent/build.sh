@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ "$(uname -sm)" != "Linux aarch64" ]; then
-    echo "FAIL: tetanes-agent guest build needs native Linux/aarch64 (the pinned Altra build host)" >&2
+    echo "FAIL: tetanes-agent guest build needs native Linux/aarch64 (validated on msr1)" >&2
     exit 1
 fi
 

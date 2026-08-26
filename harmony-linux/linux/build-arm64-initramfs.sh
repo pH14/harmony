@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Build the AA-5(c) arm64 initramfs natively on the pinned Altra box: a
+# Build the AA-5(c) arm64 initramfs natively on Linux/aarch64 (msr1): a
 # freestanding syscall-only /init, packed reproducibly with gen_init_cpio.
 set -euo pipefail
 
