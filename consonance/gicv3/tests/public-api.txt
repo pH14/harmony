@@ -34,6 +34,7 @@ pub fn gicv3::Gicv3::config(&self) -> gicv3::GicConfig
 pub fn gicv3::Gicv3::eoi(&mut self, u32) -> core::result::Result<(), gicv3::GicError>
 pub fn gicv3::Gicv3::has_deliverable(&self) -> bool
 pub fn gicv3::Gicv3::implemented(&self, u32) -> bool
+pub fn gicv3::Gicv3::input_deliverable(&self, u32) -> bool
 pub fn gicv3::Gicv3::intid_limit(&self) -> u32
 pub fn gicv3::Gicv3::lower(&mut self, u32) -> core::result::Result<(), gicv3::GicError>
 pub fn gicv3::Gicv3::mmio_read(&self, gicv3::GicFrame, u64, u64) -> core::result::Result<u32, gicv3::GicError>

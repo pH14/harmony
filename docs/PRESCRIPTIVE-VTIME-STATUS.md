@@ -102,6 +102,14 @@ dependency rather than silently weakening the criterion.
     class 2,000 V-ns makes the unchanged audited boot traffic cross the first
     deadline; this is a normative, host-independent per-class constant, not a
     workload-specific exit or a host-time measurement.
+16. **Prescriptive WFI uses the paravirtual clockevent through `IdlePlanner`.**
+    Assigned-at-exit mode does not require or claim a deterministic hardware
+    counter. The ARM deadline seam converts the absolute guest-clock deadline
+    to its first whole V-ns, filters PPI20 through the same GIC Group-1/enable/
+    priority/active gates as real delivery, and lands exactly through
+    `IdlePlanner`; post-exit service raises PPI20 at that normalized event.
+    Descriptive preemption remains separately gated, so prescriptive mode never
+    calls the backend's honestly unsupported `run_until`.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -266,13 +274,17 @@ work was begun before this evidence was recorded.
   cooperative image must use paravirtual time, and the eventual HVF capability
   report must deny direct-counter and timer-sysreg enforcement. WFI and MMIO
   have measured exception exits suitable for the backend.
-- **IN PROGRESS — `HvfBackend`, userspace GICv3 delivery, WFI/IdlePlanner:** the
+- **PASS — `HvfBackend`, userspace GICv3 delivery, WFI/IdlePlanner:** the
   production backend now creates/maps/runs an HVF vCPU, surfaces WFI as `Idle`,
   decodes MMIO and the measured GIC sysreg traps, supports pre-entry IRQ levels,
   handles the uniprocessor PSCI subset, and is composed with the userspace GIC.
   The HVF root deliberately omits the legacy 8-KiB doorbell mapping because HVF
   requires 16-KiB mappings and M1 has no control channel. Integration with the
-  prescriptive `IdlePlanner` remains outstanding.
+  prescriptive idle path now folds the generic timer and paravirtual clockevent,
+  checks the future input's actual GIC deliverability, and lands exactly at the
+  earliest deadline through `IdlePlanner`. The committed mock-ARM test reaches
+  the deadline, logs PPI20 on the WFI event, passes the placement checker, and
+  succeeds only because no unsupported `run_until` call occurs.
 - **PASS — paravirtual tick patch and one complete `/init` boot:** the pinned
   Linux 6.18.35 arm64 Image and initramfs now build natively in the audited
   container. The maintained counter/timer and exclusive-instruction scanners
@@ -407,6 +419,16 @@ runs 01..10, each:
 Image sha256:     41cea2eb60e4155b31ac70300ff9c15205b1533a7b7ab9fb7642bdb17628a3c7
 initramfs sha256: 6194ec4be99b08e68a61f9020fcedd7aae515b00fa63d38a44b9070a23fea053
 M1_TEN_RUN_ORACLE_OK normalized_logs=10 watchdogs=0
+```
+
+WFI/IdlePlanner integration checkpoint:
+
+```text
+cargo nextest run -p gicv3 -p vmm-core --all-features
+592 tests run: 592 passed, 5 skipped
+cargo clippy -p gicv3 -p vmm-core --all-features --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+gicv3 Linux-frozen public API: byte-for-byte match
 ```
 
 ## M2 — NES campaign on the M1 Max

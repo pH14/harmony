@@ -721,15 +721,40 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// The next armed generic-timer deadline in V-time ns (the pure
     /// deadlines-out half of the fabric). No fabric ⇒ none.
     pub(crate) fn next_timer_deadline_vns_arm64(&self) -> Option<u64> {
-        self.devices.gic.as_ref()?.next_timer_deadline()
+        let generic = self
+            .devices
+            .gic
+            .as_ref()
+            .and_then(gicv3::Gicv3::next_timer_deadline);
+        let clockevent = self
+            .devices
+            .clockevent
+            .deadline
+            .and_then(|deadline| self.guest_clock_deadline_vns(deadline).ok());
+        match (generic, clockevent) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (only, None) | (None, only) => only,
+        }
     }
 
     /// [`Self::next_timer_deadline_vns_arm64`], filtered to timers whose fire
     /// would actually deliver — an armed-but-undeliverable timer is no wake.
     pub(crate) fn deliverable_timer_deadline_vns_arm64(&self) -> Option<u64> {
         let gic = self.devices.gic.as_ref()?;
-        gic.next_timer_deadline()
-            .filter(|_| gic.armed_timer_deliverable())
+        let generic = gic
+            .next_timer_deadline()
+            .filter(|_| gic.armed_timer_deliverable());
+        let clockevent = self
+            .devices
+            .clockevent
+            .deadline
+            .filter(|_| self.pvclock_registration().is_some())
+            .filter(|_| gic.input_deliverable(super::board::PVCLOCK_PPI))
+            .and_then(|deadline| self.guest_clock_deadline_vns(deadline).ok());
+        match (generic, clockevent) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (only, None) | (None, only) => only,
+        }
     }
 
     /// Stage-time validation of a wire-format interrupt identity against the

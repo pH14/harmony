@@ -501,6 +501,27 @@ impl Gicv3 {
         self.peek_interrupt().is_some()
     }
 
+    /// Whether asserting `intid` as a device input would make it deliverable.
+    ///
+    /// This is the future-line counterpart to [`Self::peek_interrupt`]: it
+    /// checks the same Group-1, enable, forwarding, PMR, running-priority, and
+    /// active-state gates without mutating the pending bitmap. Unimplemented
+    /// identities are simply not deliverable.
+    pub fn input_deliverable(&self, intid: u32) -> bool {
+        if !self.implemented(intid) || self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 {
+            return false;
+        }
+        let (w, b) = ((intid / 32) as usize, intid % 32);
+        if self.enable[w] & (1 << b) == 0
+            || self.group[w] & (1 << b) == 0
+            || self.active[w] & (1 << b) != 0
+        {
+            return false;
+        }
+        let priority = u16::from(self.priority[intid as usize]);
+        priority < u16::from(self.pmr) && priority < self.running_priority()
+    }
+
     /// Acknowledge the arbitrated INTID: the pending→active transition (the
     /// `ICC_IAR1_EL1` read on real hardware). vmm-core calls this only once
     /// the backend confirms acceptance, so a snapshot taken while the INTID
@@ -623,16 +644,7 @@ impl Gicv3 {
     /// (the idle path's discriminator, exactly as `lapic`'s
     /// `armed_timer_deliverable`).
     pub fn armed_timer_deliverable(&self) -> bool {
-        if self.next_timer_deadline().is_none() {
-            return false;
-        }
-        let intid = self.timer_intid;
-        let (w, b) = ((intid / 32) as usize, intid % 32);
-        let wired = self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 != 0
-            && self.enable[w] & (1 << b) != 0
-            && self.group[w] & (1 << b) != 0;
-        let prio = u16::from(self.priority[intid as usize]);
-        wired && prio < u16::from(self.pmr) && prio < self.running_priority()
+        self.next_timer_deadline().is_some() && self.input_deliverable(self.timer_intid)
     }
 
     /// Advance the fabric to `now_vns`: latch the virtual timer's PPI pending
@@ -893,14 +905,31 @@ mod tests {
         g.write_cntv_ctl(CNTV_CTL_ENABLE);
         assert_eq!(g.next_timer_deadline(), Some(2000));
         assert!(g.armed_timer_deliverable());
+        assert!(g.input_deliverable(27));
         assert!(!g.advance_to(1999));
         assert!(g.advance_to(2000));
         assert_eq!(g.peek_interrupt(), Some(27));
+        assert!(g.input_deliverable(27));
         // The edge latched once; the deadline is consumed until re-armed.
         assert_eq!(g.next_timer_deadline(), None);
         assert!(!g.advance_to(3000));
         g.write_cntv_cval(250); // re-arm
         assert_eq!(g.next_timer_deadline(), Some(4000));
+    }
+
+    #[test]
+    fn input_deliverability_observes_active_and_priority_state() {
+        let mut g = gic();
+        assert!(!g.input_deliverable(40));
+        assert!(!g.input_deliverable(96));
+        arm(&mut g, 40, 0x80);
+        assert!(g.input_deliverable(40));
+        g.set_pmr(0x80);
+        assert!(!g.input_deliverable(40));
+        g.set_pmr(0x81);
+        g.raise(40).unwrap();
+        assert_eq!(g.take_interrupt(), Some(40));
+        assert!(!g.input_deliverable(40));
     }
 
     #[test]

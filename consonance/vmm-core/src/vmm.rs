@@ -997,9 +997,18 @@ where
         deadline_ticks: u64,
         interrupt_id: u32,
     ) -> Result<(), VmmError> {
+        let deadline_vns = self.guest_clock_deadline_vns(deadline_ticks)?;
         let Some(trace) = self.prescriptive_trace.as_mut() else {
             return Ok(());
         };
+        trace
+            .schedule_clockevent(deadline_vns, interrupt_id)
+            .map_err(|message| VmmError::ContractViolation(message.to_string()))
+    }
+
+    /// Convert an absolute guest-clock tick deadline to the first whole V-ns
+    /// at which that counter value is observable.
+    pub(crate) fn guest_clock_deadline_vns(&self, deadline_ticks: u64) -> Result<u64, VmmError> {
         let vt = self.vtime.as_ref().ok_or_else(|| {
             VmmError::ContractViolation(
                 "prescriptive clockevent schedule without V-time wiring".to_string(),
@@ -1023,9 +1032,7 @@ where
             .checked_div(hz)
             .unwrap_or(u128::MAX)
             .min(u128::from(u64::MAX)) as u64;
-        trace
-            .schedule_clockevent(deadline_vns, interrupt_id)
-            .map_err(|message| VmmError::ContractViolation(message.to_string()))
+        Ok(deadline_vns)
     }
 
     /// Mark the active production clockevent schedule canceled at this exit.
@@ -4215,9 +4222,13 @@ where
     /// gate). The interruptibility read is a [`Backend::save`] (a pure vCPU read
     /// running no guest code) and **fails closed** ([`VmmError::Backend`]) on error.
     fn idle_action(&mut self) -> Result<IdleAction, VmmError> {
-        // Determinism path only (stock / M1/M2 keep an idle halt terminal,
-        // byte-identical).
-        if self.vtime.is_none() || !self.backend.capabilities().arch.deterministic_clock() {
+        // Either determinism clock: descriptive mode needs the exact hardware
+        // counter, while assigned-at-exit mode carries its clock entirely in
+        // `vns_base` and intentionally needs no hardware counter.
+        let Some(vt) = self.vtime.as_ref() else {
+            return Ok(IdleAction::Terminal);
+        };
+        if !vt.prescriptive && !self.backend.capabilities().arch.deterministic_clock() {
             return Ok(IdleAction::Terminal);
         }
         // The guest must be resumable (able to take an interrupt / be woken).

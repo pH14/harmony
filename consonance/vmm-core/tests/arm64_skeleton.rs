@@ -926,6 +926,50 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
     assert!(format!("{err}").contains("deadline write while PPI20 is asserted"));
 }
 
+/// Prescriptive WFI uses `IdlePlanner` to land exactly on the paravirtual
+/// clockevent deadline, raises PPI20 at that same normalized event, and never
+/// asks the backend for an unsupported mid-stream `run_until` stop.
+#[test]
+fn arm64_prescriptive_wfi_jumps_to_the_clockevent_deadline() {
+    use vmm_backend::Gpa;
+    use vmm_core::prescriptive::{NormalizedEventClass, check_delivery_placement};
+    use vmm_core::vendor::arm64::board::{CNTFRQ_HZ, PVCLOCK, PVCLOCK_PPI};
+
+    let page_gpa = 0x1000;
+    let deadline_vns = 10_000;
+    let deadline_ticks = deadline_vns * CNTFRQ_HZ / 1_000_000_000;
+    let mut v = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(page_gpa),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(deadline_ticks),
+        }),
+        Exit::Common(CommonExit::Idle),
+    ]);
+    wire_prescriptive_clock(&mut v);
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(!v.has_pending_guest_interrupt().unwrap());
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.effective_vns(), Some(deadline_vns));
+    assert_eq!(v.idle_landings(), &[deadline_vns]);
+    assert!(v.has_pending_guest_interrupt().unwrap());
+
+    let trace = v.prescriptive_trace().unwrap();
+    let idle = &trace.normalized_log().events[2];
+    assert_eq!(idle.class, NormalizedEventClass::Idle);
+    assert_eq!(idle.vns_after, deadline_vns);
+    assert_eq!(idle.interrupts.len(), 1);
+    assert_eq!(idle.interrupts[0].interrupt_id, PVCLOCK_PPI);
+    check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
+}
+
 /// Review r5 P2(b): the GICv3 state feeds `state_hash` (the `GICV` chunk), so
 /// `state_components()` must expose a labeled `gic` component — otherwise two
 /// runs differing **only** in GIC state hash differently while every diagnostic
