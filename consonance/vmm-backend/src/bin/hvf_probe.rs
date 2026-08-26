@@ -46,7 +46,6 @@ mod arm64 {
     const HV_SYS_REG_SP_EL1: u16 = 0xe208;
 
     const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
-    const HV_EXIT_REASON_CANCELED: u32 = 0;
     const HV_EXIT_REASON_EXCEPTION: u32 = 1;
 
     const PSTATE_EL1H_MASKED: u64 = 0x3c5;
@@ -115,6 +114,7 @@ mod arm64 {
         fn hv_vcpu_set_vtimer_mask(vcpu: u64, value: bool) -> i32;
         fn hv_vcpu_get_vtimer_offset(vcpu: u64, value: *mut u64) -> i32;
         fn hv_vcpu_set_vtimer_offset(vcpu: u64, value: u64) -> i32;
+        fn sys_icache_invalidate(start: *mut c_void, length: usize);
     }
 
     fn check(operation: &'static str, status: i32) -> Result<(), String> {
@@ -183,6 +183,13 @@ mod arm64 {
                     .write(instruction)
             };
             Ok(())
+        }
+
+        fn sync_instruction_cache(&mut self) {
+            // SAFETY: the mapped allocation is live for PAGE_SIZE bytes. This
+            // is required after rewriting code at a reused IPA on Apple
+            // Silicon; without it, later probe cases may execute stale lines.
+            unsafe { sys_icache_invalidate(self.ptr.as_ptr().cast(), PAGE_SIZE) };
         }
     }
 
@@ -530,6 +537,7 @@ mod arm64 {
                 .ok_or_else(|| "program offset overflow".to_owned())?;
             page.put(offset, instruction)?;
         }
+        page.sync_instruction_cache();
         vcpu.reset(false)?;
         vcpu.run()
     }
@@ -571,6 +579,7 @@ mod arm64 {
         page.clear();
         page.put(0, INSN_LDR_X4_X5)?;
         page.put(4, INSN_HVC_0)?;
+        page.sync_instruction_cache();
         vcpu.reset(false)?;
         vcpu.set_reg(5, 0x20_000)?;
         let mmio = vcpu.run()?;
@@ -580,6 +589,7 @@ mod arm64 {
         page.put(0, INSN_WFI)?;
         page.put(4, INSN_HVC_0)?;
         page.put(0x280, INSN_HVC_0)?;
+        page.sync_instruction_cache();
         vcpu.reset(true)?;
         // SAFETY: the vCPU is live and this is the owning thread. The framework
         // documents that the pending level is applied on the following entry.
@@ -597,6 +607,7 @@ mod arm64 {
         page.clear();
         page.put(0, INSN_WFI)?;
         page.put(4, INSN_HVC_0)?;
+        page.sync_instruction_cache();
         vcpu.reset(false)?;
         let id = vcpu.id;
         let cancel = thread::spawn(move || {
@@ -612,10 +623,10 @@ mod arm64 {
             .map_err(|_| "WFI cancellation helper panicked".to_owned())?;
         check("hv_vcpus_exit watchdog", cancel_status)?;
         println!(
-            "exit.wfi: {}; PC={:#x}; dedicated-exit={}",
+            "exit.wfi: {}; PC={:#x}; recognizable-wfx-exception={}",
             describe_exit(wfi),
             vcpu.reg(HV_REG_PC)?,
-            wfi.reason != HV_EXIT_REASON_CANCELED && wfi.reason != HV_EXIT_REASON_EXCEPTION
+            wfi.reason == HV_EXIT_REASON_EXCEPTION && ec(wfi) == 0x1
         );
         Ok(())
     }

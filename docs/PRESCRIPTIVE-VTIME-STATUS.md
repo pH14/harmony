@@ -188,14 +188,17 @@ work was begun before this evidence was recorded.
   state.pending-irq: true and false read back exactly
   state.pending-exception / exclusive-monitor: no public get/set API
   trap.cntvct-el0: false; returned a live nonzero host-derived counter
-  trap.pmccntr-el0 / midr-el1 / cntv-cval-el0: false
+  trap.pmccntr-el0: true, EC=0x18
+  trap.midr-el1 / cntv-cval-el0: false
+  exit.unmapped-mmio: EC=0x24, VA=IPA=0x20000
   interrupt.pre-entry: PC=0x284, ELR_EL1=0x0
-  exit.wfi: only the following HVC surfaced, PC=0x8, dedicated-exit=false
+  exit.wfi: EC=0x1, syndrome=0x07e00000, PC=0x0
   ```
 
   The negative findings are capability limits, not papered-over passes: M1's
-  cooperative image must use paravirtual time and idle exits, and the eventual
-  HVF capability report must deny direct-counter and timer-sysreg enforcement.
+  cooperative image must use paravirtual time, and the eventual HVF capability
+  report must deny direct-counter and timer-sysreg enforcement. WFI and MMIO
+  have measured exception exits suitable for the backend.
 - **FAIL — `HvfBackend`, userspace GICv3 delivery, WFI/IdlePlanner:** not started.
 - **FAIL — paravirtual tick patch and `/init` boot:** not started.
 - **FAIL — ten same-seed full-boot normalized logs:** not started.
