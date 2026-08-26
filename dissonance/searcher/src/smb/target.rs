@@ -78,7 +78,7 @@ impl SmbSnapshot {
 /// controller inputs: the title screen settles, Start is pressed once, and
 /// the pre-level sequence plays out. Target setup rather than model-visible
 /// search guidance.
-const BOOT_WALK: [ButtonChord; 4] = [
+pub(crate) const BOOT_WALK: [ButtonChord; 4] = [
     ButtonChord {
         buttons: 0,
         hold_frames: 120,
@@ -553,7 +553,7 @@ const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
 
 /// Whether Mario is dead: the kill state, or a fall below the play area,
 /// which the engine state does not report before the life counter drops.
-fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
+pub(crate) fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
         || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE
 }
@@ -575,7 +575,7 @@ pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
         && wram[WORLD_NUMBER_OFFSET] == FINAL_WORLD_NUMBER
 }
 
-fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
+pub(crate) fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
     let screen_page = u64::from(wram[SCREEN_PAGE_OFFSET]);
     let screen_x_bucket = u64::from(wram[SCREEN_X_OFFSET] / 16);
     let player_y_bucket = u64::from(wram[PLAYER_Y_OFFSET] / 32);

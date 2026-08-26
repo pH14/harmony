@@ -1,0 +1,618 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Chord-boundary SMB target over the consonance control protocol.
+//!
+//! The guest consumes one complete [`ButtonChord`] and yields before its next
+//! payload fetch. This target therefore observes exactly one endpoint per
+//! action, validates the guest-reported frame delta, and reads the complete
+//! WRAM mirror the agent published during setup. Archive/search policy stays
+//! above this module and sees the same actions and observation types as the
+//! in-process target.
+
+use std::{error::Error, io::Read, io::Write};
+
+use machine::{
+    Machine, MachineError, Moment, SnapId, StopConditions, StopMask, StopReason,
+    control::{RestoreCounters, SocketMachine},
+    nes,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    smb::target::{
+        BOOT_WALK, ButtonChord, SmbObservations, WRAM_SIZE, smb_fingerprint_from_wram,
+        smb_is_victory, smb_mechanical_state_from_wram, smb_milestones_from_wram,
+        smb_player_is_dead,
+    },
+    target::{ExitKind, Target},
+};
+
+/// Control-machine additions the remote SMB adapter needs beyond the mirrored
+/// core verb set. The production implementation is [`SocketMachine`]; the
+/// trait keeps target logic portable and directly testable.
+pub trait GuestControlMachine: Machine {
+    /// Guest-reported cumulative emulated frame.
+    fn logical_frame(&self) -> Moment;
+    /// Guest-published host-readable WRAM window.
+    fn wram_window(&self) -> Option<(u64, u32)>;
+    /// Mark the gameplay genesis handle for restore accounting.
+    fn mark_genesis(&mut self, snap: SnapId) -> Result<(), MachineError>;
+    /// Genesis versus continuation restore counts.
+    fn restore_counters(&self) -> RestoreCounters;
+}
+
+impl<S: Read + Write> GuestControlMachine for SocketMachine<S> {
+    fn logical_frame(&self) -> Moment {
+        SocketMachine::logical_frame(self)
+    }
+
+    fn wram_window(&self) -> Option<(u64, u32)> {
+        SocketMachine::wram_window(self)
+    }
+
+    fn mark_genesis(&mut self, snap: SnapId) -> Result<(), MachineError> {
+        SocketMachine::mark_genesis(self, snap)
+    }
+
+    fn restore_counters(&self) -> RestoreCounters {
+        SocketMachine::restore_counters(self)
+    }
+}
+
+/// Restorable remote SMB state. `handle` is deliberately session-local and is
+/// skipped in persisted checkpoints; `lineage` reconstructs the same state from
+/// gameplay genesis in a fresh session.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RemoteSmbSnapshot {
+    #[serde(skip)]
+    handle: Option<SnapId>,
+    lineage: Vec<ButtonChord>,
+    observation: SmbObservations,
+    dead: bool,
+    failed: bool,
+}
+
+impl RemoteSmbSnapshot {
+    /// WRAM bytes captured at this chord boundary.
+    #[must_use]
+    pub fn wram(&self) -> &[u8] {
+        &self.observation.wram
+    }
+
+    /// Whether this value still has a fast session-local snapshot handle.
+    #[must_use]
+    pub fn has_live_handle(&self) -> bool {
+        self.handle.is_some()
+    }
+}
+
+/// SMB target driven through a cooperating guest's control session.
+#[derive(Debug)]
+pub struct RemoteSmbTarget<M: GuestControlMachine> {
+    machine: M,
+    genesis: SnapId,
+    genesis_frame: Moment,
+    wram_gpa: u64,
+    observation: SmbObservations,
+    action_observations: Vec<SmbObservations>,
+    lineage: Vec<ButtonChord>,
+    dead: bool,
+    failed: bool,
+}
+
+impl<M: GuestControlMachine> RemoteSmbTarget<M> {
+    /// Take over a negotiated machine, stop at `setup_complete`, execute the
+    /// same fixed boot walk as the in-process target, and seal gameplay genesis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing/malformed WRAM publication, a wrong stop,
+    /// or any control/emulator failure.
+    pub fn from_machine(mut machine: M) -> Result<Self, MachineError> {
+        let stop = machine.run(
+            StopConditions {
+                deadline: None,
+                on: StopMask::NONE.arm(machine::class_bit::SNAPSHOT_POINT),
+            },
+            None,
+        )?;
+        if !matches!(stop, StopReason::SnapshotPoint { .. }) {
+            return Err(MachineError::Backend(format!(
+                "guest did not stop at setup_complete: {stop:?}"
+            )));
+        }
+        let (wram_gpa, wram_len) = machine
+            .wram_window()
+            .ok_or_else(|| MachineError::Backend("guest did not publish a WRAM window".into()))?;
+        if wram_len as usize != WRAM_SIZE {
+            return Err(MachineError::Backend(format!(
+                "guest WRAM window is {wram_len} bytes, expected {WRAM_SIZE}"
+            )));
+        }
+
+        let setup = machine.snapshot()?;
+        machine.branch(setup, &nes::reproducer(&BOOT_WALK))?;
+        let boot_frames = BOOT_WALK.iter().fold(0_u64, |total, action| {
+            total.saturating_add(u64::from(action.bounded_hold_frames()))
+        });
+        let deadline = machine.logical_frame().0.saturating_add(boot_frames);
+        let stop = machine.run(
+            StopConditions {
+                deadline: Some(Moment(deadline)),
+                on: StopMask::NONE,
+            },
+            None,
+        )?;
+        if stop
+            != (StopReason::Deadline {
+                vtime: Moment(deadline),
+            })
+        {
+            return Err(MachineError::Backend(format!(
+                "guest boot walk stopped unexpectedly: {stop:?}"
+            )));
+        }
+        machine.drop_snapshot(setup)?;
+        let genesis = machine.snapshot()?;
+        machine.mark_genesis(genesis)?;
+        let genesis_frame = machine.logical_frame();
+        let wram = read_wram(&machine, wram_gpa)?;
+        let observation = observation(&wram, 0, &[0; WRAM_SIZE], false);
+        Ok(Self {
+            machine,
+            genesis,
+            genesis_frame,
+            wram_gpa,
+            action_observations: vec![observation.clone()],
+            observation,
+            lineage: Vec::new(),
+            dead: false,
+            failed: false,
+        })
+    }
+
+    /// Complete WRAM at the current chord boundary.
+    #[must_use]
+    pub fn wram(&self) -> [u8; WRAM_SIZE] {
+        read_wram(&self.machine, self.wram_gpa).unwrap_or([0; WRAM_SIZE])
+    }
+
+    /// Observer events emitted by the most recently applied chord.
+    #[must_use]
+    pub fn last_action_observations(&self) -> &[SmbObservations] {
+        &self.action_observations
+    }
+
+    /// Whether the endpoint is a player-death state.
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
+
+    /// Whether the endpoint is the final victory state.
+    #[must_use]
+    pub fn is_victory(&self) -> bool {
+        smb_is_victory(&self.wram())
+    }
+
+    /// Guest frames since gameplay genesis in the current restored timeline.
+    #[must_use]
+    pub fn frames_clocked(&self) -> u64 {
+        self.machine
+            .logical_frame()
+            .0
+            .saturating_sub(self.genesis_frame.0)
+    }
+
+    /// Current restore accounting from the control session.
+    #[must_use]
+    pub fn restore_counters(&self) -> RestoreCounters {
+        self.machine.restore_counters()
+    }
+
+    fn apply_checked(&mut self, action: &ButtonChord) -> Result<(), MachineError> {
+        let prior = read_wram(&self.machine, self.wram_gpa)?;
+        let start_frame = self.machine.logical_frame();
+        let start = self.machine.snapshot()?;
+        if let Err(error) = self
+            .machine
+            .branch(start, &nes::reproducer(std::slice::from_ref(action)))
+        {
+            let _ = self.machine.drop_snapshot(start);
+            return Err(error);
+        }
+        self.machine.drop_snapshot(start)?;
+        let expected = start_frame
+            .0
+            .saturating_add(u64::from(action.bounded_hold_frames()));
+        let stop = self.machine.run(
+            StopConditions {
+                deadline: Some(Moment(expected)),
+                on: StopMask::NONE,
+            },
+            None,
+        )?;
+        if stop
+            != (StopReason::Deadline {
+                vtime: Moment(expected),
+            })
+        {
+            return Err(MachineError::Backend(format!(
+                "chord stopped at the wrong frame: expected {expected}, got {stop:?}"
+            )));
+        }
+        let wram = read_wram(&self.machine, self.wram_gpa)?;
+        self.dead = smb_player_is_dead(&wram);
+        let frame_count = self
+            .observation
+            .frame_count
+            .saturating_add(u64::from(action.bounded_hold_frames()));
+        let endpoint = observation(&wram, frame_count, &prior, self.dead);
+        self.action_observations = vec![endpoint.clone()];
+        self.observation = endpoint;
+        self.lineage.push(*action);
+        Ok(())
+    }
+
+    fn restore_snapshot(&mut self, snapshot: &RemoteSmbSnapshot) -> Result<(), MachineError> {
+        match snapshot.handle {
+            Some(handle) => self.machine.replay(handle)?,
+            None if snapshot.lineage.is_empty() => self.machine.replay(self.genesis)?,
+            None => {
+                self.machine
+                    .branch(self.genesis, &nes::reproducer(&snapshot.lineage))?;
+                let frames = snapshot.lineage.iter().fold(0_u64, |total, action| {
+                    total.saturating_add(u64::from(action.bounded_hold_frames()))
+                });
+                let deadline = self.genesis_frame.0.saturating_add(frames);
+                let stop = self.machine.run(
+                    StopConditions {
+                        deadline: Some(Moment(deadline)),
+                        on: StopMask::NONE,
+                    },
+                    None,
+                )?;
+                if stop
+                    != (StopReason::Deadline {
+                        vtime: Moment(deadline),
+                    })
+                {
+                    return Err(MachineError::Backend(format!(
+                        "lineage reconstruction stopped unexpectedly: {stop:?}"
+                    )));
+                }
+            }
+        }
+        let actual = read_wram(&self.machine, self.wram_gpa)?;
+        if actual.as_slice() != snapshot.wram() {
+            return Err(MachineError::Backend(
+                "restored WRAM differs from the snapshot evidence".into(),
+            ));
+        }
+        self.observation = snapshot.observation.clone();
+        self.action_observations = vec![self.observation.clone()];
+        self.lineage.clone_from(&snapshot.lineage);
+        self.dead = snapshot.dead;
+        self.failed = snapshot.failed;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl RemoteSmbTarget<SocketMachine<std::os::unix::net::UnixStream>> {
+    /// Connect to a control socket and initialize gameplay genesis.
+    ///
+    /// # Errors
+    ///
+    /// Returns a socket, protocol, guest setup, or boot-walk error.
+    pub fn connect(path: impl AsRef<std::path::Path>) -> Result<Self, MachineError> {
+        Self::from_machine(SocketMachine::connect(path)?)
+    }
+}
+
+impl<M: GuestControlMachine> Target for RemoteSmbTarget<M> {
+    type Action = ButtonChord;
+    type Observations = SmbObservations;
+    type Snapshot = RemoteSmbSnapshot;
+
+    fn reset(&mut self) {
+        self.failed = self.machine.replay(self.genesis).is_err();
+        self.dead = false;
+        self.lineage.clear();
+        let wram = self.wram();
+        self.observation = observation(&wram, 0, &[0; WRAM_SIZE], false);
+        self.action_observations = vec![self.observation.clone()];
+    }
+
+    fn apply(&mut self, action: &Self::Action) {
+        self.action_observations.clear();
+        if self.failed || self.dead || self.is_victory() {
+            return;
+        }
+        if self.apply_checked(action).is_err() {
+            self.failed = true;
+        }
+    }
+
+    fn observe(&self) -> Self::Observations {
+        self.observation.clone()
+    }
+
+    fn fingerprint(&self) -> u64 {
+        smb_fingerprint_from_wram(&self.wram())
+    }
+
+    fn exit_kind(&self) -> ExitKind {
+        if self.failed {
+            ExitKind::Crash
+        } else {
+            ExitKind::Ok
+        }
+    }
+
+    fn snapshot(&mut self) -> Option<Self::Snapshot> {
+        match self.machine.snapshot() {
+            Ok(handle) => Some(RemoteSmbSnapshot {
+                handle: Some(handle),
+                lineage: self.lineage.clone(),
+                observation: self.observation.clone(),
+                dead: self.dead,
+                failed: self.failed,
+            }),
+            Err(_) => {
+                self.failed = true;
+                None
+            }
+        }
+    }
+
+    fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
+        self.restore_snapshot(snapshot)
+            .map_err(|error| error.to_string().into())
+    }
+}
+
+fn read_wram<M: GuestControlMachine>(
+    machine: &M,
+    gpa: u64,
+) -> Result<[u8; WRAM_SIZE], MachineError> {
+    let bytes = machine.read(gpa, WRAM_SIZE as u32)?;
+    bytes
+        .try_into()
+        .map_err(|_| MachineError::Backend("control server returned short WRAM".into()))
+}
+
+fn observation(
+    wram: &[u8; WRAM_SIZE],
+    frame_count: u64,
+    prior: &[u8; WRAM_SIZE],
+    dead: bool,
+) -> SmbObservations {
+    let changed_indices = wram
+        .iter()
+        .zip(prior)
+        .enumerate()
+        .filter_map(|(index, (current, previous))| {
+            (current != previous)
+                .then(|| u16::try_from(index).ok())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    SmbObservations {
+        frame_count,
+        wram: wram.to_vec(),
+        decoded: smb_mechanical_state_from_wram(wram),
+        milestones: smb_milestones_from_wram(wram),
+        changed_indices: changed_indices.clone(),
+        dead,
+        log_line: format!("frame={frame_count} changed={changed_indices:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use machine::{
+        Answer, Machine, Reproducer,
+        nes::{NesMachine, RenderMode},
+    };
+
+    use super::*;
+    use crate::smb::target::SmbTarget;
+
+    #[derive(Debug)]
+    struct InProcessControl {
+        machine: NesMachine,
+        counters: RestoreCounters,
+        genesis: Option<SnapId>,
+        logical_frame: Moment,
+        snapshot_frames: BTreeMap<SnapId, Moment>,
+        reported_deadline_offset: i64,
+        published_wram_len: u32,
+    }
+
+    impl Machine for InProcessControl {
+        fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            let snap = self.machine.snapshot()?;
+            self.snapshot_frames.insert(snap, self.logical_frame);
+            Ok(snap)
+        }
+
+        fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.machine.drop_snapshot(snap)?;
+            self.snapshot_frames.remove(&snap);
+            Ok(())
+        }
+
+        fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+            self.machine.branch(snap, env)?;
+            self.logical_frame = *self
+                .snapshot_frames
+                .get(&snap)
+                .ok_or_else(|| MachineError::Backend("unknown snapshot clock".into()))?;
+            if self.genesis == Some(snap) {
+                self.counters.genesis = self.counters.genesis.saturating_add(1);
+            } else {
+                self.counters.continuation = self.counters.continuation.saturating_add(1);
+            }
+            Ok(())
+        }
+
+        fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.machine.replay(snap)?;
+            self.logical_frame = *self
+                .snapshot_frames
+                .get(&snap)
+                .ok_or_else(|| MachineError::Backend("unknown snapshot clock".into()))?;
+            if self.genesis == Some(snap) {
+                self.counters.genesis = self.counters.genesis.saturating_add(1);
+            } else {
+                self.counters.continuation = self.counters.continuation.saturating_add(1);
+            }
+            Ok(())
+        }
+
+        fn run(
+            &mut self,
+            until: StopConditions,
+            resolve: Option<&Answer>,
+        ) -> Result<StopReason, MachineError> {
+            // Synthesize the guest's setup lifecycle point before any payload.
+            if until.on.armed(machine::class_bit::SNAPSHOT_POINT) && self.machine.now() == Moment(0)
+            {
+                return Ok(StopReason::SnapshotPoint { vtime: Moment(0) });
+            }
+            let logical_start = self.logical_frame;
+            let lifetime_start = self.machine.now();
+            let translated = StopConditions {
+                deadline: until.deadline.map(|deadline| {
+                    Moment(
+                        lifetime_start
+                            .0
+                            .saturating_add(deadline.0.saturating_sub(logical_start.0)),
+                    )
+                }),
+                on: until.on,
+            };
+            let stop = self.machine.run(translated, resolve)?;
+            let elapsed = self.machine.now().0.saturating_sub(lifetime_start.0);
+            self.logical_frame = Moment(logical_start.0.saturating_add(elapsed));
+            Ok(match stop {
+                StopReason::Deadline { .. } => StopReason::Deadline {
+                    vtime: Moment(
+                        self.logical_frame
+                            .0
+                            .saturating_add_signed(self.reported_deadline_offset),
+                    ),
+                },
+                other => other,
+            })
+        }
+
+        fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
+            self.machine.read(addr, len)
+        }
+    }
+
+    impl GuestControlMachine for InProcessControl {
+        fn logical_frame(&self) -> Moment {
+            self.logical_frame
+        }
+
+        fn wram_window(&self) -> Option<(u64, u32)> {
+            Some((0, self.published_wram_len))
+        }
+
+        fn mark_genesis(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.genesis = Some(snap);
+            Ok(())
+        }
+
+        fn restore_counters(&self) -> RestoreCounters {
+            self.counters
+        }
+    }
+
+    fn synthetic_nrom() -> Vec<u8> {
+        let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
+        rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let prg = &mut rom[16..16 + (16 * 1024)];
+        prg.fill(0xea);
+        prg[..3].copy_from_slice(&[0x4c, 0x00, 0x80]);
+        for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
+            prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
+        }
+        rom
+    }
+
+    #[test]
+    fn remote_target_matches_local_endpoint_and_reconstructs_a_serialized_snapshot() {
+        let rom = synthetic_nrom();
+        let control = InProcessControl {
+            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
+            counters: RestoreCounters::default(),
+            genesis: None,
+            logical_frame: Moment(0),
+            snapshot_frames: BTreeMap::new(),
+            reported_deadline_offset: 0,
+            published_wram_len: WRAM_SIZE as u32,
+        };
+        let mut remote = RemoteSmbTarget::from_machine(control).unwrap();
+        let mut local = SmbTarget::from_smb_rom_bytes_headless(&rom).unwrap();
+        let actions = [ButtonChord::new(0x81, 4), ButtonChord::new(0, 2)];
+        for action in actions {
+            remote.apply(&action);
+            local.apply(&action);
+            assert_eq!(remote.wram(), local.wram());
+            assert_eq!(remote.observe().frame_count, local.observe().frame_count);
+        }
+
+        let snapshot = remote.snapshot().unwrap();
+        assert!(snapshot.has_live_handle());
+        remote.apply(&ButtonChord::new(0x40, 3));
+        remote.restore(&snapshot).unwrap();
+        assert_eq!(remote.wram().as_slice(), snapshot.wram());
+        assert!(remote.restore_counters().continuation > 0);
+
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let durable: RemoteSmbSnapshot = serde_json::from_slice(&bytes).unwrap();
+        assert!(!durable.has_live_handle());
+        remote.apply(&ButtonChord::new(0x02, 7));
+        remote.restore(&durable).unwrap();
+        assert_eq!(remote.wram().as_slice(), durable.wram());
+        assert!(remote.restore_counters().genesis > 0);
+    }
+
+    #[test]
+    fn remote_target_rejects_a_wrong_guest_frame_delta() {
+        let rom = synthetic_nrom();
+        let control = InProcessControl {
+            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
+            counters: RestoreCounters::default(),
+            genesis: None,
+            logical_frame: Moment(0),
+            snapshot_frames: BTreeMap::new(),
+            reported_deadline_offset: 1,
+            published_wram_len: WRAM_SIZE as u32,
+        };
+        let error = RemoteSmbTarget::from_machine(control).unwrap_err();
+        assert!(error.to_string().contains("boot walk stopped unexpectedly"));
+    }
+
+    #[test]
+    fn remote_target_rejects_a_malformed_wram_publication() {
+        let rom = synthetic_nrom();
+        let control = InProcessControl {
+            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
+            counters: RestoreCounters::default(),
+            genesis: None,
+            logical_frame: Moment(0),
+            snapshot_frames: BTreeMap::new(),
+            reported_deadline_offset: 0,
+            published_wram_len: (WRAM_SIZE - 1) as u32,
+        };
+        let error = RemoteSmbTarget::from_machine(control).unwrap_err();
+        assert!(error.to_string().contains("expected 2048"));
+    }
+}
