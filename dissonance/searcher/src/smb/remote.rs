@@ -20,9 +20,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     smb::target::{
-        BOOT_WALK, ButtonChord, SmbCampaignTarget, SmbObservations, SmbSnapshotEvidence, WRAM_SIZE,
-        smb_fingerprint_from_wram, smb_is_victory, smb_mechanical_state_from_wram,
-        smb_milestones_from_wram, smb_player_is_dead,
+        BOOT_WALK, ButtonChord, SmbCampaignTarget, SmbObservations, SmbSnapshot,
+        SmbSnapshotEvidence, SmbTarget, WRAM_SIZE, smb_fingerprint_from_wram, smb_is_victory,
+        smb_mechanical_state_from_wram, smb_milestones_from_wram, smb_player_is_dead,
     },
     target::{ExitKind, SnapshotRestoreCounters, Target},
 };
@@ -485,6 +485,166 @@ where
     }
 }
 
+/// Snapshot pair for the live guest and the independent in-process emulator.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DifferentialSmbSnapshot {
+    remote: RemoteSmbSnapshot,
+    local: SmbSnapshot,
+}
+
+impl SmbSnapshotEvidence for DifferentialSmbSnapshot {
+    fn snapshot_wram(&self) -> &[u8] {
+        self.remote.wram()
+    }
+}
+
+/// Production M2 target that compares the guest build and in-process TetaNES
+/// at every complete chord boundary.
+#[derive(Debug)]
+pub struct DifferentialSmbTarget<M: GuestControlMachine> {
+    remote: RemoteSmbTarget<M>,
+    local: SmbTarget,
+    diverged: bool,
+}
+
+impl<M: GuestControlMachine> DifferentialSmbTarget<M> {
+    /// Build both independent emulator compositions over the same ROM.
+    ///
+    /// # Errors
+    ///
+    /// Returns an emulator/control setup error or an initial WRAM mismatch.
+    pub fn from_machine(machine: M, rom: &[u8]) -> Result<Self, MachineError> {
+        let remote = RemoteSmbTarget::from_machine(machine)?;
+        let local = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+        if remote.wram() != local.wram() {
+            return Err(MachineError::Backend(
+                "guest and in-process TetaNES disagree at gameplay genesis".into(),
+            ));
+        }
+        Ok(Self {
+            remote,
+            local,
+            diverged: false,
+        })
+    }
+
+    fn agrees(&self) -> bool {
+        self.remote.wram() == self.local.wram()
+            && self.remote.is_dead() == self.local.is_dead()
+            && self.remote.is_victory() == self.local.is_victory()
+            && self.remote.exit_kind() == self.local.exit_kind()
+    }
+}
+
+#[cfg(unix)]
+impl DifferentialSmbTarget<SocketMachine<std::os::unix::net::UnixStream>> {
+    /// Connect the guest target and initialize the independent local target.
+    ///
+    /// # Errors
+    ///
+    /// Returns a socket, protocol, guest setup, local emulator, or differential
+    /// mismatch error.
+    pub fn connect(path: impl AsRef<std::path::Path>, rom: &[u8]) -> Result<Self, MachineError> {
+        Self::from_machine(SocketMachine::connect(path)?, rom)
+    }
+}
+
+impl<M: GuestControlMachine> Target for DifferentialSmbTarget<M> {
+    type Action = ButtonChord;
+    type Observations = SmbObservations;
+    type Snapshot = DifferentialSmbSnapshot;
+
+    fn reset(&mut self) {
+        self.remote.reset();
+        self.local.reset();
+        self.diverged = !self.agrees();
+    }
+
+    fn apply(&mut self, action: &Self::Action) {
+        if self.diverged {
+            return;
+        }
+        self.remote.apply(action);
+        self.local.apply(action);
+        self.diverged = !self.agrees();
+    }
+
+    fn observe(&self) -> Self::Observations {
+        self.remote.observe()
+    }
+
+    fn fingerprint(&self) -> u64 {
+        self.remote.fingerprint()
+    }
+
+    fn exit_kind(&self) -> ExitKind {
+        if self.diverged {
+            ExitKind::Crash
+        } else {
+            self.remote.exit_kind()
+        }
+    }
+
+    fn snapshot(&mut self) -> Option<Self::Snapshot> {
+        if self.diverged {
+            return None;
+        }
+        Some(DifferentialSmbSnapshot {
+            remote: self.remote.snapshot()?,
+            local: self.local.snapshot()?,
+        })
+    }
+
+    fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
+        self.remote.restore(&snapshot.remote)?;
+        self.local.restore(&snapshot.local)?;
+        self.diverged = !self.agrees();
+        if self.diverged {
+            return Err("guest and in-process TetaNES diverged after restore".into());
+        }
+        Ok(())
+    }
+}
+
+impl<M> SmbCampaignTarget for DifferentialSmbTarget<M>
+where
+    M: GuestControlMachine + Send,
+{
+    fn campaign_wram(&self) -> [u8; WRAM_SIZE] {
+        self.remote.wram()
+    }
+
+    fn campaign_action_observations(&self) -> &[SmbObservations] {
+        self.remote.last_action_observations()
+    }
+
+    fn campaign_is_dead(&self) -> bool {
+        self.remote.is_dead()
+    }
+
+    fn campaign_is_victory(&self) -> bool {
+        self.remote.is_victory()
+    }
+
+    fn campaign_frames_clocked(&self) -> u64 {
+        self.remote.frames_clocked()
+    }
+
+    fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
+        let action = ButtonChord::new(buttons, u8::try_from(frames).unwrap_or(u8::MAX));
+        self.apply(&action);
+        !self.campaign_is_dead() && self.exit_kind() == ExitKind::Ok
+    }
+
+    fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
+        self.remote.campaign_restore_counters()
+    }
+
+    fn campaign_diverged(&self) -> bool {
+        self.diverged
+    }
+}
+
 fn read_wram<M: GuestControlMachine>(
     machine: &M,
     gpa: u64,
@@ -670,19 +830,57 @@ mod tests {
         rom
     }
 
-    #[test]
-    fn remote_target_matches_local_endpoint_and_reconstructs_a_serialized_snapshot() {
-        let rom = synthetic_nrom();
-        let control = InProcessControl {
-            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
+    fn input_sensitive_nrom() -> Vec<u8> {
+        let mut rom = synthetic_nrom();
+        let prg = &mut rom[16..16 + (16 * 1024)];
+        let program = [
+            0xa9, 0x01, 0x8d, 0x16, 0x40, 0xa9, 0x00, 0x8d, 0x16, 0x40, 0xad, 0x16, 0x40, 0x29,
+            0x01, 0x8d, 0x1a, 0x07, 0x4c, 0x00, 0x80,
+        ];
+        prg[..program.len()].copy_from_slice(&program);
+        rom
+    }
+
+    fn control(rom: &[u8]) -> InProcessControl {
+        InProcessControl {
+            machine: NesMachine::from_rom_bytes(rom, RenderMode::Neither).unwrap(),
             counters: RestoreCounters::default(),
             genesis: None,
             logical_frame: Moment(0),
             snapshot_frames: BTreeMap::new(),
             reported_deadline_offset: 0,
             published_wram_len: WRAM_SIZE as u32,
-        };
-        let mut remote = RemoteSmbTarget::from_machine(control).unwrap();
+        }
+    }
+
+    #[test]
+    fn production_differential_compares_every_chord_and_restore() {
+        let rom = synthetic_nrom();
+        let mut target = DifferentialSmbTarget::from_machine(control(&rom), &rom).unwrap();
+        target.apply(&ButtonChord::new(0x81, 4));
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        let snapshot = target.snapshot().unwrap();
+        target.apply(&ButtonChord::new(0, 2));
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        target.restore(&snapshot).unwrap();
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+    }
+
+    #[test]
+    fn production_differential_rejects_a_component_rom_mismatch() {
+        let remote_rom = synthetic_nrom();
+        let local_rom = input_sensitive_nrom();
+        let mut target =
+            DifferentialSmbTarget::from_machine(control(&remote_rom), &local_rom).unwrap();
+        target.apply(&ButtonChord::new(0x01, 4));
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+        assert!(target.snapshot().is_none());
+    }
+
+    #[test]
+    fn remote_target_matches_local_endpoint_and_reconstructs_a_serialized_snapshot() {
+        let rom = synthetic_nrom();
+        let mut remote = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
         let mut local = SmbTarget::from_smb_rom_bytes_headless(&rom).unwrap();
         let work_before = remote.frames_clocked();
         let actions = [ButtonChord::new(0x81, 4), ButtonChord::new(0, 2)];

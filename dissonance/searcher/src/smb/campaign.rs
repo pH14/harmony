@@ -64,7 +64,7 @@ pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-snapshot-checkpoint-v1";
 
 /// Format tag for checkpoints whose snapshots carry durable guest lineages
 /// and session-local control handles.
-pub const REMOTE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-remote-snapshot-checkpoint-v2";
+pub const REMOTE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-remote-snapshot-checkpoint-v3";
 
 /// Identifier recorded for the hold distribution, see
 /// [`crate::smb::archive::sample_chord_from_masks`].
@@ -144,12 +144,12 @@ impl ControlSocketSmbBackend {
 
 #[cfg(unix)]
 impl SmbTargetBackend for ControlSocketSmbBackend {
-    type Target = crate::smb::remote::RemoteSmbTarget<
+    type Target = crate::smb::remote::DifferentialSmbTarget<
         machine::control::SocketMachine<std::os::unix::net::UnixStream>,
     >;
 
-    fn new_target(&self, _rom: &[u8]) -> Result<Self::Target, String> {
-        crate::smb::remote::RemoteSmbTarget::connect(&self.socket)
+    fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
+        crate::smb::remote::DifferentialSmbTarget::connect(&self.socket, rom)
             .map_err(|error| error.to_string())
     }
 
@@ -229,10 +229,12 @@ pub type RemoteSmbGame = SmbGame<ControlSocketSmbBackend>;
 pub type RemoteSmbCampaignOrigin = CampaignOrigin<RemoteSmbGame>;
 /// The Unix control-socket snapshot checkpoint instantiation.
 #[cfg(unix)]
-pub type RemoteSmbSnapshotCheckpoint = SnapshotCheckpoint<crate::smb::remote::RemoteSmbSnapshot>;
+pub type RemoteSmbSnapshotCheckpoint =
+    SnapshotCheckpoint<crate::smb::remote::DifferentialSmbSnapshot>;
 /// The Unix control-socket resume checkpoint instantiation.
 #[cfg(unix)]
-pub type RemoteSmbCampaignCheckpoint = CampaignCheckpoint<crate::smb::remote::RemoteSmbSnapshot>;
+pub type RemoteSmbCampaignCheckpoint =
+    CampaignCheckpoint<crate::smb::remote::DifferentialSmbSnapshot>;
 /// The SMB stream header instantiation.
 pub type SmbCampaignStreamHeader = CampaignStreamHeader<SmbChordTableHeader>;
 /// The SMB campaign report instantiation.
@@ -636,6 +638,9 @@ where
         }
         length = length.saturating_add(1);
         target.apply(action);
+        if target.campaign_diverged() {
+            return Err("guest and in-process TetaNES diverged at a chord boundary".into());
+        }
         merge_observation_milestones(&mut milestones, target.campaign_action_observations())?;
         let observations = target.campaign_action_observations().to_vec();
         let dead = target.campaign_is_dead();
@@ -956,6 +961,9 @@ where
         milestones: &mut SmbMilestones,
     ) -> Result<(), Box<dyn Error>> {
         target.apply(action);
+        if target.campaign_diverged() {
+            return Err("guest and in-process TetaNES diverged at a chord boundary".into());
+        }
         merge_observation_milestones(milestones, target.campaign_action_observations())
     }
 
@@ -1333,6 +1341,8 @@ mod tests {
         inner: SmbTarget,
         restores: SnapshotRestoreCounters,
         alter_next_action: bool,
+        diverge_after_action: bool,
+        diverged: bool,
     }
 
     impl Target for CountingTarget {
@@ -1353,6 +1363,9 @@ mod tests {
                 self.inner.apply(&altered);
             } else {
                 self.inner.apply(action);
+            }
+            if self.diverge_after_action {
+                self.diverged = true;
             }
         }
 
@@ -1407,6 +1420,10 @@ mod tests {
         fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
             self.restores
         }
+
+        fn campaign_diverged(&self) -> bool {
+            self.diverged
+        }
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -1421,6 +1438,8 @@ mod tests {
                     .map_err(|error| error.to_string())?,
                 restores: SnapshotRestoreCounters::default(),
                 alter_next_action: false,
+                diverge_after_action: false,
+                diverged: false,
             })
         }
 
@@ -1441,6 +1460,30 @@ mod tests {
                     .map_err(|error| error.to_string())?,
                 restores: SnapshotRestoreCounters::default(),
                 alter_next_action: true,
+                diverge_after_action: false,
+                diverged: false,
+            })
+        }
+
+        fn checkpoint_format(&self) -> &'static str {
+            SNAPSHOT_CHECKPOINT_FORMAT
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct DivergingBackend;
+
+    impl SmbTargetBackend for DivergingBackend {
+        type Target = CountingTarget;
+
+        fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
+            Ok(CountingTarget {
+                inner: SmbTarget::from_smb_rom_bytes_headless(rom)
+                    .map_err(|error| error.to_string())?,
+                restores: SnapshotRestoreCounters::default(),
+                alter_next_action: false,
+                diverge_after_action: true,
+                diverged: false,
             })
         }
 
@@ -1571,6 +1614,22 @@ mod tests {
         let baseline_hash = Sha256::digest(serde_json::to_vec(&baseline.archive).unwrap());
         let altered_hash = Sha256::digest(serde_json::to_vec(&altered.archive).unwrap());
         assert_ne!(baseline_hash, altered_hash);
+    }
+
+    #[test]
+    fn campaign_aborts_when_cross_build_comparison_diverges() {
+        let rom = synthetic_nrom();
+        let game = SmbGame::with_backend(&rom, DivergingBackend);
+        let config = genesis_config(0x5eed_ca22, 1, 1).generic::<SmbGame<DivergingBackend>>();
+        let mut stream = Vec::new();
+        let error =
+            run_campaign_checkpointed(&game, &config, &CampaignOrigin::Genesis, &mut stream, None)
+                .expect_err("planted cross-build mismatch must abort the campaign");
+        assert!(
+            error
+                .to_string()
+                .contains("guest and in-process TetaNES diverged")
+        );
     }
 
     #[test]

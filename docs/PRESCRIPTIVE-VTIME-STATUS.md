@@ -211,6 +211,16 @@ dependency rather than silently weakening the criterion.
     each live VM and every within-session restore factory from the same image,
     initramfs, boot arguments, RAM size, GIC, pvclock, and control-slot root. It
     never unlinks a pre-existing socket target.
+29. **The production control-socket campaign is always a dual-build
+    differential.** `ControlSocketSmbBackend` constructs the external guest and
+    an independent in-process TetaNES target from the same caller-supplied ROM;
+    there is no production switch that can disable comparison. Gameplay genesis,
+    every complete chord boundary, and every paired snapshot restore compare full
+    2-KiB WRAM plus death, victory, and exit state. Any mismatch aborts the
+    campaign instead of becoming an admissible crash result. Durable checkpoints
+    retain both snapshot halves and advance to remote format v3. A planted
+    component-ROM mismatch and a campaign-level synthetic divergence prove both
+    the comparator and fail-loud path can fire before the external-ROM run counts.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -669,14 +679,16 @@ guest differential compares an independently configured TetaNES deck's full
 ```text
 cd dissonance
 cargo test -p searcher --lib smb::remote
-5 passed; 0 failed
+7 passed; 0 failed
 
-cargo test -p searcher --lib \
-  smb::campaign::tests::live_campaign_replays_byte_identically
-1 passed; 0 failed
+cargo test -p searcher --lib smb::campaign::tests
+21 passed; 0 failed (706.00 s; includes the 24-seed live/replay sweep)
 
-cargo clippy -p searcher --lib -- -D warnings
+cargo clippy -p searcher --all-targets -- -D warnings
 exit status 0 (pre-existing clippy.toml invalid-path notice only)
+
+cargo fmt --all -- --check
+exit status 0
 
 cargo check -p searcher --bin smb-campaign
 exit status 0
@@ -708,6 +720,12 @@ after every chord of a two-chord uninterrupted suffix, restores the branch,
 requires the immediate hash to equal the snapshot, and reproduces the exact
 per-chord hash sequence. Flipping one bit of the retained expected hash makes
 the same restore fail loudly.
+The production socket backend now pairs every external guest target with the
+independent in-process build, compares full WRAM and terminal state at genesis,
+after every chord, and after every paired restore, and makes divergence a hard
+campaign error. Its planted component-ROM mismatch reaches `Crash` at the target
+boundary, while the separate generic-campaign negative proves that boundary
+cannot be serialized as a successful job or report.
 
 The stored-snapshot integrity matrix is also green:
 
@@ -738,8 +756,10 @@ before restore decoding or VM replacement.
   tamper-evident, and the focused immediate/per-chord continuation-hash oracle is
   green; sampling branch points from the real campaign remains open.
 - **IN PROGRESS — in-process/guest/transport cross-build differential:** the
-  independent synthetic-ROM chord-endpoint differential is green; the shipped
-  guest image and external SMB ROM run remain open.
+  production control-socket backend now makes the independent TetaNES comparison
+  mandatory at genesis, every chord, and every restore, with both target-level
+  and campaign-level fail-loud negatives green. The shipped guest image and
+  external SMB ROM run remain open.
 - **IN PROGRESS — thousands of mid-workload branch/replay cycles:** the bounded
   cache eviction oracle crosses 1,024 stored snapshots, but a real campaign with
   thousands of mid-workload branches has not run.

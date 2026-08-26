@@ -107,6 +107,10 @@ pub trait SmbCampaignTarget:
     fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
         SnapshotRestoreCounters::default()
     }
+    /// Whether an independent cross-build comparison has diverged.
+    fn campaign_diverged(&self) -> bool {
+        false
+    }
 }
 
 /// Fixed boot walk from power-on to gameplay genesis, encoded as staged
