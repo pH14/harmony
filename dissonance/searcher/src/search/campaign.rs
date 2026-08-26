@@ -35,7 +35,10 @@ use crate::search::archive::{
     RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
     retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
 };
-use crate::search::draw::{SuffixShape, suffix_shape_from_identifier, suffix_shape_identifier};
+use crate::search::draw::{
+    DrawMixture, MIXTURE_BIASED_HALF_IDENTIFIER, SuffixShape, draw_mixture_from_identifier,
+    draw_mixture_identifier, suffix_shape_from_identifier, suffix_shape_identifier,
+};
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::with_worker_pool;
 use crate::search::rand::RomuDuoJrRand;
@@ -242,6 +245,7 @@ pub trait Game: Sync {
         run: &Self::Run,
         state: &Self::DrawState,
         shape: SuffixShape,
+        mixture: DrawMixture,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
     /// Expand one recorded mutation seed against the recorded draw-state
@@ -255,6 +259,7 @@ pub trait Game: Sync {
         run: &Self::Run,
         state: &Self::DrawState,
         shape: SuffixShape,
+        mixture: DrawMixture,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
@@ -443,6 +448,8 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     pub run: G::Run,
     /// Mutation shape for this run, recorded in the header and report.
     pub suffix: SuffixShape,
+    /// Draw mixture for this run, recorded in the header and report.
+    pub mixture: DrawMixture,
     /// Admission rule for this run, recorded in the header and report.
     pub retention: RetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
@@ -496,6 +503,10 @@ pub struct CampaignStreamHeader<T> {
     pub resume_policy: String,
     /// Mutation shape identifier.
     pub suffix_policy: String,
+    /// Draw mixture identifier; streams written before the mixture became a
+    /// run option carry no field and replay under the biased half.
+    #[serde(default = "default_mixture_policy")]
+    pub mixture_policy: String,
     /// The game-owned policy identifiers of the run, one header field each.
     #[serde(flatten)]
     pub game_policies: GamePolicies,
@@ -518,6 +529,12 @@ pub struct CampaignStreamHeader<T> {
     pub worker_seed_derivation: String,
     /// SHA-256 of the game image bytes.
     pub rom_sha256: String,
+}
+
+/// Mixture recorded implicitly by streams written before the mixture became
+/// a run option.
+fn default_mixture_policy() -> String {
+    MIXTURE_BIASED_HALF_IDENTIFIER.to_owned()
 }
 
 /// One admission decision for one candidate boundary, in candidate order.
@@ -674,6 +691,10 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub resume_policy: String,
     /// Mutation shape identifier.
     pub suffix_policy: String,
+    /// Draw mixture identifier; reports written before the mixture became a
+    /// run option carry no field and describe the biased half.
+    #[serde(default = "default_mixture_policy")]
+    pub mixture_policy: String,
     /// The game-owned policy identifiers of the run, one report field each.
     #[serde(flatten)]
     pub game_policies: GamePolicies,
@@ -1326,6 +1347,7 @@ fn stream_header<G: Game>(
         archive_entry_limit: config.archive_entry_limit,
         resume_policy: RESUME_IDENTIFIER.to_owned(),
         suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
+        mixture_policy: draw_mixture_identifier(config.mixture).to_owned(),
         game_policies: game.policies(&config.run),
         draw_table,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
@@ -1480,6 +1502,7 @@ fn build_report<G: Game>(
         archive_entry_limit: header.archive_entry_limit,
         resume_policy: header.resume_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
+        mixture_policy: header.mixture_policy.clone(),
         game_policies: header.game_policies.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
@@ -1706,8 +1729,13 @@ where
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let mutation_seed = rand.next_u64();
                     let draw_table_before = game.draw_checkpoint(draw_state)?;
-                    let suffix =
-                        game.expand_suffix(&config.run, draw_state, config.suffix, mutation_seed)?;
+                    let suffix = game.expand_suffix(
+                        &config.run,
+                        draw_state,
+                        config.suffix,
+                        config.mixture,
+                        mutation_seed,
+                    )?;
                     if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix)
                     {
@@ -1987,6 +2015,7 @@ where
         return Err("campaign stream resume policy is not recognized".into());
     }
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
+    let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
     let replay_origin: CampaignOrigin<G> = match origin_report {
         Some(report) => CampaignOrigin::Archive {
@@ -2037,6 +2066,7 @@ where
                     &replay_run,
                     &draw_state,
                     replay_suffix,
+                    replay_mixture,
                     skip.draw_table_before.as_ref(),
                     skip.mutation_seed,
                 )?;
@@ -2073,6 +2103,7 @@ where
                     &replay_run,
                     &draw_state,
                     replay_suffix,
+                    replay_mixture,
                     job.draw_table_before.as_ref(),
                     job.mutation_seed,
                 )?;

@@ -61,6 +61,34 @@ pub enum DrawMixture {
     BiasedHalf,
 }
 
+/// Identifier recorded for the alphabet-only mixture.
+pub const MIXTURE_ALPHABET_ONLY_IDENTIFIER: &str = "alphabet_only";
+
+/// Identifier recorded for the biased-half mixture.
+pub const MIXTURE_BIASED_HALF_IDENTIFIER: &str = "biased_half";
+
+/// The recorded identifier of a draw mixture.
+#[must_use]
+pub fn draw_mixture_identifier(mixture: DrawMixture) -> &'static str {
+    match mixture {
+        DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER,
+        DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER,
+    }
+}
+
+/// The draw mixture a recorded identifier names.
+///
+/// # Errors
+///
+/// Returns an error when the identifier names no compiled mixture.
+pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box<dyn Error>> {
+    match identifier {
+        MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
+        MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
+        _ => Err(format!("draw mixture {identifier} is not recognized").into()),
+    }
+}
+
 /// Expand one mutation seed into a complete suffix.
 ///
 /// The suffix is sampled from a fresh generator seeded with `mutation_seed`
@@ -109,8 +137,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        DrawMixture, SuffixShape, draw_suffix, suffix_shape_from_identifier,
-        suffix_shape_identifier,
+        DrawMixture, SuffixShape, draw_mixture_from_identifier, draw_mixture_identifier,
+        draw_suffix, suffix_shape_from_identifier, suffix_shape_identifier,
     };
 
     #[test]
@@ -121,6 +149,17 @@ mod tests {
             shape
         );
         assert!(suffix_shape_from_identifier("two_or_three").is_err());
+    }
+
+    #[test]
+    fn the_mixture_identifier_round_trips_and_rejects_unknown_names() {
+        for mixture in [DrawMixture::AlphabetOnly, DrawMixture::BiasedHalf] {
+            assert_eq!(
+                draw_mixture_from_identifier(draw_mixture_identifier(mixture)).expect("round trip"),
+                mixture
+            );
+        }
+        assert!(draw_mixture_from_identifier("table_only").is_err());
     }
 
     /// A biased table that offers nothing must consume no draw, so a run

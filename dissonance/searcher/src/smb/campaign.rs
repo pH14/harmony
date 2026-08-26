@@ -177,6 +177,8 @@ pub struct SmbCampaignConfig {
     pub selector: crate::search::archive::SelectorPolicy,
     /// Suffix shape for this run, recorded in the header and report.
     pub suffix: SuffixShape,
+    /// Draw mixture for this run, recorded in the header and report.
+    pub mixture: DrawMixture,
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<std::path::PathBuf>,
@@ -189,6 +191,7 @@ impl SmbCampaignConfig {
     fn generic(&self) -> GenericCampaignConfig<SmbGame> {
         GenericCampaignConfig {
             suffix: self.suffix,
+            mixture: self.mixture,
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
@@ -291,12 +294,12 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
 pub fn derive_suffix(
     mutation_seed: u64,
     shape: SuffixShape,
+    mixture: DrawMixture,
     chord_policy: SmbCampaignChordPolicy,
     vocabulary: SmbButtonVocabulary,
     chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
     let SmbCampaignChordPolicy::DerivedHalf(_) = chord_policy;
-    let mixture = DrawMixture::BiasedHalf;
     draw_suffix(
         shape,
         mixture,
@@ -860,11 +863,13 @@ impl Game for SmbGame {
         run: &SmbCampaignRun,
         state: &SmbDrawState,
         shape: SuffixShape,
+        mixture: DrawMixture,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         derive_suffix(
             mutation_seed,
             shape,
+            mixture,
             run.chord,
             run.vocabulary,
             state.tables.as_ref().map(EmpiricalStepTables::view),
@@ -876,12 +881,20 @@ impl Game for SmbGame {
         run: &SmbCampaignRun,
         state: &SmbDrawState,
         shape: SuffixShape,
+        mixture: DrawMixture,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         let tables =
             recorded_chord_tables(run.chord, before, &state.versions, state.tables.as_ref())?;
-        derive_suffix(mutation_seed, shape, run.chord, run.vocabulary, tables)
+        derive_suffix(
+            mutation_seed,
+            shape,
+            mixture,
+            run.chord,
+            run.vocabulary,
+            tables,
+        )
     }
 
     fn finish_stream_record(
@@ -1086,7 +1099,7 @@ pub fn replay_smb_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::{
-        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
+        DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
         SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbGame,
         SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SuffixShape,
@@ -1132,6 +1145,7 @@ mod tests {
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
             selector: crate::search::archive::SelectorPolicy::GroupUniform,
             suffix: SuffixShape::default(),
+            mixture: DrawMixture::BiasedHalf,
             victory_input_path: None,
             checkpoint_dir: None,
         }
@@ -1160,6 +1174,7 @@ mod tests {
             let first = derive_suffix(
                 seed,
                 SuffixShape::OneOrTwo,
+                DrawMixture::BiasedHalf,
                 SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
                 Some(empty),
@@ -1168,6 +1183,7 @@ mod tests {
             let second = derive_suffix(
                 seed,
                 SuffixShape::OneOrTwo,
+                DrawMixture::BiasedHalf,
                 SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
                 Some(empty),
@@ -1267,6 +1283,7 @@ mod tests {
         let suffix = derive_suffix(
             0x5eed_ca02,
             SuffixShape::OneOrTwo,
+            DrawMixture::BiasedHalf,
             SmbCampaignChordPolicy::default(),
             SmbButtonVocabulary::default(),
             Some(empty),
