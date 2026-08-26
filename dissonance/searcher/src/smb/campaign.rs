@@ -1447,7 +1447,7 @@ mod tests {
             "whole_tree",
             "nes_down_ten",
             "frozen_area_span",
-            "one_or_two",
+            "one_to_six",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");

@@ -22,9 +22,9 @@ pub const SUFFIX_ONE_TO_SIX_IDENTIFIER: &str = "one_to_six";
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
     /// One action, or two at one-in-four odds.
-    #[default]
     OneOrTwo,
     /// A uniform draw of one to six actions.
+    #[default]
     OneToSix,
 }
 

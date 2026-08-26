@@ -1811,11 +1811,19 @@ where
                 let parent_index = usize::try_from(pending_job.parent_id)?;
                 core.archive
                     .record_selection(parent_index, &pending_job.selector);
+                let retained_ids = decisions
+                    .iter()
+                    .filter_map(|decision| match decision {
+                        CampaignAdmissionDecision::Retained { id } => usize::try_from(*id).ok(),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 core.archive.record_selection_outcome(
                     parent_index,
-                    decisions.iter().any(|decision| {
-                        matches!(decision, CampaignAdmissionDecision::Retained { .. })
-                    }),
+                    !retained_ids.is_empty(),
+                    retained_ids
+                        .iter()
+                        .any(|id| core.archive.opened_new_slot(*id)),
                 );
                 if victories_before == 0
                     && let (Some(path), Some(input)) =
@@ -2162,11 +2170,19 @@ where
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
                 core.archive.record_selection(parent_index, &job.selector);
+                let retained_ids = decisions
+                    .iter()
+                    .filter_map(|decision| match decision {
+                        CampaignAdmissionDecision::Retained { id } => usize::try_from(*id).ok(),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 core.archive.record_selection_outcome(
                     parent_index,
-                    decisions.iter().any(|decision| {
-                        matches!(decision, CampaignAdmissionDecision::Retained { .. })
-                    }),
+                    !retained_ids.is_empty(),
+                    retained_ids
+                        .iter()
+                        .any(|id| core.archive.opened_new_slot(*id)),
                 );
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {

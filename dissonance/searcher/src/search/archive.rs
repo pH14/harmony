@@ -595,6 +595,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     productive: Vec<u64>,
     since_retained: Vec<u64>,
     in_window_ever: Vec<bool>,
+    /// Per entry: whether its retention slot was empty when it arrived.
+    opened_slot: Vec<bool>,
     selector_accounting: SelectorAccounting,
     /// Time each retained entry spent inside its own coarsest group, in
     /// entry-id order, in the game's action-duration unit.
@@ -645,6 +647,7 @@ where
             productive: Vec::new(),
             since_retained: Vec::new(),
             in_window_ever: Vec::new(),
+            opened_slot: Vec::new(),
             selector_accounting: SelectorAccounting {
                 concentration: ConcentrationAccounting {
                     window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
@@ -851,6 +854,7 @@ where
         // that reached the same slot in strictly less time. The entry id
         // breaks ties so the choice stays a total order over the slot.
         let slot = self.slots.entry(key.group(0)).or_default().clone();
+        let new_slot = slot.is_empty();
         let slot_full = slot.len() >= MAX_ENTRIES_PER_KEY;
         let replace = if slot_full {
             slot.iter()
@@ -894,6 +898,7 @@ where
         self.productive.push(0);
         self.since_retained.push(0);
         self.in_window_ever.push(false);
+        self.opened_slot.push(new_slot);
         self.slots.entry(key.group(0)).or_default().push(id);
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
@@ -1158,6 +1163,12 @@ where
         ))
     }
 
+    /// Whether entry `id` was the first to occupy its retention slot.
+    #[must_use]
+    pub fn opened_new_slot(&self, id: usize) -> bool {
+        self.opened_slot.get(id).copied().unwrap_or(false)
+    }
+
     /// Account one recorded selection of `id`.
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
         // The reset-marked draw is the only place streak counters clear.
@@ -1221,16 +1232,27 @@ where
     }
 
     /// Account one selection's discovery outcome.
-    pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool) {
+    pub fn record_selection_outcome(
+        &mut self,
+        id: usize,
+        retained_descendant: bool,
+        new_slot_descendant: bool,
+    ) {
         if !retained_descendant {
             return;
         }
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
-        if matches!(
-            self.selector_policy,
-            SelectorPolicy::Retire(_) | SelectorPolicy::Energy(_)
-        ) {
+        // Retire clears its pooled counters on any retained child so
+        // historical streams replay unchanged; energy clears only when a
+        // child opened a new retention slot, because admission that keeps
+        // most results makes plain retention too common to signal anything.
+        let clears_groups = match self.selector_policy {
+            SelectorPolicy::Retire(_) => true,
+            SelectorPolicy::Energy(_) => new_slot_descendant,
+            SelectorPolicy::GroupUniform => false,
+        };
+        if clears_groups {
             let key = self.entries[id].report.key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 map.insert(key.group(offset + 1), 0);
@@ -1506,7 +1528,7 @@ mod tests {
                 .entry((key.progress, key.player_y_bucket))
                 .or_default() += 1;
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, true);
+            archive.record_selection_outcome(id, true, true);
         }
         assert!(cell_draws > 600);
         assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
@@ -1561,7 +1583,7 @@ mod tests {
         // the retired band; a retained descendant of entry 1 clears the
         // pooled counter and the band returns to selection.
         archive.record_selection(1, &barren_draw);
-        archive.record_selection_outcome(1, true);
+        archive.record_selection_outcome(1, true, true);
         let mut upper_band_seen = false;
         for _ in 0..64 {
             let (id, draw) = archive
