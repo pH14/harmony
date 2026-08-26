@@ -4,6 +4,7 @@ pub const harmony_sdk::wire::CATALOG_EVENT_ID: u32
 pub const harmony_sdk::wire::CATALOG_MAGIC: u32
 pub const harmony_sdk::wire::DISP_HIT: u8
 pub const harmony_sdk::wire::DISP_VIOLATION: u8
+pub const harmony_sdk::wire::FRAME_COMPLETE_EVENT_ID: u32
 pub const harmony_sdk::wire::KIND_ALWAYS: u8
 pub const harmony_sdk::wire::KIND_BUGGIFY: u8
 pub const harmony_sdk::wire::KIND_REACHABLE: u8
@@ -61,6 +62,7 @@ pub fn harmony_sdk::Sdk<T>::assert_unreachable(&mut self, u32) -> core::result::
 pub fn harmony_sdk::Sdk<T>::buggify(&mut self, u32) -> core::result::Result<bool, harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::client_mut(&mut self) -> &mut hypercall_proto::guest::Client<T>
 pub fn harmony_sdk::Sdk<T>::entropy_fill(&mut self, &mut [u8]) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::frame_complete(&mut self, u64) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::init(T, &[harmony_sdk::Point]) -> core::result::Result<Self, harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::setup_complete(&mut self) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::state_max(&mut self, u32, u64) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>

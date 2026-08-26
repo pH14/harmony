@@ -12,13 +12,35 @@ cd "$(dirname "$0")"
 require_linux_aarch64
 require_tools cc make flex bison bc xz gzip patch objdump python3
 
+# The canonical M1 build remains the default. M2's std/TetaNES payload needs a
+# separate kernel profile with userspace/proc/devmem facilities; keeping its
+# object tree and output distinct preserves the sealed M1 artifact byte-for-byte.
+arm64_profile=${ARM64_KERNEL_PROFILE:-minimal}
+case "$arm64_profile" in
+    minimal)
+        arm64_source_root=$BUILD_ROOT/arm64-src
+        arm64_object_root=$ARM64_KOBJ
+        arm64_output=Image
+        arm64_extra_fragment=
+        ;;
+    game)
+        arm64_source_root=$BUILD_ROOT/arm64-game-src
+        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-game
+        arm64_output=Image-game
+        arm64_extra_fragment=$LINUX_DIR/arm64-game-config-fragment
+        ;;
+    *)
+        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal or game)" >&2
+        exit 1
+        ;;
+esac
+
 # The arm64 patch stack overlaps itself (0003/0004 modify files 0002 creates), so a
 # per-patch "already applied?" probe cannot certify a previously patched tree — and the
 # x86 recipe patches the shared $KSRC extract with its own stack. Build from a dedicated
 # tree re-extracted pristine on every run, and rebuild the object dir with it. The arm64
 # series lives under patches/arm64/ (the x86 series under patches/x86/), so the two
 # arches never share a patch number or an applier glob (hm-0dst, tribunal F7).
-ARM64_SRC_ROOT=$BUILD_ROOT/arm64-src
 kernel_tarball=$DL_DIR/$(basename "$KERNEL_URL")
 if [ ! -f "$kernel_tarball" ]; then
     echo "FAIL: $kernel_tarball missing — run 'make -C harmony-linux fetch' first (needs network once)" >&2
@@ -30,10 +52,10 @@ if [ "$got" != "$KERNEL_SHA256" ]; then
     exit 1
 fi
 echo "== arm64 kernel: pristine extract of linux-$KERNEL_VERSION (sha256 verified)"
-rm -rf "$ARM64_SRC_ROOT" "$ARM64_KOBJ"
-mkdir -p "$ARM64_SRC_ROOT"
-tar -xf "$kernel_tarball" -C "$ARM64_SRC_ROOT"
-KSRC=$ARM64_SRC_ROOT/linux-$KERNEL_VERSION
+rm -rf "$arm64_source_root" "$arm64_object_root"
+mkdir -p "$arm64_source_root"
+tar -xf "$kernel_tarball" -C "$arm64_source_root"
+KSRC=$arm64_source_root/linux-$KERNEL_VERSION
 
 apply_kernel_patch() {
     patch_file=$1
@@ -63,17 +85,23 @@ apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0005-arm64-harmony-pvclock-from-dt.patch" \
     "harmony DT-discovered pvclock page"
 
-mkdir -p "$ARM64_KOBJ" "$ARM64_ART_DIR"
+mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
-echo "== arm64 kernel: tinyconfig + AA-5(c) determinism overlay (linux-$KERNEL_VERSION)"
-make -C "$KSRC" O="$ARM64_KOBJ" ARCH=arm64 tinyconfig
-(cd "$KSRC" && ./scripts/kconfig/merge_config.sh -m -O "$ARM64_KOBJ" \
-    "$ARM64_KOBJ/.config" "$LINUX_DIR/arm64-config-fragment")
-make -C "$KSRC" O="$ARM64_KOBJ" ARCH=arm64 olddefconfig
+echo "== arm64 kernel: $arm64_profile profile + AA-5(c) determinism overlay (linux-$KERNEL_VERSION)"
+make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 tinyconfig
+if [ -n "$arm64_extra_fragment" ]; then
+    (cd "$KSRC" && ./scripts/kconfig/merge_config.sh -m -O "$arm64_object_root" \
+        "$arm64_object_root/.config" "$LINUX_DIR/arm64-config-fragment" \
+        "$arm64_extra_fragment")
+else
+    (cd "$KSRC" && ./scripts/kconfig/merge_config.sh -m -O "$arm64_object_root" \
+        "$arm64_object_root/.config" "$LINUX_DIR/arm64-config-fragment")
+fi
+make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 olddefconfig
 
 assert_y() {
     for sym in "$@"; do
-        if ! grep -qxF "CONFIG_$sym=y" "$ARM64_KOBJ/.config"; then
+        if ! grep -qxF "CONFIG_$sym=y" "$arm64_object_root/.config"; then
             echo "FAIL: CONFIG_$sym=y did not survive arm64 merge_config/olddefconfig" >&2
             exit 1
         fi
@@ -81,7 +109,7 @@ assert_y() {
 }
 assert_off() {
     for sym in "$@"; do
-        if grep -q "^CONFIG_$sym=" "$ARM64_KOBJ/.config"; then
+        if grep -q "^CONFIG_$sym=" "$arm64_object_root/.config"; then
             echo "FAIL: CONFIG_$sym is enabled but must be off in the AA-5(c) image" >&2
             exit 1
         fi
@@ -102,18 +130,24 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
     FSL_ERRATUM_A008585 HISILICON_ERRATUM_161010101 \
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
     BPF_SYSCALL BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH \
-    PERF_EVENTS HW_PERF_EVENTS BINFMT_SCRIPT PROC_FS FUTEX
-if ! grep -qxF 'CONFIG_NR_CPUS=2' "$ARM64_KOBJ/.config"; then
+    PERF_EVENTS HW_PERF_EVENTS
+if [ "$arm64_profile" = minimal ]; then
+    assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
+else
+    assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU TMPFS
+    assert_off STRICT_DEVMEM
+fi
+if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then
     echo "FAIL: CONFIG_NR_CPUS must be the arm64 minimum (2)" >&2
     exit 1
 fi
-if ! grep -qxF 'CONFIG_LOCALVERSION=""' "$ARM64_KOBJ/.config"; then
+if ! grep -qxF 'CONFIG_LOCALVERSION=""' "$arm64_object_root/.config"; then
     echo "FAIL: CONFIG_LOCALVERSION must be empty in the AA-5(c) kernel" >&2
     exit 1
 fi
 
 echo "== arm64 kernel: building Image + vmlinux"
-make -C "$KSRC" O="$ARM64_KOBJ" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Image
+make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Image
 
 # ARM has no generic-counter trap on the reachable N1 silicon. Unlike x86's
 # reviewed allowlist, one reachable CNTVCT/CNTPCT opcode is a determinism hole.
@@ -150,7 +184,7 @@ if ! grep -q '^\[REJECT\].*1 live-domain timer program' "$scan_probe_log"; then
 fi
 echo "ok: scanner rejected the planted live-counter probe"
 python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
-    "$ARM64_KOBJ/vmlinux" "$ARM64_KOBJ/arch/arm64/kernel/vdso/vdso.so.dbg"
+    "$arm64_object_root/vmlinux" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
 
 # LL/SC changes the retired-branch clock when STXR fails spuriously and
 # livelocks under the exact-landing single-step path. The config removes the
@@ -181,7 +215,7 @@ if ! grep -q '^\[BANNED\].*: 2 LL/SC exclusive instruction(s)$' "$exclusive_prob
 fi
 echo "ok: scanner rejected the planted LDXR/STXR probe"
 python3 "$exclusive_scan" \
-    "$ARM64_KOBJ/vmlinux" "$ARM64_KOBJ/arch/arm64/kernel/vdso/vdso.so.dbg"
+    "$arm64_object_root/vmlinux" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
 
-install -m 0644 "$ARM64_KOBJ/arch/arm64/boot/Image" "$ARM64_ART_DIR/Image"
-echo "ok: $ARM64_ART_DIR/Image"
+install -m 0644 "$arm64_object_root/arch/arm64/boot/Image" "$ARM64_ART_DIR/$arm64_output"
+echo "ok: $ARM64_ART_DIR/$arm64_output"

@@ -210,7 +210,10 @@ repeat.
   the `RecordedEnv`; each input fetch consumes one entry.
 - `run(until)` → control-proto `Run`, stopping at the `SnapshotPoint` yield whose
   reported frame count reaches the deadline. Stop conditions are expressed in
-  frames (yield events), never in nanoseconds.
+  frames (yield events), never in nanoseconds. The report is SDK lifecycle local
+  id 1 (`frame_complete`) with one little-endian `u64` cumulative frame count;
+  malformed widths do not arm a yield. The next payload fetch is the synchronized
+  pre-consumption boundary at which that deferred yield is sealable.
 - `read(addr, len)` → control-proto `Read` against the payload's WRAM buffer,
   pinned at a guest-physical address registered at startup (the
   `live_moment_address` pattern). The searcher's WRAM decoders are untouched.

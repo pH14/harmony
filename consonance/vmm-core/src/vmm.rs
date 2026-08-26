@@ -92,8 +92,8 @@ pub enum SdkStop {
         /// Opaque assertion detail bytes.
         data: Vec<u8>,
     },
-    // NB: `setup_complete` no longer surfaces an immediate `SnapshotPoint` stop —
-    // its doorbell OUT is unsealable, so it is **deferred** (see
+    // NB: lifecycle yields no longer surface an immediate `SnapshotPoint` stop —
+    // their doorbell OUT is unsealable, so each is **deferred** (see
     // `SdkChannel::pending_snapshot`) to the next synchronized boundary, surfaced
     // by the control loop as `StopReason::SnapshotPoint` there.
 }
@@ -104,7 +104,7 @@ pub enum SdkStop {
 enum SdkEventAction {
     /// Surface a cooperating-SDK stop (an assert violation) as a bug.
     Stop(SdkStop),
-    /// `setup_complete` (empty payload): arm the deferred snapshot point.
+    /// A validated lifecycle yield: arm the deferred snapshot point.
     DeferSnapshot,
     /// A well-formed non-stop emission: capture raw, take no host action.
     Capture,
@@ -3734,6 +3734,9 @@ where
     /// - **`setup_complete`** (`SDK_NS_LIFECYCLE`, local 0): arms the deferred
     ///   snapshot point ([`DeferSnapshot`](SdkEventAction::DeferSnapshot)). It carries
     ///   NO payload; a nonempty one is [`Malformed`](SdkEventAction::Malformed).
+    /// - **`frame_complete`** (`SDK_NS_LIFECYCLE`, local 1): also arms the
+    ///   deferred snapshot point and carries exactly one little-endian `u64`
+    ///   cumulative emulated-frame count. Any other width is malformed.
     ///
     /// A `Malformed` frame is rejected (BadRequest) and never captured/armed/
     /// surfaced, so a bug or a snapshot deferral is never synthesized from garbage.
@@ -3766,6 +3769,14 @@ where
             // `setup_complete` carries no payload; a nonempty one is malformed.
             SDK_NS_LIFECYCLE if local == 0 => {
                 if data.is_empty() {
+                    SdkEventAction::DeferSnapshot
+                } else {
+                    SdkEventAction::Malformed
+                }
+            }
+            // `frame_complete` carries exactly one cumulative u64 frame count.
+            SDK_NS_LIFECYCLE if local == 1 => {
+                if data.len() == 8 {
                     SdkEventAction::DeferSnapshot
                 } else {
                     SdkEventAction::Malformed
@@ -5330,6 +5341,7 @@ mod tests {
         type C = SdkEventAction;
         let assert_id = (u32::from(SDK_NS_ASSERT) << SDK_NS_SHIFT) | 20;
         let setup_id = u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT;
+        let frame_id = setup_id | 1;
         let state_id = (2u32 << SDK_NS_SHIFT) | 3; // a state register (link-owned)
         let classify = Vmm::<MockBackend>::classify_sdk_event;
 
@@ -5366,6 +5378,12 @@ mod tests {
         assert_eq!(classify(setup_id, &[]), C::DeferSnapshot);
         assert_eq!(classify(setup_id, &[0xAB]), C::Malformed); // garbage payload
         assert_eq!(classify(setup_id, &[0; 4]), C::Malformed);
+
+        // --- frame_complete: EXACTLY one little-endian u64. ---
+        assert_eq!(classify(frame_id, &17_u64.to_le_bytes()), C::DeferSnapshot);
+        assert_eq!(classify(frame_id, &[]), C::Malformed);
+        assert_eq!(classify(frame_id, &[0; 7]), C::Malformed);
+        assert_eq!(classify(frame_id, &[0; 9]), C::Malformed);
 
         // --- everything else is captured raw (the link tier owns its validation). ---
         assert_eq!(classify(state_id, &[0, 1, 2, 3]), C::Capture);
@@ -5408,6 +5426,7 @@ mod tests {
         };
         let assert_id = (u32::from(SDK_NS_ASSERT) << SDK_NS_SHIFT) | 20;
         let setup_id = u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT;
+        let frame_id = setup_id | 1;
 
         // Malformed assert violation (detail_len overflows) → BadRequest, no stop,
         // NOT captured.
@@ -5430,6 +5449,21 @@ mod tests {
         // A well-formed setup_complete IS captured (Ok) — the valid path still works.
         let mut v = mk();
         assert_eq!(ring(&mut v, setup_id, &[]), (Status::Ok as u16, false, 1));
+
+        // A malformed frame_complete is rejected without capture or deferral.
+        let mut v = mk();
+        assert_eq!(
+            ring(&mut v, frame_id, &[0; 7]),
+            (Status::BadRequest as u16, false, 0),
+            "a short frame_complete is rejected, never arms the deferral"
+        );
+
+        // The exact-width positive path is captured and arms the deferral.
+        let mut v = mk();
+        assert_eq!(
+            ring(&mut v, frame_id, &17_u64.to_le_bytes()),
+            (Status::Ok as u16, false, 1)
+        );
     }
 
     /// A doorbell `OUT` on a Vmm with **no** channels reaches the default-deny

@@ -148,6 +148,22 @@ dependency rather than silently weakening the criterion.
     `SocketMachine` validates exact capabilities and request sequence, preserves
     control errors, retains seal cuts, and reports genesis versus continuation
     restore counts.
+21. **M2 game deadlines are an SDK frame clock, never wire V-time.** Lifecycle
+    local id 1 is `frame_complete([frame_count u64-le])`. The VMM accepts only
+    the exact eight-byte payload and defers a `SnapshotPoint`; the socket client
+    independently validates a strictly increasing counter, sends no control-wire
+    deadline, and advances until the first chord-boundary report at or beyond the
+    requested frame. The following payload fetch is the synchronized pre-consume
+    boundary, so a continuation snapshot never resumes from an already-failed
+    exhaustion response.
+22. **M2 has a distinct userspace-capable image, with no relaxation of M1's
+    executable-image admission rule.** The sealed minimal M1 `Image` and object
+    tree remain untouched. `Image-game` layers only the proc/futex/devmem/tmpfs
+    facilities needed by std/TetaNES, retains every clock/interrupt/LSE exclusion,
+    and passes through the same planted-negative counter and exclusive scanners.
+    The initramfs builder scans the complete TetaNES binary, BusyBox, dynamic
+    loader, and every shared object. A generic runtime containing dormant LL/SC
+    therefore blocks the build loudly rather than being waived on an LSE host.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -516,9 +532,12 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   that alters one chord and proves the whole-state comparator fires. The arm64
   generic control-protocol `Machine` client is implemented and closes against a
   real `ControlServer<MockBackend>` over a Unix socket. The imported PR #193
-  searcher remains green against the shared version-7 bytes. The arm64 guest
-  payload and its live M1-Max composition remain open, so this criterion is not
-  yet a pass.
+  searcher remains green against the shared version-7 bytes. The portable arm64
+  guest agent now runs the same pinned TetaNES configuration, consumes exactly
+  one payload per chord, mirrors complete WRAM, and reports cumulative frames at
+  chord boundaries. Its live Linux/aarch64 `/dev/mem` composition and separate
+  fail-closed image builder are present. The ROM, native Altra image build, and
+  live M1-Max execution remain open, so this criterion is not yet a pass.
 
 ### M2 payload-substrate checkpoint evidence
 
@@ -559,6 +578,39 @@ exit status 0 (pre-existing clippy.toml invalid-path notice only)
 cargo fmt --all -- --check
 exit status 0
 ```
+
+### M2 frame-clock and guest-agent checkpoint evidence
+
+```text
+cargo test --manifest-path harmony-linux/sdk/Cargo.toml
+11 passed; 0 failed; 1 ignored
+
+cargo nextest run -p vmm-core --all-features \
+  -E 'test(classify_sdk_event_payload_matrix) | \
+      test(doorbell_rejects_malformed_sdk_event_payloads)'
+2 passed; 0 failed
+
+cd dissonance && cargo test -p machine
+12 passed (11 unit + 1 real control-server socket integration)
+
+cargo test --manifest-path harmony-linux/tetanes-agent/Cargo.toml --locked
+3 passed; 0 failed
+
+cargo check --manifest-path harmony-linux/tetanes-agent/Cargo.toml \
+  --target aarch64-unknown-linux-gnu --locked
+exit status 0
+
+cargo clippy --manifest-path harmony-linux/tetanes-agent/Cargo.toml \
+  --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notice only)
+```
+
+The committed negatives reject seven- and nine-byte `frame_complete` payloads
+at the VMM, malformed or decreasing frame reports at the socket client, a frame-4
+yield for a frame-5 deadline, malformed WRAM registration, absent/hidden/
+overflowing pagemap entries, and zero or overlong chord holds. The portable
+guest differential compares an independently configured TetaNES deck's full
+2-KiB WRAM at every chord boundary.
 - **FAIL — two same-seed archive hashes:** not started.
 - **FAIL — every archived lineage replays byte-for-byte:** not started.
 - **FAIL — snapshot restore counter and uninterrupted-continuation hash oracle:**

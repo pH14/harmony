@@ -25,6 +25,7 @@
 //! | 2  | state       | register id          | `[op u8][value u64]` |
 //! | 3  | buggify     | buggify point id     | `[fired u8]` |
 //! | 4  | lifecycle   | `0` = setup_complete | (empty) |
+//! | 4  | lifecycle   | `1` = frame_complete | `[frame_count u64]` |
 //! | 8..=255 | plugins | plugin-defined       | plugin-defined (OTel is task 74) |
 //!
 //! All integers are little-endian. Payload builders here are total and never
@@ -51,13 +52,15 @@ pub const NS_ASSERT: u8 = 1;
 pub const NS_STATE: u8 = 2;
 /// Namespace 3 — buggify results.
 pub const NS_BUGGIFY: u8 = 3;
-/// Namespace 4 — lifecycle (`setup_complete`).
+/// Namespace 4 — lifecycle (`setup_complete`, `frame_complete`).
 pub const NS_LIFECYCLE: u8 = 4;
 
 /// The catalog-declaration event id (`NS_CONTROL`, local 0).
 pub const CATALOG_EVENT_ID: u32 = 0;
 /// The `setup_complete` lifecycle event id (`NS_LIFECYCLE`, local 0).
 pub const SETUP_COMPLETE_EVENT_ID: u32 = (NS_LIFECYCLE as u32) << NS_SHIFT;
+/// The `frame_complete` lifecycle event id (`NS_LIFECYCLE`, local 1).
+pub const FRAME_COMPLETE_EVENT_ID: u32 = ((NS_LIFECYCLE as u32) << NS_SHIFT) | 1;
 
 /// Catalog-blob magic, `"SDKC"` little-endian.
 pub const CATALOG_MAGIC: u32 = u32::from_le_bytes(*b"SDKC");

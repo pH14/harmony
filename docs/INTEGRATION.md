@@ -78,6 +78,12 @@ semantics may instead ride a `VMCALL` doorbell surfaced as `Exit::Hypercall(Hype
 alternative to the port-I/O doorbell, not a replacement; the wire frames and `Dispatcher` are
 identical either way. (The `VMCALL` variant, being its own single exit, is likewise atomic.)
 
+**Arm64 prescriptive variant (M2):** the unchanged request/response pages occupy
+the upper half of one fully retained 16-KiB control slot at `0xC000..0x10000`;
+the alignment pages are state, not hidden padding. The guest rings one 32-bit
+MMIO store at board GPA `0x0A00_0000`. The store carries the request length and
+has the same atomic exchange semantics as x86's `OUT`.
+
 Push-style input (host-initiated events) is **not** part of this ABI; it arrives as injected
 interrupts at planned V-times, after which the guest pulls data via a normal hypercall.
 
@@ -166,6 +172,15 @@ its module doc):
   **7**: its recorded form ends in an optional length-prefixed tape. Snapshots and hashes retain only
   the unconsumed suffix, and `RecordedEnv` re-emits that suffix so a fork from the current cut has the
   identical future.
+- **M2 SDK lifecycle frame clock.** SDK event ids use `namespace << 24 | local`.
+  Lifecycle local `0` remains `setup_complete` with an empty payload. Lifecycle
+  local `1` (`0x0400_0001`) is `frame_complete` and carries exactly one
+  little-endian `u64` cumulative emulated-frame count. Either valid event arms a
+  deferred `SnapshotPoint`; any other payload width is `BadRequest`, captured
+  nowhere, and arms nothing. A game control client always advances with the
+  snapshot-point class armed, reads the captured frame event, and evaluates
+  deadlines in that guest frame domain. It never copies a frame deadline into
+  the wire's V-time `Moment` field.
 - An unregistered service id is `Status::UnknownService`; an opcode a service does not implement is
   `Status::UnknownOpcode` — never a silent drop.
 

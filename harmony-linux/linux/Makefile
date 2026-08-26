@@ -2,7 +2,7 @@
 # linux/amd64 container (docs/BUILDING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image exec-image postgres-image campaign-image docker-image k3s-image game-image maze-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image exec-image postgres-image campaign-image docker-image k3s-image game-image maze-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -21,6 +21,14 @@ arm64-initramfs:
 	./build-arm64-initramfs.sh
 
 arm64-image: arm64-kernel arm64-initramfs
+
+# M2's std/TetaNES payload uses a separate userspace-capable kernel and
+# initramfs, preserving the sealed M1 Image and minimal initramfs artifacts.
+arm64-game-kernel:
+	./build-arm64-game-kernel.sh
+
+arm64-game-image: arm64-game-kernel
+	./build-arm64-game-image.sh
 
 # Task 81 exec-capable initramfs: static busybox + an interactive root shell on
 # ttyS0 (`exec-init.sh`), so the `exec` improvisation channel has a shell to inject

@@ -8,9 +8,9 @@ is a complete guest client with zero new transport code.
 
 - **Verbs** (`src/lib.rs`): `init(transport, catalog)` (one catalog-declaration
   Emit), `assert_always`/`assert_sometimes`/`assert_reachable`/`assert_unreachable`,
-  `state_set`/`state_max`, `setup_complete`, `buggify(point) -> bool`, and
-  `entropy_fill` (a re-export citing the seeded Entropy hypercall — **not** a new
-  random primitive).
+  `state_set`/`state_max`, `setup_complete`, `frame_complete(frame_count)`,
+  `buggify(point) -> bool`, and `entropy_fill` (a re-export citing the seeded
+  Entropy hypercall — **not** a new random primitive).
 - **The wire convention** (`src/wire.rs`) is the **canonical source of truth**
   for the SDK event byte format: an `event_id` is `(namespace << 24) | local`,
   and each namespace has a fixed payload shape. The host-side `dissonance/link`
@@ -26,6 +26,9 @@ is a complete guest client with zero new transport code.
   times anything — the host stamps each emission at the `Moment` it surfaces.
 - `state_max`/`state_set` report the **raw** `(reg, op, value)`; the host
   interprets max-novelty. No max tracking in the guest.
+- `frame_complete` reports an exact cumulative emulated-frame count and creates
+  a snapshot-point yield. The host never derives gameplay deadlines from
+  wall-clock or V-time nanoseconds.
 - `buggify(point)` round-trips the host's fire decision over `ServiceId::Sdk`
   (op 1) **and** records the result on the Event stream, so the link tier
   observes reached-and-fired vs reached-and-nominal and the catalog can flag a

@@ -134,6 +134,18 @@ jobs:
           cargo test --manifest-path harmony-linux/play-agent/Cargo.toml --all-features
           cargo deny --manifest-path harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path harmony-linux/play-agent/Cargo.toml --bin play-agent
+      # M2's arm64 TetaNES agent is another standalone guest workspace. Its
+      # portable loop tests prove exact chord consumption, frame reports, WRAM
+      # mirrors, and an independent TetaNES deck differential. The cross-target
+      # check compiles the live /dev/mem + MMIO composition without executing it.
+      - name: harmony-linux/tetanes-agent gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path harmony-linux/tetanes-agent/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path harmony-linux/tetanes-agent/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path harmony-linux/tetanes-agent/Cargo.toml
+          cargo deny --manifest-path harmony-linux/tetanes-agent/Cargo.toml check --config deny.toml licenses
+          rustup target add aarch64-unknown-linux-gnu
+          cargo check --locked --manifest-path harmony-linux/tetanes-agent/Cargo.toml --target aarch64-unknown-linux-gnu
       # harmony-linux/libvoidstar (task 43) is a C subtree with its own Makefile — the
       # root cargo gates never see it, and nothing else in CI builds it, so a change
       # that broke the clean-room ABI shim would merge green. `make test-libvoidstar`

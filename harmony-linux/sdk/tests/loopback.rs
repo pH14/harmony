@@ -284,6 +284,22 @@ fn setup_complete_emits_the_lifecycle_event() {
     assert_eq!(ev[base..], [(wire::SETUP_COMPLETE_EVENT_ID, vec![])]);
 }
 
+/// frame_complete emits an exact little-endian cumulative frame counter.
+#[test]
+fn frame_complete_emits_the_frame_clock_lifecycle_event() {
+    let (mut sdk, events, _asks) = harness();
+    let base = events.borrow().len();
+    sdk.frame_complete(0x0102_0304_0506_0708).unwrap();
+    let ev = events.borrow();
+    assert_eq!(
+        ev[base..],
+        [(
+            wire::FRAME_COMPLETE_EVENT_ID,
+            0x0102_0304_0506_0708_u64.to_le_bytes().to_vec()
+        )]
+    );
+}
+
 /// Determinism: the same catalog + call sequence yields a byte-identical event
 /// stream (the gate-4 determinism property, at the SDK layer).
 #[test]

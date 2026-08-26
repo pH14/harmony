@@ -20,8 +20,9 @@
 //! - **`buggify(point)`** asks the host to resolve a deliberate perturbation
 //!   ([FoundationDB BUGGIFY], minus the anonymity — the point is a *named,
 //!   steerable, auditable* coordinate) and records the result on the event stream.
-//! - **`setup_complete`** is the lifecycle hook the host turns into
-//!   `StopReason::SnapshotPoint`.
+//! - **`setup_complete`** and **`frame_complete`** are lifecycle hooks the host
+//!   turns into `StopReason::SnapshotPoint`; the latter carries the guest's
+//!   cumulative emulated-frame count, never host time.
 //!
 //! The SDK never times anything — the **host** stamps each emission at the
 //! `Moment` it surfaces. Guest randomness is **not** an SDK primitive: the
@@ -364,6 +365,14 @@ impl<T: Transport> Sdk<T> {
     /// prefix and fork from it.
     pub fn setup_complete(&mut self) -> Result<(), SdkError<T::Error>> {
         self.emit(wire::SETUP_COMPLETE_EVENT_ID, &[])
+    }
+
+    /// `frame_complete(frame_count)`: report the cumulative number of emulated
+    /// frames at a cooperating workload boundary. The host surfaces a snapshot
+    /// point for the event; a control client uses the payload as its logical
+    /// frame clock rather than interpreting V-time nanoseconds as game time.
+    pub fn frame_complete(&mut self, frame_count: u64) -> Result<(), SdkError<T::Error>> {
+        self.emit(wire::FRAME_COMPLETE_EVENT_ID, &frame_count.to_le_bytes())
     }
 
     /// `buggify(point) -> bool`: ask the host whether to fire the deliberate
