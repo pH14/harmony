@@ -246,6 +246,15 @@ dependency rather than silently weakening the criterion.
     The success report records every branch id, lineage length, branch hash, and
     chord-hash sequence. A test-only control machine corrupts exactly the first
     replayed chord hash and proves the production comparator rejects index zero.
+32. **The standalone workspace carries no ignored unmaintained postcard
+    dependency.** The imported searcher and fuzzer requested `postcard`'s default
+    heapless feature even though both use its allocated encoding API. Disabling
+    that unused default removes `heapless` 0.7 and unmaintained
+    `atomic-polyfill` from the all-target graph; the advisory is not ignored.
+    The root license policy now documents and admits the actual
+    AGPLv3-compatible Zlib, BSL-1.0, and file-scoped MPL-2.0 transitive terms
+    brought by the pre-existing LibAFL/TetaNES graph. The resulting full
+    `cargo deny check` reports advisories, bans, licenses, and sources all OK.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -618,13 +627,14 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   guest agent now runs the same pinned TetaNES configuration, consumes exactly
   one payload per chord, mirrors complete WRAM, and reports cumulative frames at
   chord boundaries. Its live Linux/aarch64 `/dev/mem` composition and separate
-  fail-closed image builder are present. The ROM, native Altra image build, and
-  live M1-Max execution remain open, so this criterion is not yet a pass. The
+  fail-closed image builder are present. The external ROM is now located and its
+  real in-process smoke is green. The native Altra image build and live M1-Max
+  execution remain open, so this criterion is not yet a pass. The
   searcher now exposes the same campaign through `--control-socket`, requires
   exactly one worker per mutable VMM session, records a distinct durable remote
   checkpoint format, and can replay a recorded stream through a fresh session.
   The Apple-HVF listener composition is now present and compile/lint clean; the
-  missing external ROM and native Linux/aarch64 image remain the live blockers.
+  missing native Linux/aarch64 image and ROM-bearing initramfs remain the live blockers.
   The live oracle runs and validates the existing real-ROM `smb-smoke` report
   before it starts either production campaign.
 
@@ -796,7 +806,10 @@ exit status 0; plist OK
 uname -s; uname -m
 Darwin
 arm64
-HARMONY_SMB_ROM=UNSET
+external ROM:
+  /Users/phemberger/Downloads/Super Mario Bros. (World)/Super Mario Bros. (World).nes
+ROM sha256:
+  0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea
 MISSING harmony-linux/build/arm64/Image-game
 MISSING harmony-linux/build/arm64/initramfs-game.cpio.gz
 MISSING harmony-linux/build/arm64/initramfs-game.rom.sha256
@@ -804,21 +817,56 @@ MISSING harmony-linux/build/arm64/initramfs-game.rom.sha256
 harmony-linux/scripts/prescriptive-m2-oracle.sh \
   harmony-linux/build/arm64/Image-game \
   harmony-linux/build/arm64/initramfs-game.cpio.gz \
-  /private/tmp/harmony-missing-smb.nes \
+  '/Users/phemberger/Downloads/Super Mario Bros. (World)/Super Mario Bros. (World).nes' \
   harmony-linux/build/arm64/initramfs-game.rom.sha256 \
-  /private/tmp/harmony-m2-live-oracle-check
+  /private/tmp/harmony-m2-live-oracle-rom-found
 exit status 1: FAIL: required M2 artifact is missing or empty:
   harmony-linux/build/arm64/Image-game
 ```
 
 The game kernel and initramfs builders deliberately require native
 Linux/aarch64, while this measured execution host is macOS/arm64. The external
-SMB ROM is also unset. The checked-in runner is ready, but none of its live
+SMB ROM is present and independently smoke-tested, but has not yet been packed
+by that native builder. The checked-in runner is ready, but none of its live
 success criteria is credited from structural checks or the prerequisite failure.
 
+### M2 real-ROM and complete standalone-workspace evidence
+
+```text
+HARMONY_SMB_ROM='.../Super Mario Bros. (World).nes' \
+  cargo run --release --manifest-path dissonance/Cargo.toml \
+  -p searcher --bin smb-smoke -- /private/tmp/harmony-m2-smb-smoke-abaf1f7a
+exit status 0
+same_input_identical_ram_trace=true
+snapshot_cache_equivalent=true
+headless_ram_trace_equivalent=true
+same_seed_campaign_reproducible=true
+mini_campaign_corpus_size=5
+final_frame_count=360
+final_changed_indices=153
+
+cargo build --manifest-path dissonance/Cargo.toml --all-features
+exit status 0
+
+cargo nextest run --manifest-path dissonance/Cargo.toml --all-features
+93 passed; 0 failed; 0 skipped (790.553 s on the corrected dependency graph)
+
+cargo clippy --manifest-path dissonance/Cargo.toml \
+  --all-features --all-targets -- -D warnings
+cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+
+cargo tree --manifest-path dissonance/Cargo.toml --target all \
+  -i atomic-polyfill
+error: package ID specification `atomic-polyfill` did not match any packages
+
+cargo deny --manifest-path dissonance/Cargo.toml check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
 - **BLOCKED — two same-seed archive hashes:** the fail-closed live runner is
-  implemented; the external ROM and native Linux/aarch64 `Image-game` and
-  initramfs artifacts are absent.
+  implemented and the external ROM is present; native Linux/aarch64
+  `Image-game` and ROM-bearing initramfs artifacts are absent.
 - **IN PROGRESS — every archived lineage replays byte-for-byte:** durable
   lineage reconstruction is implemented and green for focused snapshots; the
   runner requires byte-identical live/replay archives, reports, and complete
@@ -831,8 +879,8 @@ success criteria is credited from structural checks or the prerequisite failure.
 - **IN PROGRESS — in-process/guest/transport cross-build differential:** the
   production control-socket backend now makes the independent TetaNES comparison
   mandatory at genesis, every chord, and every restore, with both target-level
-  and campaign-level fail-loud negatives green. The shipped guest image and
-  external SMB ROM run remain open.
+  and campaign-level fail-loud negatives green. The ROM is present and its local
+  smoke is green; the shipped guest-image run remains open.
 - **IN PROGRESS — thousands of mid-workload branch/replay cycles:** the bounded
   cache eviction oracle crosses 1,024 stored snapshots and the live runner
   requires at least 2,000 reported continuation restores, but the real campaign
