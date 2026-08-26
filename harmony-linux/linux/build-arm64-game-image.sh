@@ -73,6 +73,7 @@ if [ -n "${HARMONY_SMB_ROM:-}" ]; then
     printf '%s\n' "$rom_sha" >"$game_root/opt/harmony/smb.nes.sha256"
     echo "== arm64 game image: ROM installed (sha256 $rom_sha)"
 else
+    rm -f "$ARM64_ART_DIR/initramfs-game.rom.sha256"
     echo "== arm64 game image: BLOCKED/SKIP — HARMONY_SMB_ROM unset" >&2
     echo "   The image will report TETANES_GAME_SKIP; no live M2 criterion is green." >&2
 fi
@@ -94,4 +95,7 @@ find "$game_root" -mindepth 1 -exec touch -hcd @0 {} +
 (cd "$game_root" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
     | cpio --null -o -H newc --owner=0:0 --quiet) \
     | gzip -n -9 >"$ARM64_ART_DIR/initramfs-game.cpio.gz"
+if [ -n "${rom_sha:-}" ]; then
+    printf '%s\n' "$rom_sha" >"$ARM64_ART_DIR/initramfs-game.rom.sha256"
+fi
 echo "ok: $ARM64_ART_DIR/initramfs-game.cpio.gz"

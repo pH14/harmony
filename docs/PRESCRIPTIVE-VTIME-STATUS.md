@@ -221,6 +221,18 @@ dependency rather than silently weakening the criterion.
     retain both snapshot halves and advance to remote format v3. A planted
     component-ROM mismatch and a campaign-level synthetic divergence prove both
     the comparator and fail-loud path can fire before the external-ROM run counts.
+30. **The live M2 oracle is one fail-closed, byte-attested operation.**
+    `prescriptive-m2-oracle.sh` builds and entitlement-signs the production HVF
+    listener and searcher, then runs two 4,096-job one-worker campaigns at the
+    same seed, requires byte-identical archives, streams, reports, and snapshot
+    checkpoints, and replays the first campaign through a fresh VM. It rejects
+    fewer than 2,000 continuation restores or any absent genesis restore. The
+    game-image builder publishes the embedded ROM SHA-256 only after a successful
+    initramfs pack; the oracle matches that sidecar to the host ROM before launch
+    and writes a manifest binding the kernel, initramfs, ROM, signed listener,
+    and searcher. Missing artifacts, skipped payload markers, watchdogs, panics,
+    partial server session counts, or an existing output directory all fail
+    loudly and cannot produce the success record.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -747,10 +759,47 @@ The second oracle seals canonical arm64 state with distinctive core-register and
 userspace-GIC timer fields, independently flips a resident RAM-page byte, the
 vCPU field, and the GIC field, and requires the matching typed integrity failure
 before restore decoding or VM replacement.
-- **FAIL — two same-seed archive hashes:** not started.
+
+### M2 live-oracle checkpoint evidence
+
+```text
+bash -n harmony-linux/scripts/prescriptive-m2-oracle.sh \
+  harmony-linux/linux/build-arm64-game-image.sh
+shellcheck harmony-linux/scripts/prescriptive-m2-oracle.sh \
+  harmony-linux/linux/build-arm64-game-image.sh
+plutil -lint consonance/vmm-backend/hvf.entitlements.plist
+exit status 0; plist OK
+
+uname -s; uname -m
+Darwin
+arm64
+HARMONY_SMB_ROM=UNSET
+MISSING harmony-linux/build/arm64/Image-game
+MISSING harmony-linux/build/arm64/initramfs-game.cpio.gz
+MISSING harmony-linux/build/arm64/initramfs-game.rom.sha256
+
+harmony-linux/scripts/prescriptive-m2-oracle.sh \
+  harmony-linux/build/arm64/Image-game \
+  harmony-linux/build/arm64/initramfs-game.cpio.gz \
+  /private/tmp/harmony-missing-smb.nes \
+  harmony-linux/build/arm64/initramfs-game.rom.sha256 \
+  /private/tmp/harmony-m2-live-oracle-check
+exit status 1: FAIL: required M2 artifact is missing or empty:
+  harmony-linux/build/arm64/Image-game
+```
+
+The game kernel and initramfs builders deliberately require native
+Linux/aarch64, while this measured execution host is macOS/arm64. The external
+SMB ROM is also unset. The checked-in runner is ready, but none of its live
+success criteria is credited from structural checks or the prerequisite failure.
+
+- **BLOCKED — two same-seed archive hashes:** the fail-closed live runner is
+  implemented; the external ROM and native Linux/aarch64 `Image-game` and
+  initramfs artifacts are absent.
 - **IN PROGRESS — every archived lineage replays byte-for-byte:** durable
   lineage reconstruction is implemented and green for focused snapshots; the
-  whole retained archive and real guest remain open.
+  runner requires byte-identical live/replay archives, reports, and complete
+  checkpoint bytes, but the whole retained real-guest run remains blocked.
 - **IN PROGRESS — snapshot restore counter and uninterrupted-continuation hash
   oracle:** genesis/continuation counters are now recorded, replay-verified, and
   tamper-evident, and the focused immediate/per-chord continuation-hash oracle is
@@ -761,8 +810,9 @@ before restore decoding or VM replacement.
   and campaign-level fail-loud negatives green. The shipped guest image and
   external SMB ROM run remain open.
 - **IN PROGRESS — thousands of mid-workload branch/replay cycles:** the bounded
-  cache eviction oracle crosses 1,024 stored snapshots, but a real campaign with
-  thousands of mid-workload branches has not run.
+  cache eviction oracle crosses 1,024 stored snapshots and the live runner
+  requires at least 2,000 reported continuation restores, but the real campaign
+  has not run.
 - **PASS — altered-chord archive comparator negative:** the input-sensitive ROM
   and one-chord perturbation produce different archive SHA-256 values at one
   otherwise identical seed and policy configuration.
