@@ -5,6 +5,43 @@ the `docs/BRINGUP.md` crate split: vmm-core (task 15) compiles against `Backend`
 `KVM_RUN`-unaware. This crate delivers **the trait + the first implementation** (stock
 `KvmBackend`), plus a portable `MockBackend` for vmm-core's unit tests.
 
+## M1 prescriptive V-time — Hypervisor.framework probe
+
+`src/bin/hvf_probe.rs` is the required empirical gate before an `HvfBackend`
+may claim any Apple Silicon capability. It uses only the public
+Hypervisor.framework API and a one-page AArch64 guest. The disposable binary
+must be ad-hoc signed with the `com.apple.security.hypervisor` entitlement; an
+unsigned binary reaches the framework but `hv_vm_create` returns `HV_DENIED`.
+
+The recorded run was on an M1 Max (`RELEASE_ARM64_T6000`), macOS 26.4.1
+(25E253), Darwin 25.4.0, with the macOS 26.4.1 SDK, from commit `c48a70cb` plus
+the uncommitted probe. Results are properties of that measured surface, not
+claims about another macOS or Apple Silicon generation:
+
+| Surface | Measured result | Backend consequence |
+|---|---|---|
+| General registers | all 35 public scalar register IDs get/set; X0 and FPCR/FPSR perturbations read back exactly | retain all scalar registers |
+| SIMD/FP | Q0 perturbation reads back exactly through the public Q-register API | retain Q0..Q31 plus FPCR/FPSR |
+| EL1/timer sysregs | 18 selected boot-critical sysregs get/set; TPIDR_EL0 and CNTV_CVAL_EL0 perturbations read back exactly | retain the complete selected list, including CNTV_CTL/CNTV_CVAL and the framework VTimer mask/offset |
+| Debug | all 64 breakpoint/watchpoint value/control registers plus MDSCR_EL1 get/set; DBGBVR0 perturbation and both trap-control toggles read back exactly | retain debug register file and both trap-control booleans |
+| Pending IRQ | true and false both read back; a pending unmasked IRQ set before entry vectors before guest PC 0 (`PC=0x284`, `ELR_EL1=0`) | reassert the userspace GIC's IRQ level before every `hv_vcpu_run`; the framework clears it on return |
+| Pending synchronous exception | no public get/set API exists | the backend cannot honestly retain a framework-private pending exception; sealable boundaries must have no staged synchronous injection |
+| Exclusive monitor | no public get/set API exists | canonicalize at sealable boundaries and rely on the image LL/SC prohibition/audit required by M1 |
+| WFI | `WFI; HVC #0` exits only for HVC (`EC=0x16`, `PC=0x8`); WFI neither blocks nor surfaces a dedicated exit, and there is no WFI control in `hv_vcpu_config` | the cooperative image must replace its idle WFI path with the paravirtual idle exit; raw WFI is outside the deterministic capability claim |
+| CNTVCT_EL0 | executes without a sysreg exit and returns a nonzero live value; the API defines it as `mach_absolute_time() - vtimer_offset` | direct counter use is nondeterministic and must be prohibited by the cooperative image; guest time comes only from the V-time paravirtual page |
+| PMCCNTR_EL0, MIDR_EL1, CNTV_CVAL_EL0 | each test instruction reaches the following HVC with no sysreg exit | HVF cannot provide a default-deny sysreg-interception claim; freeze writable ID state where supported and audit the cooperative image against direct PMU/timer use |
+
+The raw probe run also observed an unmapped load reach the following HVC rather
+than surface as an MMIO exit. That observation is not used as MMIO evidence:
+the backend must establish MMIO exit behavior with the actual Linux stage-1
+configuration and userspace-GIC address range before the full-boot oracle can
+count.
+
+These measurements deliberately force an honest, narrow M1 posture. HVF is a
+bring-up backend for the audited paravirtual arm64 image, not a general guest
+determinism backend: `capabilities()` must report no deterministic direct
+counter and no enforced timer-sysreg interception.
+
 ## Task 21 — `PatchedKvmBackend` (the determinism-complete backend)
 
 Task 21 productionizes the task-16 spike (GO) into `PatchedKvmBackend` — the first

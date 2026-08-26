@@ -174,7 +174,28 @@ work was begun before this evidence was recorded.
 
 ## M1 — the M1 Max boots deterministically
 
-- **FAIL — probe binary and recorded HVF findings:** not started.
+- **PASS — probe binary and recorded HVF findings:**
+  `consonance/vmm-backend/src/bin/hvf_probe.rs` compiled and ran in one
+  entitlement-signed process on the M1 Max / macOS 26.4.1 host. The exact
+  surface and its backend consequences are recorded in
+  `consonance/vmm-backend/IMPLEMENTATION.md`.
+
+  ```text
+  state.scalar: 35/35 get+set; X0 and FPCR/FPSR perturbations exact
+  state.simd-fp: Q0 perturbation exact
+  state.sysregs: 18/18 get+set; TPIDR_EL0 and CNTV_CVAL perturbations exact
+  state.debug: 65/65 get+set; DBGBVR0 and both trap-control toggles exact
+  state.pending-irq: true and false read back exactly
+  state.pending-exception / exclusive-monitor: no public get/set API
+  trap.cntvct-el0: false; returned a live nonzero host-derived counter
+  trap.pmccntr-el0 / midr-el1 / cntv-cval-el0: false
+  interrupt.pre-entry: PC=0x284, ELR_EL1=0x0
+  exit.wfi: only the following HVC surfaced, PC=0x8, dedicated-exit=false
+  ```
+
+  The negative findings are capability limits, not papered-over passes: M1's
+  cooperative image must use paravirtual time and idle exits, and the eventual
+  HVF capability report must deny direct-counter and timer-sysreg enforcement.
 - **FAIL — `HvfBackend`, userspace GICv3 delivery, WFI/IdlePlanner:** not started.
 - **FAIL — paravirtual tick patch and `/init` boot:** not started.
 - **FAIL — ten same-seed full-boot normalized logs:** not started.
