@@ -1251,7 +1251,10 @@ mod tests {
         }
 
         fn group(self, depth: usize) -> Self::Group {
-            assert!(depth < DEPTHS, "group depth {depth} is past {DEPTHS} depths");
+            assert!(
+                depth < DEPTHS,
+                "group depth {depth} is past {DEPTHS} depths"
+            );
             let mut group = self.0;
             for component in group.iter_mut().take(depth) {
                 *component = 0;
@@ -1331,7 +1334,8 @@ mod tests {
                 })
             );
             assert!(
-                selector_policy_from_identifier("room_cell_uniform_128_retire:3,6", pooled).is_err()
+                selector_policy_from_identifier("room_cell_uniform_128_retire:3,6", pooled)
+                    .is_err()
             );
         }
     }

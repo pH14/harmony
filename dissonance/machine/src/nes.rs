@@ -4,9 +4,14 @@
 //!
 //! The environment is a controller action suffix: each action is one button
 //! mask held for a bounded frame count, applied during [`Machine::run`] and
-//! released at the end of its hold. Work RAM is served by [`Machine::read`].
-//! Snapshot export/import and the film accessors are emulator extras outside
-//! the mirrored verb set.
+//! released at the end of its hold. It travels as an opaque [`Reproducer`]
+//! blob that only this module mints and parses, so the searcher never sees a
+//! controller. [`Machine::read`] serves the whole CPU address space.
+//!
+//! The console has no cooperating guest, so it never surfaces a decision, a
+//! snapshot point, or an assertion; an invalid opcode surfaces as
+//! [`StopReason::Crash`]. Snapshot export/import and the film accessors are
+//! emulator extras outside the mirrored verb set.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -20,12 +25,55 @@ use tetanes_core::{
     memory::RamState,
 };
 
-use crate::{Machine, MachineError, Moment, SnapId, StopConditions, StopReason};
+use crate::{
+    Answer, CrashInfo, CrashKind, Machine, MachineError, Moment, Reproducer, SnapId,
+    StopConditions, StopReason,
+};
 
-/// Size of the NES CPU work RAM exposed through [`Machine::read`].
+/// Size of the NES CPU work RAM, the low mirror-free window of the address
+/// space [`Machine::read`] serves.
 pub const WRAM_SIZE: usize = 2 * 1024;
+/// Bytes the NES CPU can address, the length of [`Machine::read`]'s space.
+pub const ADDRESS_SPACE_SIZE: u64 = 64 * 1024;
 /// Longest controller hold accepted from an input.
 pub const MAX_HOLD_FRAMES: u8 = 120;
+
+/// Blob format version of a NES [`Reproducer`]: a flat sequence of
+/// `(buttons, hold_frames)` byte pairs in execution order.
+pub const ENV_BLOB_VERSION: u16 = 1;
+
+/// Mint the environment blob for one controller action suffix.
+#[must_use]
+pub fn reproducer(actions: &[ButtonChord]) -> Reproducer {
+    let mut bytes = Vec::with_capacity(actions.len() * 2);
+    for action in actions {
+        bytes.push(action.buttons);
+        bytes.push(action.bounded_hold_frames());
+    }
+    Reproducer {
+        blob_version: ENV_BLOB_VERSION,
+        bytes,
+    }
+}
+
+/// Parse an environment blob back into its controller action suffix.
+///
+/// # Errors
+///
+/// Returns an error for another format version or a truncated blob.
+pub fn actions_of(env: &Reproducer) -> Result<Vec<ButtonChord>, MachineError> {
+    if env.blob_version != ENV_BLOB_VERSION {
+        return Err(MachineError::BadEnvVersion);
+    }
+    if env.bytes.len() % 2 != 0 {
+        return Err(MachineError::MalformedEnv);
+    }
+    Ok(env
+        .bytes
+        .chunks_exact(2)
+        .map(|pair| ButtonChord::new(pair[0], pair[1]))
+        .collect())
+}
 
 /// One total NES input action: an eight-button mask held for a bounded frame count.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -194,8 +242,6 @@ impl NesMachine {
 }
 
 impl Machine for NesMachine {
-    type Env = Vec<ButtonChord>;
-
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
         let mut bytes = Vec::new();
         self.deck
@@ -214,14 +260,15 @@ impl Machine for NesMachine {
             .ok_or(MachineError::UnknownSnapshot)
     }
 
-    fn branch(&mut self, snap: SnapId, env: Self::Env) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+        let actions = actions_of(env)?;
         let bytes = self
             .snapshots
             .get(&snap.0)
             .ok_or(MachineError::UnknownSnapshot)?
             .clone();
         self.restore_bytes(&bytes)?;
-        self.staged = env.into();
+        self.staged = actions.into();
         Ok(())
     }
 
@@ -234,8 +281,26 @@ impl Machine for NesMachine {
         self.restore_bytes(&bytes)
     }
 
-    fn run(&mut self, until: StopConditions) -> Result<StopReason, MachineError> {
+    /// The console has no cooperating guest, so no class in `until.on` can
+    /// ever surface and the mask is honored vacuously.
+    fn run(
+        &mut self,
+        until: StopConditions,
+        resolve: Option<&Answer>,
+    ) -> Result<StopReason, MachineError> {
+        if resolve.is_some() {
+            return Err(MachineError::ResolveWithoutDecision);
+        }
         loop {
+            if self.deck.cpu_corrupted() {
+                return Ok(StopReason::Crash {
+                    vtime: Moment(self.vtime),
+                    info: CrashInfo {
+                        kind: CrashKind::UnrecoverableFault,
+                        detail: b"cpu executed an invalid opcode".to_vec(),
+                    },
+                });
+            }
             if let Some(deadline) = until.deadline
                 && self.vtime >= deadline.0
             {
@@ -265,21 +330,40 @@ impl Machine for NesMachine {
         }
     }
 
+    /// Reads run over the console's whole 64 KiB CPU address space, the NES
+    /// analogue of guest-physical memory. Reads are side-effect free: an
+    /// address mapped to a hardware register reports its current value
+    /// without the read the console itself would perform. The low
+    /// [`WRAM_SIZE`] window is served straight from work RAM, which is the
+    /// same memory that window addresses.
     fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
-        let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
-        let length = len as usize;
-        let end = start
+        let length = u64::from(len);
+        let end = addr
             .checked_add(length)
-            .filter(|end| *end <= WRAM_SIZE)
+            .filter(|end| *end <= ADDRESS_SPACE_SIZE)
             .ok_or(MachineError::ReadOutOfBounds)?;
-        Ok(self.deck.wram()[start..end].to_vec())
+        if end <= WRAM_SIZE as u64 {
+            let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
+            let finish = usize::try_from(end).map_err(|_| MachineError::ReadOutOfBounds)?;
+            return Ok(self.deck.wram()[start..finish].to_vec());
+        }
+        Ok((addr..end)
+            .map(|address| {
+                self.deck
+                    .bus()
+                    .peek(u16::try_from(address).unwrap_or(u16::MAX))
+            })
+            .collect())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ButtonChord, MAX_HOLD_FRAMES, NesMachine, RenderMode, WRAM_SIZE};
-    use crate::{Machine, Moment, StopConditions, StopReason};
+    use super::{
+        ADDRESS_SPACE_SIZE, ButtonChord, ENV_BLOB_VERSION, MAX_HOLD_FRAMES, NesMachine, RenderMode,
+        WRAM_SIZE, actions_of, reproducer,
+    };
+    use crate::{Answer, Machine, MachineError, Moment, Reproducer, StopConditions, StopReason};
 
     fn synthetic_nrom() -> Vec<u8> {
         let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
@@ -307,17 +391,21 @@ mod tests {
         machine
             .branch(
                 start,
-                vec![ButtonChord::new(0x01, 4), ButtonChord::new(0, 2)],
+                &reproducer(&[ButtonChord::new(0x01, 4), ButtonChord::new(0, 2)]),
             )
             .expect("branch");
         let stop = machine
-            .run(StopConditions {
-                deadline: Some(Moment(3)),
-            })
+            .run(
+                StopConditions {
+                    deadline: Some(Moment(3)),
+                    ..StopConditions::default()
+                },
+                None,
+            )
             .expect("run to deadline");
         assert_eq!(stop, StopReason::Deadline { vtime: Moment(3) });
         let stop = machine
-            .run(StopConditions::default())
+            .run(StopConditions::default(), None)
             .expect("run to quiescence");
         assert_eq!(stop, StopReason::Quiescent { vtime: Moment(6) });
         assert_eq!(machine.now(), Moment(6));
@@ -330,17 +418,74 @@ mod tests {
         let start = machine.snapshot().expect("snapshot power-on");
         let before = machine.read(0, 2048).expect("read wram");
         machine
-            .branch(start, vec![ButtonChord::new(0x01, 8)])
+            .branch(start, &reproducer(&[ButtonChord::new(0x01, 8)]))
             .expect("branch");
-        machine.run(StopConditions::default()).expect("run");
+        machine.run(StopConditions::default(), None).expect("run");
         machine.replay(start).expect("replay");
         assert_eq!(machine.read(0, 2048).expect("read restored wram"), before);
-        assert!(machine.read(2048, 1).is_err());
-        assert!(machine.read(u64::MAX, 1).is_err());
-        assert!(
+        // The window past work RAM is still addressable; only the space's
+        // end bounds a read.
+        assert_eq!(machine.read(2048, 1).expect("read past wram").len(), 1);
+        assert_eq!(
             machine
                 .read(1, u32::try_from(WRAM_SIZE).expect("len"))
-                .is_err()
+                .expect("read straddling the wram window")
+                .len(),
+            WRAM_SIZE
+        );
+        assert!(machine.read(u64::MAX, 1).is_err());
+        assert!(machine.read(ADDRESS_SPACE_SIZE, 1).is_err());
+        assert!(machine.read(ADDRESS_SPACE_SIZE - 1, 2).is_err());
+    }
+
+    /// A read spanning the work-RAM boundary must agree byte for byte with
+    /// the two reads that meet at it, so the fast path and the bus path are
+    /// the same memory.
+    #[test]
+    fn the_work_ram_window_and_the_bus_agree() {
+        let rom = synthetic_nrom();
+        let mut machine = NesMachine::from_rom_bytes(&rom, RenderMode::Neither).expect("load rom");
+        for (offset, byte) in [(0_usize, 0x11_u8), (1, 0x22), (2047, 0x33)] {
+            machine.poke_wram(offset, byte);
+        }
+        let straddling = machine.read(2040, 16).expect("read across the boundary");
+        let inside = machine.read(2040, 8).expect("read inside work ram");
+        let outside = machine.read(2048, 8).expect("read past work ram");
+        assert_eq!(straddling[..8], inside[..]);
+        assert_eq!(straddling[8..], outside[..]);
+        // 0x0800 mirrors work RAM on the NES bus.
+        assert_eq!(machine.read(2048, 3).expect("mirror"), vec![0x11, 0x22, 0]);
+    }
+
+    #[test]
+    fn an_environment_blob_round_trips_and_rejects_foreign_versions() {
+        let actions = vec![ButtonChord::new(0x81, 4), ButtonChord::new(0, 200)];
+        let env = reproducer(&actions);
+        assert_eq!(env.blob_version, ENV_BLOB_VERSION);
+        assert_eq!(actions_of(&env).expect("round trip"), actions);
+        assert_eq!(
+            actions_of(&Reproducer {
+                blob_version: ENV_BLOB_VERSION + 1,
+                bytes: env.bytes.clone(),
+            }),
+            Err(MachineError::BadEnvVersion)
+        );
+        assert_eq!(
+            actions_of(&Reproducer {
+                blob_version: ENV_BLOB_VERSION,
+                bytes: vec![0x01],
+            }),
+            Err(MachineError::MalformedEnv)
+        );
+    }
+
+    #[test]
+    fn a_run_that_answers_nothing_is_refused() {
+        let rom = synthetic_nrom();
+        let mut machine = NesMachine::from_rom_bytes(&rom, RenderMode::Neither).expect("load rom");
+        assert_eq!(
+            machine.run(StopConditions::default(), Some(&Answer(vec![0]))),
+            Err(MachineError::ResolveWithoutDecision)
         );
     }
 

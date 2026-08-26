@@ -11,9 +11,9 @@ use searcher::{
     },
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
-        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint,
-        SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
-        SmbSnapshotCheckpoint, button_vocabulary_from_identifier, chord_policy_from_identifier,
+        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig,
+        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
+        button_vocabulary_from_identifier, chord_policy_from_identifier,
         replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
 };
@@ -80,8 +80,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     // Retire thresholds are measured search statistics (99th-percentile
     // picks-before-first-keeper per class) and should be re-measured for a
     // new game rather than treated as universal constants.
-    let mut chord =
-        chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,3,1,64,1024")?;
+    let mut chord = chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,3,1,64,1024")?;
     let mut retention = RetentionPolicy::AdmitAlive;
     let mut selector = SelectorPolicy::Retire(RetireThresholds {
         entry: 3,

@@ -22,8 +22,9 @@ use std::{
 use searcher::smb::{
     archive::SmbArchiveReport,
     campaign::{
-        SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignStreamHeader,
-        SmbCampaignStreamRecord, derive_suffix,
+        CHORD_POLICY_FIELD, CONTROLLER_VOCABULARY_FIELD, SmbCampaignAdmissionDecision,
+        SmbCampaignChordPolicy, SmbCampaignStreamHeader, SmbCampaignStreamRecord, derive_suffix,
+        recorded_policy,
     },
     target::ButtonChord,
 };
@@ -127,8 +128,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut lines = reader.split(b'\n');
     let header_line = lines.next().ok_or("stream is empty")??;
     let header: SmbCampaignStreamHeader = serde_json::from_slice(&header_line)?;
-    if header.chord_policy != "chord_uniform" {
-        return Err(format!("unexpected chord policy {}", header.chord_policy).into());
+    let chord_policy = recorded_policy(&header.game_policies, CHORD_POLICY_FIELD)?;
+    if chord_policy != "chord_uniform" {
+        return Err(format!("unexpected chord policy {chord_policy}").into());
     }
     for line in lines {
         let line = line?;
@@ -158,9 +160,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             let suffix = derive_suffix(
                 job.mutation_seed,
                 SmbCampaignChordPolicy::Uniform,
-                searcher::smb::campaign::button_vocabulary_from_identifier(
-                    &header.controller_vocabulary,
-                )?,
+                searcher::smb::campaign::button_vocabulary_from_identifier(recorded_policy(
+                    &header.game_policies,
+                    CONTROLLER_VOCABULARY_FIELD,
+                )?)?,
                 None,
             )?;
             if let Some(first) = suffix.first() {

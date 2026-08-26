@@ -25,7 +25,7 @@ use crate::{
     search::campaign::{
         CampaignActionResult, CampaignCandidate, CampaignCheckpoint, CampaignJobResult,
         CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, Game,
-        GameIdentifiers, SnapshotCheckpoint, replay_campaign_checkpointed,
+        GamePolicies, SnapshotCheckpoint, replay_campaign_checkpointed,
         run_campaign_checkpointed,
     },
     search::empirical_steps::{
@@ -66,6 +66,35 @@ pub const SUFFIX_IDENTIFIER: &str = "one_or_two";
 /// Identifier recorded for the hold distribution, see
 /// [`crate::smb::archive::sample_chord_from_masks`].
 pub const DURATION_IDENTIFIER: &str = "stratified";
+
+/// Stream-header field names SMB records its policies under. These are the
+/// recorded names, so they are pinned by every stream already written.
+pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
+/// Header field naming the archive key policy.
+pub const KEY_POLICY_FIELD: &str = "key_policy";
+/// Header field naming the hold distribution.
+pub const DURATION_POLICY_FIELD: &str = "duration_policy";
+/// Header field naming the suffix shape.
+pub const SUFFIX_POLICY_FIELD: &str = "suffix_policy";
+/// Header field naming the chord policy.
+pub const CHORD_POLICY_FIELD: &str = "chord_policy";
+/// Header field naming the cell-replacement rule.
+pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
+
+/// One recorded game policy of a campaign stream header.
+///
+/// # Errors
+///
+/// Returns an error when the header records no policy under `field`.
+pub fn recorded_policy<'a>(
+    policies: &'a GamePolicies,
+    field: &str,
+) -> Result<&'a str, Box<dyn Error>> {
+    policies
+        .get(field)
+        .map(String::as_str)
+        .ok_or_else(|| format!("campaign stream is missing the {field} policy").into())
+}
 
 /// The SMB campaign game context: the ROM and everything decoded from it.
 pub struct SmbGame {
@@ -380,7 +409,10 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
             let source = match derivation.source_filter {
                 SmbChordSource::All(_) => "all".to_owned(),
                 SmbChordSource::Level(filter) => {
-                    format!("{},{},{}", filter.world, filter.level, filter.minimum_progress)
+                    format!(
+                        "{},{},{}",
+                        filter.world, filter.level, filter.minimum_progress
+                    )
                 }
             };
             format!(
@@ -694,53 +726,49 @@ impl Game for SmbGame {
         chord_time
     }
 
-    fn identifiers(&self, run: &SmbCampaignRun) -> GameIdentifiers {
-        GameIdentifiers {
-            controller_vocabulary: button_vocabulary_identifier(run.vocabulary).to_owned(),
-            key_policy: KEY_POLICY_IDENTIFIER.to_owned(),
-            duration_policy: DURATION_IDENTIFIER.to_owned(),
-            suffix_policy: SUFFIX_IDENTIFIER.to_owned(),
-            chord_policy: chord_policy_identifier(run.chord),
-            replacement_policy: REPLACEMENT_IDENTIFIER.to_owned(),
-            resume_policy: RESUME_IDENTIFIER.to_owned(),
-        }
+    fn policies(&self, run: &SmbCampaignRun) -> GamePolicies {
+        [
+            (
+                CONTROLLER_VOCABULARY_FIELD,
+                button_vocabulary_identifier(run.vocabulary).to_owned(),
+            ),
+            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER.to_owned()),
+            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
+            (SUFFIX_POLICY_FIELD, SUFFIX_IDENTIFIER.to_owned()),
+            (CHORD_POLICY_FIELD, chord_policy_identifier(run.chord)),
+            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
+        ]
+        .into_iter()
+        .map(|(field, value)| (field.to_owned(), value))
+        .collect()
     }
 
-    fn resolve_recorded(
-        &self,
-        identifiers: &GameIdentifiers,
-    ) -> Result<SmbCampaignRun, Box<dyn Error>> {
-        let expected = [
-            (
-                identifiers.key_policy.as_str(),
-                KEY_POLICY_IDENTIFIER,
-                "key policy",
-            ),
-            (
-                identifiers.replacement_policy.as_str(),
-                REPLACEMENT_IDENTIFIER,
-                "replacement policy",
-            ),
-            (
-                identifiers.suffix_policy.as_str(),
-                SUFFIX_IDENTIFIER,
-                "suffix policy",
-            ),
-            (
-                identifiers.duration_policy.as_str(),
-                DURATION_IDENTIFIER,
-                "duration policy",
-            ),
+    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<SmbCampaignRun, Box<dyn Error>> {
+        let recorded = |field: &str| recorded_policy(policies, field);
+        let pinned = [
+            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
+            (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
+            (SUFFIX_POLICY_FIELD, SUFFIX_IDENTIFIER),
+            (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
         ];
-        for (recorded, compiled, name) in expected {
-            if recorded != compiled {
-                return Err(format!("campaign stream {name} is not recognized").into());
+        for (field, compiled) in pinned {
+            if recorded(field)? != compiled {
+                return Err(format!("campaign stream {field} is not recognized").into());
             }
         }
-        Ok(SmbCampaignRun {
-            chord: chord_policy_from_identifier(&identifiers.chord_policy)?,
-            vocabulary: button_vocabulary_from_identifier(&identifiers.controller_vocabulary)?,
-        })
+        let run = SmbCampaignRun {
+            chord: chord_policy_from_identifier(recorded(CHORD_POLICY_FIELD)?)?,
+            vocabulary: button_vocabulary_from_identifier(recorded(CONTROLLER_VOCABULARY_FIELD)?)?,
+        };
+        // A name SMB does not own would silently survive replay, so the
+        // recorded set must be exactly the set this build writes.
+        let unknown = policies
+            .keys()
+            .find(|field| !self.policies(&run).contains_key(field.as_str()));
+        if let Some(field) = unknown {
+            return Err(format!("campaign stream carries an unknown {field} policy").into());
+        }
+        Ok(run)
     }
 
     fn new_target(&self) -> Result<SmbTarget, String> {
@@ -1593,8 +1621,8 @@ mod tests {
                     .expect("parse campaign record")
             })
             .filter_map(|record| match record {
-                SmbCampaignStreamRecord::Job(job) => job.chord_table_before,
-                SmbCampaignStreamRecord::Skip(skip) => skip.chord_table_before,
+                SmbCampaignStreamRecord::Job(job) => job.draw_table_before,
+                SmbCampaignStreamRecord::Skip(skip) => skip.draw_table_before,
             })
             .map(|checkpoint| checkpoint.retained_successes)
             .max()

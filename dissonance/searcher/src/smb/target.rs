@@ -11,7 +11,7 @@ use std::error::Error;
 
 use crate::target::ExitKind;
 use machine::{
-    Machine, MachineError, SnapId, StopConditions,
+    Machine, MachineError, SnapId, StopConditions, nes,
     nes::{NesMachine, RenderMode},
 };
 use serde::{Deserialize, Serialize};
@@ -112,8 +112,8 @@ impl SmbTarget {
     fn from_smb_rom_bytes_with_mode(rom: &[u8], render: RenderMode) -> Result<Self, MachineError> {
         let mut machine = NesMachine::from_rom_bytes(rom, render)?;
         let power_on = machine.snapshot()?;
-        machine.branch(power_on, BOOT_WALK.to_vec())?;
-        machine.run(StopConditions::default())?;
+        machine.branch(power_on, &nes::reproducer(&BOOT_WALK))?;
+        machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(power_on)?;
         let genesis = machine.snapshot()?;
         let wram = wram_array(&machine)?;
@@ -235,7 +235,7 @@ impl SmbTarget {
     }
 
     fn probe_env(&mut self, start: SnapId, env: Vec<ButtonChord>) -> bool {
-        if self.machine.branch(start, env).is_err() {
+        if self.machine.branch(start, &nes::reproducer(&env)).is_err() {
             self.failed = true;
             return false;
         }
@@ -253,14 +253,24 @@ impl SmbTarget {
     }
 
     /// Advance one frame of the staged environment. `Ok(true)` when a frame
-    /// was emulated, `Ok(false)` at quiescence, `Err` on a machine failure.
+    /// was emulated, `Ok(false)` at quiescence, `Err` on a crash or a machine
+    /// failure. The console produces no cooperating-guest stop, so the run
+    /// arms no class and the remaining reasons are unreachable.
     fn run_one_frame(&mut self) -> Result<bool, ()> {
         let deadline = machine::Moment(self.machine.now().0.saturating_add(1));
-        match self.machine.run(StopConditions {
-            deadline: Some(deadline),
-        }) {
+        match self.machine.run(
+            StopConditions {
+                deadline: Some(deadline),
+                on: machine::StopMask::NONE,
+            },
+            None,
+        ) {
             Ok(machine::StopReason::Deadline { .. }) => Ok(true),
             Ok(machine::StopReason::Quiescent { .. }) => Ok(false),
+            Ok(_) => {
+                self.failed = true;
+                Err(())
+            }
             Err(_) => {
                 self.failed = true;
                 Err(())
@@ -420,7 +430,7 @@ impl Target for SmbTarget {
             self.failed = true;
             return;
         };
-        if self.machine.branch(start, vec![*action]).is_err() {
+        if self.machine.branch(start, &nes::reproducer(std::slice::from_ref(action))).is_err() {
             self.failed = true;
             let _ = self.machine.drop_snapshot(start);
             return;

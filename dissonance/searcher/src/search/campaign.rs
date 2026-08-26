@@ -69,26 +69,15 @@ const PROGRESS_INTERVAL_SECONDS: u64 = 60;
 /// identity only.
 pub const RESUME_IDENTIFIER: &str = "whole_tree";
 
-/// Recorded identifier strings for the game-owned policies of one run. Field
-/// names mirror the stream header fields the values are written to; the
-/// generic layer treats every value as opaque.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GameIdentifiers {
-    /// Controller vocabulary identifier.
-    pub controller_vocabulary: String,
-    /// Archive key policy identifier.
-    pub key_policy: String,
-    /// Hold distribution identifier.
-    pub duration_policy: String,
-    /// Suffix shape identifier.
-    pub suffix_policy: String,
-    /// Chord policy identifier.
-    pub chord_policy: String,
-    /// Cell-replacement rule identifier.
-    pub replacement_policy: String,
-    /// Resume rule identifier.
-    pub resume_policy: String,
-}
+/// The recorded identifier strings of one run's game-owned policies, keyed by
+/// the stream-header field each value is written to.
+///
+/// The generic layer never interprets a name or a value: it writes the set
+/// into the header and the report, and hands the recorded set back to
+/// [`Game::resolve_recorded`], which decides whether it names a run this
+/// build can reproduce. A target with no controller and no input alphabet
+/// records whatever names its own policies have instead.
+pub type GamePolicies = BTreeMap<String, String>;
 
 /// Everything one game supplies to run campaigns over it.
 ///
@@ -132,14 +121,14 @@ pub trait Game: Sync {
     fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
 
     /// The recorded identifiers of one run's game-owned policies.
-    fn identifiers(&self, run: &Self::Run) -> GameIdentifiers;
-    /// Resolve recorded identifiers back into run policies, rejecting any
-    /// identifier that names no compiled policy.
+    fn policies(&self, run: &Self::Run) -> GamePolicies;
+    /// Resolve a recorded policy set back into a run, rejecting any name or
+    /// value that names no compiled policy.
     ///
     /// # Errors
     ///
-    /// Returns an error for an unrecognized identifier.
-    fn resolve_recorded(&self, identifiers: &GameIdentifiers) -> Result<Self::Run, Box<dyn Error>>;
+    /// Returns an error for an unrecognized policy set.
+    fn resolve_recorded(&self, policies: &GamePolicies) -> Result<Self::Run, Box<dyn Error>>;
 
     /// Build one worker's target.
     ///
@@ -495,23 +484,20 @@ pub struct CampaignStreamHeader<T> {
     pub action_limit: usize,
     /// Archive entry bound the run retained under.
     pub archive_entry_limit: usize,
-    /// Controller vocabulary identifier.
-    pub controller_vocabulary: String,
-    /// Archive key policy identifier.
-    pub key_policy: String,
-    /// Hold distribution identifier.
-    pub duration_policy: String,
-    /// Suffix shape identifier.
-    pub suffix_policy: String,
-    /// Chord policy identifier.
-    pub chord_policy: String,
-    /// Cell-replacement rule identifier.
-    pub replacement_policy: String,
     /// Resume rule identifier.
     pub resume_policy: String,
-    /// Derived draw-table provenance; absent for uniform and compiled tables.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table: Option<T>,
+    /// The game-owned policy identifiers of the run, one header field each.
+    #[serde(flatten)]
+    pub game_policies: GamePolicies,
+    /// Derived draw-table provenance; absent for uniform tables. The field
+    /// keeps its recorded name so streams written before the generic
+    /// draw-table naming still replay.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "chord_table"
+    )]
+    pub draw_table: Option<T>,
     /// Admission rule identifier.
     pub retention_policy: String,
     /// Parent selector identifier.
@@ -566,12 +552,22 @@ pub struct CampaignJobRecord {
     pub decisions: Vec<CampaignAdmissionDecision>,
     /// Selector draw record.
     pub selector: SelectorDraw,
-    /// Derived table version used to draw this job.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_before: Option<EmpiricalStepCheckpoint>,
+    /// Derived table version used to draw this job. The field keeps its
+    /// recorded name so streams written before the generic draw-table naming
+    /// still replay.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "chord_table_before"
+    )]
+    pub draw_table_before: Option<EmpiricalStepCheckpoint>,
     /// Periodic derived table hash after admitting this stream record.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_after: Option<EmpiricalStepCheckpoint>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "chord_table_after"
+    )]
+    pub draw_table_after: Option<EmpiricalStepCheckpoint>,
 }
 
 /// Stream record for one job skipped before execution as a known duplicate.
@@ -585,12 +581,22 @@ pub struct CampaignSkipRecord {
     pub mutation_seed: u64,
     /// Selector draw record.
     pub selector: SelectorDraw,
-    /// Derived table version used to draw this skipped job.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_before: Option<EmpiricalStepCheckpoint>,
+    /// Derived table version used to draw this skipped job. The field keeps
+    /// its recorded name so streams written before the generic draw-table
+    /// naming still replay.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "chord_table_before"
+    )]
+    pub draw_table_before: Option<EmpiricalStepCheckpoint>,
     /// Periodic derived table hash after this stream record.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chord_table_after: Option<EmpiricalStepCheckpoint>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "chord_table_after"
+    )]
+    pub draw_table_after: Option<EmpiricalStepCheckpoint>,
 }
 
 /// One line of the recorded stream after the header.
@@ -654,20 +660,11 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub action_limit: usize,
     /// Archive entry bound the run retained under.
     pub archive_entry_limit: usize,
-    /// Controller vocabulary identifier.
-    pub controller_vocabulary: String,
-    /// Archive key policy identifier.
-    pub key_policy: String,
-    /// Hold distribution identifier.
-    pub duration_policy: String,
-    /// Suffix shape identifier.
-    pub suffix_policy: String,
-    /// Chord policy identifier.
-    pub chord_policy: String,
-    /// Cell-replacement rule identifier.
-    pub replacement_policy: String,
     /// Resume rule identifier.
     pub resume_policy: String,
+    /// The game-owned policy identifiers of the run, one report field each.
+    #[serde(flatten)]
+    pub game_policies: GamePolicies,
     /// Admission rule identifier.
     pub retention_policy: String,
     /// Parent selector identifier.
@@ -1297,9 +1294,8 @@ fn stream_header<G: Game>(
     game: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOriginRecord,
-    chord_table: Option<G::TableHeader>,
+    draw_table: Option<G::TableHeader>,
 ) -> CampaignStreamHeader<G::TableHeader> {
-    let identifiers = game.identifiers(&config.run);
     CampaignStreamHeader {
         format: game.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
@@ -1316,14 +1312,9 @@ fn stream_header<G: Game>(
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
-        controller_vocabulary: identifiers.controller_vocabulary,
-        key_policy: identifiers.key_policy,
-        duration_policy: identifiers.duration_policy,
-        suffix_policy: identifiers.suffix_policy,
-        chord_policy: identifiers.chord_policy,
-        chord_table,
-        replacement_policy: identifiers.replacement_policy,
-        resume_policy: identifiers.resume_policy,
+        resume_policy: RESUME_IDENTIFIER.to_owned(),
+        game_policies: game.policies(&config.run),
+        draw_table,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: selector_policy_identifier(&config.selector),
         executor_mode: "snapshot_resume_archive".to_owned(),
@@ -1474,13 +1465,8 @@ fn build_report<G: Game>(
         wall_budget_seconds: header.wall_budget_seconds,
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
-        controller_vocabulary: header.controller_vocabulary.clone(),
-        key_policy: header.key_policy.clone(),
-        duration_policy: header.duration_policy.clone(),
-        suffix_policy: header.suffix_policy.clone(),
-        chord_policy: header.chord_policy.clone(),
-        replacement_policy: header.replacement_policy.clone(),
         resume_policy: header.resume_policy.clone(),
+        game_policies: header.game_policies.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
         executor_mode: header.executor_mode.clone(),
@@ -1524,7 +1510,7 @@ struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
     selector: SelectorDraw,
-    chord_table_before: Option<EmpiricalStepCheckpoint>,
+    draw_table_before: Option<EmpiricalStepCheckpoint>,
 }
 
 /// One periodic observation of a live run.
@@ -1616,8 +1602,8 @@ where
             ..
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
-    let (mut draw_state, chord_table_header) = game.initial_draw_state(&config.run, draw_origin)?;
-    let header = stream_header(game, config, &origin_record, chord_table_header);
+    let (mut draw_state, draw_table_header) = game.initial_draw_state(&config.run, draw_origin)?;
+    let header = stream_header(game, config, &origin_record, draw_table_header);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
@@ -1705,20 +1691,20 @@ where
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let mutation_seed = rand.next_u64();
-                    let chord_table_before = game.draw_checkpoint(draw_state)?;
+                    let draw_table_before = game.draw_checkpoint(draw_state)?;
                     let suffix = game.expand_suffix(&config.run, draw_state, mutation_seed)?;
                     if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix)
                     {
-                        let chord_table_after =
+                        let draw_table_after =
                             game.finish_stream_record(&config.run, draw_state, &[])?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
                             worker,
                             parent_id: u64::try_from(parent_index)?,
                             mutation_seed,
                             selector,
-                            chord_table_before,
-                            chord_table_after,
+                            draw_table_before,
+                            draw_table_after,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
@@ -1740,7 +1726,7 @@ where
                             parent_id: u64::try_from(parent_index)?,
                             mutation_seed,
                             selector,
-                            chord_table_before,
+                            draw_table_before,
                         },
                     )));
                 }
@@ -1794,7 +1780,7 @@ where
                 {
                     std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
                 }
-                let chord_table_after =
+                let draw_table_after =
                     finish_record(game, &config.run, &mut draw_state, &core, &decisions)?;
                 writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
                     sequence,
@@ -1805,8 +1791,8 @@ where
                     result_sha256: result_sha256::<G>(&result)?,
                     decisions,
                     selector: pending_job.selector,
-                    chord_table_before: pending_job.chord_table_before,
-                    chord_table_after,
+                    draw_table_before: pending_job.draw_table_before,
+                    draw_table_after,
                 }))?;
                 counters.jobs_per_worker[worker_index] =
                     counters.jobs_per_worker[worker_index].saturating_add(1);
@@ -1939,15 +1925,15 @@ where
     let header: CampaignStreamHeader<G::TableHeader> =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
     let record_lines = lines.collect::<Vec<_>>();
-    let mut required_chord_versions = BTreeSet::new();
+    let mut required_draw_versions = BTreeSet::new();
     for line in &record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         let before = match record {
-            CampaignStreamRecord::Job(job) => job.chord_table_before,
-            CampaignStreamRecord::Skip(skip) => skip.chord_table_before,
+            CampaignStreamRecord::Job(job) => job.draw_table_before,
+            CampaignStreamRecord::Skip(skip) => skip.draw_table_before,
         };
         if let Some(before) = before {
-            required_chord_versions.insert(before.records);
+            required_draw_versions.insert(before.records);
         }
     }
     if header.format != game.stream_format() {
@@ -1985,16 +1971,8 @@ where
     if header.resume_policy != RESUME_IDENTIFIER {
         return Err("campaign stream resume policy is not recognized".into());
     }
-    let replay_run = game.resolve_recorded(&GameIdentifiers {
-        controller_vocabulary: header.controller_vocabulary.clone(),
-        key_policy: header.key_policy.clone(),
-        duration_policy: header.duration_policy.clone(),
-        suffix_policy: header.suffix_policy.clone(),
-        chord_policy: header.chord_policy.clone(),
-        replacement_policy: header.replacement_policy.clone(),
-        resume_policy: header.resume_policy.clone(),
-    })?;
-    let chord_origin: CampaignOrigin<G> = match origin_report {
+    let replay_run = game.resolve_recorded(&header.game_policies)?;
+    let replay_origin: CampaignOrigin<G> = match origin_report {
         Some(report) => CampaignOrigin::Archive {
             path: header.origin_path.clone().unwrap_or_default(),
             file_sha256: header.origin_archive_sha256.clone().unwrap_or_default(),
@@ -2008,7 +1986,7 @@ where
     {
         return Err("campaign replay checkpoint does not match the recorded stream".into());
     }
-    let draw_origin = match &chord_origin {
+    let draw_origin = match &replay_origin {
         CampaignOrigin::Genesis => None,
         CampaignOrigin::Archive {
             file_sha256,
@@ -2016,12 +1994,12 @@ where
             ..
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
-    let (mut draw_state, replay_chord_header) =
+    let (mut draw_state, replay_draw_header) =
         game.initial_draw_state(&replay_run, draw_origin)?;
-    if replay_chord_header != header.chord_table {
-        return Err("re-derived chord table does not match the recorded header".into());
+    if replay_draw_header != header.draw_table {
+        return Err("re-derived draw table does not match the recorded header".into());
     }
-    game.remember_draw_version(&mut draw_state, &required_chord_versions)?;
+    game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
     let mut core = CoordinatorCore::new(game, header.action_limit, header.archive_entry_limit);
     core.archive.selector_policy = replay_selector.clone();
     let mut counters = CampaignCounters::new(header.workers);
@@ -2029,7 +2007,7 @@ where
         format!("failed to build the replay target: {error}").into()
     })?;
     let frames_before = game.frames_clocked(&target);
-    counters.tree_import = bootstrap_core(game, &mut core, &mut target, &chord_origin)?;
+    counters.tree_import = bootstrap_core(game, &mut core, &mut target, &replay_origin)?;
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
 
     for line in record_lines {
@@ -2043,7 +2021,7 @@ where
                 let suffix = game.expand_suffix_recorded(
                     &replay_run,
                     &draw_state,
-                    skip.chord_table_before.as_ref(),
+                    skip.draw_table_before.as_ref(),
                     skip.mutation_seed,
                 )?;
                 if !core.all_prefixes_archived(parent_index, &suffix) {
@@ -2058,12 +2036,12 @@ where
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
-                let chord_table_after =
+                let draw_table_after =
                     game.finish_stream_record(&replay_run, &mut draw_state, &[])?;
-                if chord_table_after != skip.chord_table_after {
-                    return Err("replayed skip chord-table checkpoint diverged".into());
+                if draw_table_after != skip.draw_table_after {
+                    return Err("replayed skip draw-table checkpoint diverged".into());
                 }
-                game.remember_draw_version(&mut draw_state, &required_chord_versions)?;
+                game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
                 let parent_index = usize::try_from(job.parent_id)?;
@@ -2078,7 +2056,7 @@ where
                 let suffix = game.expand_suffix_recorded(
                     &replay_run,
                     &draw_state,
-                    job.chord_table_before.as_ref(),
+                    job.draw_table_before.as_ref(),
                     job.mutation_seed,
                 )?;
                 let job_frames_before = game.frames_clocked(&target);
@@ -2124,16 +2102,16 @@ where
                     )
                     .into());
                 }
-                let chord_table_after =
+                let draw_table_after =
                     finish_record(game, &replay_run, &mut draw_state, &core, &decisions)?;
-                if chord_table_after != job.chord_table_after {
+                if draw_table_after != job.draw_table_after {
                     return Err(format!(
-                        "replayed job {} chord-table checkpoint diverged",
+                        "replayed job {} draw-table checkpoint diverged",
                         job.sequence
                     )
                     .into());
                 }
-                game.remember_draw_version(&mut draw_state, &required_chord_versions)?;
+                game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
                 core.archive.record_selection(parent_index, &job.selector);
                 core.archive.record_selection_outcome(
