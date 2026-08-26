@@ -17,8 +17,9 @@
 
 use hypercall_proto::{Service, Status};
 use vm_state::Arm64VmState;
-use vmm_backend::{Arm64, Arm64VcpuState, Backend, Gpa};
+use vmm_backend::{Arm64, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
+use crate::prescriptive::{DeviceClass, NormalizedEventClass};
 use crate::snapshot::SnapshotError;
 use crate::vendor::InterruptReject;
 use crate::vendor::arm64::contract;
@@ -65,6 +66,72 @@ fn is_gicd_irouter(addr: u64) -> bool {
     let first_spi = GICD.0 + IROUTER_BASE + 32 * 8;
     let end = first_spi + u64::from(IMPL_SPIS) * 8;
     (first_spi..end).contains(&addr) && addr.is_multiple_of(8)
+}
+
+/// Convert an ARM backend exit to the substrate-independent M1 log shape.
+/// Payloads are fixed-order little-endian encodings of every field that can
+/// affect dispatch; no backend debug string or host address enters this log.
+pub(crate) fn normalize_prescriptive_exit_arm64(
+    exit: &Exit<Arm64>,
+) -> (NormalizedEventClass, Vec<u8>) {
+    use super::board::{DOORBELL, GICD, GICR, PL011, PVCLOCK};
+
+    match exit {
+        Exit::Common(CommonExit::Mmio { gpa, size, write }) => {
+            let mut payload = gpa.0.to_le_bytes().to_vec();
+            payload.push(*size);
+            match write {
+                Some(value) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&value.to_le_bytes());
+                }
+                None => payload.push(0),
+            }
+            let class = if in_frame(gpa.0, PL011) {
+                NormalizedEventClass::DeviceMmio(DeviceClass::Serial)
+            } else if in_frame(gpa.0, GICD) || in_frame(gpa.0, GICR) {
+                NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
+            } else if in_frame(gpa.0, PVCLOCK) {
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
+            } else if in_frame(gpa.0, DOORBELL) {
+                NormalizedEventClass::Doorbell
+            } else {
+                // Dispatch will fail closed. Retain a stable class in the raw
+                // failure trace without pretending it was a modeled device.
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
+            };
+            (class, payload)
+        }
+        Exit::Arch(vmm_backend::Arm64Exit::Sysreg { sysreg, write }) => {
+            let mut payload = sysreg.to_le_bytes().to_vec();
+            match write {
+                Some(value) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&value.to_le_bytes());
+                }
+                None => payload.push(0),
+            }
+            let class = if matches!(*sysreg, OSDLR_EL1 | OSLAR_EL1) {
+                NormalizedEventClass::ArchitecturalControl
+            } else {
+                NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
+            };
+            (class, payload)
+        }
+        Exit::Common(CommonExit::Idle) => (NormalizedEventClass::Idle, Vec::new()),
+        Exit::Common(CommonExit::Shutdown) => (NormalizedEventClass::Terminal, Vec::new()),
+        Exit::Common(CommonExit::Hypercall(frame)) => {
+            let mut payload = Vec::new();
+            for arg in frame.args {
+                payload.extend_from_slice(&arg.to_le_bytes());
+            }
+            (NormalizedEventClass::Doorbell, payload)
+        }
+        Exit::Common(CommonExit::Deadline { reached }) => (
+            NormalizedEventClass::TimeRead,
+            reached.0.to_le_bytes().to_vec(),
+        ),
+    }
 }
 
 /// The arm64 per-VM device state
@@ -486,11 +553,14 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// PPI20 device input is high is a protocol fault; the guest must ACK or
     /// DISARM first.
     fn arm_clockevent_program(&mut self, deadline: u64) -> Result<(), VmmError> {
+        use super::board::PVCLOCK_PPI;
+
         if self.devices.clockevent.line_asserted {
             return Err(VmmError::ContractViolation(
                 "arm64 clockevent deadline write while PPI20 is asserted".to_string(),
             ));
         }
+        self.trace_arm_clockevent_schedule(deadline, PVCLOCK_PPI)?;
         self.devices.clockevent.deadline = Some(deadline);
         Ok(())
     }
@@ -501,6 +571,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
 
         match control {
             1 => {
+                if self.devices.clockevent.deadline.is_some() {
+                    self.trace_arm_clockevent_cancel()?;
+                }
                 self.devices.clockevent.deadline = None;
                 if self.devices.clockevent.line_asserted {
                     let gic = self.devices.gic.as_mut().ok_or_else(|| {
@@ -575,6 +648,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         gic.raise(PVCLOCK_PPI).map_err(|e| {
             VmmError::ContractViolation(format!("arm64 clockevent could not assert PPI20: {e}"))
         })?;
+        self.trace_arm_clockevent_delivery()?;
         self.devices.clockevent.deadline = None;
         self.devices.clockevent.line_asserted = true;
         self.devices.clockevent.assertions = self.devices.clockevent.assertions.saturating_add(1);

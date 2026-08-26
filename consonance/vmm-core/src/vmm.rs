@@ -19,6 +19,7 @@ use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, ArchCaps, Backend, CommonExit, Exit, Moment};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
+use crate::prescriptive::LivePrescriptiveTrace;
 use crate::vendor::Vendor;
 use crate::work::{WorkError, WorkSource};
 
@@ -799,6 +800,11 @@ where
     /// V-time + seeded-RNG wiring for the determinism-complete path. `None` for
     /// stock KVM / M1/M2 (RDTSC/RNG never surface there).
     pub(crate) vtime: Option<VtimeWiring>,
+    /// Host-side production trace for assigned-at-exit V-time. This is oracle
+    /// evidence only: it is deliberately excluded from snapshots and hashes,
+    /// while the device state and assigned clock that produced it remain part
+    /// of both.
+    pub(crate) prescriptive_trace: Option<LivePrescriptiveTrace>,
     /// Set when the most-recently-serviced exit staged an **RNG** completion
     /// (RDRAND/RDSEED) whose seeded draw advanced the entropy stream but whose
     /// register-write/RIP-advance is only staged for the next `KVM_RUN` (not in
@@ -934,6 +940,7 @@ where
             terminal: None,
             saved_state: None,
             vtime: None,
+            prescriptive_trace: None,
             rng_completion_staged: false,
             completion_staged: false,
             // A fresh VM is at work 0: the effective V-time is exactly `vns_base`, so
@@ -956,8 +963,89 @@ where
     /// unwired). After this, `RDTSC`/`RDTSCP` resolve to `VClock::guest_ticks(work)` and
     /// `RDRAND`/`RDSEED` to the seeded stream, instead of failing closed.
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
+        self.prescriptive_trace = wiring.prescriptive.then(LivePrescriptiveTrace::default);
         self.vtime = Some(wiring);
         self
+    }
+
+    /// Production normalized trace, present only for assigned-at-exit V-time.
+    pub fn prescriptive_trace(&self) -> Option<&LivePrescriptiveTrace> {
+        self.prescriptive_trace.as_ref()
+    }
+
+    /// Attach the current full-state hash to the trace's final event.
+    ///
+    /// # Errors
+    /// Returns [`VmmError::ContractViolation`] when the production trace is not
+    /// wired or no exit has completed.
+    pub fn checkpoint_prescriptive_trace(&mut self) -> Result<(), VmmError> {
+        let hash = self.state_hash();
+        self.prescriptive_trace
+            .as_mut()
+            .ok_or_else(|| {
+                VmmError::ContractViolation(
+                    "prescriptive trace checkpoint without prescriptive V-time".to_string(),
+                )
+            })?
+            .checkpoint_last(hash)
+            .map_err(|message| VmmError::ContractViolation(message.to_string()))
+    }
+
+    /// Record a guest-clock deadline in the independent production schedule.
+    pub(crate) fn trace_arm_clockevent_schedule(
+        &mut self,
+        deadline_ticks: u64,
+        interrupt_id: u32,
+    ) -> Result<(), VmmError> {
+        let Some(trace) = self.prescriptive_trace.as_mut() else {
+            return Ok(());
+        };
+        let vt = self.vtime.as_ref().ok_or_else(|| {
+            VmmError::ContractViolation(
+                "prescriptive clockevent schedule without V-time wiring".to_string(),
+            )
+        })?;
+        if vt.guest_clock_offset != 0 {
+            return Err(VmmError::ContractViolation(
+                "prescriptive clockevent schedule with nonzero guest-clock offset".to_string(),
+            ));
+        }
+        let ticks = deadline_ticks.saturating_sub(vt.cfg.guest_base);
+        let numerator = u128::from(ticks) * 1_000_000_000_u128;
+        let hz = u128::from(vt.cfg.guest_hz);
+        if hz == 0 {
+            return Err(VmmError::ContractViolation(
+                "prescriptive clockevent schedule with zero guest frequency".to_string(),
+            ));
+        }
+        let deadline_vns = numerator
+            .saturating_add(hz - 1)
+            .checked_div(hz)
+            .unwrap_or(u128::MAX)
+            .min(u128::from(u64::MAX)) as u64;
+        trace
+            .schedule_clockevent(deadline_vns, interrupt_id)
+            .map_err(|message| VmmError::ContractViolation(message.to_string()))
+    }
+
+    /// Mark the active production clockevent schedule canceled at this exit.
+    pub(crate) fn trace_arm_clockevent_cancel(&mut self) -> Result<(), VmmError> {
+        let Some(trace) = self.prescriptive_trace.as_mut() else {
+            return Ok(());
+        };
+        trace
+            .cancel_clockevent()
+            .map_err(|message| VmmError::ContractViolation(message.to_string()))
+    }
+
+    /// Bind a delivered clockevent to the schedule active at this exit.
+    pub(crate) fn trace_arm_clockevent_delivery(&mut self) -> Result<(), VmmError> {
+        let Some(trace) = self.prescriptive_trace.as_mut() else {
+            return Ok(());
+        };
+        trace
+            .deliver_clockevent()
+            .map_err(|message| VmmError::ContractViolation(message.to_string()))
     }
 
     /// Assign V-time at a serviced exit. Prescriptive compositions call this
@@ -1857,6 +1945,20 @@ where
             Some(d) => self.backend.run_until(d)?,
             None => self.backend.run()?,
         };
+        let trace_started = if let Some(trace) = self.prescriptive_trace.as_mut() {
+            if let Some((class, payload)) = <B::A as Vendor>::normalize_prescriptive_exit(&exit) {
+                let reason = exit.reason();
+                let backend_debug = format!("{reason:?}");
+                trace
+                    .begin(reason, backend_debug, class, payload)
+                    .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         // Did the guest ACTUALLY enter this call? (Round-13 zero-step invariant.) `run()`
         // always enters; a `run_until` GUEST EXIT means the guest ran; a `run_until`
         // `Deadline` entered iff work advanced past `work_before` — the no-entry zero-step
@@ -1928,6 +2030,30 @@ where
         // unless a page is registered.
         self.pvclock_refresh()?;
         <B::A as Vendor>::post_exit(self)?;
+        if trace_started {
+            let event_index = self
+                .prescriptive_trace
+                .as_ref()
+                .expect("trace was started")
+                .current_event_index()
+                .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+            let checkpoint = (event_index + 1).is_multiple_of(256);
+            let state_hash = checkpoint.then(|| self.state_hash());
+            let vns_after = self
+                .vtime
+                .as_ref()
+                .ok_or_else(|| {
+                    VmmError::ContractViolation(
+                        "prescriptive trace completed without V-time wiring".to_string(),
+                    )
+                })?
+                .prescriptive_vns();
+            self.prescriptive_trace
+                .as_mut()
+                .expect("trace was started")
+                .finish(vns_after, state_hash)
+                .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+        }
         Ok(step)
     }
 

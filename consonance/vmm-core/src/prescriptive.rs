@@ -29,6 +29,9 @@ pub const PLACEHOLDER_PARAVIRTUAL_DEVICE_MMIO_VNS: u64 = 1;
 /// Placeholder duration for a trapped guest time read.
 pub const PLACEHOLDER_TRAPPED_TIME_READ_VNS: u64 = 1;
 
+/// Placeholder duration for a trapped architectural-control access.
+pub const PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS: u64 = 1;
+
 /// Device classes whose contract constants advance prescriptive V-time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeviceClass {
@@ -54,6 +57,8 @@ pub struct PrescriptiveTiming {
     pub paravirtual_device_mmio_vns: u64,
     /// V-ns assigned to a trapped time read.
     pub trapped_time_read_vns: u64,
+    /// V-ns assigned to a trapped deterministic architectural control.
+    pub architectural_control_vns: u64,
 }
 
 impl Default for PrescriptiveTiming {
@@ -63,6 +68,7 @@ impl Default for PrescriptiveTiming {
             serial_mmio_vns: PLACEHOLDER_SERIAL_MMIO_VNS,
             paravirtual_device_mmio_vns: PLACEHOLDER_PARAVIRTUAL_DEVICE_MMIO_VNS,
             trapped_time_read_vns: PLACEHOLDER_TRAPPED_TIME_READ_VNS,
+            architectural_control_vns: PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS,
         }
     }
 }
@@ -86,6 +92,8 @@ pub enum NormalizedEventClass {
     DeviceMmio(DeviceClass),
     /// Counter-shaped sysreg read or pvclock refresh.
     TimeRead,
+    /// Deterministic architectural-control trap outside a device model.
+    ArchitecturalControl,
     /// Guest WFI/HLT idle exit.
     Idle,
     /// A terminal exit, which advances by zero.
@@ -102,6 +110,7 @@ impl NormalizedEventClass {
             Self::TimeRead => 4,
             Self::Idle => 5,
             Self::Terminal => 6,
+            Self::ArchitecturalControl => 7,
         }
     }
 }
@@ -111,6 +120,7 @@ enum AdvanceRule {
     Doorbell(u64),
     DeviceMmio(DeviceClass),
     TimeRead,
+    ArchitecturalControl,
     Idle,
     None,
 }
@@ -158,6 +168,16 @@ impl ClassifiedExit {
         }
     }
 
+    /// A deterministic architectural-control trap.
+    pub fn architectural_control(payload: Vec<u8>) -> Self {
+        Self {
+            class: NormalizedEventClass::ArchitecturalControl,
+            payload,
+            advance: AdvanceRule::ArchitecturalControl,
+            terminal: false,
+        }
+    }
+
     /// A WFI/HLT exit.  The clock jumps to the earliest scheduled deadline.
     pub fn idle(payload: Vec<u8>) -> Self {
         Self {
@@ -193,6 +213,9 @@ pub struct ScheduledInterrupt {
     /// boundary prevents the independent checker from requiring delivery at an
     /// earlier event, before the timer existed.
     pub armed_for_event: u64,
+    /// Exit that canceled/replaced this deadline before post-exit delivery.
+    /// `None` means it remains live until delivered.
+    pub canceled_at_event: Option<u64>,
     /// Vendor-neutral wire interrupt identity.
     pub interrupt_id: u32,
 }
@@ -251,6 +274,225 @@ pub struct NormalizedEvent {
 pub struct NormalizedLog {
     /// Ordered exit records.
     pub events: Vec<NormalizedEvent>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingLiveEvent {
+    raw: RawEvent,
+    class: NormalizedEventClass,
+    payload: Vec<u8>,
+}
+
+/// Full prescriptive trace captured by the production VMM run loop.
+///
+/// The trace is host-side evidence only: it is excluded from snapshots and
+/// state hashes. It retains every raw exit for local diagnosis, every
+/// normalized exit for cross-run comparison, and the immutable deadline
+/// schedule (including cancellation events) for the independent placement
+/// checker.
+#[derive(Clone, Debug, Default)]
+pub struct LivePrescriptiveTrace {
+    raw: Vec<RawEvent>,
+    normalized: NormalizedLog,
+    schedule: Vec<ScheduledInterrupt>,
+    next_schedule_index: u64,
+    active_clockevent_schedule: Option<u64>,
+    pending: Option<PendingLiveEvent>,
+    current_interrupts: Vec<InterruptDelivery>,
+}
+
+impl LivePrescriptiveTrace {
+    /// Backend-local raw exits. Never compare this across substrates.
+    pub fn raw_log(&self) -> &[RawEvent] {
+        &self.raw
+    }
+
+    /// Complete guest-visible normalized exit log.
+    pub fn normalized_log(&self) -> &NormalizedLog {
+        &self.normalized
+    }
+
+    /// Immutable deadline schedule consumed by [`check_delivery_placement`].
+    pub fn schedule(&self) -> &[ScheduledInterrupt] {
+        &self.schedule
+    }
+
+    /// SHA-256 of the complete normalized log and deadline schedule in a fixed,
+    /// domain-separated little-endian encoding.
+    pub fn normalized_digest(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"consonance.live-prescriptive-log.v1\0");
+        h.update(
+            u64::try_from(self.normalized.events.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        for event in &self.normalized.events {
+            h.update(event.event_index.to_le_bytes());
+            h.update([event.class.tag()]);
+            h.update(event.payload_digest);
+            h.update(event.vns_after.to_le_bytes());
+            h.update(
+                u64::try_from(event.interrupts.len())
+                    .unwrap_or(u64::MAX)
+                    .to_le_bytes(),
+            );
+            for delivery in &event.interrupts {
+                h.update(delivery.deadline_vns.to_le_bytes());
+                h.update(delivery.schedule_index.to_le_bytes());
+                h.update(delivery.interrupt_id.to_le_bytes());
+            }
+            match event.state_hash {
+                Some(hash) => {
+                    h.update([1]);
+                    h.update(hash);
+                }
+                None => h.update([0]),
+            }
+        }
+        h.update(
+            u64::try_from(self.schedule.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
+        for scheduled in &self.schedule {
+            h.update(scheduled.deadline_vns.to_le_bytes());
+            h.update(scheduled.schedule_index.to_le_bytes());
+            h.update(scheduled.armed_for_event.to_le_bytes());
+            match scheduled.canceled_at_event {
+                Some(event) => {
+                    h.update([1]);
+                    h.update(event.to_le_bytes());
+                }
+                None => h.update([0]),
+            }
+            h.update(scheduled.interrupt_id.to_le_bytes());
+        }
+        h.finalize().into()
+    }
+
+    pub(crate) fn begin(
+        &mut self,
+        reason: ExitReason,
+        backend_debug: String,
+        class: NormalizedEventClass,
+        payload: Vec<u8>,
+    ) -> Result<(), &'static str> {
+        if self.pending.is_some() {
+            return Err("prescriptive trace began a second event before finishing the first");
+        }
+        let event_index = u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX);
+        self.pending = Some(PendingLiveEvent {
+            raw: RawEvent {
+                event_index,
+                reason,
+                backend_debug,
+            },
+            class,
+            payload,
+        });
+        self.current_interrupts.clear();
+        Ok(())
+    }
+
+    pub(crate) fn current_event_index(&self) -> Result<u64, &'static str> {
+        self.pending
+            .as_ref()
+            .map(|pending| pending.raw.event_index)
+            .ok_or("prescriptive trace operation outside an active event")
+    }
+
+    pub(crate) fn schedule_clockevent(
+        &mut self,
+        deadline_vns: u64,
+        interrupt_id: u32,
+    ) -> Result<(), &'static str> {
+        let event = self.current_event_index()?;
+        self.cancel_clockevent_at(event)?;
+        let schedule_index = self.next_schedule_index;
+        self.next_schedule_index = self
+            .next_schedule_index
+            .checked_add(1)
+            .ok_or("prescriptive clockevent schedule index exhausted")?;
+        self.schedule.push(ScheduledInterrupt {
+            deadline_vns,
+            schedule_index,
+            armed_for_event: event,
+            canceled_at_event: None,
+            interrupt_id,
+        });
+        self.active_clockevent_schedule = Some(schedule_index);
+        Ok(())
+    }
+
+    pub(crate) fn cancel_clockevent(&mut self) -> Result<(), &'static str> {
+        let event = self.current_event_index()?;
+        self.cancel_clockevent_at(event)
+    }
+
+    fn cancel_clockevent_at(&mut self, event: u64) -> Result<(), &'static str> {
+        let Some(schedule_index) = self.active_clockevent_schedule.take() else {
+            return Ok(());
+        };
+        let scheduled = self
+            .schedule
+            .iter_mut()
+            .find(|scheduled| scheduled.schedule_index == schedule_index)
+            .ok_or("active prescriptive clockevent schedule record is missing")?;
+        if scheduled.canceled_at_event.is_some() {
+            return Err("active prescriptive clockevent schedule was already canceled");
+        }
+        scheduled.canceled_at_event = Some(event);
+        Ok(())
+    }
+
+    pub(crate) fn deliver_clockevent(&mut self) -> Result<(), &'static str> {
+        let schedule_index = self
+            .active_clockevent_schedule
+            .take()
+            .ok_or("clockevent delivery has no active prescriptive schedule")?;
+        let scheduled = self
+            .schedule
+            .iter()
+            .find(|scheduled| scheduled.schedule_index == schedule_index)
+            .ok_or("delivered prescriptive clockevent schedule record is missing")?;
+        if scheduled.canceled_at_event.is_some() {
+            return Err("canceled prescriptive clockevent was delivered");
+        }
+        self.current_interrupts.push((*scheduled).into());
+        Ok(())
+    }
+
+    pub(crate) fn finish(
+        &mut self,
+        vns_after: u64,
+        state_hash: Option<[u8; 32]>,
+    ) -> Result<(), &'static str> {
+        let pending = self
+            .pending
+            .take()
+            .ok_or("prescriptive trace finished with no active event")?;
+        self.raw.push(pending.raw);
+        self.normalized.events.push(NormalizedEvent {
+            event_index: u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX),
+            class: pending.class,
+            payload_digest: digest_payload(pending.class, &pending.payload),
+            vns_after,
+            interrupts: std::mem::take(&mut self.current_interrupts),
+            state_hash,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn checkpoint_last(&mut self, state_hash: [u8; 32]) -> Result<(), &'static str> {
+        let last = self
+            .normalized
+            .events
+            .last_mut()
+            .ok_or("cannot checkpoint an empty prescriptive trace")?;
+        last.state_hash = Some(state_hash);
+        Ok(())
+    }
 }
 
 /// State supplied to the full-state checkpoint callback.
@@ -389,6 +631,7 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
             deadline_vns,
             schedule_index,
             armed_for_event: self.next_event_index,
+            canceled_at_event: None,
             interrupt_id,
         };
         let token = TimerToken(schedule_index);
@@ -452,6 +695,7 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
             AdvanceRule::Doorbell(duration_vns) => duration_vns,
             AdvanceRule::DeviceMmio(class) => self.timing.mmio_vns(class),
             AdvanceRule::TimeRead => self.timing.trapped_time_read_vns,
+            AdvanceRule::ArchitecturalControl => self.timing.architectural_control_vns,
             AdvanceRule::Idle => {
                 let (deadline, _) = self
                     .timers
@@ -507,7 +751,7 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
     }
 }
 
-fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8; 32] {
+pub(crate) fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"consonance.prescriptive-event.v1\0");
     hasher.update([class.tag()]);
@@ -665,6 +909,9 @@ pub fn check_delivery_placement(
             .filter_map(|(index, scheduled)| {
                 (!delivered[index]
                     && scheduled.armed_for_event <= event.event_index
+                    && scheduled
+                        .canceled_at_event
+                        .is_none_or(|canceled| canceled > event.event_index)
                     && scheduled.deadline_vns <= event.vns_after)
                     .then_some(index)
             })
@@ -685,10 +932,18 @@ pub fn check_delivery_placement(
         }
     }
 
-    if let Some((_, missing)) = ordered
-        .iter()
-        .enumerate()
-        .find(|(index, _)| !delivered[*index])
+    // A milestone log is a finite prefix ending at its observation marker
+    // (`/init` for M1), not necessarily a terminal VM state. A still-armed
+    // deadline strictly beyond the prefix's final V-time is not late and must
+    // remain in the schedule so the state/checkpoint is honest. Reject only a
+    // live deadline that had become eligible within the observed prefix.
+    if let Some(last) = log.events.last()
+        && let Some((_, missing)) = ordered.iter().enumerate().find(|(index, scheduled)| {
+            !delivered[*index]
+                && scheduled.canceled_at_event.is_none()
+                && scheduled.armed_for_event <= last.event_index
+                && scheduled.deadline_vns <= last.vns_after
+        })
     {
         return Err(PlacementViolation::Undelivered {
             schedule_index: missing.schedule_index,
@@ -696,4 +951,103 @@ pub fn check_delivery_placement(
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod live_trace_tests {
+    use super::*;
+
+    #[test]
+    fn replacement_and_disarm_are_recorded_as_cancellations() {
+        let mut trace = LivePrescriptiveTrace::default();
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "Mmio".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                vec![1],
+            )
+            .unwrap();
+        trace.schedule_clockevent(10, 20).unwrap();
+        trace.schedule_clockevent(20, 20).unwrap();
+        trace.finish(1, None).unwrap();
+
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "Mmio".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                vec![2],
+            )
+            .unwrap();
+        trace.cancel_clockevent().unwrap();
+        trace.finish(2, None).unwrap();
+
+        assert_eq!(trace.schedule.len(), 2);
+        assert_eq!(trace.schedule[0].canceled_at_event, Some(0));
+        assert_eq!(trace.schedule[1].canceled_at_event, Some(1));
+        check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
+    }
+
+    #[test]
+    fn live_delivery_is_bound_to_the_active_schedule() {
+        let mut trace = LivePrescriptiveTrace::default();
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "Mmio".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                vec![3],
+            )
+            .unwrap();
+        trace.schedule_clockevent(4, 20).unwrap();
+        trace.finish(1, None).unwrap();
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "Mmio".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Serial),
+                vec![4],
+            )
+            .unwrap();
+        trace.deliver_clockevent().unwrap();
+        trace.finish(4, None).unwrap();
+
+        check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
+        assert_eq!(trace.normalized.events[1].interrupts.len(), 1);
+    }
+
+    #[test]
+    fn finite_prefix_permits_only_deadlines_beyond_its_final_vtime() {
+        let event = NormalizedEvent {
+            event_index: 0,
+            class: NormalizedEventClass::Terminal,
+            payload_digest: [0; 32],
+            vns_after: 9,
+            interrupts: Vec::new(),
+            state_hash: None,
+        };
+        let schedule = [ScheduledInterrupt {
+            deadline_vns: 10,
+            schedule_index: 0,
+            armed_for_event: 0,
+            canceled_at_event: None,
+            interrupt_id: 20,
+        }];
+        let prefix = NormalizedLog {
+            events: vec![event.clone()],
+        };
+        check_delivery_placement(&schedule, &prefix).unwrap();
+
+        let due = NormalizedLog {
+            events: vec![NormalizedEvent {
+                vns_after: 10,
+                ..event
+            }],
+        };
+        assert!(matches!(
+            check_delivery_placement(&schedule, &due),
+            Err(PlacementViolation::WrongDelivery { event_index: 0, .. })
+        ));
+    }
 }

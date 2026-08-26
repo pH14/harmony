@@ -25,8 +25,9 @@
 //! trait-freeze memo (the ARM spike) owns the freeze decision.
 
 use control_proto::RegsView;
-use vmm_backend::{Arch, Backend, Gpa};
+use vmm_backend::{Arch, Backend, Exit, Gpa};
 
+use crate::prescriptive::NormalizedEventClass;
 use crate::vmm::{Step, Vmm, VmmError};
 
 pub mod arm64;
@@ -124,6 +125,14 @@ pub trait Vendor: Arch + Sized {
     /// guest clock with its paravirtual clockevent deadline.
     fn post_exit<B: Backend<A = Self>>(_vmm: &mut Vmm<B>) -> Result<(), VmmError> {
         Ok(())
+    }
+
+    /// Normalize one backend exit for the production prescriptive trace. A
+    /// descriptive-only vendor may return `None`; a prescriptive composition
+    /// that returns `Some` records the complete payload before dispatch mutates
+    /// device state.
+    fn normalize_prescriptive_exit(_exit: &Exit<Self>) -> Option<(NormalizedEventClass, Vec<u8>)> {
+        None
     }
 
     // --- interrupt fabric ----------------------------------------------------

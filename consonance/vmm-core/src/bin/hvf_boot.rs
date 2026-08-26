@@ -2,6 +2,64 @@
 //! Event-count-bounded live arm64 Linux boot on Hypervisor.framework.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+fn placement_event(error: &vmm_core::prescriptive::PlacementViolation) -> Option<u64> {
+    use vmm_core::prescriptive::PlacementViolation;
+
+    match error {
+        PlacementViolation::BadEventIndex { position, .. } => Some(*position),
+        PlacementViolation::VtimeRegressed { event_index, .. }
+        | PlacementViolation::WrongDelivery { event_index, .. } => Some(*event_index),
+        PlacementViolation::Undelivered { .. } => None,
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+fn write_normalized_log(
+    path: &std::path::Path,
+    trace: &vmm_core::prescriptive::LivePrescriptiveTrace,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    writeln!(out, "format consonance.live-prescriptive-log.v1")?;
+    writeln!(out, "digest {}", hex(&trace.normalized_digest()))?;
+    writeln!(out, "events {}", trace.normalized_log().events.len())?;
+    for event in &trace.normalized_log().events {
+        writeln!(
+            out,
+            "event {} class={:?} payload={} vns={} interrupts={:?} state_hash={}",
+            event.event_index,
+            event.class,
+            hex(&event.payload_digest),
+            event.vns_after,
+            event.interrupts,
+            event
+                .state_hash
+                .as_ref()
+                .map_or_else(|| "-".to_string(), |hash| hex(hash)),
+        )?;
+    }
+    writeln!(out, "schedules {}", trace.schedule().len())?;
+    for scheduled in trace.schedule() {
+        writeln!(
+            out,
+            "schedule {} deadline_vns={} armed_for_event={} canceled_at_event={:?} interrupt_id={}",
+            scheduled.schedule_index,
+            scheduled.deadline_vns,
+            scheduled.armed_for_event,
+            scheduled.canceled_at_event,
+            scheduled.interrupt_id,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 fn main() -> std::process::ExitCode {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,11 +84,11 @@ fn main() -> std::process::ExitCode {
 
     let mut args = std::env::args_os().skip(1);
     let Some(image_path) = args.next() else {
-        eprintln!("usage: hvf_boot <Image> <initramfs.cpio.gz> [max-events]");
+        eprintln!("usage: hvf_boot <Image> <initramfs.cpio.gz> [max-events] [normalized-log]");
         return std::process::ExitCode::from(2);
     };
     let Some(initramfs_path) = args.next() else {
-        eprintln!("usage: hvf_boot <Image> <initramfs.cpio.gz> [max-events]");
+        eprintln!("usage: hvf_boot <Image> <initramfs.cpio.gz> [max-events] [normalized-log]");
         return std::process::ExitCode::from(2);
     };
     let max_events = match args.next() {
@@ -43,8 +101,9 @@ fn main() -> std::process::ExitCode {
         },
         None => DEFAULT_MAX_EVENTS,
     };
+    let normalized_log_path = args.next();
     if args.next().is_some() {
-        eprintln!("usage: hvf_boot <Image> <initramfs.cpio.gz> [max-events]");
+        eprintln!("usage: hvf_boot <Image> <initramfs.cpio.gz> [max-events] [normalized-log]");
         return std::process::ExitCode::from(2);
     }
 
@@ -147,9 +206,130 @@ fn main() -> std::process::ExitCode {
             emitted = serial.len();
         }
         if serial.windows(READY.len()).any(|window| window == READY) {
+            use vmm_core::prescriptive::{
+                LogField, check_delivery_placement, compare_normalized_logs,
+            };
+
+            if let Err(error) = vmm.checkpoint_prescriptive_trace() {
+                eprintln!("cannot checkpoint production prescriptive trace: {error}");
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
+            let trace = vmm
+                .prescriptive_trace()
+                .expect("prescriptive HVF composition wires a production trace");
+            if let Some(path) = normalized_log_path.as_deref()
+                && let Err(error) = write_normalized_log(std::path::Path::new(path), trace)
+            {
+                eprintln!("cannot write normalized log {path:?}: {error}");
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
+            if let Err(error) = check_delivery_placement(trace.schedule(), trace.normalized_log()) {
+                eprintln!(
+                    "production delivery-placement oracle failed: {error}; final_vns={:?}; \
+                     final_schedule={:?}",
+                    trace
+                        .normalized_log()
+                        .events
+                        .last()
+                        .map(|logged| logged.vns_after),
+                    trace.schedule().last(),
+                );
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
+            let deliveries: usize = trace
+                .normalized_log()
+                .events
+                .iter()
+                .map(|logged| logged.interrupts.len())
+                .sum();
+            if deliveries == 0 {
+                eprintln!("production trace contains no clockevent delivery");
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
+
+            // Required negative oracle on the exact production workload: move
+            // every delivered tick one exit late. Two identically late logs
+            // agree with each other, but both independent oracles must reject
+            // them at the first genuine delivery boundary.
+            let original = trace.normalized_log();
+            let mut late = original.clone();
+            for logged in &mut late.events {
+                logged.interrupts.clear();
+            }
+            for (index, logged) in original.events.iter().enumerate() {
+                if logged.interrupts.is_empty() {
+                    continue;
+                }
+                let Some(next) = late.events.get_mut(index + 1) else {
+                    eprintln!("cannot shift a final-event clockevent delivery one exit late");
+                    stop_watchdog(&watchdog_tx, watchdog);
+                    return std::process::ExitCode::FAILURE;
+                };
+                next.interrupts.extend_from_slice(&logged.interrupts);
+            }
+            let late_peer = late.clone();
+            if let Err(error) = compare_normalized_logs(&late, &late_peer) {
+                eprintln!("identically late negative logs unexpectedly diverged: {error}");
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
+            let divergence = match compare_normalized_logs(original, &late) {
+                Err(divergence) if divergence.field == LogField::Interrupts => divergence,
+                Err(divergence) => {
+                    eprintln!("late-log comparator reported wrong field: {divergence}");
+                    stop_watchdog(&watchdog_tx, watchdog);
+                    return std::process::ExitCode::FAILURE;
+                }
+                Ok(()) => {
+                    eprintln!("normalized comparator accepted a one-exit-late production log");
+                    stop_watchdog(&watchdog_tx, watchdog);
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            let placement = match check_delivery_placement(trace.schedule(), &late) {
+                Err(error) => error,
+                Ok(()) => {
+                    eprintln!("placement checker accepted a one-exit-late production log");
+                    stop_watchdog(&watchdog_tx, watchdog);
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            let Some(late_placement_event) = placement_event(&placement) else {
+                eprintln!("late-log placement failure had no exact event: {placement}");
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            };
+            if late_placement_event != divergence.event_index {
+                eprintln!(
+                    "negative oracles disagree: comparator event {}, placement event {}",
+                    divergence.event_index, late_placement_event
+                );
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
+            let checkpoints = original
+                .events
+                .iter()
+                .filter(|logged| logged.state_hash.is_some())
+                .count();
+            println!(
+                "HVF_M1_ORACLE events={} raw={} schedules={} deliveries={} checkpoints={} \
+                 placement=ok late_comparator_event={} late_placement_event={} log_digest={}",
+                original.events.len(),
+                trace.raw_log().len(),
+                trace.schedule().len(),
+                deliveries,
+                checkpoints,
+                divergence.event_index,
+                late_placement_event,
+                hex(&trace.normalized_digest()),
+            );
             let hash = vmm.state_hash();
-            let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
-            println!("HVF_BOOT_READY event={event} state_hash={hex}");
+            println!("HVF_BOOT_READY event={event} state_hash={}", hex(&hash));
             stop_watchdog(&watchdog_tx, watchdog);
             return std::process::ExitCode::SUCCESS;
         }

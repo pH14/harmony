@@ -23,7 +23,7 @@ use crate::prescriptive::PrescriptiveTiming;
 /// Assigned duration of one GIC distributor/redistributor/CPU-interface exit.
 pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 1_000;
 /// Assigned duration of one PL011 access.
-pub const SERIAL_EXIT_VNS: u64 = 1_000;
+pub const SERIAL_EXIT_VNS: u64 = 2_000;
 /// Assigned duration of one pvclock/clockevent MMIO access.
 pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
 /// Assigned duration of a trapped counter-shaped time read.
@@ -41,6 +41,7 @@ pub fn prescriptive_timing() -> PrescriptiveTiming {
         serial_mmio_vns: SERIAL_EXIT_VNS,
         paravirtual_device_mmio_vns: PARAVIRTUAL_EXIT_VNS,
         trapped_time_read_vns: TRAPPED_TIME_READ_VNS,
+        architectural_control_vns: ARCH_CONTROL_EXIT_VNS,
     }
 }
 
@@ -112,9 +113,9 @@ mod tests {
         let timing = prescriptive_timing();
         assert_ne!(timing, PrescriptiveTiming::default());
         assert_eq!(timing.interrupt_controller_mmio_vns, 1_000);
-        assert_eq!(timing.serial_mmio_vns, 1_000);
+        assert_eq!(timing.serial_mmio_vns, 2_000);
         assert_eq!(timing.paravirtual_device_mmio_vns, 1_000);
         assert_eq!(timing.trapped_time_read_vns, 1);
-        assert_eq!(ARCH_CONTROL_EXIT_VNS, 1_000);
+        assert_eq!(timing.architectural_control_vns, 1_000);
     }
 }

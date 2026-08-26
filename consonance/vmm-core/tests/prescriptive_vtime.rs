@@ -34,6 +34,7 @@ fn timing() -> PrescriptiveTiming {
         serial_mmio_vns: 5,
         paravirtual_device_mmio_vns: 7,
         trapped_time_read_vns: 2,
+        architectural_control_vns: 3,
     }
 }
 
@@ -287,6 +288,7 @@ fn payload_digest_is_domain_separated_by_event_class() {
         ClassifiedExit::device_mmio(DeviceClass::Serial, payload.clone()),
         ClassifiedExit::device_mmio(DeviceClass::Paravirtual, payload.clone()),
         ClassifiedExit::time_read(payload.clone()),
+        ClassifiedExit::architectural_control(payload.clone()),
         ClassifiedExit::terminal(payload.clone()),
     ];
     let mut digests = BTreeSet::new();
@@ -309,7 +311,7 @@ fn payload_digest_is_domain_separated_by_event_class() {
 
     assert_eq!(
         digests.len(),
-        7,
+        8,
         "every event class must domain-separate the same complete payload"
     );
 }

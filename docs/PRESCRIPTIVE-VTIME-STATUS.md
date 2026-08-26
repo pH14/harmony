@@ -85,6 +85,23 @@ dependency rather than silently weakening the criterion.
     deterministic readiness markers to the captured early console. The boot
     harness matches the complete marker independent of kernel `LF -> CRLF`
     transport translation.
+14. **A milestone log is a finite prefix, so future deadlines remain honest.**
+    The first production placement run ended at `/init` with V-time
+    `14,141,000` and one still-armed kernel tick at `17,528,000`. Requiring that
+    not-yet-eligible deadline to have fired is impossible without extending the
+    run past its observation marker. The checker now permits only an uncanceled
+    deadline strictly beyond the final V-time; a deadline due anywhere in the
+    prefix is still rejected at its first eligible event. A committed positive
+    and negative unit test fixes both halves, and the plan text now states this
+    finite-prefix rule explicitly.
+15. **The ARM serial contract assigns 2,000 V-ns per access.** The original
+    1,000 V-ns row reached `/init` before the kernel's first tick, leaving no
+    production interrupt placement to compare. A diagnostic guest-side padding
+    experiment was rejected because synchronous printk itself became
+    exit-starved and correctly tripped the watchdog. Assigning the normal PL011
+    class 2,000 V-ns makes the unchanged audited boot traffic cross the first
+    deadline; this is a normative, host-independent per-class constant, not a
+    workload-specific exit or a host-time measurement.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -283,12 +300,22 @@ work was begun before this evidence was recorded.
   state_hash=6949042e3fd067b9610c2ed46fffcb720ae04462bfafb340533ea54cb43a1e60
   exit status 0; liveness watchdog did not fire
   ```
-- **FAIL — ten same-seed full-boot normalized logs:** not started.
-- **FAIL — placement checker green for every boot:** not started.
-- **IN PROGRESS — no liveness-watchdog abort:** one complete boot passed; the
-  required ten-run corpus is not yet recorded.
-- **FAIL — one-exit-late tick comparator and consistent-error placement negatives:**
-  not started.
+- **IN PROGRESS — ten same-seed full-boot normalized logs:** the production run
+  loop now records all 14,141 exits, assigned V-time, exact payload digests,
+  clockevent schedule/delivery identity, 55 interval checkpoints plus the
+  `/init` checkpoint, and a canonical complete-log digest. One signed optimized
+  live run is green; the ten-run harness is committed but its corpus is not yet
+  recorded.
+- **IN PROGRESS — placement checker green for every boot:** one production boot
+  passed against its schedule with one real PPI20 delivery; the remaining nine
+  runs are pending.
+- **IN PROGRESS — no liveness-watchdog abort:** the first complete production
+  oracle boot passed; the required ten-run corpus is not yet recorded.
+- **PASS — one-exit-late tick comparator and consistent-error placement
+  negatives on the production workload:** `hvf_boot` moves every live delivery
+  one exit late, proves two identically late twins compare equal, then requires
+  the original-vs-late comparator and independent placement checker to reject
+  the exact same first event (`12,529`).
 - **IN PROGRESS — every retained state class perturbs the hash and round-trips
   restore:** SIMD/FP, debug registers and trap controls, virtual-timer
   register/mask/offset state, and pending IRQ/FIQ now ride backend state,
@@ -355,6 +382,18 @@ initramfs.cpio.gz sha256: d1ccc8d7cea812095bdf5cc77c4ac505c6a22f16b666f1ef111eb1
 656/656 tests (5 skipped), followed by an all-targets `clippy -D warnings`
 success (only the repository's pre-existing invalid-path notices) and a clean
 `cargo fmt --all -- --check`.
+
+First production normalized-log oracle after wiring the run loop and selecting
+the 2,000 V-ns PL011 row:
+
+```text
+HVF_M1_ORACLE events=14141 raw=14141 schedules=1 deliveries=1 checkpoints=56
+placement=ok late_comparator_event=12529 late_placement_event=12529
+log_digest=8604f41cd2373d0bb582982119d168c6da310098bd35f2005fadbd161e033a3e
+HVF_BOOT_READY event=14140
+state_hash=d9576a79a323fda8ee5aa49b9c998d7ace7d17d7f588f7d76f01368affa16af3
+exit status 0; liveness watchdog did not fire
+```
 
 ## M2 — NES campaign on the M1 Max
 

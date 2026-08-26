@@ -242,11 +242,15 @@ its checks are too weak to fail. Three rules apply to every milestone:
 2. **Delivery placement is checked against the schedule, not against another
    run.** An independent checker consumes a run's deadline schedule and its
    normalized log and asserts §2.1's delivery contract mechanically: every
-   deadline delivered exactly once, at the first event whose vns is at or after
+   deadline that matures within the finite log prefix delivered exactly once,
+   at the first event whose vns is at or after
    it, in FIFO order for equal deadlines, with the masked-at-deadline,
    WFI-at-deadline, simultaneous-deadline, and reassertion-after-unmask cases
    each exercised by a dedicated workload. Two runs that agree with each other
    but both place a delivery late fail this checker.
+   A deadline still armed strictly beyond the final event's vns remains in the
+   schedule and is not an undelivered error: milestone logs end at an observation
+   marker (`/init` in M1), not necessarily at a terminal or timer-quiescent state.
 3. **Every comparator is proven able to fail before its first real use.** Before
    a milestone's oracle counts, run it against a deliberately perturbed twin —
    one vns increment off by one, one interrupt delivered one exit late, one
