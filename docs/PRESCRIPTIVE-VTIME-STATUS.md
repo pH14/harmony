@@ -421,7 +421,8 @@ state_hash=d9576a79a323fda8ee5aa49b9c998d7ace7d17d7f588f7d76f01368affa16af3
 exit status 0; liveness watchdog did not fire
 ```
 
-Required ten-run corpus (`/private/tmp/harmony-m1-ten-c8829c7f`):
+Final-head ten-run corpus (`/private/tmp/harmony-m1-ten-bbc7d3d3`), rerun after
+the WFI and retained-state commits:
 
 ```text
 runs 01..10, each:
@@ -466,6 +467,13 @@ HVF_STATE_CLASS_OK class=vtimer
 HVF_STATE_CLASS_OK class=pending-interrupts
 HVF_STATE_ROUNDTRIP_OK classes=6 baseline_restores=6
 ```
+
+**M1 overall: PASS.** The measured Apple-HVF backend, audited cooperative image,
+paravirtual clocksource and clockevent, userspace GICv3, exact WFI landing,
+complete retained-state/hash/restore matrix, canonical-empty exclusive monitor,
+ten same-seed full normalized logs, independent delivery placement check, live
+comparator and placement negatives, and liveness watchdog criterion are all
+green on the current M1 head. M2 did not begin before this evidence was recorded.
 
 ## M2 — NES campaign on the M1 Max
 
