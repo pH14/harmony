@@ -492,6 +492,29 @@ pub struct DifferentialSmbSnapshot {
     local: SmbSnapshot,
 }
 
+impl DifferentialSmbSnapshot {
+    /// Number of actions from gameplay genesis to this branch point.
+    #[must_use]
+    pub fn lineage_len(&self) -> usize {
+        self.remote.lineage.len()
+    }
+
+    /// Canonical whole-machine hash captured at this branch point.
+    #[must_use]
+    pub fn state_hash(&self) -> [u8; 32] {
+        self.remote.state_hash()
+    }
+}
+
+/// Hash evidence for one uninterrupted-versus-restored continuation check.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ContinuationHashEvidence {
+    /// Whole-machine hash at the sampled branch point.
+    pub branch_state_hash: [u8; 32],
+    /// Whole-machine hash after every compared chord.
+    pub chord_state_hashes: Vec<[u8; 32]>,
+}
+
 impl SmbSnapshotEvidence for DifferentialSmbSnapshot {
     fn snapshot_wram(&self) -> &[u8] {
         self.remote.wram()
@@ -533,6 +556,68 @@ impl<M: GuestControlMachine> DifferentialSmbTarget<M> {
             && self.remote.is_dead() == self.local.is_dead()
             && self.remote.is_victory() == self.local.is_victory()
             && self.remote.exit_kind() == self.local.exit_kind()
+    }
+
+    /// Run a suffix without interruption, restore its current branch point,
+    /// and require the repeated suffix to reproduce every chord state hash.
+    ///
+    /// The target must already be positioned at the branch point to sample.
+    /// A fresh paired snapshot captures that exact state; the first path runs
+    /// directly onward, while the second begins only after restoring the pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty suffix, snapshot/control failure,
+    /// cross-build divergence, or the first differing replayed chord hash.
+    pub fn verify_current_continuation(
+        &mut self,
+        actions: &[ButtonChord],
+    ) -> Result<ContinuationHashEvidence, MachineError> {
+        if actions.is_empty() {
+            return Err(MachineError::Backend(
+                "continuation hash oracle requires at least one chord".into(),
+            ));
+        }
+        let branch = self.snapshot().ok_or_else(|| {
+            MachineError::Backend("continuation hash oracle could not snapshot the branch".into())
+        })?;
+        let mut uninterrupted = Vec::with_capacity(actions.len());
+        for action in actions {
+            self.apply(action);
+            if self.diverged || self.remote.exit_kind() != ExitKind::Ok {
+                return Err(MachineError::Backend(
+                    "continuation hash oracle failed on the uninterrupted path".into(),
+                ));
+            }
+            uninterrupted.push(self.remote.state_hash()?);
+            if self.remote.is_dead() || self.remote.is_victory() {
+                break;
+            }
+        }
+
+        self.restore(&branch).map_err(|error| {
+            MachineError::Backend(format!(
+                "continuation hash oracle could not restore its branch: {error}"
+            ))
+        })?;
+        for (index, (action, expected)) in actions.iter().zip(&uninterrupted).enumerate() {
+            self.apply(action);
+            if self.diverged || self.remote.exit_kind() != ExitKind::Ok {
+                return Err(MachineError::Backend(format!(
+                    "restored continuation failed at chord {index}"
+                )));
+            }
+            let actual = self.remote.state_hash()?;
+            if actual != *expected {
+                return Err(MachineError::Backend(format!(
+                    "restored continuation state hash differs at chord {index}"
+                )));
+            }
+        }
+        Ok(ContinuationHashEvidence {
+            branch_state_hash: branch.state_hash(),
+            chord_state_hashes: uninterrupted,
+        })
     }
 }
 
@@ -704,6 +789,8 @@ mod tests {
         snapshot_frames: BTreeMap<SnapId, Moment>,
         reported_deadline_offset: i64,
         published_wram_len: u32,
+        state_hash_calls: u64,
+        corrupt_state_hash_call: Option<u64>,
     }
 
     impl Machine for InProcessControl {
@@ -814,7 +901,12 @@ mod tests {
             let mut hasher = Sha256::new();
             hasher.update(bytes);
             hasher.update(self.logical_frame.0.to_le_bytes());
-            Ok(hasher.finalize().into())
+            let mut digest: [u8; 32] = hasher.finalize().into();
+            self.state_hash_calls = self.state_hash_calls.saturating_add(1);
+            if self.corrupt_state_hash_call == Some(self.state_hash_calls) {
+                digest[0] ^= 0x80;
+            }
+            Ok(digest)
         }
     }
 
@@ -850,6 +942,8 @@ mod tests {
             snapshot_frames: BTreeMap::new(),
             reported_deadline_offset: 0,
             published_wram_len: WRAM_SIZE as u32,
+            state_hash_calls: 0,
+            corrupt_state_hash_call: None,
         }
     }
 
@@ -875,6 +969,26 @@ mod tests {
         target.apply(&ButtonChord::new(0x01, 4));
         assert_eq!(target.exit_kind(), ExitKind::Crash);
         assert!(target.snapshot().is_none());
+    }
+
+    #[test]
+    fn production_continuation_oracle_catches_replayed_chord_hash_drift() {
+        let rom = synthetic_nrom();
+        let mut positive = DifferentialSmbTarget::from_machine(control(&rom), &rom).unwrap();
+        positive.apply(&ButtonChord::new(0x81, 4));
+        let actions = [ButtonChord::new(0, 2), ButtonChord::new(0x40, 3)];
+        let evidence = positive.verify_current_continuation(&actions).unwrap();
+        assert_eq!(evidence.chord_state_hashes.len(), actions.len());
+
+        let mut corrupted_control = control(&rom);
+        // One action: branch snapshot, uninterrupted hash, restore validation,
+        // then the planted first replayed-chord hash.
+        corrupted_control.corrupt_state_hash_call = Some(4);
+        let mut negative = DifferentialSmbTarget::from_machine(corrupted_control, &rom).unwrap();
+        let error = negative
+            .verify_current_continuation(&actions[..1])
+            .expect_err("planted replay hash drift must fail");
+        assert!(error.to_string().contains("differs at chord 0"));
     }
 
     #[test]
@@ -911,16 +1025,7 @@ mod tests {
     #[test]
     fn restored_continuation_repeats_each_chord_state_hash() {
         let rom = synthetic_nrom();
-        let control = InProcessControl {
-            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
-            counters: RestoreCounters::default(),
-            genesis: None,
-            logical_frame: Moment(0),
-            snapshot_frames: BTreeMap::new(),
-            reported_deadline_offset: 0,
-            published_wram_len: WRAM_SIZE as u32,
-        };
-        let mut remote = RemoteSmbTarget::from_machine(control).unwrap();
+        let mut remote = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
         remote.apply(&ButtonChord::new(0x81, 4));
         let branch = remote.snapshot().unwrap();
         let suffix = [ButtonChord::new(0, 2), ButtonChord::new(0x40, 3)];
@@ -950,15 +1055,8 @@ mod tests {
     #[test]
     fn remote_target_rejects_a_wrong_guest_frame_delta() {
         let rom = synthetic_nrom();
-        let control = InProcessControl {
-            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
-            counters: RestoreCounters::default(),
-            genesis: None,
-            logical_frame: Moment(0),
-            snapshot_frames: BTreeMap::new(),
-            reported_deadline_offset: 1,
-            published_wram_len: WRAM_SIZE as u32,
-        };
+        let mut control = control(&rom);
+        control.reported_deadline_offset = 1;
         let error = RemoteSmbTarget::from_machine(control).unwrap_err();
         assert!(error.to_string().contains("boot walk stopped unexpectedly"));
     }
@@ -966,15 +1064,8 @@ mod tests {
     #[test]
     fn remote_target_rejects_a_malformed_wram_publication() {
         let rom = synthetic_nrom();
-        let control = InProcessControl {
-            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
-            counters: RestoreCounters::default(),
-            genesis: None,
-            logical_frame: Moment(0),
-            snapshot_frames: BTreeMap::new(),
-            reported_deadline_offset: 0,
-            published_wram_len: (WRAM_SIZE - 1) as u32,
-        };
+        let mut control = control(&rom);
+        control.published_wram_len = (WRAM_SIZE - 1) as u32;
         let error = RemoteSmbTarget::from_machine(control).unwrap_err();
         assert!(error.to_string().contains("expected 2048"));
     }
@@ -982,16 +1073,7 @@ mod tests {
     #[test]
     fn evicted_live_handles_fall_back_to_durable_lineage() {
         let rom = synthetic_nrom();
-        let control = InProcessControl {
-            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
-            counters: RestoreCounters::default(),
-            genesis: None,
-            logical_frame: Moment(0),
-            snapshot_frames: BTreeMap::new(),
-            reported_deadline_offset: 0,
-            published_wram_len: WRAM_SIZE as u32,
-        };
-        let mut remote = RemoteSmbTarget::from_machine(control).unwrap();
+        let mut remote = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
         let oldest = remote.snapshot().unwrap();
         for _ in 0..LIVE_SNAPSHOT_LIMIT {
             remote.snapshot().unwrap();

@@ -22,6 +22,7 @@ output_dir=$5
 execution_budget=${6:-4096}
 campaign_seed=0x5eedca22
 minimum_continuation_restores=2000
+continuation_samples=32
 
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
     echo "FAIL: the M2 live oracle requires an Apple Silicon macOS host" >&2
@@ -79,11 +80,12 @@ trap cleanup EXIT
 echo "== M2: building production compositions"
 (cd "$repo_root" && cargo build --release -p vmm-core --bin hvf_control_server)
 (cd "$repo_root" && cargo build --release --manifest-path dissonance/Cargo.toml \
-    -p searcher --bin smb-campaign)
+    -p searcher --bin smb-campaign --bin smb-vtime-continuation)
 server=$repo_root/target/release/hvf_control_server
 searcher=$repo_root/dissonance/target/release/smb-campaign
+continuation_oracle=$repo_root/dissonance/target/release/smb-vtime-continuation
 entitlements=$repo_root/consonance/vmm-backend/hvf.entitlements.plist
-for artifact in "$server" "$searcher" "$entitlements"; do
+for artifact in "$server" "$searcher" "$continuation_oracle" "$entitlements"; do
     if [[ ! -s "$artifact" ]]; then
         echo "FAIL: built M2 artifact is missing or empty: $artifact" >&2
         exit 1
@@ -105,6 +107,7 @@ fi
     printf '%s  smb.nes\n' "$rom_sha"
     printf '%s  hvf_control_server.signed\n' "$(sha256_of "$server")"
     printf '%s  smb-campaign\n' "$(sha256_of "$searcher")"
+    printf '%s  smb-vtime-continuation\n' "$(sha256_of "$continuation_oracle")"
 } >"$output_dir/MANIFEST.sha256"
 
 wait_for_socket() {
@@ -201,6 +204,27 @@ if (( archive_entries < 1 )); then
     exit 1
 fi
 
+echo "== M2: sampling uninterrupted/restored continuation hashes"
+start_server continuation 1
+HARMONY_SMB_ROM="$rom" "$continuation_oracle" "$current_socket" \
+    "$output_dir/run-1/snapshots-live.bin" "$continuation_samples" \
+    "$output_dir/continuation-hashes.json" \
+    >"$output_dir/continuation-searcher.stdout" \
+    2>"$output_dir/continuation-searcher.stderr"
+finish_server 1
+read -r sampled_branch_points chord_hashes_compared < <(
+    python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r["sampled_branch_points"], r["chord_hashes_compared"])' \
+        "$output_dir/continuation-hashes.json"
+)
+if (( sampled_branch_points != continuation_samples )); then
+    echo "FAIL: sampled $sampled_branch_points branch points, expected $continuation_samples" >&2
+    exit 1
+fi
+if (( chord_hashes_compared < continuation_samples )); then
+    echo "FAIL: only $chord_hashes_compared continuation chord hashes were compared" >&2
+    exit 1
+fi
+
 echo "== M2: replaying the complete retained campaign through a fresh VM"
 start_server replay 1
 HARMONY_SMB_ROM="$rom" "$searcher" replay "$output_dir/run-1" genesis \
@@ -219,6 +243,8 @@ archive_sha256=$archive_sha
 archive_entries=$archive_entries
 genesis_restores=$genesis_restores
 continuation_restores=$continuation_restores
+sampled_branch_points=$sampled_branch_points
+continuation_chord_hashes=$chord_hashes_compared
 same_seed_archives=2
 fresh_vm_replay_verified=true
 EOF

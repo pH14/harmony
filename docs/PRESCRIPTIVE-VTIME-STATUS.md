@@ -223,16 +223,28 @@ dependency rather than silently weakening the criterion.
     the comparator and fail-loud path can fire before the external-ROM run counts.
 30. **The live M2 oracle is one fail-closed, byte-attested operation.**
     `prescriptive-m2-oracle.sh` builds and entitlement-signs the production HVF
-    listener and searcher, then runs two 4,096-job one-worker campaigns at the
+    listener and searcher tools, then runs two 4,096-job one-worker campaigns at the
     same seed, requires byte-identical archives, streams, reports, and snapshot
     checkpoints, and replays the first campaign through a fresh VM. It rejects
     fewer than 2,000 continuation restores or any absent genesis restore. The
     game-image builder publishes the embedded ROM SHA-256 only after a successful
     initramfs pack; the oracle matches that sidecar to the host ROM before launch
     and writes a manifest binding the kernel, initramfs, ROM, signed listener,
-    and searcher. Missing artifacts, skipped payload markers, watchdogs, panics,
+    campaign and continuation-oracle executables. Missing artifacts, skipped
+    payload markers, watchdogs, panics,
     partial server session counts, or an existing output directory all fail
     loudly and cannot produce the success record.
+31. **Real continuation samples come from the retained campaign, not a toy
+    lineage.** The live runner selects 32 evenly distributed, non-genesis
+    snapshots from the first campaign's complete remote checkpoint. At each
+    mid-workload branch point, `smb-vtime-continuation` restores and verifies
+    its retained whole-state hash, takes a fresh paired guest/in-process
+    snapshot, executes two deterministic vocabulary chords uninterrupted, then
+    restores the pair and compares the whole-machine hash after every repeated
+    chord. The choices depend only on archive id, not SMB routes or coordinates.
+    The success report records every branch id, lineage length, branch hash, and
+    chord-hash sequence. A test-only control machine corrupts exactly the first
+    replayed chord hash and proves the production comparator rejects index zero.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -691,7 +703,7 @@ guest differential compares an independently configured TetaNES deck's full
 ```text
 cd dissonance
 cargo test -p searcher --lib smb::remote
-7 passed; 0 failed
+8 passed; 0 failed
 
 cargo test -p searcher --lib smb::campaign::tests
 21 passed; 0 failed (706.00 s; includes the 24-seed live/replay sweep)
@@ -703,6 +715,9 @@ cargo fmt --all -- --check
 exit status 0
 
 cargo check -p searcher --bin smb-campaign
+exit status 0
+
+cargo check -p searcher --bin smb-vtime-continuation
 exit status 0
 
 cargo check -p vmm-core --bin hvf_control_server
@@ -732,6 +747,11 @@ after every chord of a two-chord uninterrupted suffix, restores the branch,
 requires the immediate hash to equal the snapshot, and reproduces the exact
 per-chord hash sequence. Flipping one bit of the retained expected hash makes
 the same restore fail loudly.
+The production checkpoint sampler applies that same uninterrupted/restore/repeat
+comparison to 32 evenly spaced, non-genesis retained branch points. Its focused
+negative corrupts only the first replayed chord hash and is rejected at chord
+index zero; the external-ROM execution remains blocked rather than inferred from
+this portable proof.
 The production socket backend now pairs every external guest target with the
 independent in-process build, compares full WRAM and terminal state at genesis,
 after every chord, and after every paired restore, and makes divergence a hard
@@ -802,8 +822,9 @@ success criteria is credited from structural checks or the prerequisite failure.
   checkpoint bytes, but the whole retained real-guest run remains blocked.
 - **IN PROGRESS — snapshot restore counter and uninterrupted-continuation hash
   oracle:** genesis/continuation counters are now recorded, replay-verified, and
-  tamper-evident, and the focused immediate/per-chord continuation-hash oracle is
-  green; sampling branch points from the real campaign remains open.
+  tamper-evident. The live runner now requires 32 non-genesis branch samples and
+  records their immediate/per-chord hashes; its comparator and planted negative
+  are green, while executing those samples on the real campaign remains blocked.
 - **IN PROGRESS — in-process/guest/transport cross-build differential:** the
   production control-socket backend now makes the independent TetaNES comparison
   mandatory at genesis, every chord, and every restore, with both target-level
