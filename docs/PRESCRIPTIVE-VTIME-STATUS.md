@@ -110,6 +110,16 @@ dependency rather than silently weakening the criterion.
     `IdlePlanner`; post-exit service raises PPI20 at that normalized event.
     Descriptive preemption remains separately gated, so prescriptive mode never
     calls the backend's honestly unsupported `run_until`.
+17. **The exclusive monitor is an image-admission invariant, not fabricated
+    backend state.** HVF exposes no monitor save, restore, or clear operation.
+    A new vCPU begins with an empty monitor, and the mandatory whole-image
+    `aa4-exclusive-scan.py` gate proves that the admitted kernel, vDSO, and init
+    cannot execute LL/SC to make it nonempty. The backend therefore documents
+    canonical-empty at every sealable boundary and deliberately omits an
+    unenforceable bit from `Arm64VcpuState`. Pending synchronous injection is
+    handled analogously but more strictly: `save` and `restore` reject any
+    staged backend completion, while the retained interrupt class carries the
+    externally asserted IRQ/FIQ levels exactly.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -328,19 +338,23 @@ work was begun before this evidence was recorded.
   one exit late, proves two identically late twins compare equal, then requires
   the original-vs-late comparator and independent placement checker to reject
   the exact same first event (`12,529`).
-- **IN PROGRESS — every retained state class perturbs the hash and round-trips
-  restore:** SIMD/FP, debug registers and trap controls, virtual-timer
-  register/mask/offset state, and pending IRQ/FIQ now ride backend state,
-  `vm-state` TLVs, vmm-core conversion, the canonical VCPU hash, and labeled
-  diagnostic hashes. Codec round-trip uses distinctive values; strict decode
-  rejects noncanonical booleans and reserved bytes; one-field hash perturbations
-  localize to exactly the corresponding class. A live HVF save/restore oracle
-  remains outstanding.
-- **FAIL — exclusive-monitor canonicalization backed by the LL/SC image audit:**
-  the image-side audit is now non-vacuous and green: planted `LDXR`/`STXR`
+- **PASS — every retained state class perturbs the hash and round-trips
+  restore:** the portable class matrix independently changes core registers,
+  sysregs, SIMD/FP, debug registers and both trap controls, virtual-timer
+  register/mask/offset state, pending IRQ/FIQ, PL011 device state, userspace-GIC
+  state, assigned V-time, and seeded-entropy state. Each change alters only its
+  named diagnostic component, changes the canonical hash, and reproduces the
+  exact snapshot and hash through restore. The pre-existing continuation oracle
+  additionally proves that entropy resumes at the captured stream position
+  rather than replaying its first word. The entitlement-signed live
+  `hvf_state_oracle` then perturbed and exactly restored all six HVF-retained
+  backend classes, returning to the exact baseline after every class.
+- **PASS — exclusive-monitor canonicalization backed by the LL/SC image audit:**
+  the image-side audit is non-vacuous and green: planted `LDXR`/`STXR`
   instructions are rejected with the expected rows, while the real vmlinux,
-  vDSO, and initramfs contain no LL/SC instructions. Backend canonicalization
-  and its live restore oracle remain outstanding.
+  vDSO, and initramfs contain no LL/SC instructions. The backend and retained-
+  state table now state the enforceable canonical-empty invariant at every
+  sealable boundary; no synthetic, unrestorable monitor field is claimed.
 - **PASS — honest `capabilities()` surface:** `HvfBackend` reports both
   `deterministic_cntvct` and `enforces_cntv_cval` false, matching the probe's
   direct `CNTVCT_EL0` and `CNTV_CVAL_EL0` results; it never calls `run_until`.
@@ -429,6 +443,28 @@ cargo nextest run -p gicv3 -p vmm-core --all-features
 cargo clippy -p gicv3 -p vmm-core --all-features --all-targets -- -D warnings
 exit status 0 (pre-existing clippy.toml invalid-path notices only)
 gicv3 Linux-frozen public API: byte-for-byte match
+```
+
+Retained-state completeness checkpoint:
+
+```text
+cargo nextest run -p vmm-backend -p vmm-core --all-features
+665 tests run: 665 passed, 5 skipped
+
+cargo clippy -p vmm-backend -p vmm-core --all-features --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+
+cargo fmt --all -- --check
+exit status 0
+
+entitlement-signed target/release/hvf_state_oracle:
+HVF_STATE_CLASS_OK class=general
+HVF_STATE_CLASS_OK class=simd-fp
+HVF_STATE_CLASS_OK class=sysregs
+HVF_STATE_CLASS_OK class=debug
+HVF_STATE_CLASS_OK class=vtimer
+HVF_STATE_CLASS_OK class=pending-interrupts
+HVF_STATE_ROUNDTRIP_OK classes=6 baseline_restores=6
 ```
 
 ## M2 — NES campaign on the M1 Max

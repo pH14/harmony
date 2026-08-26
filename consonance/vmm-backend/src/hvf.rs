@@ -665,6 +665,15 @@ impl Backend for HvfBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
+        // Exclusive-monitor canonicalization (PRESCRIPTIVE-VTIME M1). HVF has
+        // no public monitor get/set/clear API. The cooperative image is scanned
+        // at build time by `harmony-linux/scripts/aa4-exclusive-scan.py`, whose
+        // planted LDXR/STXR negative must fail before the real kernel, vDSO, and
+        // init are accepted. Therefore no instruction in the admitted image can
+        // create a reservation: the monitor starts empty at vCPU creation and
+        // is canonically empty at every sealable boundary. It is deliberately
+        // absent from `Arm64VcpuState` rather than represented by a fabricated
+        // bit that the backend could not enforce.
         let mut state = Arm64VcpuState::default();
         for (reg, slot) in state.core.x.iter_mut().enumerate() {
             *slot = self.reg(reg as u32)?;
@@ -749,6 +758,10 @@ impl Backend for HvfBackend {
         if state.mp_state != MpState::Runnable || self.pending != Pending::None {
             return Err(BackendError::InvalidState);
         }
+        // The exclusive monitor remains the canonical empty value described in
+        // `save`: restore is admitted only for the LL/SC-free cooperative image,
+        // and that image cannot have changed the reset-empty monitor before or
+        // after this boundary.
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }

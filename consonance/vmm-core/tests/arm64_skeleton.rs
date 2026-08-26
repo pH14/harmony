@@ -1055,6 +1055,10 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
     let baseline = make(base);
     let baseline_components = baseline.state_components();
 
+    let mut general = base;
+    general.core.x[30] = 1;
+    let mut sysregs = base;
+    sysregs.sysregs.tpidr_el1 = 1;
     let mut simd = base;
     simd.simd_fp.q[31][15] = 1;
     let mut debug = base;
@@ -1064,12 +1068,15 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
     let mut interrupts = base;
     interrupts.interrupts.fiq = true;
 
-    for (expected, candidate) in [
-        ("simd-fp", make(simd)),
-        ("debug", make(debug)),
-        ("vtimer", make(vtimer)),
-        ("interrupts", make(interrupts)),
+    for (expected, state) in [
+        ("core-regs", general),
+        ("sysregs", sysregs),
+        ("simd-fp", simd),
+        ("debug", debug),
+        ("vtimer", vtimer),
+        ("interrupts", interrupts),
     ] {
+        let candidate = make(state);
         assert_ne!(
             baseline.state_hash(),
             candidate.state_hash(),
@@ -1088,7 +1095,92 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
             })
             .collect();
         assert_eq!(differing, [expected]);
+
+        let snapshot = candidate.save_vm_state().unwrap();
+        let mut restored = make(base);
+        restored
+            .restore_snapshot(candidate.guest_memory(), &snapshot)
+            .unwrap();
+        assert_eq!(restored.inspect_vcpu(), state, "{expected} restore");
+        assert_eq!(
+            restored.state_hash(),
+            candidate.state_hash(),
+            "{expected} must round-trip through the canonical snapshot"
+        );
     }
+}
+
+/// The non-vCPU retained classes named by the M1 state-completeness rule each
+/// change the hash alone and reproduce that exact hash through restore.
+#[test]
+fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::{CNTFRQ_HZ, PL011, PVCLOCK_PPI};
+    use vmm_core::vmm::VtimeWiring;
+    use vtime::VClockConfig;
+
+    let restore = |source: &Vmm<MockArm64Backend>, target: &mut Vmm<MockArm64Backend>| {
+        let snapshot = source.save_vm_state().unwrap();
+        target
+            .restore_snapshot(source.guest_memory(), &snapshot)
+            .unwrap();
+        assert_eq!(target.state_hash(), source.state_hash());
+        assert_eq!(target.save_vm_state().unwrap(), snapshot);
+    };
+
+    // Device state: one ordinary PL011 byte, with all other composition state
+    // identical. The UART capture rides the ARM device record.
+    let serial_base = vmm(vec![]);
+    let mut serial = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(PL011.0),
+        size: 1,
+        write: Some(b'X'.into()),
+    })]);
+    assert_eq!(serial.step().unwrap(), Step::Continued);
+    assert_ne!(serial.state_hash(), serial_base.state_hash());
+    restore(&serial, &mut vmm(vec![]));
+
+    // GIC state: the same programmed fabric, differing only by one pending
+    // PPI20 input. The target is composed with the same fabric shape first.
+    let mut pending_gic = clockevent_gic();
+    pending_gic.raise(PVCLOCK_PPI).unwrap();
+    let mut gic_base = vmm(vec![]);
+    gic_base.wire_gic(clockevent_gic());
+    let mut gic_pending = vmm(vec![]);
+    gic_pending.wire_gic(pending_gic);
+    assert_ne!(gic_pending.state_hash(), gic_base.state_hash());
+    let mut gic_target = vmm(vec![]);
+    gic_target.wire_gic(clockevent_gic());
+    restore(&gic_pending, &mut gic_target);
+
+    let config = VClockConfig {
+        ratio_num: 1,
+        ratio_den: 1,
+        guest_hz: CNTFRQ_HZ,
+        guest_base: 0,
+        vns_base: 0,
+    };
+    let timed = |vns: u64, seed: u64| {
+        let mut vm = vmm(vec![]);
+        let mut wiring = VtimeWiring::new_prescriptive(config, seed).unwrap();
+        wiring.advance_prescriptive(vns);
+        vm.wire_vtime(wiring);
+        vm
+    };
+
+    // Assigned V-time alone.
+    let time_base = timed(0, 7);
+    let time_changed = timed(9, 7);
+    assert_ne!(time_changed.state_hash(), time_base.state_hash());
+    restore(&time_changed, &mut timed(0, 7));
+
+    // Entropy stream state alone. Reseeding changes the canonical stream state
+    // while leaving V-time and every architectural/device byte fixed.
+    let entropy_base = timed(0, 7);
+    let mut entropy_changed = timed(0, 7);
+    entropy_changed.reseed_entropy(8).unwrap();
+    assert_ne!(entropy_changed.state_hash(), entropy_base.state_hash());
+    restore(&entropy_changed, &mut timed(0, 7));
 }
 
 /// M3 — the full boot composition: `boot` runs the host-baseline gate then
