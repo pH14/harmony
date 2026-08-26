@@ -203,6 +203,14 @@ dependency rather than silently weakening the criterion.
     negative backend flips that one bit for exactly the first chord. Different
     archive SHA-256 values therefore prove the comparator observes an emulated
     lineage divergence rather than a report-only field.
+28. **The HVF control listener creates one fresh server and VM per searcher
+    session.** The generic campaign constructs a bootstrap target and then its
+    worker target; reusing one disconnected `ControlServer` would lose the
+    session-local protocol state and snapshot pool. `hvf_control_server` binds a
+    caller-supplied Unix path, accepts those sessions sequentially, and composes
+    each live VM and every within-session restore factory from the same image,
+    initramfs, boot arguments, RAM size, GIC, pvclock, and control-slot root. It
+    never unlinks a pre-existing socket target.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -580,6 +588,8 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   searcher now exposes the same campaign through `--control-socket`, requires
   exactly one worker per mutable VMM session, records a distinct durable remote
   checkpoint format, and can replay a recorded stream through a fresh session.
+  The Apple-HVF listener composition is now present and compile/lint clean; the
+  missing external ROM and native Linux/aarch64 image remain the live blockers.
 
 ### M2 payload-substrate checkpoint evidence
 
@@ -669,6 +679,9 @@ cargo clippy -p searcher --lib -- -D warnings
 exit status 0 (pre-existing clippy.toml invalid-path notice only)
 
 cargo check -p searcher --bin smb-campaign
+exit status 0
+
+cargo check -p vmm-core --bin hvf_control_server
 exit status 0
 
 cargo test -p searcher --lib \

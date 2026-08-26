@@ -32,6 +32,15 @@ This measured result supersedes the untested 8-KiB shape that HVF rejected for
 host-page alignment. The guest rings the board MMIO doorbell at `0x0A00_0000`;
 that device frame is separate from the mapped control RAM.
 
+`hvf_control_server` is the production Unix-socket composition root for M2. It
+accepts the game `Image` and initramfs plus a socket path, then creates a fresh
+`ControlServer` and byte-identically composed `boot_hvf_control` VM for every
+accepted client session. A live one-worker campaign uses two sessions (bootstrap
+and worker); serial replay uses one. The optional `max-sessions` argument makes
+those bounded runs exit without adding host time or session order to guest state.
+The socket path must not already exist; the server never deletes an ambiguous
+filesystem target.
+
 ## What landed, by milestone
 
 - **M0 — the snapshot-state seam (the one sanctioned spine edit), x86-only.**
