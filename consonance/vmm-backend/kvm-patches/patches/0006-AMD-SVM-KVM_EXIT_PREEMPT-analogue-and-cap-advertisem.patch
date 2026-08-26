@@ -1,0 +1,54 @@
+From 52248ae11944e5805bb8267f7b03c88e38006fd7 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Tue, 25 Aug 2026 03:44:33 +0000
+Subject: [PATCH 6/8] AMD SVM KVM_EXIT_PREEMPT analogue and cap advertisement
+ (AE-3)
+
+---
+ arch/x86/kvm/svm/svm.c | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
+index fc22d106a..46e6e584b 100644
+--- a/arch/x86/kvm/svm/svm.c
++++ b/arch/x86/kvm/svm/svm.c
+@@ -2048,6 +2048,22 @@ static int io_interception(struct kvm_vcpu *vcpu)
+ 
+ static int nmi_interception(struct kvm_vcpu *vcpu)
+ {
++	/*
++	 * Deterministic preemption, the SVM analogue of the force-exit patch
++	 * 0004 adds to handle_exception_nmi() on VMX.  The perf-overflow PMI
++	 * arrived as an NMI, #VMEXIT'd with SVM_EXIT_NMI, and was already
++	 * serviced by svm_handle_exit_irqoff() by the time this runs.  If
++	 * userspace armed the one-shot force-exit, return to userspace with
++	 * KVM_EXIT_PREEMPT instead of re-entering, so the deadline is hit with
++	 * only the bounded hardware-PMI skid.  Gated on the determinism opt-in,
++	 * so the default-off path is byte-identical to stock.
++	 */
++	if (vcpu->kvm->arch.deterministic_intercepts &&
++	    vcpu->arch.preempt_armed) {
++		vcpu->arch.preempt_armed = false;
++		vcpu->run->exit_reason = KVM_EXIT_PREEMPT;
++		return 0;
++	}
+ 	return 1;
+ }
+ 
+@@ -5431,6 +5447,13 @@ static __init int svm_hardware_setup(void)
+ 	}
+ 	kvm_caps.max_tsc_scaling_ratio = SVM_TSC_RATIO_MAX;
+ 	kvm_caps.tsc_scaling_ratio_frac_bits = 32;
++	/*
++	 * Advertise the deterministic-intercepts opt-in on SVM, the analogue of
++	 * the line patch 0003 adds to vmx_hardware_setup().  Without it
++	 * KVM_ENABLE_CAP for KVM_CAP_X86_DETERMINISTIC_INTERCEPTS is refused on
++	 * an AMD host and the force-exit above can never arm.
++	 */
++	kvm_caps.has_deterministic_intercepts = true;
+ 
+ 	tsc_aux_uret_slot = kvm_add_user_return_msr(MSR_TSC_AUX);
+ 
+-- 
+2.47.3
+

@@ -94,7 +94,7 @@ FCEUMM_SHA256=fa4bd76278221ea5416da3085559ea4473c37f305bc96f804c79a3937207f0a1
 FCEUMM_LICENSE=GPL-2.0-or-later
 
 # --- task 57: the deterministic-KVM patch series (sha256 of each patch file) ---
-# The five-patch series in consonance/vmm-backend/kvm-patches/patches/ git-am's
+# The series in consonance/vmm-backend/kvm-patches/patches/ git-am's
 # clean onto the pinned linux-6.18.35 tag (KERNEL_SHA256 above) and reproduces a
 # kvm.ko/kvm-intel.ko with vermagic 6.18.35-… — see that dir's BUILD.md. 0001-0003
 # are the RDTSC/RDRAND/RDSEED exiting+emulation ABI; 0004 is the in-kernel
@@ -106,3 +106,14 @@ KVM_PATCH_0002_SHA256=522d94b4fdf3e7736a7fb33cc075a53baf60a169b139b5ac3139853ca8
 KVM_PATCH_0003_SHA256=72742b1f74b7dcc250f6cd2c1d44f27fa0413b393a8bdacd6277827a4b4124b3
 KVM_PATCH_0004_SHA256=6311848846a880d6f8deae8b89c493db1fd2dfcc97efce13bde5b585562d6d8b
 KVM_PATCH_0005_SHA256=6eed63c35cad6c4d286c5b58acdd82e416fda8620bb2c2c4482a56cb8dc89691
+
+# 0006-0009 are the AMD half, applied after 0001-0005 and built on the same pinned
+# tag. 0006 is the SVM force-exit analogue and its capability advertisement; 0007
+# turns the opt-in into a per-class mask so a host can state which classes it
+# covers; 0008 is SVM RDTSC/RDTSCP interception; 0009 applies a guest's own
+# host/guest counting filter to the guest it runs, which is what lets the work
+# clock be exact inside a virtual machine.
+KVM_PATCH_0006_SHA256=9d1da63ec6ac9d0b1321d8ade77a53ac1110314b9189fdc82d5ec4d1309dbb5b
+KVM_PATCH_0007_SHA256=6082ed21e15534a2728e13eedd7bd47aadb10e816962302709c7b267e39ead69
+KVM_PATCH_0008_SHA256=7bc676f49e1b6b68fb633cff507c8e7ec2b9314eea1a9271e5cf20f0b4c2f8ea
+KVM_PATCH_0009_SHA256=817be3da115c061bc3ac4f8bd6f50db726ca5afd78fd3ba0510b5b8a512ccb4c

@@ -1,0 +1,263 @@
+From 61c26b59dba1b428624ccaa90dac28e5b4573ae9 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Tue, 25 Aug 2026 11:16:50 +0000
+Subject: [PATCH 7/8] KVM: x86: make the deterministic-intercepts opt-in a
+ per-class mask
+
+The opt-in was a single bit covering RDTSC/RDTSCP, RDRAND/RDSEED and the
+preemption exit together, and each vendor advertised it as a boolean.  SVM
+has no intercept control for RDRAND or RDSEED, so an AMD host advertising
+the bit told userspace it had entropy coverage the hardware cannot provide,
+with nothing to reveal the gap at run time.
+
+Report the supported classes from KVM_CHECK_EXTENSION, take the requested
+subset in KVM_ENABLE_CAP, and refuse a request for anything outside the
+supported set.
+---
+ arch/x86/include/asm/kvm_host.h |  2 +-
+ arch/x86/kvm/svm/svm.c          | 15 +++++++++------
+ arch/x86/kvm/vmx/vmx.c          | 32 ++++++++++++++++++++++++--------
+ arch/x86/kvm/x86.c              | 19 ++++++++++++-------
+ arch/x86/kvm/x86.h              |  2 +-
+ include/uapi/linux/kvm.h        | 10 ++++++++++
+ 6 files changed, 57 insertions(+), 23 deletions(-)
+
+diff --git a/arch/x86/include/asm/kvm_host.h b/arch/x86/include/asm/kvm_host.h
+index 18b0a8074..703071d68 100644
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -1499,7 +1499,7 @@ struct kvm_arch {
+ 	bool triple_fault_event;
+ 
+ 	bool bus_lock_detection_enabled;
+-	bool deterministic_intercepts;
++	u64 deterministic_intercepts;
+ 	bool enable_pmu;
+ 
+ 	u32 notify_window;
+diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
+index 46e6e584b..497c25150 100644
+--- a/arch/x86/kvm/svm/svm.c
++++ b/arch/x86/kvm/svm/svm.c
+@@ -2058,7 +2058,8 @@ static int nmi_interception(struct kvm_vcpu *vcpu)
+ 	 * only the bounded hardware-PMI skid.  Gated on the determinism opt-in,
+ 	 * so the default-off path is byte-identical to stock.
+ 	 */
+-	if (vcpu->kvm->arch.deterministic_intercepts &&
++	if ((vcpu->kvm->arch.deterministic_intercepts &
++	     KVM_DETERMINISTIC_INTERCEPT_PREEMPT) &&
+ 	    vcpu->arch.preempt_armed) {
+ 		vcpu->arch.preempt_armed = false;
+ 		vcpu->run->exit_reason = KVM_EXIT_PREEMPT;
+@@ -5448,12 +5449,14 @@ static __init int svm_hardware_setup(void)
+ 	kvm_caps.max_tsc_scaling_ratio = SVM_TSC_RATIO_MAX;
+ 	kvm_caps.tsc_scaling_ratio_frac_bits = 32;
+ 	/*
+-	 * Advertise the deterministic-intercepts opt-in on SVM, the analogue of
+-	 * the line patch 0003 adds to vmx_hardware_setup().  Without it
+-	 * KVM_ENABLE_CAP for KVM_CAP_X86_DETERMINISTIC_INTERCEPTS is refused on
+-	 * an AMD host and the force-exit above can never arm.
++	 * SVM has no intercept control for RDRAND or RDSEED, so that class is
++	 * left out of the advertised set and a VMM asking for it is refused
++	 * rather than run without the coverage it asked for.  Guest randomness
++	 * has to be denied above the hypervisor on this vendor.
+ 	 */
+-	kvm_caps.has_deterministic_intercepts = true;
++	kvm_caps.supported_deterministic_intercepts =
++		KVM_DETERMINISTIC_INTERCEPT_TSC |
++		KVM_DETERMINISTIC_INTERCEPT_PREEMPT;
+ 
+ 	tsc_aux_uret_slot = kvm_add_user_return_msr(MSR_TSC_AUX);
+ 
+diff --git a/arch/x86/kvm/vmx/vmx.c b/arch/x86/kvm/vmx/vmx.c
+index 1e9e1ee9c..efdc4dfc7 100644
+--- a/arch/x86/kvm/vmx/vmx.c
++++ b/arch/x86/kvm/vmx/vmx.c
+@@ -4475,7 +4475,8 @@ static u32 vmx_exec_control(struct vcpu_vmx *vmx)
+ 		exec_control &= ~CPU_BASED_HLT_EXITING;
+ 
+ 	/* Deterministic backend: trap RDTSC/RDTSCP to userspace (opt-in). */
+-	if (vmx->vcpu.kvm->arch.deterministic_intercepts)
++	if (vmx->vcpu.kvm->arch.deterministic_intercepts &
++	    KVM_DETERMINISTIC_INTERCEPT_TSC)
+ 		exec_control |= CPU_BASED_RDTSC_EXITING;
+ 
+ 	return exec_control;
+@@ -4640,7 +4641,8 @@ static u32 vmx_secondary_exec_control(struct vcpu_vmx *vmx)
+ 	 * though the features are exposed to the guest, so userspace supplies
+ 	 * the value from a seeded stream.  Overrides the adjustments above.
+ 	 */
+-	if (vmx->vcpu.kvm->arch.deterministic_intercepts) {
++	if (vmx->vcpu.kvm->arch.deterministic_intercepts &
++	    KVM_DETERMINISTIC_INTERCEPT_RNG) {
+ 		if (cpu_has_vmx_rdrand())
+ 			exec_control |= SECONDARY_EXEC_RDRAND_EXITING;
+ 		if (cpu_has_vmx_rdseed())
+@@ -5218,7 +5220,8 @@ static int handle_exception_nmi(struct kvm_vcpu *vcpu)
+ 		 * re-entering, so the V-time deadline is hit with only the bounded
+ 		 * hardware-PMI skid.  Gated on the determinism opt-in.
+ 		 */
+-		if (vcpu->kvm->arch.deterministic_intercepts &&
++		if ((vcpu->kvm->arch.deterministic_intercepts &
++		     KVM_DETERMINISTIC_INTERCEPT_PREEMPT) &&
+ 		    vcpu->arch.preempt_armed) {
+ 			vcpu->arch.preempt_armed = false;
+ 			kvm_run->exit_reason = KVM_EXIT_PREEMPT;
+@@ -5931,7 +5934,8 @@ int vmx_vcpu_pre_run(struct kvm_vcpu *vcpu)
+ 	}
+ 
+ 	/* Deterministic single-step (harmony 0005): arm MTF for one instruction. */
+-	if (vcpu->kvm->arch.deterministic_intercepts && vcpu->arch.mtf_step_armed)
++	if ((vcpu->kvm->arch.deterministic_intercepts &
++	     KVM_DETERMINISTIC_INTERCEPT_PREEMPT) && vcpu->arch.mtf_step_armed)
+ 		exec_controls_setbit(to_vmx(vcpu), CPU_BASED_MONITOR_TRAP_FLAG);
+ 
+ 	return 1;
+@@ -5959,7 +5963,8 @@ static int handle_pause(struct kvm_vcpu *vcpu)
+ static int handle_monitor_trap(struct kvm_vcpu *vcpu)
+ {
+ 	/* Deterministic single-step (harmony 0005): MTF one-shot step. */
+-	if (vcpu->kvm->arch.deterministic_intercepts && vcpu->arch.mtf_step_armed) {
++	if ((vcpu->kvm->arch.deterministic_intercepts &
++	     KVM_DETERMINISTIC_INTERCEPT_PREEMPT) && vcpu->arch.mtf_step_armed) {
+ 		vcpu->arch.mtf_step_armed = false;
+ 		exec_controls_clearbit(to_vmx(vcpu), CPU_BASED_MONITOR_TRAP_FLAG);
+ 		vcpu->run->exit_reason = KVM_EXIT_DET_STEP;
+@@ -6717,7 +6722,8 @@ int vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
+ 	 * with the MTF still armed, so stepping through a demand-paged fault still
+ 	 * lands its DET_STEP correctly.
+ 	 */
+-	if (ret <= 0 && vcpu->kvm->arch.deterministic_intercepts &&
++	if (ret <= 0 && (vcpu->kvm->arch.deterministic_intercepts &
++			 KVM_DETERMINISTIC_INTERCEPT_PREEMPT) &&
+ 	    vcpu->arch.mtf_step_armed &&
+ 	    vmx_get_exit_reason(vcpu).basic != EXIT_REASON_MONITOR_TRAP_FLAG) {
+ 		vcpu->arch.mtf_step_armed = false;
+@@ -8645,8 +8651,18 @@ __init int vmx_hardware_setup(void)
+ 	kvm_caps.tsc_scaling_ratio_frac_bits = 48;
+ 	kvm_caps.has_bus_lock_exit = cpu_has_vmx_bus_lock_detection();
+ 	kvm_caps.has_notify_vmexit = cpu_has_notify_vmexit();
+-	/* RDTSC-exiting is architectural on all VMX CPUs; RNG gated at setup. */
+-	kvm_caps.has_deterministic_intercepts = true;
++	/*
++	 * RDTSC-exiting is architectural on all VMX CPUs and the preemption
++	 * exit is software, so both are always available.  The RNG controls
++	 * are model-specific, so advertise that class only when the hardware
++	 * can trap both instructions.
++	 */
++	kvm_caps.supported_deterministic_intercepts =
++		KVM_DETERMINISTIC_INTERCEPT_TSC |
++		KVM_DETERMINISTIC_INTERCEPT_PREEMPT;
++	if (cpu_has_vmx_rdrand() && cpu_has_vmx_rdseed())
++		kvm_caps.supported_deterministic_intercepts |=
++			KVM_DETERMINISTIC_INTERCEPT_RNG;
+ 
+ 	set_bit(0, vmx_vpid_bitmap); /* 0 is reserved for host */
+ 
+diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
+index f89036a0a..b48e3a001 100644
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -2146,7 +2146,8 @@ static int kvm_emulate_deterministic_tsc(struct kvm_vcpu *vcpu, u32 insn)
+ {
+ 	struct kvm_run *run = vcpu->run;
+ 
+-	if (WARN_ON_ONCE(!vcpu->kvm->arch.deterministic_intercepts))
++	if (WARN_ON_ONCE(!(vcpu->kvm->arch.deterministic_intercepts &
++			   KVM_DETERMINISTIC_INTERCEPT_TSC)))
+ 		return kvm_skip_emulated_instruction(vcpu);
+ 
+ 	memset(&run->determinism, 0, sizeof(run->determinism));
+@@ -2185,7 +2186,8 @@ int kvm_emulate_rng_intercept(struct kvm_vcpu *vcpu, u32 insn,
+ 	bool rex_b = false;
+ 
+ 	/* Not opted in: preserve stock behavior (#UD for an un-exposed feature). */
+-	if (!vcpu->kvm->arch.deterministic_intercepts)
++	if (!(vcpu->kvm->arch.deterministic_intercepts &
++	      KVM_DETERMINISTIC_INTERCEPT_RNG))
+ 		return kvm_handle_invalid_op(vcpu);
+ 
+ 	if (!insn_len || insn_len > sizeof(buf))
+@@ -5024,7 +5026,7 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
+ 		r = 1;
+ 		break;
+ 	case KVM_CAP_X86_DETERMINISTIC_INTERCEPTS:
+-		r = kvm_caps.has_deterministic_intercepts;
++		r = kvm_caps.supported_deterministic_intercepts;
+ 		break;
+ 	case KVM_CAP_PRE_FAULT_MEMORY:
+ 		r = tdp_enabled;
+@@ -6427,7 +6429,8 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
+ 		 * Gated on the determinism opt-in (default-off -> stock behavior).
+ 		 */
+ 		r = -EINVAL;
+-		if (vcpu->kvm->arch.deterministic_intercepts) {
++		if (vcpu->kvm->arch.deterministic_intercepts &
++		    KVM_DETERMINISTIC_INTERCEPT_PREEMPT) {
+ 			vcpu->arch.preempt_armed = true;
+ 			r = 0;
+ 		}
+@@ -6435,7 +6438,8 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
+ 	case KVM_ARM_MTF_STEP:
+ 		/* Deterministic single-step (harmony 0005): arm one-shot MTF step. */
+ 		r = -EINVAL;
+-		if (vcpu->kvm->arch.deterministic_intercepts) {
++		if (vcpu->kvm->arch.deterministic_intercepts &
++		    KVM_DETERMINISTIC_INTERCEPT_PREEMPT) {
+ 			vcpu->arch.mtf_step_armed = true;
+ 			r = 0;
+ 		}
+@@ -7020,13 +7024,14 @@ int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
+ 		break;
+ 	case KVM_CAP_X86_DETERMINISTIC_INTERCEPTS:
+ 		r = -EINVAL;
+-		if (!kvm_caps.has_deterministic_intercepts || (cap->args[0] & ~1ULL))
++		if (!cap->args[0] ||
++		    (cap->args[0] & ~kvm_caps.supported_deterministic_intercepts))
+ 			break;
+ 		mutex_lock(&kvm->lock);
+ 		if (kvm->created_vcpus) {
+ 			r = -EINVAL;
+ 		} else {
+-			kvm->arch.deterministic_intercepts = cap->args[0] & 1;
++			kvm->arch.deterministic_intercepts = cap->args[0];
+ 			r = 0;
+ 		}
+ 		mutex_unlock(&kvm->lock);
+diff --git a/arch/x86/kvm/x86.h b/arch/x86/kvm/x86.h
+index fbadb3a79..afbb3e4aa 100644
+--- a/arch/x86/kvm/x86.h
++++ b/arch/x86/kvm/x86.h
+@@ -25,7 +25,7 @@ struct kvm_caps {
+ 	u64  default_tsc_scaling_ratio;
+ 	/* bus lock detection supported? */
+ 	bool has_bus_lock_exit;
+-	bool has_deterministic_intercepts;
++	u64 supported_deterministic_intercepts;
+ 	/* notify VM exit supported? */
+ 	bool has_notify_vmexit;
+ 	/* bit mask of VM types */
+diff --git a/include/uapi/linux/kvm.h b/include/uapi/linux/kvm.h
+index 4e0fa4829..a8bc2ebd1 100644
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -988,6 +988,16 @@ struct kvm_enable_cap {
+ #define KVM_CAP_GUEST_MEMFD_FLAGS 244
+ #define KVM_CAP_X86_DETERMINISTIC_INTERCEPTS 245
+ 
++/*
++ * Instruction classes KVM_CAP_X86_DETERMINISTIC_INTERCEPTS can cover.
++ * KVM_CHECK_EXTENSION returns the set this host supports; KVM_ENABLE_CAP
++ * takes the subset userspace wants and rejects anything outside it, so a
++ * VMM cannot believe it has coverage the hardware cannot provide.
++ */
++#define KVM_DETERMINISTIC_INTERCEPT_TSC		(1ULL << 0)
++#define KVM_DETERMINISTIC_INTERCEPT_RNG		(1ULL << 1)
++#define KVM_DETERMINISTIC_INTERCEPT_PREEMPT	(1ULL << 2)
++
+ struct kvm_irq_routing_irqchip {
+ 	__u32 irqchip;
+ 	__u32 pin;
+-- 
+2.47.3
+

@@ -1,0 +1,76 @@
+From 5efe9d087ffe0873ac018955f9a917d007a6d375 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Tue, 25 Aug 2026 11:16:50 +0000
+Subject: [PATCH 8/8] KVM: SVM: trap RDTSC and RDTSCP for the deterministic
+ backend
+
+The emulation helpers are vendor-neutral and the VMX side has routed these
+two exits since patch 0003, but SVM wired neither, so a VM that opted in on
+an AMD host read the host time stamp counter directly.
+
+Set both intercepts when the VM asks for the TSC class and route the exits
+to the shared helpers.  RDTSCP keeps its stock meaning when the VM has not
+opted in, where the trap exists to inject #UD into a guest that was not
+given the feature.
+---
+ arch/x86/kvm/svm/svm.c | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/kvm/svm/svm.c b/arch/x86/kvm/svm/svm.c
+index 497c25150..64dd5e0cf 100644
+--- a/arch/x86/kvm/svm/svm.c
++++ b/arch/x86/kvm/svm/svm.c
+@@ -986,6 +986,17 @@ static void svm_recalc_instruction_intercepts(struct kvm_vcpu *vcpu)
+ 			svm_set_intercept(svm, INTERCEPT_RDTSCP);
+ 	}
+ 
++	/*
++	 * The deterministic backend supplies the time stamp from a seeded
++	 * stream, so both instructions are trapped whatever the guest CPUID
++	 * says.  This runs after the block above and overrides it.
++	 */
++	if (vcpu->kvm->arch.deterministic_intercepts &
++	    KVM_DETERMINISTIC_INTERCEPT_TSC) {
++		svm_set_intercept(svm, INTERCEPT_RDTSC);
++		svm_set_intercept(svm, INTERCEPT_RDTSCP);
++	}
++
+ 	if (guest_cpuid_is_intel_compatible(vcpu)) {
+ 		svm_set_intercept(svm, INTERCEPT_VMLOAD);
+ 		svm_set_intercept(svm, INTERCEPT_VMSAVE);
+@@ -3211,6 +3222,15 @@ static int vmmcall_interception(struct kvm_vcpu *vcpu)
+ 	return kvm_emulate_hypercall(vcpu);
+ }
+ 
++static int rdtscp_interception(struct kvm_vcpu *vcpu)
++{
++	if (vcpu->kvm->arch.deterministic_intercepts &
++	    KVM_DETERMINISTIC_INTERCEPT_TSC)
++		return kvm_emulate_rdtscp_intercept(vcpu);
++
++	return kvm_handle_invalid_op(vcpu);
++}
++
+ static int (*const svm_exit_handlers[])(struct kvm_vcpu *vcpu) = {
+ 	[SVM_EXIT_READ_CR0]			= cr_interception,
+ 	[SVM_EXIT_READ_CR3]			= cr_interception,
+@@ -3248,6 +3268,7 @@ static int (*const svm_exit_handlers[])(struct kvm_vcpu *vcpu) = {
+ 	[SVM_EXIT_NMI]				= nmi_interception,
+ 	[SVM_EXIT_SMI]				= smi_interception,
+ 	[SVM_EXIT_VINTR]			= interrupt_window_interception,
++	[SVM_EXIT_RDTSC]			= kvm_emulate_rdtsc_intercept,
+ 	[SVM_EXIT_RDPMC]			= kvm_emulate_rdpmc,
+ 	[SVM_EXIT_CPUID]			= kvm_emulate_cpuid,
+ 	[SVM_EXIT_IRET]                         = iret_interception,
+@@ -3267,7 +3288,7 @@ static int (*const svm_exit_handlers[])(struct kvm_vcpu *vcpu) = {
+ 	[SVM_EXIT_STGI]				= stgi_interception,
+ 	[SVM_EXIT_CLGI]				= clgi_interception,
+ 	[SVM_EXIT_SKINIT]			= skinit_interception,
+-	[SVM_EXIT_RDTSCP]			= kvm_handle_invalid_op,
++	[SVM_EXIT_RDTSCP]			= rdtscp_interception,
+ 	[SVM_EXIT_WBINVD]                       = kvm_emulate_wbinvd,
+ 	[SVM_EXIT_MONITOR]			= kvm_emulate_monitor,
+ 	[SVM_EXIT_MWAIT]			= kvm_emulate_mwait,
+-- 
+2.47.3
+

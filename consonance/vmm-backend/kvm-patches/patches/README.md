@@ -51,16 +51,62 @@ was proven on:
   handled exits re-enter with the MTF still armed, so stepping through a demand-
   paged fault still lands its `DET_STEP`.
 
+**AMD (0006-0008).** The vendor-neutral patches (0001, 0002, 0004) are shared; the
+VMX halves above have SVM counterparts. Apply these after 0001-0005.
+
+- `0006` — the SVM analogue of 0004's force-exit, plus the capability
+  advertisement in `svm_hardware_setup()` without which `KVM_ENABLE_CAP` is
+  refused on an AMD host and the force-exit can never arm.
+- `0007` — the opt-in becomes a per-class mask. It was a single bit covering the
+  time-stamp instructions, the randomness instructions and the preemption exit
+  together, so an AMD host advertising it promised entropy coverage the hardware
+  cannot provide. `KVM_CHECK_EXTENSION` returns the classes the vendor supports
+  and `KVM_ENABLE_CAP` refuses a request for anything outside that set. This changes what
+  an existing caller gets: `args[0] = 1` used to mean "on" and now names the time-stamp
+  class alone, so a caller written against the single-bit form enables less than it asks
+  for and finds out at the first ioctl the missing class gates, not at the enable.
+- `0008` — SVM sets `INTERCEPT_RDTSC` and `INTERCEPT_RDTSCP` for a VM that asked
+  for the time-stamp class and routes both exits to the shared helpers from 0002.
+  RDTSCP keeps its stock meaning when the VM has not opted in, where the trap
+  exists to inject `#UD` into a guest that was not given the feature.
+- `0009` — a guest's own host/guest counting filter is applied to the guest it
+  runs. Bits 40 and 41 of the event select (GuestOnly, HostOnly) were stripped as
+  reserved, so a guest asking to count only its own guest counted its whole self
+  instead. Hardware cannot make the distinction, because a guest and any guest it
+  runs in turn are inside the same `VMRUN`; KVM makes it by stopping and starting
+  the backing event at the nested transitions. Needed to run this backend inside a
+  virtual machine, where the work clock is exactly that measurement.
+
+RDRAND and RDSEED have no SVM counterpart. The intercept vector in
+`arch/x86/include/asm/svm.h` carries no control for either instruction, so a guest
+executes them against the hardware whatever its CPUID model says. Guest randomness
+has to be denied above the hypervisor on this vendor.
+
+There is no SVM counterpart to 0005 either. SVM has no monitor-trap facility, so
+single-stepping there goes through stock `KVM_GUESTDBG_SINGLESTEP` on `RFLAGS.TF`,
+which skips one instruction after a `MOV SS` or `POP SS` shadow.
+
 - `0001-KVM-x86-add-KVM_EXIT_DETERMINISM-userspace-exit-ABI.patch`
 - `0002-KVM-x86-emulate-intercepted-RDTSC-RDTSCP-RDRAND-RDSE.patch`
 - `0003-KVM-VMX-enable-RDTSC-RDRAND-RDSEED-exiting-for-the-d.patch`
 - `0004-KVM-x86-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-pr.patch`
 - `0005-KVM-VMX-MTF-based-deterministic-single-step.patch`
+- `0006-AMD-SVM-KVM_EXIT_PREEMPT-analogue-and-cap-advertisem.patch`
+- `0007-KVM-x86-make-the-deterministic-intercepts-opt-in-a-p.patch`
+- `0008-KVM-SVM-trap-RDTSC-and-RDTSCP-for-the-deterministic-.patch`
+- `0009-KVM-SVM-apply-a-guest-s-host-guest-counting-filter-t.patch`
 
-Verified: the five-patch series is `git am`-clean on a fresh `linux-6.18.35`
+Verified: the 0001-0005 series is `git am`-clean on a fresh `linux-6.18.35`
 checkout, reproduces the built tree byte-for-byte, and the out-of-tree modules
 build cleanly (vermagic `6.18.35-…`). Per-file sha256 are pinned in
 `harmony-linux/linux/versions.lock` (`KVM_PATCH_000x_SHA256`). `scripts/apply_patch.py`
 reproduces the 0001-0003 edits by string anchor; `scripts/apply_patch_612.py`
 ports them to the Debian 6.12.90 source for the loadable proxy build
 (`../BUILD.md` Part 2).
+
+The 0006-0009 half was applied on top of that series, built, and booted on an EPYC
+7313P; every measurement under `qualification-evidence/nested/` and
+`qualification-evidence/rdtsc/` was taken against those modules. It has not been
+through the byte-for-byte reproduction check the first five have, and there is no
+`apply_patch.py` anchor form for it.
+
