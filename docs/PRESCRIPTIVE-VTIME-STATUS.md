@@ -182,6 +182,13 @@ dependency rather than silently weakening the criterion.
     recordings whose targets did not expose counters. The throughput sidecar
     additionally reports continuation restores per wall second, but wall time
     never enters the stream or deterministic report.
+25. **Snapshot content addresses are verified on restore, including opaque
+    machine state.** A page's resident bytes are re-hashed against its sealed
+    BLAKE3 content address before read or materialization. Each vCPU/device blob
+    carries its own seal-time BLAKE3 digest and is verified before the vendor
+    codec sees it. Missing or changed data fails as a typed integrity error; it
+    never degrades to a zero page or partially restores a fresh VM. Test-only
+    corruption hooks are feature-gated and cannot enter a production build.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -665,6 +672,27 @@ durable fallback remains byte-exact. The restore-accounting oracle runs a live
 and serially replayed campaign through a counting target, requires nonzero and
 class-separated totals, then increments one recorded continuation count and
 requires replay to reject that exact job.
+
+The stored-snapshot integrity matrix is also green:
+
+```text
+cargo test -p snapshot-store --features test-utils \
+  sealed_page_and_vm_state_corruption_are_detected
+1 passed; 0 failed
+
+cargo test -p vmm-core --all-features \
+  ram_vcpu_and_gic_corruption_each_fail_before_restore
+1 passed; 0 failed
+
+cargo clippy -p snapshot-store --all-targets --features test-utils -- -D warnings
+cargo clippy -p vmm-core --all-features --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+```
+
+The second oracle seals canonical arm64 state with distinctive core-register and
+userspace-GIC timer fields, independently flips a resident RAM-page byte, the
+vCPU field, and the GIC field, and requires the matching typed integrity failure
+before restore decoding or VM replacement.
 - **FAIL — two same-seed archive hashes:** not started.
 - **IN PROGRESS — every archived lineage replays byte-for-byte:** durable
   lineage reconstruction is implemented and green for focused snapshots; the
@@ -680,8 +708,9 @@ requires replay to reject that exact job.
   cache eviction oracle crosses 1,024 stored snapshots, but a real campaign with
   thousands of mid-workload branches has not run.
 - **FAIL — altered-chord archive comparator negative:** not started.
-- **FAIL — RAM, vCPU, and GIC/device stored-snapshot corruption negatives:** not
-  started.
+- **PASS — RAM, vCPU, and GIC/device stored-snapshot corruption negatives:** all
+  three seeded corruptions fail at the retained-store integrity boundary before
+  decode or VM replacement.
 
 ## M3 — liveness on a real payload
 

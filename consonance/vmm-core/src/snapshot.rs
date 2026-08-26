@@ -242,6 +242,29 @@ impl SnapshotEngine {
         self.store.gc()
     }
 
+    /// Deliberately corrupt one stored RAM byte for a restore integrity oracle.
+    #[cfg(test)]
+    pub(crate) fn corrupt_page_for_test(
+        &mut self,
+        snap: SnapshotId,
+        gfn: u64,
+        byte: usize,
+        mask: u8,
+    ) -> Result<(), SnapshotError> {
+        Ok(self.store.corrupt_page_for_test(snap, gfn, byte, mask)?)
+    }
+
+    /// Deliberately corrupt one stored vCPU/device byte for an integrity oracle.
+    #[cfg(test)]
+    pub(crate) fn corrupt_vm_state_for_test(
+        &mut self,
+        snap: SnapshotId,
+        byte: usize,
+        mask: u8,
+    ) -> Result<(), SnapshotError> {
+        Ok(self.store.corrupt_vm_state_for_test(snap, byte, mask)?)
+    }
+
     fn check_image_len(&self, memory: &[u8]) -> Result<(), SnapshotError> {
         let expected = (self.mem_pages as usize).saturating_mul(PAGE_SIZE);
         if memory.len() != expected {
@@ -257,6 +280,8 @@ impl SnapshotEngine {
 
 #[cfg(test)]
 mod tests {
+    use snapshot_store::StoreError;
+    use vm_state::Arm64VmState;
     use vm_state::VmState;
 
     use super::*;
@@ -435,5 +460,71 @@ mod tests {
         ));
         // The in-range boundary gfn 3 is accepted.
         assert!(eng.snapshot_derive(base, &mem, Some(&[3]), b"").is_ok());
+    }
+
+    #[test]
+    fn ram_vcpu_and_gic_corruption_each_fail_before_restore() {
+        let mut gic = gicv3::Gicv3::new(gicv3::GicConfig {
+            impl_spis: 32,
+            timer_hz: 0x0f1e_2d3c_4b5a_6978,
+            timer_intid: 27,
+        })
+        .unwrap();
+        gic.raise(40).unwrap();
+        let mut state = Arm64VmState::default();
+        state.regs.x[0] = 0x1122_3344_5566_7788;
+        state.vtime.ratio_den = 1;
+        state.devices = crate::vendor::arm64::records::encode_device_blob(
+            &crate::vendor::arm64::records::Arm64DeviceState {
+                clock_offset: 0xdead_beef,
+                report_stream: vec![1, 2, 3],
+                uart_capture: b"integrity".to_vec(),
+                uart_regs: [13, 1, 0x70, 0x301, 0x10],
+                gic: Some(gic.snapshot()),
+                doorbell: Vec::new(),
+                pvclock: None,
+            },
+        );
+        let blob = state.encode().unwrap();
+        let vcpu_marker = 0x1122_3344_5566_7788_u64.to_le_bytes();
+        let gic_marker = 0x0f1e_2d3c_4b5a_6978_u64.to_le_bytes();
+        let vcpu_offset = blob
+            .windows(vcpu_marker.len())
+            .position(|window| window == vcpu_marker)
+            .expect("vCPU marker in canonical state");
+        let gic_offset = blob
+            .windows(gic_marker.len())
+            .position(|window| window == gic_marker)
+            .expect("GIC marker in canonical device blob");
+
+        let mut memory = vec![0_u8; 2 * PG];
+        memory[PG..2 * PG].fill(0x5a);
+        let mut ram_engine = SnapshotEngine::new(memory.len());
+        let ram = ram_engine.snapshot_base(&memory, &blob).unwrap();
+        ram_engine.corrupt_page_for_test(ram, 1, 17, 0x80).unwrap();
+        assert!(matches!(
+            ram_engine.materialize(ram),
+            Err(SnapshotError::Store(StoreError::PageIntegrity { gfn: 1 }))
+        ));
+
+        let mut vcpu_engine = SnapshotEngine::new(memory.len());
+        let vcpu = vcpu_engine.snapshot_base(&memory, &blob).unwrap();
+        vcpu_engine
+            .corrupt_vm_state_for_test(vcpu, vcpu_offset, 0x01)
+            .unwrap();
+        assert!(matches!(
+            vcpu_engine.vm_state::<Arm64VmState>(vcpu),
+            Err(SnapshotError::Store(StoreError::VmStateIntegrity))
+        ));
+
+        let mut gic_engine = SnapshotEngine::new(memory.len());
+        let gic = gic_engine.snapshot_base(&memory, &blob).unwrap();
+        gic_engine
+            .corrupt_vm_state_for_test(gic, gic_offset, 0x01)
+            .unwrap();
+        assert!(matches!(
+            gic_engine.vm_state::<Arm64VmState>(gic),
+            Err(SnapshotError::Store(StoreError::VmStateIntegrity))
+        ));
     }
 }

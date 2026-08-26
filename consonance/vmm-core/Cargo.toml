@@ -99,6 +99,7 @@ environment = { path = "../environment", version = "0.1.0" }
 libc = "0.2"
 
 [dev-dependencies]
+snapshot-store = { path = "../snapshot-store", version = "0.1.0", features = ["test-utils"] }
 # `mock` turns on `vmm_backend::MockBackend` — the scripted, no-`/dev/kvm`
 # substrate the pure-logic gates drive the event loop against (Mac + Linux).
 vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] }

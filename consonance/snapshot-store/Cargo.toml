@@ -8,6 +8,9 @@ description = "Layered copy-on-write guest-memory snapshot store"
 [lints]
 workspace = true
 
+[features]
+test-utils = []
+
 [dependencies]
 blake3 = "1"
 memmap2 = "0.9"

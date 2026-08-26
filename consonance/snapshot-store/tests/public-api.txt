@@ -7,7 +7,10 @@ pub snapshot_store::StoreError::GfnOutOfRange
 pub snapshot_store::StoreError::GfnOutOfRange::gfn: u64
 pub snapshot_store::StoreError::GfnOutOfRange::mem_pages: u64
 pub snapshot_store::StoreError::Io(std::io::error::Error)
+pub snapshot_store::StoreError::PageIntegrity
+pub snapshot_store::StoreError::PageIntegrity::gfn: u64
 pub snapshot_store::StoreError::UnknownSnapshot(snapshot_store::SnapshotId)
+pub snapshot_store::StoreError::VmStateIntegrity
 pub struct snapshot_store::BaseBuilder<'a>
 impl snapshot_store::BaseBuilder<'_>
 pub fn snapshot_store::BaseBuilder<'_>::seal(self, alloc::vec::Vec<u8>) -> snapshot_store::SnapshotId
@@ -31,6 +34,8 @@ pub struct snapshot_store::SnapshotId(_)
 pub struct snapshot_store::Store
 impl snapshot_store::Store
 pub fn snapshot_store::Store::begin_base(&mut self) -> snapshot_store::BaseBuilder<'_>
+pub fn snapshot_store::Store::corrupt_page_for_test(&mut self, snapshot_store::SnapshotId, u64, usize, u8) -> core::result::Result<(), snapshot_store::StoreError>
+pub fn snapshot_store::Store::corrupt_vm_state_for_test(&mut self, snapshot_store::SnapshotId, usize, u8) -> core::result::Result<(), snapshot_store::StoreError>
 pub fn snapshot_store::Store::derive(&mut self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::DeltaBuilder<'_>, snapshot_store::StoreError>
 pub fn snapshot_store::Store::gc(&mut self) -> u64
 pub fn snapshot_store::Store::materialize(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::Mapping, snapshot_store::StoreError>
