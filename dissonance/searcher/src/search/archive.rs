@@ -152,6 +152,12 @@ pub enum SelectorPolicy {
     /// floor of 1 so shallow groups keep a live tail. Both factors multiply;
     /// the entry threshold still retires single entries hard.
     EnergyFrontier(RetireThresholds),
+    /// The frontier walk with a cost-weighted cell draw: within the recency
+    /// window, entries are ranked by frames spent in their group, and an
+    /// entry's weight halves per `CHEAPEST_RANK_SCALE` ranks above the
+    /// cheapest, flooring at 1. Cheap entries hold the most unspent budget
+    /// under any workload clock, so they take most of the cell's draws.
+    EnergyFrontierCheapest(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -171,6 +177,12 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         SelectorPolicy::EnergyFrontier(scales) => {
             format!(
                 "{SELECTOR_IDENTIFIER}_energy_frontier:{}",
+                threshold_values(scales)
+            )
+        }
+        SelectorPolicy::EnergyFrontierCheapest(scales) => {
+            format!(
+                "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:{}",
                 threshold_values(scales)
             )
         }
@@ -202,13 +214,17 @@ pub fn selector_policy_from_identifier(
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
+    let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
     enum Parsed {
         Retire,
         Energy,
         EnergyFrontier,
+        EnergyFrontierCheapest,
     }
     let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
+    } else if let Some(values) = identifier.strip_prefix(&cheapest_prefix) {
+        (values, Parsed::EnergyFrontierCheapest)
     } else if let Some(values) = identifier.strip_prefix(&frontier_prefix) {
         (values, Parsed::EnergyFrontier)
     } else if let Some(values) = identifier.strip_prefix(&energy_prefix) {
@@ -238,6 +254,7 @@ pub fn selector_policy_from_identifier(
         Parsed::Retire => SelectorPolicy::Retire(thresholds),
         Parsed::Energy => SelectorPolicy::Energy(thresholds),
         Parsed::EnergyFrontier => SelectorPolicy::EnergyFrontier(thresholds),
+        Parsed::EnergyFrontierCheapest => SelectorPolicy::EnergyFrontierCheapest(thresholds),
     })
 }
 
@@ -247,6 +264,11 @@ pub(crate) const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
 /// A concentrated cell draw samples only this many of the cell's
 /// greatest-id members.
 const CONCENTRATION_WINDOW: usize = 128;
+
+/// Cost ranks per halving of a cell entry's draw weight under the cheapest
+/// concentration; a compiled property of its recorded identifier, like the
+/// window itself.
+const CHEAPEST_RANK_SCALE: usize = 16;
 
 /// Which selection path one recorded draw took.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1087,7 +1109,8 @@ where
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
         let (scales, frontier) = match &self.selector_policy {
             SelectorPolicy::Energy(scales) => (scales, false),
-            SelectorPolicy::EnergyFrontier(scales) => (scales, true),
+            SelectorPolicy::EnergyFrontier(scales)
+            | SelectorPolicy::EnergyFrontierCheapest(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
         // A key with no pooled depth at this position has no barren counter
@@ -1143,7 +1166,8 @@ where
             SelectorPolicy::GroupUniform => true,
             SelectorPolicy::Retire(thresholds)
             | SelectorPolicy::Energy(thresholds)
-            | SelectorPolicy::EnergyFrontier(thresholds) => {
+            | SelectorPolicy::EnergyFrontier(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapest(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
         }
@@ -1155,7 +1179,8 @@ where
         match &self.selector_policy {
             SelectorPolicy::GroupUniform
             | SelectorPolicy::Energy(_)
-            | SelectorPolicy::EnergyFrontier(_) => true,
+            | SelectorPolicy::EnergyFrontier(_)
+            | SelectorPolicy::EnergyFrontierCheapest(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
                     .groups
@@ -1194,7 +1219,33 @@ where
                 entered_window = entered_window.saturating_add(1);
             }
         }
-        let id = window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)];
+        let id = if matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyFrontierCheapest(_)
+        ) {
+            let mut ranked = window
+                .iter()
+                .map(|id| (self.time_in_group[*id], *id))
+                .collect::<Vec<_>>();
+            ranked.sort_unstable();
+            let weights = (0..ranked.len())
+                .map(|rank| 256_usize >> (rank / CHEAPEST_RANK_SCALE).min(8))
+                .collect::<Vec<_>>();
+            let total =
+                NonZeroUsize::new(weights.iter().sum()).ok_or("cheapest weights sum to zero")?;
+            let mut draw = rand.below(total);
+            let mut chosen = ranked[0].1;
+            for (weight, (_, id)) in weights.iter().zip(&ranked) {
+                if draw < *weight {
+                    chosen = *id;
+                    break;
+                }
+                draw -= weight;
+            }
+            chosen
+        } else {
+            window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)]
+        };
         Ok((
             id,
             ConcentrationDraw {
@@ -1232,6 +1283,7 @@ where
             SelectorPolicy::Retire(_)
                 | SelectorPolicy::Energy(_)
                 | SelectorPolicy::EnergyFrontier(_)
+                | SelectorPolicy::EnergyFrontierCheapest(_)
         ) {
             let key = self.entries[id].report.key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -1292,7 +1344,9 @@ where
         // most results makes plain retention too common to signal anything.
         let clears_groups = match self.selector_policy {
             SelectorPolicy::Retire(_) => true,
-            SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
+            SelectorPolicy::Energy(_)
+            | SelectorPolicy::EnergyFrontier(_)
+            | SelectorPolicy::EnergyFrontierCheapest(_) => new_slot_descendant,
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
@@ -1313,7 +1367,8 @@ where
         let mut accounting = self.selector_accounting.clone();
         if let SelectorPolicy::Retire(thresholds)
         | SelectorPolicy::Energy(thresholds)
-        | SelectorPolicy::EnergyFrontier(thresholds) = &self.selector_policy
+        | SelectorPolicy::EnergyFrontier(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapest(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
                 self.since_retained
@@ -1694,6 +1749,62 @@ mod tests {
             "a barren band at the floor must fade: {upper}/{walks}"
         );
         assert!(lower * 2 > walks, "the fresh band must dominate");
+    }
+
+    #[test]
+    fn the_cheapest_concentration_prefers_low_cost_cell_members() {
+        // Forty entries in one cell whose costs rise with their ids: the
+        // cost-weighted draw must concentrate on the cheapest ranks while
+        // the plain frontier window stays uniform.
+        let mut archive = TestArchive::new(|_| 1);
+        for index in 0..40_u8 {
+            let input = Input {
+                actions: vec![0; usize::from(index) + 1],
+            };
+            let key = SmbArchiveKey {
+                world: 1,
+                level: 0,
+                progress: 144,
+                player_y_bucket: 0,
+                player_engine_state: 0,
+                state_fingerprint: index,
+                room_x_bucket: 0,
+                room: [0; 3],
+            };
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input,
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert cell entry");
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024, 1_024, 1_024],
+        });
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e34);
+        let cell = (0..40_usize).collect::<Vec<_>>();
+        let mut cheapest_block = 0_u64;
+        for _ in 0..4_096 {
+            let (id, _) = archive
+                .draw_from_cell(&mut rand, cell.clone())
+                .expect("cheapest cell draw");
+            if id < 16 {
+                cheapest_block += 1;
+            }
+        }
+        // Sixteen full-weight ranks against halved and quartered tails must
+        // take well over the uniform 40% share.
+        assert!(
+            cheapest_block > 2_400,
+            "cheapest ranks drew {cheapest_block}/4096"
+        );
     }
 
     #[test]
