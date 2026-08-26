@@ -29,7 +29,7 @@ use crate::{
         CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, Game,
         GamePolicies, SnapshotCheckpoint, replay_campaign_checkpointed, run_campaign_checkpointed,
     },
-    search::draw::{DrawMixture, SuffixShape, draw_suffix},
+    search::draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     search::empirical_steps::{
         EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
         EmpiricalStepTableRef, EmpiricalStepTables,
@@ -295,6 +295,7 @@ pub fn derive_suffix(
     mutation_seed: u64,
     shape: SuffixShape,
     mixture: DrawMixture,
+    mixture_weight: u8,
     chord_policy: SmbCampaignChordPolicy,
     vocabulary: SmbButtonVocabulary,
     chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
@@ -303,6 +304,7 @@ pub fn derive_suffix(
     draw_suffix(
         shape,
         mixture,
+        mixture_weight,
         mutation_seed,
         |rand| {
             let tables = chord_tables.ok_or("derived chord policy has no folded tables")?;
@@ -863,13 +865,14 @@ impl Game for SmbGame {
         run: &SmbCampaignRun,
         state: &SmbDrawState,
         shape: SuffixShape,
-        mixture: DrawMixture,
+        mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         derive_suffix(
             mutation_seed,
             shape,
-            mixture,
+            mixture.mixture,
+            mixture.weight,
             run.chord,
             run.vocabulary,
             state.tables.as_ref().map(EmpiricalStepTables::view),
@@ -881,7 +884,7 @@ impl Game for SmbGame {
         run: &SmbCampaignRun,
         state: &SmbDrawState,
         shape: SuffixShape,
-        mixture: DrawMixture,
+        mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
@@ -890,7 +893,8 @@ impl Game for SmbGame {
         derive_suffix(
             mutation_seed,
             shape,
-            mixture,
+            mixture.mixture,
+            mixture.weight,
             run.chord,
             run.vocabulary,
             tables,
@@ -1175,6 +1179,7 @@ mod tests {
                 seed,
                 SuffixShape::OneOrTwo,
                 DrawMixture::BiasedHalf,
+                128,
                 SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
                 Some(empty),
@@ -1184,6 +1189,7 @@ mod tests {
                 seed,
                 SuffixShape::OneOrTwo,
                 DrawMixture::BiasedHalf,
+                128,
                 SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
                 Some(empty),
@@ -1284,6 +1290,7 @@ mod tests {
             0x5eed_ca02,
             SuffixShape::OneOrTwo,
             DrawMixture::BiasedHalf,
+            128,
             SmbCampaignChordPolicy::default(),
             SmbButtonVocabulary::default(),
             Some(empty),

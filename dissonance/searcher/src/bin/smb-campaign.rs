@@ -93,7 +93,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     });
     let mut vocabulary = SmbButtonVocabulary::default();
     let mut suffix = SuffixShape::default();
-    let mut mixture = DrawMixture::BiasedHalf;
+    let mut mixture = DrawMixture::Energy { scale: 6 };
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {

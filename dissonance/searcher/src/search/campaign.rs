@@ -36,8 +36,9 @@ use crate::search::archive::{
     retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
 };
 use crate::search::draw::{
-    DrawMixture, MIXTURE_BIASED_HALF_IDENTIFIER, SuffixShape, draw_mixture_from_identifier,
-    draw_mixture_identifier, suffix_shape_from_identifier, suffix_shape_identifier,
+    DrawMixture, MIXTURE_BIASED_HALF_IDENTIFIER, MixtureDraw, MixtureEnergy, SuffixShape,
+    draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy_is_biased,
+    suffix_shape_from_identifier, suffix_shape_identifier,
 };
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::with_worker_pool;
@@ -245,7 +246,7 @@ pub trait Game: Sync {
         run: &Self::Run,
         state: &Self::DrawState,
         shape: SuffixShape,
-        mixture: DrawMixture,
+        mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
     /// Expand one recorded mutation seed against the recorded draw-state
@@ -259,7 +260,7 @@ pub trait Game: Sync {
         run: &Self::Run,
         state: &Self::DrawState,
         shape: SuffixShape,
-        mixture: DrawMixture,
+        mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
@@ -537,6 +538,11 @@ fn default_mixture_policy() -> String {
     MIXTURE_BIASED_HALF_IDENTIFIER.to_owned()
 }
 
+/// Weight recorded implicitly by streams written before the mixture adapted.
+fn default_mixture_weight() -> u8 {
+    128
+}
+
 /// One admission decision for one candidate boundary, in candidate order.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
@@ -577,6 +583,12 @@ pub struct CampaignJobRecord {
     pub result_sha256: String,
     /// Ordered admission decisions for the job's candidates.
     pub decisions: Vec<CampaignAdmissionDecision>,
+    /// Biased-strategy weight out of 256 the energy mixture used for this
+    /// draw; the recorded half-weight for every other mixture and for
+    /// streams written before the mixture adapted.
+    #[serde(default = "default_mixture_weight")]
+    pub mixture_weight: u8,
+
     /// Selector draw record.
     pub selector: SelectorDraw,
     /// Derived table version used to draw this job. The field keeps its
@@ -606,6 +618,12 @@ pub struct CampaignSkipRecord {
     pub parent_id: u64,
     /// Mutation seed whose full prefix chain was already archived.
     pub mutation_seed: u64,
+    /// Biased-strategy weight out of 256 the energy mixture used for this
+    /// draw; the recorded half-weight for every other mixture and for
+    /// streams written before the mixture adapted.
+    #[serde(default = "default_mixture_weight")]
+    pub mixture_weight: u8,
+
     /// Selector draw record.
     pub selector: SelectorDraw,
     /// Derived table version used to draw this skipped job. The field keeps
@@ -934,6 +952,7 @@ pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     sequence: u64,
     probe_refused: u64,
     max_actions: usize,
+    pub(crate) mixture_energy: MixtureEnergy,
 }
 
 impl<G: Game + ?Sized> CoordinatorCore<G> {
@@ -950,6 +969,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             sequence: 0,
             probe_refused: 0,
             max_actions,
+            mixture_energy: MixtureEnergy::default(),
         }
     }
 
@@ -1347,7 +1367,7 @@ fn stream_header<G: Game>(
         archive_entry_limit: config.archive_entry_limit,
         resume_policy: RESUME_IDENTIFIER.to_owned(),
         suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
-        mixture_policy: draw_mixture_identifier(config.mixture).to_owned(),
+        mixture_policy: draw_mixture_identifier(config.mixture),
         game_policies: game.policies(&config.run),
         draw_table,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
@@ -1546,6 +1566,7 @@ type SelectedJob<G> = (JobSpec<G>, PendingJob);
 struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
+    mixture_weight: u8,
     selector: SelectorDraw,
     draw_table_before: Option<EmpiricalStepCheckpoint>,
 }
@@ -1728,12 +1749,19 @@ where
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let mutation_seed = rand.next_u64();
+                    let mixture_weight = match config.mixture {
+                        DrawMixture::Energy { scale } => core.mixture_energy.biased_weight(scale),
+                        _ => default_mixture_weight(),
+                    };
                     let draw_table_before = game.draw_checkpoint(draw_state)?;
                     let suffix = game.expand_suffix(
                         &config.run,
                         draw_state,
                         config.suffix,
-                        config.mixture,
+                        MixtureDraw {
+                            mixture: config.mixture,
+                            weight: mixture_weight,
+                        },
                         mutation_seed,
                     )?;
                     if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
@@ -1745,6 +1773,7 @@ where
                             worker,
                             parent_id: u64::try_from(parent_index)?,
                             mutation_seed,
+                            mixture_weight,
                             selector,
                             draw_table_before,
                             draw_table_after,
@@ -1768,6 +1797,7 @@ where
                         PendingJob {
                             parent_id: u64::try_from(parent_index)?,
                             mutation_seed,
+                            mixture_weight,
                             selector,
                             draw_table_before,
                         },
@@ -1818,13 +1848,22 @@ where
                         _ => None,
                     })
                     .collect::<Vec<_>>();
+                let new_slot_descendant = retained_ids
+                    .iter()
+                    .any(|id| core.archive.opened_new_slot(*id));
                 core.archive.record_selection_outcome(
                     parent_index,
                     !retained_ids.is_empty(),
-                    retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_slot(*id)),
+                    new_slot_descendant,
                 );
+                if let DrawMixture::Energy { .. } = config.mixture {
+                    let biased_strategy = energy_strategy_is_biased(
+                        pending_job.mutation_seed,
+                        pending_job.mixture_weight,
+                    )?;
+                    core.mixture_energy
+                        .record_outcome(biased_strategy, new_slot_descendant);
+                }
                 if victories_before == 0
                     && let (Some(path), Some(input)) =
                         (&config.victory_input_path, &core.victory_input)
@@ -1841,6 +1880,7 @@ where
                     frames,
                     result_sha256: result_sha256::<G>(&result)?,
                     decisions,
+                    mixture_weight: pending_job.mixture_weight,
                     selector: pending_job.selector,
                     draw_table_before: pending_job.draw_table_before,
                     draw_table_after,
@@ -2074,7 +2114,10 @@ where
                     &replay_run,
                     &draw_state,
                     replay_suffix,
-                    replay_mixture,
+                    MixtureDraw {
+                        mixture: replay_mixture,
+                        weight: skip.mixture_weight,
+                    },
                     skip.draw_table_before.as_ref(),
                     skip.mutation_seed,
                 )?;
@@ -2111,7 +2154,10 @@ where
                     &replay_run,
                     &draw_state,
                     replay_suffix,
-                    replay_mixture,
+                    MixtureDraw {
+                        mixture: replay_mixture,
+                        weight: job.mixture_weight,
+                    },
                     job.draw_table_before.as_ref(),
                     job.mutation_seed,
                 )?;

@@ -59,6 +59,16 @@ pub enum DrawMixture {
     /// Half the actions offered by the run's biased table first, falling
     /// back to the alphabet whenever the table offers nothing.
     BiasedHalf,
+    /// One strategy per suffix, drawn at the weight the campaign maintains:
+    /// a strategy's share halves every `scale` consecutive suffixes that
+    /// opened no new retention slot and resets when one does, flooring so
+    /// both strategies always keep a live share. The chosen strategy
+    /// supplies every action of the suffix, with the biased table still
+    /// falling back to the alphabet when it offers nothing.
+    Energy {
+        /// Barren suffixes per halving of a strategy's share.
+        scale: u64,
+    },
 }
 
 /// Identifier recorded for the alphabet-only mixture.
@@ -67,12 +77,16 @@ pub const MIXTURE_ALPHABET_ONLY_IDENTIFIER: &str = "alphabet_only";
 /// Identifier recorded for the biased-half mixture.
 pub const MIXTURE_BIASED_HALF_IDENTIFIER: &str = "biased_half";
 
+/// Identifier prefix recorded for the energy mixture; the scale follows.
+pub const MIXTURE_ENERGY_PREFIX: &str = "energy:";
+
 /// The recorded identifier of a draw mixture.
 #[must_use]
-pub fn draw_mixture_identifier(mixture: DrawMixture) -> &'static str {
+pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
     match mixture {
-        DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER,
-        DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER,
+        DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
+        DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
+        DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
     }
 }
 
@@ -82,11 +96,82 @@ pub fn draw_mixture_identifier(mixture: DrawMixture) -> &'static str {
 ///
 /// Returns an error when the identifier names no compiled mixture.
 pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box<dyn Error>> {
+    if let Some(scale) = identifier.strip_prefix(MIXTURE_ENERGY_PREFIX) {
+        let scale = scale.parse::<u64>()?;
+        if scale == 0 {
+            return Err("energy mixture scale must be nonzero".into());
+        }
+        return Ok(DrawMixture::Energy { scale });
+    }
     match identifier {
         MIXTURE_ALPHABET_ONLY_IDENTIFIER => Ok(DrawMixture::AlphabetOnly),
         MIXTURE_BIASED_HALF_IDENTIFIER => Ok(DrawMixture::BiasedHalf),
         _ => Err(format!("draw mixture {identifier} is not recognized").into()),
     }
+}
+
+/// One suffix draw's mixture and the biased-strategy weight it was drawn
+/// at; the weight only steers the energy mixture.
+#[derive(Clone, Copy, Debug)]
+pub struct MixtureDraw {
+    /// The run's recorded mixture.
+    pub mixture: DrawMixture,
+    /// Biased-strategy weight out of 256 at this draw.
+    pub weight: u8,
+}
+
+/// Per-stream shares of the energy mixture's two strategies. Live updates
+/// the counters as job outcomes complete and records each draw's resulting
+/// weight in the stream, so replay re-derives every suffix from the record
+/// alone and never needs the counters.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MixtureEnergy {
+    /// Consecutive suffixes per strategy (biased, alphabet) that opened no
+    /// new retention slot.
+    barren: [u64; 2],
+}
+
+impl MixtureEnergy {
+    /// The biased strategy's current weight out of 256, kept off both ends
+    /// so each strategy always has a live share.
+    #[must_use]
+    pub fn biased_weight(&self, scale: u64) -> u8 {
+        let share = |barren: u64| -> u64 {
+            let halvings = u32::try_from((barren / scale).min(8)).unwrap_or(8);
+            (256_u64 >> halvings).max(1)
+        };
+        let biased = share(self.barren[0]);
+        let total = biased + share(self.barren[1]);
+        u8::try_from(((256 * biased) / total).clamp(1, 255)).unwrap_or(128)
+    }
+
+    /// Fold one suffix outcome into the strategy that drew it.
+    pub fn record_outcome(&mut self, biased_strategy: bool, new_slot: bool) {
+        let index = usize::from(!biased_strategy);
+        if new_slot {
+            self.barren[index] = 0;
+        } else {
+            self.barren[index] = self.barren[index].saturating_add(1);
+        }
+    }
+}
+
+/// Whether the energy mixture assigns this suffix to the biased strategy.
+/// The strategy draw is the seeded generator's first draw, so the campaign
+/// re-derives it at outcome time from the recorded seed and weight.
+///
+/// # Errors
+///
+/// Returns an error when the weight bound is invalid.
+pub fn energy_strategy_is_biased(
+    mutation_seed: u64,
+    biased_weight: u8,
+) -> Result<bool, Box<dyn Error>> {
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
+    Ok(
+        rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
+            < usize::from(biased_weight),
+    )
 }
 
 /// Expand one mutation seed into a complete suffix.
@@ -102,6 +187,7 @@ pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box
 pub fn draw_suffix<A, B, U>(
     shape: SuffixShape,
     mixture: DrawMixture,
+    mixture_weight: u8,
     mutation_seed: u64,
     mut biased: B,
     mut alphabet: U,
@@ -111,6 +197,15 @@ where
     U: FnMut(&mut RomuDuoJrRand) -> Result<A, Box<dyn Error>>,
 {
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
+    // The energy strategy draw comes first so it is re-derivable from the
+    // seed and recorded weight alone; see `energy_strategy_is_biased`.
+    let energy_biased = match mixture {
+        DrawMixture::Energy { .. } => Some(
+            rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
+                < usize::from(mixture_weight),
+        ),
+        DrawMixture::AlphabetOnly | DrawMixture::BiasedHalf => None,
+    };
     let length = match shape {
         SuffixShape::OneOrTwo => {
             if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
@@ -123,8 +218,13 @@ where
     };
     let mut suffix = Vec::with_capacity(length);
     for _ in 0..length {
-        let take_biased = mixture == DrawMixture::BiasedHalf
-            && rand.below(NonZeroUsize::new(2).ok_or("invalid mixture odds")?) == 0;
+        let take_biased = match energy_biased {
+            Some(biased_strategy) => biased_strategy,
+            None => {
+                mixture == DrawMixture::BiasedHalf
+                    && rand.below(NonZeroUsize::new(2).ok_or("invalid mixture odds")?) == 0
+            }
+        };
         if take_biased && let Some(action) = biased(&mut rand)? {
             suffix.push(action);
             continue;
@@ -137,8 +237,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        DrawMixture, SuffixShape, draw_mixture_from_identifier, draw_mixture_identifier,
-        draw_suffix, suffix_shape_from_identifier, suffix_shape_identifier,
+        DrawMixture, MixtureEnergy, SuffixShape, draw_mixture_from_identifier,
+        draw_mixture_identifier, draw_suffix, energy_strategy_is_biased,
+        suffix_shape_from_identifier, suffix_shape_identifier,
     };
 
     #[test]
@@ -153,13 +254,19 @@ mod tests {
 
     #[test]
     fn the_mixture_identifier_round_trips_and_rejects_unknown_names() {
-        for mixture in [DrawMixture::AlphabetOnly, DrawMixture::BiasedHalf] {
+        for mixture in [
+            DrawMixture::AlphabetOnly,
+            DrawMixture::BiasedHalf,
+            DrawMixture::Energy { scale: 6 },
+        ] {
             assert_eq!(
-                draw_mixture_from_identifier(draw_mixture_identifier(mixture)).expect("round trip"),
+                draw_mixture_from_identifier(&draw_mixture_identifier(mixture))
+                    .expect("round trip"),
                 mixture
             );
         }
         assert!(draw_mixture_from_identifier("table_only").is_err());
+        assert!(draw_mixture_from_identifier("energy:0").is_err());
     }
 
     /// A biased table that offers nothing must consume no draw, so a run
@@ -172,6 +279,7 @@ mod tests {
             let plain = draw_suffix(
                 SuffixShape::OneOrTwo,
                 DrawMixture::AlphabetOnly,
+                128,
                 seed,
                 |_| Ok(None::<u64>),
                 |rand| {
@@ -183,6 +291,7 @@ mod tests {
             let with_empty_table = draw_suffix(
                 SuffixShape::OneOrTwo,
                 DrawMixture::BiasedHalf,
+                128,
                 seed,
                 |_| Ok(None::<u64>),
                 |rand| Ok(rand.next_u64()),
@@ -201,6 +310,7 @@ mod tests {
                 draw_suffix(
                     SuffixShape::OneOrTwo,
                     DrawMixture::AlphabetOnly,
+                    128,
                     *seed,
                     |_| Ok(None::<u64>),
                     |rand| Ok(rand.next_u64()),
@@ -211,5 +321,58 @@ mod tests {
             })
             .count();
         assert!((900..1_150).contains(&long), "two-action suffixes: {long}");
+    }
+
+    /// The energy mixture assigns each suffix to one strategy, matches the
+    /// re-derivation helper, and follows the recorded weight.
+    #[test]
+    fn the_energy_mixture_follows_its_recorded_weight() {
+        for (weight, low, high) in [(255_u8, 4_000, 4_096), (1, 0, 96), (128, 1_850, 2_250)] {
+            let biased = (0..4_096_u64)
+                .filter(|seed| {
+                    let suffix = draw_suffix(
+                        SuffixShape::OneToSix,
+                        DrawMixture::Energy { scale: 6 },
+                        weight,
+                        *seed,
+                        |_| Ok(Some(1_u64)),
+                        |_| Ok(0_u64),
+                    )
+                    .expect("energy suffix");
+                    let from_table = suffix.iter().all(|action| *action == 1);
+                    assert!(
+                        from_table || suffix.iter().all(|action| *action == 0),
+                        "a suffix must draw every action from one strategy"
+                    );
+                    assert_eq!(
+                        from_table,
+                        energy_strategy_is_biased(*seed, weight).expect("strategy"),
+                        "the helper must re-derive the strategy draw"
+                    );
+                    from_table
+                })
+                .count();
+            assert!(
+                (low..=high).contains(&biased),
+                "weight {weight} chose the table {biased} times"
+            );
+        }
+    }
+
+    /// Barren streaks move the shared weight and a new slot resets them.
+    #[test]
+    fn mixture_energy_counters_move_the_weight() {
+        let mut energy = MixtureEnergy::default();
+        assert_eq!(energy.biased_weight(6), 128);
+        for _ in 0..12 {
+            energy.record_outcome(true, false);
+        }
+        assert!(energy.biased_weight(6) < 70);
+        energy.record_outcome(true, true);
+        assert_eq!(energy.biased_weight(6), 128);
+        for _ in 0..60 {
+            energy.record_outcome(false, false);
+        }
+        assert!(energy.biased_weight(6) > 240);
     }
 }
