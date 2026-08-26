@@ -117,3 +117,7 @@ KVM_PATCH_0006_SHA256=9d1da63ec6ac9d0b1321d8ade77a53ac1110314b9189fdc82d5ec4d130
 KVM_PATCH_0007_SHA256=6082ed21e15534a2728e13eedd7bd47aadb10e816962302709c7b267e39ead69
 KVM_PATCH_0008_SHA256=7bc676f49e1b6b68fb633cff507c8e7ec2b9314eea1a9271e5cf20f0b4c2f8ea
 KVM_PATCH_0009_SHA256=817be3da115c061bc3ac4f8bd6f50db726ca5afd78fd3ba0510b5b8a512ccb4c
+
+# 0010 splits the MTF single-step out of the preemption class, which SVM
+# advertises, so the arm ioctl is refused on a vendor where nothing consumes it.
+KVM_PATCH_0010_SHA256=9f52f392232c7a3c27b848150e0579fef98cc4a6919a03e1b376aea60ae2dd04

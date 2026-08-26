@@ -518,6 +518,22 @@ fn the_patched_randomness_capability_follows_the_granted_class() {
 }
 
 #[test]
+fn the_step_mechanism_follows_the_granted_class() {
+    // SVM has no monitor trap flag, so an AMD host grants the clock and preemption
+    // classes and not the step one, and must fall back to RFLAGS.TF. Arming the MTF
+    // there sets a flag no vendor code reads: KVM_RUN then resumes the guest instead
+    // of advancing it one instruction.
+    let amd = DETERMINISTIC_INTERCEPT_TSC | DETERMINISTIC_INTERCEPT_PREEMPT;
+    assert!(!grants_mtf_step(amd));
+
+    let intel = amd | DETERMINISTIC_INTERCEPT_RNG | DETERMINISTIC_INTERCEPT_STEP;
+    assert!(grants_mtf_step(intel));
+
+    // Stock KVM grants nothing at all.
+    assert!(!grants_mtf_step(0));
+}
+
+#[test]
 fn kvm_capabilities_are_honestly_false() {
     let c = kvm_capabilities();
     assert_eq!(c.name, "kvm-stock");

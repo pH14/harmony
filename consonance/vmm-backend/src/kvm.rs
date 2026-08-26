@@ -87,10 +87,12 @@ pub(crate) const KVM_CAP_X86_DETERMINISTIC_INTERCEPTS: u32 = 245;
 /// reports the set a host supports and the enable takes the subset wanted, so a
 /// vendor that cannot trap a class refuses the request instead of running without
 /// the coverage. SVM has no intercept control for RDRAND or RDSEED, so an AMD host
-/// never reports [`DETERMINISTIC_INTERCEPT_RNG`].
+/// never reports [`DETERMINISTIC_INTERCEPT_RNG`], and it has no monitor trap flag,
+/// so it never reports [`DETERMINISTIC_INTERCEPT_STEP`] either (patch 0010).
 pub(crate) const DETERMINISTIC_INTERCEPT_TSC: u64 = 1 << 0;
 pub(crate) const DETERMINISTIC_INTERCEPT_RNG: u64 = 1 << 1;
 pub(crate) const DETERMINISTIC_INTERCEPT_PREEMPT: u64 = 1 << 2;
+pub(crate) const DETERMINISTIC_INTERCEPT_STEP: u64 = 1 << 3;
 
 /// `KVM_EXIT_PREEMPT` (patch 0004) — the in-kernel **force-exit** preemption: when
 /// the one-shot arm is set, the perf-overflow PMI's NMI VM-exit returns to userspace
@@ -744,6 +746,15 @@ pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
 /// `enforces_tsc_deadline_msr` stays `false`: the determinism patch touches only
 /// the instruction intercepts, not the `0x6E0` WRMSR fastpath (the contract hides
 /// `IA32_TSC_DEADLINE` instead — INTEGRATION.md §7 / R1, no in-kernel LAPIC).
+/// Whether a host's granted classes select the patched one-shot MTF step over
+/// `RFLAGS.TF`. The MTF steps *through* the guest's own syscall and exception
+/// delivery, which TF cannot: any gate entry clears TF in the new flags, and
+/// `SYSCALL` masks it through `IA32_FMASK`. SVM has no monitor trap flag, so an
+/// AMD host takes the TF path even though it is a patched backend (patch 0010).
+pub(crate) fn grants_mtf_step(granted: u64) -> bool {
+    granted & DETERMINISTIC_INTERCEPT_STEP != 0
+}
+
 pub(crate) fn patched_capabilities(granted: u64) -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-patched",

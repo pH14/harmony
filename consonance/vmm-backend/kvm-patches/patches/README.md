@@ -82,9 +82,21 @@ RDRAND and RDSEED have no SVM counterpart. The intercept vector in
 executes them against the hardware whatever its CPUID model says. Guest randomness
 has to be denied above the hypervisor on this vendor.
 
-There is no SVM counterpart to 0005 either. SVM has no monitor-trap facility, so
-single-stepping there goes through stock `KVM_GUESTDBG_SINGLESTEP` on `RFLAGS.TF`,
-which skips one instruction after a `MOV SS` or `POP SS` shadow.
+- `0010` — the single-step gets its own class, `KVM_DETERMINISTIC_INTERCEPT_STEP`.
+  `0007` had gated it on the preemption class, which SVM advertises, so
+  `KVM_ARM_MTF_STEP` succeeded on an AMD host and set a flag only `vmx.c` reads:
+  the step never happened and `KVM_RUN` resumed the guest instead of advancing it
+  one instruction. VMX advertises the new class where the hardware has a monitor
+  trap flag; SVM never does.
+
+There is no SVM counterpart to 0005. SVM has no monitor trap flag, so single-stepping
+there goes through stock `KVM_GUESTDBG_SINGLESTEP` on `RFLAGS.TF`. TF is guest state,
+which costs three things a hypervisor stepping a whole guest cares about: any interrupt
+or exception delivered through a gate clears it in the new flags and `SYSCALL` masks it
+through `IA32_FMASK`, so stepping stops at the guest's own kernel entry; the resulting
+`#DB` shares a channel with the guest's own debugging; and the `MOV SS` / `POP SS`
+shadow defers it, so one step covers two instructions. MTF has none of these — it lives
+in the VMCS, produces its own exit, and the guest cannot see or clear it.
 
 - `0001-KVM-x86-add-KVM_EXIT_DETERMINISM-userspace-exit-ABI.patch`
 - `0002-KVM-x86-emulate-intercepted-RDTSC-RDTSCP-RDRAND-RDSE.patch`
@@ -95,6 +107,7 @@ which skips one instruction after a `MOV SS` or `POP SS` shadow.
 - `0007-KVM-x86-make-the-deterministic-intercepts-opt-in-a-p.patch`
 - `0008-KVM-SVM-trap-RDTSC-and-RDTSCP-for-the-deterministic-.patch`
 - `0009-KVM-SVM-apply-a-guest-s-host-guest-counting-filter-t.patch`
+- `0010-KVM-x86-give-the-deterministic-single-step-its-own-c.patch`
 
 Verified: the 0001-0005 series is `git am`-clean on a fresh `linux-6.18.35`
 checkout, reproduces the built tree byte-for-byte, and the out-of-tree modules
@@ -109,4 +122,8 @@ The 0006-0009 half was applied on top of that series, built, and booted on an EP
 `qualification-evidence/rdtsc/` was taken against those modules. It has not been
 through the byte-for-byte reproduction check the first five have, and there is no
 `apply_patch.py` anchor form for it.
+
+`0010` is `git am`-clean on top of 0001-0009 on a fresh `linux-6.18.35` checkout and
+nothing further. It was written after the qualification box was released, so it has
+not been compiled or booted, and no measurement here was taken against it.
 

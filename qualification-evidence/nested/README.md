@@ -109,3 +109,16 @@ the enable. That is how the landing harness failed here — `ENABLE_CAP` succeed
   hypervisor, or a cloud vendor's, would do.
 - The live contract exam has not been re-run since the margin fix. The box was spun
   down first.
+- Single-stepping on this vendor has never run. Patch `0007` gated the monitor-trap
+  step on the preemption class, which SVM advertises, so `KVM_ARM_MTF_STEP` succeeded
+  here and armed a flag only the Intel path reads, while the backend skipped the
+  `RFLAGS.TF` fallback because it treated "patched" as "has a monitor trap flag".
+  Neither mechanism was armed. Patch `0010` splits the step into its own class and the
+  backend now chooses from the granted set, but that fix was written after the box was
+  released, so it is unbuilt and unrun — issue #196. Every landing recorded here came
+  from the standalone harnesses under `landing/`, which step through `KVM_GUESTDBG_SINGLESTEP`
+  directly and are unaffected.
+- Whether `RFLAGS.TF` steps exactly enough to land at all on this vendor. TF is cleared
+  on gate entry and by `IA32_FMASK`, and deferred by the `MOV SS` shadow. The metal
+  campaign's million landings say the answer is yes for those workloads; nothing says
+  it holds through a guest's own kernel entry.

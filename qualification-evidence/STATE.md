@@ -69,6 +69,9 @@ nested phase; `nested/README.md` is its report. What is left:
 5. Gates and checks that need a Linux host, listed in `nested/README.md`: the full
    workspace gates, regenerating `consonance/vmm-backend/tests/public-api.txt`, and the
    live contract exam against the per-backend margin.
+6. Verifying the AMD single-step fallback: patch `0010` and the backend change beside
+   it are unbuilt and unrun, and TF stepping has never landed on this vendor through
+   the backend. Issue #196.
 
 ## Recorded failures so far
 

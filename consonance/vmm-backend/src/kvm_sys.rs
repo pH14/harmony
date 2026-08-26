@@ -177,10 +177,9 @@ pub struct KvmBackend {
     /// per `run_until` (not per step) and always disarmed before the next `run`.
     single_step_armed: bool,
     /// Whether this backend opted into `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (the
-    /// patched-KVM path). Gates both patched determinism mechanisms:
-    /// - the single-step mechanism — the patched one-shot MTF (`KVM_ARM_MTF_STEP` →
-    ///   `KVM_EXIT_DET_STEP`, which steps *through* the guest's own syscall/exception)
-    ///   when `true`; stock `KVM_GUESTDBG_SINGLESTEP` when `false`;
+    /// patched-KVM path). Gates the free-run force-exit; the single-step mechanism
+    /// is chosen by [`Self::mtf_step`] from the granted classes instead, because a
+    /// patched host without a monitor trap flag still has to step with `RFLAGS.TF`:
     /// - the free-run force-exit (task 55, patch 0004) — when `true`, `run_until`'s
     ///   free-run arms the one-shot in-kernel `KVM_ARM_PREEMPT_EXIT` before every entry,
     ///   so the V-time deadline is hit with the bounded hardware-PMI skid rather than the
@@ -257,13 +256,15 @@ impl KvmBackend {
                     cap: "KVM_CAP_X86_DETERMINISTIC_INTERCEPTS (patched KVM not loaded?)",
                 });
             }
-            // The randomness class is asked for only where it exists. On SVM it
-            // does not, and a guest RDRAND there reaches the hardware unseen.
+            // The randomness and single-step classes are asked for only where they
+            // exist. On SVM neither does: a guest RDRAND there reaches the hardware
+            // unseen, and there is no monitor trap flag to step with.
             let mut cap = kvm_enable_cap {
                 cap: KVM_CAP_X86_DETERMINISTIC_INTERCEPTS,
                 ..Default::default()
             };
-            cap.args[0] = supported & (required | DETERMINISTIC_INTERCEPT_RNG);
+            cap.args[0] =
+                supported & (required | DETERMINISTIC_INTERCEPT_RNG | DETERMINISTIC_INTERCEPT_STEP);
             vm.enable_cap(&cap).map_err(|_| BackendError::Capability {
                 cap: "KVM_CAP_X86_DETERMINISTIC_INTERCEPTS (patched KVM not loaded?)",
             })?;
@@ -652,6 +653,13 @@ impl KvmBackend {
         Ok(LiveStop::Guest { exit, work })
     }
 
+    /// Whether the host granted the patched one-shot MTF step (patch 0010). VMX
+    /// grants it where the hardware has a monitor trap flag; SVM never does, so an
+    /// AMD host steps with `RFLAGS.TF` even though it is a patched backend.
+    fn mtf_step(&self) -> bool {
+        grants_mtf_step(self.granted_intercepts)
+    }
+
     /// Planner phase 2: single-step **one** instruction (`KVM_GUESTDBG_SINGLESTEP`)
     /// to land at the exact deadline despite skid. Returns the new work count, or a
     /// genuine guest exit taken by the stepped instruction. P2(a): it runs the SAME
@@ -665,13 +673,13 @@ impl KvmBackend {
             // Deliver any pending injectable IRQ (P2(a)); clears the window when none
             // is pending, so an IRQ-window exit cannot loop.
             self.inject_pending(fd)?;
-            // Patched path only: arm the one-shot MTF for the next instruction (exits
-            // `KVM_EXIT_DET_STEP`, stepping THROUGH the guest's own syscall/exception).
-            // The stock path uses the sticky `KVM_GUESTDBG_SINGLESTEP` armed in
-            // `enable_single_step`; the MTF ioctl is patched-only and `EINVAL`s on a
-            // non-determinism VM, so it must never be issued there (regressed the stock
-            // `run_until`/`live_preemption` gate).
-            if self.deterministic_intercepts {
+            // Where the step class was granted: arm the one-shot MTF for the next
+            // instruction (exits `KVM_EXIT_DET_STEP`, stepping THROUGH the guest's own
+            // syscall/exception). Otherwise the sticky `KVM_GUESTDBG_SINGLESTEP` armed
+            // in `enable_single_step` is doing the work; the MTF ioctl `EINVAL`s on a
+            // VM that did not get the class, so it must never be issued there
+            // (regressed the stock `run_until`/`live_preemption` gate).
+            if self.mtf_step() {
                 // SAFETY (raw ioctl seam): one-shot MTF arm on the owned vCPU.
                 unsafe { raw_mtf_step(fd) }?;
             }
@@ -711,18 +719,19 @@ impl KvmBackend {
     /// steps the counter must only count (no second overflow could fire mid-skid-margin,
     /// and the phase-1 record is consumed so a long run never fills the ring).
     ///
-    /// Mechanism by backend: the **patched** path arms a per-step one-shot MTF in
-    /// [`Self::single_step_once`] (it steps *through* the guest's own syscall/exception,
-    /// which TF cannot — issue #34); the **stock** path arms the sticky
-    /// `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` here (the MTF ioctl is
-    /// patched-only and would `EINVAL` on stock KVM).
+    /// Mechanism by granted class: where the step class was granted, a per-step
+    /// one-shot MTF is armed in [`Self::single_step_once`] (it steps *through* the
+    /// guest's own syscall/exception, which TF cannot — issue #34); otherwise the
+    /// sticky `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` is armed here. Stock
+    /// KVM and any SVM host take the second path, the first because it cannot honor
+    /// the cap at all and the second because SVM has no monitor trap flag.
     fn enable_single_step(&mut self) -> Result<()> {
         if self.single_step_armed {
             return Ok(());
         }
         self.pmu_disarm()?;
-        if !self.deterministic_intercepts {
-            // Stock KVM: TF-based single-step (each retired instruction → KVM_EXIT_DEBUG).
+        if !self.mtf_step() {
+            // TF-based single-step (each retired instruction → KVM_EXIT_DEBUG).
             let dbg = kvm_guest_debug {
                 control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
                 ..Default::default()
@@ -734,13 +743,13 @@ impl KvmBackend {
     }
 
     /// Disarm single-step, restoring normal execution for the next `run`. No-op if it
-    /// was never armed. Only the stock path armed guest-debug; the patched path's MTF
-    /// is a per-step one-shot (no sticky vCPU state to clear).
+    /// was never armed. Only the TF path armed guest-debug; the MTF is a per-step
+    /// one-shot (no sticky vCPU state to clear).
     fn disable_single_step(&mut self) -> Result<()> {
         if !self.single_step_armed {
             return Ok(());
         }
-        if !self.deterministic_intercepts {
+        if !self.mtf_step() {
             let dbg = kvm_guest_debug::default(); // control = 0: disable
             self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
         }
@@ -925,6 +934,10 @@ unsafe fn raw_set_msr_filter(_fd: std::os::fd::RawFd, _filter: &kvm_msr_filter) 
 /// harmony 0005: arm a one-shot MTF single-step. The next `KVM_RUN` exits with
 /// `KVM_EXIT_DET_STEP` after exactly one instruction — including THROUGH the guest's
 /// own syscall/exception (unlike TF single-step, cleared on event delivery / FMASK).
+///
+/// Issue this only where the step class was granted ([`grants_mtf_step`]). Patch 0010
+/// makes the kernel refuse it otherwise; before it, an SVM host accepted the arm and
+/// then ignored the flag, so the caller got a resumed guest in place of one step.
 ///
 /// # Safety
 /// `fd` must be a valid vCPU fd.
