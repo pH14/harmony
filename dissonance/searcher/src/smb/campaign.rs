@@ -293,10 +293,8 @@ pub fn derive_suffix(
     vocabulary: SmbButtonVocabulary,
     chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-    let mixture = match chord_policy {
-        SmbCampaignChordPolicy::Uniform => DrawMixture::AlphabetOnly,
-        SmbCampaignChordPolicy::DerivedHalf(_) => DrawMixture::BiasedHalf,
-    };
+    let SmbCampaignChordPolicy::DerivedHalf(_) = chord_policy;
+    let mixture = DrawMixture::BiasedHalf;
     draw_suffix(
         shape,
         mixture,
@@ -367,21 +365,40 @@ pub struct SmbChordTableHeader {
 }
 
 /// Chord policy a campaign draws chords from, recorded in the stream header.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+///
+/// The feedback tables are the only draw source; retired policies survive
+/// only as stream identifiers for recordings made before their removal, and
+/// those streams no longer replay.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbCampaignChordPolicy {
-    /// Every chord drawn uniformly from the vocabulary.
-    #[default]
-    Uniform,
     /// Derive recent and all-history tables from the recorded source, mixing
     /// their registered empirical weights into the biased half of each draw.
     DerivedHalf(SmbChordTableDerivation),
+}
+
+impl Default for SmbCampaignChordPolicy {
+    /// The promoted level-neutral derivation with the registered
+    /// head-to-head fold parameters.
+    fn default() -> Self {
+        Self::DerivedHalf(SmbChordTableDerivation {
+            source_filter: SmbChordSource::All(SmbChordSourceAll {}),
+            parameters: EmpiricalStepParameters {
+                prefix_steps: 0,
+                recent_successes: 128,
+                recent_weight: 3,
+                all_history_weight: 1,
+                update_every_records: 64,
+                hash_every_records: 1024,
+            },
+            hash_rule: EmpiricalStepHashRule::IncrementalHistory,
+        })
+    }
 }
 
 /// Header identifier for a chord policy.
 #[must_use]
 pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
-        SmbCampaignChordPolicy::Uniform => "chord_uniform".to_owned(),
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
             let parameters = derivation.parameters;
             let prefix = match derivation.hash_rule {
@@ -418,9 +435,6 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
 pub fn chord_policy_from_identifier(
     identifier: &str,
 ) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
-    if identifier == "chord_uniform" {
-        return Ok(SmbCampaignChordPolicy::Uniform);
-    }
     let (fields, hash_rule) = if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_50:")
     {
         (Some(rest), EmpiricalStepHashRule::FullJson)
@@ -555,9 +569,7 @@ fn initial_chord_tables(
     policy: SmbCampaignChordPolicy,
     origin: Option<(&str, &SmbArchiveReport)>,
 ) -> Result<InitialChordTables, Box<dyn Error>> {
-    let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy else {
-        return Ok((None, None));
-    };
+    let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy;
     let mut tables =
         EmpiricalStepTables::with_hash_rule(derivation.parameters, derivation.hash_rule)?;
     let source_sha256 = match origin {
@@ -619,12 +631,7 @@ fn recorded_chord_tables<'a>(
     versions: &'a BTreeMap<u64, SmbChordTableVersion>,
     tables: Option<&'a EmpiricalStepTables<ButtonChord>>,
 ) -> Result<Option<EmpiricalStepTableRef<'a, ButtonChord>>, Box<dyn Error>> {
-    let SmbCampaignChordPolicy::DerivedHalf(_) = policy else {
-        if before.is_some() {
-            return Err("non-derived chord draw carries a table version".into());
-        }
-        return Ok(None);
-    };
+    let SmbCampaignChordPolicy::DerivedHalf(_) = policy;
     let before = before.ok_or("derived chord draw is missing its table version")?;
     let version = versions
         .get(&before.records)
@@ -881,9 +888,7 @@ impl Game for SmbGame {
         state: &mut SmbDrawState,
         retained_inputs: &[&[ButtonChord]],
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-        let SmbCampaignChordPolicy::DerivedHalf(_) = run.chord else {
-            return Ok(None);
-        };
+        let SmbCampaignChordPolicy::DerivedHalf(_) = run.chord;
         let tables = state
             .tables
             .as_mut()
@@ -1121,7 +1126,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             archive_entry_limit: 32_768,
-            chord: SmbCampaignChordPolicy::Uniform,
+            chord: SmbCampaignChordPolicy::default(),
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
             selector: crate::search::archive::SelectorPolicy::GroupUniform,
             victory_input_path: None,
@@ -1144,20 +1149,25 @@ mod tests {
     #[test]
     fn suffix_derivation_is_pure_and_bounded() {
         for seed in [0_u64, 0x5eed_ca01, u64::MAX] {
+            let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+                empty_table_parameters(),
+                &[],
+                &[],
+            );
             let first = derive_suffix(
                 seed,
                 SuffixShape::OneOrTwo,
-                SmbCampaignChordPolicy::Uniform,
+                SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
-                None,
+                Some(empty),
             )
             .expect("derive suffix");
             let second = derive_suffix(
                 seed,
                 SuffixShape::OneOrTwo,
-                SmbCampaignChordPolicy::Uniform,
+                SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
-                None,
+                Some(empty),
             )
             .expect("derive suffix again");
             assert_eq!(first, second);
@@ -1169,6 +1179,11 @@ mod tests {
                         || (96..=120).contains(&chord.hold_frames))
             );
         }
+    }
+
+    fn empty_table_parameters() -> EmpiricalStepParameters {
+        let SmbCampaignChordPolicy::DerivedHalf(derivation) = SmbCampaignChordPolicy::default();
+        derivation.parameters
     }
 
     fn derived_policy() -> SmbCampaignChordPolicy {
@@ -1201,9 +1216,7 @@ mod tests {
         assert!(chord_policy_from_identifier("chord_draw_recorded_50").is_err());
         assert!(chord_policy_from_identifier("chord_draw_recorded_50:0").is_err());
 
-        let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy else {
-            panic!("derived policy expected");
-        };
+        let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy;
         derivation.hash_rule = EmpiricalStepHashRule::IncrementalHistory;
         let incremental = SmbCampaignChordPolicy::DerivedHalf(derivation);
         let identifier = chord_policy_identifier(incremental);
@@ -1243,12 +1256,17 @@ mod tests {
         first.reset();
         first.apply(&ButtonChord::new(0x81, 12));
         let snapshot = first.snapshot().expect("snapshot prefix");
+        let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+            empty_table_parameters(),
+            &[],
+            &[],
+        );
         let suffix = derive_suffix(
             0x5eed_ca02,
             SuffixShape::OneOrTwo,
-            SmbCampaignChordPolicy::Uniform,
+            SmbCampaignChordPolicy::default(),
             SmbButtonVocabulary::default(),
-            None,
+            Some(empty),
         )
         .expect("derive suffix");
         // Disturb the first instance so the job must depend on the snapshot alone.
