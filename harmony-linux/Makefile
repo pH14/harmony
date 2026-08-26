@@ -3,7 +3,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: test test-linux test-libvoidstar libvoidstar fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image postgres-image campaign-image docker-image game-image clean
+.PHONY: test test-linux test-libvoidstar libvoidstar fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image postgres-image campaign-image docker-image game-image clean
 
 test: test-libvoidstar test-linux
 
@@ -30,7 +30,7 @@ endif
 fetch:
 	scripts/fetch.sh
 
-kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image postgres-image campaign-image docker-image game-image maze-image:
+kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image postgres-image campaign-image docker-image game-image maze-image:
 ifeq ($(UNAME_S),Linux)
 	$(MAKE) -C linux $@
 else

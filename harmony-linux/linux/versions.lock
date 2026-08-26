@@ -17,6 +17,16 @@ MUSL_VERSION=1.2.6
 MUSL_URL=https://musl.libc.org/releases/musl-1.2.6.tar.gz
 MUSL_SHA256=d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a
 
+# M3 builds its arm64 PostgreSQL payload from pinned upstream source. The
+# official arm64 distro image cannot be shipped under the frozen AA-4/AA-5
+# whole-image contract: its required postgres executable and dynamic loader
+# contain LL/SC. A native static build through Harmony's patched musl keeps the
+# exact acceptance workload while making every shipped executable scannable.
+# Pinned 2026-08-26 from the PostgreSQL project's official v17.10 release.
+PG_SOURCE_VERSION=17.10
+PG_SOURCE_URL=https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.bz2
+PG_SOURCE_SHA256=078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90
+
 # PostgreSQL for the bare-Postgres workload image (task 37). We vendor the Debian
 # trixie .debs (server + client + libpq) by URL+sha256 — same pin-then-verify
 # discipline as the kernel/busybox. PostgreSQL 17.10 is the trixie security build;

@@ -307,6 +307,8 @@ struct BootOutcome {
     row_uuids: Vec<String>,
     guest_ready: bool,
     step_error: Option<String>,
+    /// Host diagnostic duration from first entry through terminal.
+    wall: Duration,
 }
 
 impl BootOutcome {
@@ -368,6 +370,7 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
         }
     }
     let serial = vmm.serial();
+    let wall = start.elapsed();
     BootOutcome {
         reason,
         steps,
@@ -379,6 +382,7 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
         row_uuids: all_row_uuids(serial),
         guest_ready: find(serial, GUEST_READY),
         step_error,
+        wall,
     }
 }
 
@@ -407,9 +411,10 @@ fn boot_docker(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
 
 fn report(tag: &str, out: &BootOutcome) {
     eprintln!(
-        "\n[{tag}] steps={} terminal={:?} container_up={} pg_ready={} workload_done={} \
+        "\n[{tag}] steps={} wall_ns={} terminal={:?} container_up={} pg_ready={} workload_done={} \
          final_row={} uuids={} GUEST_READY={} step_error={:?}",
         out.steps,
+        out.wall.as_nanos(),
         out.reason,
         out.container_up,
         out.pg_ready,
@@ -422,6 +427,26 @@ fn report(tag: &str, out: &BootOutcome) {
     if let Some((uuid, t)) = &out.sample_uuid_ts {
         eprintln!("[{tag}] final-row sample: uuid={uuid} t={t}");
     }
+}
+
+/// Write an optional descriptive-x86 diagnostic beside M3's intrinsic ARM report.
+fn write_m3_x86_diagnostic(path: &std::path::Path, out: &BootOutcome) -> std::io::Result<()> {
+    let wall_ns = u64::try_from(out.wall.as_nanos()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "descriptive-x86 diagnostic duration does not fit u64 nanoseconds",
+        )
+    })?;
+    std::fs::write(
+        path,
+        format!(
+            "format consonance.m3-x86-diagnostic.v1\n\
+             payload postgres-container-task38\n\
+             mode descriptive-x86\n\
+             rows {WORKLOAD_N}\n\
+             wall_ns {wall_ns}\n"
+        ),
+    )
 }
 
 /// Assert the workload's UUID/time columns are *well-formed* in `out`: the final row
@@ -514,6 +539,12 @@ fn p1_docker_postgres_runs_and_streams_patched() {
         out.terminated_cleanly(),
         "Gate 1: the guest must power off cleanly within budget"
     );
+    if let Some(path) = std::env::var_os("M3_X86_DIAGNOSTIC_REPORT") {
+        let path = std::path::PathBuf::from(path);
+        write_m3_x86_diagnostic(&path, &out)
+            .unwrap_or_else(|error| panic!("cannot write M3 x86 diagnostic {path:?}: {error}"));
+        eprintln!("[p1] wrote optional M3 descriptive-x86 diagnostic to {path:?}");
+    }
 }
 
 // --- Gate 2: deterministic twice (the milestone) ---------------------------

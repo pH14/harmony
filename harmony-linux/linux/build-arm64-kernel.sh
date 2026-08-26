@@ -29,8 +29,14 @@ case "$arm64_profile" in
         arm64_output=Image-game
         arm64_extra_fragment=$LINUX_DIR/arm64-game-config-fragment
         ;;
+    postgres)
+        arm64_source_root=$BUILD_ROOT/arm64-postgres-src
+        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-postgres
+        arm64_output=Image-postgres
+        arm64_extra_fragment=$LINUX_DIR/arm64-postgres-config-fragment
+        ;;
     *)
-        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal or game)" >&2
+        echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal, game, or postgres)" >&2
         exit 1
         ;;
 esac
@@ -87,6 +93,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0006-arm64-harmony-lse-only-futex.patch" \
     "harmony LSE-only futex atomics"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0007-arm64-harmony-syscall-tick.patch" \
+    "harmony prescriptive syscall tick"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
@@ -134,12 +143,22 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
     BPF_SYSCALL BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH \
     PERF_EVENTS HW_PERF_EVENTS
-if [ "$arm64_profile" = minimal ]; then
-    assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
-else
-    assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU SHMEM TMPFS
-    assert_off STRICT_DEVMEM
-fi
+case "$arm64_profile" in
+    minimal)
+        assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
+        ;;
+    game)
+        assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU SHMEM TMPFS
+        assert_off STRICT_DEVMEM
+        ;;
+    postgres)
+        assert_y BINFMT_SCRIPT PROC_FS FUTEX MMU SHMEM TMPFS FILE_LOCKING MULTIUSER \
+            SYSVIPC POSIX_MQUEUE NAMESPACES UTS_NS IPC_NS PID_NS NET_NS NET UNIX \
+            INET CGROUPS EPOLL EVENTFD SIGNALFD TIMERFD INOTIFY_USER SECCOMP \
+            DEVMEM
+        assert_off STRICT_DEVMEM
+        ;;
+esac
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then
     echo "FAIL: CONFIG_NR_CPUS must be the arm64 minimum (2)" >&2
     exit 1

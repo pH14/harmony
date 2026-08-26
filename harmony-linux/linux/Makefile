@@ -2,7 +2,7 @@
 # linux/amd64 container (docs/BUILDING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image exec-image postgres-image campaign-image docker-image k3s-image game-image maze-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image exec-image postgres-image campaign-image docker-image k3s-image game-image maze-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -29,6 +29,14 @@ arm64-game-kernel:
 
 arm64-game-image: arm64-game-kernel
 	./build-arm64-game-image.sh
+
+# M3's real PostgreSQL container payload has its own kernel profile and static,
+# LSE-only userspace. It preserves every sealed M1/M2 artifact.
+arm64-postgres-kernel:
+	./build-arm64-postgres-kernel.sh
+
+arm64-postgres-image: arm64-postgres-kernel
+	./build-arm64-postgres-image.sh
 
 # Task 81 exec-capable initramfs: static busybox + an interactive root shell on
 # ttyS0 (`exec-init.sh`), so the `exec` improvisation channel has a shell to inject

@@ -147,7 +147,7 @@ pub struct Arm64Devices {
     /// `TODO(AA-6)`, the vGICv3 round-trip verdict), so wiring it is a
     /// test/mock composition today, never a silicon claim.
     pub(crate) gic: Option<gicv3::Gicv3>,
-    /// Paravirtual clockevent deadline and its dedicated PPI20 input level.
+    /// Paravirtual clockevent deadline and its virtual-timer PPI input level.
     pub(crate) clockevent: Arm64ClockeventState,
 }
 
@@ -239,12 +239,12 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 gic.eoi(intid).map_err(|e| {
                     VmmError::ContractViolation(format!("ICC_EOIR1_EL1 rejected: {e}"))
                 })?;
-                // PPI20 is a level input. If a broken guest EOIs without first
+                // The clockevent PPI is a level input. If a broken guest EOIs without first
                 // ACKing the device, the still-high line becomes pending again.
                 if intid == super::board::PVCLOCK_PPI && self.devices.clockevent.line_asserted {
                     gic.raise(intid).map_err(|e| {
                         VmmError::ContractViolation(format!(
-                            "PPI20 level reassertion after EOI failed: {e}"
+                            "clockevent PPI level reassertion after EOI failed: {e}"
                         ))
                     })?;
                 }
@@ -417,7 +417,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             let offset = addr - PVCLOCK.0;
             let exact = matches!(
                 (offset, size, write),
-                (0x000, 8, Some(_)) | (0x008, 4, None) | (0x010, 8, Some(_)) | (0x018, 4, Some(_))
+                (0x000, 8, Some(_))
+                    | (0x008, 4, None)
+                    | (0x010, 8, Some(_))
+                    | (0x018, 4, Some(_))
+                    | (0x020, 4, Some(1))
             );
             if !exact {
                 return Err(VmmError::ContractViolation(format!(
@@ -427,7 +431,12 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 )));
             }
             if self.prescriptive_vtime_enabled() {
-                self.advance_prescriptive_vtime(contract::PARAVIRTUAL_EXIT_VNS)?;
+                let advance = if offset == 0x020 {
+                    contract::EXECUTION_TICK_VNS
+                } else {
+                    contract::PARAVIRTUAL_EXIT_VNS
+                };
+                self.advance_prescriptive_vtime(advance)?;
             }
             return match (offset, write) {
                 (0x000, Some(gpa)) => {
@@ -462,6 +471,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     self.arm_clockevent_control(control)?;
                     Ok(Step::Continued)
                 }
+                (0x020, Some(1)) => Ok(Step::Continued),
                 _ => Err(VmmError::ContractViolation(
                     "arm64 pvclock exact-shape validation disagreed with dispatch".to_string(),
                 )),
@@ -550,14 +560,14 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     }
 
     /// Replace the pending absolute clockevent deadline. Programming while the
-    /// PPI20 device input is high is a protocol fault; the guest must ACK or
+    /// clockevent-PPI device input is high is a protocol fault; the guest must ACK or
     /// DISARM first.
     fn arm_clockevent_program(&mut self, deadline: u64) -> Result<(), VmmError> {
         use super::board::PVCLOCK_PPI;
 
         if self.devices.clockevent.line_asserted {
             return Err(VmmError::ContractViolation(
-                "arm64 clockevent deadline write while PPI20 is asserted".to_string(),
+                "arm64 clockevent deadline write while its PPI is asserted".to_string(),
             ));
         }
         self.trace_arm_clockevent_schedule(deadline, PVCLOCK_PPI)?;
@@ -583,7 +593,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     })?;
                     gic.lower(PVCLOCK_PPI).map_err(|e| {
                         VmmError::ContractViolation(format!(
-                            "arm64 clockevent DISARM could not lower PPI20: {e}"
+                            "arm64 clockevent DISARM could not lower its PPI: {e}"
                         ))
                     })?;
                     self.devices.clockevent.line_asserted = false;
@@ -598,7 +608,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 })?;
                 gic.lower(PVCLOCK_PPI).map_err(|e| {
                     VmmError::ContractViolation(format!(
-                        "arm64 clockevent ACK could not lower PPI20: {e}"
+                        "arm64 clockevent ACK could not lower its PPI: {e}"
                     ))
                 })?;
                 self.devices.clockevent.line_asserted = false;
@@ -607,7 +617,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 Ok(())
             }
             2 => Err(VmmError::ContractViolation(
-                "arm64 clockevent ACK while PPI20 is not asserted".to_string(),
+                "arm64 clockevent ACK while its PPI is not asserted".to_string(),
             )),
             value => Err(VmmError::ContractViolation(format!(
                 "arm64 clockevent control value {value} is not DISARM(1) or ACK(2)"
@@ -615,7 +625,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
-    /// After the exit's page publication, assert PPI20 iff the registered
+    /// After the exit's page publication, assert the clockevent PPI iff the registered
     /// guest-clock value has reached the one pending absolute deadline.
     pub(crate) fn service_arm_clockevent_due(&mut self) -> Result<(), VmmError> {
         use super::board::PVCLOCK_PPI;
@@ -639,14 +649,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
         if self.devices.clockevent.line_asserted {
             return Err(VmmError::ContractViolation(
-                "arm64 clockevent retained a deadline while PPI20 was already asserted".to_string(),
+                "arm64 clockevent retained a deadline while its PPI was already asserted"
+                    .to_string(),
             ));
         }
         let gic = self.devices.gic.as_mut().ok_or_else(|| {
             VmmError::ContractViolation("arm64 clockevent became due with no GIC wired".to_string())
         })?;
         gic.raise(PVCLOCK_PPI).map_err(|e| {
-            VmmError::ContractViolation(format!("arm64 clockevent could not assert PPI20: {e}"))
+            VmmError::ContractViolation(format!("arm64 clockevent could not assert its PPI: {e}"))
         })?;
         self.trace_arm_clockevent_delivery()?;
         self.devices.clockevent.deadline = None;

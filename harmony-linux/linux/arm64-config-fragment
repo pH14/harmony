@@ -41,7 +41,7 @@ CONFIG_HZ_100=y
 
 ## Owned clock and interrupt path
 # The AA-5(c) patch replaces every live generic-counter read with the materialized
-# work-derived page and uses the timer driver's IRQ slot only for dedicated PPI 20;
+# work-derived page and uses the timer driver's virtual-timer IRQ slot, PPI 27;
 # it never programs live-domain CNTV_CVAL/TVAL. `nohlt` is mandatory in the DT so
 # the sole vCPU polls and keeps exact work targets reachable instead of entering WFI.
 CONFIG_ARM_ARCH_TIMER=y

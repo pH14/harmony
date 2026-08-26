@@ -5,7 +5,7 @@ domain, not Harmony's materialized work clock. Replace that final AA-5(c)
 timer-domain leak with a guest/host protocol on the existing owned MMIO page:
 the guest writes an absolute work-clock tick deadline, userspace compares it
 only after publishing an exact-work page value, and userspace holds dedicated
-PPI 20 high until the interrupt handler ACKs it. ACK precedes the generic event
+virtual-timer PPI 27 high until the interrupt handler ACKs it. ACK precedes the generic event
 handler, so level deassertion completes before the handler rearms. The virtual
 timer control stays disabled and this path never programs CNTV_CVAL/TVAL.
 
@@ -113,7 +113,7 @@ repository's designated guest-kernel patch exception.
 +}
 +
 +/*
-+ * PPI 20 is level-triggered. ACK before evt->event_handler() so userspace
++ * PPI 27 is level-triggered. ACK before evt->event_handler() so userspace
 + * drives the external input low before the generic handler rearms and before
 + * the GIC CPU interface completes EOI on return from this IRQ handler.
 + */

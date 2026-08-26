@@ -76,7 +76,7 @@ generic-counter read or LL/SC opcode survives into the published image.
   freestanding init before publication.
 - `0004-arm64-harmony-work-clockevent.patch` — AA-5(c): replaces the final
   live-domain `CNTV_CVAL` clockevent with absolute work-clock deadlines on the
-  owned MMIO page and dedicated level-triggered PPI 20. The guest ACKs before
+  owned MMIO page and the level-triggered virtual-timer PPI 27. The guest ACKs before
   its generic event handler, the host deasserts on ACK, and the build selects
   generic `nohlt` polling support. The linked-artifact scanner rejects every
   surviving CNTV/CNTP CVAL/TVAL program, including raw mapping-symbol words.

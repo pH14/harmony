@@ -184,7 +184,7 @@ const DEVICE_BLOB_VERSION_GIC: u16 = 2;
 const DEVICE_BLOB_VERSION_DOORBELL: u16 = 3;
 /// v2 + the doorbell record: the GIC **and** the doorbell pages.
 const DEVICE_BLOB_VERSION_GIC_DOORBELL: u16 = 4;
-/// v1 plus the ARM pvclock channel and its PPI20 clockevent state.
+/// v1 plus the ARM pvclock channel and its virtual-timer-PPI clockevent state.
 const DEVICE_BLOB_VERSION_PVCLOCK: u16 = 5;
 /// v2 plus the ARM pvclock/clockevent record.
 const DEVICE_BLOB_VERSION_GIC_PVCLOCK: u16 = 6;
@@ -204,7 +204,7 @@ const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 pub(crate) struct Arm64ClockeventState {
     /// Pending absolute deadline in pvclock `guest_clock` ticks.
     pub deadline: Option<u64>,
-    /// Whether the dedicated PPI20 device input is currently high.
+    /// Whether the virtual-timer PPI device input is currently high.
     pub line_asserted: bool,
     /// Number of distinct low-to-high assertions.
     pub assertions: u64,

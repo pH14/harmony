@@ -26,6 +26,13 @@ pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 1_000;
 pub const SERIAL_EXIT_VNS: u64 = 2_000;
 /// Assigned duration of one pvclock/clockevent MMIO access.
 pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of the kernel's deterministic execution tick.
+///
+/// The guest emits one tick on every syscall entry and context switch.
+/// Advancing by the full 100 Hz period makes an already-armed clockevent due
+/// at that exit, so a process that blocks cannot strand the vCPU in an
+/// exit-free idle loop.
+pub(crate) const EXECUTION_TICK_VNS: u64 = 10_000_000;
 /// Assigned duration of a trapped counter-shaped time read.
 pub const TRAPPED_TIME_READ_VNS: u64 = 1;
 /// Assigned duration of a deterministic architectural-control trap that is

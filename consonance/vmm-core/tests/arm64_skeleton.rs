@@ -657,6 +657,11 @@ fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
             size: 4,
             write: None,
         }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x20),
+            size: 4,
+            write: Some(1),
+        }),
     ]);
     v.wire_vtime(
         VtimeWiring::new_prescriptive(
@@ -681,10 +686,20 @@ fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
     assert_eq!(v.step().unwrap(), Step::Continued);
     let second = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
     assert_eq!(second.vns, 2_000);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    let tick = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
+    assert_eq!(tick.vns, 10_002_000);
 
     // Direction and width are one exact tuple. Neither invalid access consumes
     // registration state or advances a fresh VM's clock.
-    for (offset, size, write) in [(0, 8, None), (8, 8, None), (8, 4, Some(1))] {
+    for (offset, size, write) in [
+        (0, 8, None),
+        (8, 8, None),
+        (8, 4, Some(1)),
+        (0x20, 4, Some(0)),
+        (0x20, 8, Some(1)),
+        (0x20, 4, None),
+    ] {
         let mut bad = vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(PVCLOCK.0 + offset),
             size,
@@ -736,7 +751,7 @@ fn wire_prescriptive_clock(v: &mut Vmm<MockArm64Backend>) {
 }
 
 /// The paravirtual clockevent is an absolute-deadline, one-shot, level PPI:
-/// reaching the deadline asserts PPI20, EOI without device ACK re-pends it,
+/// reaching the deadline asserts the clockevent PPI, EOI without device ACK re-pends it,
 /// ACK lowers it, and the complete in-flight state survives a snapshot.
 #[test]
 fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
@@ -833,7 +848,7 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     assert_eq!(restored.state_hash(), v.state_hash());
 
     // Accept then EOI without ACK. Because the device line remains high,
-    // PPI20 immediately becomes pending again.
+    // The clockevent PPI immediately becomes pending again.
     assert_eq!(v.step().unwrap(), Step::Continued); // IAR: pending -> active
     assert_eq!(v.step().unwrap(), Step::Continued); // EOI: level reasserts
     assert!(v.has_pending_guest_interrupt().unwrap());
@@ -844,7 +859,7 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     assert_eq!(v.step().unwrap(), Step::Continued);
     assert!(!v.has_pending_guest_interrupt().unwrap());
     let err = v.step().unwrap_err();
-    assert!(format!("{err}").contains("ACK while PPI20 is not asserted"));
+    assert!(format!("{err}").contains("ACK while its PPI is not asserted"));
 }
 
 /// Protocol misuse is rejected rather than silently changing the one-shot
@@ -923,11 +938,11 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
     assert_eq!(asserted.step().unwrap(), Step::Continued);
     assert_eq!(asserted.step().unwrap(), Step::Continued);
     let err = asserted.step().unwrap_err();
-    assert!(format!("{err}").contains("deadline write while PPI20 is asserted"));
+    assert!(format!("{err}").contains("deadline write while its PPI is asserted"));
 }
 
 /// Prescriptive WFI uses `IdlePlanner` to land exactly on the paravirtual
-/// clockevent deadline, raises PPI20 at that same normalized event, and never
+/// clockevent deadline, raises the clockevent PPI at that same normalized event, and never
 /// asks the backend for an unsupported mid-stream `run_until` stop.
 #[test]
 fn arm64_prescriptive_wfi_jumps_to_the_clockevent_deadline() {
@@ -1141,7 +1156,7 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     restore(&serial, &mut vmm(vec![]));
 
     // GIC state: the same programmed fabric, differing only by one pending
-    // PPI20 input. The target is composed with the same fabric shape first.
+    // clockevent-PPI input. The target is composed with the same fabric shape first.
     let mut pending_gic = clockevent_gic();
     pending_gic.raise(PVCLOCK_PPI).unwrap();
     let mut gic_base = vmm(vec![]);

@@ -49,6 +49,8 @@ pub mod corpus;
 // type at the serial shell + how to detect completion/status). Portable and
 // off-record by ruling; the real serial wiring lives in `vmm`/`control`.
 pub mod exec;
+/// M3's pure real-payload acceptance, V-time-gap, and throughput oracles.
+pub mod m3_report;
 /// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
 pub mod prescriptive;
 // Task 63 — the pure-logic half of the arbitrary-V-time seal-rate measurement (the

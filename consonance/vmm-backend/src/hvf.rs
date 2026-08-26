@@ -67,6 +67,7 @@ const ESR_EC_DATA_ABORT_LOWER: u64 = 0x24;
 const ESR_EC_DATA_ABORT_SAME: u64 = 0x25;
 
 const PSTATE_I: u64 = 1 << 7;
+const ICC_IAR1_EL1_CANONICAL: u32 = 0x0030_3018;
 
 // PSCI 0.2+ function IDs used by a uniprocessor Linux boot.
 const PSCI_VERSION: u64 = 0x8400_0000;
@@ -213,6 +214,16 @@ fn sysreg_rt(iss: u64) -> u32 {
     ((iss >> 5) & 0x1f) as u32
 }
 
+fn accepted_irq_for_sysreg(
+    pending_irq: Option<GicIntId>,
+    sysreg: u32,
+    read: bool,
+) -> Option<GicIntId> {
+    (read && sysreg == ICC_IAR1_EL1_CANONICAL)
+        .then_some(pending_irq)
+        .flatten()
+}
+
 /// Cross-thread handle for the liveness monitor's non-guest-visible abort.
 /// Requesting an exit only makes `hv_vcpu_run` return canceled; it never
 /// injects state into the guest.
@@ -353,12 +364,13 @@ impl HvfBackend {
     fn apply_pending_irq(&mut self) -> Result<()> {
         let irq_enabled = self.reg(HV_REG_CPSR)? & PSTATE_I == 0;
         let inject = irq_enabled && self.pending_irq.is_some();
-        // SAFETY: this is the owning thread; HVF consumes this level on run.
+        // SAFETY: this is the owning thread. Keep the level asserted across
+        // unrelated exits; acceptance is observable only when the guest reads
+        // ICC_IAR1_EL1, not merely because PSTATE.I happened to be clear before
+        // an entry that exited for some other reason.
         hv("hv_vcpu_set_pending_interrupt", unsafe {
             hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, inject)
-        })?;
-        self.accepted_irq = inject.then_some(self.pending_irq).flatten();
-        Ok(())
+        })
     }
 
     fn handle_psci(&self, function: u64) -> Result<Option<Exit<Arm64>>> {
@@ -440,6 +452,11 @@ impl HvfBackend {
                     let iss = raw.exception.syndrome & 0x01ff_ffff;
                     let reg = sysreg_rt(iss);
                     let read = iss & 1 != 0;
+                    let sysreg = canonical_sysreg(iss);
+                    if let Some(accepted) = accepted_irq_for_sysreg(self.pending_irq, sysreg, read)
+                    {
+                        self.accepted_irq = Some(accepted);
+                    }
                     // Rt=31 is XZR for MSR/MRS, not an index into HVF's
                     // register enum (where numeric 31 names PC). Linux uses
                     // `msr ICC_BPR1_EL1, xzr` during GIC CPU-interface init.
@@ -456,10 +473,7 @@ impl HvfBackend {
                     } else {
                         Pending::SysregWrite
                     };
-                    Exit::Arch(Arm64Exit::Sysreg {
-                        sysreg: canonical_sysreg(iss),
-                        write,
-                    })
+                    Exit::Arch(Arm64Exit::Sysreg { sysreg, write })
                 }
                 ESR_EC_DATA_ABORT_LOWER | ESR_EC_DATA_ABORT_SAME => {
                     let abort = decode_data_abort(raw)?;
@@ -906,6 +920,30 @@ mod tests {
         let bpr1_xzr = 0x0036_3018u64 | (31 << 5);
         assert_eq!(sysreg_rt(bpr1_xzr), 31);
         assert_eq!(canonical_sysreg(bpr1_xzr), 0x0036_3018);
+    }
+
+    #[test]
+    fn pending_irq_is_accepted_only_at_the_guest_iar_read() {
+        let pending = Some(GicIntId(20));
+        assert_eq!(
+            accepted_irq_for_sysreg(pending, ICC_IAR1_EL1_CANONICAL, true),
+            pending
+        );
+        assert_eq!(
+            accepted_irq_for_sysreg(pending, ICC_IAR1_EL1_CANONICAL, false),
+            None,
+            "a write-shaped trap cannot accept an IRQ"
+        );
+        assert_eq!(
+            accepted_irq_for_sysreg(pending, 0x0030_100c, true),
+            None,
+            "an unrelated trapped read cannot accept an IRQ"
+        );
+        assert_eq!(
+            accepted_irq_for_sysreg(None, ICC_IAR1_EL1_CANONICAL, true),
+            None,
+            "an IAR read cannot fabricate an IRQ"
+        );
     }
 
     #[test]

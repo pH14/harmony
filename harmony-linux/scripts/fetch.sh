@@ -47,6 +47,8 @@ fetch_one() {
 fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
 fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256"
 fetch_one "$MUSL_URL" "$MUSL_SHA256"
+# PostgreSQL source for M3's native arm64 static container payload.
+fetch_one "$PG_SOURCE_URL" "$PG_SOURCE_SHA256"
 # PostgreSQL .debs for the task-37 bare-Postgres workload image.
 fetch_one "$PG_SERVER_DEB_URL" "$PG_SERVER_DEB_SHA256"
 fetch_one "$PG_CLIENT_DEB_URL" "$PG_CLIENT_DEB_SHA256"

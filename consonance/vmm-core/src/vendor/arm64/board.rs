@@ -42,12 +42,14 @@ pub const DOORBELL: (u64, u64) = (0x0A00_0000, 0x0000_1000);
 /// ARM pvclock registration and clockevent MMIO frame.
 pub const PVCLOCK: (u64, u64) = (0x0B00_0000, 0x0000_1000);
 
-/// Dedicated level-triggered PPI used by the paravirtual clockevent.
-pub const PVCLOCK_PPI: u32 = 20;
-
 /// The generic timer's virtual-timer PPI INTID (PPI 11 ⇒ GIC INTID 27) — the
 /// `arm,armv8-timer` virtual-timer interrupt, the fabric's `timer_intid`.
 pub const VIRT_TIMER_INTID: u32 = 27;
+
+/// Level-triggered PPI used by the paravirtual clockevent. It is the DT's
+/// virtual-timer PPI because Linux registers and enables that interrupt for the
+/// patched `arch_timer_handler_virt`; a second identity would remain masked.
+pub const PVCLOCK_PPI: u32 = VIRT_TIMER_INTID;
 
 /// The implemented SPI count the distributor advertises (a multiple of 32; the
 /// PL011's SPI 1 is well inside it). Governs `GICD_TYPER.ITLinesNumber`.

@@ -357,11 +357,18 @@ driven under prescriptive V-time with the paravirtual tick.
 *Passes when:* the payload's existing acceptance checks pass; no run hit the
 liveness watchdog; dmesg is free of RCU-stall and soft-lockup reports; the
 inter-exit vns gap histogram is recorded and its maximum stays under the tick
-period times a small documented factor; throughput is reported next to the
-descriptive-mode x86 number for the same payload.
-*Does not count unless:* the gap histogram and throughput are in the report —
-a payload that "passes" with an unbounded quiet stretch or a 100× slowdown is
-a finding, and the report must be capable of showing it.
+period times a small documented factor; and the ARM run reports intrinsic
+performance evidence split into boot, PostgreSQL startup, workload, shutdown,
+and health-check phases, including wall time, rows/second, exit counts, and exit
+density. A descriptive-mode x86 number may be printed as an optional diagnostic,
+but is neither an M3 oracle nor an acceptance input: while the deterministic
+exit policy is under our control, a cross-host throughput ratio does not measure
+the load-bearing liveness or exit-density claim.
+*Does not count unless:* the gap histogram, phase-separated ARM performance, and
+workload rate are in the report; the event-loop exit count agrees with the
+independent normalized trace; and the report can fail on a missing or unordered
+phase, an unbounded quiet stretch, a malformed workload, and an independent
+pvclock mismatch. Missing or malformed x86 diagnostic data must not fail M3.
 
 **M4 — complete `Arm64KvmBackend` on msr1.**
 *Build:* interrupt injection on KVM/arm64, per §2.2's delivery decision
