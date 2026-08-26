@@ -401,6 +401,23 @@ fn placement_checker_rejects_duplicate_and_undelivered_deadlines() {
     ));
 }
 
+#[test]
+fn placement_checker_rejects_vtime_regression_after_the_first_event() {
+    let mut run = configured_loop(script_for_deltas(&[5, 1]), 1);
+    run_to_terminal(&mut run);
+    let mut regressed = run.normalized_log().clone();
+    regressed.events[1].vns_after = 4;
+
+    assert_eq!(
+        check_delivery_placement(run.schedule(), &regressed),
+        Err(PlacementViolation::VtimeRegressed {
+            event_index: 1,
+            before: 5,
+            after: 4,
+        })
+    );
+}
+
 fn has_chunk(blob: &[u8], wanted: &[u8; 4]) -> bool {
     let mut at = 0usize;
     while let Some(header_end) = at.checked_add(12) {

@@ -650,7 +650,7 @@ pub fn check_delivery_placement(
                 actual: event.event_index,
             });
         }
-        if position > 0 && event.vns_after < previous_vns {
+        if event.vns_after < previous_vns {
             return Err(PlacementViolation::VtimeRegressed {
                 event_index: event.event_index,
                 before: previous_vns,

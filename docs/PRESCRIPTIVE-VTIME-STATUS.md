@@ -30,7 +30,10 @@ dependency rather than silently weakening the criterion.
    mutation run found that tests did not observe event-class domain separation or
    the raw-log accessor. The suite now proves all seven event classes produce
    distinct digests for identical payload bytes and checks the complete raw log.
-   The repaired shard-0 rerun is clean (7 caught, 7 compiler-rejected).
+   Shard 2 then exposed the missing post-first-event V-time-regression oracle; an
+   exact event-1 failure test was added. The redundant `position > 0` guard was
+   removed because its `>= 0` mutant is equivalent for a `usize`, while comparing
+   every event against a zero initial baseline is total and identical in meaning.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -79,14 +82,16 @@ dependency rather than silently weakening the criterion.
   equal to each other, while the placement checker rejects event 0.
 - **PASS — duplicate and missing delivery failures.** Both are committed negative
   tests and fail at the exact event.
+- **PASS — post-first-event V-time regression failure.** A `5 -> 4` regression at
+  event 1 returns the exact `VtimeRegressed` evidence.
 
 ### M0 command evidence
 
 `cargo test -p vmm-core --test prescriptive_vtime --all-features -- --nocapture`
 
 ```text
-running 11 tests
-test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+running 12 tests
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
 `cargo test -p vmm-core --all-features`
@@ -136,7 +141,11 @@ report/floor exit status 0
 shard 3: 12 mutants tested: 11 caught, 1 compiler-rejected
 shard 0 first pass: 3 missed (the two oracle gaps recorded above)
 shard 0 repaired rerun: 14 mutants tested: 7 caught, 7 compiler-rejected
-shards 1 and 2: RUNNING serially
+shard 1: 14 mutants tested: 9 caught, 5 compiler-rejected
+shard 2 first pass: 3 missed (one regression-oracle gap)
+shard 2 after the oracle: 1 equivalent mutant remained; redundant guard removed
+shard 2 final rerun: 13 mutants tested: 13 caught
+final total: 53 mutants, 40 caught, 13 compiler-rejected, 0 missed, 0 timed out
 ```
 
 `MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p vmm-core`
@@ -217,5 +226,9 @@ M1 has not started.
 - **PASS at M0 — Linux-frozen `vmm-core` public API:** exact cross-target match.
 - **PASS at M0 — coverage ratchet:** 94.76% workspace region coverage against the
   workflow's 90% floor; the new module measures 90.08%.
-- **FAIL — mutation, Kani, cross-arch, and remaining quality-toolchain gates:**
-  not yet run for the complete plan.
+- **PASS at M0 — mutation gate:** all 53 changed-code mutants accounted for; no
+  survivors or timeouts.
+- **PASS at M0 — aarch64 architecture seam:** full all-feature/all-target clippy
+  for `aarch64-unknown-linux-gnu`, exit status 0.
+- **FAIL — Kani and remaining final quality-toolchain gates:** not yet run for the
+  complete plan.
