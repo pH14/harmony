@@ -78,9 +78,23 @@ normative contract values, recorded alongside the MSR/sysreg dispositions.
 `TimerQueue` is unchanged. Delivery: after advancing at an exit, pop every due
 deadline and inject before reentry — the paths the codebase already defines as
 `PlanOutcome::TargetInPast` and `IdleAdvance::already_due` become the universal
-delivery path. A timer's deadline is met at the first exit at or after it; which
-exit that is is itself deterministic, so two same-seed runs deliver every
-interrupt at the same instruction boundary.
+delivery path. **The delivery contract:** each deadline `D` is delivered exactly
+once, at the first exit whose post-advance vns is at or after `D`, with equal
+deadlines in `TimerQueue`'s FIFO order. Which exit that is is itself
+deterministic, so two same-seed runs deliver every interrupt at the same
+instruction boundary. `run_until` under prescriptive V-time runs to the next
+exit; a deadline never stops the guest mid-stream — it is met at the exit that
+follows it. Delivery latency is therefore bounded by exit density, which the
+guest supplies (the paravirtual tick, SDK yields, device access, WFI) and every
+run measures (§3, M3's histogram).
+
+**Liveness monitor.** The run loop carries a host wall-clock watchdog that fires
+when the guest executes past a budget with no exit. The watchdog **aborts the
+run** and reports the guest PC range — it never injects into or otherwise
+perturbs the guest, so it reads host time without that time ever reaching guest
+state, and determinism is unaffected. A guest stretch that outruns the budget is
+a loud incompatible-workload finding, and a payload whose runs abort this way
+fails its milestone.
 
 The pvclock page is stamped at exits, exactly as `docs/PARAVIRT-CLOCK.md`
 specifies today; guest-visible time already only changes at exits, so the guest
@@ -93,15 +107,24 @@ one impl per (substrate, arch) pair, nothing above it branching on substrate.
 
 - **`HvfBackend` (M1 Max) — the bring-up backend.** A new impl of the trait
   over Hypervisor.framework: `hv_vcpu_run`, WFI/MMIO/sysreg exits, interrupt
-  injection before reentry. Interrupt state lives in the userspace
-  `consonance/gicv3` model; injection happens at exits.
+  injection before reentry, and `hv_vcpus_exit` as the watchdog's abort path.
+  Interrupt state lives in the userspace `consonance/gicv3` model; injection
+  happens at exits. `run_until` here is run-to-next-exit per §2.1's delivery
+  contract — the backend needs no guest-work counter and no mid-stream stop,
+  which is what makes Hypervisor.framework's exit surface sufficient.
 - **`Arm64KvmBackend` (msr1, follow-up §5).** The existing stock-KVM/arm64
   skeleton (`arm64_kvm.rs`) grows the pieces its `capabilities()` currently
-  reports absent — interrupt injection and `run_until` — reusing the same
-  userspace `gicv3` model, so interrupt behavior is decided by shared code and
-  is identical across substrates by construction. This takes up the work the
-  arm64 delivery ruling in `AGENTS.md` deferred — that deferral is superseded
-  by this plan.
+  reports absent — interrupt injection and `run_until` (run-to-next-exit, per
+  §2.1). Delivery on KVM/arm64 requires a decision the `gicv3` crate already
+  frames as the AA-6 verdict: stock KVM couples the GICv3 CPU interface and
+  the timer PPI to the in-kernel vGICv3, so the backend either creates the
+  in-kernel vGICv3 and injects through `KVM_IRQ_LINE` — with the vGIC's
+  save/restore folded into `state_hash` and its bit-identical round-trip
+  demonstrated as part of F1's oracle — or carries an arm64 kernel patch that
+  routes injection and the ICC sysregs to the userspace `gicv3` model. §5
+  records the decision when F1 starts. This takes up the work the arm64
+  delivery ruling in `AGENTS.md` deferred — that deferral is superseded by
+  this plan.
 
 The run loop drives either through `run_until` with prescriptive advancement; the
 `WorkSource` in use reads zero, and the injection planner's overflow/single-step
@@ -166,22 +189,40 @@ archive, energy selection, and parent policy are unchanged code.
 The failure mode this plan is designed against: a bring-up that "works" because
 its checks are too weak to fail. Three rules apply to every milestone:
 
-1. **Full-log comparison, never final-state comparison.** The unit of evidence is
-   the **event log**: the ordered sequence of
-   (exit index, exit class + payload digest, vns after advance, interrupts
-   injected at this exit), plus a guest-memory hash at every checkpoint interval
-   and at the end. Two runs are "identical" only if their logs are. Divergences
-   are bracketed with `unison::compare_runs`.
-2. **Every comparator is proven able to fail before its first real use.** Before a
-   milestone's oracle counts, run it against a deliberately perturbed twin — one
-   vns increment off by one, one interrupt delivered one exit late, one byte
-   flipped in guest memory — and record that it reports the divergence at the
-   right index. A comparator that has never failed proves nothing.
-3. **Same bytes or no claim.** Any cross-host comparison first asserts the guest
+1. **Full-log comparison over complete state, never final-state comparison.**
+   Each run produces two logs. The **raw log** is backend-local: every exit as
+   the substrate reports it, kept for debugging. The **normalized log** is the
+   guest-visible record and the unit of all determinism claims: the ordered
+   sequence of (event index, event class + payload digest, vns after advance,
+   interrupts injected at this event), with `Vmm::state_hash` — the canonical
+   serialization of *all* observable state: RAM, vCPU registers and sysregs,
+   device and GIC state, serial capture, V-time, entropy position, SDK channel
+   (`vmm-core/src/vmm.rs`, `state_blob`) — at every checkpoint interval and at
+   the end. The prescriptive V-time and entropy chunks are wired into
+   `state_blob` on these backends as part of M0. Two runs are "identical" only
+   if their normalized logs, including every `state_hash`, are. Divergences are
+   bracketed with `unison::compare_runs`.
+2. **Delivery placement is checked against the schedule, not against another
+   run.** An independent checker consumes a run's deadline schedule and its
+   normalized log and asserts §2.1's delivery contract mechanically: every
+   deadline delivered exactly once, at the first event whose vns is at or after
+   it, in FIFO order for equal deadlines, with the masked-at-deadline,
+   WFI-at-deadline, simultaneous-deadline, and reassertion-after-unmask cases
+   each exercised by a dedicated workload. Two runs that agree with each other
+   but both place a delivery late fail this checker.
+3. **Every comparator is proven able to fail before its first real use.** Before
+   a milestone's oracle counts, run it against a deliberately perturbed twin —
+   one vns increment off by one, one interrupt delivered one exit late, one
+   byte flipped in guest state — and record that it reports the divergence at
+   the right index. A comparator that has never failed proves nothing. This
+   demonstrates comparator sensitivity only; correctness of placement is rule
+   2's job.
+4. **Same bytes or no claim.** Any cross-host comparison first asserts the guest
    image, payload, and seed are byte-identical (`MANIFEST.sha256` + input digest)
-   on both sides. Every run's report includes exits/sec by class, wall time, and
-   the guest-time/wall-time ratio, so cost regressions are visible in the same
-   place as correctness.
+   on both sides, and compares normalized logs (raw logs differ across
+   substrates by construction). Every run's report includes exits/sec by class,
+   wall time, and the guest-time/wall-time ratio, so cost regressions are
+   visible in the same place as correctness.
 
 ### Milestones
 
@@ -191,13 +232,17 @@ declared done from a subset of its oracle.
 
 **M0 — prescriptive advancement in pure logic.**
 *Build:* the run-loop advancement and delivery rules of §2.1 in `vmm-core`,
-driven against `MockBackend` and scripted exit streams; the event log and its
-comparator.
-*Passes when:* property tests hold — monotonicity, delivery of every deadline at
-the first exit at or after it, log equality for identical scripts, log
-divergence at the exact index for perturbed scripts.
-*Does not count unless:* the comparator's failure cases (rule 2) are themselves
-committed tests.
+driven against `MockBackend` and scripted exit streams; the normalized log and
+its comparator; the delivery-placement checker of rule 2; the prescriptive
+V-time and entropy chunks in `state_blob`.
+*Passes when:* property tests hold — monotonicity, the placement checker green
+over generated schedules including the masked / WFI-overlap / simultaneous /
+reassertion cases, log equality for identical scripts, log divergence at the
+exact index for perturbed scripts.
+*Does not count unless:* the comparator's and the placement checker's failure
+cases (rules 2 and 3) are themselves committed tests — including a script that
+delivers every deadline consistently one exit late, which the comparator alone
+cannot catch and the placement checker must.
 
 **M1 — the M1 Max boots deterministically.**
 *Build:* first a probe binary that confirms the required Hypervisor.framework
@@ -205,37 +250,48 @@ surface (WFI exit control, sysreg trap coverage, injection timing) on this
 macOS version, its findings recorded in the backend's docs; then `HvfBackend`
 with `run_until`, userspace GICv3 delivery at exits, and WFI via `IdlePlanner`;
 the paravirtual tick patch; boot the arm64 image to `/init`.
-*Passes when:* ten same-seed boots produce one event log: identical exit
-sequences, identical vns at every exit, identical interrupt placements,
-identical memory hash at every checkpoint and at `/init`.
+*Passes when:* ten same-seed boots produce one normalized log — identical event
+sequences, identical vns at every event, identical interrupt placements,
+identical `state_hash` at every checkpoint and at `/init` — **and** the
+delivery-placement checker is green over each boot's log against its deadline
+schedule, **and** no run hit the liveness watchdog.
 *Does not count unless:* the log covers the full boot (first entry to `/init`),
 interrupt placements are in the log, `capabilities()` reports the backend's
 honest surface, and the comparator was first shown to catch a one-exit-late
-tick injection on this workload.
+tick injection on this workload (rule 3) — with the placement checker, not the
+comparator, standing against the same error made consistently in all runs.
 
 **M2 — NES campaign on the M1 Max.**
 *Build:* the §2.5 payload and the control-proto `Machine` client; run
 `smb-smoke`, then a campaign of meaningful length.
 *Passes when:* (a) two same-seed campaigns produce identical archive hashes;
 (b) every archived lineage, replayed through the hypervisor, reproduces its
-archive key byte-for-byte; (c) a **three-way agreement** holds on a sampled set
-of lineages: the in-process `NesMachine` and the consonance-hosted payload,
-given the same chord sequence, produce identical WRAM at each chord boundary —
-the in-process emulator is an independent reference implementation, and any
-disagreement indicts the guest or the VMM, never the payload.
+archive key byte-for-byte; (c) **snapshots are causally load-bearing**: the
+campaign's continuations execute from restored snapshots (asserted by a restore
+counter in the run report, with genesis replays counted separately), and on a
+sampled set of branch points the restored continuation's per-chord `state_hash`
+sequence equals the uninterrupted run's from the same point; (d) a
+**cross-implementation differential** holds on a sampled set of lineages: the
+in-process `NesMachine`, the consonance-hosted payload, and the campaign's own
+recorded observations agree on WRAM at each chord boundary — three
+independently produced results, with any disagreement treated as unlocalized
+until component-level checks (chord encoding, ROM/core configuration, boundary
+alignment) attribute it.
 *Does not count unless:* the campaign ran long enough to exercise snapshot
 churn at real scale (thousands of branch/replay cycles, non-quiescent
-snapshots), and the archive-hash comparator was shown to catch a seeded
-divergence (one chord altered in one lineage).
+snapshots); the archive-hash comparator was shown to catch a seeded divergence
+(one chord altered in one lineage); and snapshot integrity checking was shown
+to detect seeded corruption in each of a RAM page, a vCPU field, and a
+GIC/device field of a stored snapshot (rule 3 applied to the restore path).
 
 **M3 — liveness on a real payload.**
 *Build:* the postgres container payload from the acceptance suite, booted and
 driven under prescriptive V-time with the paravirtual tick.
-*Passes when:* the payload's existing acceptance checks pass; dmesg is free of
-RCU-stall and soft-lockup reports; the inter-exit vns gap histogram is
-recorded and its maximum stays under the tick period times a small documented
-factor; throughput is reported next to the descriptive-mode x86 number for the
-same payload.
+*Passes when:* the payload's existing acceptance checks pass; no run hit the
+liveness watchdog; dmesg is free of RCU-stall and soft-lockup reports; the
+inter-exit vns gap histogram is recorded and its maximum stays under the tick
+period times a small documented factor; throughput is reported next to the
+descriptive-mode x86 number for the same payload.
 *Does not count unless:* the gap histogram and throughput are in the report —
 a payload that "passes" with an unbounded quiet stretch or a 100× slowdown is
 a finding, and the report must be capable of showing it.
@@ -244,11 +300,15 @@ a finding, and the report must be capable of showing it.
 *Build:* the SDK threshold protocol of §2.4; a small suite of deliberately racy
 instrumented Go/Rust programs, each with a known bug and a known reproducing
 schedule.
-*Passes when:* the searcher, given the schedule vocabulary of instrumented
-yields, reproduces each seeded bug from its seed, deterministically.
+*Passes when:* (a) the searcher, given the schedule vocabulary of instrumented
+yields, reproduces each seeded bug from its seed, deterministically; and (b)
+for a held-out subset whose reproducing schedules are withheld from the
+searcher and its fixtures, the searcher *discovers* a reproducing schedule
+within a fixed, pre-declared budget per bug.
 *Does not count unless:* each suite entry was first shown to *not* reproduce
 under a wrong schedule (the bug requires the interleaving, i.e. the suite can
-fail), and results are reported per-bug, never as a single pass rate.
+fail); the withheld subset's schedules are demonstrably absent from seeds and
+fixtures; and results are reported per-bug, never as a single pass rate.
 
 This suite is the standing instrument for schedule-expressiveness questions;
 when the descriptive x86 design matures to a comparable state, running the same
@@ -281,19 +341,25 @@ When the msr1 box goes idle, two pieces of deferred work turn the single-host
 result into the portability claim. They reuse everything above unchanged.
 
 **F1 — `Arm64KvmBackend` completes.** Interrupt injection and `run_until` on
-the stock-KVM/arm64 skeleton, per §2.2, sharing the userspace `gicv3` model
-with `HvfBackend`. Passes milestone M1's oracle verbatim on msr1 (ten
-same-seed boots, one event log), on the same image bytes the M1 Max runs.
+the KVM/arm64 backend, per §2.2's delivery decision (in-kernel vGICv3 via
+`KVM_IRQ_LINE` with bit-identical save/restore evidence, or a patched
+injection ABI into the userspace `gicv3` model). The decision and its
+supporting measurements are recorded here when this work starts. Passes
+milestone M1's oracle verbatim on msr1 — ten same-seed boots, one normalized
+log, placement checker green — on the same image bytes the M1 Max runs.
 
 **F2 — cross-host determinism, the portability claim itself.**
 *Passes when:* with byte-identical image, payload, and seed: (a) msr1 and the
-M1 Max produce **identical event logs** for the boot and for an NES campaign,
-and identical archive hashes; (b) a snapshot taken mid-lineage on one host,
-restored on the other, continues to the same archive key, in both directions.
-*Does not count unless:* rule 3 held (bytes attested on both sides before the
-run), the comparison is the full log (rule 1), and at least one seeded
-cross-host divergence was demonstrated to be caught (rule 2, run once with an
-increment constant deliberately differing between hosts).
+M1 Max produce **identical normalized logs** (raw logs differ across
+substrates by construction; only the normalized, guest-visible log is
+compared) for the boot and for an NES campaign, and identical archive hashes;
+(b) a snapshot taken mid-lineage on one host, restored on the other,
+continues to the same archive key, in both directions.
+*Does not count unless:* rule 4 held (bytes attested on both sides before the
+run), the comparison is the full normalized log with `state_hash` checkpoints
+(rule 1), and at least one seeded cross-host divergence was demonstrated to
+be caught (rule 3, run once with an increment constant deliberately differing
+between hosts).
 
 ## 6. In-tree placement
 
