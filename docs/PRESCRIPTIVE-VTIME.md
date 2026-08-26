@@ -196,8 +196,13 @@ instrumented-payload milestone (M4).
 The `dissonance` searcher (PR #193) is written against a `Machine` trait that
 mirrors the control-protocol verb set — snapshot / drop / branch / replay / run /
 read — precisely so it can move from the in-process NES emulator to a
-control-protocol client unchanged. The guest payload is TetaNES headless linked
-against the SDK; its loop is: fetch the next `ButtonChord` through the SDK
+control-protocol client unchanged. The guest payload follows the shipped
+game-image pattern (`harmony-linux/linux/build-game-image.sh`: an agent binary
+plus an emulator core); for this plan the core is `tetanes-core` built for the
+guest — the same implementation the searcher's in-process `NesMachine` wraps,
+so M2's differential compares two independently executing builds of one
+emulator and attributes divergence to the substrate rather than to emulator
+accuracy. The agent's loop is: fetch the next `ButtonChord` through the SDK
 (doorbell exit), emulate the hold, report the frame count (doorbell exit),
 repeat.
 
@@ -314,12 +319,13 @@ campaign's continuations execute from restored snapshots (asserted by a restore
 counter in the run report, with genesis replays counted separately), and on a
 sampled set of branch points the restored continuation's per-chord `state_hash`
 sequence equals the uninterrupted run's from the same point; (d) a
-**cross-implementation differential** holds on a sampled set of lineages: two
-independent implementations — the in-process `NesMachine` and the
-consonance-hosted payload — plus the campaign's independently recorded
-transport observations agree on WRAM at each chord boundary, with any
-disagreement treated as unlocalized until component-level checks (chord
-encoding, ROM/core configuration, boundary alignment) attribute it.
+**cross-build differential** holds on a sampled set of lineages: two
+independently executing builds of the same emulator — the in-process
+`NesMachine` and the consonance-hosted payload — plus the campaign's
+independently recorded transport observations agree on WRAM at each chord
+boundary, with any disagreement treated as unlocalized until component-level
+checks (chord encoding, ROM/core configuration, boundary alignment)
+attribute it.
 *Does not count unless:* the campaign ran long enough to exercise snapshot
 churn at real scale — thousands of branch/replay cycles, with snapshots taken
 while the guest is mid-workload rather than idle (each boundary itself a fully
@@ -372,9 +378,14 @@ suite there produces the comparative measurement.
 - **ISA baseline drift between hosts.** Implementation-defined behavior
   outside the pinned baseline (ID registers, FP corner behavior) would surface
   as a log divergence in the §5 cross-host experiment; `compare_runs` brackets
-  it to an instruction range. The NES payload is integer-pure, which keeps that
-  experiment's first pass free of FP questions; FP-heavy payloads extend the
-  baseline audit when they arrive.
+  it to an instruction range. The FP/SIMD environment is in the baseline audit
+  from day one: `FPCR`/`FPSR` are pinned guest state and, with the FP/SIMD
+  registers, covered by M1's state-completeness check; FP data-processing on
+  the pinned arm64 baseline is architecturally exact, and every math-library
+  path is guest code with identical bytes on both hosts. This covers the guest
+  payloads as they are — the emulator cores carry floating-point paths
+  (FCEUmm's palette and timing code; `tetanes-core`'s mixing), and no payload
+  is assumed integer-only.
 - **Snapshot rate under searcher churn.** VM snapshots are large and the
   searcher branches constantly. M2's report includes branch/replay throughput;
   optimization (dirty-page tracking, copy-on-write) is scheduled by that
