@@ -103,11 +103,16 @@ delivery path. **The delivery contract:** each deadline `D` is delivered exactly
 once, at the first exit whose post-advance vns is at or after `D`, with equal
 deadlines in `TimerQueue`'s FIFO order. Which exit that is is itself
 deterministic, so two same-seed runs deliver every interrupt at the same
-instruction boundary. `run_until` under prescriptive V-time runs to the next
-exit; a deadline never stops the guest mid-stream — it is met at the exit that
-follows it. Delivery latency is therefore bounded by exit density, which the
-guest supplies (the paravirtual tick, SDK yields, device access, WFI) and every
-run measures (§3, M3's histogram).
+instruction boundary. The prescriptive run loop drives the backend with plain
+`Backend::run` — run to the next exit — and does all deadline bookkeeping
+above the trait: advance the clock, deliver what is due, reenter.
+`Backend::run_until`, whose late-only-stop contract is the descriptive-mode
+deadline stop, has no caller in this mode; backends without the machinery keep
+reporting it `Unsupported`, exactly as the arm64 skeleton does today, and
+`capabilities()` stays honest. A deadline never stops the guest mid-stream —
+it is met at the exit that follows it. Delivery latency is therefore bounded
+by exit density, which the guest supplies (the paravirtual tick, SDK yields,
+device access, WFI) and every run measures (§3, M3's histogram).
 
 **Liveness monitor.** The run loop carries a host wall-clock watchdog that fires
 when the guest executes past a budget with no exit. The watchdog **aborts the
@@ -134,13 +139,15 @@ one impl per (substrate, arch) pair, nothing above it branching on substrate.
   over Hypervisor.framework: `hv_vcpu_run`, WFI/MMIO/sysreg exits, interrupt
   injection before reentry, and `hv_vcpus_exit` as the watchdog's abort path.
   Interrupt state lives in the userspace `consonance/gicv3` model; injection
-  happens at exits. `run_until` here is run-to-next-exit per §2.1's delivery
-  contract — the backend needs no guest-work counter and no mid-stream stop,
-  which is what makes Hypervisor.framework's exit surface sufficient.
+  happens at exits. The backend implements `run` and reports `run_until`
+  `Unsupported` — per §2.1 the prescriptive run loop never calls it — so it
+  needs no guest-work counter and no mid-stream stop, which is what makes
+  Hypervisor.framework's exit surface sufficient.
 - **`Arm64KvmBackend` (msr1, follow-up §5).** The existing stock-KVM/arm64
   skeleton (`arm64_kvm.rs`) grows the pieces its `capabilities()` currently
-  reports absent — interrupt injection and `run_until` (run-to-next-exit, per
-  §2.1). Delivery on KVM/arm64 requires a decision the `gicv3` crate already
+  reports absent — interrupt injection (`run` already works; `run_until` stays
+  `Unsupported`, per §2.1 the prescriptive run loop never calls it). Delivery
+  on KVM/arm64 requires a decision the `gicv3` crate already
   frames as the AA-6 verdict: stock KVM couples the GICv3 CPU interface and
   the timer PPI to the in-kernel vGICv3, so the backend either creates the
   in-kernel vGICv3 and injects through `KVM_IRQ_LINE` — with the vGIC's
@@ -151,9 +158,9 @@ one impl per (substrate, arch) pair, nothing above it branching on substrate.
   delivery ruling in `AGENTS.md` deferred — that deferral is superseded by
   this plan.
 
-The run loop drives either through `run_until` with prescriptive advancement; the
-`WorkSource` in use reads zero, and the injection planner's overflow/single-step
-states are never entered.
+The run loop drives either backend through `run` with prescriptive advancement;
+the `WorkSource` in use reads zero, and the injection planner's
+overflow/single-step states are never entered.
 
 ### 2.3 Guest image
 
@@ -276,7 +283,7 @@ injection timing, and **save/restore coverage**: which of the retained state
 classes (general registers, SIMD/FP, sysregs including timer registers,
 pending exception and debug state) the HVF get/set API captures on this
 hardware — its findings recorded in the backend's docs; then `HvfBackend`
-with `run_until`, userspace GICv3 delivery at exits, and WFI via `IdlePlanner`;
+with `run`, userspace GICv3 delivery at exits, and WFI via `IdlePlanner`;
 the paravirtual tick patch; boot the arm64 image to `/init`.
 *Passes when:* ten same-seed boots produce one normalized log — identical event
 sequences, identical vns at every event, identical interrupt placements,
@@ -378,8 +385,8 @@ suite there produces the comparative measurement.
 When the msr1 box goes idle, two pieces of deferred work turn the single-host
 result into the portability claim. They reuse everything above unchanged.
 
-**F1 — `Arm64KvmBackend` completes.** Interrupt injection and `run_until` on
-the KVM/arm64 backend, per §2.2's delivery decision (in-kernel vGICv3 via
+**F1 — `Arm64KvmBackend` completes.** Interrupt injection on the KVM/arm64
+backend, per §2.2's delivery decision (in-kernel vGICv3 via
 `KVM_IRQ_LINE` with bit-identical save/restore evidence, or a patched
 injection ABI into the userspace `gicv3` model). The decision and its
 supporting measurements are recorded here when this work starts. Passes
