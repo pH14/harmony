@@ -138,6 +138,16 @@ dependency rather than silently weakening the criterion.
     tape; Moment-based `EnvCodec::compose` rejects it because prefix consumption
     cannot be inferred safely. This keeps the VMM workload-blind and makes guest,
     snapshot, replay, and in-process implementations share one reproducer byte form.
+20. **PR #193 lands additively and both emulator builds consume environment v7.**
+    The current `machine` and `searcher` crates from
+    `exec/pr193-boundary-revisions` are workspace members beside the existing
+    LibAFL `fuzzer`; the import does not replace that work. Phase 5 permits the
+    `machine` crate's first harmony dependencies. Its in-process `NesMachine` now
+    parses the same canonical version-7 ordered-payload reproducer the consonance
+    socket path sends, rather than a private pair blob. The synchronous
+    `SocketMachine` validates exact capabilities and request sequence, preserves
+    control errors, retains seal cuts, and reports genesis versus continuation
+    restore counts.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -504,8 +514,11 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   and control-loop negative oracles are implemented. The focused substrate suite
   is green (environment, hypercall-proto, and vmm-core), including the control test
   that alters one chord and proves the whole-state comparator fires. The arm64
-  guest payload and generic control-protocol `Machine` client remain open, so this
-  criterion is not yet a pass.
+  generic control-protocol `Machine` client is implemented and closes against a
+  real `ControlServer<MockBackend>` over a Unix socket. The imported PR #193
+  searcher remains green against the shared version-7 bytes. The arm64 guest
+  payload and its live M1-Max composition remain open, so this criterion is not
+  yet a pass.
 
 ### M2 payload-substrate checkpoint evidence
 
@@ -531,6 +544,21 @@ the identical suffix again. Its two anti-vacuity arms changed `[0x81, 4]` to
 `[0x81, 5]` and required the whole-state hash to differ, then drove an exhausted
 tape through a real mock PIO exit and required `StopReason::Quiescent` with
 `StopMask::NONE`.
+
+```text
+cd dissonance
+cargo test -p machine
+10 passed (9 unit + 1 real control-server socket integration)
+
+cargo test -p searcher --lib
+50 passed; 0 failed (699.64 s; includes archive/replay and seed-sweep tests)
+
+cargo clippy -p machine -p searcher --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notice only)
+
+cargo fmt --all -- --check
+exit status 0
+```
 - **FAIL — two same-seed archive hashes:** not started.
 - **FAIL — every archived lineage replays byte-for-byte:** not started.
 - **FAIL — snapshot restore counter and uninterrupted-continuation hash oracle:**
