@@ -39,6 +39,7 @@ use crate::search::draw::{SuffixShape, suffix_shape_from_identifier, suffix_shap
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::with_worker_pool;
 use crate::search::rand::RomuDuoJrRand;
+use crate::target::SnapshotRestoreCounters;
 
 /// A campaign's finished report and its whole-tree snapshot checkpoint.
 pub type CampaignOutcome<G> = (
@@ -154,6 +155,10 @@ pub trait Game: Sync {
     ) -> Result<(), Box<dyn Error>>;
     /// Frames the target has emulated over its lifetime.
     fn frames_clocked(&self, target: &Self::Target) -> u64;
+    /// Genesis and continuation snapshot restores over the target lifetime.
+    fn snapshot_restore_counters(&self, _target: &Self::Target) -> SnapshotRestoreCounters {
+        SnapshotRestoreCounters::default()
+    }
     /// Apply one action and merge its milestone evidence.
     ///
     /// # Errors
@@ -556,6 +561,9 @@ pub struct CampaignJobRecord {
     pub mutation_seed: u64,
     /// Frames the job emulated, admission probes included.
     pub frames: u64,
+    /// Snapshot restores performed by this job, admission probes included.
+    #[serde(default, skip_serializing_if = "SnapshotRestoreCounters::is_zero")]
+    pub snapshot_restores: SnapshotRestoreCounters,
     /// SHA-256 of the serialized job result, snapshots included.
     pub result_sha256: String,
     /// Ordered admission decisions for the job's candidates.
@@ -694,6 +702,9 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub tree_import: Option<TreeImportCounts>,
     /// Bootstrap frames plus every job's frames, probes included.
     pub frames_emulated: u64,
+    /// Snapshot restores performed by bootstrap and executed jobs.
+    #[serde(default, skip_serializing_if = "SnapshotRestoreCounters::is_zero")]
+    pub snapshot_restores: SnapshotRestoreCounters,
     /// Jobs skipped before execution as known duplicates.
     pub duplicates_skipped: u64,
     /// Candidates refused by the admission probe.
@@ -1371,6 +1382,7 @@ struct CampaignCounters {
     bootstrap_frames: u64,
     tree_import: Option<TreeImportCounts>,
     job_frames: u64,
+    snapshot_restores: SnapshotRestoreCounters,
     duplicates_skipped: u64,
     jobs_per_worker: Vec<u64>,
     skips_per_worker: Vec<u64>,
@@ -1382,6 +1394,7 @@ impl CampaignCounters {
             bootstrap_frames: 0,
             tree_import: None,
             job_frames: 0,
+            snapshot_restores: SnapshotRestoreCounters::default(),
             duplicates_skipped: 0,
             jobs_per_worker: vec![0; workers as usize],
             skips_per_worker: vec![0; workers as usize],
@@ -1491,6 +1504,7 @@ fn build_report<G: Game>(
         frames_emulated: counters
             .bootstrap_frames
             .saturating_add(counters.job_frames),
+        snapshot_restores: counters.snapshot_restores,
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
         victories,
@@ -1628,10 +1642,15 @@ where
         format!("failed to build the bootstrap target: {error}").into()
     })?;
     let frames_before = game.frames_clocked(&bootstrap_target);
+    let restores_before = game.snapshot_restore_counters(&bootstrap_target);
     counters.tree_import = bootstrap_core(game, &mut core, &mut bootstrap_target, origin)?;
     counters.bootstrap_frames = game
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
+    counters.snapshot_restores.merge(
+        game.snapshot_restore_counters(&bootstrap_target)
+            .delta_since(restores_before),
+    );
     drop(bootstrap_target);
 
     let workers = config.workers as usize;
@@ -1664,6 +1683,7 @@ where
         |_| game.new_target(),
         |target, spec: JobSpec<G>| {
             let frames_before = game.frames_clocked(target);
+            let restores_before = game.snapshot_restore_counters(target);
             game.execute_job(
                 target,
                 &spec.snapshot,
@@ -1677,6 +1697,8 @@ where
                 (
                     result,
                     game.frames_clocked(target).saturating_sub(frames_before),
+                    game.snapshot_restore_counters(target)
+                        .delta_since(restores_before),
                 )
             })
             .map_err(|error| error.to_string())
@@ -1772,9 +1794,10 @@ where
             while in_flight > 0 {
                 let reply = pool.receive()?;
                 let worker_index = reply.worker as usize;
-                let (result, frames) = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                    format!("campaign worker {} failed: {error}", reply.worker).into()
-                })?;
+                let (result, frames, snapshot_restores) =
+                    reply.outcome.map_err(|error| -> Box<dyn Error> {
+                        format!("campaign worker {} failed: {error}", reply.worker).into()
+                    })?;
                 let pending_job = pending[worker_index]
                     .take()
                     .ok_or("campaign worker replied without a pending job")?;
@@ -1803,6 +1826,7 @@ where
                     parent_id: pending_job.parent_id,
                     mutation_seed: pending_job.mutation_seed,
                     frames,
+                    snapshot_restores,
                     result_sha256: result_sha256::<G>(&result)?,
                     decisions,
                     selector: pending_job.selector,
@@ -1812,6 +1836,7 @@ where
                 counters.jobs_per_worker[worker_index] =
                     counters.jobs_per_worker[worker_index].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
+                counters.snapshot_restores.merge(snapshot_restores);
                 in_flight -= 1;
                 if let Some(directory) = &config.checkpoint_dir
                     && sequence > 0
@@ -2022,8 +2047,13 @@ where
         format!("failed to build the replay target: {error}").into()
     })?;
     let frames_before = game.frames_clocked(&target);
+    let restores_before = game.snapshot_restore_counters(&target);
     counters.tree_import = bootstrap_core(game, &mut core, &mut target, &replay_origin)?;
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    counters.snapshot_restores.merge(
+        game.snapshot_restore_counters(&target)
+            .delta_since(restores_before),
+    );
 
     for line in record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
@@ -2077,6 +2107,7 @@ where
                     job.mutation_seed,
                 )?;
                 let job_frames_before = game.frames_clocked(&target);
+                let job_restores_before = game.snapshot_restore_counters(&target);
                 let result = game.execute_job(
                     &mut target,
                     &snapshot,
@@ -2089,10 +2120,20 @@ where
                 let frames = game
                     .frames_clocked(&target)
                     .saturating_sub(job_frames_before);
+                let snapshot_restores = game
+                    .snapshot_restore_counters(&target)
+                    .delta_since(job_restores_before);
                 if frames != job.frames {
                     return Err(format!(
                         "replayed job {} emulated {frames} frames against recorded {}",
                         job.sequence, job.frames
+                    )
+                    .into());
+                }
+                if snapshot_restores != job.snapshot_restores {
+                    return Err(format!(
+                        "replayed job {} snapshot restores {snapshot_restores:?} differ from recorded {:?}",
+                        job.sequence, job.snapshot_restores
                     )
                     .into());
                 }
@@ -2144,6 +2185,7 @@ where
                 counters.jobs_per_worker[worker] =
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
+                counters.snapshot_restores.merge(snapshot_restores);
             }
         }
     }
@@ -2173,6 +2215,7 @@ mod tests {
     use super::{CampaignJobRecord, CampaignStreamHeader, CampaignStreamRecord, GamePolicies};
     use crate::search::archive::{SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
+    use crate::target::SnapshotRestoreCounters;
 
     /// The header a stream recorded before the policy map existed, verbatim.
     /// The generic layer now holds the game's policies in a map and names its
@@ -2232,6 +2275,7 @@ mod tests {
         let CampaignStreamRecord::Job(job) = record else {
             panic!("expected a job record");
         };
+        assert!(job.snapshot_restores.is_zero());
         assert_eq!(job.selector.path, SelectorPath::GroupWalk);
         assert_eq!(
             job.draw_table_before,
@@ -2246,9 +2290,19 @@ mod tests {
         assert!(object.contains_key("chord_table_before"));
         assert!(object.contains_key("chord_table_after"));
         assert!(!object.contains_key("draw_table_before"));
+        assert!(!object.contains_key("snapshot_restores"));
         let round_trip: CampaignJobRecord =
             serde_json::from_value(written).expect("job round-trips");
         assert_eq!(round_trip, job);
+
+        let mut counted = job.clone();
+        counted.snapshot_restores = SnapshotRestoreCounters {
+            genesis: 1,
+            continuation: 3,
+        };
+        let counted = serde_json::to_value(counted).expect("counted job serializes");
+        assert_eq!(counted["snapshot_restores"]["genesis"], 1);
+        assert_eq!(counted["snapshot_restores"]["continuation"], 3);
         let _ = SelectorDraw {
             path: SelectorPath::GroupWalk,
             classes_skipped: 0,

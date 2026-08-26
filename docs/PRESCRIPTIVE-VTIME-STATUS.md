@@ -174,6 +174,14 @@ dependency rather than silently weakening the criterion.
     later restore deterministically reconstructs from gameplay genesis. This
     prevents rejected or old archive candidates from leaking unbounded server
     snapshots without making raw handles falsely portable across sessions.
+24. **Restore accounting is deterministic stream evidence, not a live-only
+    sidecar.** Every nonzero job record carries separate genesis and continuation
+    restore deltas; replay recomputes and compares them before admission, and the
+    report accumulates bootstrap plus job counts. Zero counts are omitted and
+    default on decode, preserving byte-for-byte local streams and historical
+    recordings whose targets did not expose counters. The throughput sidecar
+    additionally reports continuation restores per wall second, but wall time
+    never enters the stream or deterministic report.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -641,6 +649,10 @@ exit status 0 (pre-existing clippy.toml invalid-path notice only)
 
 cargo check -p searcher --bin smb-campaign
 exit status 0
+
+cargo test -p searcher --lib \
+  restore_accounting_is_recorded_replayed_and_tamper_evident
+1 passed; 0 failed
 ```
 
 The adapter differential executes the same synthetic NROM and chords through
@@ -649,14 +661,18 @@ and frame count at every chord endpoint. Its negatives reject a 2,047-byte WRAM
 publication and a one-frame guest-report offset. Snapshot tests prove both a
 live continuation restore and a post-serialization genesis-lineage restore; a
 1,025-snapshot churn test evicts the oldest live handle and proves the same
-durable fallback remains byte-exact.
+durable fallback remains byte-exact. The restore-accounting oracle runs a live
+and serially replayed campaign through a counting target, requires nonzero and
+class-separated totals, then increments one recorded continuation count and
+requires replay to reject that exact job.
 - **FAIL — two same-seed archive hashes:** not started.
 - **IN PROGRESS — every archived lineage replays byte-for-byte:** durable
   lineage reconstruction is implemented and green for focused snapshots; the
   whole retained archive and real guest remain open.
 - **IN PROGRESS — snapshot restore counter and uninterrupted-continuation hash
-  oracle:** genesis/continuation counters and focused restore evidence are green;
-  sampled campaign branch-point hashes remain open.
+  oracle:** genesis/continuation counters are now recorded, replay-verified, and
+  tamper-evident, and focused restore evidence is green; sampled campaign
+  branch-point hashes remain open.
 - **IN PROGRESS — in-process/guest/transport cross-build differential:** the
   independent synthetic-ROM chord-endpoint differential is green; the shipped
   guest image and external SMB ROM run remain open.

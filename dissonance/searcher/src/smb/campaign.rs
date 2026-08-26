@@ -20,7 +20,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::target::ExitKind;
+use crate::target::{ExitKind, SnapshotRestoreCounters};
 
 use crate::{
     search::archive::RetentionPolicy,
@@ -945,6 +945,10 @@ where
         target.campaign_frames_clocked()
     }
 
+    fn snapshot_restore_counters(&self, target: &Self::Target) -> SnapshotRestoreCounters {
+        target.campaign_restore_counters()
+    }
+
     fn apply_action(
         &self,
         target: &mut Self::Target,
@@ -1304,18 +1308,116 @@ mod tests {
         SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
         SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbGame,
-        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SuffixShape,
+        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SmbTargetBackend, SuffixShape,
         chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
         execute_job, replay_smb_campaign, run_smb_campaign, run_smb_campaign_with_progress,
     };
-    use crate::search::campaign::{CoordinatorCore, write_live_checkpoint};
+    use crate::search::campaign::{
+        CampaignOrigin, CoordinatorCore, replay_campaign_checkpointed, run_campaign_checkpointed,
+        write_live_checkpoint,
+    };
     use crate::search::empirical_steps::EmpiricalStepHashRule;
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
         smb::archive::{SmbArchiveEntryReport, SmbArchiveKey, SmbArchiveReport},
-        smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
-        target::Target,
+        smb::target::{
+            ButtonChord, SmbCampaignTarget, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot,
+            SmbTarget, WRAM_SIZE,
+        },
+        target::{ExitKind, SnapshotRestoreCounters, Target},
     };
+
+    #[derive(Debug)]
+    struct CountingTarget {
+        inner: SmbTarget,
+        restores: SnapshotRestoreCounters,
+    }
+
+    impl Target for CountingTarget {
+        type Action = ButtonChord;
+        type Observations = SmbObservations;
+        type Snapshot = SmbSnapshot;
+
+        fn reset(&mut self) {
+            self.inner.reset();
+            self.restores.genesis = self.restores.genesis.saturating_add(1);
+        }
+
+        fn apply(&mut self, action: &Self::Action) {
+            self.inner.apply(action);
+        }
+
+        fn observe(&self) -> Self::Observations {
+            self.inner.observe()
+        }
+
+        fn fingerprint(&self) -> u64 {
+            self.inner.fingerprint()
+        }
+
+        fn exit_kind(&self) -> ExitKind {
+            self.inner.exit_kind()
+        }
+
+        fn snapshot(&mut self) -> Option<Self::Snapshot> {
+            self.inner.snapshot()
+        }
+
+        fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn std::error::Error>> {
+            self.inner.restore(snapshot)?;
+            self.restores.continuation = self.restores.continuation.saturating_add(1);
+            Ok(())
+        }
+    }
+
+    impl SmbCampaignTarget for CountingTarget {
+        fn campaign_wram(&self) -> [u8; WRAM_SIZE] {
+            self.inner.wram()
+        }
+
+        fn campaign_action_observations(&self) -> &[SmbObservations] {
+            self.inner.last_action_observations()
+        }
+
+        fn campaign_is_dead(&self) -> bool {
+            self.inner.is_dead()
+        }
+
+        fn campaign_is_victory(&self) -> bool {
+            self.inner.is_victory()
+        }
+
+        fn campaign_frames_clocked(&self) -> u64 {
+            self.inner.frames_clocked()
+        }
+
+        fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
+            self.inner.survives_probe(buttons, frames)
+        }
+
+        fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
+            self.restores
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct CountingBackend;
+
+    impl SmbTargetBackend for CountingBackend {
+        type Target = CountingTarget;
+
+        fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
+            Ok(CountingTarget {
+                inner: SmbTarget::from_smb_rom_bytes_headless(rom)
+                    .map_err(|error| error.to_string())?,
+                restores: SnapshotRestoreCounters::default(),
+            })
+        }
+
+        fn checkpoint_format(&self) -> &'static str {
+            SNAPSHOT_CHECKPOINT_FORMAT
+        }
+    }
 
     fn synthetic_nrom() -> Vec<u8> {
         let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
@@ -1349,6 +1451,46 @@ mod tests {
             victory_input_path: None,
             checkpoint_dir: None,
         }
+    }
+
+    #[test]
+    fn restore_accounting_is_recorded_replayed_and_tamper_evident() {
+        let rom = synthetic_nrom();
+        let game = SmbGame::with_backend(&rom, CountingBackend);
+        let mut config = genesis_config(0x5eed_ca20, 1, 2);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        let generic = config.generic::<SmbGame<CountingBackend>>();
+        let origin = CampaignOrigin::<SmbGame<CountingBackend>>::Genesis;
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(&game, &generic, &origin, &mut stream, None)
+            .expect("counted live campaign");
+        assert!(live.snapshot_restores.genesis > 0);
+        assert!(live.snapshot_restores.continuation >= live.executions_completed);
+
+        let (replayed, _) = replay_campaign_checkpointed(&game, &stream, None, None)
+            .expect("counted replay campaign");
+        assert_eq!(replayed, live);
+
+        let text = String::from_utf8(stream).expect("stream is utf-8");
+        let mut altered = String::new();
+        let mut changed = false;
+        for line in text.lines() {
+            let mut value: serde_json::Value = serde_json::from_str(line).expect("stream line");
+            if !changed && value.get("event").and_then(serde_json::Value::as_str) == Some("job") {
+                let continuation = value["snapshot_restores"]["continuation"]
+                    .as_u64()
+                    .expect("recorded continuation count");
+                value["snapshot_restores"]["continuation"] =
+                    serde_json::Value::from(continuation.saturating_add(1));
+                changed = true;
+            }
+            altered.push_str(&serde_json::to_string(&value).expect("serialize stream line"));
+            altered.push('\n');
+        }
+        assert!(changed);
+        let error = replay_campaign_checkpointed(&game, altered.as_bytes(), None, None)
+            .expect_err("altered restore accounting must fail");
+        assert!(error.to_string().contains("snapshot restores"));
     }
 
     #[test]

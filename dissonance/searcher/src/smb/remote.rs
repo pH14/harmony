@@ -24,7 +24,7 @@ use crate::{
         smb_fingerprint_from_wram, smb_is_victory, smb_mechanical_state_from_wram,
         smb_milestones_from_wram, smb_player_is_dead,
     },
-    target::{ExitKind, Target},
+    target::{ExitKind, SnapshotRestoreCounters, Target},
 };
 
 /// Resident continuation handles kept in one VMM session. Older archive
@@ -102,6 +102,7 @@ pub struct RemoteSmbTarget<M: GuestControlMachine> {
     machine: M,
     genesis: SnapId,
     genesis_frame: Moment,
+    frames_clocked: u64,
     wram_gpa: u64,
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
@@ -173,6 +174,7 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
             machine,
             genesis,
             genesis_frame,
+            frames_clocked: boot_frames,
             wram_gpa,
             action_observations: vec![observation.clone()],
             observation,
@@ -207,13 +209,13 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
         smb_is_victory(&self.wram())
     }
 
-    /// Guest frames since gameplay genesis in the current restored timeline.
+    /// Total guest frames emulated over this target's lifetime.
+    ///
+    /// Snapshot restore rewinds the guest frame counter but never this work
+    /// counter, matching the in-process target and campaign accounting seam.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {
-        self.machine
-            .logical_frame()
-            .0
-            .saturating_sub(self.genesis_frame.0)
+        self.frames_clocked
     }
 
     /// Current restore accounting from the control session.
@@ -253,6 +255,9 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
                 "chord stopped at the wrong frame: expected {expected}, got {stop:?}"
             )));
         }
+        self.frames_clocked = self
+            .frames_clocked
+            .saturating_add(u64::from(action.bounded_hold_frames()));
         let wram = read_wram(&self.machine, self.wram_gpa)?;
         self.dead = smb_player_is_dead(&wram);
         let frame_count = self
@@ -296,6 +301,7 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
                         "lineage reconstruction stopped unexpectedly: {stop:?}"
                     )));
                 }
+                self.frames_clocked = self.frames_clocked.saturating_add(frames);
             }
         }
         let actual = read_wram(&self.machine, self.wram_gpa)?;
@@ -432,6 +438,14 @@ where
             remaining -= hold;
         }
         !self.is_dead() && self.exit_kind() == ExitKind::Ok
+    }
+
+    fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
+        let counters = self.restore_counters();
+        SnapshotRestoreCounters {
+            genesis: counters.genesis,
+            continuation: counters.continuation,
+        }
     }
 }
 
@@ -623,6 +637,7 @@ mod tests {
         };
         let mut remote = RemoteSmbTarget::from_machine(control).unwrap();
         let mut local = SmbTarget::from_smb_rom_bytes_headless(&rom).unwrap();
+        let work_before = remote.frames_clocked();
         let actions = [ButtonChord::new(0x81, 4), ButtonChord::new(0, 2)];
         for action in actions {
             remote.apply(&action);
@@ -645,6 +660,7 @@ mod tests {
         remote.restore(&durable).unwrap();
         assert_eq!(remote.wram().as_slice(), durable.wram());
         assert!(remote.restore_counters().genesis > 0);
+        assert_eq!(remote.frames_clocked().saturating_sub(work_before), 22);
     }
 
     #[test]

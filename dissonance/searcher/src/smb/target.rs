@@ -9,7 +9,7 @@
 
 use std::error::Error;
 
-use crate::target::ExitKind;
+use crate::target::{ExitKind, SnapshotRestoreCounters};
 use machine::{
     Machine, MachineError, SnapId, StopConditions, nes,
     nes::{NesMachine, RenderMode},
@@ -103,6 +103,10 @@ pub trait SmbCampaignTarget:
     fn campaign_frames_clocked(&self) -> u64;
     /// Probe one fixed mask for a bounded horizon.
     fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool;
+    /// Genesis and continuation restore counts for this target lifetime.
+    fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
+        SnapshotRestoreCounters::default()
+    }
 }
 
 /// Fixed boot walk from power-on to gameplay genesis, encoded as staged

@@ -42,6 +42,9 @@ struct LiveThroughput {
     frames_emulated: u64,
     executions_per_second: f64,
     frames_per_second: f64,
+    genesis_restores: u64,
+    continuation_restores: u64,
+    continuation_restores_per_second: f64,
 }
 
 #[allow(clippy::disallowed_methods)] // not order-observable: wall time is live throughput evidence only.
@@ -205,6 +208,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         frames_emulated: report.frames_emulated,
         executions_per_second: rate(report.executions_completed, wall_seconds),
         frames_per_second: rate(report.frames_emulated, wall_seconds),
+        genesis_restores: report.snapshot_restores.genesis,
+        continuation_restores: report.snapshot_restores.continuation,
+        continuation_restores_per_second: rate(report.snapshot_restores.continuation, wall_seconds),
     };
     fs::write(
         output.join("throughput-live.json"),
@@ -400,6 +406,7 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "probe_refused": report.probe_refused,
         "duplicates_skipped": report.duplicates_skipped,
         "frames_emulated": report.frames_emulated,
+        "snapshot_restores": report.snapshot_restores,
         "jobs_per_worker": report.jobs_per_worker,
         "stream_sha256": report.stream_sha256,
     })
