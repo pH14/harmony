@@ -430,7 +430,11 @@ impl Target for SmbTarget {
             self.failed = true;
             return;
         };
-        if self.machine.branch(start, &nes::reproducer(std::slice::from_ref(action))).is_err() {
+        if self
+            .machine
+            .branch(start, &nes::reproducer(std::slice::from_ref(action)))
+            .is_err()
+        {
             self.failed = true;
             let _ = self.machine.drop_snapshot(start);
             return;

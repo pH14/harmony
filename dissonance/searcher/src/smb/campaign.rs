@@ -4,8 +4,11 @@
 //!
 //! This module holds everything the generic coordinator asks a game for:
 //! target construction and stepping, key and milestone decoding from work
-//! RAM, chord vocabularies and the recorded chord-table policy, and the
-//! identifier strings recorded for the game-owned policies.
+//! RAM, the chord vocabularies a single action is drawn from, the mined
+//! chord tables and the source rule that seeds them, and the identifier
+//! strings recorded for those policies. The search layer owns the mutation
+//! shape, the mixture odds, admission, selection, and the resume rule; none
+//! of them is stated here.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,7 +20,6 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::search::rand::RomuDuoJrRand;
 use crate::target::ExitKind;
 
 use crate::{
@@ -25,9 +27,9 @@ use crate::{
     search::campaign::{
         CampaignActionResult, CampaignCandidate, CampaignCheckpoint, CampaignJobResult,
         CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, Game,
-        GamePolicies, SnapshotCheckpoint, replay_campaign_checkpointed,
-        run_campaign_checkpointed,
+        GamePolicies, SnapshotCheckpoint, replay_campaign_checkpointed, run_campaign_checkpointed,
     },
+    search::draw::{DrawMixture, SuffixShape, draw_suffix},
     search::empirical_steps::{
         EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
         EmpiricalStepTableRef, EmpiricalStepTables,
@@ -59,10 +61,6 @@ pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-campaign-stream-v1";
 /// Format tag of the snapshot checkpoint file.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-snapshot-checkpoint-v1";
 
-/// Identifier recorded for the suffix shape: one action, or two at
-/// one-in-four odds.
-pub const SUFFIX_IDENTIFIER: &str = "one_or_two";
-
 /// Identifier recorded for the hold distribution, see
 /// [`crate::smb::archive::sample_chord_from_masks`].
 pub const DURATION_IDENTIFIER: &str = "stratified";
@@ -74,8 +72,6 @@ pub const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 pub const KEY_POLICY_FIELD: &str = "key_policy";
 /// Header field naming the hold distribution.
 pub const DURATION_POLICY_FIELD: &str = "duration_policy";
-/// Header field naming the suffix shape.
-pub const SUFFIX_POLICY_FIELD: &str = "suffix_policy";
 /// Header field naming the chord policy.
 pub const CHORD_POLICY_FIELD: &str = "chord_policy";
 /// Header field naming the cell-replacement rule.
@@ -190,6 +186,7 @@ pub struct SmbCampaignConfig {
 impl SmbCampaignConfig {
     fn generic(&self) -> GenericCampaignConfig<SmbGame> {
         GenericCampaignConfig {
+            suffix: SuffixShape::default(),
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
@@ -280,11 +277,10 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
 
 /// Expand one mutation seed into its complete suffix.
 ///
-/// The suffix is sampled from a fresh RNG seeded with the mutation seed
-/// alone, so a job is a pure function of (parent snapshot, mutation seed).
-/// Under a recorded chord policy each chord comes from the table at even
-/// odds with the uniform draw. Public so recorded-artifact diagnostics can
-/// re-derive the actions a stream's jobs executed.
+/// The search layer owns the shape and the mixture odds; SMB supplies only
+/// the two draws they compose — one chord from the run's vocabulary, and one
+/// chord offered by the run's mined tables. Public so recorded-artifact
+/// diagnostics can re-derive the actions a stream's jobs executed.
 ///
 /// # Errors
 ///
@@ -292,42 +288,28 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
 /// is missing its folded tables.
 pub fn derive_suffix(
     mutation_seed: u64,
+    shape: SuffixShape,
     chord_policy: SmbCampaignChordPolicy,
     vocabulary: SmbButtonVocabulary,
     chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-    let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
-    let suffix_len = if rand.below(NonZeroUsize::new(4).ok_or("invalid suffix odds")?) == 0 {
-        2
-    } else {
-        1
+    let mixture = match chord_policy {
+        SmbCampaignChordPolicy::Uniform => DrawMixture::AlphabetOnly,
+        SmbCampaignChordPolicy::DerivedHalf(_) => DrawMixture::BiasedHalf,
     };
-    let mut suffix = Vec::with_capacity(suffix_len);
-    for _ in 0..suffix_len {
-        let recorded = chord_policy != SmbCampaignChordPolicy::Uniform
-            && rand.below(NonZeroUsize::new(2).ok_or("invalid chord odds")?) == 0;
-        if recorded {
-            let mined = match chord_policy {
-                SmbCampaignChordPolicy::Uniform => None,
-                SmbCampaignChordPolicy::DerivedHalf(_) => {
-                    let tables = chord_tables.ok_or("derived chord policy has no folded tables")?;
-                    let length = tables.mixed_len()?;
-                    NonZeroUsize::new(length)
-                        .and_then(|length| tables.mixed_step(rand.below(length)))
-                        .copied()
-                }
-            };
-            if let Some(chord) = mined {
-                suffix.push(chord);
-                continue;
-            }
-        }
-        suffix.push(crate::smb::archive::sample_chord_from_masks(
-            &mut rand,
-            vocabulary.masks(),
-        )?);
-    }
-    Ok(suffix)
+    draw_suffix(
+        shape,
+        mixture,
+        mutation_seed,
+        |rand| {
+            let tables = chord_tables.ok_or("derived chord policy has no folded tables")?;
+            let length = tables.mixed_len()?;
+            Ok(NonZeroUsize::new(length)
+                .and_then(|length| tables.mixed_step(rand.below(length)))
+                .copied())
+        },
+        |rand| crate::smb::archive::sample_chord_from_masks(rand, vocabulary.masks()),
+    )
 }
 
 /// SMB-only filter preserving the existing deep-lineage extraction semantics.
@@ -734,7 +716,6 @@ impl Game for SmbGame {
             ),
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER.to_owned()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER.to_owned()),
-            (SUFFIX_POLICY_FIELD, SUFFIX_IDENTIFIER.to_owned()),
             (CHORD_POLICY_FIELD, chord_policy_identifier(run.chord)),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER.to_owned()),
         ]
@@ -748,7 +729,6 @@ impl Game for SmbGame {
         let pinned = [
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (SUFFIX_POLICY_FIELD, SUFFIX_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
         ];
         for (field, compiled) in pinned {
@@ -870,10 +850,12 @@ impl Game for SmbGame {
         &self,
         run: &SmbCampaignRun,
         state: &SmbDrawState,
+        shape: SuffixShape,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         derive_suffix(
             mutation_seed,
+            shape,
             run.chord,
             run.vocabulary,
             state.tables.as_ref().map(EmpiricalStepTables::view),
@@ -884,12 +866,13 @@ impl Game for SmbGame {
         &self,
         run: &SmbCampaignRun,
         state: &SmbDrawState,
+        shape: SuffixShape,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         let tables =
             recorded_chord_tables(run.chord, before, &state.versions, state.tables.as_ref())?;
-        derive_suffix(mutation_seed, run.chord, run.vocabulary, tables)
+        derive_suffix(mutation_seed, shape, run.chord, run.vocabulary, tables)
     }
 
     fn finish_stream_record(
@@ -1099,9 +1082,9 @@ mod tests {
         SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
         SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbGame,
-        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, chord_policy_from_identifier,
-        chord_policy_identifier, derive_suffix, derive_worker_seed, execute_job,
-        replay_smb_campaign, run_smb_campaign, run_smb_campaign_with_progress,
+        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SuffixShape,
+        chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
+        execute_job, replay_smb_campaign, run_smb_campaign, run_smb_campaign_with_progress,
     };
     use crate::search::campaign::{CoordinatorCore, write_live_checkpoint};
     use crate::search::empirical_steps::EmpiricalStepHashRule;
@@ -1163,6 +1146,7 @@ mod tests {
         for seed in [0_u64, 0x5eed_ca01, u64::MAX] {
             let first = derive_suffix(
                 seed,
+                SuffixShape::OneOrTwo,
                 SmbCampaignChordPolicy::Uniform,
                 SmbButtonVocabulary::default(),
                 None,
@@ -1170,6 +1154,7 @@ mod tests {
             .expect("derive suffix");
             let second = derive_suffix(
                 seed,
+                SuffixShape::OneOrTwo,
                 SmbCampaignChordPolicy::Uniform,
                 SmbButtonVocabulary::default(),
                 None,
@@ -1260,6 +1245,7 @@ mod tests {
         let snapshot = first.snapshot().expect("snapshot prefix");
         let suffix = derive_suffix(
             0x5eed_ca02,
+            SuffixShape::OneOrTwo,
             SmbCampaignChordPolicy::Uniform,
             SmbButtonVocabulary::default(),
             None,

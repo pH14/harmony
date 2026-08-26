@@ -19,6 +19,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use searcher::search::draw::suffix_shape_from_identifier;
 use searcher::smb::{
     archive::SmbArchiveReport,
     campaign::{
@@ -128,6 +129,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut lines = reader.split(b'\n');
     let header_line = lines.next().ok_or("stream is empty")??;
     let header: SmbCampaignStreamHeader = serde_json::from_slice(&header_line)?;
+    let suffix_shape = suffix_shape_from_identifier(&header.suffix_policy)?;
     let chord_policy = recorded_policy(&header.game_policies, CHORD_POLICY_FIELD)?;
     if chord_policy != "chord_uniform" {
         return Err(format!("unexpected chord policy {chord_policy}").into());
@@ -159,6 +161,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             dead_jobs = dead_jobs.saturating_add(1);
             let suffix = derive_suffix(
                 job.mutation_seed,
+                suffix_shape,
                 SmbCampaignChordPolicy::Uniform,
                 searcher::smb::campaign::button_vocabulary_from_identifier(recorded_policy(
                     &header.game_policies,

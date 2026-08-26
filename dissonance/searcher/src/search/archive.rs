@@ -114,7 +114,8 @@ pub fn retention_policy_from_identifier(
 
 /// Identifier recorded for the parent selector: the group walk from the
 /// deepest coarsest class down to one selection cell, then the
-/// recency-concentrated draw within it.
+/// recency-concentrated draw within it. The string is pinned by every stream
+/// already written.
 pub const SELECTOR_IDENTIFIER: &str = "room_cell_uniform_128";
 
 /// Give-up thresholds for the retiring selector: consecutive barren draws at
@@ -210,8 +211,10 @@ pub enum SelectorPath {
     Uniform,
     /// The group walk: deepest coarsest class first, one unexhausted group
     /// chosen uniformly at each depth, then the concentrated recency draw
-    /// within the chosen selection cell.
-    RoomCellUniform,
+    /// within the chosen selection cell. The recorded value is pinned by
+    /// every stream already written.
+    #[serde(rename = "room_cell_uniform")]
+    GroupWalk,
 }
 
 /// One selector draw, recorded so selection-time state is checkable.
@@ -926,7 +929,7 @@ where
                 return Ok((
                     id,
                     SelectorDraw {
-                        path: SelectorPath::RoomCellUniform,
+                        path: SelectorPath::GroupWalk,
                         classes_skipped,
                         counter_reset,
                         concentration: Some(concentration),
@@ -1103,7 +1106,7 @@ where
                     .uniform_selections
                     .saturating_add(1);
             }
-            SelectorPath::RoomCellUniform => {
+            SelectorPath::GroupWalk => {
                 self.selector_accounting.cell_selections =
                     self.selector_accounting.cell_selections.saturating_add(1);
             }
@@ -1403,7 +1406,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("walk selection");
-            if draw.path != SelectorPath::RoomCellUniform {
+            if draw.path != SelectorPath::GroupWalk {
                 continue;
             }
             cell_draws += 1;
@@ -1443,7 +1446,7 @@ mod tests {
             groups: vec![64, 1, 64],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::RoomCellUniform,
+            path: SelectorPath::GroupWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -1455,7 +1458,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::RoomCellUniform {
+            if draw.path == SelectorPath::GroupWalk {
                 assert_eq!(id, 2, "cell draws must fall through to the 124 band");
                 assert_eq!(draw.classes_skipped, 1);
                 assert!(!draw.counter_reset);
@@ -1473,7 +1476,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("selection after reset");
-            if draw.path == SelectorPath::RoomCellUniform && (id == 0 || id == 1) {
+            if draw.path == SelectorPath::GroupWalk && (id == 0 || id == 1) {
                 upper_band_seen = true;
             }
         }
@@ -1501,7 +1504,7 @@ mod tests {
             groups: vec![64, 64, 1],
         });
         let barren_draw = SelectorDraw {
-            path: SelectorPath::RoomCellUniform,
+            path: SelectorPath::GroupWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -1513,7 +1516,7 @@ mod tests {
             let (_, draw) = archive
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("selection under a retired class");
-            if draw.path == SelectorPath::RoomCellUniform {
+            if draw.path == SelectorPath::GroupWalk {
                 if draw.counter_reset {
                     reset_seen = true;
                     break;
@@ -1529,7 +1532,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124), (1, 0, 123), (0, 0, 100)];
         let mut archive = selector_archive(&keys);
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::RoomCellUniform,
+            path: SelectorPath::GroupWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -1543,7 +1546,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::RoomCellUniform {
+            if draw.path == SelectorPath::GroupWalk {
                 fell_through += 1;
                 assert!(
                     id == 1 || id == 2,
@@ -1565,7 +1568,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (0, 0, 100)];
         let mut archive = selector_archive(&keys);
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::RoomCellUniform,
+            path: SelectorPath::GroupWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -1581,7 +1584,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("selection");
-            if draw.path == SelectorPath::RoomCellUniform {
+            if draw.path == SelectorPath::GroupWalk {
                 assert!(
                     draw.counter_reset,
                     "the first cell draw after full exhaustion must reset"
@@ -1612,7 +1615,7 @@ mod tests {
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
             match draw.path {
-                SelectorPath::RoomCellUniform => {
+                SelectorPath::GroupWalk => {
                     cell_draws += 1;
                     assert!(
                         id >= 12,
@@ -1640,7 +1643,7 @@ mod tests {
             entry.report.key.player_y_bucket = 0;
         }
         let exhausting_draw = SelectorDraw {
-            path: SelectorPath::RoomCellUniform,
+            path: SelectorPath::GroupWalk,
             classes_skipped: 0,
             counter_reset: false,
             concentration: None,
@@ -1656,7 +1659,7 @@ mod tests {
             let (id, draw) = archive
                 .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
-            if draw.path == SelectorPath::RoomCellUniform {
+            if draw.path == SelectorPath::GroupWalk {
                 assert_eq!(id, 0, "the only unexhausted member must be sampled");
                 assert_eq!(draw.classes_skipped, 0);
                 assert!(!draw.counter_reset);

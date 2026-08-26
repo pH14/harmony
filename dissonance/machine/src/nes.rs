@@ -65,7 +65,7 @@ pub fn actions_of(env: &Reproducer) -> Result<Vec<ButtonChord>, MachineError> {
     if env.blob_version != ENV_BLOB_VERSION {
         return Err(MachineError::BadEnvVersion);
     }
-    if env.bytes.len() % 2 != 0 {
+    if !env.bytes.len().is_multiple_of(2) {
         return Err(MachineError::MalformedEnv);
     }
     Ok(env

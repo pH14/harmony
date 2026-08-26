@@ -11,9 +11,12 @@
 //! byte.
 //!
 //! Everything game-specific arrives through [`Game`]: target construction and
-//! stepping, key and milestone decoding, alive/dead/won classification,
-//! seed-to-suffix expansion under the recorded input policies, and the
-//! identifier strings for game-owned policies.
+//! stepping, key and milestone decoding, alive/dead/won classification, the
+//! draws a suffix is built from, and an opaque [`GamePolicies`] set naming
+//! whatever policies the game owns. The search layer keeps the policies it
+//! owns — the mutation shape, admission, selection, and the resume rule — and
+//! records each under its own header field. A game supplies no name the
+//! search layer reads.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -32,6 +35,7 @@ use crate::search::archive::{
     RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
     retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
 };
+use crate::search::draw::{SuffixShape, suffix_shape_from_identifier, suffix_shape_identifier};
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::with_worker_pool;
 use crate::search::rand::RomuDuoJrRand;
@@ -228,7 +232,7 @@ pub trait Game: Sync {
         state: &Self::DrawState,
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>>;
     /// Expand one mutation seed into its complete suffix from the live draw
-    /// state.
+    /// state, under the search layer's mutation `shape`.
     ///
     /// # Errors
     ///
@@ -237,6 +241,7 @@ pub trait Game: Sync {
         &self,
         run: &Self::Run,
         state: &Self::DrawState,
+        shape: SuffixShape,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
     /// Expand one recorded mutation seed against the recorded draw-state
@@ -249,6 +254,7 @@ pub trait Game: Sync {
         &self,
         run: &Self::Run,
         state: &Self::DrawState,
+        shape: SuffixShape,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
@@ -435,6 +441,8 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     pub archive_entry_limit: usize,
     /// Game-owned per-run policies, recorded in the header and report.
     pub run: G::Run,
+    /// Mutation shape for this run, recorded in the header and report.
+    pub suffix: SuffixShape,
     /// Admission rule for this run, recorded in the header and report.
     pub retention: RetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
@@ -486,6 +494,8 @@ pub struct CampaignStreamHeader<T> {
     pub archive_entry_limit: usize,
     /// Resume rule identifier.
     pub resume_policy: String,
+    /// Mutation shape identifier.
+    pub suffix_policy: String,
     /// The game-owned policy identifiers of the run, one header field each.
     #[serde(flatten)]
     pub game_policies: GamePolicies,
@@ -662,6 +672,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub archive_entry_limit: usize,
     /// Resume rule identifier.
     pub resume_policy: String,
+    /// Mutation shape identifier.
+    pub suffix_policy: String,
     /// The game-owned policy identifiers of the run, one report field each.
     #[serde(flatten)]
     pub game_policies: GamePolicies,
@@ -865,7 +877,7 @@ impl<G: Game + ?Sized> Debug for CampaignJobResult<G> {
 /// Reject a stream whose selector annotations disagree with the selector.
 fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
     match (draw.path, draw.concentration) {
-        (SelectorPath::RoomCellUniform, None) => {
+        (SelectorPath::GroupWalk, None) => {
             Err("cell draw is missing its concentration record".into())
         }
         (SelectorPath::Uniform, Some(_)) => {
@@ -1313,6 +1325,7 @@ fn stream_header<G: Game>(
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
         resume_policy: RESUME_IDENTIFIER.to_owned(),
+        suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
         game_policies: game.policies(&config.run),
         draw_table,
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
@@ -1466,6 +1479,7 @@ fn build_report<G: Game>(
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
         resume_policy: header.resume_policy.clone(),
+        suffix_policy: header.suffix_policy.clone(),
         game_policies: header.game_policies.clone(),
         retention_policy: header.retention_policy.clone(),
         parent_scheduler: header.parent_scheduler.clone(),
@@ -1692,7 +1706,8 @@ where
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let mutation_seed = rand.next_u64();
                     let draw_table_before = game.draw_checkpoint(draw_state)?;
-                    let suffix = game.expand_suffix(&config.run, draw_state, mutation_seed)?;
+                    let suffix =
+                        game.expand_suffix(&config.run, draw_state, config.suffix, mutation_seed)?;
                     if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix)
                     {
@@ -1971,6 +1986,7 @@ where
     if header.resume_policy != RESUME_IDENTIFIER {
         return Err("campaign stream resume policy is not recognized".into());
     }
+    let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
     let replay_origin: CampaignOrigin<G> = match origin_report {
         Some(report) => CampaignOrigin::Archive {
@@ -1994,8 +2010,7 @@ where
             ..
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
-    let (mut draw_state, replay_draw_header) =
-        game.initial_draw_state(&replay_run, draw_origin)?;
+    let (mut draw_state, replay_draw_header) = game.initial_draw_state(&replay_run, draw_origin)?;
     if replay_draw_header != header.draw_table {
         return Err("re-derived draw table does not match the recorded header".into());
     }
@@ -2021,6 +2036,7 @@ where
                 let suffix = game.expand_suffix_recorded(
                     &replay_run,
                     &draw_state,
+                    replay_suffix,
                     skip.draw_table_before.as_ref(),
                     skip.mutation_seed,
                 )?;
@@ -2056,6 +2072,7 @@ where
                 let suffix = game.expand_suffix_recorded(
                     &replay_run,
                     &draw_state,
+                    replay_suffix,
                     job.draw_table_before.as_ref(),
                     job.mutation_seed,
                 )?;
@@ -2149,4 +2166,94 @@ where
         &counters,
         stream_sha256,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CampaignJobRecord, CampaignStreamHeader, CampaignStreamRecord, GamePolicies};
+    use crate::search::archive::{SelectorDraw, SelectorPath};
+    use crate::search::empirical_steps::EmpiricalStepCheckpoint;
+
+    /// The header a stream recorded before the policy map existed, verbatim.
+    /// The generic layer now holds the game's policies in a map and names its
+    /// draw-table fields generically; both must still read and write these
+    /// exact field names, or recorded streams stop replaying.
+    const RECORDED_HEADER: &str = r#"{"format":"smb-campaign-v1","campaign_seed":7,"workers":2,
+"host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
+"resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"wall_budget_seconds":null,
+"action_limit":64,"archive_entry_limit":128,"controller_vocabulary":"nes_down_ten",
+"key_policy":"frozen_area_span","duration_policy":"stratified","suffix_policy":"one_or_two",
+"chord_policy":"chord_uniform","replacement_policy":"fewest_frames_in_level",
+"resume_policy":"whole_tree","retention_policy":"admit_alive",
+"parent_scheduler":"room_cell_uniform_128","executor_mode":"snapshot_resume_archive",
+"worker_seed_derivation":"x","rom_sha256":"cd"}"#;
+
+    #[test]
+    fn a_recorded_header_still_reads_and_writes_its_field_names() {
+        let compact = RECORDED_HEADER.replace('\n', "");
+        let header: CampaignStreamHeader<()> =
+            serde_json::from_str(&compact).expect("recorded header parses");
+        assert_eq!(header.suffix_policy, "one_or_two");
+        assert_eq!(header.resume_policy, "whole_tree");
+        assert_eq!(header.draw_table, None);
+        let expected: GamePolicies = [
+            ("controller_vocabulary", "nes_down_ten"),
+            ("key_policy", "frozen_area_span"),
+            ("duration_policy", "stratified"),
+            ("chord_policy", "chord_uniform"),
+            ("replacement_policy", "fewest_frames_in_level"),
+        ]
+        .into_iter()
+        .map(|(field, value)| (field.to_owned(), value.to_owned()))
+        .collect();
+        assert_eq!(header.game_policies, expected);
+
+        let written = serde_json::to_value(&header).expect("header serializes");
+        let object = written.as_object().expect("header is an object");
+        for field in expected.keys() {
+            assert_eq!(
+                object.get(field).and_then(serde_json::Value::as_str),
+                Some(expected[field].as_str())
+            );
+        }
+        assert!(!object.contains_key("chord_table"));
+    }
+
+    /// A job record's draw-table checkpoints keep their recorded names.
+    #[test]
+    fn a_recorded_job_keeps_its_draw_table_field_names() {
+        let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":0,"mutation_seed":9,
+"frames":12,"result_sha256":"ef","decisions":[],
+"selector":{"path":"room_cell_uniform","classes_skipped":0,"counter_reset":false},
+"chord_table_before":{"records":3,"retained_successes":1,"table_sha256":"aa"},
+"chord_table_after":{"records":4,"retained_successes":2,"table_sha256":"bb"}}"#
+            .replace('\n', "");
+        let record: CampaignStreamRecord = serde_json::from_str(&line).expect("record parses");
+        let CampaignStreamRecord::Job(job) = record else {
+            panic!("expected a job record");
+        };
+        assert_eq!(job.selector.path, SelectorPath::GroupWalk);
+        assert_eq!(
+            job.draw_table_before,
+            Some(EmpiricalStepCheckpoint {
+                records: 3,
+                retained_successes: 1,
+                table_sha256: "aa".to_owned(),
+            })
+        );
+        let written = serde_json::to_value(&job).expect("job serializes");
+        let object = written.as_object().expect("job is an object");
+        assert!(object.contains_key("chord_table_before"));
+        assert!(object.contains_key("chord_table_after"));
+        assert!(!object.contains_key("draw_table_before"));
+        let round_trip: CampaignJobRecord =
+            serde_json::from_value(written).expect("job round-trips");
+        assert_eq!(round_trip, job);
+        let _ = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+    }
 }
