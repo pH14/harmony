@@ -146,6 +146,12 @@ pub enum SelectorPolicy {
     /// receiving draws instead of falling back to shallower classes. The
     /// entry threshold still retires single entries hard.
     Energy(RetireThresholds),
+    /// The energy walk with a second weight factor biasing each pooled group
+    /// draw toward the frontier: a group's weight also halves for each rank
+    /// it sits below the deepest (greatest) group value at its depth, with a
+    /// floor of 1 so shallow groups keep a live tail. Both factors multiply;
+    /// the entry threshold still retires single entries hard.
+    EnergyFrontier(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -161,6 +167,12 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
         }
         SelectorPolicy::Energy(scales) => {
             format!("{SELECTOR_IDENTIFIER}_energy:{}", threshold_values(scales))
+        }
+        SelectorPolicy::EnergyFrontier(scales) => {
+            format!(
+                "{SELECTOR_IDENTIFIER}_energy_frontier:{}",
+                threshold_values(scales)
+            )
         }
     }
 }
@@ -189,10 +201,18 @@ pub fn selector_policy_from_identifier(
     }
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
-    let (values, energy) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
-        (values, false)
+    let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
+    enum Parsed {
+        Retire,
+        Energy,
+        EnergyFrontier,
+    }
+    let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
+        (values, Parsed::Retire)
+    } else if let Some(values) = identifier.strip_prefix(&frontier_prefix) {
+        (values, Parsed::EnergyFrontier)
     } else if let Some(values) = identifier.strip_prefix(&energy_prefix) {
-        (values, true)
+        (values, Parsed::Energy)
     } else {
         return Err(format!("parent selector {identifier} is not recognized").into());
     };
@@ -214,10 +234,10 @@ pub fn selector_policy_from_identifier(
         entry: parsed[0],
         groups: parsed[1..].to_vec(),
     };
-    Ok(if energy {
-        SelectorPolicy::Energy(thresholds)
-    } else {
-        SelectorPolicy::Retire(thresholds)
+    Ok(match selector {
+        Parsed::Retire => SelectorPolicy::Retire(thresholds),
+        Parsed::Energy => SelectorPolicy::Energy(thresholds),
+        Parsed::EnergyFrontier => SelectorPolicy::EnergyFrontier(thresholds),
     })
 }
 
@@ -1065,8 +1085,10 @@ where
         groups: &[K::Group],
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
-        let SelectorPolicy::Energy(scales) = &self.selector_policy else {
-            return Ok(rand.below(count));
+        let (scales, frontier) = match &self.selector_policy {
+            SelectorPolicy::Energy(scales) => (scales, false),
+            SelectorPolicy::EnergyFrontier(scales) => (scales, true),
+            _ => return Ok(rand.below(count)),
         };
         // A key with no pooled depth at this position has no barren counter
         // to weight by; its draw stays uniform.
@@ -1083,7 +1105,22 @@ where
                     .copied()
                     .unwrap_or(0);
                 let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
-                256_usize >> halvings
+                let energy = 256_usize >> halvings;
+                if !frontier {
+                    return energy;
+                }
+                // Rank from the deepest distinct group value at this depth;
+                // the deepest group keeps its full energy weight.
+                let rank = {
+                    let mut deeper = groups
+                        .iter()
+                        .filter(|other| *other > group)
+                        .collect::<Vec<_>>();
+                    deeper.sort_unstable();
+                    deeper.dedup();
+                    deeper.len()
+                };
+                (energy >> rank.min(8)).max(1)
             })
             .collect::<Vec<_>>();
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
@@ -1104,7 +1141,9 @@ where
         }
         match &self.selector_policy {
             SelectorPolicy::GroupUniform => true,
-            SelectorPolicy::Retire(thresholds) | SelectorPolicy::Energy(thresholds) => {
+            SelectorPolicy::Retire(thresholds)
+            | SelectorPolicy::Energy(thresholds)
+            | SelectorPolicy::EnergyFrontier(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
         }
@@ -1114,7 +1153,9 @@ where
     /// of a selection cell.
     fn groups_unexhausted(&self, key: K) -> bool {
         match &self.selector_policy {
-            SelectorPolicy::GroupUniform | SelectorPolicy::Energy(_) => true,
+            SelectorPolicy::GroupUniform
+            | SelectorPolicy::Energy(_)
+            | SelectorPolicy::EnergyFrontier(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
                     .groups
@@ -1188,7 +1229,9 @@ where
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
         if matches!(
             self.selector_policy,
-            SelectorPolicy::Retire(_) | SelectorPolicy::Energy(_)
+            SelectorPolicy::Retire(_)
+                | SelectorPolicy::Energy(_)
+                | SelectorPolicy::EnergyFrontier(_)
         ) {
             let key = self.entries[id].report.key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -1249,7 +1292,7 @@ where
         // most results makes plain retention too common to signal anything.
         let clears_groups = match self.selector_policy {
             SelectorPolicy::Retire(_) => true,
-            SelectorPolicy::Energy(_) => new_slot_descendant,
+            SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
@@ -1268,8 +1311,9 @@ where
     #[must_use]
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
-        if let SelectorPolicy::Retire(thresholds) | SelectorPolicy::Energy(thresholds) =
-            &self.selector_policy
+        if let SelectorPolicy::Retire(thresholds)
+        | SelectorPolicy::Energy(thresholds)
+        | SelectorPolicy::EnergyFrontier(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
                 self.since_retained
@@ -1650,6 +1694,41 @@ mod tests {
             "a barren band at the floor must fade: {upper}/{walks}"
         );
         assert!(lower * 2 > walks, "the fresh band must dominate");
+    }
+
+    #[test]
+    fn the_frontier_selector_weights_the_deepest_band_over_a_fresh_shallow_one() {
+        // Two bands with zero barrenness everywhere: energy alone would draw
+        // them evenly, so the frontier factor must be what separates them.
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
+        let mut archive = selector_archive(&keys);
+        archive.selector_policy = SelectorPolicy::EnergyFrontier(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024, 1_024, 1_024],
+        });
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e33);
+        let mut deep = 0_u64;
+        let mut shallow = 0_u64;
+        let mut walks = 0_u64;
+        for _ in 0..4_096 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("frontier selection");
+            if draw.path != SelectorPath::GroupWalk {
+                continue;
+            }
+            walks += 1;
+            if id == 2 {
+                shallow += 1;
+            } else {
+                deep += 1;
+            }
+        }
+        assert!(shallow > 0, "the shallow band must keep a floor share");
+        assert!(
+            deep > shallow * 3 / 2,
+            "the deepest band must dominate: {deep}/{shallow} of {walks}"
+        );
     }
 
     #[test]

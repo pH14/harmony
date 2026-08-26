@@ -1611,6 +1611,10 @@ mod tests {
                 entry: 3,
                 groups: vec![6, 12, 2],
             }),
+            SelectorPolicy::EnergyFrontier(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12, 2],
+            }),
         ] {
             assert_eq!(
                 selector_policy_from_identifier(&selector_policy_identifier(&policy))
