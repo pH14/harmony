@@ -117,6 +117,7 @@ pub struct RemoteSmbTarget<M: GuestControlMachine> {
     genesis_frame: Moment,
     frames_clocked: u64,
     wram_gpa: u64,
+    wram: [u8; WRAM_SIZE],
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
     lineage: Vec<ButtonChord>,
@@ -189,6 +190,7 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
             genesis_frame,
             frames_clocked: boot_frames,
             wram_gpa,
+            wram,
             action_observations: vec![observation.clone()],
             observation,
             lineage: Vec::new(),
@@ -198,10 +200,10 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
         })
     }
 
-    /// Complete WRAM at the current chord boundary.
+    /// Complete WRAM from the last successful chord-boundary read.
     #[must_use]
     pub fn wram(&self) -> [u8; WRAM_SIZE] {
-        read_wram(&self.machine, self.wram_gpa).unwrap_or([0; WRAM_SIZE])
+        self.wram
     }
 
     /// Observer events emitted by the most recently applied chord.
@@ -219,7 +221,7 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
     /// Whether the endpoint is the final victory state.
     #[must_use]
     pub fn is_victory(&self) -> bool {
-        smb_is_victory(&self.wram())
+        smb_is_victory(&self.wram)
     }
 
     /// Total guest frames emulated over this target's lifetime.
@@ -247,7 +249,7 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
     }
 
     fn apply_checked(&mut self, action: &ButtonChord) -> Result<(), MachineError> {
-        let prior = read_wram(&self.machine, self.wram_gpa)?;
+        let prior = self.wram;
         let start_frame = self.machine.logical_frame();
         let start = self.machine.snapshot()?;
         if let Err(error) = self
@@ -287,6 +289,7 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
             .frame_count
             .saturating_add(u64::from(action.bounded_hold_frames()));
         let endpoint = observation(&wram, frame_count, &prior, self.dead);
+        self.wram = wram;
         self.action_observations = vec![endpoint.clone()];
         self.observation = endpoint;
         self.lineage.push(*action);
@@ -338,10 +341,22 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
             ));
         }
         self.observation = snapshot.observation.clone();
+        self.wram = actual;
         self.action_observations = vec![self.observation.clone()];
         self.lineage.clone_from(&snapshot.lineage);
         self.dead = snapshot.dead;
         self.failed = snapshot.failed;
+        Ok(())
+    }
+
+    fn reset_checked(&mut self) -> Result<(), MachineError> {
+        self.machine.replay(self.genesis)?;
+        let wram = read_wram(&self.machine, self.wram_gpa)?;
+        self.wram = wram;
+        self.dead = false;
+        self.lineage.clear();
+        self.observation = observation(&wram, 0, &[0; WRAM_SIZE], false);
+        self.action_observations = vec![self.observation.clone()];
         Ok(())
     }
 }
@@ -364,12 +379,7 @@ impl<M: GuestControlMachine> Target for RemoteSmbTarget<M> {
     type Snapshot = RemoteSmbSnapshot;
 
     fn reset(&mut self) {
-        self.failed = self.machine.replay(self.genesis).is_err();
-        self.dead = false;
-        self.lineage.clear();
-        let wram = self.wram();
-        self.observation = observation(&wram, 0, &[0; WRAM_SIZE], false);
-        self.action_observations = vec![self.observation.clone()];
+        self.failed = self.reset_checked().is_err();
     }
 
     fn apply(&mut self, action: &Self::Action) {
@@ -387,7 +397,7 @@ impl<M: GuestControlMachine> Target for RemoteSmbTarget<M> {
     }
 
     fn fingerprint(&self) -> u64 {
-        smb_fingerprint_from_wram(&self.wram())
+        smb_fingerprint_from_wram(&self.wram)
     }
 
     fn exit_kind(&self) -> ExitKind {
@@ -769,7 +779,7 @@ fn observation(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{cell::Cell, collections::BTreeMap};
 
     use machine::{
         Answer, Machine, Reproducer,
@@ -789,6 +799,8 @@ mod tests {
         snapshot_frames: BTreeMap<SnapId, Moment>,
         reported_deadline_offset: i64,
         published_wram_len: u32,
+        read_calls: Cell<u64>,
+        fail_read_call: Option<u64>,
         state_hash_calls: u64,
         corrupt_state_hash_call: Option<u64>,
     }
@@ -872,6 +884,11 @@ mod tests {
         }
 
         fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
+            let call = self.read_calls.get().saturating_add(1);
+            self.read_calls.set(call);
+            if self.fail_read_call == Some(call) {
+                return Err(MachineError::Backend("planted WRAM read failure".into()));
+            }
             self.machine.read(addr, len)
         }
     }
@@ -942,6 +959,8 @@ mod tests {
             snapshot_frames: BTreeMap::new(),
             reported_deadline_offset: 0,
             published_wram_len: WRAM_SIZE as u32,
+            read_calls: Cell::new(0),
+            fail_read_call: None,
             state_hash_calls: 0,
             corrupt_state_hash_call: None,
         }
@@ -1068,6 +1087,24 @@ mod tests {
         control.published_wram_len = (WRAM_SIZE - 1) as u32;
         let error = RemoteSmbTarget::from_machine(control).unwrap_err();
         assert!(error.to_string().contains("expected 2048"));
+    }
+
+    #[test]
+    fn remote_reset_fails_closed_when_wram_cannot_be_read() {
+        let rom = synthetic_nrom();
+        let mut remote = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
+        remote.apply(&ButtonChord::new(0x81, 4));
+        let prior = remote.wram();
+        remote.machine.fail_read_call = Some(remote.machine.read_calls.get().saturating_add(1));
+
+        remote.reset();
+
+        assert_eq!(remote.exit_kind(), ExitKind::Crash);
+        assert_eq!(
+            remote.wram(),
+            prior,
+            "a read error must not become zero WRAM"
+        );
     }
 
     #[test]

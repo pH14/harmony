@@ -255,6 +255,14 @@ dependency rather than silently weakening the criterion.
     AGPLv3-compatible Zlib, BSL-1.0, and file-scoped MPL-2.0 transitive terms
     brought by the pre-existing LibAFL/TetaNES graph. The resulting full
     `cargo deny check` reports advisories, bans, licenses, and sources all OK.
+33. **A control-transport read failure is not an all-zero guest state.** The
+    remote production target now caches only WRAM returned by a successful
+    checked boundary read. Reset replays genesis and reads the complete mirror
+    through one fallible operation before publishing the new observation; on
+    either failure the target reports `Crash` and retains the last validated
+    bytes. A planted failure on the reset read proves the production path fails
+    closed instead of allowing the former zero-filled fallback to reach the
+    cross-build comparator.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -849,7 +857,11 @@ cargo build --manifest-path dissonance/Cargo.toml --all-features
 exit status 0
 
 cargo nextest run --manifest-path dissonance/Cargo.toml --all-features
-93 passed; 0 failed; 0 skipped (790.553 s on the corrected dependency graph)
+94 passed; 0 failed; 0 skipped (725.789 s on the corrected dependency graph)
+
+cargo test --manifest-path dissonance/Cargo.toml -p searcher --lib \
+  smb::remote::tests
+9 passed; 0 failed (includes the planted reset-read failure)
 
 cargo clippy --manifest-path dissonance/Cargo.toml \
   --all-features --all-targets -- -D warnings
