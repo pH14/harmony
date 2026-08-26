@@ -34,6 +34,12 @@ dependency rather than silently weakening the criterion.
    exact event-1 failure test was added. The redundant `position > 0` guard was
    removed because its `>= 0` mutant is equivalent for a `usize`, while comparing
    every event against a zero initial baseline is total and identical in meaning.
+6. **Prescriptive proptests follow the crate's Miri convention.** Native runs keep
+   256 cases. Under Miri they use 16 interpreted cases and disable cwd-backed
+   failure persistence, which Miri isolation does not support. The first full
+   Miri run established all earlier unit/integration binaries were clean and
+   exposed only this harness incompatibility; the repaired prescriptive target
+   and every remaining integration target then ran clean under Miri.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -151,12 +157,20 @@ final total: 53 mutants, 40 caught, 13 compiler-rejected, 0 missed, 0 timed out
 `MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p vmm-core`
 
 ```text
-RUNNING — required before M0 is declared fully green.
+library: 394 passed, 99 intentionally ignored, 0 failed
+arm64_skeleton: 14 passed; corpus_oracle_mock: 3 passed; event_loop: 19 passed
+linux_loader_proptest: 4 passed; loader_proptest: 3 passed
+first prescriptive attempt: harness-only getcwd isolation error, no UB finding
+repaired `--test prescriptive_vtime`: 12 passed, 0 failed
+remaining protocol target: 5 passed, 0 failed
+public_api/seal_rate_sweep/snapshot_branch: clean (ignored/zero tests under Miri)
+composite result: every Miri-enabled vmm-core unit and integration target clean
 ```
 
-**M0 overall: FAIL (verification still running).** Native implementation and all
-positive/negative oracles are green; the required Miri gate has not completed yet.
-M1 has not started.
+**M0 overall: PASS.** Every build, positive oracle, negative oracle, independent
+placement check, mutation shard, Miri-enabled target, portable/full native gate,
+Linux-frozen API check, and aarch64 seam check is green. M1 may now start; no M1
+work was begun before this evidence was recorded.
 
 ## M1 — the M1 Max boots deterministically
 
@@ -214,7 +228,7 @@ M1 has not started.
 ## Repository-wide final gates
 
 - **PASS at M0 — `cargo build --all-features`:** exit status 0.
-- **PASS at M0 — `cargo nextest run --all-features`:** 1234 passed, 25 skipped.
+- **PASS at M0 — `cargo nextest run --all-features`:** 1236 passed, 25 skipped.
   The sandboxed first attempt could not open telemetry's local test socket; the
   unrestricted rerun passed every test.
 - **PASS at M0 — `cargo clippy --all-features --all-targets -- -D warnings`:**

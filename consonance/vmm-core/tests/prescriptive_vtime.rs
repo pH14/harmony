@@ -147,8 +147,19 @@ fn script_for_deltas(deltas: &[u64]) -> Vec<Exit<X86>> {
     exits
 }
 
+/// Keep the native gate at the required 256 cases. Miri interprets each backend
+/// event and cannot use proptest's cwd-backed failure persistence under isolation,
+/// so it uses the repository's standard reduced/persistence-free configuration.
+fn proptest_config() -> ProptestConfig {
+    let mut config = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { 256 });
+    if cfg!(miri) {
+        config.failure_persistence = None;
+    }
+    config
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(proptest_config())]
 
     #[test]
     fn assigned_clock_is_monotonic_and_matches_saturating_sum(
