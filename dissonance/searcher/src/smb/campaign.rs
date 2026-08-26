@@ -175,6 +175,8 @@ pub struct SmbCampaignConfig {
     pub retention: RetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
     pub selector: crate::search::archive::SelectorPolicy,
+    /// Suffix shape for this run, recorded in the header and report.
+    pub suffix: SuffixShape,
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<std::path::PathBuf>,
@@ -186,7 +188,7 @@ pub struct SmbCampaignConfig {
 impl SmbCampaignConfig {
     fn generic(&self) -> GenericCampaignConfig<SmbGame> {
         GenericCampaignConfig {
-            suffix: SuffixShape::default(),
+            suffix: self.suffix,
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
@@ -1129,6 +1131,7 @@ mod tests {
             chord: SmbCampaignChordPolicy::default(),
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
             selector: crate::search::archive::SelectorPolicy::GroupUniform,
+            suffix: SuffixShape::default(),
             victory_input_path: None,
             checkpoint_dir: None,
         }

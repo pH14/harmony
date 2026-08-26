@@ -15,12 +15,17 @@ use crate::search::rand::RomuDuoJrRand;
 /// Identifier recorded for the one-or-two suffix shape.
 pub const SUFFIX_ONE_OR_TWO_IDENTIFIER: &str = "one_or_two";
 
+/// Identifier recorded for the one-to-six suffix shape.
+pub const SUFFIX_ONE_TO_SIX_IDENTIFIER: &str = "one_to_six";
+
 /// How many actions one job appends to its parent's input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
     /// One action, or two at one-in-four odds.
     #[default]
     OneOrTwo,
+    /// A uniform draw of one to six actions.
+    OneToSix,
 }
 
 /// The recorded identifier of a suffix shape.
@@ -28,6 +33,7 @@ pub enum SuffixShape {
 pub fn suffix_shape_identifier(shape: SuffixShape) -> &'static str {
     match shape {
         SuffixShape::OneOrTwo => SUFFIX_ONE_OR_TWO_IDENTIFIER,
+        SuffixShape::OneToSix => SUFFIX_ONE_TO_SIX_IDENTIFIER,
     }
 }
 
@@ -39,6 +45,7 @@ pub fn suffix_shape_identifier(shape: SuffixShape) -> &'static str {
 pub fn suffix_shape_from_identifier(identifier: &str) -> Result<SuffixShape, Box<dyn Error>> {
     match identifier {
         SUFFIX_ONE_OR_TWO_IDENTIFIER => Ok(SuffixShape::OneOrTwo),
+        SUFFIX_ONE_TO_SIX_IDENTIFIER => Ok(SuffixShape::OneToSix),
         _ => Err(format!("suffix shape {identifier} is not recognized").into()),
     }
 }
@@ -84,6 +91,7 @@ where
                 1
             }
         }
+        SuffixShape::OneToSix => 1 + rand.below(NonZeroUsize::new(6).ok_or("invalid suffix odds")?),
     };
     let mut suffix = Vec::with_capacity(length);
     for _ in 0..length {

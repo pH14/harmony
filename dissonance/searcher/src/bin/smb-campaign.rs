@@ -9,6 +9,7 @@ use searcher::{
         MAX_ARCHIVE_ENTRIES, RetentionPolicy, RetireThresholds, SelectorPolicy,
         retention_policy_from_identifier,
     },
+    search::draw::{SuffixShape, suffix_shape_from_identifier},
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
         SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig,
@@ -89,6 +90,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         groups: vec![6, 12, 2],
     });
     let mut vocabulary = SmbButtonVocabulary::default();
+    let mut suffix = SuffixShape::default();
     let mut checkpoint_path = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
@@ -120,6 +122,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --vocabulary value")?
                     .to_string_lossy(),
             )?;
+        } else if flag == "--suffix" {
+            suffix = suffix_shape_from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --suffix value")?
+                    .to_string_lossy(),
+            )?;
         } else if flag == "--checkpoint" {
             checkpoint_path = Some(PathBuf::from(
                 args.next().ok_or("missing --checkpoint value")?,
@@ -146,6 +155,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         chord,
         retention,
         selector,
+        suffix,
         victory_input_path: Some(output.join("victory-input.json")),
         checkpoint_dir: Some(output.clone()),
     };
