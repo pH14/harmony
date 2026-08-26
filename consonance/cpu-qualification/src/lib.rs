@@ -19,6 +19,7 @@
 #![deny(missing_docs)]
 
 pub mod chips;
+pub mod dispositions;
 pub mod guest;
 pub mod pack;
 pub mod payload;

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use cpu_qualification::dispositions::Dispositions;
 use cpu_qualification::pack::Pack;
 use cpu_qualification::report::{Floors, Record, Verdict, parse_records, recompute, record_line};
 use cpu_qualification::stage0::{Stage0Error, Stage0Outcome};
@@ -34,12 +35,24 @@ enum Cmd {
         /// Where to write the run's records.
         #[arg(long)]
         evidence_dir: PathBuf,
+        /// A file of recorded acceptances for stage-0 deviations.
+        #[arg(long)]
+        dispositions: Option<PathBuf>,
     },
     /// Check the chip and the standing host conditions, and print the rows.
     Check {
         /// The chip baseline whose pack the host is checked against.
         #[arg(long)]
         baseline: String,
+        /// A file of recorded acceptances for stage-0 deviations.
+        #[arg(long)]
+        dispositions: Option<PathBuf>,
+    },
+    /// Rewrite a pack's `pack_hash` from its own content.
+    Seal {
+        /// The pack file to reseal, edited in place.
+        #[arg(long)]
+        pack: PathBuf,
     },
     /// Recompute every floor from the retained raw records and print the verdict.
     Report {
@@ -76,6 +89,61 @@ fn read_records(dir: &Path) -> Result<Vec<Record>, Box<dyn std::error::Error>> {
         records.extend(parsed);
     }
     Ok(records)
+}
+
+/// Read the recorded acceptances, if the run named a file.
+fn read_dispositions(
+    path: Option<&Path>,
+) -> Result<Vec<cpu_qualification::dispositions::Disposition>, Box<dyn std::error::Error>> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read dispositions {}: {e}", path.display()))?;
+    let file = Dispositions::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(file.dispositions)
+}
+
+/// Reseal `path` in place.
+///
+/// Only the `pack_hash` line is rewritten. The hash is a function of the pack's
+/// canonical serialization, not of the file's bytes, so leaving every other byte
+/// alone keeps the comments a reader needs and changes nothing the hash covers.
+fn cmd_seal(path: &Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read pack {}: {e}", path.display()))?;
+    let pack = Pack::parse_unsealed(&text)?;
+    let recorded = pack.pack.pack_hash.clone();
+    let computed = pack.compute_hash()?;
+    if recorded == computed {
+        println!("{} is already sealed at {computed}", path.display());
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut rewritten = 0usize;
+    for line in text.lines() {
+        if line.trim_start().starts_with("pack_hash") && line.contains('=') {
+            lines.push(format!("pack_hash = {computed:?}"));
+            rewritten += 1;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if rewritten != 1 {
+        return Err(format!(
+            "{}: found {rewritten} pack_hash assignments, expected exactly one",
+            path.display()
+        )
+        .into());
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    std::fs::write(path, &out).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    // Read it back through the sealed path, so the command never reports a seal
+    // the loader would reject.
+    Pack::parse(&std::fs::read_to_string(path)?)?;
+    println!("{}: {recorded} -> {computed}", path.display());
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_report(evidence_dir: &Path) -> Result<ExitCode, Box<dyn std::error::Error>> {
@@ -124,9 +192,14 @@ fn print_rows(outcome: &Stage0Outcome) {
     }
 }
 
-fn cmd_check(baseline: &str) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn cmd_check(
+    baseline: &str,
+    dispositions: Option<&Path>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let pack = Pack::builtin(baseline)?;
-    let outcome = stage0(&pack)?;
+    let dispositions = read_dispositions(dispositions)?;
+    let mut outcome = stage0(&pack)?;
+    outcome.apply_dispositions(&dispositions)?;
     print_rows(&outcome);
     let deviations = outcome.deviations();
     if deviations.is_empty() {
@@ -206,6 +279,7 @@ fn run_stage0(
     pack: &Pack,
     baseline: &str,
     evidence_dir: &Path,
+    dispositions: &[cpu_qualification::dispositions::Disposition],
 ) -> Result<i32, Box<dyn std::error::Error>> {
     // Stage 0 measures nothing that carries a floor, so its plan commits to
     // none. Writing the plan first keeps the recomputation honest about what the
@@ -219,7 +293,12 @@ fn run_stage0(
             skid_margin: 0,
         },
     }];
-    let outcome = stage0(pack);
+    let outcome = stage0(pack)
+        .map_err(Box::<dyn std::error::Error>::from)
+        .and_then(|mut outcome| {
+            outcome.apply_dispositions(dispositions)?;
+            Ok(outcome)
+        });
     let rc = match &outcome {
         Ok(outcome) => {
             records.extend(outcome.to_records());
@@ -305,11 +384,13 @@ fn cmd_run(
     stage: u8,
     baseline: &str,
     evidence_dir: &Path,
+    dispositions: Option<&Path>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if stage > 1 {
         return Err(format!("stage {stage} is not built in this crate; stages 0 and 1 are").into());
     }
     let pack = Pack::builtin(baseline)?;
+    let dispositions = read_dispositions(dispositions)?;
     std::fs::create_dir_all(evidence_dir).map_err(|e| {
         format!(
             "cannot create evidence directory {}: {e}",
@@ -317,7 +398,7 @@ fn cmd_run(
         )
     })?;
 
-    let mut rc = run_stage0(&pack, baseline, evidence_dir)?;
+    let mut rc = run_stage0(&pack, baseline, evidence_dir, &dispositions)?;
     if stage >= 1 {
         // Stage 1 runs on a host stage 0 confirmed. Measuring a counter on a
         // host whose standing conditions are unknown measures the conditions,
@@ -344,8 +425,13 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             stage,
             baseline,
             evidence_dir,
-        } => cmd_run(stage, &baseline, &evidence_dir),
-        Cmd::Check { baseline } => cmd_check(&baseline),
+            dispositions,
+        } => cmd_run(stage, &baseline, &evidence_dir, dispositions.as_deref()),
+        Cmd::Check {
+            baseline,
+            dispositions,
+        } => cmd_check(&baseline, dispositions.as_deref()),
+        Cmd::Seal { pack } => cmd_seal(&pack),
         Cmd::Report { evidence_dir } => cmd_report(&evidence_dir),
     }
 }

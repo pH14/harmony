@@ -273,9 +273,17 @@ pub fn read_conditions(entry: &ChipEntry, cpus: &[usize]) -> Result<Vec<Reading>
             }
             HostConditionKind::SpecLockMapDisabled => {
                 for cpu in cpus {
-                    let value = read_msr(*cpu, LS_CFG)?;
-                    let set = (value >> LS_CFG_SPEC_LOCK_MAP_BIT) & 1 == 1;
-                    let found = if set { "disabled" } else { "enabled" };
+                    // A register that cannot be read is a reading, not a stop. KVM
+                    // refuses this one to a guest, and a run that dies here reports
+                    // nothing at all about the conditions it could have checked.
+                    // The reading still fails the comparison against the pack.
+                    let found = match read_msr(*cpu, LS_CFG) {
+                        Ok(value) => {
+                            let set = (value >> LS_CFG_SPEC_LOCK_MAP_BIT) & 1 == 1;
+                            if set { "disabled" } else { "enabled" }.to_string()
+                        }
+                        Err(e) => format!("unreadable: {e}"),
+                    };
                     readings.push(Reading::new(*kind, format!("cpu{cpu}"), found));
                 }
             }

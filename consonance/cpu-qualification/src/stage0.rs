@@ -11,6 +11,7 @@
 //! refusal. Neither is a row that quietly passes.
 
 use crate::chips::{ChipEntry, ChipIdentity, HostConditionKind, Refusal};
+use crate::dispositions::{Disposition, DispositionError};
 use crate::pack::{HostConditionExpectation, Pack, PackError};
 use crate::report::Record;
 
@@ -334,6 +335,41 @@ pub struct Stage0Outcome {
 }
 
 impl Stage0Outcome {
+    /// Mark every deviating row a recorded acceptance covers, and refuse if any
+    /// acceptance covered nothing.
+    ///
+    /// # Errors
+    /// [`DispositionError::Stale`] when an acceptance matched no deviating row.
+    pub fn apply_dispositions(
+        &mut self,
+        dispositions: &[Disposition],
+    ) -> Result<(), DispositionError> {
+        let mut used = vec![false; dispositions.len()];
+        for row in &mut self.rows {
+            if row.confirmed {
+                continue;
+            }
+            for (i, d) in dispositions.iter().enumerate() {
+                if d.covers(&row.condition, &row.scope, &row.found) {
+                    row.disposition = Some(d.why.clone());
+                    used[i] = true;
+                    break;
+                }
+            }
+        }
+        let stale: Vec<String> = dispositions
+            .iter()
+            .zip(&used)
+            .filter(|(_, used)| !**used)
+            .map(|(d, _)| d.describe())
+            .collect();
+        if stale.is_empty() {
+            Ok(())
+        } else {
+            Err(DispositionError::Stale { stale })
+        }
+    }
+
     /// Rows that are neither confirmed nor dispositioned.
     #[must_use]
     pub fn deviations(&self) -> Vec<&Row> {
@@ -677,6 +713,81 @@ mod tests {
         assert_eq!(deviations[0].expect, "0");
         assert_eq!(deviations[0].found, "1");
         assert!(deviations[0].disposition.is_none());
+    }
+
+    #[test]
+    fn an_acceptance_naming_the_reading_disposes_of_the_deviation() {
+        let pack = pack_with_conditions(intel_expectations());
+        let mut readings = intel_readings();
+        readings[0] = Reading::new(HostConditionKind::NmiWatchdogOff, "host", "1");
+        let mut outcome = build_rows(
+            intel_entry(),
+            &pack,
+            &intel_chip(),
+            &readings,
+            &good_probe(),
+        )
+        .expect("builds");
+        outcome
+            .apply_dispositions(&[Disposition {
+                condition: "nmi-watchdog-off".to_string(),
+                scope: None,
+                found: "1".to_string(),
+                why: "accepted here".to_string(),
+            }])
+            .expect("the acceptance matches");
+        assert!(outcome.deviations().is_empty());
+        let row = outcome
+            .rows
+            .iter()
+            .find(|r| r.condition == "nmi-watchdog-off")
+            .expect("the row is still there");
+        assert!(!row.confirmed);
+        assert_eq!(row.disposition.as_deref(), Some("accepted here"));
+    }
+
+    #[test]
+    fn an_acceptance_naming_a_different_reading_leaves_the_deviation_live() {
+        let pack = pack_with_conditions(intel_expectations());
+        let mut readings = intel_readings();
+        readings[0] = Reading::new(HostConditionKind::NmiWatchdogOff, "host", "1");
+        let mut outcome = build_rows(
+            intel_entry(),
+            &pack,
+            &intel_chip(),
+            &readings,
+            &good_probe(),
+        )
+        .expect("builds");
+        let refusal = outcome.apply_dispositions(&[Disposition {
+            condition: "nmi-watchdog-off".to_string(),
+            scope: None,
+            found: "2".to_string(),
+            why: "accepted here".to_string(),
+        }]);
+        assert!(matches!(refusal, Err(DispositionError::Stale { .. })));
+        assert_eq!(outcome.deviations().len(), 1);
+    }
+
+    #[test]
+    fn an_acceptance_does_not_touch_a_confirmed_row() {
+        let pack = pack_with_conditions(intel_expectations());
+        let mut outcome = build_rows(
+            intel_entry(),
+            &pack,
+            &intel_chip(),
+            &intel_readings(),
+            &good_probe(),
+        )
+        .expect("builds");
+        let refusal = outcome.apply_dispositions(&[Disposition {
+            condition: "nmi-watchdog-off".to_string(),
+            scope: None,
+            found: "0".to_string(),
+            why: "accepted here".to_string(),
+        }]);
+        assert!(matches!(refusal, Err(DispositionError::Stale { .. })));
+        assert!(outcome.rows.iter().all(|r| r.disposition.is_none()));
     }
 
     #[test]

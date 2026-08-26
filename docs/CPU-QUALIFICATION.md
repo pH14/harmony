@@ -37,7 +37,7 @@ name. The portable core — check definitions, pack format, report format, floor
 recomputation — compiles and is unit-tested everywhere. The measurement code is
 Linux-only behind `cfg`, mirroring the gating in `vmm-backend/src/lib.rs`.
 
-Three commands:
+Four commands:
 
 - `cpu-qualification run --stage <0..3> --baseline <name> --evidence-dir <dir>`
   runs one stage and everything below it.
@@ -47,6 +47,15 @@ Three commands:
 - `cpu-qualification report --evidence-dir <dir>` recomputes every floor from the
   retained raw records and prints the verdict. Recomputation from records is the only
   path to a pass; a summary line is never an input.
+- `cpu-qualification seal --pack <path>` rewrites a pack's `pack_hash` from the pack's
+  own content, so a pack whose measured values changed can be checked in again.
+
+`run` and `check` both take `--dispositions <path>`: a file of recorded acceptances,
+each naming a condition, the reading it accepts, and why. Stage 0 marks a matching
+deviation dispositioned rather than undecided, and the reason travels in the run's
+records. An acceptance names the reading, not just the condition, so a machine that
+changes underneath a run stops matching and the deviation goes live again. An
+acceptance that matches no deviating row is a refusal, not a no-op.
 
 ## The known-chip table
 

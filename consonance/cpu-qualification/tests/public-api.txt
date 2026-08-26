@@ -75,6 +75,28 @@ impl core::convert::From<cpu_qualification::chips::Refusal> for cpu_qualificatio
 pub fn cpu_qualification::stage0::Stage0Error::from(cpu_qualification::chips::Refusal) -> cpu_qualification::stage0::Stage0Error
 pub const cpu_qualification::chips::KNOWN_CHIPS: &[cpu_qualification::chips::ChipEntry]
 pub fn cpu_qualification::chips::match_chip(&cpu_qualification::chips::ChipIdentity) -> core::result::Result<&'static cpu_qualification::chips::ChipEntry, cpu_qualification::chips::Refusal>
+pub mod cpu_qualification::dispositions
+pub enum cpu_qualification::dispositions::DispositionError
+pub cpu_qualification::dispositions::DispositionError::Parse(toml::de::Error)
+pub cpu_qualification::dispositions::DispositionError::Schema
+pub cpu_qualification::dispositions::DispositionError::Schema::expected: &'static str
+pub cpu_qualification::dispositions::DispositionError::Schema::found: alloc::string::String
+pub cpu_qualification::dispositions::DispositionError::Stale
+pub cpu_qualification::dispositions::DispositionError::Stale::stale: alloc::vec::Vec<alloc::string::String>
+pub struct cpu_qualification::dispositions::Disposition
+pub cpu_qualification::dispositions::Disposition::condition: alloc::string::String
+pub cpu_qualification::dispositions::Disposition::found: alloc::string::String
+pub cpu_qualification::dispositions::Disposition::scope: core::option::Option<alloc::string::String>
+pub cpu_qualification::dispositions::Disposition::why: alloc::string::String
+impl cpu_qualification::dispositions::Disposition
+pub fn cpu_qualification::dispositions::Disposition::covers(&self, &str, &str, &str) -> bool
+pub fn cpu_qualification::dispositions::Disposition::describe(&self) -> alloc::string::String
+pub struct cpu_qualification::dispositions::Dispositions
+pub cpu_qualification::dispositions::Dispositions::dispositions: alloc::vec::Vec<cpu_qualification::dispositions::Disposition>
+pub cpu_qualification::dispositions::Dispositions::schema: alloc::string::String
+impl cpu_qualification::dispositions::Dispositions
+pub fn cpu_qualification::dispositions::Dispositions::parse(&str) -> core::result::Result<cpu_qualification::dispositions::Dispositions, cpu_qualification::dispositions::DispositionError>
+pub const cpu_qualification::dispositions::DISPOSITIONS_SCHEMA: &str
 pub mod cpu_qualification::guest
 pub enum cpu_qualification::guest::GuestError
 pub cpu_qualification::guest::GuestError::IncompleteCapture
@@ -198,6 +220,7 @@ pub fn cpu_qualification::pack::Pack::builtin(&str) -> core::result::Result<cpu_
 pub fn cpu_qualification::pack::Pack::canonical(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
 pub fn cpu_qualification::pack::Pack::compute_hash(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
 pub fn cpu_qualification::pack::Pack::parse(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::parse_unsealed(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
 pub fn cpu_qualification::pack::Pack::seal(&mut self) -> core::result::Result<(), cpu_qualification::pack::PackError>
 pub struct cpu_qualification::pack::PackHeader
 pub cpu_qualification::pack::PackHeader::baseline: alloc::string::String
@@ -433,6 +456,7 @@ pub cpu_qualification::stage0::Stage0Outcome::entry_name: alloc::string::String
 pub cpu_qualification::stage0::Stage0Outcome::rows: alloc::vec::Vec<cpu_qualification::stage0::Row>
 impl cpu_qualification::stage0::Stage0Outcome
 pub fn cpu_qualification::stage0::Stage0Outcome::add_rows(&mut self, impl core::iter::traits::collect::IntoIterator<Item = cpu_qualification::stage0::Row>)
+pub fn cpu_qualification::stage0::Stage0Outcome::apply_dispositions(&mut self, &[cpu_qualification::dispositions::Disposition]) -> core::result::Result<(), cpu_qualification::dispositions::DispositionError>
 pub fn cpu_qualification::stage0::Stage0Outcome::deviations(&self) -> alloc::vec::Vec<&cpu_qualification::stage0::Row>
 pub fn cpu_qualification::stage0::Stage0Outcome::identity_text(&self) -> alloc::string::String
 pub fn cpu_qualification::stage0::Stage0Outcome::to_records(&self) -> alloc::vec::Vec<cpu_qualification::report::Record>
@@ -710,6 +734,7 @@ pub fn cpu_qualification::pack::Pack::builtin(&str) -> core::result::Result<cpu_
 pub fn cpu_qualification::pack::Pack::canonical(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
 pub fn cpu_qualification::pack::Pack::compute_hash(&self) -> core::result::Result<alloc::string::String, cpu_qualification::pack::PackError>
 pub fn cpu_qualification::pack::Pack::parse(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
+pub fn cpu_qualification::pack::Pack::parse_unsealed(&str) -> core::result::Result<cpu_qualification::pack::Pack, cpu_qualification::pack::PackError>
 pub fn cpu_qualification::pack::Pack::seal(&mut self) -> core::result::Result<(), cpu_qualification::pack::PackError>
 pub struct cpu_qualification::Reading
 pub cpu_qualification::Reading::condition: cpu_qualification::chips::HostConditionKind
@@ -738,6 +763,7 @@ pub cpu_qualification::Stage0Outcome::entry_name: alloc::string::String
 pub cpu_qualification::Stage0Outcome::rows: alloc::vec::Vec<cpu_qualification::stage0::Row>
 impl cpu_qualification::stage0::Stage0Outcome
 pub fn cpu_qualification::stage0::Stage0Outcome::add_rows(&mut self, impl core::iter::traits::collect::IntoIterator<Item = cpu_qualification::stage0::Row>)
+pub fn cpu_qualification::stage0::Stage0Outcome::apply_dispositions(&mut self, &[cpu_qualification::dispositions::Disposition]) -> core::result::Result<(), cpu_qualification::dispositions::DispositionError>
 pub fn cpu_qualification::stage0::Stage0Outcome::deviations(&self) -> alloc::vec::Vec<&cpu_qualification::stage0::Row>
 pub fn cpu_qualification::stage0::Stage0Outcome::identity_text(&self) -> alloc::string::String
 pub fn cpu_qualification::stage0::Stage0Outcome::to_records(&self) -> alloc::vec::Vec<cpu_qualification::report::Record>

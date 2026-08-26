@@ -303,18 +303,30 @@ impl Pack {
     /// unreadable format token, [`PackError::HashMismatch`] when the recorded hash
     /// does not match the content.
     pub fn parse(text: &str) -> Result<Pack, PackError> {
-        let pack: Pack = toml::from_str(text)?;
-        if pack.pack.schema != PACK_SCHEMA {
-            return Err(PackError::Schema {
-                found: pack.pack.schema.clone(),
-                expected: PACK_SCHEMA,
-            });
-        }
+        let pack = Pack::parse_unsealed(text)?;
         let computed = pack.compute_hash()?;
         if computed != pack.pack.pack_hash {
             return Err(PackError::HashMismatch {
                 recorded: pack.pack.pack_hash.clone(),
                 computed,
+            });
+        }
+        Ok(pack)
+    }
+
+    /// Parse a pack and check its schema token, without checking its recorded
+    /// hash. This is what sealing reads with: a pack being resealed is one whose
+    /// recorded hash is stale by construction.
+    ///
+    /// # Errors
+    /// [`PackError::Parse`] on a malformed file, [`PackError::Schema`] on an
+    /// unreadable format token.
+    pub fn parse_unsealed(text: &str) -> Result<Pack, PackError> {
+        let pack: Pack = toml::from_str(text)?;
+        if pack.pack.schema != PACK_SCHEMA {
+            return Err(PackError::Schema {
+                found: pack.pack.schema.clone(),
+                expected: PACK_SCHEMA,
             });
         }
         Ok(pack)
