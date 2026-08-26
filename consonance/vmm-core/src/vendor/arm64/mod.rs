@@ -12,7 +12,8 @@
 //!
 //! **A skeleton, deliberately** (the §Pre-build ruling): built against the
 //! unfrozen trait (designed-not-frozen — AA-3's memo owns the freeze), trusted
-//! only on Altra-spike GO. The interrupt fabric is unwired until the `gicv3`
+//! only after M4's native msr1 validation. The interrupt fabric is unwired until
+//! the `gicv3`
 //! model lands (M2) and **delivery** into a real guest is `TODO(AA-6)` (the
 //! vGICv3 round-trip verdict); the boot path lands with M3; the KVM backend
 //! with M4. Nothing here claims silicon behavior.

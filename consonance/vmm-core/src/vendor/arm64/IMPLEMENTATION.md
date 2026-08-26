@@ -3,11 +3,11 @@
 The first real **second vendor** behind the `Arch`/`Backend`/`Vendor` seam
 `tasks/108` landed: a KVM/arm64 backend, an `Image`+DTB boot path, GICv3 +
 generic-timer models, and the `Arm64` vendor behind the engine — **additive
-code, built now, trusted only once the Altra spike (`docs/ARM-ALTRA.md`)
-returns GO** (the 2026-07-13 pre-build ruling; the sunk-cost risk is accepted).
+code, built now, trusted only once M4's native msr1 validation returns GO**
+(the 2026-07-13 pre-build ruling; the sunk-cost risk is accepted).
 
 All Mac-local gates are green; the real-KVM boot + `state_hash` determinism
-gates are **specified and edged to `hm-7pb`** (the Altra) — there is no local
+gates are **specified and edged to `hm-7pb`** on msr1 — there is no local
 KVM loop (`hm-8l3` REFUSE).
 
 ## Prescriptive M2 control slot (measured on HVF)
@@ -205,13 +205,13 @@ unsafe crates). The new `unsafe` this task adds lives in `vmm-backend`
 raw ioctls — box-only, un-Miri-able like x86's `kvm_sys`), and `vmm-backend` is
 **already** in the `nightly.yml` Miri list, so the coverage is in place.
 
-## Box gates — specified, edged to `hm-7pb` (arrival-day)
+## Native Linux/aarch64 gates — specified, edged to `hm-7pb`
 
-On the Altra, over `ARM_BOX_SSH` (the `DET_BOX_SSH` convention extended; the
+On msr1, over `ARM_BOX_SSH` (the `DET_BOX_SSH` convention extended; the
 repo hard-codes no host): a real `KVM_RUN` boots the `Image`+DTB path
 (`boot_selected`) to a console marker, and a same-seed pair holds a
 bit-identical `state_hash`. Every count/PMI/skid claim they could make is the
-spike's (`docs/ARM-ALTRA.md` AA-1/AA-3), never this task's. The **M0
+native qualification campaign's, never this task's. The **M0
 x86-neutrality box gate** (the existing x86 determinism box, `DET_BOX_SSH`) is
 BLOCKING-and-runnable-today; it is handed to the foreman for the merge (the M0
 spine edit's default paths are byte-identical, but a live-KVM snapshot

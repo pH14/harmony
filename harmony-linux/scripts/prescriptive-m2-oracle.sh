@@ -23,6 +23,10 @@ execution_budget=${6:-4096}
 campaign_seed=0x5eedca22
 minimum_continuation_restores=2000
 continuation_samples=32
+smoke_watchdog_seconds=600
+campaign_watchdog_seconds=1800
+continuation_watchdog_seconds=1800
+replay_watchdog_seconds=1800
 
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
     echo "FAIL: the M2 live oracle requires an Apple Silicon macOS host" >&2
@@ -40,9 +44,8 @@ for artifact in "$image" "$initramfs" "$rom" "$rom_sidecar"; do
         exit 1
     fi
 done
-if [[ ! "$execution_budget" =~ ^[0-9]+$ ]] \
-    || (( execution_budget < minimum_continuation_restores )); then
-    echo "FAIL: execution budget must be an integer >= $minimum_continuation_restores" >&2
+if [[ ! "$execution_budget" =~ ^[0-9]+$ ]] || (( execution_budget < 1 )); then
+    echo "FAIL: execution budget must be a positive integer" >&2
     exit 1
 fi
 if [[ -e "$output_dir" ]]; then
@@ -68,7 +71,12 @@ fi
 mkdir -p "$output_dir"
 oracle_tmp=$(mktemp -d "${TMPDIR:-/tmp}/harmony-m2-oracle.XXXXXX")
 server_pid=
+command_pid=
 cleanup() {
+    if [[ -n "$command_pid" ]] && kill -0 "$command_pid" 2>/dev/null; then
+        kill "$command_pid" 2>/dev/null || true
+        wait "$command_pid" 2>/dev/null || true
+    fi
     if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
@@ -162,20 +170,51 @@ finish_server() {
     fi
 }
 
+run_with_watchdog() {
+    local label=$1
+    local limit=$2
+    local stdout=$3
+    local stderr=$4
+    shift 4
+
+    "$@" >"$stdout" 2>"$stderr" &
+    command_pid=$!
+    local elapsed=0
+    while kill -0 "$command_pid" 2>/dev/null; do
+        if (( elapsed >= limit )); then
+            kill "$command_pid" 2>/dev/null || true
+            wait "$command_pid" 2>/dev/null || true
+            command_pid=
+            echo "FAIL: $label exceeded its ${limit}s watchdog" >&2
+            return 124
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    if ! wait "$command_pid"; then
+        command_pid=
+        echo "FAIL: $label exited unsuccessfully" >&2
+        return 1
+    fi
+    command_pid=
+}
+
 run_campaign() {
     local label=$1
     local run_dir=$output_dir/$label
     start_server "$label" 2
-    HARMONY_SMB_ROM="$rom" "$searcher" run genesis "$campaign_seed" 1 \
-        "$execution_budget" 96 m1-max "$run_dir" --control-socket "$current_socket" \
-        >"$output_dir/$label-searcher.stdout" \
-        2>"$output_dir/$label-searcher.stderr"
+    run_with_watchdog "$label campaign" "$campaign_watchdog_seconds" \
+        "$output_dir/$label-searcher.stdout" \
+        "$output_dir/$label-searcher.stderr" \
+        env HARMONY_SMB_ROM="$rom" "$searcher" run genesis "$campaign_seed" 1 \
+        "$execution_budget" 96 m1-max "$run_dir" --control-socket "$current_socket"
     finish_server 2
 }
 
 echo "== M2: running the real-ROM SMB smoke gate"
-HARMONY_SMB_ROM="$rom" "$smoke" "$output_dir/smoke" \
-    >"$output_dir/smoke.stdout" 2>"$output_dir/smoke.stderr"
+run_with_watchdog "real-ROM SMB smoke" "$smoke_watchdog_seconds" \
+    "$output_dir/smoke.stdout" "$output_dir/smoke.stderr" \
+    env HARMONY_SMB_ROM="$rom" "$smoke" "$output_dir/smoke"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert all(r[k] is True for k in ("same_input_identical_ram_trace", "snapshot_cache_equivalent", "headless_ram_trace_equivalent", "same_seed_campaign_reproducible"))' \
     "$output_dir/smoke/smb-smoke-report.json"
 
@@ -214,11 +253,12 @@ fi
 
 echo "== M2: sampling uninterrupted/restored continuation hashes"
 start_server continuation 1
-HARMONY_SMB_ROM="$rom" "$continuation_oracle" "$current_socket" \
-    "$output_dir/run-1/snapshots-live.bin" "$continuation_samples" \
-    "$output_dir/continuation-hashes.json" \
-    >"$output_dir/continuation-searcher.stdout" \
-    2>"$output_dir/continuation-searcher.stderr"
+run_with_watchdog "continuation sampling" "$continuation_watchdog_seconds" \
+    "$output_dir/continuation-searcher.stdout" \
+    "$output_dir/continuation-searcher.stderr" \
+    env HARMONY_SMB_ROM="$rom" "$continuation_oracle" "$current_socket" \
+        "$output_dir/run-1/snapshots-live.bin" "$continuation_samples" \
+        "$output_dir/continuation-hashes.json"
 finish_server 1
 read -r sampled_branch_points chord_hashes_compared < <(
     python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r["sampled_branch_points"], r["chord_hashes_compared"])' \
@@ -235,10 +275,10 @@ fi
 
 echo "== M2: replaying the complete retained campaign through a fresh VM"
 start_server replay 1
-HARMONY_SMB_ROM="$rom" "$searcher" replay "$output_dir/run-1" genesis \
-    --control-socket "$current_socket" \
-    >"$output_dir/replay-searcher.stdout" \
-    2>"$output_dir/replay-searcher.stderr"
+run_with_watchdog "fresh-VM replay" "$replay_watchdog_seconds" \
+    "$output_dir/replay-searcher.stdout" "$output_dir/replay-searcher.stderr" \
+    env HARMONY_SMB_ROM="$rom" "$searcher" replay "$output_dir/run-1" genesis \
+        --control-socket "$current_socket"
 finish_server 1
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["replay_verified"] is True' \
     "$output_dir/run-1/replay-verdict.json"

@@ -5,8 +5,9 @@
 //!
 //! **A skeleton probe.** The concrete `expect-vs-found` rows (which `ID_AA64*`
 //! fields must match the frozen contract, which errata must be present) are
-//! AA-0's capability truth table + AA-6's enforcement rows (`docs/ARM-ALTRA.md`)
-//! — measured on real N1 silicon, never guessed here. The live probe is
+//! M4's capability truth table and enforcement rows
+//! (`docs/PRESCRIPTIVE-VTIME.md`) — measured on msr1, never guessed here. The
+//! live probe is
 //! `target_arch = "aarch64"`-gated and reads nothing yet (its row set is
 //! `TODO(AA-0/AA-6)`); off the box it is a no-op, exactly as x86's is off an
 //! x86 box. It exists so the boot root has the same `enforce()` seam both

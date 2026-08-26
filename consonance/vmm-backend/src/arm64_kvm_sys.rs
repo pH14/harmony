@@ -5,7 +5,7 @@
 //!
 //! It **has no local oracle** — the Mac has no `/dev/kvm` (`hm-8l3` REFUSE), so
 //! this module is only ever *compiled* locally (the CI aarch64-linux
-//! cross-check) and *run* arrival-day on the Altra (`hm-7pb`). Its shape (ioctl
+//! cross-check) and run natively on msr1 during M4 (`hm-7pb`). Its shape (ioctl
 //! ordering, the register-ID set, the exit decode) is asserted portably against
 //! [`FakeKvm`](crate::FakeKvm); this module wires that shape to the documented
 //! kvm/arm64 ABI (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` with
@@ -36,7 +36,7 @@ const RUN_OFFSETS: RunOffsets = RunOffsets {
 };
 
 // --- compile-time UAPI pin ---------------------------------------------------
-// `docs/ARM-ALTRA.md` §Evidence-integrity: verify knowable UAPI surfaces against
+// `docs/PRESCRIPTIVE-VTIME.md`: verify knowable UAPI surfaces against
 // the pinned kernel, never take a constant on faith. The portable `arm64_kvm`
 // exit-reason and register-class constants MUST equal the pinned kernel's
 // `uapi/linux/kvm.h` (reached here through `kvm-bindings`, generated from those
@@ -149,7 +149,7 @@ impl Arm64Kvm for LiveKvm {
         );
         // KVM_ARM_VCPU_INIT returns EINVAL for an unsupported feature, so a
         // successful init is the kernel's confirmation the bit took. (Live PSCI
-        // conformance is M4/Altra-verified; no /dev/kvm oracle on the Mac.)
+        // conformance is an M4/msr1 gate; no /dev/kvm oracle on the Mac.)
         self.vcpu.vcpu_init(&kvi).map_err(kvm_err)?;
         Ok(())
     }

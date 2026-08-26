@@ -54,7 +54,7 @@
 //! > avoid churn (the spec defers the `io-transport` rename); despite the name, the mechanism is
 //! > now the port-I/O doorbell described above, **not** `VMCALL`.
 
-use core::ptr;
+use core::{mem::size_of, ptr};
 
 use hypercall_proto::HEADER_LEN;
 
@@ -97,6 +97,77 @@ const _: () = assert!(HEADER_LEN <= PAGE_SIZE);
 const _: () = assert!(REQ_GPA.is_multiple_of(PAGE_SIZE as u64));
 const _: () = assert!(RESP_GPA.is_multiple_of(PAGE_SIZE as u64));
 const _: () = assert!(REQ_GPA != RESP_GPA);
+
+/// Copy ordinary memory into a shared page through single volatile scalar
+/// accesses. Linux maps the arm64 low-GPA control slot through `/dev/mem` as
+/// device memory; ordinary `memcpy` may use paired/vector accesses that are not
+/// valid for that mapping and raise `SIGBUS` inside the guest.
+///
+/// # Safety
+/// `dst` must be aligned for `u64`, valid for `len` initialized writable bytes,
+/// and not overlap the `len` readable bytes at `src`.
+unsafe fn copy_to_shared_page(dst: *mut u8, src: *const u8, len: usize) {
+    let mut offset = 0;
+    while offset + size_of::<u64>() <= len {
+        // SAFETY: the caller grants both ranges for `len` bytes. `src` need not
+        // be aligned, while `dst + offset` is u64-aligned because the page base
+        // is aligned and `offset` advances by whole u64 words.
+        let word = unsafe { ptr::read_unaligned(src.add(offset).cast::<u64>()) };
+        // SAFETY: same range/alignment grant; volatile keeps this as a single
+        // shared-page access rather than a libc/vectorized memory operation.
+        unsafe { ptr::write_volatile(dst.add(offset).cast::<u64>(), word) };
+        offset += size_of::<u64>();
+    }
+    while offset < len {
+        // SAFETY: the remaining byte lies inside both caller-granted ranges.
+        let byte = unsafe { ptr::read(src.add(offset)) };
+        // SAFETY: the destination byte is in-range; volatile is required for
+        // an arm64 `/dev/mem` device mapping.
+        unsafe { ptr::write_volatile(dst.add(offset), byte) };
+        offset += 1;
+    }
+}
+
+/// Copy a shared page into ordinary memory through single volatile scalar
+/// accesses.
+///
+/// # Safety
+/// `src` must be aligned for `u64`, valid for `len` initialized readable bytes,
+/// and not overlap the `len` writable bytes at `dst`.
+unsafe fn copy_from_shared_page(dst: *mut u8, src: *const u8, len: usize) {
+    let mut offset = 0;
+    while offset + size_of::<u64>() <= len {
+        // SAFETY: the source word is aligned and inside the caller-granted
+        // shared-page range. Volatile prevents paired/vectorized device reads.
+        let word = unsafe { ptr::read_volatile(src.add(offset).cast::<u64>()) };
+        // SAFETY: the destination has `len` writable bytes but need not be
+        // aligned, hence the explicit unaligned ordinary-memory store.
+        unsafe { ptr::write_unaligned(dst.add(offset).cast::<u64>(), word) };
+        offset += size_of::<u64>();
+    }
+    while offset < len {
+        // SAFETY: the remaining source byte is inside the granted shared page.
+        let byte = unsafe { ptr::read_volatile(src.add(offset)) };
+        // SAFETY: the corresponding ordinary-memory destination byte is live.
+        unsafe { ptr::write(dst.add(offset), byte) };
+        offset += 1;
+    }
+}
+
+/// Zero one complete shared page through single volatile scalar stores.
+///
+/// # Safety
+/// `page` must be `u64`-aligned and valid for `PAGE_SIZE` initialized writable
+/// bytes.
+unsafe fn zero_shared_page(page: *mut u8) {
+    let mut offset = 0;
+    while offset < PAGE_SIZE {
+        // SAFETY: PAGE_SIZE is a multiple of u64 and the caller grants an
+        // aligned complete page, so every word is aligned and in-range.
+        unsafe { ptr::write_volatile(page.add(offset).cast::<u64>(), 0) };
+        offset += size_of::<u64>();
+    }
+}
 
 /// The privileged hypercall-doorbell primitive, abstracted so the page-marshalling logic can be
 /// driven by a host-side loopback in tests without a hypervisor.
@@ -285,12 +356,15 @@ impl VmcallTransport<RealIoDoorbell> {
     /// dereferences these values directly (it accesses the pages by address), **each GPA must also
     /// equal the page's linear/virtual address** — i.e. the pages are identity-mapped, as under
     /// the task-04 payload map; a GPA that is not a valid linear address is UB. The pages must be
-    /// **initialized byte storage** (real memory, not `MaybeUninit` — e.g. zeroed at reservation:
-    /// the host may write a response shorter than the page, and step 3 zeroes the page so the
-    /// untouched tail and a rejected page read as zeros) and **exclusively owned** by this
-    /// transport for its lifetime — no other live reference may alias them (the `req` and `resp`
-    /// slices passed to `exchange` must not overlap them), since the host writes the response page
-    /// out-of-band.
+    /// **initialized byte storage** (real memory or a device-typed `/dev/mem`
+    /// mapping, not `MaybeUninit` — e.g. zeroed at reservation: the host may
+    /// write a response shorter than the page, and step 3 zeroes the page so
+    /// the untouched tail and a rejected page read as zeros) and **exclusively
+    /// owned** by this transport for its lifetime — no other live reference may
+    /// alias them (the `req` and `resp` slices passed to `exchange` must not
+    /// overlap them), since the host writes the response page out-of-band. Page
+    /// access uses aligned volatile scalar words so this contract is valid for
+    /// either memory type.
     pub unsafe fn from_gpas(req_gpa: u64, resp_gpa: u64) -> Self {
         // SAFETY: forwarded to `with_doorbell`; `RealIoDoorbell` carries no invariants of its own
         // and is consistent with any GPAs (it only executes the `OUT` doorbell).
@@ -330,8 +404,11 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
             return Err(TransportError::RequestTooLarge);
         }
 
-        // Steps 2 & 3: stage the request and clear both pages. Raw-pointer ops only — no `&`/`&mut`
-        // to either page is created here, and none is live across the doorbell below.
+        // Steps 2 & 3: clear both pages and stage the request. Raw-pointer ops
+        // only — no `&`/`&mut` to either page is created here, and none is live
+        // across the doorbell below. The volatile scalar helpers are required
+        // for arm64, where `/dev/mem` gives the reserved low-GPA slot device
+        // attributes and an ordinary optimized `memcpy` can SIGBUS.
         //
         // Step 2 clears the request-page tail (`req.len()..PAGE_SIZE`) so a direct `exchange`
         // caller passing a `req` shorter than its header-encoded length exposes only zeros to the
@@ -340,13 +417,14 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
         // that writes nothing (a rejection) leaves the magic field zero, which step 5 maps to
         // `HostRejected` instead of decoding a stale prior frame.
         //
-        // SAFETY: `req_page`/`resp_page` name distinct, page-aligned, `PAGE_SIZE`, exclusively
-        // owned pages (constructor contract); `req` does not overlap them (same contract), so the
-        // copy is non-overlapping. All offsets stay within `PAGE_SIZE`.
+        // SAFETY: `req_page`/`resp_page` name distinct, page-aligned,
+        // `PAGE_SIZE`, exclusively owned pages (constructor contract); `req`
+        // does not overlap them (same contract), so the copy is
+        // non-overlapping. `req.len() <= PAGE_SIZE`, checked above.
         unsafe {
-            ptr::copy_nonoverlapping(req.as_ptr(), self.req_page, req.len());
-            ptr::write_bytes(self.req_page.add(req.len()), 0, PAGE_SIZE - req.len());
-            ptr::write_bytes(self.resp_page, 0, PAGE_SIZE);
+            zero_shared_page(self.req_page);
+            zero_shared_page(self.resp_page);
+            copy_to_shared_page(self.req_page, req.as_ptr(), req.len());
         }
 
         // Step 4: ring the doorbell (single `OUT`). No reference to either page is live across this
@@ -370,7 +448,7 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
         // PAGE_SIZE`, so the read stays in-page; no `&`/`&mut` to the page outlives this block.
         let mut header = [0_u8; HEADER_LEN];
         unsafe {
-            ptr::copy_nonoverlapping(self.resp_page, header.as_mut_ptr(), HEADER_LEN);
+            copy_from_shared_page(header.as_mut_ptr(), self.resp_page, HEADER_LEN);
         }
 
         // Step 6: transport-level rejection. A response page that does not begin with the frame
@@ -402,7 +480,7 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
         // (constructor contract), so the copy is non-overlapping. No `&`/`&mut` to the page
         // outlives this block.
         unsafe {
-            ptr::copy_nonoverlapping(self.resp_page, resp.as_mut_ptr(), len);
+            copy_from_shared_page(resp.as_mut_ptr(), self.resp_page, len);
         }
         Ok(len)
     }

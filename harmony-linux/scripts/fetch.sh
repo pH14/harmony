@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Download the pinned kernel + busybox tarballs into harmony-linux/dl/ and verify
-# their sha256 against harmony-linux/linux/versions.lock. Runs on macOS and Linux;
+# Download pinned upstream sources into harmony-linux/dl/ and verify their
+# sha256 against harmony-linux/linux/versions.lock. Runs on macOS and Linux;
 # after a successful fetch no further network access is needed.
 set -euo pipefail
 
@@ -46,6 +46,7 @@ fetch_one() {
 
 fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
 fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256"
+fetch_one "$MUSL_URL" "$MUSL_SHA256"
 # PostgreSQL .debs for the task-37 bare-Postgres workload image.
 fetch_one "$PG_SERVER_DEB_URL" "$PG_SERVER_DEB_SHA256"
 fetch_one "$PG_CLIENT_DEB_URL" "$PG_CLIENT_DEB_SHA256"

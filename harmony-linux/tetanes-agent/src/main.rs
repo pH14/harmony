@@ -29,6 +29,9 @@ mod live {
     use hypercall_doorbell::{MmioDoorbell, PAGE_SIZE, REQ_GPA, RESP_GPA, VmcallTransport};
 
     const DOORBELL_GPA: u64 = 0x0A00_0000;
+    const PVCLOCK_GPA: u64 = 0x0B00_0000;
+    const PVCLOCK_ABI_OFFSET: usize = 0x008;
+    const PVCLOCK_ABI_VERSION: u32 = 1;
     const REG_WRAM_GPA: u32 = 1;
     const REG_WRAM_LEN: u32 = 2;
     const CATALOG: &[Point] = &[
@@ -40,6 +43,7 @@ mod live {
 
     struct LiveChannel {
         sdk: Sdk<Transport>,
+        pvclock: *const u8,
     }
 
     impl Channel for LiveChannel {
@@ -55,7 +59,8 @@ mod live {
         fn frame_complete(&mut self, frame_count: u64) -> Result<(), Self::Error> {
             self.sdk
                 .frame_complete(frame_count)
-                .map_err(|error| format!("frame_complete: {error:?}"))
+                .map_err(|error| format!("frame_complete: {error:?}"))?;
+            synchronize_lifecycle(self.pvclock)
         }
     }
 
@@ -72,6 +77,7 @@ mod live {
             .map_err(|error| format!("prime WRAM: {error:?}"))?;
 
         let transport = open_transport()?;
+        let pvclock = map_phys(PVCLOCK_GPA, PAGE_SIZE)?;
         let mut sdk =
             Sdk::init(transport, CATALOG).map_err(|error| format!("sdk init: {error:?}"))?;
         sdk.state_set(REG_WRAM_GPA, wram_gpa)
@@ -81,8 +87,9 @@ mod live {
         println!("TETANES_WRAM_READY gpa={wram_gpa:#x} len={WRAM_SIZE}");
         sdk.setup_complete()
             .map_err(|error| format!("setup_complete: {error:?}"))?;
+        synchronize_lifecycle(pvclock)?;
 
-        let mut channel = LiveChannel { sdk };
+        let mut channel = LiveChannel { sdk, pvclock };
         loop {
             agent
                 .run_chord(&mut channel, mirror)
@@ -144,6 +151,22 @@ mod live {
         // SAFETY: req/resp are distinct page-sized mappings of the ABI control
         // pages, exclusively owned here and leaked for the process lifetime.
         Ok(unsafe { VmcallTransport::with_doorbell(req as u64, resp as u64, doorbell) })
+    }
+
+    fn synchronize_lifecycle(pvclock: *const u8) -> Result<(), String> {
+        // SAFETY: `pvclock` is a leaked page-sized mapping of the board's
+        // pvclock MMIO register frame. Offset 0x008 is its aligned, read-only
+        // 32-bit ABI register. The volatile access must remain a scalar MMIO
+        // read so the host observes a synchronized exit immediately after each
+        // deferred lifecycle snapshot request.
+        let abi = unsafe { std::ptr::read_volatile(pvclock.add(PVCLOCK_ABI_OFFSET).cast::<u32>()) };
+        if abi != PVCLOCK_ABI_VERSION {
+            return Err(format!(
+                "lifecycle synchronization returned pvclock ABI {abi}, expected \
+                 {PVCLOCK_ABI_VERSION}"
+            ));
+        }
+        Ok(())
     }
 
     fn map_phys(gpa: u64, len: usize) -> Result<*mut u8, String> {

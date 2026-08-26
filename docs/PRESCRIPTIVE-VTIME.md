@@ -3,8 +3,8 @@
 Plan of record for bringing up consonance with **prescriptive V-time** — virtual time
 the run loop *assigns* at VM exits — on ARM, with the M1 Max (macOS,
 Hypervisor.framework) as the development and bring-up host. The `msr1` box (arm64
-Linux/KVM, via ssh) joins as a second host in the follow-up work of §5 when it goes
-idle; the plan's milestones run entirely on the M1. The term comes from the existing
+Linux/KVM on a CIX P1 with Cortex-A520/A720 cores and LSE, via ssh) is the
+validated second host for M4 and M5. The term comes from the existing
 clock documentation: `consonance/vtime/src/idle.rs` describes the idle jump as a
 prescriptive advance layered on the descriptive base clock. This plan makes the
 prescriptive path carry all of V-time.
@@ -67,7 +67,7 @@ faults (which live at exits by nature), and workload permutation. Where the
 instrumented and kernel-supplied exit density thins out, M3 measures the gap and
 the liveness monitor reports the stretches; where an exact vPMU exists — the
 x86 box — descriptive V-time retains the full capability. The two modes are the
-same VMM making a different trade per host, and M4's suite is the standing
+same VMM making a different trade per host, and M6's suite is the standing
 instrument for measuring what the trade costs in found bugs.
 
 x86 descriptive V-time on the box continues unchanged. Prescriptive V-time is how
@@ -143,7 +143,7 @@ one impl per (substrate, arch) pair, nothing above it branching on substrate.
   `Unsupported` — per §2.1 the prescriptive run loop never calls it — so it
   needs no guest-work counter and no mid-stream stop, which is what makes
   Hypervisor.framework's exit surface sufficient.
-- **`Arm64KvmBackend` (msr1, follow-up §5).** The existing stock-KVM/arm64
+- **`Arm64KvmBackend` (msr1, M4).** The existing stock-KVM/arm64
   skeleton (`arm64_kvm.rs`) grows the pieces its `capabilities()` currently
   reports absent — interrupt injection (`run` already works; `run_until` stays
   `Unsupported`, per §2.1 the prescriptive run loop never calls it). Delivery
@@ -152,9 +152,9 @@ one impl per (substrate, arch) pair, nothing above it branching on substrate.
   the timer PPI to the in-kernel vGICv3, so the backend either creates the
   in-kernel vGICv3 and injects through `KVM_IRQ_LINE` — with the vGIC's
   save/restore folded into `state_hash` and its bit-identical round-trip
-  demonstrated as part of F1's oracle — or carries an arm64 kernel patch that
+  demonstrated as part of M4's oracle — or carries an arm64 kernel patch that
   routes injection and the ICC sysregs to the userspace `gicv3` model. §5
-  records the decision when F1 starts. This takes up the work the arm64
+  records the decision when M4 starts. This takes up the work the arm64
   delivery ruling in `AGENTS.md` deferred — that deferral is superseded by
   this plan.
 
@@ -189,7 +189,7 @@ currently inert — becomes the userspace yield: each instrumented basic block
 increments a per-thread counter, and crossing a threshold prescribed by the
 hypervisor at the previous exit rings the doorbell. For the first workload below,
 only the SDK input-fetch call is needed; the threshold protocol lands with the
-instrumented-payload milestone (M4).
+instrumented-payload milestone (M6).
 
 ### 2.5 First workload: the NES searcher
 
@@ -203,8 +203,13 @@ guest — the same implementation the searcher's in-process `NesMachine` wraps,
 so M2's differential compares two independently executing builds of one
 emulator and attributes divergence to the substrate rather than to emulator
 accuracy. The agent's loop is: fetch the next `ButtonChord` through the SDK
-(doorbell exit), emulate the hold, report the frame count (doorbell exit),
-repeat.
+(doorbell exit), emulate the hold or stop on the observation layer's first
+death/victory frame, report the frame count (doorbell exit),
+perform one read of the board pvclock ABI register (a V-time-advancing MMIO
+intercept), repeat. It performs the same read immediately after
+`setup_complete`. These explicit post-lifecycle intercepts are required because
+the lifecycle doorbell itself is an unsynchronized exit: they surface each
+deferred snapshot point before the guest can consume or exhaust the next input.
 
 - `branch(snap, env)` → control-proto `Branch` with the chord suffix staged as
   the `RecordedEnv`; each input fetch consumes one entry.
@@ -212,8 +217,12 @@ repeat.
   reported frame count reaches the deadline. Stop conditions are expressed in
   frames (yield events), never in nanoseconds. The report is SDK lifecycle local
   id 1 (`frame_complete`) with one little-endian `u64` cumulative frame count;
-  malformed widths do not arm a yield. The next payload fetch is the synchronized
-  pre-consumption boundary at which that deferred yield is sealable.
+  malformed widths do not arm a yield. The agent's following pvclock ABI read is
+  the synchronized pre-consumption boundary at which that deferred yield is
+  sealable; using the next payload fetch for synchronization would already have
+  consumed (or exhausted) input before the seal. A yield before the requested
+  hold completes is accepted only when the published WRAM independently reports
+  death or victory; an unexplained early yield fails the target.
 - `read(addr, len)` → control-proto `Read` against the payload's WRAM buffer,
   pinned at a guest-physical address registered at startup (the
   `live_moment_address` pattern). The searcher's WRAM decoders are untouched.
@@ -354,7 +363,33 @@ descriptive-mode x86 number for the same payload.
 a payload that "passes" with an unbounded quiet stretch or a 100× slowdown is
 a finding, and the report must be capable of showing it.
 
-**M4 — instrumented concurrency payload (absolute finding measurement).**
+**M4 — complete `Arm64KvmBackend` on msr1.**
+*Build:* interrupt injection on KVM/arm64, per §2.2's delivery decision
+(in-kernel vGICv3 via `KVM_IRQ_LINE` with bit-identical save/restore evidence,
+or a patched injection ABI into the userspace `gicv3` model).
+*Passes when:* milestone M1's oracle passes verbatim on msr1 — ten same-seed
+boots, one normalized log, placement checker green — using the same image bytes
+as the M1 Max.
+*Does not count unless:* the delivery choice and supporting measurement are
+recorded, backend capabilities remain honest, and the save/restore path has one
+meaningful positive oracle, one planted negative, and one genuinely independent
+comparator.
+
+**M5 — bidirectional cross-host determinism and snapshot portability.**
+*Passes when:* with byte-identical image, payload, and seed: (a) msr1 and the
+M1 Max produce identical normalized logs for boot and an NES campaign, plus
+identical archive hashes; and (b) a mid-lineage snapshot taken on either host,
+restored on the other, has canonical `state_hash` equality immediately after
+restore and then reproduces the origin host's uninterrupted normalized-log and
+`state_hash` sequence, in both directions.
+*Does not count unless:* bytes are attested on both hosts before the run; the
+comparison covers the full normalized log and checkpoint sequence; a planted
+cross-host increment mismatch is caught; and an independent architectural-state
+comparator agrees with the portability result. If M4 uses the in-kernel vGICv3,
+kernel GIC state is normalized to the userspace model's architectural form before
+serialization, with committed model-equivalence tests.
+
+**M6 — instrumented concurrency payload (absolute finding measurement).**
 *Build:* the SDK threshold protocol of §2.4; a small suite of deliberately racy
 instrumented Go/Rust programs, each with a known bug and a known reproducing
 schedule.
@@ -384,7 +419,7 @@ suite there produces the comparative measurement.
   resolves this before backend work starts, and the findings are recorded.
 - **ISA baseline drift between hosts.** Implementation-defined behavior
   outside the pinned baseline (ID registers, FP corner behavior) would surface
-  as a log divergence in the §5 cross-host experiment; `compare_runs` brackets
+  as a log divergence in the M5 cross-host experiment; `compare_runs` brackets
   it to an instruction range. The FP/SIMD environment is in the baseline audit
   from day one: `FPCR`/`FPSR` are pinned guest state and, with the FP/SIMD
   registers, covered by M1's state-completeness check; FP data-processing on
@@ -398,38 +433,15 @@ suite there produces the comparative measurement.
   optimization (dirty-page tracking, copy-on-write) is scheduled by that
   number, and the determinism oracles are unaffected by it.
 
-## 5. Follow-up: msr1 and the portability claim
+## 5. Milestone order and validation scope
 
-When the msr1 box goes idle, two pieces of deferred work turn the single-host
-result into the portability claim. They reuse everything above unchanged.
-
-**F1 — `Arm64KvmBackend` completes.** Interrupt injection on the KVM/arm64
-backend, per §2.2's delivery decision (in-kernel vGICv3 via
-`KVM_IRQ_LINE` with bit-identical save/restore evidence, or a patched
-injection ABI into the userspace `gicv3` model). The decision and its
-supporting measurements are recorded here when this work starts. Passes
-milestone M1's oracle verbatim on msr1 — ten same-seed boots, one normalized
-log, placement checker green — on the same image bytes the M1 Max runs.
-
-**F2 — cross-host determinism, the portability claim itself.**
-*Passes when:* with byte-identical image, payload, and seed: (a) msr1 and the
-M1 Max produce **identical normalized logs** (raw logs differ across
-substrates by construction; only the normalized, guest-visible log is
-compared) for the boot and for an NES campaign, and identical archive hashes;
-(b) a snapshot taken mid-lineage on one host, restored on the other,
-has canonical `state_hash` equality **immediately after restore**, and its
-continuation's full normalized-log and `state_hash` sequence equals the
-origin host's uninterrupted run from the same point — in both directions,
-with the archive key match as the final consequence rather than the test.
-*Does not count unless:* rule 4 held (bytes attested on both sides before the
-run), the comparison is the full normalized log with `state_hash` checkpoints
-(rule 1), at least one seeded cross-host divergence was demonstrated to be
-caught (rule 3, run once with an increment constant deliberately differing
-between hosts), and — when F1 chose the in-kernel vGICv3 — the kernel's GIC
-state is normalized into the architectural representation the userspace
-`gicv3` model defines before it enters `state_blob`, with committed
-equivalence tests showing the two models hash identically for the same
-architectural state.
+The dependency order is strict: M2 must be sealed before M3 begins; M3 precedes
+the msr1 backend work in M4; M4 precedes the bidirectional portability proof in
+M5; and M6 runs only after that proof. Each milestone validates its load-bearing
+claims with one meaningful positive oracle, one planted negative, and one
+genuinely independent comparator. Broad workspace checks and exhaustive seed
+sweeps remain CI/nightly work unless a specific result is directly load-bearing
+for the milestone being sealed.
 
 ## 6. In-tree placement
 
@@ -437,5 +449,5 @@ Everything lands in the existing crates: advancement and delivery in
 `vmm-core`'s run loop, the two backends in `vmm-backend`, interrupt state in
 `gicv3`, clock and queue in `vtime` (unchanged), guest changes under
 `harmony-linux`, the workload under `dissonance` behind its `Machine` trait,
-and the contract constants in the determinism-contract tables. Follow-up work
-items are tracked as GitHub issues per repo policy.
+and the contract constants in the determinism-contract tables. Work items are
+tracked as GitHub issues per repo policy.

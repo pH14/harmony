@@ -266,28 +266,39 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
         let stop = self.machine.run(
             StopConditions {
                 deadline: Some(Moment(expected)),
-                on: StopMask::NONE,
+                on: StopMask::NONE.arm(machine::class_bit::SNAPSHOT_POINT),
             },
             None,
         )?;
-        if stop
-            != (StopReason::Deadline {
-                vtime: Moment(expected),
-            })
-        {
+        let end_frame = self.machine.logical_frame().0;
+        let Some(executed_frames) = end_frame.checked_sub(start_frame.0).filter(|executed| {
+            *executed > 0 && *executed <= u64::from(action.bounded_hold_frames())
+        }) else {
             return Err(MachineError::Backend(format!(
-                "chord stopped at the wrong frame: expected {expected}, got {stop:?}"
+                "guest reported invalid chord frame range: start {}, end {end_frame}, maximum \
+                 {expected}",
+                start_frame.0
             )));
-        }
-        self.frames_clocked = self
-            .frames_clocked
-            .saturating_add(u64::from(action.bounded_hold_frames()));
+        };
         let wram = read_wram(&self.machine, self.wram_gpa)?;
         self.dead = smb_player_is_dead(&wram);
-        let frame_count = self
-            .observation
-            .frame_count
-            .saturating_add(u64::from(action.bounded_hold_frames()));
+        let victory = smb_is_victory(&wram);
+        let complete = stop
+            == (StopReason::Deadline {
+                vtime: Moment(expected),
+            });
+        let early_terminal = matches!(stop, StopReason::SnapshotPoint { .. })
+            && end_frame < expected
+            && (self.dead || victory);
+        if !complete && !early_terminal {
+            return Err(MachineError::Backend(format!(
+                "chord stopped at an invalid lifecycle boundary: expected frame {expected}, got \
+                 {stop:?} at frame {end_frame}, dead={}, victory={victory}",
+                self.dead
+            )));
+        }
+        self.frames_clocked = self.frames_clocked.saturating_add(executed_frames);
+        let frame_count = self.observation.frame_count.saturating_add(executed_frames);
         let endpoint = observation(&wram, frame_count, &prior, self.dead);
         self.wram = wram;
         self.action_observations = vec![endpoint.clone()];
@@ -297,36 +308,39 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
     }
 
     fn restore_snapshot(&mut self, snapshot: &RemoteSmbSnapshot) -> Result<(), MachineError> {
-        match snapshot
-            .handle
-            .filter(|handle| self.live_snapshots.contains(handle))
-        {
-            Some(handle) => self.machine.replay(handle)?,
-            None if snapshot.lineage.is_empty() => self.machine.replay(self.genesis)?,
-            None => {
-                self.machine
-                    .branch(self.genesis, &nes::reproducer(&snapshot.lineage))?;
-                let frames = snapshot.lineage.iter().fold(0_u64, |total, action| {
-                    total.saturating_add(u64::from(action.bounded_hold_frames()))
-                });
-                let deadline = self.genesis_frame.0.saturating_add(frames);
-                let stop = self.machine.run(
-                    StopConditions {
-                        deadline: Some(Moment(deadline)),
-                        on: StopMask::NONE,
-                    },
-                    None,
-                )?;
-                if stop
-                    != (StopReason::Deadline {
-                        vtime: Moment(deadline),
-                    })
-                {
-                    return Err(MachineError::Backend(format!(
-                        "lineage reconstruction stopped unexpectedly: {stop:?}"
-                    )));
+        if snapshot.lineage.is_empty() {
+            self.machine.replay(self.genesis)?;
+        } else {
+            match snapshot
+                .handle
+                .filter(|handle| self.live_snapshots.contains(handle))
+            {
+                Some(handle) => self.machine.replay(handle)?,
+                None => {
+                    self.machine
+                        .branch(self.genesis, &nes::reproducer(&snapshot.lineage))?;
+                    let frames = snapshot.lineage.iter().fold(0_u64, |total, action| {
+                        total.saturating_add(u64::from(action.bounded_hold_frames()))
+                    });
+                    let deadline = self.genesis_frame.0.saturating_add(frames);
+                    let stop = self.machine.run(
+                        StopConditions {
+                            deadline: Some(Moment(deadline)),
+                            on: StopMask::NONE,
+                        },
+                        None,
+                    )?;
+                    if stop
+                        != (StopReason::Deadline {
+                            vtime: Moment(deadline),
+                        })
+                    {
+                        return Err(MachineError::Backend(format!(
+                            "lineage reconstruction stopped unexpectedly: {stop:?}"
+                        )));
+                    }
+                    self.frames_clocked = self.frames_clocked.saturating_add(frames);
                 }
-                self.frames_clocked = self.frames_clocked.saturating_add(frames);
             }
         }
         let actual = read_wram(&self.machine, self.wram_gpa)?;
@@ -803,6 +817,8 @@ mod tests {
         fail_read_call: Option<u64>,
         state_hash_calls: u64,
         corrupt_state_hash_call: Option<u64>,
+        early_yield_after: Option<u64>,
+        early_yield_is_terminal: bool,
     }
 
     impl Machine for InProcessControl {
@@ -855,6 +871,31 @@ mod tests {
             if until.on.armed(machine::class_bit::SNAPSHOT_POINT) && self.machine.now() == Moment(0)
             {
                 return Ok(StopReason::SnapshotPoint { vtime: Moment(0) });
+            }
+            if until.on.armed(machine::class_bit::SNAPSHOT_POINT)
+                && let Some(frames) = self.early_yield_after.take()
+            {
+                let target = self.machine.now().0.saturating_add(frames);
+                let stop = self.machine.run(
+                    StopConditions {
+                        deadline: Some(Moment(target)),
+                        on: StopMask::NONE,
+                    },
+                    None,
+                )?;
+                if !matches!(stop, StopReason::Deadline { .. }) {
+                    return Err(MachineError::Backend(
+                        "early-yield fixture did not reach its frame".into(),
+                    ));
+                }
+                self.logical_frame = Moment(self.logical_frame.0.saturating_add(frames));
+                if self.early_yield_is_terminal {
+                    // The fixture plants the observation layer's killed-state byte.
+                    self.machine.poke_wram(0x000e, 0x0b);
+                }
+                return Ok(StopReason::SnapshotPoint {
+                    vtime: self.logical_frame,
+                });
             }
             let logical_start = self.logical_frame;
             let lifetime_start = self.machine.now();
@@ -963,6 +1004,8 @@ mod tests {
             fail_read_call: None,
             state_hash_calls: 0,
             corrupt_state_hash_call: None,
+            early_yield_after: None,
+            early_yield_is_terminal: false,
         }
     }
 
@@ -1042,6 +1085,31 @@ mod tests {
     }
 
     #[test]
+    fn root_snapshots_restore_through_genesis_before_and_after_serialization() {
+        let rom = synthetic_nrom();
+        let mut remote = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
+        let root = remote.snapshot().unwrap();
+        assert!(root.has_live_handle());
+
+        remote.apply(&ButtonChord::new(0x81, 4));
+        let before_live = remote.restore_counters();
+        remote.restore(&root).unwrap();
+        let after_live = remote.restore_counters();
+        assert_eq!(after_live.genesis, before_live.genesis + 1);
+        assert_eq!(after_live.continuation, before_live.continuation);
+
+        let bytes = serde_json::to_vec(&root).unwrap();
+        let durable: RemoteSmbSnapshot = serde_json::from_slice(&bytes).unwrap();
+        assert!(!durable.has_live_handle());
+        remote.apply(&ButtonChord::new(0x40, 3));
+        let before_durable = remote.restore_counters();
+        remote.restore(&durable).unwrap();
+        let after_durable = remote.restore_counters();
+        assert_eq!(after_durable.genesis, before_durable.genesis + 1);
+        assert_eq!(after_durable.continuation, before_durable.continuation);
+    }
+
+    #[test]
     fn restored_continuation_repeats_each_chord_state_hash() {
         let rom = synthetic_nrom();
         let mut remote = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
@@ -1078,6 +1146,23 @@ mod tests {
         control.reported_deadline_offset = 1;
         let error = RemoteSmbTarget::from_machine(control).unwrap_err();
         assert!(error.to_string().contains("boot walk stopped unexpectedly"));
+    }
+
+    #[test]
+    fn remote_target_accepts_only_terminal_early_lifecycle_yields() {
+        let rom = synthetic_nrom();
+        let mut terminal = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
+        terminal.machine.early_yield_after = Some(2);
+        terminal.machine.early_yield_is_terminal = true;
+        terminal.apply(&ButtonChord::new(0x81, 4));
+        assert_eq!(terminal.exit_kind(), ExitKind::Ok);
+        assert!(terminal.is_dead());
+        assert_eq!(terminal.observe().frame_count, 2);
+
+        let mut nonterminal = RemoteSmbTarget::from_machine(control(&rom)).unwrap();
+        nonterminal.machine.early_yield_after = Some(2);
+        nonterminal.apply(&ButtonChord::new(0x81, 4));
+        assert_eq!(nonterminal.exit_kind(), ExitKind::Crash);
     }
 
     #[test]

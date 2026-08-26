@@ -16,10 +16,10 @@
 //!   structurally valid FDT QEMU accepts;
 //! - it does **not** exercise `Arm64KvmBackend` (QEMU is its *own* VMM, not our
 //!   backend — that path talks to `/dev/kvm` and is M4's, arrival-day) and it
-//!   says **nothing** about `BR_RETIRED` counts, PMIs, or skid — those are
-//!   silicon's (`docs/ARM-ALTRA.md` AA-1/AA-3).
+//!   says **nothing** about `BR_RETIRED` counts, PMIs, or skid — those require
+//!   independent native evidence.
 //!
-//! Evidence integrity (`docs/ARM-ALTRA.md` §1): every constituent RC is
+//! Evidence integrity (`docs/PRESCRIPTIVE-VTIME.md`): every constituent RC is
 //! propagated — a nonzero assemble/objcopy/QEMU status, a missing marker, or a
 //! non-clean poweroff fails the test. A done-marker is never a success
 //! condition; the success condition is `marker present AND QEMU exited 0` (the

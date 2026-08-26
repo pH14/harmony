@@ -10,8 +10,8 @@
 //! **A skeleton subset, deliberately.** The core registers (`x0..x30`, `SP`,
 //! `PC`, `PSTATE`) and a small named EL1 system-register file are enough to
 //! build, seal, and round-trip a trivial vCPU through the container — the M1
-//! keystone. **Which sysregs a snapshot must carry is AA-6's measured
-//! decision** (`docs/ARM-ALTRA.md` §AA-6); the full record set is
+//! keystone. **Which sysregs a snapshot must carry is M4's measured
+//! decision** (`docs/PRESCRIPTIVE-VTIME.md`); the full record set is
 //! `TODO(AA-6)`, never guessed here. designed-not-frozen (AA-3).
 
 use crate::types::MpState;

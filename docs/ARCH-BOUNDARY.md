@@ -1,7 +1,8 @@
 # The architecture boundary — ISA seam design
 
-A design ruling. The **vendor programs are ruled** (`docs/ARM-ALTRA.md`, `docs/AMD-EPYC.md` —
-the reserved engine/vendor split names activate with the ARM window), and **pre-build is ruled**
+A design ruling. The **vendor programs are ruled** (the historical task-100 ARM
+record and `docs/AMD-EPYC.md` — the reserved engine/vendor split names activate
+with the ARM window), and **pre-build is ruled**
 (§Pre-build ruling below — building no longer waits for spike GO; trust still does).
 **§Sequencing steps 1–4 have landed** (`tasks/108`, `hm-b5n`):
 the C-list neutralizations, the x86 value-type extraction, the keystone (`Arch` trait +
@@ -274,9 +275,10 @@ that slip.
 
 AA-3 ran the patched-KVM (`-aa3preempt`) force-exit +
 `run_until_overflow` + `single_step` exact landing at **1,010,800 armed deadlines** on the
-Ampere Altra (Neoverse N1), sharded 76-wide, aggregate `floor-check` **PASS (1371 checks)**,
-solo-vs-co-tenant determinism **MATCH** (evidence: `spikes/arm-altra/results/aa-3/exact-evidence/`,
-disposition: `docs/ARM-ALTRA.md` §AA-3). Verification later found the campaign did not invoke
+historical Neoverse N1 host, sharded 76-wide, aggregate `floor-check` **PASS (1371 checks)**,
+solo-vs-co-tenant determinism **MATCH** (evidence:
+`spikes/arm-altra/results/aa-3/exact-evidence/`, disposition: the task-100 AA-3
+record in git history). Verification later found the campaign did not invoke
 the comparator and the original comparator accepted intersections. Full-join recomputation over
 the retained records still MATCHed 5,700/5,700 keys with zero divergences, so the physical findings
 below are retained and the mechanism is presumed sound; however, the GO certificate and trait
@@ -310,12 +312,12 @@ freeze are **void** until the repaired apparatus completes re-verification:
 
 ## Pre-build ruling — build-first; the spike gates trust, not construction
 
-With two vendor boxes incoming on unknown arrival dates (Altra `hm-7pb`, Epyc `hm-9wt`), the
+With two vendor boxes incoming on unknown arrival dates (ARM `hm-7pb`, Epyc `hm-9wt`), the
 integrator reversed the "no ARM-side building before the spike GOes" cost hedge: **everything
 pre-buildable gets built now**, so box-wait converts into worker throughput and arrival day
 stays experiment day — with better tooling.
 
-**The risk acceptance, recorded.** The hedge existed because Altra's PMU can fail the AA-1/AA-3
+**The risk acceptance, recorded.** The hedge existed because the ARM host's PMU can fail the AA-1/AA-3
 kill conditions. Pre-building reverses it: if the ARM work clock NO-GOes, the ARM-specific
 slice (the §D backend/GIC/boot/vendor work, `hm-cbt`) is sunk — a few worker-weeks, accepted
 against zero box idle time. The seam restructure (`hm-b5n`) and the paravirt clock (`hm-rk5`)

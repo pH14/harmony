@@ -9,9 +9,9 @@
 //! including the ioctl *ordering* (`KVM_ARM_VCPU_INIT` before the first
 //! `KVM_SET_ONE_REG`, policy-before-run, map-before-restore) — is asserted
 //! portably against a recording fake ([`FakeKvm`]) on the Mac and under Miri,
-//! with no `/dev/kvm` (`docs/ARM-ALTRA.md` §Evidence-integrity: mechanism
-//! attestation without the hardware). The real ioctl path against `/dev/kvm` has
-//! **no local oracle** — it is arrival-day only, on the Altra (`hm-7pb`; the
+//! with no `/dev/kvm` (`docs/PRESCRIPTIVE-VTIME.md`: mechanism attestation
+//! without the hardware). The real ioctl path against `/dev/kvm` has
+//! **no local oracle** — it runs natively on msr1 during M4 (`hm-7pb`; the
 //! Mac has no local KVM loop, `hm-8l3` REFUSE).
 //!
 //! **The stock/patched split is load-bearing and honest** (mirroring x86, where
@@ -810,9 +810,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
 // ---------------------------------------------------------------------------
 // A recording fake syscall seam — the portable + Miri test double that asserts
-// ioctl *shape* (ordering, the reg-ID set) with no `/dev/kvm` (`docs/ARM-ALTRA`
-// §Evidence-integrity: mechanism attestation). Behind `cfg(any(test, ...))` so
-// it never ships in a non-test build.
+// ioctl *shape* (ordering, the reg-ID set) with no `/dev/kvm`
+// (`docs/PRESCRIPTIVE-VTIME.md`: mechanism attestation). Behind
+// `cfg(any(test, ...))` so it never ships in a non-test build.
 // ---------------------------------------------------------------------------
 
 /// A recording fake [`Arm64Kvm`]: it holds a register map, a scripted queue of
@@ -1182,7 +1182,7 @@ mod tests {
     /// and answers `SYSTEM_OFF` (which the boot path relies on for a clean
     /// poweroff) `NOT_SUPPORTED`. Pin the requested bitmap against the fake —
     /// which records exactly what `LiveKvm` sends (the shared
-    /// [`vcpu_init_features`]). Live PSCI conformance is M4/Altra-verified (the
+    /// [`vcpu_init_features`]). Live PSCI conformance is an M4/msr1 gate (the
     /// Mac has no `/dev/kvm` oracle; `hm-8l3` REFUSE).
     #[test]
     fn vcpu_init_advertises_psci_0_2() {

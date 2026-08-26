@@ -280,8 +280,8 @@ pub fn boot_hvf_control(
 /// later bead (the AA-3 patched backend + the paravirt clock, `hm-rk5`).
 ///
 /// The real `KVM_RUN` boot to a console marker and the same-seed `state_hash`
-/// determinism gate over this pair are **arrival-day**, edged to `hm-7pb` (the
-/// Altra); there is no local KVM loop (`hm-8l3` REFUSE), so this root has no
+/// determinism gate over this pair run natively on msr1 during M4; there is no
+/// local KVM loop (`hm-8l3` REFUSE), so this root has no
 /// local oracle — only the aarch64-linux cross-check compiles it.
 ///
 /// **No interrupt-driven guest boot is claimed here** (`tasks/112` M2 §Delivery).

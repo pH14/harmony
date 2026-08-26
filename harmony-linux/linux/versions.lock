@@ -10,6 +10,13 @@ BUSYBOX_VERSION=1.38.0
 BUSYBOX_URL=https://busybox.net/downloads/busybox-1.38.0.tar.bz2
 BUSYBOX_SHA256=34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2
 
+# musl supplies the fully owned static C runtime for M2's arm64 game image.
+# Pinned 2026-08-26; the hash matches the official release tarball and the
+# independently published Buildroot source hash.
+MUSL_VERSION=1.2.6
+MUSL_URL=https://musl.libc.org/releases/musl-1.2.6.tar.gz
+MUSL_SHA256=d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a
+
 # PostgreSQL for the bare-Postgres workload image (task 37). We vendor the Debian
 # trixie .debs (server + client + libpq) by URL+sha256 — same pin-then-verify
 # discipline as the kernel/busybox. PostgreSQL 17.10 is the trixie security build;

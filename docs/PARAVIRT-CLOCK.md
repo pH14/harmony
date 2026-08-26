@@ -347,8 +347,8 @@ work count (`consonance/vmm-backend/src/kvm.rs:520`, capability `deterministic_t
 There is no RDTSC-equivalent trap available on the reachable silicon, so closure is structural,
 not interception-based:
 
-- **ECV is a probed fast-path, never a dependency.** No reachable ARM server chip has FEAT_ECV:
-  Ampere Altra / Neoverse N1 is Armv8.2; Graviton 3 (Neoverse V1) and Graviton 4 / Grace
+- **ECV is a probed fast-path, never a dependency.** No qualified ARM server chip has FEAT_ECV:
+  the historical Neoverse N1 host is Armv8.2; Graviton 3 (Neoverse V1) and Graviton 4 / Grace
   (Neoverse V2) both lack it (`docs/ARM-PORT.md:30`, table + §1). Where silicon *does* have ECV
   (e.g. DGX Spark's Cortex-X925, Armv9.2 — `docs/ARM-PORT.md:33`), the vmm may set
   `CNTHCTL_EL2.EL0VCTEN=0` to trap `CNTVCT_EL0` as an extra guard — but this is **recorded as a
@@ -405,7 +405,7 @@ out of contract; Reproducers are secret-bearing artifacts (test workloads only).
 Ruled and adopted. Build: the seed-pure CRNG + reachability gate
 (`hm-kz9v`); the schedule half is tracked in the delivery lane (`hm-sp8v`), not here. AA-5(c)
 accordingly claims the clock mechanism + entropy input-closure, **not** full-RAM identity — see
-`docs/ARM-ALTRA.md` §AA-5.
+the historical task-100 AA-5 record in git history.
 
 ---
 
@@ -507,7 +507,7 @@ What result invalidates the design (and which vendor it kills):
 
 ## 8. Relationship to the ARM vendor spike (`tasks/100`)
 
-This spec is the design; `docs/ARM-ALTRA.md` (bead `hm-x8g`, task 100) is the consumer that
+This spec is the design; the historical task-100 record (bead `hm-x8g`) is the consumer that
 **validates** it on real N1 silicon. Task 100 §1 names the paravirt work-derived clock as its
 time-virtualization centerpiece and defers the design here; the division is: this doc rules
 *what the page is and how it closes*, the spike rules *which stage boots a guest whose only

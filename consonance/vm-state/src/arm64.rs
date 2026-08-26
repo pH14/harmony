@@ -6,8 +6,9 @@
 //! **A minimal, skeleton record set** (`tasks/112` M1): the core registers, a
 //! small named EL1 system-register file, and the arch-neutral engine blocks —
 //! enough to encode/decode a trivial vCPU state and round-trip it through the
-//! container. **Which sysregs an arm64 snapshot must carry is AA-6's measured
-//! decision** (`docs/ARM-ALTRA.md`); the full record set is `TODO(AA-6)` and
+//! container. **Which sysregs an arm64 snapshot must carry is M4's measured
+//! decision** (`docs/PRESCRIPTIVE-VTIME.md`); the full record set is
+//! `TODO(AA-6)` and
 //! lands under a bumped section layout, never guessed here.
 //! designed-not-frozen (AA-3).
 //!

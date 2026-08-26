@@ -40,6 +40,13 @@ silently ring an unrelated mapping. The request and response page ABI is unchang
 the canonical four-page control slot at GPA `0xC000`; the ABI pages remain at `0xE000` and
 `0xF000`, while the MMIO trap itself remains the board doorbell frame at `0x0A00_0000`.
 
+Linux/aarch64 reaches the low reserved control slot through `/dev/mem`, whose mapping is
+device-typed on the production image. Consequently the transport marshals those pages with
+aligned volatile `u64` scalar accesses (and byte tails), never a compiler-selected bulk
+`memcpy`/`memset`: musl's paired AArch64 loads/stores are not valid for that device mapping and
+raise `SIGBUS` under HVF. Ordinary caller buffers still use unaligned scalar accesses. This is a
+memory-access requirement only; the frozen page layout and frame bytes do not change.
+
 This does not replace the x86 decision or overload the shared data pages with device semantics.
 It is the architecture-native implementation of the same one-exit, synchronous `IoDoorbell`
 contract. The production guest maps the board register as device memory and passes its address to
@@ -67,12 +74,14 @@ The doorbell carries **no pointer** (an `OUT` cannot pass two 64-bit GPAs), so t
 live at fixed GPAs the contract reserves and the VMM maps. One exchange is a **single `OUT` VM
 exit** (synchronous, single in-flight, **wait-free** — one exit, no spinning, no retries):
 
-1. The guest writes its request frame into `REQ_GPA`.
+1. The guest zeroes the shared pages and writes its request frame into `REQ_GPA` through aligned
+   volatile scalar accesses.
 2. `OUT DOORBELL_PORT, EAX` with `EAX` = request length → `Exit::Io { write: Some(len) }`; the host
    reads `len` bytes from `REQ_GPA`, runs `Dispatcher::dispatch`, writes the response **frame** into
    `RESP_GPA`, and resumes at the next instruction (an `OUT` needs no completion).
 3. `exchange` reads the response length straight from the response-frame header in `RESP_GPA`
-   (`HEADER_LEN + payload_len`) and copies that many bytes out. A response page that does not begin
+   (`HEADER_LEN + payload_len`) and copies that many bytes out through volatile scalar reads. A
+   response page that does not begin
    with the frame magic (the host wrote nothing → step 3's zeros remain) ⇒ `HostRejected`.
 
 **Atomicity.** One exit means the host fully services the exchange and holds **no pending state
@@ -219,9 +228,11 @@ volatile `u32` store.
 
 - **Pages held as raw pointers, never `&mut [u8]` fields.** The host writes the response page
   out-of-band during the doorbell, so a Rust reference held across `IoDoorbell::ring` would be
-  aliasing UB. `VmcallTransport` stores `*mut u8` and touches the pages only with
-  `core::ptr::{copy_nonoverlapping, write_bytes}`; no borrow to either page is live across the
-  call. The same rule binds the loopback host.
+  aliasing UB. `VmcallTransport` stores `*mut u8` and touches shared pages only through aligned
+  volatile scalar reads/writes; no borrow to either page is live across the call. This also keeps
+  Linux/aarch64 `/dev/mem` device mappings free of bulk or paired accesses. Ordinary slice memory
+  is read/written with unaligned scalar operations. The same raw-page rule binds the loopback
+  host.
 - **The `u64` bound check is the load-bearing property.** The response length comes from the
   host-written frame header: `total = HEADER_LEN as u64 + payload_len as u64`, where `payload_len`
   is an attacker-controlled `u32`. `exchange` compares `total > PAGE_SIZE` and `total > resp.len()`
@@ -240,8 +251,8 @@ volatile `u32` store.
   response shorter than the page leaves zeros in the tail, never a stale prior frame.
 - **`unsafe` is confined to three granted purposes**, each with a `// SAFETY:` comment: (a) the
   `OUT` `asm!` in `RealIoDoorbell`, (b) the one volatile device-register write in `MmioDoorbell`,
-  and (c) reading/writing the shared pages through their GPAs (in `exchange` — including the
-  in-page header read — and the same in the loopback/scripted test hosts).
+  and (c) scalar volatile reading/writing of the shared pages through their GPAs (in `exchange` —
+  including the in-page header read — and the same in the loopback/scripted test hosts).
 - **No `Default` for `VmcallTransport`** (only for the invariant-free `RealIoDoorbell`): a safe
   `Default` would manufacture a transport without the unsafe GPA/page invariants, after which safe
   `exchange()` could reach UB.

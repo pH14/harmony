@@ -5,15 +5,19 @@
 //! (`buttons`, `hold_frames`), clocks the same TetaNES configuration as the
 //! in-process `machine::nes::NesMachine`, mirrors all 2 KiB of WRAM, and emits
 //! the cumulative frame count. Input is consumed once per chord; the yield is
-//! emitted only after the whole hold, creating the pre-next-fetch snapshot
-//! boundary required by the control client.
+//! emitted after the whole hold or the first observation-layer death/victory
+//! frame, creating the pre-next-fetch snapshot boundary required by the control
+//! client.
 
 use std::io::Cursor;
 
 use tetanes_core::{
-    control_deck::{Config, ControlDeck, HeadlessMode},
-    input::{JoypadBtnState, Player},
+    apu::Apu,
+    common::NesRegion,
+    control_deck::{Config, ControlDeck, HeadlessMode, MapperRevisionsConfig},
+    input::{FourPlayer, JoypadBtnState, Player},
     memory::RamState,
+    video::VideoFilter,
 };
 
 /// Size of the NES CPU work RAM mirrored into the host-readable guest page.
@@ -22,6 +26,34 @@ pub const WRAM_SIZE: usize = 2 * 1024;
 pub const MAX_HOLD_FRAMES: u8 = 120;
 /// One ordinary Linux page; the WRAM mirror fits wholly within it.
 pub const GUEST_PAGE_SIZE: usize = 4096;
+
+const PLAYER_ENGINE_STATE_OFFSET: usize = 0x000e;
+const PLAYER_KILLED_STATE: u8 = 0x0b;
+const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
+const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
+const WORLD_NUMBER_OFFSET: usize = 0x075f;
+const OPERATING_MODE_OFFSET: usize = 0x0770;
+const VICTORY_OPERATING_MODE: u8 = 2;
+const FINAL_WORLD_NUMBER: u8 = 7;
+
+fn deterministic_config() -> Config {
+    Config {
+        filter: VideoFilter::default(),
+        region: NesRegion::Auto,
+        ram_state: RamState::AllZeros,
+        four_player: FourPlayer::default(),
+        zapper: false,
+        genie_codes: Vec::new(),
+        concurrent_dpad: false,
+        channels_enabled: [true; Apu::MAX_CHANNEL_COUNT],
+        headless_mode: HeadlessMode::NO_AUDIO | HeadlessMode::NO_VIDEO,
+        sram_dir: None,
+        mapper_revisions: MapperRevisionsConfig::default(),
+        emulate_ppu_warmup: false,
+        run_ahead: 0,
+        clear_audio_on_clock: true,
+    }
+}
 
 /// SDK operations needed by the emulator loop.
 pub trait Channel {
@@ -60,13 +92,7 @@ impl Agent {
     ///
     /// Returns an emulator error when TetaNES rejects the ROM.
     pub fn from_rom_bytes(rom: &[u8]) -> Result<Self, AgentError<core::convert::Infallible>> {
-        let mut deck = ControlDeck::with_config(Config {
-            ram_state: RamState::AllZeros,
-            headless_mode: HeadlessMode::NO_AUDIO | HeadlessMode::NO_VIDEO,
-            sram_dir: None,
-            run_ahead: 0,
-            ..Config::default()
-        });
+        let mut deck = ControlDeck::with_config(deterministic_config());
         deck.load_rom("campaign.nes", &mut Cursor::new(rom))
             .map_err(|error| AgentError::Emulator(error.to_string()))?;
         Ok(Self {
@@ -94,9 +120,9 @@ impl Agent {
         Ok(())
     }
 
-    /// Fetch and execute one complete chord, publish WRAM, then report its
-    /// cumulative ending frame. The next payload fetch does not begin until
-    /// this call returns.
+    /// Fetch and execute one chord through its hold or the first observed
+    /// death/victory frame, publish WRAM, then report its cumulative ending
+    /// frame. The next payload fetch does not begin until this call returns.
     ///
     /// # Errors
     ///
@@ -124,6 +150,9 @@ impl Agent {
                 ));
             }
             self.frame_count = self.frame_count.saturating_add(1);
+            if terminal_observed(self.deck.wram()) {
+                break;
+            }
         }
         self.deck.joypad_mut(Player::One).buttons = JoypadBtnState::empty();
         self.mirror_wram(mirror)?;
@@ -132,6 +161,14 @@ impl Agent {
             .map_err(AgentError::Channel)?;
         Ok(self.frame_count)
     }
+}
+
+fn terminal_observed(wram: &[u8]) -> bool {
+    let dead = wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
+        || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE;
+    let victory = wram[OPERATING_MODE_OFFSET] == VICTORY_OPERATING_MODE
+        && wram[WORLD_NUMBER_OFFSET] == FINAL_WORLD_NUMBER;
+    dead || victory
 }
 
 /// Byte offset of a virtual address's entry in `/proc/self/pagemap`.
@@ -198,6 +235,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "a complete interpreted TetaNES frame is prohibitively slow under Miri"
+    )]
     fn one_fetch_and_one_yield_bound_each_complete_chord() {
         let mut channel = Tape {
             payloads: [[0x81, 0], [0, 4], [0x02, u8::MAX]].into(),
@@ -213,6 +254,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "a complete interpreted TetaNES frame is prohibitively slow under Miri"
+    )]
     fn guest_loop_matches_an_independent_tetanes_deck_at_every_chord_boundary() {
         let rom = synthetic_nrom();
         let actions = [[0x01, 3], [0x80, 2], [0, 7], [0x42, 4]];
@@ -223,13 +268,7 @@ mod tests {
         let mut agent = Agent::from_rom_bytes(&rom).unwrap();
         let mut mirror = [0_u8; WRAM_SIZE];
 
-        let mut reference = ControlDeck::with_config(Config {
-            ram_state: RamState::AllZeros,
-            headless_mode: HeadlessMode::NO_AUDIO | HeadlessMode::NO_VIDEO,
-            sram_dir: None,
-            run_ahead: 0,
-            ..Config::default()
-        });
+        let mut reference = ControlDeck::with_config(deterministic_config());
         reference
             .load_rom("campaign.nes", &mut Cursor::new(&rom))
             .unwrap();
@@ -260,5 +299,24 @@ mod tests {
         );
         let too_large = present | ((1_u64 << 55) - 1);
         assert!(decode_pagemap_entry(too_large, 0xfff).is_err());
+    }
+
+    #[test]
+    fn terminal_observation_matches_the_search_target_boundary() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        assert!(!terminal_observed(&wram));
+
+        wram[PLAYER_ENGINE_STATE_OFFSET] = PLAYER_KILLED_STATE;
+        assert!(terminal_observed(&wram));
+        wram[PLAYER_ENGINE_STATE_OFFSET] = 0;
+
+        wram[PLAYER_VERTICAL_PAGE_OFFSET] = PLAYER_BELOW_PLAY_AREA_PAGE;
+        assert!(terminal_observed(&wram));
+        wram[PLAYER_VERTICAL_PAGE_OFFSET] = 0;
+
+        wram[OPERATING_MODE_OFFSET] = VICTORY_OPERATING_MODE;
+        assert!(!terminal_observed(&wram));
+        wram[WORLD_NUMBER_OFFSET] = FINAL_WORLD_NUMBER;
+        assert!(terminal_observed(&wram));
     }
 }

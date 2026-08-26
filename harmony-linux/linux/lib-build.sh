@@ -70,6 +70,9 @@ KOBJ=$BUILD_ROOT/kernel-build
 BBSRC=$BUILD_ROOT/busybox-$BUSYBOX_VERSION
 BBOBJ=$BUILD_ROOT/busybox-build
 ARM64_KOBJ=$BUILD_ROOT/kernel-build-arm64
+MUSLSRC=$BUILD_ROOT/musl-$MUSL_VERSION
+ARM64_GAME_MUSL_SRC=$BUILD_ROOT/musl-arm64-game-src
+ARM64_GAME_MUSL_PREFIX=$BUILD_ROOT/musl-arm64-game-prefix
 
 # Reproducibility levers (task spec): fixed timestamp/user/host/version, fixed
 # SOURCE_DATE_EPOCH, no kconfig header timestamps. LOCALVERSION is fixed in
@@ -124,4 +127,34 @@ extract_kernel() {
 
 extract_busybox() {
     verify_and_extract "$DL_DIR/$(basename "$BUSYBOX_URL")" "$BUSYBOX_SHA256" "$BBSRC"
+}
+
+extract_musl() {
+    verify_and_extract "$DL_DIR/$(basename "$MUSL_URL")" "$MUSL_SHA256" "$MUSLSRC"
+}
+
+# Build the M2 userspace C runtime from pristine pinned source on every run.
+# The upstream aarch64 atomics use LL/SC directly, so the Harmony-only patch
+# replaces their public CAS primitives with acquire-release LSE CAS.
+build_arm64_game_musl() {
+    extract_musl
+    rm -rf "$ARM64_GAME_MUSL_SRC" "$ARM64_GAME_MUSL_PREFIX"
+    cp -a "$MUSLSRC" "$ARM64_GAME_MUSL_SRC"
+    patch -d "$ARM64_GAME_MUSL_SRC" --batch -p1 \
+        <"$LINUX_DIR/patches/musl/0001-aarch64-harmony-lse-only-atomics.patch"
+    (
+        cd "$ARM64_GAME_MUSL_SRC" || exit
+        CC=cc CFLAGS='-O2 -march=armv8.1-a+lse -mno-outline-atomics' \
+            ./configure --prefix="$ARM64_GAME_MUSL_PREFIX" --disable-shared >/dev/null
+        make -j"$(nproc)" >/dev/null
+        make install >/dev/null
+    )
+    [ -x "$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc" ] || {
+        echo "FAIL: arm64 game musl compiler wrapper was not installed" >&2
+        exit 1
+    }
+    [ -f "$ARM64_GAME_MUSL_PREFIX/lib/libc.a" ] || {
+        echo "FAIL: arm64 game static musl runtime was not installed" >&2
+        exit 1
+    }
 }

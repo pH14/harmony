@@ -8,8 +8,8 @@
 //!
 //! This is the `docs/ARCH-BOUNDARY.md` §D pre-build skeleton (`hm-cbt`): built
 //! against the *unfrozen* trait (designed-not-frozen — AA-3's trait-freeze memo
-//! owns the freeze), trusted only once the Altra spike (`docs/ARM-ALTRA.md`)
-//! returns GO. Every constant the spike measures is a named `TODO(AA-N)`,
+//! owns the freeze), trusted only once M4's native msr1 validation returns GO.
+//! Every measured constant is a named `TODO(AA-N)`,
 //! never a default; the one number stated here as fact — `BR_RETIRED` raw
 //! event `0x21` — is a documented hardware fact (Arm ARM PMU event
 //! enumeration), not a measurement.

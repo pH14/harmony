@@ -153,9 +153,11 @@ dependency rather than silently weakening the criterion.
     the exact eight-byte payload and defers a `SnapshotPoint`; the socket client
     independently validates a strictly increasing counter, sends no control-wire
     deadline, and advances until the first chord-boundary report at or beyond the
-    requested frame. The following payload fetch is the synchronized pre-consume
-    boundary, so a continuation snapshot never resumes from an already-failed
-    exhaustion response.
+    requested frame. The guest follows `setup_complete` and every
+    `frame_complete` with a volatile read of the board pvclock ABI register. That
+    already-modeled MMIO exit is the synchronized pre-consume boundary, so a
+    continuation snapshot never resumes after consuming or exhausting the next
+    input.
 22. **M2 has a distinct userspace-capable image, with no relaxation of M1's
     executable-image admission rule.** The sealed minimal M1 `Image` and object
     tree remain untouched. `Image-game` layers only the proc/futex/devmem/tmpfs
@@ -224,7 +226,7 @@ dependency rather than silently weakening the criterion.
 30. **The live M2 oracle is one fail-closed, byte-attested operation.**
     `prescriptive-m2-oracle.sh` builds and entitlement-signs the production HVF
     listener and searcher tools, runs the external-ROM `smb-smoke` gate, then
-    runs two 4,096-job one-worker campaigns at the same seed, requires
+    runs two caller-budgeted one-worker campaigns at the same seed, requires
     byte-identical archives, streams, reports, and snapshot checkpoints, and
     replays the first campaign through a fresh VM. It rejects any false smoke
     invariant, fewer than 2,000 continuation restores, or any absent genesis
@@ -263,11 +265,10 @@ dependency rather than silently weakening the criterion.
     bytes. A planted failure on the reset read proves the production path fails
     closed instead of allowing the former zero-filled fallback to reach the
     cross-build comparator.
-34. **The native ARM build host is Linux/aarch64, not Ampere Altra.** The
-    prescriptive contract is architecture-based and the available `msr1` host
-    is Linux/aarch64 on a CIX P1 (Cortex-A520/A720) with LSE. Build entry points
-    now name that actual requirement and validated host; historical Altra/KVM
-    evidence outside this M2 build path remains unchanged.
+34. **The native ARM build host is msr1.** The prescriptive contract is
+    architecture-based, and the validated host is Linux/aarch64 on a CIX P1
+    with Cortex-A520/A720 cores and LSE. Build entry points name that actual
+    requirement and validated host.
 35. **The M2 game profile requests TMPFS's SHMEM dependency explicitly.** The
     first native msr1 build proved the prior profile could not pass its own
     `CONFIG_TMPFS=y` publication gate because `tinyconfig` had explicitly
@@ -284,6 +285,68 @@ dependency rather than silently weakening the criterion.
     zero live-counter programs and zero LL/SC instructions, and `Image-game`
     published at 3,209,224 bytes with SHA-256
     `c98c7b660abd550d9de120975132935204c6409799b3b01c33a17341d9d164fc`.
+37. **The arm64 control pages use volatile scalar marshalling.** Linux maps the
+    low reserved request/response GPAs through `/dev/mem` as device memory. The
+    production guest's first catalog call previously died with `SIGBUS` at musl
+    `memcpy` (`PC 0x4a99f0`, caller
+    `hypercall_proto::Client::exchange_copy` at `0x40a67c`) because the routine
+    selected paired AArch64 stores. The same static agent ran natively on `msr1`
+    through emulator initialization and failed only later at the expected
+    pagemap-PFN privilege check, isolating the device mapping. The transport now
+    zeroes and copies shared pages with aligned volatile `u64` accesses plus byte
+    tails; ordinary buffers use unaligned scalar accesses. The wire bytes and
+    ABI are unchanged. Native tests, strict clippy, and the pinned Miri suite are
+    green, and the rebuilt whole image remains clean under the independent
+    LL/SC and counter scanners.
+38. **Every SDK lifecycle event has an explicit post-doorbell synchronization
+    intercept.** A lifecycle doorbell is intentionally unsynchronized, so
+    deferring `setup_complete` to the next payload fetch captured the guest after
+    it had already received `UnknownService`; doing the same after
+    `frame_complete` let an exhaustion request beat the logical-frame deadline.
+    The agent maps the board pvclock register frame before setup and, immediately
+    after setup and every frame report, reads its ABI register. The read is an
+    already-modeled MMIO exit and must return ABI 1. A live trace showed the
+    snapshot point on that MMIO exit before every subsequent payload request;
+    the focused one-job campaign completed both control sessions with one
+    continuation and two genesis restores.
+39. **An early chord yield is terminal only when WRAM independently says so.**
+    The 2,000-job oracle's first non-setup failure occurred deterministically at
+    job 27: both builds reported death, but the guest had executed one extra
+    frame because it always finished the hold. The SMB guest observation layer
+    now stops at the first death/victory frame, matching the existing search
+    target. The socket adapter arms the lifecycle stop explicitly, accounts the
+    reported partial frame delta, and accepts it only when the published WRAM
+    independently reports death or victory; a committed negative rejects an
+    unexplained early yield. A 40-job real-ROM rerun crossed four deaths with 82
+    continuation restores and exact guest/in-process agreement.
+40. **Campaign length and snapshot churn are independent live gates.** The
+    prescriptive criterion requires thousands of branch/replay cycles, not a
+    particular job count. A 2,000-job calibration crossed 2,052 continuation
+    restores by job 910 but correctly hit the original 1,800-second campaign
+    watchdog at job 1,188. The runner therefore accepts any positive explicit
+    execution budget and retains the independent hard post-run floor of 2,000
+    continuation restores plus at least one genesis restore. The sealed
+    900-job run completed 2,031 continuation restores inside the same watchdog;
+    reducing the budget cannot make an under-churn run pass.
+41. **Empty lineage is gameplay genesis even when a transient handle exists.**
+    A live root archive snapshot carried a session-local handle distinct from
+    the internally marked genesis handle. Live execution happened to rebuild it
+    through durable lineage, while a fresh replay used the transient handle and
+    reported two continuation restores instead of one genesis plus one
+    continuation restore. Root restoration now always replays the marked
+    gameplay-genesis handle before consulting the live-handle cache. A focused
+    unit test proves identical class-separated deltas before and after snapshot
+    serialization, and the corrected fresh-VM verifier replayed all 900 jobs.
+42. **Future milestone validation is claim-based.** Each load-bearing claim gets
+    one meaningful positive oracle, one planted negative, and one genuinely
+    independent comparator. Broad workspace checks and exhaustive seed sweeps
+    belong in CI/nightly unless a result is directly load-bearing for the
+    milestone being sealed.
+43. **The remaining milestone dependency order is strict.** After sealed M2,
+    M3 measures real-payload liveness and performance; M4 completes the ARM64
+    KVM backend on msr1; M5 proves bidirectional HVF↔KVM cross-host determinism
+    and snapshot portability; and M6 runs the instrumented concurrency-discovery
+    measurement. A later milestone does not begin before its predecessor seals.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -641,31 +704,15 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
 
 ## M2 — NES campaign on the M1 Max
 
-- **IN PROGRESS — guest payload and control-protocol `Machine` client:** the
-  architecture-native arm64 `MmioDoorbell` and the HVF-aligned, fully retained
-  control-memory composition are implemented. The focused portable suite passed
-  583/583 tests (5 skipped), and the signed live probe produced the measured
-  `HVF_CONTROL_MAP_OK` evidence recorded in decision 18. The generic environment,
-  doorbell protocol, VMM service, snapshot/replay carry, live-suffix reproducer,
-  and control-loop negative oracles are implemented. The focused substrate suite
-  is green (environment, hypercall-proto, and vmm-core), including the control test
-  that alters one chord and proves the whole-state comparator fires. The arm64
-  generic control-protocol `Machine` client is implemented and closes against a
-  real `ControlServer<MockBackend>` over a Unix socket. The imported PR #193
-  searcher remains green against the shared version-7 bytes. The portable arm64
-  guest agent now runs the same pinned TetaNES configuration, consumes exactly
-  one payload per chord, mirrors complete WRAM, and reports cumulative frames at
-  chord boundaries. Its live Linux/aarch64 `/dev/mem` composition and separate
-  fail-closed image builder are present. The external ROM is now located and its
-  real in-process smoke is green. The native Linux/aarch64 image build on msr1 and live M1-Max
-  execution remain open, so this criterion is not yet a pass. The
-  searcher now exposes the same campaign through `--control-socket`, requires
-  exactly one worker per mutable VMM session, records a distinct durable remote
-  checkpoint format, and can replay a recorded stream through a fresh session.
-  The Apple-HVF listener composition is now present and compile/lint clean; the
-  missing native Linux/aarch64 image and ROM-bearing initramfs remain the live blockers.
-  The live oracle runs and validates the existing real-ROM `smb-smoke` report
-  before it starts either production campaign.
+- **PASS — guest payload, control-protocol `Machine` client, and complete live
+  campaign oracle.** The native Linux/aarch64 build on `msr1` produced the
+  LSE-only game kernel and static musl/TetaNES initramfs. The signed Apple-HVF
+  composition booted that image on the M1 Max and completed the external-ROM
+  smoke, two same-seed 900-job campaigns, 32 retained continuation samples, and
+  a complete 900-job replay through a fresh VM. The production socket target
+  compared the guest and independent in-process TetaNES build at genesis, every
+  chord boundary, and every restore. All fail-closed gates and planted negatives
+  described below remain green; no M3 work began before this result was sealed.
 
 ### M2 payload-substrate checkpoint evidence
 
@@ -722,7 +769,7 @@ cd dissonance && cargo test -p machine
 12 passed (11 unit + 1 real control-server socket integration)
 
 cargo test --manifest-path harmony-linux/tetanes-agent/Cargo.toml --locked
-3 passed; 0 failed
+4 passed; 0 failed
 
 cargo check --manifest-path harmony-linux/tetanes-agent/Cargo.toml \
   --target aarch64-unknown-linux-gnu --locked
@@ -731,6 +778,11 @@ exit status 0
 cargo clippy --manifest-path harmony-linux/tetanes-agent/Cargo.toml \
   --all-targets -- -D warnings
 exit status 0 (pre-existing clippy.toml invalid-path notice only)
+
+MIRIFLAGS=-Zmiri-permissive-provenance \
+  cargo +nightly-2026-06-16 miri test \
+  --manifest-path harmony-linux/tetanes-agent/Cargo.toml
+2 passed; 0 failed; 2 TetaNES frame tests intentionally ignored under Miri
 ```
 
 The committed negatives reject seven- and nine-byte `frame_complete` payloads
@@ -745,7 +797,7 @@ guest differential compares an independently configured TetaNES deck's full
 ```text
 cd dissonance
 cargo test -p searcher --lib smb::remote
-8 passed; 0 failed
+11 passed; 0 failed
 
 cargo test -p searcher --lib smb::campaign::tests
 21 passed; 0 failed (706.00 s; includes the 24-seed live/replay sweep)
@@ -792,8 +844,8 @@ the same restore fail loudly.
 The production checkpoint sampler applies that same uninterrupted/restore/repeat
 comparison to 32 evenly spaced, non-genesis retained branch points. Its focused
 negative corrupts only the first replayed chord hash and is rejected at chord
-index zero; the external-ROM execution remains blocked rather than inferred from
-this portable proof.
+index zero; the external-ROM execution below supplies the independent production
+evidence rather than being inferred from this portable proof.
 The production socket backend now pairs every external guest target with the
 independent in-process build, compares full WRAM and terminal state at genesis,
 after every chord, and after every paired restore, and makes divergence a hard
@@ -832,32 +884,45 @@ shellcheck harmony-linux/scripts/prescriptive-m2-oracle.sh \
 plutil -lint consonance/vmm-backend/hvf.entitlements.plist
 exit status 0; plist OK
 
-uname -s; uname -m
-Darwin
-arm64
-external ROM:
-  /Users/phemberger/Downloads/Super Mario Bros. (World)/Super Mario Bros. (World).nes
-ROM sha256:
-  0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea
-MISSING harmony-linux/build/arm64/Image-game
-MISSING harmony-linux/build/arm64/initramfs-game.cpio.gz
-MISSING harmony-linux/build/arm64/initramfs-game.rom.sha256
-
 harmony-linux/scripts/prescriptive-m2-oracle.sh \
   harmony-linux/build/arm64/Image-game \
   harmony-linux/build/arm64/initramfs-game.cpio.gz \
   '/Users/phemberger/Downloads/Super Mario Bros. (World)/Super Mario Bros. (World).nes' \
   harmony-linux/build/arm64/initramfs-game.rom.sha256 \
-  /private/tmp/harmony-m2-live-oracle-rom-found
-exit status 1: FAIL: required M2 artifact is missing or empty:
-  harmony-linux/build/arm64/Image-game
+  /private/tmp/harmony-m2-oracle-final-root-classification 900
+
+M2_CAMPAIGN_ORACLE_OK
+campaign_seed=0x5eedca22
+execution_budget=900
+archive_sha256=b868c1f03d649d4514c21370e5ccb2e0322e52d62fa178b1edc3db7d6feab7c3
+archive_entries=1088
+genesis_restores=8
+continuation_restores=2031
+sampled_branch_points=32
+continuation_chord_hashes=64
+smb_smoke_verified=true
+same_seed_archives=2
+fresh_vm_replay_verified=true
 ```
 
-The game kernel and initramfs builders deliberately require native
-Linux/aarch64, while this measured execution host is macOS/arm64. The external
-SMB ROM is present and independently smoke-tested, but has not yet been packed
-by that native builder. The checked-in runner is ready, but none of its live
-success criteria is credited from structural checks or the prerequisite failure.
+The native msr1 Linux/aarch64 build published Image-game SHA-256
+c98c7b660abd550d9de120975132935204c6409799b3b01c33a17341d9d164fc
+and initramfs SHA-256
+8d674e8f6f7ead55cca0dc1ff2f585a19f0548b529f9e5b8ba1c6209c5907c68.
+The embedded and host ROM both matched SHA-256
+0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea.
+The final whole-image admission scans found no LL/SC instruction and no live
+generic-counter access in the kernel, vDSO, BusyBox, musl, or TetaNES agent.
+
+Both live campaigns completed 900 executions, 57,152 frames, 41 deaths, 1,088
+retained entries, eight genesis restores, and 2,031 continuation restores. The
+runner compared their archive, stream, deterministic report, and complete
+snapshot-checkpoint bytes. The retained stream SHA-256 was
+b304c47d35a6d8df519c8d7919d9082bf2e3af1a0c34b2b583a2503b5ed6d502;
+the fresh-VM replay reproduced report SHA-256
+e261549973e28b794ceb686acd51309e0237cd2d2807c763592fd89b29fb48b4.
+All smoke, campaign, continuation, and replay stderr artifacts were empty, and
+every expected control-server session completed successfully.
 
 ### M2 real-ROM and complete standalone-workspace evidence
 
@@ -878,11 +943,11 @@ cargo build --manifest-path dissonance/Cargo.toml --all-features
 exit status 0
 
 cargo nextest run --manifest-path dissonance/Cargo.toml --all-features
-94 passed; 0 failed; 0 skipped (725.789 s on the corrected dependency graph)
+96 passed; 0 failed; 0 skipped (826.498 s, including the 24-seed replay sweep)
 
 cargo test --manifest-path dissonance/Cargo.toml -p searcher --lib \
   smb::remote::tests
-9 passed; 0 failed (includes the planted reset-read failure)
+11 passed; 0 failed (includes reset-read, early-yield, and root-restore negatives)
 
 cargo clippy --manifest-path dissonance/Cargo.toml \
   --all-features --all-targets -- -D warnings
@@ -897,33 +962,37 @@ cargo deny --manifest-path dissonance/Cargo.toml check
 advisories ok, bans ok, licenses ok, sources ok
 ```
 
-- **BLOCKED — two same-seed archive hashes:** the fail-closed live runner is
-  implemented and the external ROM is present; native Linux/aarch64
-  `Image-game` and ROM-bearing initramfs artifacts are absent.
-- **IN PROGRESS — every archived lineage replays byte-for-byte:** durable
-  lineage reconstruction is implemented and green for focused snapshots; the
-  runner requires byte-identical live/replay archives, reports, and complete
-  checkpoint bytes, but the whole retained real-guest run remains blocked.
-- **IN PROGRESS — snapshot restore counter and uninterrupted-continuation hash
-  oracle:** genesis/continuation counters are now recorded, replay-verified, and
-  tamper-evident. The live runner now requires 32 non-genesis branch samples and
-  records their immediate/per-chord hashes; its comparator and planted negative
-  are green, while executing those samples on the real campaign remains blocked.
-- **IN PROGRESS — in-process/guest/transport cross-build differential:** the
-  production control-socket backend now makes the independent TetaNES comparison
-  mandatory at genesis, every chord, and every restore, with both target-level
-  and campaign-level fail-loud negatives green. The ROM is present and its local
-  smoke is green; the shipped guest-image run remains open.
-- **IN PROGRESS — thousands of mid-workload branch/replay cycles:** the bounded
-  cache eviction oracle crosses 1,024 stored snapshots and the live runner
-  requires at least 2,000 reported continuation restores, but the real campaign
-  has not run.
+- **PASS — two same-seed archive hashes:** both 900-job live runs produced archive
+  SHA-256 `b868c1f03d649d4514c21370e5ccb2e0322e52d62fa178b1edc3db7d6feab7c3`,
+  and the runner also byte-compared their streams, reports, and checkpoints.
+- **PASS — every retained campaign job replays byte-for-byte:** a fresh VM
+  replayed all 900 recorded jobs, reproduced the archive, stream, report, restore
+  counts, frame counts, admission decisions, and checkpoint bytes, and wrote
+  `replay_verified=true`.
+- **PASS — snapshot restore counter and uninterrupted-continuation hash oracle:**
+  both campaigns reported eight genesis and 2,031 continuation restores; replay
+  recomputed the same class-separated deltas. All 32 non-genesis retained branch
+  samples reproduced their immediate state hash and both repeated chord hashes,
+  for 64 matching continuation hashes total.
+- **PASS — in-process/guest/transport cross-build differential:** the production
+  run compared complete WRAM and terminal state between the shipped guest and
+  independent in-process TetaNES build at genesis, every chord, and every paired
+  restore. All 900 jobs completed in both same-seed runs and again in fresh replay.
+- **PASS — thousands of mid-workload branch/replay cycles:** the live report
+  contains 2,031 continuation restores from active retained branch points, above
+  the independent 2,000-cycle floor; the 32 sampled points were all non-genesis.
 - **PASS — altered-chord archive comparator negative:** the input-sensitive ROM
   and one-chord perturbation produce different archive SHA-256 values at one
   otherwise identical seed and policy configuration.
 - **PASS — RAM, vCPU, and GIC/device stored-snapshot corruption negatives:** all
   three seeded corruptions fail at the retained-store integrity boundary before
   decode or VM replacement.
+
+**M2 overall: PASS.** The native LSE-only image, real-ROM smoke, dual-build
+differential, two same-seed campaign artifacts, independent restore-count floor,
+sampled uninterrupted/restored hashes, complete fresh-VM replay, and all
+anti-vacuity negatives are green on the current M2 head. M3 did not begin before
+this evidence was recorded.
 
 ## M3 — liveness on a real payload
 
@@ -933,7 +1002,23 @@ advisories ok, bans ok, licenses ok, sources ok
 - **FAIL — throughput beside descriptive x86:** not started.
 - **FAIL — report demonstrates an unbounded gap and severe slowdown:** not started.
 
-## M4 — instrumented concurrency payload
+## M4 — complete the ARM64 KVM backend on msr1
+
+- **FAIL — KVM/arm64 interrupt-delivery implementation:** not started.
+- **FAIL — M1 boot oracle on the byte-identical image:** not started.
+- **FAIL — GIC save/restore positive, planted negative, and independent
+  comparator:** not started.
+- **FAIL — honest backend capability publication:** not started.
+
+## M5 — bidirectional HVF↔KVM determinism and snapshot portability
+
+- **FAIL — byte-attested bidirectional same-seed normalized logs:** not started.
+- **FAIL — immediate cross-host restore `state_hash` equality:** not started.
+- **FAIL — both-direction uninterrupted continuation comparison:** not started.
+- **FAIL — planted cross-host increment mismatch:** not started.
+- **FAIL — independent architectural-state comparator:** not started.
+
+## M6 — instrumented concurrency-discovery measurement
 
 - **FAIL — SDK threshold protocol:** not started.
 - **FAIL — deliberately racy Go/Rust suite with known schedules:** not started.
@@ -943,24 +1028,27 @@ advisories ok, bans ok, licenses ok, sources ok
 - **FAIL — held-out schedules absent from seeds/fixtures and per-bug report:** not
   started.
 
-## Follow-up F1/F2 (out of current scope)
-
-- **BLOCKED — F1 arm64 KVM delivery:** waits for the `msr1` box to be idle, per the
-  plan of record.
-- **BLOCKED — F2 cross-host portability:** depends on F1 and the same idle box.
-
 ## Repository-wide final gates
 
-- **PASS at M0 — `cargo build --all-features`:** exit status 0.
-- **PASS at M0 — `cargo nextest run --all-features`:** 1236 passed, 25 skipped.
+- **PASS at M2 — `cargo build --all-features`:** exit status 0.
+- **PASS at M2 — `cargo nextest run --all-features`:** 1265 passed, 25 skipped.
   The sandboxed first attempt could not open telemetry's local test socket; the
   unrestricted rerun passed every test.
-- **PASS at M0 — `cargo clippy --all-features --all-targets -- -D warnings`:**
+- **PASS at M2 — `cargo clippy --all-features --all-targets -- -D warnings`:**
   exit status 0 (the pre-existing invalid-path notices from `clippy.toml` remain
   non-fatal).
-- **PASS — `cargo fmt --all -- --check`:** green at M0.
-- **PASS at M0 — `cargo deny check`:** advisories, bans, licenses, and sources all
+- **PASS — `cargo fmt --all -- --check`:** green at M2.
+- **PASS at M2 — `cargo deny check`:** advisories, bans, licenses, and sources all
   green.
+- **PASS at M2 — standalone search workspace:** build, strict clippy, format,
+  deny, and 96-test nextest suite are green; the full seed sweep remains a
+  CI/nightly concern after this directly load-bearing M2 record.
+- **PASS at M2 — unsafe-crate Miri:** pinned Miri passed the hypercall-doorbell
+  loopback suite and the agent's pure tests; full-frame agent tests are explicitly
+  excluded only under Miri.
+- **PASS at M2 — native Linux/aarch64 validation on msr1:** exact-source
+  hypercall-doorbell and agent tests plus strict clippy passed, and published
+  image hashes matched the local build inputs and outputs.
 - **PASS at M0 — Linux-frozen `vmm-core` public API:** exact cross-target match.
 - **PASS at M0 — coverage ratchet:** 94.76% workspace region coverage against the
   workflow's 90% floor; the new module measures 90.08%.

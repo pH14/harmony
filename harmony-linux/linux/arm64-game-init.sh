@@ -7,10 +7,18 @@ BB=/bin/busybox
 
 $BB mount -t proc proc /proc
 $BB mount -t sysfs sysfs /sys
+# The sealed HVF board deliberately has only an early PL011 console. Route PID
+# 1 and the agent through kmsg, which printk forwards to that early console.
+# Seed the nodes so diagnostics survive even if the explicit devtmpfs mount
+# fails; a successful mount replaces them with kernel-managed nodes.
+$BB mknod -m 0600 /dev/kmsg c 1 11 2>/dev/null
+$BB mknod -m 0666 /dev/null c 1 3 2>/dev/null
 $BB mount -t devtmpfs dev /dev 2>/dev/null
-$BB chmod 0666 /dev/console
+$BB chmod 0600 /dev/kmsg
+$BB chmod 0666 /dev/null
+exec </dev/null >/dev/kmsg 2>&1
 
-if [ ! -f /opt/harmony/smb.nes ]; then
+if ! $BB cat /opt/harmony/smb.nes >/dev/null 2>&1; then
     echo "TETANES_GAME_SKIP: HARMONY_SMB_ROM was unset; live M2 cannot run"
     exec $BB halt -f
 fi
@@ -20,7 +28,7 @@ echo "TETANES_AGENT_READY: launching TetaNES payload"
 /opt/harmony/harmony-tetanes-agent /opt/harmony/smb.nes
 rc=$?
 echo "TETANES_AGENT_EXIT: rc=$rc"
-if [ "$rc" != 0 ]; then
-    exec $BB reboot -f
-fi
-exec $BB halt -f
+case "$rc" in
+    0) exec $BB halt -f ;;
+    *) exec $BB reboot -f ;;
+esac
