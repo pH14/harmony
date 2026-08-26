@@ -340,6 +340,29 @@ pub struct VtimeWiring {
 }
 
 impl VtimeWiring {
+    /// Build assigned-at-exit V-time wiring with its work source permanently at
+    /// zero.  Prescriptive advancement carries the whole clock in `vns_base`
+    /// through [`VtimeWiring::advance_prescriptive`]; no hardware or scripted
+    /// retired-work count participates.
+    pub fn new_prescriptive(cfg: VClockConfig, seed: u64) -> Result<VtimeWiring, VmmError> {
+        Self::new(cfg, Box::new(crate::work::ScriptedWork::new()), seed)
+    }
+
+    /// Assign `vns_delta` at an exit while holding measured work at zero.
+    ///
+    /// This is the only clock mutation used by the prescriptive run loop.  It
+    /// deliberately delegates to [`VClock::advance_idle`], the existing
+    /// prescriptive/base-clock mutation, and saturates rather than wrapping.
+    pub fn advance_prescriptive(&mut self, vns_delta: u64) {
+        self.clock.advance_idle(vns_delta);
+        self.last_intercept_work = 0;
+    }
+
+    /// Current assigned V-time, always evaluated at work zero.
+    pub fn prescriptive_vns(&self) -> u64 {
+        self.clock.vns(0)
+    }
+
     /// Build the wiring from a clock config, a work source, and an entropy seed.
     ///
     /// **Fails closed on a fractional work→ns ratio** (`ratio_den != 1`):

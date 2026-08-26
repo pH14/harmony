@@ -52,6 +52,114 @@ pub fn vmm_core::exec::ExecSession::is_done(&self) -> bool
 pub fn vmm_core::exec::ExecSession::new(&str, u64) -> vmm_core::exec::ExecSession
 pub fn vmm_core::exec::ExecSession::truncated(&self) -> bool
 pub const vmm_core::exec::MAX_CAPTURE: usize
+pub mod vmm_core::prescriptive
+pub enum vmm_core::prescriptive::DeviceClass
+pub vmm_core::prescriptive::DeviceClass::InterruptController
+pub vmm_core::prescriptive::DeviceClass::Paravirtual
+pub vmm_core::prescriptive::DeviceClass::Serial
+pub enum vmm_core::prescriptive::LogField
+pub vmm_core::prescriptive::LogField::Class
+pub vmm_core::prescriptive::LogField::EventIndex
+pub vmm_core::prescriptive::LogField::Interrupts
+pub vmm_core::prescriptive::LogField::Length
+pub vmm_core::prescriptive::LogField::PayloadDigest
+pub vmm_core::prescriptive::LogField::StateHash
+pub vmm_core::prescriptive::LogField::VnsAfter
+pub enum vmm_core::prescriptive::NormalizedEventClass
+pub vmm_core::prescriptive::NormalizedEventClass::DeviceMmio(vmm_core::prescriptive::DeviceClass)
+pub vmm_core::prescriptive::NormalizedEventClass::Doorbell
+pub vmm_core::prescriptive::NormalizedEventClass::Idle
+pub vmm_core::prescriptive::NormalizedEventClass::Terminal
+pub vmm_core::prescriptive::NormalizedEventClass::TimeRead
+pub enum vmm_core::prescriptive::PlacementViolation
+pub vmm_core::prescriptive::PlacementViolation::BadEventIndex
+pub vmm_core::prescriptive::PlacementViolation::BadEventIndex::actual: u64
+pub vmm_core::prescriptive::PlacementViolation::BadEventIndex::position: u64
+pub vmm_core::prescriptive::PlacementViolation::Undelivered
+pub vmm_core::prescriptive::PlacementViolation::Undelivered::deadline_vns: u64
+pub vmm_core::prescriptive::PlacementViolation::Undelivered::schedule_index: u64
+pub vmm_core::prescriptive::PlacementViolation::VtimeRegressed
+pub vmm_core::prescriptive::PlacementViolation::VtimeRegressed::after: u64
+pub vmm_core::prescriptive::PlacementViolation::VtimeRegressed::before: u64
+pub vmm_core::prescriptive::PlacementViolation::VtimeRegressed::event_index: u64
+pub vmm_core::prescriptive::PlacementViolation::WrongDelivery
+pub vmm_core::prescriptive::PlacementViolation::WrongDelivery::actual: alloc::vec::Vec<vmm_core::prescriptive::InterruptDelivery>
+pub vmm_core::prescriptive::PlacementViolation::WrongDelivery::event_index: u64
+pub vmm_core::prescriptive::PlacementViolation::WrongDelivery::expected: alloc::vec::Vec<vmm_core::prescriptive::InterruptDelivery>
+pub enum vmm_core::prescriptive::PrescriptiveError
+pub vmm_core::prescriptive::PrescriptiveError::AlreadyTerminal
+pub vmm_core::prescriptive::PrescriptiveError::Backend(vmm_backend::error::BackendError)
+pub vmm_core::prescriptive::PrescriptiveError::Classification(alloc::string::String)
+pub vmm_core::prescriptive::PrescriptiveError::Clock(vtime::error::VtimeError)
+pub vmm_core::prescriptive::PrescriptiveError::IdleWithoutDeadline
+pub vmm_core::prescriptive::PrescriptiveError::IndexExhausted
+pub vmm_core::prescriptive::PrescriptiveError::IndexExhausted::counter: &'static str
+pub vmm_core::prescriptive::PrescriptiveError::UnknownTimerToken
+pub vmm_core::prescriptive::PrescriptiveError::UnknownTimerToken::token: u64
+pub vmm_core::prescriptive::PrescriptiveError::ZeroCheckpointInterval
+pub struct vmm_core::prescriptive::ClassifiedExit
+impl vmm_core::prescriptive::ClassifiedExit
+pub fn vmm_core::prescriptive::ClassifiedExit::device_mmio(vmm_core::prescriptive::DeviceClass, alloc::vec::Vec<u8>) -> Self
+pub fn vmm_core::prescriptive::ClassifiedExit::doorbell(alloc::vec::Vec<u8>, u64) -> Self
+pub fn vmm_core::prescriptive::ClassifiedExit::idle(alloc::vec::Vec<u8>) -> Self
+pub fn vmm_core::prescriptive::ClassifiedExit::terminal(alloc::vec::Vec<u8>) -> Self
+pub fn vmm_core::prescriptive::ClassifiedExit::time_read(alloc::vec::Vec<u8>) -> Self
+pub struct vmm_core::prescriptive::InterruptDelivery
+pub vmm_core::prescriptive::InterruptDelivery::deadline_vns: u64
+pub vmm_core::prescriptive::InterruptDelivery::interrupt_id: u32
+pub vmm_core::prescriptive::InterruptDelivery::schedule_index: u64
+impl core::convert::From<vmm_core::prescriptive::ScheduledInterrupt> for vmm_core::prescriptive::InterruptDelivery
+pub fn vmm_core::prescriptive::InterruptDelivery::from(vmm_core::prescriptive::ScheduledInterrupt) -> Self
+pub struct vmm_core::prescriptive::LogDivergence
+pub vmm_core::prescriptive::LogDivergence::event_index: u64
+pub vmm_core::prescriptive::LogDivergence::field: vmm_core::prescriptive::LogField
+pub struct vmm_core::prescriptive::NormalizedEvent
+pub vmm_core::prescriptive::NormalizedEvent::class: vmm_core::prescriptive::NormalizedEventClass
+pub vmm_core::prescriptive::NormalizedEvent::event_index: u64
+pub vmm_core::prescriptive::NormalizedEvent::interrupts: alloc::vec::Vec<vmm_core::prescriptive::InterruptDelivery>
+pub vmm_core::prescriptive::NormalizedEvent::payload_digest: [u8; 32]
+pub vmm_core::prescriptive::NormalizedEvent::state_hash: core::option::Option<[u8; 32]>
+pub vmm_core::prescriptive::NormalizedEvent::vns_after: u64
+pub struct vmm_core::prescriptive::NormalizedLog
+pub vmm_core::prescriptive::NormalizedLog::events: alloc::vec::Vec<vmm_core::prescriptive::NormalizedEvent>
+pub struct vmm_core::prescriptive::PrescriptiveCheckpoint
+pub vmm_core::prescriptive::PrescriptiveCheckpoint::event_index: u64
+pub vmm_core::prescriptive::PrescriptiveCheckpoint::pending_interrupts: u64
+pub vmm_core::prescriptive::PrescriptiveCheckpoint::vns: u64
+pub struct vmm_core::prescriptive::PrescriptiveRunLoop<B: vmm_backend::backend::Backend>
+impl<B: vmm_backend::backend::Backend> vmm_core::prescriptive::PrescriptiveRunLoop<B>
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::backend(&self) -> &B
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::new(B, vtime::clock::VClockConfig, vmm_core::prescriptive::PrescriptiveTiming, u64) -> core::result::Result<Self, vmm_core::prescriptive::PrescriptiveError>
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::normalized_log(&self) -> &vmm_core::prescriptive::NormalizedLog
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::raw_log(&self) -> &[vmm_core::prescriptive::RawEvent]
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::run_backend_once<C, D, H>(&mut self, C, D, H) -> core::result::Result<&vmm_core::prescriptive::NormalizedEvent, vmm_core::prescriptive::PrescriptiveError> where C: core::ops::function::FnOnce(&mut B, &vmm_backend::exit::Exit<<B as vmm_backend::backend::Backend>::A>) -> core::result::Result<vmm_core::prescriptive::ClassifiedExit, vmm_core::prescriptive::PrescriptiveError>, D: core::ops::function::FnMut(&mut B, vmm_core::prescriptive::InterruptDelivery) -> core::result::Result<(), vmm_core::prescriptive::PrescriptiveError>, H: core::ops::function::FnOnce(&B, vmm_core::prescriptive::PrescriptiveCheckpoint) -> [u8; 32], <B as vmm_backend::backend::Backend>::A: core::fmt::Debug
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::schedule(&self) -> &[vmm_core::prescriptive::ScheduledInterrupt]
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::schedule_interrupt(&mut self, u64, u32) -> core::result::Result<vmm_core::prescriptive::ScheduledInterrupt, vmm_core::prescriptive::PrescriptiveError>
+pub fn vmm_core::prescriptive::PrescriptiveRunLoop<B>::vns(&self) -> u64
+pub struct vmm_core::prescriptive::PrescriptiveTiming
+pub vmm_core::prescriptive::PrescriptiveTiming::interrupt_controller_mmio_vns: u64
+pub vmm_core::prescriptive::PrescriptiveTiming::paravirtual_device_mmio_vns: u64
+pub vmm_core::prescriptive::PrescriptiveTiming::serial_mmio_vns: u64
+pub vmm_core::prescriptive::PrescriptiveTiming::trapped_time_read_vns: u64
+impl core::default::Default for vmm_core::prescriptive::PrescriptiveTiming
+pub fn vmm_core::prescriptive::PrescriptiveTiming::default() -> Self
+pub struct vmm_core::prescriptive::RawEvent
+pub vmm_core::prescriptive::RawEvent::backend_debug: alloc::string::String
+pub vmm_core::prescriptive::RawEvent::event_index: u64
+pub vmm_core::prescriptive::RawEvent::reason: vmm_backend::exit::ExitReason
+pub struct vmm_core::prescriptive::ScheduledInterrupt
+pub vmm_core::prescriptive::ScheduledInterrupt::armed_for_event: u64
+pub vmm_core::prescriptive::ScheduledInterrupt::deadline_vns: u64
+pub vmm_core::prescriptive::ScheduledInterrupt::interrupt_id: u32
+pub vmm_core::prescriptive::ScheduledInterrupt::schedule_index: u64
+impl core::convert::From<vmm_core::prescriptive::ScheduledInterrupt> for vmm_core::prescriptive::InterruptDelivery
+pub fn vmm_core::prescriptive::InterruptDelivery::from(vmm_core::prescriptive::ScheduledInterrupt) -> Self
+pub const vmm_core::prescriptive::PLACEHOLDER_INTERRUPT_CONTROLLER_MMIO_VNS: u64
+pub const vmm_core::prescriptive::PLACEHOLDER_PARAVIRTUAL_DEVICE_MMIO_VNS: u64
+pub const vmm_core::prescriptive::PLACEHOLDER_SERIAL_MMIO_VNS: u64
+pub const vmm_core::prescriptive::PLACEHOLDER_TRAPPED_TIME_READ_VNS: u64
+pub fn vmm_core::prescriptive::check_delivery_placement(&[vmm_core::prescriptive::ScheduledInterrupt], &vmm_core::prescriptive::NormalizedLog) -> core::result::Result<(), vmm_core::prescriptive::PlacementViolation>
+pub fn vmm_core::prescriptive::compare_normalized_logs(&vmm_core::prescriptive::NormalizedLog, &vmm_core::prescriptive::NormalizedLog) -> core::result::Result<(), vmm_core::prescriptive::LogDivergence>
 pub mod vmm_core::seal_rate
 pub mod vmm_core::seal_rate::mock
 pub struct vmm_core::seal_rate::mock::MockConfig
@@ -758,7 +866,10 @@ pub vmm_core::vmm::VtimeSnapshot::guest_clock_offset: u64
 pub vmm_core::vmm::VtimeSnapshot::vns: u64
 pub struct vmm_core::vmm::VtimeWiring
 impl vmm_core::vmm::VtimeWiring
+pub fn vmm_core::vmm::VtimeWiring::advance_prescriptive(&mut self, u64)
 pub fn vmm_core::vmm::VtimeWiring::new(vtime::clock::VClockConfig, alloc::boxed::Box<dyn vmm_core::work::WorkSource>, u64) -> core::result::Result<vmm_core::vmm::VtimeWiring, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::VtimeWiring::new_prescriptive(vtime::clock::VClockConfig, u64) -> core::result::Result<vmm_core::vmm::VtimeWiring, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::VtimeWiring::prescriptive_vns(&self) -> u64
 pub const vmm_core::vmm::PVCLOCK_DEFAULT_DELTA_WORK: u64
 pub const vmm_core::vmm::PVCLOCK_REFRESH_TRACE_CAP: usize
 pub type vmm_core::vmm::VcpuOf<B> = <<B as vmm_backend::backend::Backend>::A as vmm_backend::arch::Arch>::VcpuState

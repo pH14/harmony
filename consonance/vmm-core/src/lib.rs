@@ -49,6 +49,8 @@ pub mod corpus;
 // type at the serial shell + how to detect completion/status). Portable and
 // off-record by ruling; the real serial wiring lives in `vmm`/`control`.
 pub mod exec;
+/// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
+pub mod prescriptive;
 // Task 63 — the pure-logic half of the arbitrary-V-time seal-rate measurement (the
 // Wave-5 go/no-go): the V-time sampling schedule and the seal-rate / `sealable`-predicate
 // bookkeeping the box harness (`tests/seal_rate_sweep.rs`) feeds live measurements into.
