@@ -81,6 +81,9 @@ const SDK_DISP_VIOLATION: u8 = 1;
 /// it with [`Vmm::take_sdk_stop`] and maps it to the wire `StopReason`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SdkStop {
+    /// The branch's ordered payload tape is exhausted. This is a terminal
+    /// cooperating-workload stop, independent of the client's stop mask.
+    Quiescent,
     /// An `assert_always` violation (or an `assert_unreachable` reached) — a bug.
     /// `id` is the assertion's catalog point id; `data` its detail bytes.
     Assertion {
@@ -690,6 +693,17 @@ pub struct SdkSnapshot {
     /// differently (the deferred point silently lost), breaking replay's
     /// round-trip hash equality.
     pending_snapshot: bool,
+    /// Canonical ordered-input state: only the unconsumed payload suffix.
+    /// `None` means the service was not offered; `Some([])` is offered and
+    /// exhausted.
+    payloads: Option<Vec<Vec<u8>>>,
+}
+
+impl SdkSnapshot {
+    /// Clone the unconsumed ordered payload suffix captured by this snapshot.
+    pub(crate) fn remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
+        self.payloads.clone()
+    }
 }
 
 /// The task-61 `Net` channel's **replay-relevant** state, captured with a
@@ -2599,6 +2613,10 @@ where
             s if s == ServiceId::Sdk as u16 => self.sdk.is_some(),
             s if s == ServiceId::Net as u16 => self.net.is_some(),
             s if s == ServiceId::Entropy as u16 => self.sdk.is_some() || self.net.is_some(),
+            s if s == ServiceId::Payload as u16 => self
+                .sdk
+                .as_ref()
+                .is_some_and(|sdk| sdk.env.payload_configured()),
             s if s == ServiceId::Pvclock as u16 => self.pvclock_available(),
             _ => false,
         }
@@ -3105,6 +3123,7 @@ where
             stream: s.env.stream_state(),
             events: s.events.clone(),
             pending_snapshot: s.pending_snapshot,
+            payloads: s.env.remaining_payloads(),
         })
     }
 
@@ -3122,6 +3141,7 @@ where
             // restored image (where `setup_complete` is already past) and must not
             // re-surface an already-sealed deferred point.
             s.pending_snapshot = snap.pending_snapshot;
+            s.env.restore_payloads(snap.payloads.clone());
         }
     }
 
@@ -3143,6 +3163,15 @@ where
             .as_ref()
             .map(|s| s.events.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Clone the canonical live ordered-input state: only the unconsumed
+    /// payload suffix. `None` means no payload service is offered; an exhausted
+    /// offered tape is `Some([])`.
+    pub(crate) fn sdk_remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
+        self.sdk
+            .as_ref()
+            .and_then(|sdk| sdk.env.remaining_payloads())
     }
 
     /// Take the pending SDK stop (an assertion violation / snapshot point) the
@@ -3368,6 +3397,102 @@ where
             .unwrap_or(0);
             return (n, None);
         }
+        // The ordered Payload service (id 8, op 1): consume exactly one entry
+        // from the branch's recorded payload tape. Availability is checked
+        // before opcode/payload classification, matching every other service.
+        // Exhaustion returns a framed OutOfRange response and surfaces a
+        // terminal Quiescent stop at this same atomic doorbell exit.
+        if header.service == ServiceId::Payload as u16 {
+            if !self.doorbell_service_offered(header.service) {
+                let n = encode_error(
+                    header.service,
+                    header.opcode,
+                    header.seq,
+                    Status::UnknownService,
+                    resp,
+                );
+                return (n, None);
+            }
+            if header.opcode != 1 {
+                let n = encode_error(
+                    header.service,
+                    header.opcode,
+                    header.seq,
+                    Status::UnknownOpcode,
+                    resp,
+                );
+                return (n, None);
+            }
+            if payload.len() != 4 {
+                let n = encode_response(
+                    ServiceId::Payload,
+                    1,
+                    header.seq,
+                    Status::BadRequest,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
+            let bytes = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            if bytes == 0 || bytes as usize > MAX_PAYLOAD {
+                let n = encode_response(
+                    ServiceId::Payload,
+                    1,
+                    header.seq,
+                    Status::BadRequest,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
+            let pulled = self
+                .sdk
+                .as_mut()
+                .expect("payload availability requires SDK")
+                .env
+                .pull_payload(bytes);
+            return match pulled {
+                Ok(Some(entry)) => {
+                    let n = encode_response(
+                        ServiceId::Payload,
+                        1,
+                        header.seq,
+                        Status::Ok,
+                        &entry,
+                        resp,
+                    )
+                    .unwrap_or(0);
+                    (n, None)
+                }
+                Ok(None) => {
+                    let n = encode_response(
+                        ServiceId::Payload,
+                        1,
+                        header.seq,
+                        Status::OutOfRange,
+                        &[],
+                        resp,
+                    )
+                    .unwrap_or(0);
+                    (n, Some(SdkStop::Quiescent))
+                }
+                Err(_) => {
+                    let n = encode_response(
+                        ServiceId::Payload,
+                        1,
+                        header.seq,
+                        Status::BadRequest,
+                        &[],
+                        resp,
+                    )
+                    .unwrap_or(0);
+                    (n, None)
+                }
+            };
+        }
         // The Event service (id 4, op 1): capture the `Moment`-stamped emission
         // and, for an assert violation / `setup_complete`, arm a stop.
         //
@@ -3574,6 +3699,7 @@ where
                 || s == ServiceId::Net as u16
                 || s == ServiceId::Entropy as u16
                 || s == ServiceId::Pvclock as u16
+                || s == ServiceId::Payload as u16
         );
         if known && self.doorbell_service_offered(header.service) {
             let n = encode_error(
@@ -4451,6 +4577,7 @@ fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
             v.extend_from_slice(&(data.len() as u32).to_le_bytes());
             v.extend_from_slice(data);
         }
+        Some(SdkStop::Quiescent) => v.push(2),
     }
     v.push(u8::from(sdk.pending_snapshot));
     // The active fault policy (round-8 P1): a stream position alone does not
@@ -4458,6 +4585,18 @@ fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
     // same-stream forks under different policies must hash differently.
     v.extend_from_slice(&(sdk.policy.len() as u32).to_le_bytes());
     v.extend_from_slice(&sdk.policy);
+    // Preserve every pre-M2 SDK hash byte when no payload service is offered.
+    // When offered, fold the canonical live state: only the unconsumed suffix.
+    if let Some(payloads) = sdk.env.remaining_payloads() {
+        v.extend_from_slice(b"PAYL");
+        let count = u64::try_from(payloads.len()).unwrap_or(u64::MAX);
+        v.extend_from_slice(&count.to_le_bytes());
+        for entry in payloads {
+            let len = u64::try_from(entry.len()).unwrap_or(u64::MAX);
+            v.extend_from_slice(&len.to_le_bytes());
+            v.extend_from_slice(&entry);
+        }
+    }
     v
 }
 
@@ -4730,6 +4869,89 @@ mod tests {
         let ids: Vec<u32> = vmm.sdk_events().iter().map(|(_, id, _)| *id).collect();
         assert_eq!(ids, vec![hit_id, viol_id, setup_id]);
         assert_eq!(vmm.sdk_buggify(), &[(0, Answer::Fault(Fault::BuggifyFire))]);
+    }
+
+    #[test]
+    fn payload_tape_is_exact_hash_visible_snapshot_complete_and_exhausts_loudly() {
+        use environment::{EnvSpec, FaultPolicy};
+
+        fn spec(entries: Vec<Vec<u8>>) -> EnvSpec {
+            let mut spec = EnvSpec::Seeded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+            };
+            spec.set_payloads(Some(entries));
+            spec
+        }
+
+        fn ring(vmm: &mut Vmm<MockBackend>, bytes: u32) -> (Step, u16, Vec<u8>) {
+            let mut frame = [0_u8; HC_PAGE];
+            let n = hypercall_proto::encode_request(
+                ServiceId::Payload,
+                1,
+                1,
+                &bytes.to_le_bytes(),
+                &mut frame,
+            )
+            .unwrap();
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+            let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+            let page = &vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE];
+            let (header, payload) = decode(page).unwrap();
+            (step, header.status, payload.to_vec())
+        }
+
+        let tape = spec(vec![vec![0x81, 4], vec![0, 2]]);
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(tape.materialize(), tape.policy());
+
+        let before = encode_sdk_channel(vmm.sdk.as_ref().unwrap());
+        assert_eq!(
+            ring(&mut vmm, 1),
+            (Step::Continued, Status::BadRequest as u16, Vec::new()),
+            "wrong length rejects without consuming"
+        );
+        assert_eq!(encode_sdk_channel(vmm.sdk.as_ref().unwrap()), before);
+
+        assert_eq!(
+            ring(&mut vmm, 2),
+            (Step::Continued, Status::Ok as u16, vec![0x81, 4])
+        );
+        let after_first = encode_sdk_channel(vmm.sdk.as_ref().unwrap());
+        assert_ne!(after_first, before, "the remaining suffix is hash state");
+        let snap = vmm.sdk_snapshot().unwrap();
+        assert_eq!(snap.remaining_payloads(), Some(vec![vec![0, 2]]));
+
+        assert_eq!(
+            ring(&mut vmm, 2),
+            (Step::Continued, Status::Ok as u16, vec![0, 2])
+        );
+        assert_ne!(encode_sdk_channel(vmm.sdk.as_ref().unwrap()), after_first);
+        vmm.sdk_restore(&snap);
+        assert_eq!(
+            encode_sdk_channel(vmm.sdk.as_ref().unwrap()),
+            after_first,
+            "restoring the snapshot restores the exact remaining suffix"
+        );
+
+        assert_eq!(ring(&mut vmm, 2).2, vec![0, 2]);
+        assert_eq!(
+            ring(&mut vmm, 2),
+            (Step::SdkStop, Status::OutOfRange as u16, Vec::new())
+        );
+        assert_eq!(vmm.take_sdk_stop(), Some(SdkStop::Quiescent));
+
+        let a = spec(vec![vec![1, 2]]);
+        let b = spec(vec![vec![1, 3]]);
+        let mut va = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let mut vb = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        va.enable_sdk(a.materialize(), a.policy());
+        vb.enable_sdk(b.materialize(), b.policy());
+        assert_ne!(
+            va.state_hash(),
+            vb.state_hash(),
+            "altering one staged chord changes full state"
+        );
     }
 
     /// Review r10: the transport ABI pages (`REQ_GPA`/`RESP_GPA`) are **absolute**

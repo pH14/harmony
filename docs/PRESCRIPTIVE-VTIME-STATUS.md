@@ -129,6 +129,15 @@ dependency rather than silently weakening the criterion.
     entitlement-signed production-composition probe accepted the mapping and
     reported `HVF_CONTROL_MAP_OK bytes=16384` with state hash
     `0766544d87f6924a70fc1bb9755be1846f12f08b02a353d28677e66a7701eea4`.
+19. **M2 payload input is an optional sequential tape whose state is its remaining
+    suffix.** Input chords do not have predictable `Moment`s, so they do not belong
+    in the sparse override map. Environment blob version 7 adds an ordered tape:
+    absent means service unavailable, empty means offered and exhausted, and an
+    exact-length request consumes one entry. Snapshots, the SDK state hash, and the
+    `RecordedEnv` reply all carry only the unconsumed suffix. Mutation preserves the
+    tape; Moment-based `EnvCodec::compose` rejects it because prefix consumption
+    cannot be inferred safely. This keeps the VMM workload-blind and makes guest,
+    snapshot, replay, and in-process implementations share one reproducer byte form.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -490,9 +499,38 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   architecture-native arm64 `MmioDoorbell` and the HVF-aligned, fully retained
   control-memory composition are implemented. The focused portable suite passed
   583/583 tests (5 skipped), and the signed live probe produced the measured
-  `HVF_CONTROL_MAP_OK` evidence recorded in decision 18. Payload delivery and the
-  generic control-protocol `Machine` client remain open, so this criterion is not
-  yet a pass.
+  `HVF_CONTROL_MAP_OK` evidence recorded in decision 18. The generic environment,
+  doorbell protocol, VMM service, snapshot/replay carry, live-suffix reproducer,
+  and control-loop negative oracles are implemented. The focused substrate suite
+  is green (environment, hypercall-proto, and vmm-core), including the control test
+  that alters one chord and proves the whole-state comparator fires. The arm64
+  guest payload and generic control-protocol `Machine` client remain open, so this
+  criterion is not yet a pass.
+
+### M2 payload-substrate checkpoint evidence
+
+```text
+cargo nextest run -p environment -p hypercall-proto -p vmm-core --all-features
+715 tests run: 715 passed, 6 skipped
+
+cargo clippy -p environment -p hypercall-proto -p vmm-core \
+  --all-features --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+
+cargo fmt --all -- --check
+exit status 0
+
+pinned public API: environment and hypercall-proto regenerated then matched;
+vmm-core macOS output confirms the sole platform-neutral addition
+SdkStop::Quiescent (the committed Linux-frozen snapshot contains that line)
+```
+
+The positive control oracle consumed `[0x81, 4]`, observed only `[0, 2]` in
+`RecordedEnv`, sealed that suffix, consumed it, replayed the seal, and consumed
+the identical suffix again. Its two anti-vacuity arms changed `[0x81, 4]` to
+`[0x81, 5]` and required the whole-state hash to differ, then drove an exhausted
+tape through a real mock PIO exit and required `StopReason::Quiescent` with
+`StopMask::NONE`.
 - **FAIL — two same-seed archive hashes:** not started.
 - **FAIL — every archived lineage replays byte-for-byte:** not started.
 - **FAIL — snapshot restore counter and uninterrupted-continuation hash oracle:**

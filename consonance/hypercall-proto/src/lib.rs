@@ -16,11 +16,13 @@
 //! | [`Net`](ServiceId::Net)         | 5 | `1` = `net_decide` (round-trips a per-flow policy answer) |
 //! | [`Sdk`](ServiceId::Sdk)         | 6 | `1` = `buggify_decide` (round-trips a one-byte fire / no-fire answer) |
 //! | [`Pvclock`](ServiceId::Pvclock) | 7 | `1` = `pvclock_register` (publishes the guest clock-page GPA) |
+//! | [`Payload`](ServiceId::Payload) | 8 | `1` = consume one exact-length staged payload entry |
 //!
 //! Id **5** is the task-61 `Net` vertical (the first guest-plane fault path); the
 //! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
 //! task-110 paravirt work-derived clock registration ([`Pvclock`](ServiceId::Pvclock))
-//! takes id **7**. An
+//! takes id **7**; the ordered cooperating-workload payload service takes id
+//! **8**. An
 //! unregistered service id or an opcode a service does not implement is a
 //! [`Status::UnknownService`] / [`Status::UnknownOpcode`], never a silent drop.
 //!
@@ -130,6 +132,12 @@ pub enum ServiceId {
     /// [`Status::UnknownService`], and the guest keeps its trap-backstopped time
     /// paths (the page is pure opt-in on both sides).
     Pvclock = 7,
+    /// Ordered cooperating-workload input service (prescriptive V-time M2).
+    /// Opcode 1 carries a 4-byte little-endian requested length and consumes
+    /// exactly one entry from the branch's recorded payload tape. The response
+    /// is that entry verbatim. Exhaustion is [`Status::OutOfRange`]; a length
+    /// mismatch is [`Status::BadRequest`] and consumes nothing.
+    Payload = 8,
 }
 
 impl ServiceId {
@@ -595,6 +603,24 @@ mod guest {
             put_u32(&mut payload[..4], id);
             payload[4..4 + data.len()].copy_from_slice(data);
             self.call_expect_empty(ServiceId::Event, 1, &payload[..4 + data.len()])
+        }
+
+        /// Consume one exact-length entry from the host's staged payload tape.
+        /// The request carries only `out.len()` as a little-endian `u32`; on
+        /// success the response must fill `out` exactly. Empty or over-frame
+        /// requests are rejected locally. Tape exhaustion surfaces as
+        /// [`ClientError::Status`]`(`[`Status::OutOfRange`]`)`.
+        pub fn payload_fetch(&mut self, out: &mut [u8]) -> Result<(), ClientError<T::Error>> {
+            if out.is_empty() || out.len() > MAX_PAYLOAD {
+                return Err(ClientError::InvalidLength);
+            }
+            let mut payload = [0_u8; 4];
+            put_u32(&mut payload, out.len() as u32);
+            let copied = self.call_copy(ServiceId::Payload, 1, &payload, out)?;
+            if copied != out.len() {
+                return Err(ClientError::Protocol(ProtoError::BadPayload));
+            }
+            Ok(())
         }
 
         /// Ask the host to resolve a **buggify** decision for `point` (task 73's

@@ -4690,3 +4690,26 @@ the new `err_schedule_moment_unreachable` golden) / `clippy -D warnings` / `fmt
 variant's three lines). Downstream `campaign-runner` + `explorer` (320 passed, 2
 skipped) green, pinning hash-neutrality on the real maze/game campaign surface across
 both the vmm-core latch refactor and the new control-proto variant.
+
+---
+
+## Prescriptive V-time M2 — ordered guest payload source
+
+The generic doorbell dispatcher offers `ServiceId::Payload` only when the active
+SDK environment has an explicitly configured tape. Opcode 1 validates the request
+shape and expected length before touching the tape. A match returns and consumes
+one entry; a mismatch answers `BadRequest` without consumption; exhaustion answers
+`OutOfRange` and arms `SdkStop::Quiescent`. The control run always surfaces that
+terminal stop; only assertion stops remain mask-gated.
+
+The SDK hash chunk appends a domain marker plus the canonical unconsumed suffix
+only when the service is offered, preserving every pre-M2 hash byte for machines
+without a tape. `SdkSnapshot` captures the suffix. Branch installs the supplied
+tape, replay restores the snapshot suffix, and the wire `RecordedEnv` reply replaces
+the original tape with the live suffix before encoding it.
+
+Two negative oracles make the proof non-vacuous: changing one staged chord changes
+the whole-state hash, and exhaustion is driven through an actual mock PIO exit and
+must return `StopReason::Quiescent` even with `StopMask::NONE`. The same control test
+consumes one entry, verifies the recorded suffix, seals it, consumes again, replays,
+and receives the same second entry again.

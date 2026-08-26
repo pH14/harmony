@@ -779,6 +779,7 @@ pub enum vmm_core::vmm::SdkStop
 pub vmm_core::vmm::SdkStop::Assertion
 pub vmm_core::vmm::SdkStop::Assertion::data: alloc::vec::Vec<u8>
 pub vmm_core::vmm::SdkStop::Assertion::id: u32
+pub vmm_core::vmm::SdkStop::Quiescent
 pub enum vmm_core::vmm::Step
 pub vmm_core::vmm::Step::Continued
 pub vmm_core::vmm::Step::SdkStop

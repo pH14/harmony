@@ -160,6 +160,7 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
         overrides: BTreeMap::from([(1, Action::Guest(Answer::Fault(Fault::NetReset)))]),
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
+        payloads: None,
     };
     let mut bytes = spec.encode();
     // Layout: magic:u32 then version:u16. The current version is BLOB_VERSION (5 —
@@ -191,6 +192,7 @@ fn a_v4_blob_is_rejected_at_the_version_gate() {
         overrides: std::collections::BTreeMap::new(),
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
+        payloads: None,
     };
     let mut bytes = spec.encode();
     // Rewrite the version field to 4 AND truncate to just magic+version: if the
@@ -281,7 +283,7 @@ proptest! {
             .iter()
             .map(|m| (*m, Action::Guest(Answer::Fault(Fault::NetReset))))
             .collect();
-        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default() };
+        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default(), payloads: None };
 
         let sched: Vec<(Moment, P)> = conns.iter().enumerate()
             .map(|(i, c)| (i as u64, flow(*c)))
@@ -311,7 +313,7 @@ proptest! {
         let mut policy = FaultPolicy::none();
         policy.set_class(DecisionClass::NetFlow, net.0, net.1, &net.2)
             .expect("net is a fault class with in-class faults");
-        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default() };
+        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default(), payloads: None };
 
         let bytes = spec.encode();
         let back = EnvSpec::decode(&bytes).expect("our own encoding decodes");

@@ -229,16 +229,21 @@ pub fn arb_spec() -> impl Strategy<Value = EnvSpec> {
             arb_overrides(),
             prop::collection::vec(arb_standing(), 0..6),
             arb_reseeds(),
+            prop::option::of(prop::collection::vec(
+                prop::collection::vec(any::<u8>(), 0..32),
+                0..6,
+            )),
         )
-            .prop_map(
-                |(seed, policy, overrides, standing, reseeds)| EnvSpec::Recorded {
+            .prop_map(|(seed, policy, overrides, standing, reseeds, payloads)| {
+                EnvSpec::Recorded {
                     seed,
                     policy,
                     overrides,
                     standing,
                     reseeds,
+                    payloads,
                 }
-            ),
+            }),
     ]
 }
 
@@ -253,6 +258,7 @@ pub fn canon(spec: EnvSpec) -> EnvSpec {
             overrides,
             mut standing,
             reseeds,
+            payloads,
         } => {
             standing.sort_by(|a, b| standing_key(a).cmp(&standing_key(b)));
             standing.dedup_by(|a, b| standing_key(a) == standing_key(b));
@@ -262,6 +268,7 @@ pub fn canon(spec: EnvSpec) -> EnvSpec {
                 overrides,
                 standing,
                 reseeds,
+                payloads,
             }
         }
         s => s,

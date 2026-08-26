@@ -21,6 +21,7 @@ pub hypercall_proto::ServiceId::Console = 1
 pub hypercall_proto::ServiceId::Entropy = 2
 pub hypercall_proto::ServiceId::Event = 4
 pub hypercall_proto::ServiceId::Net = 5
+pub hypercall_proto::ServiceId::Payload = 8
 pub hypercall_proto::ServiceId::Pvclock = 7
 pub hypercall_proto::ServiceId::Sdk = 6
 #[repr(u16)] pub enum hypercall_proto::Status
@@ -40,6 +41,7 @@ pub fn hypercall_proto::Client<T>::entropy_fill(&mut self, &mut [u8]) -> core::r
 pub fn hypercall_proto::Client<T>::event_emit(&mut self, u32, &[u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::net_decide(&mut self, u32, u32, u64, u16, &mut [u8]) -> core::result::Result<usize, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::new(T) -> Self
+pub fn hypercall_proto::Client<T>::payload_fetch(&mut self, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::pvclock_register(&mut self, u64) -> core::result::Result<u32, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub struct hypercall_proto::ConsoleSink
 impl hypercall_proto::ConsoleSink

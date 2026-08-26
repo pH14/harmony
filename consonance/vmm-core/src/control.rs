@@ -1047,6 +1047,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         //    the env's host-plane schedule to stage after a successful restore.
         let mut host: Vec<(environment::Moment, environment::HostFault)> = Vec::new();
         let mut reseeds: BTreeMap<environment::Moment, u64> = BTreeMap::new();
+        let mut payloads: Option<Vec<Vec<u8>>> = None;
         // Task 73: the branch env's (buggify-only) fault policy, preserved into the
         // recorded reproducer below so `recorded_env()` re-emits it and a replay
         // reproduces the buggify decisions. `None` for a verbatim replay.
@@ -1103,6 +1104,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
                 host = spec.host_faults().collect();
                 reseeds = spec.reseeds().clone();
+                payloads = spec.payloads().map(<[Vec<u8>]>::to_vec);
                 env_policy = Some(spec.policy().clone());
                 Some(spec.seed())
             }
@@ -1308,6 +1310,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Some(policy) = restore_policy {
             self.set_recorded_policy(policy);
         }
+        // A branch stages its newly supplied ordered tape. A verbatim replay
+        // restores the snapshot's canonical remaining suffix. Set this before
+        // materializing the SDK environment so the payload service's
+        // availability and state are correct immediately.
+        let active_payloads = if seed.is_some() {
+            payloads
+        } else {
+            sdk_snap
+                .as_ref()
+                .and_then(|snap| snap.channel.remaining_payloads())
+        };
+        self.recorded.set_payloads(active_payloads);
         let sdk_env = self.recorded.materialize();
         let sdk_policy = self.recorded.policy().clone();
         self.vmm
@@ -1687,14 +1701,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         self.schedule_poisoned = Some(err.clone());
                         return Ok(Err(err));
                     }
-                    // Gate the assertion on the client `StopMask` (round-7): if the
-                    // `ASSERTION` class is not armed, the stop is already consumed
-                    // (`take_sdk_stop` above) and the guest is past the assert
-                    // doorbell `OUT`, so continue the loop — the run proceeds to the
-                    // terminal (`StopMask::NONE` runs an assertion straight through).
-                    if !until.on.armed(control_proto::class_bit::ASSERTION) {
-                        continue;
-                    }
                     let reason = match stop {
                         Some(sdk_stop) => sdk_stop_to_reason(sdk_stop, vns),
                         // `SdkStop` is armed (an assertion) before the step returns
@@ -1702,6 +1708,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         // anyway with a benign quiescent stop.
                         None => StopReason::Quiescent { vtime: Moment(vns) },
                     };
+                    // Only assertions are mask-gated. Payload exhaustion is a
+                    // terminal Quiescent stop and always surfaces.
+                    if matches!(reason, StopReason::Assertion { .. })
+                        && !until.on.armed(control_proto::class_bit::ASSERTION)
+                    {
+                        continue;
+                    }
                     return Ok(Ok(Reply::Stop(reason)));
                 }
                 Step::Terminal(reason) => {
@@ -1834,9 +1847,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if self.timeline_tainted {
             return Err(ControlError::Tainted);
         }
+        let mut recorded = self.recorded.clone();
+        // The stored spec names the tape originally staged at branch time;
+        // the live VMM owns consumption. Re-emit only the canonical remaining
+        // suffix so branching this reproducer from the current cut recreates
+        // the same future input state.
+        recorded.set_payloads(self.vmm.as_ref().and_then(Vmm::sdk_remaining_payloads));
         Ok(Reply::Recorded(Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
-            bytes: self.recorded.encode(),
+            bytes: recorded.encode(),
         }))
     }
 }
@@ -1919,6 +1938,7 @@ fn regs_view<B: Backend<A: Vendor>>(vmm: &Vmm<B>) -> RegsView {
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
     let vtime = Moment(vns);
     match stop {
+        SdkStop::Quiescent => StopReason::Quiescent { vtime },
         // `setup_complete`'s snapshot point is deferred to a synchronized boundary
         // (surfaced directly in the run loop), so the only immediate SDK stop is an
         // assertion.
@@ -2184,6 +2204,118 @@ mod tests {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
         }
+    }
+
+    /// A branch reproducer with the M2 ordered payload source offered. The
+    /// promotion to `Recorded` is deliberate: `Some([])` means offered but
+    /// exhausted, unlike a bare `Seeded` spec where service 8 is unavailable.
+    fn payload_env(seed: u64, payloads: Vec<Vec<u8>>) -> Reproducer {
+        let mut spec = EnvSpec::Seeded {
+            seed,
+            policy: FaultPolicy::none(),
+        };
+        spec.set_payloads(Some(payloads));
+        Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        }
+    }
+
+    /// A synchronized control server whose RAM covers the canonical doorbell
+    /// pages. The compact generic `server` fixture intentionally has only
+    /// 16 KiB, below `REQ_GPA`; this fixture mirrors its composition at 128 KiB.
+    fn payload_server() -> ControlServer<MockBackend> {
+        let mut backend = MockBackend::with_exits([Exit::Arch(X86Exit::Rdtsc)]);
+        backend
+            .set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+        let mut live = Vmm::new(backend, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(500)),
+                0xBA5E,
+            )
+            .unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        live.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        live.restore_guest_memory(&vec![0_u8; BIG_RAM]).unwrap();
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
+
+        let factory = Box::new(|| {
+            let mut backend = MockBackend::new();
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(BIG_RAM).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new(
+                    contract_vclock_config(),
+                    Box::new(ScriptedWork::at(9_999)),
+                    0,
+                )
+                .unwrap(),
+            );
+            vmm.wire_snapshot_hashing();
+            vmm.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            Ok(vmm)
+        });
+        ControlServer::new(live, factory)
+    }
+
+    /// Stage one payload request in the canonical transport page.
+    fn stage_payload_request(server: &mut ControlServer<MockBackend>, bytes: u32) -> u32 {
+        const REQ_GPA: u64 = 0xE000;
+        let mut frame = [0_u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Payload,
+            1,
+            1,
+            &bytes.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        server
+            .vmm
+            .as_mut()
+            .unwrap()
+            .guest_slice_mut(REQ_GPA, n)
+            .unwrap()
+            .copy_from_slice(&frame[..n]);
+        u32::try_from(n).unwrap()
+    }
+
+    /// Ring a staged payload request directly and return its framed reply.
+    fn ring_payload(server: &mut ControlServer<MockBackend>, bytes: u32) -> (u16, Vec<u8>) {
+        const RESP_GPA: u64 = 0xF000;
+        let n = stage_payload_request(server, bytes);
+        let vmm = server.vmm.as_mut().unwrap();
+        assert!(matches!(
+            vmm.dispatch_out(0x0CA1, 4, n).unwrap(),
+            crate::vmm::Step::Continued
+        ));
+        let page = vmm.guest_slice(RESP_GPA, 4096).unwrap();
+        let (header, payload) = hypercall_proto::decode(page).unwrap();
+        (header.status, payload.to_vec())
     }
 
     fn run_all(server: &mut ControlServer<MockBackend>) -> StopReason {
@@ -2913,6 +3045,92 @@ mod tests {
             "replay restored the buggify policy, not none()"
         );
         assert_ne!(s.recorded_env().policy(), &FaultPolicy::none());
+    }
+
+    /// M2 payload closure through the real control state machine: branch stages
+    /// the ordered source; the live recorded reproducer exposes only its future;
+    /// snapshots restore that suffix exactly; changing one chord changes the
+    /// whole-state oracle; and exhaustion is a mask-independent terminal stop.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize uses tempfile+mmap); payload tape semantics are covered by the Miri-run vmm and environment unit tests"
+    )]
+    fn payload_branch_snapshot_replay_and_exhaustion_close_the_control_loop() {
+        let mut s = payload_server();
+        hello(&mut s);
+        let base = snap(&mut s);
+
+        let chord_a = vec![0x81, 4];
+        let chord_b = vec![0, 2];
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: payload_env(7, vec![chord_a.clone(), chord_b.clone()]),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let staged_hash = hash(&mut s);
+
+        assert_eq!(
+            ring_payload(&mut s, 2),
+            (hypercall_proto::Status::Ok as u16, chord_a)
+        );
+        let remaining = match s.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => EnvSpec::decode(&reproducer.bytes).unwrap(),
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert_eq!(remaining.payloads(), Some([chord_b.clone()].as_slice()));
+
+        let mid = snap(&mut s);
+        assert_eq!(
+            ring_payload(&mut s, 2),
+            (hypercall_proto::Status::Ok as u16, chord_b.clone())
+        );
+        assert_eq!(s.handle(&Request::Replay(mid)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(
+            ring_payload(&mut s, 2),
+            (hypercall_proto::Status::Ok as u16, chord_b)
+        );
+
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: payload_env(7, vec![vec![0x81, 5], vec![0, 2]]),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_ne!(
+            hash(&mut s),
+            staged_hash,
+            "altering one staged chord must trip the full-state oracle"
+        );
+
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: payload_env(7, vec![]),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let n = stage_payload_request(&mut s, 2);
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Arch(X86Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n),
+            }));
+        assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
+        let response = s.vmm.as_ref().unwrap().guest_slice(0xF000, 4096).unwrap();
+        let (header, payload) = hypercall_proto::decode(response).unwrap();
+        assert_eq!(header.status, hypercall_proto::Status::OutOfRange as u16);
+        assert!(payload.is_empty());
     }
 
     #[test]

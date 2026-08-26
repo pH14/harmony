@@ -128,6 +128,7 @@ its module doc):
 | `Net`     | 5 | `1` = `net_decide` — round-trips a per-flow policy answer (task 61) |
 | `Sdk`     | 6 | `1` = `buggify_decide` — round-trips a one-byte fire / no-fire answer |
 | `Pvclock` | 7 | `1` = `pvclock_register` — publishes the guest clock-page GPA (task 110) |
+| `Payload` | 8 | `1` = consume one exact-length entry from the branch's ordered payload tape |
 
 - **`Net = 5` (task 61).** The guest flow agent's `net_decide` verb asks the host what to do with a
   flow — **once per flow/connection, never per frame** (the host is on the control path only). One
@@ -157,6 +158,14 @@ its module doc):
   refreshed). A host not composed with the clock page — or one without a deterministic work counter to
   derive stamps from — answers `Status::UnknownService`, and the guest keeps its trap-backstopped time
   paths (the page is pure opt-in on both sides).
+- **`Payload = 8` (prescriptive V-time M2).** A request contains one nonzero little-endian `u32`
+  expected length; a successful response contains exactly that many bytes and consumes exactly one
+  entry from the branch's ordered payload tape. A wrong length is `BadRequest` and consumes nothing.
+  An offered-but-empty tape returns `OutOfRange` and ends the control run as `Quiescent`, independent
+  of the stop mask. An absent tape means the service is not offered. The environment blob is version
+  **7**: its recorded form ends in an optional length-prefixed tape. Snapshots and hashes retain only
+  the unconsumed suffix, and `RecordedEnv` re-emits that suffix so a fork from the current cut has the
+  identical future.
 - An unregistered service id is `Status::UnknownService`; an opcode a service does not implement is
   `Status::UnknownOpcode` — never a silent drop.
 

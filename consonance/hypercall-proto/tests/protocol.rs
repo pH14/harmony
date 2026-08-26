@@ -83,6 +83,18 @@ fn golden_request_bytes_for_every_service_opcode() {
     sdk.extend_from_slice(&le32(0)); // reserved
     sdk.extend_from_slice(&le32(50)); // point 50
     assert_eq!(enc_req(ServiceId::Sdk, 1, 12, &le32(50)), sdk);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"HCP1");
+    payload.extend_from_slice(&1_u16.to_le_bytes());
+    payload.extend_from_slice(&(ServiceId::Payload as u16).to_le_bytes());
+    payload.extend_from_slice(&1_u16.to_le_bytes());
+    payload.extend_from_slice(&0_u16.to_le_bytes());
+    payload.extend_from_slice(&13_u32.to_le_bytes());
+    payload.extend_from_slice(&le32(4));
+    payload.extend_from_slice(&0_u32.to_le_bytes());
+    payload.extend_from_slice(&le32(2));
+    assert_eq!(enc_req(ServiceId::Payload, 1, 13, &le32(2)), payload);
 }
 
 #[test]
@@ -243,6 +255,58 @@ impl Transport for DispatcherLoopback {
     fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {
         Ok(self.0.dispatch(req, resp))
     }
+}
+
+#[derive(Clone)]
+struct OnePayload(Option<Vec<u8>>);
+
+impl Service for OnePayload {
+    fn handle(&mut self, opcode: u16, payload: &[u8], resp_payload: &mut [u8]) -> (Status, usize) {
+        if opcode != 1 || payload.len() != 4 {
+            return (Status::BadRequest, 0);
+        }
+        let requested = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let Some(entry) = self.0.as_ref() else {
+            return (Status::OutOfRange, 0);
+        };
+        if entry.len() as u64 != u64::from(requested) || resp_payload.len() < entry.len() {
+            return (Status::BadRequest, 0);
+        }
+        resp_payload[..entry.len()].copy_from_slice(entry);
+        let len = entry.len();
+        self.0 = None;
+        (Status::Ok, len)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        self.0.clone().unwrap_or_default()
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
+        self.0 = (!state.is_empty()).then(|| state.to_vec());
+        Ok(())
+    }
+}
+
+#[test]
+fn payload_fetch_is_exact_and_exhaustion_is_a_clean_status() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(
+        ServiceId::Payload,
+        Box::new(OnePayload(Some(vec![0x81, 4]))),
+    );
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    let mut chord = [0_u8; 2];
+    client.payload_fetch(&mut chord).unwrap();
+    assert_eq!(chord, [0x81, 4]);
+    assert_eq!(
+        client.payload_fetch(&mut chord),
+        Err(ClientError::Status(Status::OutOfRange))
+    );
+    assert_eq!(
+        client.payload_fetch(&mut []),
+        Err(ClientError::InvalidLength)
+    );
 }
 
 /// The task-73 SDK buggify round-trip: the guest `buggify_decide(point)` reaches
@@ -622,6 +686,8 @@ fn service_ids_are_a_stable_additive_registry() {
     assert_eq!(ServiceId::Event as u16, 4);
     assert_eq!(ServiceId::Net as u16, 5);
     assert_eq!(ServiceId::Sdk as u16, 6);
+    assert_eq!(ServiceId::Pvclock as u16, 7);
+    assert_eq!(ServiceId::Payload as u16, 8);
 }
 
 proptest! {
