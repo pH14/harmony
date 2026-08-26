@@ -164,6 +164,16 @@ dependency rather than silently weakening the criterion.
     The initramfs builder scans the complete TetaNES binary, BusyBox, dynamic
     loader, and every shared object. A generic runtime containing dormant LL/SC
     therefore blocks the build loudly rather than being waived on an LSE host.
+23. **The SMB campaign has one policy path and a bounded live-handle cache.**
+    `SmbGame` is parameterized only by target construction; the archive,
+    selector, mutation draw, admission probe, milestone merge, and parent policy
+    remain the same generic implementation for in-process and control-socket
+    execution. A remote snapshot serializes its complete chord lineage and WRAM
+    evidence but skips its session-local server handle. Each live session retains
+    at most 1,024 continuation handles; eviction drops the VMM snapshot, and a
+    later restore deterministically reconstructs from gameplay genesis. This
+    prevents rejected or old archive candidates from leaking unbounded server
+    snapshots without making raw handles falsely portable across sessions.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -537,7 +547,10 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   one payload per chord, mirrors complete WRAM, and reports cumulative frames at
   chord boundaries. Its live Linux/aarch64 `/dev/mem` composition and separate
   fail-closed image builder are present. The ROM, native Altra image build, and
-  live M1-Max execution remain open, so this criterion is not yet a pass.
+  live M1-Max execution remain open, so this criterion is not yet a pass. The
+  searcher now exposes the same campaign through `--control-socket`, requires
+  exactly one worker per mutable VMM session, records a distinct durable remote
+  checkpoint format, and can replay a recorded stream through a fresh session.
 
 ### M2 payload-substrate checkpoint evidence
 
@@ -611,12 +624,45 @@ yield for a frame-5 deadline, malformed WRAM registration, absent/hidden/
 overflowing pagemap entries, and zero or overlong chord holds. The portable
 guest differential compares an independently configured TetaNES deck's full
 2-KiB WRAM at every chord boundary.
+
+### M2 searcher-adapter checkpoint evidence
+
+```text
+cd dissonance
+cargo test -p searcher --lib smb::remote
+4 passed; 0 failed
+
+cargo test -p searcher --lib \
+  smb::campaign::tests::live_campaign_replays_byte_identically
+1 passed; 0 failed
+
+cargo clippy -p searcher --lib -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notice only)
+
+cargo check -p searcher --bin smb-campaign
+exit status 0
+```
+
+The adapter differential executes the same synthetic NROM and chords through
+independent in-process and control-machine boundaries and compares complete WRAM
+and frame count at every chord endpoint. Its negatives reject a 2,047-byte WRAM
+publication and a one-frame guest-report offset. Snapshot tests prove both a
+live continuation restore and a post-serialization genesis-lineage restore; a
+1,025-snapshot churn test evicts the oldest live handle and proves the same
+durable fallback remains byte-exact.
 - **FAIL — two same-seed archive hashes:** not started.
-- **FAIL — every archived lineage replays byte-for-byte:** not started.
-- **FAIL — snapshot restore counter and uninterrupted-continuation hash oracle:**
-  not started.
-- **FAIL — in-process/guest/transport cross-build differential:** not started.
-- **FAIL — thousands of mid-workload branch/replay cycles:** not started.
+- **IN PROGRESS — every archived lineage replays byte-for-byte:** durable
+  lineage reconstruction is implemented and green for focused snapshots; the
+  whole retained archive and real guest remain open.
+- **IN PROGRESS — snapshot restore counter and uninterrupted-continuation hash
+  oracle:** genesis/continuation counters and focused restore evidence are green;
+  sampled campaign branch-point hashes remain open.
+- **IN PROGRESS — in-process/guest/transport cross-build differential:** the
+  independent synthetic-ROM chord-endpoint differential is green; the shipped
+  guest image and external SMB ROM run remain open.
+- **IN PROGRESS — thousands of mid-workload branch/replay cycles:** the bounded
+  cache eviction oracle crosses 1,024 stored snapshots, but a real campaign with
+  thousands of mid-workload branches has not run.
 - **FAIL — altered-chord archive comparator negative:** not started.
 - **FAIL — RAM, vCPU, and GIC/device stored-snapshot corruption negatives:** not
   started.

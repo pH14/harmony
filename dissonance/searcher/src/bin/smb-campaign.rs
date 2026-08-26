@@ -11,10 +11,12 @@ use searcher::{
     },
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
-        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig,
-        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
-        button_vocabulary_from_identifier, chord_policy_from_identifier,
-        replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
+        REMOTE_SNAPSHOT_CHECKPOINT_FORMAT, RemoteSmbCampaignCheckpoint, RemoteSmbCampaignOrigin,
+        RemoteSmbSnapshotCheckpoint, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary,
+        SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
+        SmbSnapshotCheckpoint, button_vocabulary_from_identifier, chord_policy_from_identifier,
+        replay_remote_smb_campaign_checkpointed, replay_smb_campaign_checkpointed,
+        run_remote_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
 };
 use serde::Serialize;
@@ -90,6 +92,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     });
     let mut vocabulary = SmbButtonVocabulary::default();
     let mut checkpoint_path = None;
+    let mut control_socket = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -124,6 +127,10 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
             checkpoint_path = Some(PathBuf::from(
                 args.next().ok_or("missing --checkpoint value")?,
             ));
+        } else if flag == "--control-socket" {
+            control_socket = Some(PathBuf::from(
+                args.next().ok_or("missing --control-socket value")?,
+            ));
         } else {
             return Err("unexpected run argument".into());
         }
@@ -133,7 +140,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     }
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
-    let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
     let config = SmbCampaignConfig {
         vocabulary,
         campaign_seed,
@@ -157,8 +163,32 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     // untouched by it.
     let mut progress = BufWriter::new(fs::File::create(output.join("progress-live.jsonl"))?);
     let started = std::time::Instant::now();
-    let (report, checkpoint) =
-        run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, Some(&mut progress))?;
+    let (report, checkpoint_bytes) = match control_socket {
+        Some(socket) => {
+            let origin =
+                load_remote_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
+            let (report, checkpoint) = run_remote_smb_campaign_checkpointed(
+                &rom,
+                socket,
+                &config,
+                &origin,
+                &mut stream,
+                Some(&mut progress),
+            )?;
+            (report, checkpoint.to_bytes()?)
+        }
+        None => {
+            let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
+            let (report, checkpoint) = run_smb_campaign_checkpointed(
+                &rom,
+                &config,
+                &origin,
+                &mut stream,
+                Some(&mut progress),
+            )?;
+            (report, checkpoint.to_bytes()?)
+        }
+    };
     let wall_seconds = started.elapsed().as_secs_f64();
     drop(stream);
 
@@ -168,7 +198,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         "archive-live.json",
         "campaign-report.json",
     )?;
-    fs::write(output.join("snapshots-live.bin"), checkpoint.to_bytes()?)?;
+    fs::write(output.join("snapshots-live.bin"), checkpoint_bytes)?;
     let throughput = LiveThroughput {
         wall_seconds,
         executions_completed: report.executions_completed,
@@ -189,9 +219,18 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let origin_arg = args
         .next()
         .ok_or("missing origin (genesis or the recorded source archive path)")?;
-    let checkpoint_arg = args.next().map(PathBuf::from);
-    if args.next().is_some() {
-        return Err("unexpected extra replay argument".into());
+    let mut checkpoint_arg = None;
+    let mut control_socket = None;
+    while let Some(argument) = args.next() {
+        if argument == "--control-socket" {
+            control_socket = Some(PathBuf::from(
+                args.next().ok_or("missing --control-socket value")?,
+            ));
+        } else if checkpoint_arg.is_none() {
+            checkpoint_arg = Some(PathBuf::from(argument));
+        } else {
+            return Err("unexpected extra replay argument".into());
+        }
     }
     let rom = read_rom()?;
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
@@ -201,20 +240,39 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
             path,
         )?)?),
     };
-    let origin_checkpoint = checkpoint_arg.as_deref().map(load_checkpoint).transpose()?;
-    let (report, checkpoint) = replay_smb_campaign_checkpointed(
-        &rom,
-        &stream_bytes,
-        origin_report.as_ref(),
-        origin_checkpoint.as_ref(),
-    )?;
+    let (report, checkpoint_bytes) = match control_socket {
+        Some(socket) => {
+            let origin_checkpoint = checkpoint_arg
+                .as_deref()
+                .map(load_remote_checkpoint)
+                .transpose()?;
+            let (report, checkpoint) = replay_remote_smb_campaign_checkpointed(
+                &rom,
+                socket,
+                &stream_bytes,
+                origin_report.as_ref(),
+                origin_checkpoint.as_ref(),
+            )?;
+            (report, checkpoint.to_bytes()?)
+        }
+        None => {
+            let origin_checkpoint = checkpoint_arg.as_deref().map(load_checkpoint).transpose()?;
+            let (report, checkpoint) = replay_smb_campaign_checkpointed(
+                &rom,
+                &stream_bytes,
+                origin_report.as_ref(),
+                origin_checkpoint.as_ref(),
+            )?;
+            (report, checkpoint.to_bytes()?)
+        }
+    };
     write_report_files(
         &run_dir,
         &report,
         "archive-replay.json",
         "campaign-report-replay.json",
     )?;
-    fs::write(run_dir.join("snapshots-replay.bin"), checkpoint.to_bytes()?)?;
+    fs::write(run_dir.join("snapshots-replay.bin"), checkpoint_bytes)?;
 
     let archive_live = fs::read(run_dir.join("archive-live.json"))?;
     let archive_replay = fs::read(run_dir.join("archive-replay.json"))?;
@@ -263,12 +321,46 @@ fn load_origin(
     })
 }
 
+fn load_remote_origin(
+    origin_arg: &str,
+    checkpoint_path: Option<&std::path::Path>,
+) -> Result<RemoteSmbCampaignOrigin, Box<dyn Error>> {
+    if origin_arg == "genesis" {
+        if checkpoint_path.is_some() {
+            return Err("a snapshot checkpoint needs a source archive origin".into());
+        }
+        return Ok(RemoteSmbCampaignOrigin::Genesis);
+    }
+    let bytes = fs::read(origin_arg)?;
+    let report: SmbArchiveReport = serde_json::from_slice(&bytes)?;
+    Ok(RemoteSmbCampaignOrigin::Archive {
+        path: origin_arg.to_owned(),
+        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+        report: Box::new(report),
+        checkpoint: checkpoint_path.map(load_remote_checkpoint).transpose()?,
+    })
+}
+
 fn load_checkpoint(path: &std::path::Path) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
     let bytes = fs::read(path)?;
     Ok(SmbCampaignCheckpoint {
         path: path.to_string_lossy().into_owned(),
         file_sha256: format!("{:x}", Sha256::digest(&bytes)),
         snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes, SNAPSHOT_CHECKPOINT_FORMAT)?,
+    })
+}
+
+fn load_remote_checkpoint(
+    path: &std::path::Path,
+) -> Result<RemoteSmbCampaignCheckpoint, Box<dyn Error>> {
+    let bytes = fs::read(path)?;
+    Ok(RemoteSmbCampaignCheckpoint {
+        path: path.to_string_lossy().into_owned(),
+        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+        snapshots: RemoteSmbSnapshotCheckpoint::from_bytes(
+            &bytes,
+            REMOTE_SNAPSHOT_CHECKPOINT_FORMAT,
+        )?,
     })
 }
 
