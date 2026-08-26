@@ -16,7 +16,7 @@
 [pack]
 schema = "cpu-qualification-pack-v1"
 baseline = "det-zen3-v1"
-pack_hash = "61a0829b0069195daf5e611a4576cd1bd394c476c8c59e76f18e9ea64d58504d"
+pack_hash = "08b8fd47f4a5a2bcda0b1b630928d08bed2c536656864a7351fbd4ed45f49564"
 
 [chip.vendor]
 source = "/proc/cpuinfo vendor_id on the qualification box; docs/CPU-QUALIFICATION.md known-chip table AMD row"
@@ -116,12 +116,12 @@ scope = "host"
 
 [[host_conditions.value]]
 condition = "kvm-module-identity"
-expect = "srcversion unrecorded, build-id 108ce949651645819c7b64a80808c9bccd7fe5c1"
+expect = "srcversion unrecorded, build-id 3b96ce3a518f95c96edaf5ecbb7b0d97ddab4643"
 scope = "kvm_amd"
 
 [[host_conditions.value]]
 condition = "kvm-module-identity"
-expect = "srcversion unrecorded, build-id 61680f4470b7d6881ff0c25d941d35457316e90e"
+expect = "srcversion unrecorded, build-id 5cb8ae6a19c6b3e74ebeb7e35d25029afe77b611"
 scope = "kvm"
 
 [[host_conditions.value]]
