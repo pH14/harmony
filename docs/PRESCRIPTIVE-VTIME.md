@@ -92,9 +92,13 @@ run measures (§3, M3's histogram).
 when the guest executes past a budget with no exit. The watchdog **aborts the
 run** and reports the guest PC range — it never injects into or otherwise
 perturbs the guest, so it reads host time without that time ever reaching guest
-state, and determinism is unaffected. A guest stretch that outruns the budget is
-a loud incompatible-workload finding, and a payload whose runs abort this way
-fails its milestone.
+state, and determinism is unaffected. This is the design's kill condition for
+an exit-free stretch: the run ends loudly, the workload is recorded as
+incompatible, and a payload whose runs abort this way fails its milestone.
+Supported workloads are those whose execution reaches exits at the density
+their own I/O, the paravirtual tick, and (when instrumented) the SDK
+thresholds supply; the watchdog converts everything outside that into a
+finding.
 
 The pvclock page is stamped at exits, exactly as `docs/PARAVIRT-CLOCK.md`
 specifies today; guest-visible time already only changes at exits, so the guest
@@ -246,8 +250,11 @@ cannot catch and the placement checker must.
 
 **M1 — the M1 Max boots deterministically.**
 *Build:* first a probe binary that confirms the required Hypervisor.framework
-surface (WFI exit control, sysreg trap coverage, injection timing) on this
-macOS version, its findings recorded in the backend's docs; then `HvfBackend`
+surface on this macOS version — WFI exit control, sysreg trap coverage,
+injection timing, and **save/restore coverage**: which of the retained state
+classes (general registers, SIMD/FP, sysregs including timer registers,
+pending exception and debug state) the HVF get/set API captures on this
+hardware — its findings recorded in the backend's docs; then `HvfBackend`
 with `run_until`, userspace GICv3 delivery at exits, and WFI via `IdlePlanner`;
 the paravirtual tick patch; boot the arm64 image to `/init`.
 *Passes when:* ten same-seed boots produce one normalized log — identical event
@@ -260,6 +267,14 @@ interrupt placements are in the log, `capabilities()` reports the backend's
 honest surface, and the comparator was first shown to catch a one-exit-late
 tick injection on this workload (rule 3) — with the placement checker, not the
 comparator, standing against the same error made consistently in all runs.
+**State-completeness check:** for each state class retained in `state_blob` —
+general registers, SIMD/FP, sysregs including the timer registers, pending
+exception and debug state, the GIC model, device state, V-time, entropy
+position — a committed test perturbs that class alone at a snapshot boundary
+and shows `state_hash` changes and a restore round-trips it. A state class the
+image makes unreachable (the exclusive monitor, under the image's LL/SC
+prohibition) is documented as canonicalized at every sealable boundary instead,
+with the audit that enforces the prohibition cited as the evidence.
 
 **M2 — NES campaign on the M1 Max.**
 *Build:* the §2.5 payload and the control-proto `Machine` client; run
@@ -271,15 +286,17 @@ campaign's continuations execute from restored snapshots (asserted by a restore
 counter in the run report, with genesis replays counted separately), and on a
 sampled set of branch points the restored continuation's per-chord `state_hash`
 sequence equals the uninterrupted run's from the same point; (d) a
-**cross-implementation differential** holds on a sampled set of lineages: the
-in-process `NesMachine`, the consonance-hosted payload, and the campaign's own
-recorded observations agree on WRAM at each chord boundary — three
-independently produced results, with any disagreement treated as unlocalized
-until component-level checks (chord encoding, ROM/core configuration, boundary
-alignment) attribute it.
+**cross-implementation differential** holds on a sampled set of lineages: two
+independent implementations — the in-process `NesMachine` and the
+consonance-hosted payload — plus the campaign's independently recorded
+transport observations agree on WRAM at each chord boundary, with any
+disagreement treated as unlocalized until component-level checks (chord
+encoding, ROM/core configuration, boundary alignment) attribute it.
 *Does not count unless:* the campaign ran long enough to exercise snapshot
-churn at real scale (thousands of branch/replay cycles, non-quiescent
-snapshots); the archive-hash comparator was shown to catch a seeded divergence
+churn at real scale — thousands of branch/replay cycles, with snapshots taken
+while the guest is mid-workload rather than idle (each boundary itself a fully
+serviced, sealable exit per the snapshot contract, `INTEGRATION.md` §4); the
+archive-hash comparator was shown to catch a seeded divergence
 (one chord altered in one lineage); and snapshot integrity checking was shown
 to detect seeded corruption in each of a RAM page, a vCPU field, and a
 GIC/device field of a stored snapshot (rule 3 applied to the restore path).
@@ -354,12 +371,19 @@ M1 Max produce **identical normalized logs** (raw logs differ across
 substrates by construction; only the normalized, guest-visible log is
 compared) for the boot and for an NES campaign, and identical archive hashes;
 (b) a snapshot taken mid-lineage on one host, restored on the other,
-continues to the same archive key, in both directions.
+has canonical `state_hash` equality **immediately after restore**, and its
+continuation's full normalized-log and `state_hash` sequence equals the
+origin host's uninterrupted run from the same point — in both directions,
+with the archive key match as the final consequence rather than the test.
 *Does not count unless:* rule 4 held (bytes attested on both sides before the
 run), the comparison is the full normalized log with `state_hash` checkpoints
-(rule 1), and at least one seeded cross-host divergence was demonstrated to
-be caught (rule 3, run once with an increment constant deliberately differing
-between hosts).
+(rule 1), at least one seeded cross-host divergence was demonstrated to be
+caught (rule 3, run once with an increment constant deliberately differing
+between hosts), and — when F1 chose the in-kernel vGICv3 — the kernel's GIC
+state is normalized into the architectural representation the userspace
+`gicv3` model defines before it enters `state_blob`, with committed
+equivalence tests showing the two models hash identically for the same
+architectural state.
 
 ## 6. In-tree placement
 
