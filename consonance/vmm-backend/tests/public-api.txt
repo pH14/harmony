@@ -562,6 +562,8 @@ pub fn vmm_backend::KvmBackend::new() -> vmm_backend::Result<vmm_backend::KvmBac
 pub fn vmm_backend::KvmBackend::pmu_overflow_stats(&self) -> core::option::Option<vmm_backend::PmuOverflowStats>
 pub fn vmm_backend::KvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_dirty_log_enabled(&mut self, bool)
+pub fn vmm_backend::KvmBackend::set_skid_margin(&mut self, u64)
+pub fn vmm_backend::KvmBackend::skid_margin(&self) -> u64
 pub fn vmm_backend::KvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
 impl core::ops::drop::Drop for vmm_backend::KvmBackend
 pub fn vmm_backend::KvmBackend::drop(&mut self)
@@ -689,6 +691,8 @@ pub fn vmm_backend::PatchedKvmBackend::new() -> vmm_backend::Result<vmm_backend:
 pub fn vmm_backend::PatchedKvmBackend::pmu_overflow_stats(&self) -> core::option::Option<vmm_backend::PmuOverflowStats>
 pub fn vmm_backend::PatchedKvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::set_dirty_log_enabled(&mut self, bool)
+pub fn vmm_backend::PatchedKvmBackend::set_skid_margin(&mut self, u64)
+pub fn vmm_backend::PatchedKvmBackend::skid_margin(&self) -> u64
 pub fn vmm_backend::PatchedKvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
 impl vmm_backend::Backend for vmm_backend::PatchedKvmBackend
 pub type vmm_backend::PatchedKvmBackend::A = vmm_backend::arch::x86::X86

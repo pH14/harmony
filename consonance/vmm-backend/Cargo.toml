@@ -43,6 +43,10 @@ kvm-bindings = { version = "0.14", features = ["fam-wrappers"] }
 libc = "0.2"
 
 [dev-dependencies]
+# The live contract exam plans `run_until` against the running chip's sealed skid
+# margin rather than the Coffee Lake default. The pack is where that number lives.
+# Dev-only: no production path in this crate reads a pack.
+cpu-qualification = { path = "../cpu-qualification", version = "0.1.0" }
 proptest = "1"
 # Model-based (stateful) property test for the first-entry PMU-reset discipline
 # (`run_until`'s P1(b) fix): random save/restore/run sequences over N VMs sharing one

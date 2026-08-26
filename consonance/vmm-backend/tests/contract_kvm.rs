@@ -28,6 +28,9 @@
     feature = "contract-tests"
 ))]
 
+use cpu_qualification::chips::Vendor;
+use cpu_qualification::pack::Pack;
+use cpu_qualification::stage0_sys;
 use vmm_backend::contract::{BackendFixture, ContractReport, Scenario, run_all};
 use vmm_backend::{
     Backend, CpuidModel, Gpa, KvmBackend, MsrFilter, MsrRange, PatchedKvmBackend, X86Policy,
@@ -87,7 +90,7 @@ impl Drop for GuestMem {
 /// Every stub ends in `hlt; jmp -3`, so each `run` after the armed exit returns
 /// `Idle` again — the same repeated-halt shape the mock's scripted `Idle` tail
 /// provides.
-fn stub(scenario: Scenario, patched: bool) -> Option<Vec<u8>> {
+fn stub(scenario: Scenario, patched: bool, traps_rng: bool) -> Option<Vec<u8>> {
     // hlt ; jmp -3  (back to the hlt)
     const HALT_LOOP: [u8; 3] = [0xF4, 0xEB, 0xFD];
     let head: Vec<u8> = match scenario {
@@ -112,8 +115,10 @@ fn stub(scenario: Scenario, patched: bool) -> Option<Vec<u8>> {
         // rdtsc — only the determinism backend traps it.
         Scenario::Rdtsc if patched => vec![0x0F, 0x31],
         Scenario::Rdtsc => return None,
-        // rdrand ax — only the determinism backend traps it.
-        Scenario::Rdrand if patched => vec![0x0F, 0xC7, 0xF0],
+        // rdrand ax — only a host that can trap it. VMX has RDRAND-exiting and
+        // RDSEED-exiting controls; SVM has neither, so on AMD the patched
+        // backend traps the clock and not the randomness.
+        Scenario::Rdrand if traps_rng => vec![0x0F, 0xC7, 0xF0],
         Scenario::Rdrand => return None,
         // dec cx ; jnz -3 ; jmp -5 — a conditional-branch-retiring loop that
         // never exits on its own, so only a `run_until` deadline stops it.
@@ -159,6 +164,10 @@ fn require_kvm() {
 /// constructor and their reach, so the fixture is generic over the pair.
 trait LiveBackend: Backend<A = vmm_backend::X86> + Sized {
     fn open() -> Self;
+    /// Plan `run_until` against this chip's margin. Skid is a property of the
+    /// silicon, so the exam has to use the running chip's number or it measures
+    /// the constant instead of the landing.
+    fn set_skid_margin(&mut self, margin: u64);
     fn enable_dirty_log(&mut self);
     fn load(&mut self, gpa: Gpa, bytes: &[u8]);
     fn map(&mut self, gpa: Gpa, host: &mut [u8]);
@@ -169,6 +178,9 @@ impl LiveBackend for KvmBackend {
         KvmBackend::new().unwrap_or_else(|e| {
             panic!("KvmBackend::new failed ({e}); needs /dev/kvm + VMX on the determinism box")
         })
+    }
+    fn set_skid_margin(&mut self, margin: u64) {
+        KvmBackend::set_skid_margin(self, margin);
     }
     fn enable_dirty_log(&mut self) {
         self.set_dirty_log_enabled(true);
@@ -192,6 +204,9 @@ impl LiveBackend for PatchedKvmBackend {
                  (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS) must be loaded"
             )
         })
+    }
+    fn set_skid_margin(&mut self, margin: u64) {
+        PatchedKvmBackend::set_skid_margin(self, margin);
     }
     fn enable_dirty_log(&mut self) {
         self.set_dirty_log_enabled(true);
@@ -218,11 +233,36 @@ fn enter_real_mode_at<B: LiveBackend>(backend: &mut B, entry: u64) {
     backend.restore(&st).expect("restore setup state");
 }
 
+/// The skid margin sealed for the chip this host is, read from the chip's pack.
+///
+/// Skid is a property of the silicon and the two baselines are not close: Coffee
+/// Lake seals 256 and Zen 3 seals 16192. An exam that planned against a constant
+/// would report the constant's fit rather than the chip's landing, and on Zen 3 it
+/// raises `SkidExceeded` on the first arm.
+fn running_chip_skid_margin() -> u64 {
+    let baseline = match stage0_sys::read_chip_identity() {
+        Ok(chip) if chip.vendor == Vendor::AuthenticAMD => "det-zen3-v1",
+        _ => "det-cfl-v1",
+    };
+    *Pack::builtin(baseline)
+        .expect("a checked-in pack")
+        .skid
+        .margin
+        .value()
+        .expect("every checked-in pack records a skid margin")
+}
+
 /// The live fixture. Owns the guest memory of every backend it has handed out,
 /// so a `GuestMem` can never be freed while a backend still maps it.
 struct KvmFixture<B: LiveBackend> {
     name: &'static str,
     patched: bool,
+    /// Whether a backend of this kind traps the guest's hardware-randomness
+    /// reads on this host, read from a backend rather than assumed, because it
+    /// is a vendor fact rather than a property of the patched path.
+    traps_rng: bool,
+    /// The arm-early margin this chip's pack seals.
+    skid_margin: u64,
     mems: Vec<GuestMem>,
     _marker: std::marker::PhantomData<B>,
 }
@@ -232,15 +272,23 @@ impl<B: LiveBackend> KvmFixture<B> {
         KvmFixture {
             name,
             patched,
+            traps_rng: B::open().capabilities().deterministic_rng,
+            skid_margin: running_chip_skid_margin(),
             mems: Vec::new(),
             _marker: std::marker::PhantomData,
         }
+    }
+
+    /// What a backend of this kind reports on this host.
+    fn traps_rng(&self) -> bool {
+        self.traps_rng
     }
 
     /// A fresh, mapped, stub-loaded, **unconfigured** backend positioned at
     /// `entry`.
     fn boot(&mut self, code: &[u8], entry: u64) -> B {
         let mut backend = B::open();
+        backend.set_skid_margin(self.skid_margin);
         // Armed before `map_memory`: the flag is a property of the memslot, so
         // it has to be set before the slot is registered.
         backend.enable_dirty_log();
@@ -261,7 +309,7 @@ impl<B: LiveBackend> BackendFixture for KvmFixture<B> {
     }
 
     fn spawn(&mut self, scenario: Scenario) -> Option<B> {
-        let code = stub(scenario, self.patched)?;
+        let code = stub(scenario, self.patched, self.traps_rng)?;
         Some(self.boot(&code, ENTRY))
     }
 
@@ -339,8 +387,8 @@ fn patched_kvm_backend_passes_the_contract_exam() {
     println!("[CONTRACT] {report:#?}");
 
     assert_ran(&report, REQUIRED_EVERYWHERE);
-    // The determinism backend implements the deadline path and advertises the
-    // trapped clock and RNG, so those exams must actually run.
+    // The determinism backend implements the deadline path and traps the clock
+    // on either vendor, so those exams must actually run.
     assert_ran(
         &report,
         &[
@@ -349,7 +397,17 @@ fn patched_kvm_backend_passes_the_contract_exam() {
             "exactness/deadline_monotonicity",
             "exactness/deadline_is_repeatable",
             "exactness/deterministic_tsc_traps",
-            "exactness/deterministic_rng_traps",
         ],
+    );
+    // The randomness exam is keyed to the capability, because whether the host
+    // can trap RDRAND at all is a vendor fact: VMX has RDRAND-exiting and
+    // RDSEED-exiting controls and SVM has neither. Asserting the exam ran
+    // unconditionally would demand a false green on AMD; asserting nothing would
+    // let a lost intercept on Intel pass unnoticed. Tie it to what the backend
+    // claims, and let the exam itself hold the claim to the behaviour.
+    assert_eq!(
+        report.did_run("exactness/deterministic_rng_traps"),
+        fx.traps_rng(),
+        "the randomness exam must run exactly when the backend advertises it"
     );
 }

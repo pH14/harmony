@@ -83,6 +83,15 @@ pub(crate) const KVM_EXIT_DET_STEP: u32 = 43;
 /// before vCPU creation.
 pub(crate) const KVM_CAP_X86_DETERMINISTIC_INTERCEPTS: u32 = 245;
 
+/// The instruction classes the opt-in can cover (patch 0007). `KVM_CHECK_EXTENSION`
+/// reports the set a host supports and the enable takes the subset wanted, so a
+/// vendor that cannot trap a class refuses the request instead of running without
+/// the coverage. SVM has no intercept control for RDRAND or RDSEED, so an AMD host
+/// never reports [`DETERMINISTIC_INTERCEPT_RNG`].
+pub(crate) const DETERMINISTIC_INTERCEPT_TSC: u64 = 1 << 0;
+pub(crate) const DETERMINISTIC_INTERCEPT_RNG: u64 = 1 << 1;
+pub(crate) const DETERMINISTIC_INTERCEPT_PREEMPT: u64 = 1 << 2;
+
 /// `KVM_EXIT_PREEMPT` (patch 0004) — the in-kernel **force-exit** preemption: when
 /// the one-shot arm is set, the perf-overflow PMI's NMI VM-exit returns to userspace
 /// with this reason **instead of re-entering**, so the V-time deadline is hit with
@@ -721,16 +730,24 @@ pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
     }
 }
 
-/// The patched-KVM capabilities: RDTSC/RDTSCP and RDRAND/RDSEED are surfaced as
-/// exits the VMM resolves against V-time / the seeded entropy stream, so both
-/// determinism fields are honestly `true`. `enforces_tsc_deadline_msr` stays
-/// `false`: the determinism patch touches only the four instruction intercepts,
-/// not the `0x6E0` WRMSR fastpath (the contract hides `IA32_TSC_DEADLINE`
-/// instead — INTEGRATION.md §7 / R1, no in-kernel LAPIC).
-pub(crate) fn patched_capabilities() -> Capabilities<X86Caps> {
+/// The patched-KVM capabilities for a backend that was granted `granted`, the
+/// intercept classes the host enabled.
+///
+/// RDTSC/RDTSCP are surfaced as exits the VMM resolves against V-time, and the
+/// class is required to build at all, so `deterministic_tsc` is always `true`.
+/// The randomness class is not: SVM has no RDRAND or RDSEED intercept control,
+/// so on an AMD host the class is never granted and a guest's RDRAND reaches the
+/// hardware unseen. Reporting it from the granted mask is what keeps the claim
+/// true on both vendors — a caller that needs seeded randomness must be able to
+/// find out that this host cannot give it.
+///
+/// `enforces_tsc_deadline_msr` stays `false`: the determinism patch touches only
+/// the instruction intercepts, not the `0x6E0` WRMSR fastpath (the contract hides
+/// `IA32_TSC_DEADLINE` instead — INTEGRATION.md §7 / R1, no in-kernel LAPIC).
+pub(crate) fn patched_capabilities(granted: u64) -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-patched",
-        deterministic_rng: true,
+        deterministic_rng: granted & DETERMINISTIC_INTERCEPT_RNG != 0,
         arch: X86Caps {
             deterministic_tsc: true,
             enforces_tsc_deadline_msr: false,

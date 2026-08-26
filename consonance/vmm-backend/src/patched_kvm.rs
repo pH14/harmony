@@ -47,6 +47,18 @@ pub struct PatchedKvmBackend {
 }
 
 impl PatchedKvmBackend {
+    /// Set the arm-early margin `run_until` plans against. See
+    /// [`KvmBackend::set_skid_margin`].
+    pub fn set_skid_margin(&mut self, margin: u64) {
+        self.inner.set_skid_margin(margin);
+    }
+
+    /// The arm-early margin this backend plans against.
+    #[must_use]
+    pub fn skid_margin(&self) -> u64 {
+        self.inner.skid_margin()
+    }
+
     /// Open `/dev/kvm`, enable the determinism intercepts (before vCPU
     /// creation), then create the VM/vCPU exactly as [`KvmBackend::new`] does.
     /// Returns [`crate::BackendError::Capability`] if the patched modules are not
@@ -158,8 +170,10 @@ impl Backend for PatchedKvmBackend {
     }
 
     /// The one method that differs from stock KVM: honestly report determinism
-    /// completeness (the four intercepts are surfaced + V-time/seed-resolved).
+    /// completeness, from the intercept classes this host granted rather than
+    /// from the fact that the patched path was taken. An AMD host grants no
+    /// randomness class, and the report says so.
     fn capabilities(&self) -> Capabilities<X86Caps> {
-        patched_capabilities()
+        patched_capabilities(self.inner.granted_intercepts())
     }
 }

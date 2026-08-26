@@ -47,8 +47,8 @@ use crate::pmu::PmuOverflowStats;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::{MemRegions, split_around_hole};
 use crate::run_until::{
-    ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until,
-    drive_run_until, free_run_decision,
+    DEFAULT_SKID_MARGIN, ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart,
+    classify_run_until, drive_run_until, free_run_decision,
 };
 use crate::types::{Gpa, Moment};
 
@@ -192,6 +192,18 @@ pub struct KvmBackend {
     /// not enable the cap, so the stock `run_until` caller (e.g. `live_preemption`) must
     /// never issue them.
     deterministic_intercepts: bool,
+    /// The intercept classes the host actually granted, as returned by
+    /// `KVM_CHECK_EXTENSION` and asked for at build. Zero on the stock path. The
+    /// randomness class is absent on AMD, where SVM has no RDRAND or RDSEED
+    /// intercept control, so this is what `capabilities()` reports from rather
+    /// than assuming the patched path granted everything.
+    granted_intercepts: u64,
+    /// The arm-early margin `run_until` plans against, in work units. Skid is a
+    /// property of the silicon, so this is the chip's number and not a constant:
+    /// the Coffee Lake default is 256 and the Zen 3 baseline seals 16192. Set it
+    /// from the chip's pack with [`Self::set_skid_margin`] before the first
+    /// `run_until` on anything but Coffee Lake.
+    skid_margin: u64,
     /// The first-entry PMU-reset discipline (P1(b)): resets the shared-thread branch
     /// counter at the first `run`/`run_until` of this VM's life — and again at the
     /// first entry after a `restore` — so it shares vmm-core's work-counter baseline
@@ -230,18 +242,32 @@ impl KvmBackend {
     pub(crate) fn build(deterministic_intercepts: bool) -> Result<KvmBackend> {
         let kvm = Kvm::new().map_err(kvm_err)?;
         let vm = kvm.create_vm().map_err(kvm_err)?;
+        let mut granted_intercepts = 0u64;
         if deterministic_intercepts {
-            // Opt into RDTSC/RDTSCP/RDRAND/RDSEED → KVM_EXIT_DETERMINISM. MUST
-            // precede create_vcpu. A plain EINVAL here means the patched modules
-            // are not loaded — surface that as a clear Capability error.
+            // Opt into every determinism class this host can cover → the four
+            // KVM_EXIT_DETERMINISM instructions and KVM_EXIT_PREEMPT. MUST precede
+            // create_vcpu. A zero or partial supported set means the patched
+            // modules are not loaded — surface that as a clear Capability error.
+            let supported = vm
+                .check_extension_raw(KVM_CAP_X86_DETERMINISTIC_INTERCEPTS as _)
+                .max(0) as u64;
+            let required = DETERMINISTIC_INTERCEPT_TSC | DETERMINISTIC_INTERCEPT_PREEMPT;
+            if supported & required != required {
+                return Err(BackendError::Capability {
+                    cap: "KVM_CAP_X86_DETERMINISTIC_INTERCEPTS (patched KVM not loaded?)",
+                });
+            }
+            // The randomness class is asked for only where it exists. On SVM it
+            // does not, and a guest RDRAND there reaches the hardware unseen.
             let mut cap = kvm_enable_cap {
                 cap: KVM_CAP_X86_DETERMINISTIC_INTERCEPTS,
                 ..Default::default()
             };
-            cap.args[0] = 1;
+            cap.args[0] = supported & (required | DETERMINISTIC_INTERCEPT_RNG);
             vm.enable_cap(&cap).map_err(|_| BackendError::Capability {
                 cap: "KVM_CAP_X86_DETERMINISTIC_INTERCEPTS (patched KVM not loaded?)",
             })?;
+            granted_intercepts = cap.args[0];
         }
         // KVM_IRQCHIP_NONE: we deliberately do NOT call create_irq_chip / split
         // irqchip. The guest LAPIC is the userspace xAPIC (R1).
@@ -287,6 +313,8 @@ impl KvmBackend {
             pmu: PmuBranchCounter::open().ok(),
             single_step_armed: false,
             deterministic_intercepts,
+            granted_intercepts,
+            skid_margin: DEFAULT_SKID_MARGIN,
             reset_arm: FirstEntryReset::new(),
             exit_poison: ExitPoison::default(),
         })
@@ -481,6 +509,29 @@ impl KvmBackend {
     /// it fires — so `run_armed` calls this before EVERY free-run entry (re-arming
     /// after a spurious NMI is idempotent and cheap).
     ///
+    /// The intercept classes this host granted. Zero on the stock path.
+    pub(crate) fn granted_intercepts(&self) -> u64 {
+        self.granted_intercepts
+    }
+
+    /// Set the arm-early margin `run_until` plans against, in work units.
+    ///
+    /// The margin must be strictly greater than the chip's worst-case skid; the
+    /// qualification suite measures it and the chip's pack seals it under
+    /// `skid.margin`. A margin below the chip's skid raises `SkidExceeded` rather
+    /// than landing wrong, so the failure is loud — and it is still a failure.
+    /// This is the setting that makes the landing path work on a chip other than
+    /// the Coffee Lake one the default came from.
+    pub fn set_skid_margin(&mut self, margin: u64) {
+        self.skid_margin = margin;
+    }
+
+    /// The arm-early margin this backend plans against.
+    #[must_use]
+    pub fn skid_margin(&self) -> u64 {
+        self.skid_margin
+    }
+
     /// No-op on stock KVM (`!deterministic_intercepts`): the cap is off, so the ioctl
     /// would `EINVAL`; the `pmu_sys` `SIGIO` kick remains the (non-deterministic) fallback
     /// there. The determinism box always runs the patched backend.
@@ -1404,7 +1455,7 @@ impl Backend for KvmBackend {
                     // counted event (hm-440: a work-clock completion lost across a
                     // host suspend/resume).
                     let planner = InjectionPlanner::new(PlannerConfig {
-                        skid_margin: SKID_MARGIN,
+                        skid_margin: self.skid_margin,
                     });
                     let mut cpu = LiveCpu {
                         backend: self,

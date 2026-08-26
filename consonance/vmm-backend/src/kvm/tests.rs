@@ -503,6 +503,21 @@ fn validate_restore_shape_keys_and_xsave_len() {
 }
 
 #[test]
+fn the_patched_randomness_capability_follows_the_granted_class() {
+    // SVM has no RDRAND or RDSEED intercept control, so an AMD host grants the
+    // clock and preemption classes and not the randomness one. A backend that
+    // claimed it anyway would tell a caller its guest's entropy is seeded when
+    // it is the host's.
+    let amd = patched_capabilities(DETERMINISTIC_INTERCEPT_TSC);
+    assert!(!amd.deterministic_rng);
+    assert!(amd.arch.deterministic_tsc);
+
+    let intel = patched_capabilities(DETERMINISTIC_INTERCEPT_TSC | DETERMINISTIC_INTERCEPT_RNG);
+    assert!(intel.deterministic_rng);
+    assert!(intel.arch.deterministic_tsc);
+}
+
+#[test]
 fn kvm_capabilities_are_honestly_false() {
     let c = kvm_capabilities();
     assert_eq!(c.name, "kvm-stock");

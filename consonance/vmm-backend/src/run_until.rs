@@ -31,7 +31,7 @@ use crate::types::Moment;
 use vtime::{CpuBackend, InjectionPlanner, PlanOutcome, VtimeError};
 
 /// The arm-early margin (work units, in retired conditional branches). The overflow
-/// is armed at `deadline − SKID_MARGIN` so that `armed_at + skid` (the PMI/signal-
+/// is armed at `deadline − DEFAULT_SKID_MARGIN` so that `armed_at + skid` (the PMI/signal-
 /// delivery latency, all counted as skid) lands **STRICTLY BEFORE** the deadline,
 /// leaving the remaining branches to exact single-stepping — the precision invariant
 /// (P1 round-6): every `CommonExit::Deadline` is positioned by the precise single-step, and
@@ -46,7 +46,15 @@ use vtime::{CpuBackend, InjectionPlanner, PlanOutcome, VtimeError};
 /// unchanged (the single-step always lands at exactly the deadline), only the arm point
 /// moves earlier. A skid that still reaches the deadline exceeds 2× the measured
 /// margin → a genuine determinism violation, surfaced loudly.
-pub(crate) const SKID_MARGIN: u64 = 256;
+///
+/// This value is one chip's: the Coffee Lake baseline `det-cfl-v1`. Skid is a
+/// property of the silicon and it is not close between vendors — the Zen 3
+/// baseline `det-zen3-v1` seals 16192, sixty-three times this, and running that
+/// chip at this margin raises `SkidExceeded` on the first landing. A caller on any
+/// chip but Coffee Lake must set its own margin with
+/// [`crate::KvmBackend::set_skid_margin`]; the qualification suite measures it and
+/// the chip's pack seals it under `skid.margin`.
+pub(crate) const DEFAULT_SKID_MARGIN: u64 = 256;
 
 /// A [`vtime::CpuBackend`] that can also surface a **genuine guest exit** taken
 /// before the deadline (and recover the typed backend error the opaque
@@ -99,13 +107,13 @@ pub(crate) trait PreemptCpu: CpuBackend {
 ///
 /// **Why `work >= deadline` is now fail-closed (task 55 — the in-kernel force-exit).**
 /// The preemption is anchored by a `perf_event` branch-counter overflow armed at
-/// `deadline − SKID_MARGIN`. The overflow fires a host **PMI** (an NMI); under the
+/// `deadline − DEFAULT_SKID_MARGIN`. The overflow fires a host **PMI** (an NMI); under the
 /// patched KVM (patch 0004 — the one-shot `KVM_ARM_PREEMPT_EXIT` arm, gated on the
 /// existing `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` opt-in, no separate cap)
 /// that NMI VM-exit returns to userspace as `KVM_EXIT_PREEMPT` **instead of
 /// re-entering**, so the free-run stops with only the **bounded hardware-PMI skid**
 /// (~128 retired branches), never the unbounded `SIGIO`-delivery latency a CPU-bound
-/// guest could outrun. Because `skid < SKID_MARGIN`, the free-run **always** stops
+/// guest could outrun. Because `skid < DEFAULT_SKID_MARGIN`, the free-run **always** stops
 /// STRICTLY before the deadline, and the single-step lands at exactly the deadline —
 /// so a *reported guest exit* at or past the deadline is impossible. If one is ever
 /// observed, the in-kernel skid exceeded the margin: a genuine determinism violation,
@@ -188,7 +196,7 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
                 // in-kernel force-exit (patch 0004 `KVM_EXIT_PREEMPT`) makes the
                 // free-run ALWAYS stop STRICTLY before the deadline — the skid is the
                 // bounded hardware-PMI latency (~128 retired branches), well inside
-                // `SKID_MARGIN = 256` — so the single-step always lands at exactly the
+                // the default margin of 256 — so the single-step always lands at exactly the
                 // deadline and a guest exit AT/PAST it can no longer occur in normal
                 // operation. If one ever does, the in-kernel skid blew the margin: a
                 // genuine determinism violation, surfaced LOUDLY rather than papered
@@ -199,7 +207,7 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
                 GuestExitDisposition::AtDeadline | GuestExitDisposition::PastDeadline => {
                     Err(BackendError::Internal(
                         "run_until: a guest exit landed AT or PAST the V-time deadline — the \
-                         in-kernel force-exit skid exceeded SKID_MARGIN (determinism violation; \
+                         in-kernel force-exit skid exceeded DEFAULT_SKID_MARGIN (determinism violation; \
                          the bounded-skid preemption must stop strictly before the deadline)",
                     ))
                 }
@@ -263,7 +271,7 @@ pub(crate) enum GuestExitDisposition {
     /// AT the branch with nothing reported past it.)
     AtDeadline,
     /// `work_at_exit > deadline`: a guest exit PAST the deadline. Fails closed
-    /// (task 55): with the in-kernel force-exit bounding the skid below `SKID_MARGIN`,
+    /// (task 55): with the in-kernel force-exit bounding the skid below `DEFAULT_SKID_MARGIN`,
     /// the free-run never runs past the deadline, so this can only mean the skid blew
     /// the margin — a genuine determinism violation, never silently absorbed. (This
     /// was task 54's racy SIGIO-latency natural-exit fallback; the force-exit removes
@@ -710,7 +718,7 @@ mod tests {
     /// overflow strictly before is single-stepped to the exact deadline.
     #[test]
     fn overflow_landing_exactly_on_deadline_is_skid_exceeded_not_raw_deadline() {
-        let deadline = 10_000; // > SKID_MARGIN, so the planner arms the overflow
+        let deadline = 10_000; // > DEFAULT_SKID_MARGIN, so the planner arms the overflow
         // Overflow stops EXACTLY on the deadline → SkidExceeded (never raw Deadline).
         let mut at_target = OverflowStopAtCpu {
             work: 0,
@@ -744,7 +752,7 @@ mod tests {
     /// deadline` (genuinely early) is **delivered**; an exit AT (`==`) or PAST (`>`)
     /// the deadline is a determinism violation — the in-kernel force-exit guarantees
     /// the free-run stops strictly before the deadline, so a reported exit there means
-    /// the skid blew `SKID_MARGIN` — and is a loud [`BackendError::Internal`], never
+    /// the skid blew `DEFAULT_SKID_MARGIN` — and is a loud [`BackendError::Internal`], never
     /// delivered. (Reverts task 54's natural-exit fallback, which delivered the late
     /// exit; that carried a boundary race the force-exit removes. The timer-wins
     /// `Deadline` is the *no-exit* case, in `lands_exactly_at_deadline_with_no_guest_exit`.)
@@ -881,7 +889,7 @@ mod tests {
         // backstop itself is covered by `stalled_guest_fails_closed_not_hung`
         // and by vtime's planner unit tests.
         InjectionPlanner::new(PlannerConfig {
-            skid_margin: SKID_MARGIN,
+            skid_margin: DEFAULT_SKID_MARGIN,
         })
     }
 
@@ -1023,7 +1031,7 @@ mod tests {
 
     #[test]
     fn skid_past_margin_is_a_loud_determinism_error() {
-        // max_skid (400) deliberately exceeds SKID_MARGIN (256): the overflow can stop
+        // max_skid (400) deliberately exceeds DEFAULT_SKID_MARGIN (256): the overflow can stop
         // at or past the target, which MUST surface loudly (SkidExceeded), never be
         // tolerated as a raw landing — the round-6 precision invariant.
         let mut saw_skid_error = false;
@@ -1119,7 +1127,7 @@ mod tests {
     fn stalled_guest_fails_closed_not_hung() {
         let budget = 64;
         let planner = InjectionPlanner::new(PlannerConfig {
-            skid_margin: SKID_MARGIN,
+            skid_margin: DEFAULT_SKID_MARGIN,
         })
         .with_max_stall_steps(budget);
         let deadline = 10_000;
@@ -1149,18 +1157,18 @@ mod tests {
         /// or single-stepping, landing at the exact target — regardless of where
         /// the (adversarially-drawn) skid fell — *is* the count-neutrality proof:
         /// the preemption instant is a pure function of the seed, not of the skid.
-        /// `max_skid < SKID_MARGIN` (the round-6 invariant: the overflow must stop
+        /// `max_skid < DEFAULT_SKID_MARGIN` (the round-6 invariant: the overflow must stop
         /// STRICTLY before the deadline so the single-step finishes; skid == margin is
         /// the loud `SkidExceeded` case, covered separately). Deadlines/densities are
         /// bounded so the suite stays well under the ~3-min budget. Both the
         /// long-distance (overflow + step) and short-distance (step-only) regimes
-        /// are covered since `deadline` straddles `SKID_MARGIN`.
+        /// are covered since `deadline` straddles `DEFAULT_SKID_MARGIN`.
         #[test]
         fn run_until_is_count_neutral_and_exact(
             seed in 1u64..=u64::MAX,
             density_num in 1u64..=8,
             extra_den in 0u64..=24,
-            max_skid in 0u64..SKID_MARGIN,
+            max_skid in 0u64..DEFAULT_SKID_MARGIN,
             deadline in 1u64..=4_000,
         ) {
             let density_den = density_num + extra_den; // ensures num <= den
@@ -1217,8 +1225,8 @@ mod tests {
         fn exit_free_region_overshoot_fails_closed_regardless_of_skid(
             deadline in 1_000u64..=1_000_000,
             past in 1u64..=200_000,        // how far past the deadline the natural exit is
-            skid_a in 0u64..SKID_MARGIN,
-            skid_b in 0u64..SKID_MARGIN,
+            skid_a in 0u64..DEFAULT_SKID_MARGIN,
+            skid_b in 0u64..DEFAULT_SKID_MARGIN,
         ) {
             let natural_exit_at = deadline + past; // the deterministic stream property
             let run = |skid| {
