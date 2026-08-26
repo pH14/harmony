@@ -490,6 +490,29 @@ impl Gicv3 {
         Some(intid)
     }
 
+    /// The highest-priority active INTID, with deterministic lowest-INTID tie
+    /// breaking. This is the value a userspace CPU-interface emulation returns
+    /// for the interrupt already accepted on exception entry.
+    pub fn active_interrupt(&self) -> Option<u32> {
+        let mut best: Option<(u16, u32)> = None;
+        for word in 0..BITMAP_WORDS {
+            let mut bits = self.active[word];
+            while bits != 0 {
+                let bit = bits.trailing_zeros();
+                bits &= bits - 1;
+                let intid = word as u32 * 32 + bit;
+                if !self.implemented(intid) {
+                    continue;
+                }
+                let key = (u16::from(self.priority[intid as usize]), intid);
+                if best.is_none_or(|current| key < current) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map(|(_, intid)| intid)
+    }
+
     /// End of interrupt for `intid`: clear its active bit (the combined
     /// priority-drop + deactivate of `ICC_EOIR1_EL1`/`ICC_DIR_EL1` with
     /// `EOImode == 0`).

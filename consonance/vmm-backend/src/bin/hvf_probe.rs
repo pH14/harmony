@@ -57,6 +57,12 @@ mod arm64 {
     const INSN_MRS_X1_PMCCNTR_EL0: u32 = 0xd53b_9d01;
     const INSN_MRS_X2_MIDR_EL1: u32 = 0xd538_0002;
     const INSN_MSR_CNTV_CVAL_EL0_X3: u32 = 0xd51b_e343;
+    const INSN_MRS_X0_ICC_IAR1_EL1: u32 = 0xd538_cc00;
+    const INSN_MSR_ICC_EOIR1_EL1_X1: u32 = 0xd518_cc21;
+    const INSN_MSR_ICC_PMR_EL1_X2: u32 = 0xd518_4602;
+    const INSN_MRS_X3_ICC_PMR_EL1: u32 = 0xd538_4603;
+    const INSN_MSR_ICC_IGRPEN1_EL1_X4: u32 = 0xd518_cce4;
+    const INSN_MRS_X5_ICC_SRE_EL1: u32 = 0xd538_cca5;
     const INSN_LDR_X4_X5: u32 = 0xf940_00a4;
 
     // Stable Rust deliberately rejects the platform SIMD type in an FFI
@@ -575,6 +581,22 @@ mod arm64 {
             describe_exit(timer),
             ec(timer) == 0x18
         );
+
+        for (name, instruction) in [
+            ("icc-iar1-el1", INSN_MRS_X0_ICC_IAR1_EL1),
+            ("icc-eoir1-el1", INSN_MSR_ICC_EOIR1_EL1_X1),
+            ("icc-pmr-el1-write", INSN_MSR_ICC_PMR_EL1_X2),
+            ("icc-pmr-el1-read", INSN_MRS_X3_ICC_PMR_EL1),
+            ("icc-igrpen1-el1", INSN_MSR_ICC_IGRPEN1_EL1_X4),
+            ("icc-sre-el1", INSN_MRS_X5_ICC_SRE_EL1),
+        ] {
+            let exit = run_program(page, vcpu, &[instruction, INSN_HVC_0])?;
+            println!(
+                "trap.{name}: {}; trapped={}",
+                describe_exit(exit),
+                ec(exit) == 0x18
+            );
+        }
 
         page.clear();
         page.put(0, INSN_LDR_X4_X5)?;

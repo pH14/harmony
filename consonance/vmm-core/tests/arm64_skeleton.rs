@@ -613,6 +613,58 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
     assert!(!unwired.state_components().iter().any(|(l, _)| *l == "gic"));
 }
 
+/// Every HVF-retained vCPU class is part of both the canonical VCPU hash and
+/// the diagnostic component roster. A one-field perturbation must therefore
+/// change the full state hash and exactly its named diagnostic component.
+#[test]
+fn arm64_hvf_retained_classes_are_hash_observable() {
+    let make = |state: Arm64VcpuState| {
+        let mut backend = MockArm64Backend::new();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_state(state);
+        Vmm::new(backend, GuestRam::new(RAM).unwrap())
+    };
+
+    let base = Arm64VcpuState::default();
+    let baseline = make(base);
+    let baseline_components = baseline.state_components();
+
+    let mut simd = base;
+    simd.simd_fp.q[31][15] = 1;
+    let mut debug = base;
+    debug.debug.watchpoint_control[15] = 1;
+    let mut vtimer = base;
+    vtimer.vtimer.offset = 1;
+    let mut interrupts = base;
+    interrupts.interrupts.fiq = true;
+
+    for (expected, candidate) in [
+        ("simd-fp", make(simd)),
+        ("debug", make(debug)),
+        ("vtimer", make(vtimer)),
+        ("interrupts", make(interrupts)),
+    ] {
+        assert_ne!(
+            baseline.state_hash(),
+            candidate.state_hash(),
+            "{expected} must feed the canonical VCPU hash"
+        );
+        let candidate_components = candidate.state_components();
+        let differing: Vec<&str> = baseline_components
+            .iter()
+            .filter_map(|(label, digest)| {
+                let other = candidate_components
+                    .iter()
+                    .find(|(other_label, _)| other_label == label)
+                    .map(|(_, digest)| digest)
+                    .expect("component rosters match");
+                (digest != other).then_some(*label)
+            })
+            .collect();
+        assert_eq!(differing, [expected]);
+    }
+}
+
 /// M3 — the full boot composition: `boot` runs the host-baseline gate then
 /// loads an Image + DTB and sets the entry state, all mock-backed.
 #[test]

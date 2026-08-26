@@ -1,0 +1,857 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Apple Silicon Hypervisor.framework backend for the M1 prescriptive V-time
+//! bring-up path.
+//!
+//! This backend is deliberately honest and narrow. The measured macOS 26.4.1
+//! surface traps WFI, stage-2 MMIO, PMU, and the GICv3 CPU-interface sysregs,
+//! but it does not trap `CNTVCT_EL0` or virtual-timer programming. The audited
+//! guest therefore obtains time from the paravirtual V-time page and the
+//! capability report keeps direct-counter/timer enforcement false.
+
+use core::ffi::c_void;
+use std::ptr::{self, NonNull};
+
+use crate::arch::arm64::{
+    Arm64, Arm64Caps, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState, GicIntId,
+};
+use crate::backend::Backend;
+use crate::error::{BackendError, Result};
+use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts, HypercallFrame};
+use crate::types::{Gpa, Moment, MpState};
+
+const HV_PAGE_SIZE: usize = 16 * 1024;
+const HV_MEMORY_READ: u64 = 1;
+const HV_MEMORY_WRITE: u64 = 2;
+const HV_MEMORY_EXEC: u64 = 4;
+
+const HV_EXIT_REASON_CANCELED: u32 = 0;
+const HV_EXIT_REASON_EXCEPTION: u32 = 1;
+const HV_EXIT_REASON_VTIMER_ACTIVATED: u32 = 2;
+
+const HV_INTERRUPT_TYPE_IRQ: u32 = 0;
+const HV_INTERRUPT_TYPE_FIQ: u32 = 1;
+
+const HV_REG_PC: u32 = 31;
+const HV_REG_FPCR: u32 = 32;
+const HV_REG_FPSR: u32 = 33;
+const HV_REG_CPSR: u32 = 34;
+
+const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
+const HV_SYS_REG_DBGBVR0_EL1: u16 = 0x8004;
+const HV_SYS_REG_DBGBCR0_EL1: u16 = 0x8005;
+const HV_SYS_REG_DBGWVR0_EL1: u16 = 0x8006;
+const HV_SYS_REG_DBGWCR0_EL1: u16 = 0x8007;
+const HV_SYS_REG_MDSCR_EL1: u16 = 0x8012;
+const HV_SYS_REG_CPACR_EL1: u16 = 0xc082;
+const HV_SYS_REG_TTBR0_EL1: u16 = 0xc100;
+const HV_SYS_REG_TTBR1_EL1: u16 = 0xc101;
+const HV_SYS_REG_TCR_EL1: u16 = 0xc102;
+const HV_SYS_REG_SPSR_EL1: u16 = 0xc200;
+const HV_SYS_REG_ELR_EL1: u16 = 0xc201;
+const HV_SYS_REG_SP_EL0: u16 = 0xc208;
+const HV_SYS_REG_ESR_EL1: u16 = 0xc290;
+const HV_SYS_REG_FAR_EL1: u16 = 0xc300;
+const HV_SYS_REG_MAIR_EL1: u16 = 0xc510;
+const HV_SYS_REG_VBAR_EL1: u16 = 0xc600;
+const HV_SYS_REG_TPIDR_EL1: u16 = 0xc684;
+const HV_SYS_REG_CNTKCTL_EL1: u16 = 0xc708;
+const HV_SYS_REG_TPIDR_EL0: u16 = 0xde82;
+const HV_SYS_REG_CNTV_CTL_EL0: u16 = 0xdf19;
+const HV_SYS_REG_CNTV_CVAL_EL0: u16 = 0xdf1a;
+const HV_SYS_REG_SP_EL1: u16 = 0xe208;
+
+const ESR_EC_WFX: u64 = 0x01;
+const ESR_EC_HVC64: u64 = 0x16;
+const ESR_EC_SYSREG: u64 = 0x18;
+const ESR_EC_DATA_ABORT_LOWER: u64 = 0x24;
+const ESR_EC_DATA_ABORT_SAME: u64 = 0x25;
+
+const PSTATE_I: u64 = 1 << 7;
+
+// PSCI 0.2+ function IDs used by a uniprocessor Linux boot.
+const PSCI_VERSION: u64 = 0x8400_0000;
+const PSCI_CPU_SUSPEND32: u64 = 0x8400_0001;
+const PSCI_CPU_SUSPEND64: u64 = 0xc400_0001;
+const PSCI_CPU_OFF: u64 = 0x8400_0002;
+const PSCI_CPU_ON32: u64 = 0x8400_0003;
+const PSCI_CPU_ON64: u64 = 0xc400_0003;
+const PSCI_AFFINITY_INFO32: u64 = 0x8400_0004;
+const PSCI_AFFINITY_INFO64: u64 = 0xc400_0004;
+const PSCI_MIGRATE_INFO_TYPE: u64 = 0x8400_0006;
+const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
+const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
+const PSCI_FEATURES: u64 = 0x8400_000a;
+const PSCI_VERSION_1_1: u64 = 0x0001_0001;
+const PSCI_NOT_SUPPORTED: u64 = (-1i64) as u64;
+const PSCI_ALREADY_ON: u64 = (-4i64) as u64;
+const PSCI_NOT_PRESENT: u64 = (-7i64) as u64;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct HvExitException {
+    syndrome: u64,
+    virtual_address: u64,
+    physical_address: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct HvVcpuExit {
+    reason: u32,
+    _padding: u32,
+    exception: HvExitException,
+}
+
+// Stable Rust rejects a platform SIMD value in a foreign signature. This
+// AAPCS64 thunk accepts a byte pointer in X2, loads Q0, and tail-calls the
+// framework's by-value setter.
+core::arch::global_asm!(
+    ".globl _harmony_backend_hv_vcpu_set_simd_fp_reg",
+    "_harmony_backend_hv_vcpu_set_simd_fp_reg:",
+    "ldr q0, [x2]",
+    "b _hv_vcpu_set_simd_fp_reg",
+);
+
+#[link(name = "Hypervisor", kind = "framework")]
+unsafe extern "C" {
+    fn hv_vm_create(config: *mut c_void) -> i32;
+    fn hv_vm_destroy() -> i32;
+    fn hv_vm_map(addr: *mut c_void, ipa: u64, size: usize, flags: u64) -> i32;
+    fn hv_vm_unmap(ipa: u64, size: usize) -> i32;
+
+    fn hv_vcpu_create(vcpu: *mut u64, exit: *mut *const HvVcpuExit, config: *mut c_void) -> i32;
+    fn hv_vcpu_destroy(vcpu: u64) -> i32;
+    fn hv_vcpu_run(vcpu: u64) -> i32;
+    fn hv_vcpu_get_reg(vcpu: u64, reg: u32, value: *mut u64) -> i32;
+    fn hv_vcpu_set_reg(vcpu: u64, reg: u32, value: u64) -> i32;
+    fn hv_vcpu_get_simd_fp_reg(vcpu: u64, reg: u32, value: *mut [u8; 16]) -> i32;
+    fn harmony_backend_hv_vcpu_set_simd_fp_reg(vcpu: u64, reg: u32, value: *const u8) -> i32;
+    fn hv_vcpu_get_sys_reg(vcpu: u64, reg: u16, value: *mut u64) -> i32;
+    fn hv_vcpu_set_sys_reg(vcpu: u64, reg: u16, value: u64) -> i32;
+    fn hv_vcpu_get_pending_interrupt(vcpu: u64, kind: u32, pending: *mut bool) -> i32;
+    fn hv_vcpu_set_pending_interrupt(vcpu: u64, kind: u32, pending: bool) -> i32;
+    fn hv_vcpu_get_trap_debug_exceptions(vcpu: u64, value: *mut bool) -> i32;
+    fn hv_vcpu_set_trap_debug_exceptions(vcpu: u64, value: bool) -> i32;
+    fn hv_vcpu_get_trap_debug_reg_accesses(vcpu: u64, value: *mut bool) -> i32;
+    fn hv_vcpu_set_trap_debug_reg_accesses(vcpu: u64, value: bool) -> i32;
+    fn hv_vcpu_get_vtimer_mask(vcpu: u64, value: *mut bool) -> i32;
+    fn hv_vcpu_set_vtimer_mask(vcpu: u64, value: bool) -> i32;
+    fn hv_vcpu_get_vtimer_offset(vcpu: u64, value: *mut u64) -> i32;
+    fn hv_vcpu_set_vtimer_offset(vcpu: u64, value: u64) -> i32;
+}
+
+fn hv(operation: &'static str, status: i32) -> Result<()> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(BackendError::Io(std::io::Error::other(format!(
+            "{operation}: Hypervisor.framework error {:#010x}",
+            status as u32
+        ))))
+    }
+}
+
+fn exit_ec(syndrome: u64) -> u64 {
+    syndrome >> 26
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pending {
+    None,
+    MmioLoad {
+        reg: u32,
+        size: u8,
+        sign_extend: bool,
+        sf: bool,
+    },
+    SysregRead {
+        reg: u32,
+    },
+    SysregWrite,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct DataAbort {
+    gpa: Gpa,
+    size: u8,
+    write: bool,
+    reg: u32,
+    sign_extend: bool,
+    sf: bool,
+}
+
+fn decode_data_abort(exit: HvVcpuExit) -> Result<DataAbort> {
+    let iss = exit.exception.syndrome & 0x01ff_ffff;
+    if iss & (1 << 24) == 0 {
+        return Err(BackendError::Internal(
+            "HVF data abort without a valid instruction syndrome",
+        ));
+    }
+    let sas = ((iss >> 22) & 0x3) as u8;
+    let size = 1u8 << sas;
+    let reg = ((iss >> 16) & 0x1f) as u32;
+    let sign_extend = iss & (1 << 21) != 0;
+    let sf = iss & (1 << 15) != 0;
+    let write = iss & (1 << 6) != 0;
+    Ok(DataAbort {
+        gpa: Gpa(exit.exception.physical_address),
+        size,
+        write,
+        reg,
+        sign_extend,
+        sf,
+    })
+}
+
+fn canonical_sysreg(iss: u64) -> u32 {
+    // Keep the architectural op fields, clear Rt[9:5] and direction[0].
+    ((iss & 0x003f_ffff) & !(0x1f << 5) & !1) as u32
+}
+
+/// Hypervisor.framework backend for the measured Apple Silicon bring-up host.
+pub struct HvfBackend {
+    vcpu: u64,
+    exit: NonNull<HvVcpuExit>,
+    configured: bool,
+    pending: Pending,
+    pending_irq: Option<GicIntId>,
+    accepted_irq: Option<GicIntId>,
+    counts: ExitCounts,
+    regions: Vec<(u64, usize)>,
+}
+
+impl HvfBackend {
+    /// Create the process-global HVF VM and its single vCPU.
+    pub fn new() -> Result<Self> {
+        // SAFETY: null selects the documented default VM configuration.
+        hv("hv_vm_create", unsafe { hv_vm_create(ptr::null_mut()) })?;
+        let mut vcpu = 0;
+        let mut exit = ptr::null();
+        // SAFETY: output pointers are live and null selects the default config.
+        if let Err(error) = hv("hv_vcpu_create", unsafe {
+            hv_vcpu_create(&mut vcpu, &mut exit, ptr::null_mut())
+        }) {
+            // SAFETY: this constructor created the VM and no vCPU exists.
+            let _ = unsafe { hv_vm_destroy() };
+            return Err(error);
+        }
+        let Some(exit) = NonNull::new(exit.cast_mut()) else {
+            // SAFETY: creation returned a live vCPU and this is its owner.
+            let _ = unsafe { hv_vcpu_destroy(vcpu) };
+            // SAFETY: the only vCPU is gone.
+            let _ = unsafe { hv_vm_destroy() };
+            return Err(BackendError::Internal(
+                "hv_vcpu_create returned a null exit page",
+            ));
+        };
+        // The framework timer is tied to mach_absolute_time. Keep its automatic
+        // activation exit disabled; the userspace GIC timer is V-time-derived.
+        // SAFETY: `vcpu` is live and owned by this thread.
+        if let Err(error) = hv("hv_vcpu_set_vtimer_mask", unsafe {
+            hv_vcpu_set_vtimer_mask(vcpu, true)
+        }) {
+            // SAFETY: constructor cleanup on the owning thread.
+            let _ = unsafe { hv_vcpu_destroy(vcpu) };
+            // SAFETY: the only vCPU is gone.
+            let _ = unsafe { hv_vm_destroy() };
+            return Err(error);
+        }
+        Ok(Self {
+            vcpu,
+            exit,
+            configured: false,
+            pending: Pending::None,
+            pending_irq: None,
+            accepted_irq: None,
+            counts: ExitCounts::default(),
+            regions: Vec::new(),
+        })
+    }
+
+    fn reg(&self, reg: u32) -> Result<u64> {
+        let mut value = 0;
+        // SAFETY: output points to a live u64 and this is the vCPU owner.
+        hv("hv_vcpu_get_reg", unsafe {
+            hv_vcpu_get_reg(self.vcpu, reg, &mut value)
+        })?;
+        Ok(value)
+    }
+
+    fn set_reg(&self, reg: u32, value: u64) -> Result<()> {
+        // SAFETY: the vCPU is live and this is its owning thread.
+        hv("hv_vcpu_set_reg", unsafe {
+            hv_vcpu_set_reg(self.vcpu, reg, value)
+        })
+    }
+
+    fn sysreg(&self, reg: u16) -> Result<u64> {
+        let mut value = 0;
+        // SAFETY: output points to a live u64 and this is the vCPU owner.
+        hv("hv_vcpu_get_sys_reg", unsafe {
+            hv_vcpu_get_sys_reg(self.vcpu, reg, &mut value)
+        })?;
+        Ok(value)
+    }
+
+    fn set_sysreg(&self, reg: u16, value: u64) -> Result<()> {
+        // SAFETY: the vCPU is live and this is its owning thread.
+        hv("hv_vcpu_set_sys_reg", unsafe {
+            hv_vcpu_set_sys_reg(self.vcpu, reg, value)
+        })
+    }
+
+    fn advance_pc(&self) -> Result<()> {
+        let next = self
+            .reg(HV_REG_PC)?
+            .checked_add(4)
+            .ok_or(BackendError::InvalidState)?;
+        self.set_reg(HV_REG_PC, next)
+    }
+
+    fn ensure_runnable(&self) -> Result<()> {
+        if !self.configured {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        Ok(())
+    }
+
+    fn apply_pending_irq(&mut self) -> Result<()> {
+        let irq_enabled = self.reg(HV_REG_CPSR)? & PSTATE_I == 0;
+        let inject = irq_enabled && self.pending_irq.is_some();
+        // SAFETY: this is the owning thread; HVF consumes this level on run.
+        hv("hv_vcpu_set_pending_interrupt", unsafe {
+            hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, inject)
+        })?;
+        self.accepted_irq = inject.then_some(self.pending_irq).flatten();
+        Ok(())
+    }
+
+    fn handle_psci(&self, function: u64) -> Result<Option<Exit<Arm64>>> {
+        let result = match function {
+            PSCI_VERSION => PSCI_VERSION_1_1,
+            PSCI_MIGRATE_INFO_TYPE => 2,
+            PSCI_FEATURES => {
+                let queried = self.reg(1)?;
+                if matches!(
+                    queried,
+                    PSCI_VERSION | PSCI_SYSTEM_OFF | PSCI_SYSTEM_RESET | PSCI_FEATURES
+                ) {
+                    0
+                } else {
+                    PSCI_NOT_SUPPORTED
+                }
+            }
+            PSCI_CPU_ON32 | PSCI_CPU_ON64 => PSCI_ALREADY_ON,
+            PSCI_AFFINITY_INFO32 | PSCI_AFFINITY_INFO64 => PSCI_NOT_PRESENT,
+            PSCI_CPU_SUSPEND32 | PSCI_CPU_SUSPEND64 | PSCI_CPU_OFF => PSCI_NOT_SUPPORTED,
+            PSCI_SYSTEM_OFF | PSCI_SYSTEM_RESET => return Ok(Some(CommonExit::Shutdown.into())),
+            _ => return Ok(None),
+        };
+        self.set_reg(0, result)?;
+        Ok(None)
+    }
+
+    fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
+        loop {
+            self.apply_pending_irq()?;
+            // SAFETY: the vCPU is live and this call runs on its owning thread.
+            hv("hv_vcpu_run", unsafe { hv_vcpu_run(self.vcpu) })?;
+            // SAFETY: HVF owns this exit page for the vCPU lifetime and run has
+            // completed its write before returning.
+            let raw = unsafe { *self.exit.as_ptr() };
+            match raw.reason {
+                HV_EXIT_REASON_CANCELED => {
+                    return Err(BackendError::Internal("HVF vCPU run canceled"));
+                }
+                HV_EXIT_REASON_VTIMER_ACTIVATED => {
+                    return Err(BackendError::Internal(
+                        "host-time HVF virtual timer activated despite permanent mask",
+                    ));
+                }
+                HV_EXIT_REASON_EXCEPTION => {}
+                _ => return Err(BackendError::Internal("unhandled HVF exit reason")),
+            }
+            let exit = match exit_ec(raw.exception.syndrome) {
+                ESR_EC_WFX => {
+                    self.advance_pc()?;
+                    CommonExit::Idle.into()
+                }
+                ESR_EC_HVC64 => {
+                    let function = self.reg(0)?;
+                    if let Some(exit) = self.handle_psci(function)? {
+                        exit
+                    } else if matches!(
+                        function,
+                        PSCI_VERSION
+                            | PSCI_CPU_SUSPEND32
+                            | PSCI_CPU_SUSPEND64
+                            | PSCI_CPU_OFF
+                            | PSCI_CPU_ON32
+                            | PSCI_CPU_ON64
+                            | PSCI_AFFINITY_INFO32
+                            | PSCI_AFFINITY_INFO64
+                            | PSCI_MIGRATE_INFO_TYPE
+                            | PSCI_FEATURES
+                    ) {
+                        continue;
+                    } else {
+                        CommonExit::Hypercall(HypercallFrame {
+                            args: [function, self.reg(1)?, self.reg(2)?, self.reg(3)?],
+                        })
+                        .into()
+                    }
+                }
+                ESR_EC_SYSREG => {
+                    let iss = raw.exception.syndrome & 0x01ff_ffff;
+                    let reg = ((iss >> 5) & 0x1f) as u32;
+                    let read = iss & 1 != 0;
+                    let write = if read { None } else { Some(self.reg(reg)?) };
+                    self.advance_pc()?;
+                    self.pending = if read {
+                        Pending::SysregRead { reg }
+                    } else {
+                        Pending::SysregWrite
+                    };
+                    Exit::Arch(Arm64Exit::Sysreg {
+                        sysreg: canonical_sysreg(iss),
+                        write,
+                    })
+                }
+                ESR_EC_DATA_ABORT_LOWER | ESR_EC_DATA_ABORT_SAME => {
+                    let abort = decode_data_abort(raw)?;
+                    self.advance_pc()?;
+                    if abort.write {
+                        let value = if abort.reg == 31 {
+                            0
+                        } else {
+                            self.reg(abort.reg)?
+                        };
+                        let mask = if abort.size == 8 {
+                            u64::MAX
+                        } else {
+                            (1u64 << (u32::from(abort.size) * 8)) - 1
+                        };
+                        CommonExit::Mmio {
+                            gpa: abort.gpa,
+                            size: abort.size,
+                            write: Some(value & mask),
+                        }
+                        .into()
+                    } else {
+                        self.pending = Pending::MmioLoad {
+                            reg: abort.reg,
+                            size: abort.size,
+                            sign_extend: abort.sign_extend,
+                            sf: abort.sf,
+                        };
+                        CommonExit::Mmio {
+                            gpa: abort.gpa,
+                            size: abort.size,
+                            write: None,
+                        }
+                        .into()
+                    }
+                }
+                _ => return Err(BackendError::Internal("unhandled HVF exception class")),
+            };
+            self.counts.bump(exit.reason());
+            return Ok(exit);
+        }
+    }
+}
+
+impl Drop for HvfBackend {
+    fn drop(&mut self) {
+        for &(gpa, len) in self.regions.iter().rev() {
+            // SAFETY: every entry records a successful map owned by this VM.
+            let _ = unsafe { hv_vm_unmap(gpa, len) };
+        }
+        // SAFETY: this backend owns the vCPU and drops on its owning thread.
+        let _ = unsafe { hv_vcpu_destroy(self.vcpu) };
+        // SAFETY: the sole vCPU has been destroyed.
+        let _ = unsafe { hv_vm_destroy() };
+    }
+}
+
+impl Backend for HvfBackend {
+    type A = Arm64;
+
+    fn set_policy(&mut self, policy: &Arm64Policy) -> Result<()> {
+        for (&encoding, &value) in &policy.id_regs.regs {
+            let reg = u16::try_from(encoding).map_err(|_| BackendError::InvalidState)?;
+            self.set_sysreg(reg, value)?;
+        }
+        let _ = &policy.sysreg_traps;
+        self.configured = true;
+        Ok(())
+    }
+
+    unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
+        if host.is_empty() {
+            return Err(BackendError::Memory("zero-length memory region"));
+        }
+        if !gpa.0.is_multiple_of(HV_PAGE_SIZE as u64) {
+            return Err(BackendError::Memory("gpa is not 16 KiB-aligned for HVF"));
+        }
+        if !host.len().is_multiple_of(HV_PAGE_SIZE) {
+            return Err(BackendError::Memory(
+                "region length is not 16 KiB-aligned for HVF",
+            ));
+        }
+        if !(host.as_ptr() as usize).is_multiple_of(HV_PAGE_SIZE) {
+            return Err(BackendError::Memory(
+                "host address is not 16 KiB-aligned for HVF",
+            ));
+        }
+        let end = gpa
+            .0
+            .checked_add(host.len() as u64)
+            .ok_or(BackendError::Memory("region wraps address space"))?;
+        for &(mapped_gpa, mapped_len) in &self.regions {
+            let mapped_end = mapped_gpa + mapped_len as u64;
+            if gpa.0 < mapped_end && mapped_gpa < end {
+                return Err(BackendError::Memory("region overlaps an existing map"));
+            }
+        }
+        // SAFETY: the caller guarantees pinned, unaliased backing; this method
+        // additionally verified the framework's 16 KiB alignment and length.
+        hv("hv_vm_map", unsafe {
+            hv_vm_map(
+                host.as_mut_ptr().cast(),
+                gpa.0,
+                host.len(),
+                HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC,
+            )
+        })?;
+        self.regions.push((gpa.0, host.len()));
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<Exit<Arm64>> {
+        self.ensure_runnable()?;
+        self.enter_guest()
+    }
+
+    fn run_until(&mut self, _deadline: Moment) -> Result<Exit<Arm64>> {
+        Err(BackendError::Unsupported { what: "run_until" })
+    }
+
+    fn inject(&mut self, event: Arm64Injection) -> Result<()> {
+        match event {
+            Arm64Injection::Interrupt { intid } => self.set_pending_irq(Some(intid)),
+        }
+    }
+
+    fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
+        self.pending_irq = id;
+        Ok(())
+    }
+
+    fn take_accepted_interrupt(&mut self) -> Option<GicIntId> {
+        self.accepted_irq.take()
+    }
+
+    fn complete_read(&mut self, value: u64) -> Result<()> {
+        match self.pending {
+            Pending::MmioLoad {
+                reg,
+                size,
+                sign_extend,
+                sf,
+            } => {
+                let bits = u32::from(size) * 8;
+                let masked = if bits == 64 {
+                    value
+                } else {
+                    value & ((1u64 << bits) - 1)
+                };
+                let completed = if sign_extend && bits < 64 {
+                    let shift = 64 - bits;
+                    ((masked << shift) as i64 >> shift) as u64
+                } else if sf {
+                    masked
+                } else {
+                    masked as u32 as u64
+                };
+                if reg != 31 {
+                    self.set_reg(reg, completed)?;
+                }
+                self.pending = Pending::None;
+                Ok(())
+            }
+            Pending::SysregRead { reg } => {
+                if reg != 31 {
+                    self.set_reg(reg, value)?;
+                }
+                self.pending = Pending::None;
+                Ok(())
+            }
+            _ => Err(BackendError::NoPendingRead),
+        }
+    }
+
+    fn complete_fault(&mut self) -> Result<()> {
+        match self.pending {
+            Pending::SysregRead { .. } | Pending::SysregWrite => {
+                self.pending = Pending::None;
+                Ok(())
+            }
+            _ => Err(BackendError::BadCompletion),
+        }
+    }
+
+    fn complete_ok(&mut self) -> Result<()> {
+        if self.pending == Pending::SysregWrite {
+            self.pending = Pending::None;
+            Ok(())
+        } else {
+            Err(BackendError::BadCompletion)
+        }
+    }
+
+    fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
+        Err(BackendError::NoPendingRead)
+    }
+
+    fn complete_arch(&mut self, completion: crate::arch::arm64::Arm64Completion) -> Result<()> {
+        match completion {}
+    }
+
+    fn save(&self) -> Result<Arm64VcpuState> {
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        let mut state = Arm64VcpuState::default();
+        for (reg, slot) in state.core.x.iter_mut().enumerate() {
+            *slot = self.reg(reg as u32)?;
+        }
+        state.core.pc = self.reg(HV_REG_PC)?;
+        state.core.pstate = self.reg(HV_REG_CPSR)?;
+        state.core.sp = self.sysreg(HV_SYS_REG_SP_EL0)?;
+        state.core.sp_el1 = self.sysreg(HV_SYS_REG_SP_EL1)?;
+        state.core.elr_el1 = self.sysreg(HV_SYS_REG_ELR_EL1)?;
+        state.core.spsr_el1 = self.sysreg(HV_SYS_REG_SPSR_EL1)?;
+        state.simd_fp.fpcr = self.reg(HV_REG_FPCR)?;
+        state.simd_fp.fpsr = self.reg(HV_REG_FPSR)?;
+        for (reg, q) in state.simd_fp.q.iter_mut().enumerate() {
+            // SAFETY: `q` points to 16 writable bytes and the register index is
+            // in the measured Q0..Q31 public range.
+            hv("hv_vcpu_get_simd_fp_reg", unsafe {
+                hv_vcpu_get_simd_fp_reg(self.vcpu, reg as u32, q)
+            })?;
+        }
+        state.sysregs.sctlr_el1 = self.sysreg(HV_SYS_REG_SCTLR_EL1)?;
+        state.sysregs.ttbr0_el1 = self.sysreg(HV_SYS_REG_TTBR0_EL1)?;
+        state.sysregs.ttbr1_el1 = self.sysreg(HV_SYS_REG_TTBR1_EL1)?;
+        state.sysregs.tcr_el1 = self.sysreg(HV_SYS_REG_TCR_EL1)?;
+        state.sysregs.mair_el1 = self.sysreg(HV_SYS_REG_MAIR_EL1)?;
+        state.sysregs.vbar_el1 = self.sysreg(HV_SYS_REG_VBAR_EL1)?;
+        state.sysregs.cpacr_el1 = self.sysreg(HV_SYS_REG_CPACR_EL1)?;
+        state.sysregs.esr_el1 = self.sysreg(HV_SYS_REG_ESR_EL1)?;
+        state.sysregs.far_el1 = self.sysreg(HV_SYS_REG_FAR_EL1)?;
+        state.sysregs.tpidr_el0 = self.sysreg(HV_SYS_REG_TPIDR_EL0)?;
+        state.sysregs.tpidr_el1 = self.sysreg(HV_SYS_REG_TPIDR_EL1)?;
+        state.sysregs.cntkctl_el1 = self.sysreg(HV_SYS_REG_CNTKCTL_EL1)?;
+        for index in 0..16u16 {
+            state.debug.breakpoint_value[index as usize] =
+                self.sysreg(HV_SYS_REG_DBGBVR0_EL1 + index * 8)?;
+            state.debug.breakpoint_control[index as usize] =
+                self.sysreg(HV_SYS_REG_DBGBCR0_EL1 + index * 8)?;
+            state.debug.watchpoint_value[index as usize] =
+                self.sysreg(HV_SYS_REG_DBGWVR0_EL1 + index * 8)?;
+            state.debug.watchpoint_control[index as usize] =
+                self.sysreg(HV_SYS_REG_DBGWCR0_EL1 + index * 8)?;
+        }
+        state.debug.mdscr_el1 = self.sysreg(HV_SYS_REG_MDSCR_EL1)?;
+        // SAFETY: outputs are live bools and this is the owning thread.
+        hv("hv_vcpu_get_trap_debug_exceptions", unsafe {
+            hv_vcpu_get_trap_debug_exceptions(self.vcpu, &mut state.debug.trap_debug_exceptions)
+        })?;
+        // SAFETY: outputs are live bools and this is the owning thread.
+        hv("hv_vcpu_get_trap_debug_reg_accesses", unsafe {
+            hv_vcpu_get_trap_debug_reg_accesses(self.vcpu, &mut state.debug.trap_debug_reg_accesses)
+        })?;
+        state.vtimer.cntv_ctl_el0 = self.sysreg(HV_SYS_REG_CNTV_CTL_EL0)?;
+        state.vtimer.cntv_cval_el0 = self.sysreg(HV_SYS_REG_CNTV_CVAL_EL0)?;
+        // SAFETY: outputs are live and this is the owning thread.
+        hv("hv_vcpu_get_vtimer_mask", unsafe {
+            hv_vcpu_get_vtimer_mask(self.vcpu, &mut state.vtimer.masked)
+        })?;
+        // SAFETY: outputs are live and this is the owning thread.
+        hv("hv_vcpu_get_vtimer_offset", unsafe {
+            hv_vcpu_get_vtimer_offset(self.vcpu, &mut state.vtimer.offset)
+        })?;
+        // SAFETY: outputs are live and this is the owning thread.
+        hv("hv_vcpu_get_pending_interrupt(IRQ)", unsafe {
+            hv_vcpu_get_pending_interrupt(
+                self.vcpu,
+                HV_INTERRUPT_TYPE_IRQ,
+                &mut state.interrupts.irq,
+            )
+        })?;
+        // SAFETY: outputs are live and this is the owning thread.
+        hv("hv_vcpu_get_pending_interrupt(FIQ)", unsafe {
+            hv_vcpu_get_pending_interrupt(
+                self.vcpu,
+                HV_INTERRUPT_TYPE_FIQ,
+                &mut state.interrupts.fiq,
+            )
+        })?;
+        state.mp_state = MpState::Runnable;
+        Ok(state)
+    }
+
+    fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        if state.mp_state != MpState::Runnable || self.pending != Pending::None {
+            return Err(BackendError::InvalidState);
+        }
+        for (reg, value) in state.core.x.iter().copied().enumerate() {
+            self.set_reg(reg as u32, value)?;
+        }
+        self.set_reg(HV_REG_PC, state.core.pc)?;
+        self.set_reg(HV_REG_CPSR, state.core.pstate)?;
+        self.set_sysreg(HV_SYS_REG_SP_EL0, state.core.sp)?;
+        self.set_sysreg(HV_SYS_REG_SP_EL1, state.core.sp_el1)?;
+        self.set_sysreg(HV_SYS_REG_ELR_EL1, state.core.elr_el1)?;
+        self.set_sysreg(HV_SYS_REG_SPSR_EL1, state.core.spsr_el1)?;
+        self.set_reg(HV_REG_FPCR, state.simd_fp.fpcr)?;
+        self.set_reg(HV_REG_FPSR, state.simd_fp.fpsr)?;
+        for (reg, q) in state.simd_fp.q.iter().enumerate() {
+            // SAFETY: `q` has 16 readable bytes and the thunk passes it in Q0
+            // according to AAPCS64.
+            hv("hv_vcpu_set_simd_fp_reg", unsafe {
+                harmony_backend_hv_vcpu_set_simd_fp_reg(self.vcpu, reg as u32, q.as_ptr())
+            })?;
+        }
+        self.set_sysreg(HV_SYS_REG_SCTLR_EL1, state.sysregs.sctlr_el1)?;
+        self.set_sysreg(HV_SYS_REG_TTBR0_EL1, state.sysregs.ttbr0_el1)?;
+        self.set_sysreg(HV_SYS_REG_TTBR1_EL1, state.sysregs.ttbr1_el1)?;
+        self.set_sysreg(HV_SYS_REG_TCR_EL1, state.sysregs.tcr_el1)?;
+        self.set_sysreg(HV_SYS_REG_MAIR_EL1, state.sysregs.mair_el1)?;
+        self.set_sysreg(HV_SYS_REG_VBAR_EL1, state.sysregs.vbar_el1)?;
+        self.set_sysreg(HV_SYS_REG_CPACR_EL1, state.sysregs.cpacr_el1)?;
+        self.set_sysreg(HV_SYS_REG_ESR_EL1, state.sysregs.esr_el1)?;
+        self.set_sysreg(HV_SYS_REG_FAR_EL1, state.sysregs.far_el1)?;
+        self.set_sysreg(HV_SYS_REG_TPIDR_EL0, state.sysregs.tpidr_el0)?;
+        self.set_sysreg(HV_SYS_REG_TPIDR_EL1, state.sysregs.tpidr_el1)?;
+        self.set_sysreg(HV_SYS_REG_CNTKCTL_EL1, state.sysregs.cntkctl_el1)?;
+        for index in 0..16u16 {
+            self.set_sysreg(
+                HV_SYS_REG_DBGBVR0_EL1 + index * 8,
+                state.debug.breakpoint_value[index as usize],
+            )?;
+            self.set_sysreg(
+                HV_SYS_REG_DBGBCR0_EL1 + index * 8,
+                state.debug.breakpoint_control[index as usize],
+            )?;
+            self.set_sysreg(
+                HV_SYS_REG_DBGWVR0_EL1 + index * 8,
+                state.debug.watchpoint_value[index as usize],
+            )?;
+            self.set_sysreg(
+                HV_SYS_REG_DBGWCR0_EL1 + index * 8,
+                state.debug.watchpoint_control[index as usize],
+            )?;
+        }
+        self.set_sysreg(HV_SYS_REG_MDSCR_EL1, state.debug.mdscr_el1)?;
+        // SAFETY: the vCPU is live and this is the owning thread.
+        hv("hv_vcpu_set_trap_debug_exceptions", unsafe {
+            hv_vcpu_set_trap_debug_exceptions(self.vcpu, state.debug.trap_debug_exceptions)
+        })?;
+        // SAFETY: the vCPU is live and this is the owning thread.
+        hv("hv_vcpu_set_trap_debug_reg_accesses", unsafe {
+            hv_vcpu_set_trap_debug_reg_accesses(self.vcpu, state.debug.trap_debug_reg_accesses)
+        })?;
+        self.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, state.vtimer.cntv_ctl_el0)?;
+        self.set_sysreg(HV_SYS_REG_CNTV_CVAL_EL0, state.vtimer.cntv_cval_el0)?;
+        // SAFETY: the vCPU is live and this is the owning thread.
+        hv("hv_vcpu_set_vtimer_mask", unsafe {
+            hv_vcpu_set_vtimer_mask(self.vcpu, state.vtimer.masked)
+        })?;
+        // SAFETY: the vCPU is live and this is the owning thread.
+        hv("hv_vcpu_set_vtimer_offset", unsafe {
+            hv_vcpu_set_vtimer_offset(self.vcpu, state.vtimer.offset)
+        })?;
+        // SAFETY: the vCPU is live and this is the owning thread.
+        hv("hv_vcpu_set_pending_interrupt(IRQ)", unsafe {
+            hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, state.interrupts.irq)
+        })?;
+        // SAFETY: the vCPU is live and this is the owning thread.
+        hv("hv_vcpu_set_pending_interrupt(FIQ)", unsafe {
+            hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_FIQ, state.interrupts.fiq)
+        })?;
+        Ok(())
+    }
+
+    fn exit_counts(&self) -> ExitCounts {
+        self.counts
+    }
+
+    fn reset_exit_counts(&mut self) {
+        self.counts = ExitCounts::default();
+    }
+
+    fn capabilities(&self) -> Capabilities<Arm64Caps> {
+        Capabilities {
+            name: "hvf-arm64-prescriptive",
+            deterministic_rng: false,
+            arch: Arm64Caps {
+                deterministic_cntvct: false,
+                enforces_cntv_cval: false,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_exit(syndrome: u64, ipa: u64) -> HvVcpuExit {
+        HvVcpuExit {
+            reason: HV_EXIT_REASON_EXCEPTION,
+            _padding: 0,
+            exception: HvExitException {
+                syndrome,
+                virtual_address: ipa,
+                physical_address: ipa,
+            },
+        }
+    }
+
+    #[test]
+    fn probe_data_abort_decodes_exact_mmio_shape() {
+        let decoded = decode_data_abort(raw_exit(0x93c4_8007, 0x20000)).unwrap();
+        assert_eq!(
+            decoded,
+            DataAbort {
+                gpa: Gpa(0x20000),
+                size: 8,
+                write: false,
+                reg: 4,
+                sign_extend: false,
+                sf: true,
+            }
+        );
+    }
+
+    #[test]
+    fn measured_gic_sysreg_syndromes_canonicalize_independent_of_rt_and_direction() {
+        let iar = 0x6230_3019u64 & 0x01ff_ffff;
+        let eoir = 0x6232_3038u64 & 0x01ff_ffff;
+        let pmr_write = 0x6230_104cu64 & 0x01ff_ffff;
+        let pmr_read = 0x6230_106du64 & 0x01ff_ffff;
+        assert_eq!(canonical_sysreg(iar), 0x0030_3018);
+        assert_eq!(canonical_sysreg(eoir), 0x0032_3018);
+        assert_eq!(canonical_sysreg(pmr_write), 0x0030_100c);
+        assert_eq!(canonical_sysreg(pmr_read), canonical_sysreg(pmr_write));
+    }
+
+    #[test]
+    fn untrusted_data_abort_without_isv_fails_closed() {
+        assert!(decode_data_abort(raw_exit(0x9000_0007, 0)).is_err());
+    }
+}

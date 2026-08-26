@@ -52,10 +52,24 @@ pub fn boot<B: Backend<A = Arm64>>(
 /// malformed image or one that does not fit alongside the DTB), or a
 /// [`VmmError::Backend`] from policy install / map / restore.
 pub(crate) fn compose<B: Backend<A = Arm64>>(
+    backend: B,
+    image: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<B>, VmmError> {
+    compose_inner(backend, image, bootargs, guest_ram_len, true)
+}
+
+/// Shared arm64 composition with an explicit control-channel mapping choice.
+/// HVF maps guest memory in 16-KiB host-page units, while the legacy doorbell
+/// transport is an 8-KiB low-GPA region. The M1 Linux boot has no control
+/// channel, so its HVF root deliberately omits that incompatible mapping.
+fn compose_inner<B: Backend<A = Arm64>>(
     mut backend: B,
     image: &[u8],
     bootargs: &str,
     guest_ram_len: usize,
+    map_doorbell: bool,
 ) -> Result<Vmm<B>, VmmError> {
     // 1. Install the contract policy skeleton through the trait, before the
     //    first run (the arm64 `ID_AA64*` freeze + trapped-sysreg table; rows
@@ -120,7 +134,31 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     //    absolute pages over per-arch GPA translation (see Vmm::map_doorbell_pages).
     let mut vmm = Vmm::new(backend, ram);
     vmm.ram_base_gpa = RAM_BASE;
-    vmm.map_doorbell_pages()?;
+    if map_doorbell {
+        vmm.map_doorbell_pages()?;
+    }
+    Ok(vmm)
+}
+
+/// Compose the measured macOS/arm64 Hypervisor.framework backend for the M1
+/// Linux boot. The userspace GICv3 is wired because HVF surfaces its CPU
+/// interface sysregs and accepts pending IRQ injection at the vCPU boundary.
+/// The legacy 8-KiB doorbell mapping is intentionally absent; M1 has no SDK
+/// control channel and HVF requires 16-KiB guest mappings on this host.
+///
+/// # Errors
+/// Returns the host-baseline, HVF construction, image, mapping, state, or GIC
+/// composition error without falling back to a different execution path.
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+pub fn boot_hvf(
+    image: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<vmm_backend::HvfBackend>, VmmError> {
+    hostassert::enforce()?;
+    let backend = vmm_backend::HvfBackend::new()?;
+    let mut vmm = compose_inner(backend, image, bootargs, guest_ram_len, false)?;
+    vmm.wire_gic(super::board::new_gic());
     Ok(vmm)
 }
 

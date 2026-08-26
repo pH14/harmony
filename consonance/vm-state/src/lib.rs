@@ -57,7 +57,9 @@ mod records;
 mod types;
 mod wire;
 
-pub use arm64::{Arm64Regs, Arm64Sysregs, Arm64VmState};
+pub use arm64::{
+    Arm64Debug, Arm64Interrupts, Arm64Regs, Arm64SimdFp, Arm64Sysregs, Arm64VmState, Arm64Vtimer,
+};
 pub use error::VmStateError;
 pub use records::SnapshotRecords;
 pub use types::{

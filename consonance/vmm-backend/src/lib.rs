@@ -70,6 +70,11 @@ mod mock_arm64;
 // dependency, so it compiles + unit/Miri-tests on macOS against the recording
 // `FakeKvm` (portable mechanism attestation — no `/dev/kvm`).
 mod arm64_kvm;
+// Apple Silicon bring-up backend over Hypervisor.framework. The framework and
+// AArch64 ABI are both target-specific, so no part of this module is compiled
+// on Linux or Intel macOS.
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+mod hvf;
 // The box-only syscall half (`LiveKvm`, real ioctls), gated on the arch it
 // traps as well as the OS — `kvm_bindings` exposes a different register ABI per
 // arch, so this is aarch64-linux-only, exactly as the x86 `kvm_sys` is
@@ -117,8 +122,9 @@ mod pmu_sys;
 mod patched_kvm;
 
 pub use arch::arm64::{
-    Arm64, Arm64Caps, Arm64Completion, Arm64CoreRegs, Arm64Exit, Arm64Injection, Arm64Policy,
-    Arm64SysregFile, Arm64VcpuState, GicIntId, IdRegModel, RAW_BR_RETIRED, SysregTrapPolicy,
+    Arm64, Arm64Caps, Arm64Completion, Arm64CoreRegs, Arm64DebugState, Arm64Exit, Arm64Injection,
+    Arm64InterruptState, Arm64Policy, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState,
+    Arm64VtimerState, GicIntId, IdRegModel, RAW_BR_RETIRED, SysregTrapPolicy,
 };
 pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
@@ -141,6 +147,9 @@ pub use mock_arm64::{Arm64MockCompletion, MockArm64Backend, MockArm64Caps};
 #[cfg(feature = "mock")]
 pub use arm64_kvm::FakeKvm;
 pub use arm64_kvm::{Arm64Kvm, Arm64KvmBackend, KvmRunView, MmioView};
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+pub use hvf::HvfBackend;
 
 // The box-only stock KVM/arm64 constructor — the concrete `(Arm64KvmBackend,
 // Arm64)` pair's syscall seam, named only on the aarch64-linux leg.

@@ -40,9 +40,13 @@ const TAG_TIMERS: u16 = 5;
 const TAG_HYPERCALL: u16 = 6;
 const TAG_DEVICES: u16 = 7;
 const TAG_CONTRACT_HASH: u16 = 8;
+const TAG_SIMD_FP: u16 = 9;
+const TAG_DEBUG: u16 = 10;
+const TAG_VTIMER: u16 = 11;
+const TAG_INTERRUPTS: u16 = 12;
 
 /// The number of sections every arm64 blob carries.
-const SECTION_COUNT: u16 = 8;
+const SECTION_COUNT: u16 = 12;
 
 /// Length of the fixed container header (shared with the x86 record set).
 const HEADER_LEN: usize = 10;
@@ -59,6 +63,14 @@ pub struct Arm64VmState {
     pub regs: Arm64Regs,
     /// The skeleton EL1 system-register file (full set `TODO(AA-6)`).
     pub sysregs: Arm64Sysregs,
+    /// SIMD/FP register file.
+    pub simd_fp: Arm64SimdFp,
+    /// Debug register file and trap controls.
+    pub debug: Arm64Debug,
+    /// Virtual-timer register and framework offset/mask state.
+    pub vtimer: Arm64Vtimer,
+    /// Pending interrupt levels.
+    pub interrupts: Arm64Interrupts,
     /// Runnable vs halted (WFI-halted on arm64).
     pub mp_state: MpState,
     /// V-time clock snapshot (`snapshot_vns` + ratio config) — the engine's
@@ -108,6 +120,58 @@ pub struct Arm64Sysregs {
     pub tpidr_el0: u64,
     pub tpidr_el1: u64,
     pub cntkctl_el1: u64,
+}
+
+/// SIMD/FP snapshot record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64SimdFp {
+    /// `Q0..Q31` in architectural byte order.
+    pub q: [[u8; 16]; 32],
+    /// Floating-point control register.
+    pub fpcr: u64,
+    /// Floating-point status register.
+    pub fpsr: u64,
+}
+
+/// Debug snapshot record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64Debug {
+    /// `DBGBVR0_EL1..DBGBVR15_EL1`.
+    pub breakpoint_value: [u64; 16],
+    /// `DBGBCR0_EL1..DBGBCR15_EL1`.
+    pub breakpoint_control: [u64; 16],
+    /// `DBGWVR0_EL1..DBGWVR15_EL1`.
+    pub watchpoint_value: [u64; 16],
+    /// `DBGWCR0_EL1..DBGWCR15_EL1`.
+    pub watchpoint_control: [u64; 16],
+    /// `MDSCR_EL1`.
+    pub mdscr_el1: u64,
+    /// Whether guest debug exceptions trap.
+    pub trap_debug_exceptions: bool,
+    /// Whether guest debug-register accesses trap.
+    pub trap_debug_reg_accesses: bool,
+}
+
+/// Hypervisor.framework virtual-timer snapshot record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64Vtimer {
+    /// `CNTV_CTL_EL0`.
+    pub cntv_ctl_el0: u64,
+    /// `CNTV_CVAL_EL0`.
+    pub cntv_cval_el0: u64,
+    /// Framework automatic-timer-exit mask.
+    pub masked: bool,
+    /// Framework host-counter offset.
+    pub offset: u64,
+}
+
+/// Pending interrupt-level snapshot record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64Interrupts {
+    /// Pending IRQ level.
+    pub irq: bool,
+    /// Pending FIQ level.
+    pub fiq: bool,
 }
 
 /// `Arm64Regs` on the wire: 37 little-endian `u64`s in declaration order.
@@ -207,6 +271,147 @@ impl From<&Arm64SysregsWire> for Arm64Sysregs {
     }
 }
 
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct Arm64SimdFpWire {
+    q: [[u8; 16]; 32],
+    fpcr: U64,
+    fpsr: U64,
+}
+
+impl From<&Arm64SimdFp> for Arm64SimdFpWire {
+    fn from(s: &Arm64SimdFp) -> Self {
+        Self {
+            q: s.q,
+            fpcr: s.fpcr.into(),
+            fpsr: s.fpsr.into(),
+        }
+    }
+}
+
+impl From<&Arm64SimdFpWire> for Arm64SimdFp {
+    fn from(w: &Arm64SimdFpWire) -> Self {
+        Self {
+            q: w.q,
+            fpcr: w.fpcr.get(),
+            fpsr: w.fpsr.get(),
+        }
+    }
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct Arm64DebugWire {
+    breakpoint_value: [U64; 16],
+    breakpoint_control: [U64; 16],
+    watchpoint_value: [U64; 16],
+    watchpoint_control: [U64; 16],
+    mdscr_el1: U64,
+    trap_debug_exceptions: u8,
+    trap_debug_reg_accesses: u8,
+    reserved: [u8; 6],
+}
+
+impl From<&Arm64Debug> for Arm64DebugWire {
+    fn from(s: &Arm64Debug) -> Self {
+        Self {
+            breakpoint_value: s.breakpoint_value.map(U64::from),
+            breakpoint_control: s.breakpoint_control.map(U64::from),
+            watchpoint_value: s.watchpoint_value.map(U64::from),
+            watchpoint_control: s.watchpoint_control.map(U64::from),
+            mdscr_el1: s.mdscr_el1.into(),
+            trap_debug_exceptions: u8::from(s.trap_debug_exceptions),
+            trap_debug_reg_accesses: u8::from(s.trap_debug_reg_accesses),
+            reserved: [0; 6],
+        }
+    }
+}
+
+fn decode_bool(value: u8) -> Result<bool, VmStateError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(VmStateError::InvalidField),
+    }
+}
+
+fn decode_debug(w: &Arm64DebugWire) -> Result<Arm64Debug, VmStateError> {
+    if w.reserved != [0; 6] {
+        return Err(VmStateError::InvalidField);
+    }
+    Ok(Arm64Debug {
+        breakpoint_value: w.breakpoint_value.map(|v| v.get()),
+        breakpoint_control: w.breakpoint_control.map(|v| v.get()),
+        watchpoint_value: w.watchpoint_value.map(|v| v.get()),
+        watchpoint_control: w.watchpoint_control.map(|v| v.get()),
+        mdscr_el1: w.mdscr_el1.get(),
+        trap_debug_exceptions: decode_bool(w.trap_debug_exceptions)?,
+        trap_debug_reg_accesses: decode_bool(w.trap_debug_reg_accesses)?,
+    })
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct Arm64VtimerWire {
+    cntv_ctl_el0: U64,
+    cntv_cval_el0: U64,
+    offset: U64,
+    masked: u8,
+    reserved: [u8; 7],
+}
+
+impl From<&Arm64Vtimer> for Arm64VtimerWire {
+    fn from(s: &Arm64Vtimer) -> Self {
+        Self {
+            cntv_ctl_el0: s.cntv_ctl_el0.into(),
+            cntv_cval_el0: s.cntv_cval_el0.into(),
+            offset: s.offset.into(),
+            masked: u8::from(s.masked),
+            reserved: [0; 7],
+        }
+    }
+}
+
+fn decode_vtimer(w: &Arm64VtimerWire) -> Result<Arm64Vtimer, VmStateError> {
+    if w.reserved != [0; 7] {
+        return Err(VmStateError::InvalidField);
+    }
+    Ok(Arm64Vtimer {
+        cntv_ctl_el0: w.cntv_ctl_el0.get(),
+        cntv_cval_el0: w.cntv_cval_el0.get(),
+        masked: decode_bool(w.masked)?,
+        offset: w.offset.get(),
+    })
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct Arm64InterruptsWire {
+    irq: u8,
+    fiq: u8,
+    reserved: [u8; 6],
+}
+
+impl From<&Arm64Interrupts> for Arm64InterruptsWire {
+    fn from(s: &Arm64Interrupts) -> Self {
+        Self {
+            irq: u8::from(s.irq),
+            fiq: u8::from(s.fiq),
+            reserved: [0; 6],
+        }
+    }
+}
+
+fn decode_interrupts(w: &Arm64InterruptsWire) -> Result<Arm64Interrupts, VmStateError> {
+    if w.reserved != [0; 6] {
+        return Err(VmStateError::InvalidField);
+    }
+    Ok(Arm64Interrupts {
+        irq: decode_bool(w.irq)?,
+        fiq: decode_bool(w.fiq)?,
+    })
+}
+
 impl Arm64VmState {
     /// Encode to the versioned TLV blob under [`ARCH_AARCH64`]. Deterministic:
     /// equal `Arm64VmState` ⇒ equal bytes.
@@ -253,6 +458,26 @@ impl Arm64VmState {
         put_section(&mut out, TAG_HYPERCALL, &self.hypercall)?;
         put_section(&mut out, TAG_DEVICES, &self.devices.0)?;
         put_section(&mut out, TAG_CONTRACT_HASH, &self.contract_hash)?;
+        put_section(
+            &mut out,
+            TAG_SIMD_FP,
+            Arm64SimdFpWire::from(&self.simd_fp).as_bytes(),
+        )?;
+        put_section(
+            &mut out,
+            TAG_DEBUG,
+            Arm64DebugWire::from(&self.debug).as_bytes(),
+        )?;
+        put_section(
+            &mut out,
+            TAG_VTIMER,
+            Arm64VtimerWire::from(&self.vtimer).as_bytes(),
+        )?;
+        put_section(
+            &mut out,
+            TAG_INTERRUPTS,
+            Arm64InterruptsWire::from(&self.interrupts).as_bytes(),
+        )?;
 
         Ok(out)
     }
@@ -295,6 +520,10 @@ impl Arm64VmState {
         let mut hypercall = None;
         let mut devices = None;
         let mut contract_hash = None;
+        let mut simd_fp = None;
+        let mut debug = None;
+        let mut vtimer = None;
+        let mut interrupts = None;
 
         for _ in 0..section_count {
             let tag = r.u16()?;
@@ -327,6 +556,20 @@ impl Arm64VmState {
                 TAG_HYPERCALL => hypercall = Some(payload.to_vec()),
                 TAG_DEVICES => devices = Some(DeviceBlob(payload.to_vec())),
                 TAG_CONTRACT_HASH => contract_hash = Some(decode_contract_hash(payload)?),
+                TAG_SIMD_FP => {
+                    simd_fp = Some(Arm64SimdFp::from(&read_fixed::<Arm64SimdFpWire>(payload)?));
+                }
+                TAG_DEBUG => {
+                    debug = Some(decode_debug(&read_fixed::<Arm64DebugWire>(payload)?)?);
+                }
+                TAG_VTIMER => {
+                    vtimer = Some(decode_vtimer(&read_fixed::<Arm64VtimerWire>(payload)?)?);
+                }
+                TAG_INTERRUPTS => {
+                    interrupts = Some(decode_interrupts(&read_fixed::<Arm64InterruptsWire>(
+                        payload,
+                    )?)?);
+                }
                 other => return Err(VmStateError::UnknownTag(other)),
             }
         }
@@ -349,6 +592,10 @@ impl Arm64VmState {
         Ok(Arm64VmState {
             regs: regs.ok_or(VmStateError::MissingSection(TAG_REGS))?,
             sysregs: sysregs.ok_or(VmStateError::MissingSection(TAG_SYSREGS))?,
+            simd_fp: simd_fp.ok_or(VmStateError::MissingSection(TAG_SIMD_FP))?,
+            debug: debug.ok_or(VmStateError::MissingSection(TAG_DEBUG))?,
+            vtimer: vtimer.ok_or(VmStateError::MissingSection(TAG_VTIMER))?,
+            interrupts: interrupts.ok_or(VmStateError::MissingSection(TAG_INTERRUPTS))?,
             mp_state: mp_state.ok_or(VmStateError::MissingSection(TAG_MP_STATE))?,
             vtime,
             timers: timers.ok_or(VmStateError::MissingSection(TAG_TIMERS))?,
@@ -395,6 +642,21 @@ mod tests {
         s.regs.pstate = 0x3c5; // EL1h, DAIF masked
         s.sysregs.sctlr_el1 = 0x30d0_0800;
         s.sysregs.cntkctl_el1 = 0;
+        s.simd_fp.q[0] = [0x5A; 16];
+        s.simd_fp.q[31] = [0xA5; 16];
+        s.simd_fp.fpcr = 0x0040_0000;
+        s.simd_fp.fpsr = 0x0800_009f;
+        s.debug.breakpoint_value[0] = 0x1111_2222_3333_4444;
+        s.debug.breakpoint_control[15] = 0x55;
+        s.debug.watchpoint_value[7] = 0xAAAA_BBBB_CCCC_DDDD;
+        s.debug.watchpoint_control[8] = 0x66;
+        s.debug.mdscr_el1 = 0x2000;
+        s.debug.trap_debug_exceptions = true;
+        s.vtimer.cntv_ctl_el0 = 1;
+        s.vtimer.cntv_cval_el0 = 0x1234_5678;
+        s.vtimer.masked = true;
+        s.vtimer.offset = 0x8765_4321;
+        s.interrupts.irq = true;
         s.mp_state = MpState::Runnable;
         s.vtime.ratio_den = 1;
         s.vtime.snapshot_vns = 7;
@@ -402,6 +664,21 @@ mod tests {
         s.devices = DeviceBlob(vec![1, 2, 3, 4]);
         s.contract_hash = [0xAB; 32];
         s
+    }
+
+    /// Return the payload start and length for `tag` in a known-valid blob.
+    fn section(blob: &[u8], wanted: u16) -> (usize, usize) {
+        let mut pos = HEADER_LEN;
+        while pos < blob.len() {
+            let tag = u16::from_le_bytes(blob[pos..pos + 2].try_into().unwrap());
+            let len = u32::from_le_bytes(blob[pos + 2..pos + 6].try_into().unwrap()) as usize;
+            let payload = pos + 6;
+            if tag == wanted {
+                return (payload, len);
+            }
+            pos = payload + len;
+        }
+        panic!("section {wanted} not present in valid arm64 blob");
     }
 
     #[test]
@@ -504,6 +781,47 @@ mod tests {
             Arm64VmState::decode(&bad_version),
             Err(VmStateError::UnsupportedVersion(_))
         ));
+    }
+
+    #[test]
+    fn retained_state_sections_reject_noncanonical_boolean_and_reserved_bytes() {
+        let good = sample().encode().unwrap();
+
+        // Debug: four 16-entry u64 arrays + MDSCR precede the two booleans.
+        let (debug, debug_len) = section(&good, TAG_DEBUG);
+        assert_eq!(debug_len, size_of::<Arm64DebugWire>());
+        for offset in [debug + 520, debug + 521, debug + 522] {
+            let mut malformed = good.clone();
+            malformed[offset] = 2;
+            assert_eq!(
+                Arm64VmState::decode(&malformed),
+                Err(VmStateError::InvalidField)
+            );
+        }
+
+        // Vtimer: three u64s, then the boolean and seven reserved bytes.
+        let (vtimer, vtimer_len) = section(&good, TAG_VTIMER);
+        assert_eq!(vtimer_len, size_of::<Arm64VtimerWire>());
+        for offset in [vtimer + 24, vtimer + 25] {
+            let mut malformed = good.clone();
+            malformed[offset] = 2;
+            assert_eq!(
+                Arm64VmState::decode(&malformed),
+                Err(VmStateError::InvalidField)
+            );
+        }
+
+        // Interrupts: IRQ, FIQ, then six reserved bytes.
+        let (interrupts, interrupts_len) = section(&good, TAG_INTERRUPTS);
+        assert_eq!(interrupts_len, size_of::<Arm64InterruptsWire>());
+        for offset in [interrupts, interrupts + 1, interrupts + 2] {
+            let mut malformed = good.clone();
+            malformed[offset] = 2;
+            assert_eq!(
+                Arm64VmState::decode(&malformed),
+                Err(VmStateError::InvalidField)
+            );
+        }
     }
 
     #[test]

@@ -10,8 +10,13 @@
 //! adapters. The record set is the **skeleton subset**; `TODO(AA-6)` owns the
 //! full sysreg set and both sides grow together.
 
-use vm_state::{Arm64Regs, Arm64Sysregs, Arm64VmState};
-use vmm_backend::{Arm64CoreRegs, Arm64SysregFile, Arm64VcpuState};
+use vm_state::{
+    Arm64Debug, Arm64Interrupts, Arm64Regs, Arm64SimdFp, Arm64Sysregs, Arm64VmState, Arm64Vtimer,
+};
+use vmm_backend::{
+    Arm64CoreRegs, Arm64DebugState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile,
+    Arm64VcpuState, Arm64VtimerState,
+};
 
 use crate::snapshot::SnapshotError;
 
@@ -92,6 +97,30 @@ pub(crate) fn vcpu_state_from(s: &Arm64VmState) -> Arm64VcpuState {
     Arm64VcpuState {
         core: from_vm_regs(&s.regs),
         sysregs: from_vm_sysregs(&s.sysregs),
+        simd_fp: Arm64SimdFpState {
+            q: s.simd_fp.q,
+            fpcr: s.simd_fp.fpcr,
+            fpsr: s.simd_fp.fpsr,
+        },
+        debug: Arm64DebugState {
+            breakpoint_value: s.debug.breakpoint_value,
+            breakpoint_control: s.debug.breakpoint_control,
+            watchpoint_value: s.debug.watchpoint_value,
+            watchpoint_control: s.debug.watchpoint_control,
+            mdscr_el1: s.debug.mdscr_el1,
+            trap_debug_exceptions: s.debug.trap_debug_exceptions,
+            trap_debug_reg_accesses: s.debug.trap_debug_reg_accesses,
+        },
+        vtimer: Arm64VtimerState {
+            cntv_ctl_el0: s.vtimer.cntv_ctl_el0,
+            cntv_cval_el0: s.vtimer.cntv_cval_el0,
+            masked: s.vtimer.masked,
+            offset: s.vtimer.offset,
+        },
+        interrupts: Arm64InterruptState {
+            irq: s.interrupts.irq,
+            fiq: s.interrupts.fiq,
+        },
         mp_state: from_vm_mp_state(s.mp_state),
     }
 }
@@ -100,6 +129,30 @@ pub(crate) fn vcpu_state_from(s: &Arm64VmState) -> Arm64VcpuState {
 pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
     out.regs = to_vm_regs(&s.core);
     out.sysregs = to_vm_sysregs(&s.sysregs);
+    out.simd_fp = Arm64SimdFp {
+        q: s.simd_fp.q,
+        fpcr: s.simd_fp.fpcr,
+        fpsr: s.simd_fp.fpsr,
+    };
+    out.debug = Arm64Debug {
+        breakpoint_value: s.debug.breakpoint_value,
+        breakpoint_control: s.debug.breakpoint_control,
+        watchpoint_value: s.debug.watchpoint_value,
+        watchpoint_control: s.debug.watchpoint_control,
+        mdscr_el1: s.debug.mdscr_el1,
+        trap_debug_exceptions: s.debug.trap_debug_exceptions,
+        trap_debug_reg_accesses: s.debug.trap_debug_reg_accesses,
+    };
+    out.vtimer = Arm64Vtimer {
+        cntv_ctl_el0: s.vtimer.cntv_ctl_el0,
+        cntv_cval_el0: s.vtimer.cntv_cval_el0,
+        masked: s.vtimer.masked,
+        offset: s.vtimer.offset,
+    };
+    out.interrupts = Arm64Interrupts {
+        irq: s.interrupts.irq,
+        fiq: s.interrupts.fiq,
+    };
     out.mp_state = to_vm_mp_state(s.mp_state);
 }
 

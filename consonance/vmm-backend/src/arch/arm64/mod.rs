@@ -16,7 +16,10 @@
 
 mod state;
 
-pub use state::{Arm64CoreRegs, Arm64SysregFile, Arm64VcpuState};
+pub use state::{
+    Arm64CoreRegs, Arm64DebugState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile,
+    Arm64VcpuState, Arm64VtimerState,
+};
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;

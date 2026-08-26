@@ -197,11 +197,7 @@ impl Vendor for Arm64 {
     }
 
     fn vcpu_has_inflight_injection(vcpu: &Arm64VcpuState) -> bool {
-        // The skeleton record set carries no pending-event records (the arm64
-        // `KVM_GET_VCPU_EVENTS` surface — pending SError — is part of the
-        // AA-6 record-set decision), so nothing representable is in flight.
-        let _ = vcpu;
-        false
+        vcpu.interrupts.irq || vcpu.interrupts.fiq
     }
 
     fn vcpu_has_active_injection(vcpu: &Arm64VcpuState) -> bool {

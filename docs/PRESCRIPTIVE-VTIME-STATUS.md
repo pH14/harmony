@@ -40,6 +40,17 @@ dependency rather than silently weakening the criterion.
    Miri run established all earlier unit/integration binaries were clean and
    exposed only this harness incompatibility; the repaired prescriptive target
    and every remaining integration target then ran clean under Miri.
+7. **The HVF probe invalidates rewritten instruction-cache lines.** The first
+   multi-program probe reused one IPA without a host instruction-cache flush,
+   allowing stale guest instructions to make later observations vacuous. Every
+   rewrite now calls `sys_icache_invalidate`; all recorded trap syndromes below
+   come from the repaired, entitlement-signed run.
+8. **HVF's measured GIC CPU-interface trap is the delivery mechanism.** The
+   repaired probe records stable traps for `ICC_IAR1_EL1`, `ICC_EOIR1_EL1`,
+   `ICC_PMR_EL1`, and `ICC_IGRPEN1_EL1`; `ICC_SRE_EL1` executes directly. The
+   backend canonicalizes the trap ISS by clearing only Rt and direction, and
+   vmm-core dispatches the ruled identities to the userspace GIC. Unknown
+   identities still fail before any fabric-wiring check.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -193,24 +204,63 @@ work was begun before this evidence was recorded.
   exit.unmapped-mmio: EC=0x24, VA=IPA=0x20000
   interrupt.pre-entry: PC=0x284, ELR_EL1=0x0
   exit.wfi: EC=0x1, syndrome=0x07e00000, PC=0x0
+  trap.icc-iar1-el1: syndrome=0x62303019
+  trap.icc-eoir1-el1: syndrome=0x62323038
+  trap.icc-pmr-el1-write/read: syndrome=0x6230104c / 0x6230106d
+  trap.icc-igrpen1-el1: syndrome=0x623e3098
+  trap.icc-sre-el1: false
   ```
 
   The negative findings are capability limits, not papered-over passes: M1's
   cooperative image must use paravirtual time, and the eventual HVF capability
   report must deny direct-counter and timer-sysreg enforcement. WFI and MMIO
   have measured exception exits suitable for the backend.
-- **FAIL — `HvfBackend`, userspace GICv3 delivery, WFI/IdlePlanner:** not started.
+- **IN PROGRESS — `HvfBackend`, userspace GICv3 delivery, WFI/IdlePlanner:** the
+  production backend now creates/maps/runs an HVF vCPU, surfaces WFI as `Idle`,
+  decodes MMIO and the measured GIC sysreg traps, supports pre-entry IRQ levels,
+  handles the uniprocessor PSCI subset, and is composed with the userspace GIC.
+  The HVF root deliberately omits the legacy 8-KiB doorbell mapping because HVF
+  requires 16-KiB mappings and M1 has no control channel. Integration with the
+  prescriptive `IdlePlanner` remains outstanding.
 - **FAIL — paravirtual tick patch and `/init` boot:** not started.
 - **FAIL — ten same-seed full-boot normalized logs:** not started.
 - **FAIL — placement checker green for every boot:** not started.
 - **FAIL — no liveness-watchdog abort:** not started.
 - **FAIL — one-exit-late tick comparator and consistent-error placement negatives:**
   not started.
-- **FAIL — every retained state class perturbs the hash and round-trips restore:**
-  not started.
+- **IN PROGRESS — every retained state class perturbs the hash and round-trips
+  restore:** SIMD/FP, debug registers and trap controls, virtual-timer
+  register/mask/offset state, and pending IRQ/FIQ now ride backend state,
+  `vm-state` TLVs, vmm-core conversion, the canonical VCPU hash, and labeled
+  diagnostic hashes. Codec round-trip uses distinctive values; strict decode
+  rejects noncanonical booleans and reserved bytes; one-field hash perturbations
+  localize to exactly the corresponding class. A live HVF save/restore oracle
+  remains outstanding.
 - **FAIL — exclusive-monitor canonicalization backed by the LL/SC image audit:**
   not started.
-- **FAIL — honest `capabilities()` surface:** not started.
+- **PASS — honest `capabilities()` surface:** `HvfBackend` reports both
+  `deterministic_cntvct` and `enforces_cntv_cval` false, matching the probe's
+  direct `CNTVCT_EL0` and `CNTV_CVAL_EL0` results; it never calls `run_until`.
+
+### M1 checkpoint command evidence
+
+`cargo nextest run -p gicv3 -p vm-state -p vmm-backend -p vmm-core
+--all-features`
+
+```text
+709 tests run: 709 passed, 8 skipped
+```
+
+`cargo clippy -p gicv3 -p vm-state -p vmm-backend -p vmm-core --all-features
+--all-targets -- -D warnings`
+
+```text
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+```
+
+The intentional additive `vm-state` and Linux-frozen `vmm-backend` API changes
+were regenerated with the pinned `nightly-2026-06-16` public-api tool and the
+diff contains only the new arm64 state classes and fields.
 
 ## M2 — NES campaign on the M1 Max
 

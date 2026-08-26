@@ -30,6 +30,19 @@ use crate::vmm::{Step, Vmm, VmmError};
 /// arm64 mirror of x86's `RFLAGS_IF` (inverted sense: masked vs enabled).
 pub(crate) const PSTATE_I: u64 = 1 << 7;
 
+// Canonical HVF trapped-system-register ISS identities: architectural op
+// fields with Rt and direction cleared (`vmm-backend::hvf`). These are pinned
+// by the signed M1 probe and are independent of the instruction's source/dest
+// register.
+const ICC_PMR_EL1: u32 = 0x0030_100c;
+const ICC_IAR1_EL1: u32 = 0x0030_3018;
+const ICC_EOIR1_EL1: u32 = 0x0032_3018;
+const ICC_IGRPEN1_EL1: u32 = 0x003e_3018;
+const ICC_BPR1_EL1: u32 = 0x0036_3018;
+const ICC_CTLR_EL1: u32 = 0x0038_3018;
+const ICC_RPR_EL1: u32 = 0x0036_3016;
+const ICC_HPPIR1_EL1: u32 = 0x0034_3018;
+
 /// `true` iff `addr` lies inside the `(base, len)` device frame.
 fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
     addr >= frame.0 && addr < frame.0 + frame.1
@@ -73,12 +86,91 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         sysreg: u32,
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
-        let dir = if write.is_some() { "write" } else { "read" };
-        Err(VmmError::ContractViolation(format!(
-            "trapped sysreg {dir} ({sysreg:#010x}) has no ruled disposition: the arm64 \
-             contract's sysreg rows are the AA-6 truth table's (and the trap surface is the \
-             AA-3 patched backend's) — the skeleton fails closed"
-        )))
+        let ruled = matches!(
+            sysreg,
+            ICC_PMR_EL1
+                | ICC_IAR1_EL1
+                | ICC_EOIR1_EL1
+                | ICC_IGRPEN1_EL1
+                | ICC_BPR1_EL1
+                | ICC_CTLR_EL1
+                | ICC_RPR_EL1
+                | ICC_HPPIR1_EL1
+        );
+        if !ruled {
+            let dir = if write.is_some() { "write" } else { "read" };
+            return Err(VmmError::ContractViolation(format!(
+                "trapped sysreg {dir} ({sysreg:#010x}) has no ruled disposition for HVF"
+            )));
+        }
+        let Some(gic) = self.devices.gic.as_mut() else {
+            return Err(VmmError::ContractViolation(format!(
+                "trapped GIC CPU-interface sysreg {sysreg:#010x} with no userspace GIC wired"
+            )));
+        };
+        match (sysreg, write) {
+            (ICC_IAR1_EL1, None) => {
+                let intid = gic
+                    .active_interrupt()
+                    .unwrap_or(vmm_backend::GicIntId::SPURIOUS.0);
+                self.backend.complete_read(u64::from(intid))?;
+                Ok(Step::Continued)
+            }
+            (ICC_EOIR1_EL1, Some(intid)) => {
+                let intid = u32::try_from(intid).map_err(|_| {
+                    VmmError::ContractViolation("ICC_EOIR1_EL1 INTID exceeds u32".to_string())
+                })?;
+                gic.eoi(intid).map_err(|e| {
+                    VmmError::ContractViolation(format!("ICC_EOIR1_EL1 rejected: {e}"))
+                })?;
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            (ICC_PMR_EL1, None) => {
+                self.backend.complete_read(u64::from(gic.pmr()))?;
+                Ok(Step::Continued)
+            }
+            (ICC_PMR_EL1, Some(value)) => {
+                let pmr = u8::try_from(value).map_err(|_| {
+                    VmmError::ContractViolation("ICC_PMR_EL1 value exceeds u8".to_string())
+                })?;
+                gic.set_pmr(pmr);
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            // The model is single-security-state Group-1-only. The binary
+            // point/priority controls Linux writes are accepted at their only
+            // supported values; reads return that fixed interface shape.
+            (ICC_IGRPEN1_EL1, Some(0 | 1)) | (ICC_BPR1_EL1, Some(0)) => {
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            (ICC_IGRPEN1_EL1, None) => {
+                self.backend.complete_read(1)?;
+                Ok(Step::Continued)
+            }
+            (ICC_BPR1_EL1 | ICC_CTLR_EL1, None) => {
+                self.backend.complete_read(0)?;
+                Ok(Step::Continued)
+            }
+            (ICC_RPR_EL1, None) => {
+                self.backend.complete_read(0xff)?;
+                Ok(Step::Continued)
+            }
+            (ICC_HPPIR1_EL1, None) => {
+                let intid = gic
+                    .peek_interrupt()
+                    .unwrap_or(vmm_backend::GicIntId::SPURIOUS.0);
+                self.backend.complete_read(u64::from(intid))?;
+                Ok(Step::Continued)
+            }
+            _ => {
+                let dir = if write.is_some() { "write" } else { "read" };
+                Err(VmmError::ContractViolation(format!(
+                    "trapped GIC CPU-interface sysreg {dir} ({sysreg:#010x}) has no ruled value"
+                )))
+            }
+        }
     }
 
     /// Route an MMIO access over the [`board`](super::board) memory map: the
@@ -556,6 +648,30 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
     ] {
         v.extend_from_slice(&x.to_le_bytes());
     }
+    for q in s.simd_fp.q {
+        v.extend_from_slice(&q);
+    }
+    v.extend_from_slice(&s.simd_fp.fpcr.to_le_bytes());
+    v.extend_from_slice(&s.simd_fp.fpsr.to_le_bytes());
+    for file in [
+        s.debug.breakpoint_value,
+        s.debug.breakpoint_control,
+        s.debug.watchpoint_value,
+        s.debug.watchpoint_control,
+    ] {
+        for value in file {
+            v.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    v.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
+    v.push(u8::from(s.debug.trap_debug_exceptions));
+    v.push(u8::from(s.debug.trap_debug_reg_accesses));
+    v.extend_from_slice(&s.vtimer.cntv_ctl_el0.to_le_bytes());
+    v.extend_from_slice(&s.vtimer.cntv_cval_el0.to_le_bytes());
+    v.push(u8::from(s.vtimer.masked));
+    v.extend_from_slice(&s.vtimer.offset.to_le_bytes());
+    v.push(u8::from(s.interrupts.irq));
+    v.push(u8::from(s.interrupts.fiq));
     v.push(match s.mp_state {
         vmm_backend::MpState::Runnable => 0,
         vmm_backend::MpState::Halted => 1,
@@ -624,6 +740,42 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
         sys.extend_from_slice(&x.to_le_bytes());
     }
     out.push(("sysregs", dig(&sys)));
+
+    let mut simd_fp = Vec::new();
+    for q in s.simd_fp.q {
+        simd_fp.extend_from_slice(&q);
+    }
+    simd_fp.extend_from_slice(&s.simd_fp.fpcr.to_le_bytes());
+    simd_fp.extend_from_slice(&s.simd_fp.fpsr.to_le_bytes());
+    out.push(("simd-fp", dig(&simd_fp)));
+
+    let mut debug = Vec::new();
+    for file in [
+        s.debug.breakpoint_value,
+        s.debug.breakpoint_control,
+        s.debug.watchpoint_value,
+        s.debug.watchpoint_control,
+    ] {
+        for value in file {
+            debug.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    debug.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
+    debug.push(u8::from(s.debug.trap_debug_exceptions));
+    debug.push(u8::from(s.debug.trap_debug_reg_accesses));
+    out.push(("debug", dig(&debug)));
+
+    let mut vtimer = Vec::new();
+    vtimer.extend_from_slice(&s.vtimer.cntv_ctl_el0.to_le_bytes());
+    vtimer.extend_from_slice(&s.vtimer.cntv_cval_el0.to_le_bytes());
+    vtimer.push(u8::from(s.vtimer.masked));
+    vtimer.extend_from_slice(&s.vtimer.offset.to_le_bytes());
+    out.push(("vtimer", dig(&vtimer)));
+
+    out.push((
+        "interrupts",
+        dig(&[u8::from(s.interrupts.irq), u8::from(s.interrupts.fiq)]),
+    ));
 
     let mp = match s.mp_state {
         vmm_backend::MpState::Runnable => 0u8,

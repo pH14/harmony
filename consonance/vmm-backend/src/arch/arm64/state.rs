@@ -25,6 +25,14 @@ pub struct Arm64VcpuState {
     /// The skeleton EL1 system-register file (`KVM_GET_ONE_REG` over
     /// `KVM_REG_ARM64_SYSREG` ids).
     pub sysregs: Arm64SysregFile,
+    /// SIMD/FP architectural state (`Q0..Q31`, `FPCR`, `FPSR`).
+    pub simd_fp: Arm64SimdFpState,
+    /// Hardware breakpoint/watchpoint and debug trap-control state.
+    pub debug: Arm64DebugState,
+    /// EL1 virtual-timer register and framework mask/offset state.
+    pub vtimer: Arm64VtimerState,
+    /// Pending IRQ/FIQ levels exposed by the backend.
+    pub interrupts: Arm64InterruptState,
     /// Runnable vs halted (`KVM_GET_MP_STATE`; WFI-halted on arm64).
     pub mp_state: MpState,
 }
@@ -73,4 +81,57 @@ pub struct Arm64SysregFile {
     /// closure story turns off (`docs/PARAVIRT-CLOCK.md` §4.2); carried so the
     /// closure posture survives a snapshot.
     pub cntkctl_el1: u64,
+}
+
+/// SIMD/FP state retained across snapshots.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64SimdFpState {
+    /// Vector registers `Q0..Q31` in architectural byte order.
+    pub q: [[u8; 16]; 32],
+    /// Floating-point control register.
+    pub fpcr: u64,
+    /// Floating-point status register.
+    pub fpsr: u64,
+}
+
+/// Debug register file and the two HVF trap controls.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64DebugState {
+    /// Breakpoint value registers `DBGBVR0_EL1..DBGBVR15_EL1`.
+    pub breakpoint_value: [u64; 16],
+    /// Breakpoint control registers `DBGBCR0_EL1..DBGBCR15_EL1`.
+    pub breakpoint_control: [u64; 16],
+    /// Watchpoint value registers `DBGWVR0_EL1..DBGWVR15_EL1`.
+    pub watchpoint_value: [u64; 16],
+    /// Watchpoint control registers `DBGWCR0_EL1..DBGWCR15_EL1`.
+    pub watchpoint_control: [u64; 16],
+    /// Monitor debug system control register.
+    pub mdscr_el1: u64,
+    /// Whether guest debug exceptions trap to the backend.
+    pub trap_debug_exceptions: bool,
+    /// Whether guest debug-register accesses trap to the backend.
+    pub trap_debug_reg_accesses: bool,
+}
+
+/// Virtual-timer state exposed by Hypervisor.framework.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64VtimerState {
+    /// `CNTV_CTL_EL0`.
+    pub cntv_ctl_el0: u64,
+    /// `CNTV_CVAL_EL0`.
+    pub cntv_cval_el0: u64,
+    /// Framework automatic-VTimer-exit mask.
+    pub masked: bool,
+    /// Framework host-counter offset (retained even though the deterministic
+    /// guest never consumes the resulting direct counter).
+    pub offset: u64,
+}
+
+/// Pending interrupt levels retained by the backend API.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Arm64InterruptState {
+    /// Pending IRQ level.
+    pub irq: bool,
+    /// Pending FIQ level.
+    pub fiq: bool,
 }
