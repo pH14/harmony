@@ -31,13 +31,9 @@ use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    smb::target::{
-        ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget, smb_camera_pixels,
-        smb_mechanical_state_from_wram, smb_milestones_from_wram,
-    },
-    target::Target,
+use crate::smb::target::{
+    ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones, SmbObservations,
+    SmbProgressWatermark, SmbSnapshot, smb_camera_pixels, smb_mechanical_state_from_wram,
 };
 
 /// The SMB archive instantiation of the generic snapshot archive.
@@ -95,9 +91,9 @@ const ROOM_ARRIVAL_SNAP: u16 = 17;
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_frames_in_level";
 
 /// Fixed masks the admission probe tries, in order, stopping at the first survivor.
-const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
+pub(crate) const VIABILITY_PROBE_MASKS: [u8; 3] = [0x00, 0x01, 0x81];
 /// Admission-probe horizon in frames.
-const VIABILITY_PROBE_FRAMES: u16 = 45;
+pub(crate) const VIABILITY_PROBE_FRAMES: u16 = 45;
 
 /// One bounded quality-diversity key for an action-boundary snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -248,28 +244,6 @@ pub struct SmbArchiveReport {
     pub selector: SelectorAccounting,
 }
 
-/// Probe whether a candidate stays alive for the admission horizon under any
-/// of the fixed masks; the target is left restored to the candidate.
-///
-/// # Errors
-///
-/// Returns an error when a restore fails.
-pub(crate) fn admission_is_viable(
-    target: &mut SmbTarget,
-    snapshot: &SmbSnapshot,
-) -> Result<bool, Box<dyn Error>> {
-    let mut viable = false;
-    for mask in VIABILITY_PROBE_MASKS {
-        target.restore(snapshot)?;
-        if target.survives_probe(mask, VIABILITY_PROBE_FRAMES) {
-            viable = true;
-            break;
-        }
-    }
-    target.restore(snapshot)?;
-    Ok(viable)
-}
-
 pub(crate) fn merge_progress_watermark(
     watermark: &mut SmbProgressWatermark,
     observations: &[SmbObservations],
@@ -375,21 +349,6 @@ pub(crate) fn sample_chord_from_masks(
         u8::try_from(96 + rand.below(NonZeroUsize::new(25).ok_or("invalid long hold span")?))?
     };
     Ok(ButtonChord::new(buttons, hold_frames))
-}
-
-pub(crate) fn merge_action_milestones(
-    milestones: &mut SmbMilestones,
-    target: &SmbTarget,
-) -> Result<(), Box<dyn Error>> {
-    for observation in target.last_action_observations() {
-        let wram: &[u8; 2_048] = observation
-            .wram
-            .as_slice()
-            .try_into()
-            .map_err(|_| "SMB observation WRAM is not exactly 2 KiB")?;
-        merge_milestones(milestones, smb_milestones_from_wram(wram));
-    }
-    Ok(())
 }
 
 pub(crate) fn merge_milestones(aggregate: &mut SmbMilestones, current: SmbMilestones) {

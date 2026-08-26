@@ -9,7 +9,7 @@
 //! above this module and sees the same actions and observation types as the
 //! in-process target.
 
-use std::{error::Error, io::Read, io::Write};
+use std::{collections::VecDeque, error::Error, io::Read, io::Write};
 
 use machine::{
     Machine, MachineError, Moment, SnapId, StopConditions, StopMask, StopReason,
@@ -20,12 +20,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     smb::target::{
-        BOOT_WALK, ButtonChord, SmbObservations, WRAM_SIZE, smb_fingerprint_from_wram,
-        smb_is_victory, smb_mechanical_state_from_wram, smb_milestones_from_wram,
-        smb_player_is_dead,
+        BOOT_WALK, ButtonChord, SmbCampaignTarget, SmbObservations, SmbSnapshotEvidence, WRAM_SIZE,
+        smb_fingerprint_from_wram, smb_is_victory, smb_mechanical_state_from_wram,
+        smb_milestones_from_wram, smb_player_is_dead,
     },
     target::{ExitKind, Target},
 };
+
+/// Resident continuation handles kept in one VMM session. Older archive
+/// snapshots remain restorable through their durable genesis lineage.
+const LIVE_SNAPSHOT_LIMIT: usize = 1_024;
 
 /// Control-machine additions the remote SMB adapter needs beyond the mirrored
 /// core verb set. The production implementation is [`SocketMachine`]; the
@@ -86,6 +90,12 @@ impl RemoteSmbSnapshot {
     }
 }
 
+impl SmbSnapshotEvidence for RemoteSmbSnapshot {
+    fn snapshot_wram(&self) -> &[u8] {
+        self.wram()
+    }
+}
+
 /// SMB target driven through a cooperating guest's control session.
 #[derive(Debug)]
 pub struct RemoteSmbTarget<M: GuestControlMachine> {
@@ -96,6 +106,7 @@ pub struct RemoteSmbTarget<M: GuestControlMachine> {
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
     lineage: Vec<ButtonChord>,
+    live_snapshots: VecDeque<SnapId>,
     dead: bool,
     failed: bool,
 }
@@ -166,6 +177,7 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
             action_observations: vec![observation.clone()],
             observation,
             lineage: Vec::new(),
+            live_snapshots: VecDeque::new(),
             dead: false,
             failed: false,
         })
@@ -255,7 +267,10 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
     }
 
     fn restore_snapshot(&mut self, snapshot: &RemoteSmbSnapshot) -> Result<(), MachineError> {
-        match snapshot.handle {
+        match snapshot
+            .handle
+            .filter(|handle| self.live_snapshots.contains(handle))
+        {
             Some(handle) => self.machine.replay(handle)?,
             None if snapshot.lineage.is_empty() => self.machine.replay(self.genesis)?,
             None => {
@@ -352,13 +367,26 @@ impl<M: GuestControlMachine> Target for RemoteSmbTarget<M> {
 
     fn snapshot(&mut self) -> Option<Self::Snapshot> {
         match self.machine.snapshot() {
-            Ok(handle) => Some(RemoteSmbSnapshot {
-                handle: Some(handle),
-                lineage: self.lineage.clone(),
-                observation: self.observation.clone(),
-                dead: self.dead,
-                failed: self.failed,
-            }),
+            Ok(handle) => {
+                self.live_snapshots.push_back(handle);
+                if self.live_snapshots.len() > LIVE_SNAPSHOT_LIMIT {
+                    let Some(evicted) = self.live_snapshots.pop_front() else {
+                        self.failed = true;
+                        return None;
+                    };
+                    if self.machine.drop_snapshot(evicted).is_err() {
+                        self.failed = true;
+                        return None;
+                    }
+                }
+                Some(RemoteSmbSnapshot {
+                    handle: Some(handle),
+                    lineage: self.lineage.clone(),
+                    observation: self.observation.clone(),
+                    dead: self.dead,
+                    failed: self.failed,
+                })
+            }
             Err(_) => {
                 self.failed = true;
                 None
@@ -369,6 +397,41 @@ impl<M: GuestControlMachine> Target for RemoteSmbTarget<M> {
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
         self.restore_snapshot(snapshot)
             .map_err(|error| error.to_string().into())
+    }
+}
+
+impl<M> SmbCampaignTarget for RemoteSmbTarget<M>
+where
+    M: GuestControlMachine + Send,
+{
+    fn campaign_wram(&self) -> [u8; WRAM_SIZE] {
+        self.wram()
+    }
+
+    fn campaign_action_observations(&self) -> &[SmbObservations] {
+        self.last_action_observations()
+    }
+
+    fn campaign_is_dead(&self) -> bool {
+        self.is_dead()
+    }
+
+    fn campaign_is_victory(&self) -> bool {
+        self.is_victory()
+    }
+
+    fn campaign_frames_clocked(&self) -> u64 {
+        self.frames_clocked()
+    }
+
+    fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
+        let mut remaining = frames;
+        while remaining > 0 && !self.is_dead() && self.exit_kind() == ExitKind::Ok {
+            let hold = remaining.min(u16::from(machine::nes::MAX_HOLD_FRAMES));
+            self.apply(&ButtonChord::new(buttons, u8::try_from(hold).unwrap_or(1)));
+            remaining -= hold;
+        }
+        !self.is_dead() && self.exit_kind() == ExitKind::Ok
     }
 }
 
@@ -614,5 +677,28 @@ mod tests {
         };
         let error = RemoteSmbTarget::from_machine(control).unwrap_err();
         assert!(error.to_string().contains("expected 2048"));
+    }
+
+    #[test]
+    fn evicted_live_handles_fall_back_to_durable_lineage() {
+        let rom = synthetic_nrom();
+        let control = InProcessControl {
+            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
+            counters: RestoreCounters::default(),
+            genesis: None,
+            logical_frame: Moment(0),
+            snapshot_frames: BTreeMap::new(),
+            reported_deadline_offset: 0,
+            published_wram_len: WRAM_SIZE as u32,
+        };
+        let mut remote = RemoteSmbTarget::from_machine(control).unwrap();
+        let oldest = remote.snapshot().unwrap();
+        for _ in 0..LIVE_SNAPSHOT_LIMIT {
+            remote.snapshot().unwrap();
+        }
+        remote.apply(&ButtonChord::new(0x81, 4));
+        remote.restore(&oldest).unwrap();
+        assert_eq!(remote.wram().as_slice(), oldest.wram());
+        assert!(remote.restore_counters().genesis > 0);
     }
 }

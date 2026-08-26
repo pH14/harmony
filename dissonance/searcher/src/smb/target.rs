@@ -74,6 +74,37 @@ impl SmbSnapshot {
     }
 }
 
+/// Snapshot evidence the SMB archive needs to complete a candidate key.
+pub trait SmbSnapshotEvidence {
+    /// Complete WRAM captured at the snapshot boundary.
+    fn snapshot_wram(&self) -> &[u8];
+}
+
+impl SmbSnapshotEvidence for SmbSnapshot {
+    fn snapshot_wram(&self) -> &[u8] {
+        self.wram()
+    }
+}
+
+/// Target operations used by the SMB campaign independently of its machine
+/// transport.
+pub trait SmbCampaignTarget:
+    Target<Action = ButtonChord, Observations = SmbObservations> + Send
+{
+    /// Current complete WRAM.
+    fn campaign_wram(&self) -> [u8; WRAM_SIZE];
+    /// Events emitted by the most recently completed chord.
+    fn campaign_action_observations(&self) -> &[SmbObservations];
+    /// Whether the current state is dead.
+    fn campaign_is_dead(&self) -> bool;
+    /// Whether the current state is a victory.
+    fn campaign_is_victory(&self) -> bool;
+    /// Deterministic emulated-frame work counter.
+    fn campaign_frames_clocked(&self) -> u64;
+    /// Probe one fixed mask for a bounded horizon.
+    fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool;
+}
+
 /// Fixed boot walk from power-on to gameplay genesis, encoded as staged
 /// controller inputs: the title screen settles, Start is pressed once, and
 /// the pre-level sequence plays out. Target setup rather than model-visible
@@ -369,6 +400,32 @@ impl SmbTarget {
             dead,
             log_line,
         }
+    }
+}
+
+impl SmbCampaignTarget for SmbTarget {
+    fn campaign_wram(&self) -> [u8; WRAM_SIZE] {
+        self.wram()
+    }
+
+    fn campaign_action_observations(&self) -> &[SmbObservations] {
+        self.last_action_observations()
+    }
+
+    fn campaign_is_dead(&self) -> bool {
+        self.is_dead()
+    }
+
+    fn campaign_is_victory(&self) -> bool {
+        self.is_victory()
+    }
+
+    fn campaign_frames_clocked(&self) -> u64 {
+        self.frames_clocked()
+    }
+
+    fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
+        self.survives_probe(buttons, frames)
     }
 }
 

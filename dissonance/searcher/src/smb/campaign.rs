@@ -36,13 +36,14 @@ use crate::{
     },
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
-        SmbArchiveReport, admission_is_viable, archive_key, chord_time, merge_action_milestones,
+        SmbArchiveReport, VIABILITY_PROBE_FRAMES, VIABILITY_PROBE_MASKS, archive_key, chord_time,
         merge_milestones, merge_progress_watermark, milestone_key, stamp_arrival_room,
         update_first_inputs,
     },
     smb::target::{
-        ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
-        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
+        ButtonChord, SmbCampaignTarget, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes,
+        SmbMilestones, SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbSnapshotEvidence,
+        SmbTarget,
     },
     target::Target,
 };
@@ -60,6 +61,10 @@ pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-campaign-stream-v1";
 
 /// Format tag of the snapshot checkpoint file.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-snapshot-checkpoint-v1";
+
+/// Format tag for checkpoints whose snapshots carry durable guest lineages
+/// and session-local control handles.
+pub const REMOTE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-remote-snapshot-checkpoint-v1";
 
 /// Identifier recorded for the hold distribution, see
 /// [`crate::smb::archive::sample_chord_from_masks`].
@@ -92,16 +97,92 @@ pub fn recorded_policy<'a>(
         .ok_or_else(|| format!("campaign stream is missing the {field} policy").into())
 }
 
-/// The SMB campaign game context: the ROM and everything decoded from it.
-pub struct SmbGame {
-    rom: Vec<u8>,
+/// Construction seam for an SMB campaign target.
+pub trait SmbTargetBackend: Sync {
+    /// Target a worker drives.
+    type Target: SmbCampaignTarget;
+
+    /// Build one target over the attested ROM image.
+    fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String>;
+    /// Backend-specific snapshot checkpoint format.
+    fn checkpoint_format(&self) -> &'static str;
 }
 
-impl SmbGame {
+/// In-process TetaNES backend retained as the default campaign transport.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InProcessSmbBackend;
+
+impl SmbTargetBackend for InProcessSmbBackend {
+    type Target = SmbTarget;
+
+    fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
+        SmbTarget::from_smb_rom_bytes_headless(rom).map_err(|error| error.to_string())
+    }
+
+    fn checkpoint_format(&self) -> &'static str {
+        SNAPSHOT_CHECKPOINT_FORMAT
+    }
+}
+
+/// One Unix control socket supplying the guest-backed campaign target.
+#[cfg(unix)]
+#[derive(Clone, Debug)]
+pub struct ControlSocketSmbBackend {
+    socket: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl ControlSocketSmbBackend {
+    /// Bind target construction to `socket`.
+    #[must_use]
+    pub fn new(socket: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            socket: socket.into(),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl SmbTargetBackend for ControlSocketSmbBackend {
+    type Target = crate::smb::remote::RemoteSmbTarget<
+        machine::control::SocketMachine<std::os::unix::net::UnixStream>,
+    >;
+
+    fn new_target(&self, _rom: &[u8]) -> Result<Self::Target, String> {
+        crate::smb::remote::RemoteSmbTarget::connect(&self.socket)
+            .map_err(|error| error.to_string())
+    }
+
+    fn checkpoint_format(&self) -> &'static str {
+        REMOTE_SNAPSHOT_CHECKPOINT_FORMAT
+    }
+}
+
+/// The SMB campaign game context: the ROM identity and target backend.
+pub struct SmbGame<B = InProcessSmbBackend> {
+    rom: Vec<u8>,
+    backend: B,
+}
+
+impl SmbGame<InProcessSmbBackend> {
     /// Build the context over one ROM image.
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
-        Self { rom: rom.to_vec() }
+        Self {
+            rom: rom.to_vec(),
+            backend: InProcessSmbBackend,
+        }
+    }
+}
+
+impl<B> SmbGame<B> {
+    /// Build a context over one ROM image and an explicit target backend.
+    #[must_use]
+    pub fn with_backend(rom: &[u8], backend: B) -> Self {
+        Self {
+            rom: rom.to_vec(),
+            backend,
+        }
     }
 }
 
@@ -140,6 +221,18 @@ pub type SmbCampaignCheckpoint = CampaignCheckpoint<SmbSnapshot>;
 pub type SmbSnapshotCheckpoint = SnapshotCheckpoint<SmbSnapshot>;
 /// One SMB archive entry's snapshot.
 pub type SmbSnapshotCheckpointEntry = crate::search::campaign::SnapshotCheckpointEntry<SmbSnapshot>;
+/// The Unix control-socket SMB game instantiation.
+#[cfg(unix)]
+pub type RemoteSmbGame = SmbGame<ControlSocketSmbBackend>;
+/// The Unix control-socket origin instantiation.
+#[cfg(unix)]
+pub type RemoteSmbCampaignOrigin = CampaignOrigin<RemoteSmbGame>;
+/// The Unix control-socket snapshot checkpoint instantiation.
+#[cfg(unix)]
+pub type RemoteSmbSnapshotCheckpoint = SnapshotCheckpoint<crate::smb::remote::RemoteSmbSnapshot>;
+/// The Unix control-socket resume checkpoint instantiation.
+#[cfg(unix)]
+pub type RemoteSmbCampaignCheckpoint = CampaignCheckpoint<crate::smb::remote::RemoteSmbSnapshot>;
 /// The SMB stream header instantiation.
 pub type SmbCampaignStreamHeader = CampaignStreamHeader<SmbChordTableHeader>;
 /// The SMB campaign report instantiation.
@@ -147,8 +240,10 @@ pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveRepor
 /// The SMB sidecar progress record instantiation.
 pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
 /// One executed SMB action inside a job result.
+#[cfg(test)]
 pub(crate) type SmbCampaignActionResult = CampaignActionResult<SmbGame>;
 /// Complete result of one executed SMB job.
+#[cfg(test)]
 pub(crate) type SmbCampaignJobResult = CampaignJobResult<SmbGame>;
 
 /// Fixed configuration for one live campaign run.
@@ -184,7 +279,10 @@ pub struct SmbCampaignConfig {
 }
 
 impl SmbCampaignConfig {
-    fn generic(&self) -> GenericCampaignConfig<SmbGame> {
+    fn generic<G>(&self) -> GenericCampaignConfig<G>
+    where
+        G: Game<Run = SmbCampaignRun>,
+    {
         GenericCampaignConfig {
             suffix: SuffixShape::default(),
             campaign_seed: self.campaign_seed,
@@ -488,6 +586,7 @@ pub(crate) struct SmbJobPolicies {
 /// Execute one job: restore the parent snapshot and apply the suffix exactly as
 /// the campaign suffix loop does, collecting per-boundary candidates
 /// with worker-side probe verdicts.
+#[cfg(test)]
 pub(crate) fn execute_job(
     target: &mut SmbTarget,
     parent_snapshot: &SmbSnapshot,
@@ -496,20 +595,51 @@ pub(crate) fn execute_job(
     suffix: &[ButtonChord],
     policies: SmbJobPolicies,
 ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
+    execute_backend_job::<SmbGame>(
+        target,
+        parent_snapshot,
+        parent_actions,
+        parent_milestones,
+        suffix,
+        policies,
+    )
+}
+
+fn execute_backend_job<G>(
+    target: &mut G::Target,
+    parent_snapshot: &G::Snapshot,
+    parent_actions: usize,
+    parent_milestones: SmbMilestones,
+    suffix: &[ButtonChord],
+    policies: SmbJobPolicies,
+) -> Result<CampaignJobResult<G>, Box<dyn Error>>
+where
+    G: Game<
+            Action = ButtonChord,
+            Key = SmbArchiveKey,
+            Milestones = SmbMilestones,
+            Observations = SmbObservations,
+        >,
+    G::Target: SmbCampaignTarget<Snapshot = G::Snapshot>,
+    G::Snapshot: SmbSnapshotEvidence + Send + Sync,
+{
     target.restore(parent_snapshot)?;
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     for action in suffix {
-        if target.is_dead() || target.is_victory() || length >= policies.max_actions {
+        if target.campaign_is_dead()
+            || target.campaign_is_victory()
+            || length >= policies.max_actions
+        {
             break;
         }
         length = length.saturating_add(1);
         target.apply(action);
-        merge_action_milestones(&mut milestones, target)?;
-        let observations = target.last_action_observations().to_vec();
-        let dead = target.is_dead();
-        let victory = target.is_victory();
+        merge_observation_milestones(&mut milestones, target.campaign_action_observations())?;
+        let observations = target.campaign_action_observations().to_vec();
+        let dead = target.campaign_is_dead();
+        let victory = target.campaign_is_victory();
         let failed = target.exit_kind() != ExitKind::Ok;
         // A won game is terminal: nothing past it is searched, so no
         // candidate is offered.
@@ -519,9 +649,11 @@ pub(crate) fn execute_job(
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
-            let key = archive_key(&target.wram());
+            let key = archive_key(&target.campaign_wram());
             let viable = match policies.retention {
-                RetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
+                RetentionPolicy::ProbeAtAdmission45 => {
+                    admission_is_viable_backend(target, &snapshot)?
+                }
                 RetentionPolicy::AdmitAlive => true,
             };
             Some(CampaignCandidate {
@@ -544,6 +676,44 @@ pub(crate) fn execute_job(
         }
     }
     Ok(CampaignJobResult { actions })
+}
+
+fn merge_observation_milestones(
+    milestones: &mut SmbMilestones,
+    observations: &[SmbObservations],
+) -> Result<(), Box<dyn Error>> {
+    for observation in observations {
+        let wram: &[u8; 2_048] = observation
+            .wram
+            .as_slice()
+            .try_into()
+            .map_err(|_| "SMB observation WRAM is not exactly 2 KiB")?;
+        merge_milestones(
+            milestones,
+            crate::smb::target::smb_milestones_from_wram(wram),
+        );
+    }
+    Ok(())
+}
+
+fn admission_is_viable_backend<T>(
+    target: &mut T,
+    snapshot: &T::Snapshot,
+) -> Result<bool, Box<dyn Error>>
+where
+    T: SmbCampaignTarget,
+    T::Snapshot: SmbSnapshotEvidence + Send + Sync,
+{
+    let mut viable = false;
+    for mask in VIABILITY_PROBE_MASKS {
+        target.restore(snapshot)?;
+        if target.campaign_survives_probe(mask, VIABILITY_PROBE_FRAMES) {
+            viable = true;
+            break;
+        }
+    }
+    target.restore(snapshot)?;
+    Ok(viable)
 }
 
 type InitialChordTables = (
@@ -675,12 +845,16 @@ fn remember_chord_version(
     Ok(())
 }
 
-impl Game for SmbGame {
-    type Target = SmbTarget;
+impl<B> Game for SmbGame<B>
+where
+    B: SmbTargetBackend,
+    <B::Target as Target>::Snapshot: SmbSnapshotEvidence + Send + Sync,
+{
+    type Target = B::Target;
     type Action = ButtonChord;
     type Key = SmbArchiveKey;
     type Milestones = SmbMilestones;
-    type Snapshot = SmbSnapshot;
+    type Snapshot = <B::Target as Target>::Snapshot;
     type Observations = SmbObservations;
     type Evidence = SmbCampaignEvidence;
     type ArchiveReport = SmbArchiveReport;
@@ -693,7 +867,7 @@ impl Game for SmbGame {
     }
 
     fn checkpoint_format(&self) -> &'static str {
-        SNAPSHOT_CHECKPOINT_FORMAT
+        self.backend.checkpoint_format()
     }
 
     fn image_sha256(&self) -> String {
@@ -751,67 +925,68 @@ impl Game for SmbGame {
         Ok(run)
     }
 
-    fn new_target(&self) -> Result<SmbTarget, String> {
-        SmbTarget::from_smb_rom_bytes_headless(&self.rom).map_err(|error| error.to_string())
+    fn new_target(&self) -> Result<Self::Target, String> {
+        self.backend.new_target(&self.rom)
     }
 
-    fn reset(&self, target: &mut SmbTarget) {
+    fn reset(&self, target: &mut Self::Target) {
         target.reset();
     }
 
     fn restore(
         &self,
-        target: &mut SmbTarget,
-        snapshot: &SmbSnapshot,
+        target: &mut Self::Target,
+        snapshot: &Self::Snapshot,
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &SmbTarget) -> u64 {
-        target.frames_clocked()
+    fn frames_clocked(&self, target: &Self::Target) -> u64 {
+        target.campaign_frames_clocked()
     }
 
     fn apply_action(
         &self,
-        target: &mut SmbTarget,
+        target: &mut Self::Target,
         action: &ButtonChord,
         milestones: &mut SmbMilestones,
     ) -> Result<(), Box<dyn Error>> {
         target.apply(action);
-        merge_action_milestones(milestones, target)
+        merge_observation_milestones(milestones, target.campaign_action_observations())
     }
 
-    fn is_terminal(&self, target: &SmbTarget) -> bool {
-        target.is_dead() || target.exit_kind() != ExitKind::Ok
+    fn is_terminal(&self, target: &Self::Target) -> bool {
+        target.campaign_is_dead() || target.exit_kind() != ExitKind::Ok
     }
 
-    fn snapshot(&self, target: &mut SmbTarget) -> Result<SmbSnapshot, Box<dyn Error>> {
+    fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
         target.snapshot().ok_or_else(|| "failed to snapshot".into())
     }
 
-    fn current_key(&self, target: &SmbTarget) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(archive_key(&target.wram()), &target.wram())
+    fn current_key(&self, target: &Self::Target) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        let wram = target.campaign_wram();
+        stamp_arrival_room(archive_key(&wram), &wram)
     }
 
     fn complete_candidate_key(
         &self,
         key: SmbArchiveKey,
-        snapshot: &SmbSnapshot,
+        snapshot: &Self::Snapshot,
     ) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(key, snapshot.wram())
+        stamp_arrival_room(key, snapshot.snapshot_wram())
     }
 
     fn execute_job(
         &self,
-        target: &mut SmbTarget,
-        parent_snapshot: &SmbSnapshot,
+        target: &mut Self::Target,
+        parent_snapshot: &Self::Snapshot,
         parent_actions: usize,
         parent_milestones: SmbMilestones,
         suffix: &[ButtonChord],
         max_actions: usize,
         retention: RetentionPolicy,
-    ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
-        execute_job(
+    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
+        execute_backend_job::<Self>(
             target,
             parent_snapshot,
             parent_actions,
@@ -938,7 +1113,7 @@ impl Game for SmbGame {
     fn merge_action_evidence(
         &self,
         evidence: &mut SmbCampaignEvidence,
-        action: &SmbCampaignActionResult,
+        action: &CampaignActionResult<Self>,
         sequence: u64,
         input: &SmbInput,
     ) {
@@ -1045,6 +1220,32 @@ pub fn run_smb_campaign_checkpointed(
     run_campaign_checkpointed(&game, &config.generic(), origin, stream, progress)
 }
 
+/// Run one single-worker campaign through a cooperating guest control socket.
+///
+/// The coordinator and all search policies are the same generic implementation
+/// used by [`run_smb_campaign_checkpointed`]. One VMM control session is one
+/// mutable machine, so this entry point rejects more than one worker.
+///
+/// # Errors
+///
+/// Returns an error for a multi-worker configuration, connection/setup
+/// failure, campaign failure, or checkpoint write failure.
+#[cfg(unix)]
+pub fn run_remote_smb_campaign_checkpointed(
+    rom: &[u8],
+    socket: impl Into<std::path::PathBuf>,
+    config: &SmbCampaignConfig,
+    origin: &RemoteSmbCampaignOrigin,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+) -> Result<(SmbCampaignModeReport, RemoteSmbSnapshotCheckpoint), Box<dyn Error>> {
+    if config.workers != 1 {
+        return Err("one control socket requires exactly one campaign worker".into());
+    }
+    let game = SmbGame::with_backend(rom, ControlSocketSmbBackend::new(socket));
+    run_campaign_checkpointed(&game, &config.generic(), origin, stream, progress)
+}
+
 /// Replay a recorded campaign stream serially and rebuild its report.
 ///
 /// # Errors
@@ -1073,6 +1274,27 @@ pub fn replay_smb_campaign_checkpointed(
     origin_checkpoint: Option<&SmbCampaignCheckpoint>,
 ) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn Error>> {
     let game = SmbGame::new(rom);
+    replay_campaign_checkpointed(&game, stream_bytes, origin_report, origin_checkpoint)
+}
+
+/// Replay a recorded control-socket campaign through a fresh guest session.
+///
+/// Persisted remote snapshots carry no raw server handles; restores rebuild
+/// them from gameplay genesis and their recorded chord lineage.
+///
+/// # Errors
+///
+/// Returns an error for connection/setup failure, a malformed stream or
+/// checkpoint, or any replay divergence.
+#[cfg(unix)]
+pub fn replay_remote_smb_campaign_checkpointed(
+    rom: &[u8],
+    socket: impl Into<std::path::PathBuf>,
+    stream_bytes: &[u8],
+    origin_report: Option<&SmbArchiveReport>,
+    origin_checkpoint: Option<&RemoteSmbCampaignCheckpoint>,
+) -> Result<(SmbCampaignModeReport, RemoteSmbSnapshotCheckpoint), Box<dyn Error>> {
+    let game = SmbGame::with_backend(rom, ControlSocketSmbBackend::new(socket));
     replay_campaign_checkpointed(&game, stream_bytes, origin_report, origin_checkpoint)
 }
 
