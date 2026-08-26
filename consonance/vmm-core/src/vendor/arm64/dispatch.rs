@@ -193,14 +193,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // Validate any access whose START lands in a modeled device frame
         // **fully**, before touching device state — a start-in-frame predicate
         // alone is unsafe (`in_frame` checks the start only). Every modeled
-        // arm64 device (the PL011 register block, the GICv3 register files, the
-        // hypercall-doorbell magic word) is a 32-bit-register/word-ABI, so the
-        // access must be (1) 4-byte **aligned** (register-addressed), (2) fully
-        // **within** the frame — its end must not straddle the boundary — and
-        // (3) exactly 4 bytes **wide**. Anything else fails closed (never a
-        // silent `v as u32` truncation, an under-filled load, or a cross-frame
-        // access). Checked in that order so a straddling access is reported as a
-        // straddle even when its width is also wrong.
+        // arm64 device is range-checked before touching state. GIC and the
+        // doorbell are strict 32-bit word ABIs. PL011 registers remain
+        // word-addressed but architecturally admit 8/16/32-bit transfers at the
+        // register base; Linux earlycon uses an 8-bit UARTDR store. Anything
+        // else fails closed (never a silent truncation or cross-frame access).
         if let Some((frame_name, frame)) = [
             ("PL011", PL011),
             ("doorbell", DOORBELL),
@@ -210,12 +207,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         .into_iter()
         .find(|(_, f)| in_frame(addr, *f))
         {
-            if !addr.is_multiple_of(4) {
-                return Err(VmmError::ContractViolation(format!(
-                    "arm64 {frame_name} MMIO at {addr:#x} is not 4-byte aligned — the modeled \
-                     registers are word-addressed; a misaligned access is unmodeled (fail closed)"
-                )));
-            }
             let end = addr.checked_add(u64::from(size));
             if end.is_none_or(|e| e > frame.0 + frame.1) {
                 return Err(VmmError::ContractViolation(format!(
@@ -225,26 +216,44 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     frame.0 + frame.1
                 )));
             }
-            if size != 4 {
+            if !addr.is_multiple_of(4) {
                 return Err(VmmError::ContractViolation(format!(
-                    "arm64 {frame_name} MMIO at {addr:#x} with size {size} != 4 — the modeled \
-                     registers are 32-bit-accessed; a different width is unmodeled (fail closed, \
-                     not a truncation)"
+                    "arm64 {frame_name} MMIO at {addr:#x} is not 4-byte aligned — the modeled \
+                     registers are word-addressed; a misaligned access is unmodeled (fail closed)"
+                )));
+            }
+            let valid_width = if frame_name == "PL011" {
+                matches!(size, 1 | 2 | 4)
+            } else {
+                size == 4
+            };
+            if !valid_width {
+                return Err(VmmError::ContractViolation(format!(
+                    "arm64 {frame_name} MMIO at {addr:#x} has unmodeled size {size} \
+                     (fail closed)"
                 )));
             }
         }
 
-        // The PL011 console (4 KiB frame). 32-bit register accesses.
+        // The PL011 console (4 KiB frame). Values occupy the low transfer
+        // bytes; mask explicitly so synthetic backends cannot smuggle high
+        // bits that real HVF already truncates at the MMIO exit.
         if in_frame(addr, PL011) {
             let offset = addr - PL011.0;
+            let bits = u32::from(size) * 8;
+            let mask = if bits == 32 {
+                u32::MAX
+            } else {
+                (1u32 << bits) - 1
+            };
             return match write {
                 None => {
-                    let v = self.devices.uart.read(offset);
+                    let v = self.devices.uart.read(offset) & mask;
                     self.backend.complete_read(u64::from(v))?;
                     Ok(Step::Continued)
                 }
                 Some(v) => {
-                    self.devices.uart.write(offset, v as u32);
+                    self.devices.uart.write(offset, v as u32 & mask);
                     Ok(Step::Continued)
                 }
             };

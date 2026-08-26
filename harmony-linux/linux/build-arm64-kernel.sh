@@ -117,7 +117,7 @@ make -C "$KSRC" O="$ARM64_KOBJ" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Image
 # The canonical Image is therefore published only after the empty-allowlist
 # scanner accepts the symbolized vmlinux.
 echo "== arm64 kernel: zero-live-counter reachability gate"
-scan=$GUEST_DIR/../spikes/arm-altra/host/aa5-counter-scan.py
+scan=$GUEST_DIR/scripts/aa5-counter-scan.py
 scan_probe=$BUILD_ROOT/aa5-counter-scan-probe.S
 scan_probe_elf=$BUILD_ROOT/aa5-counter-scan-probe
 scan_probe_log=$BUILD_ROOT/aa5-counter-scan-probe.log
@@ -146,7 +146,7 @@ if ! grep -q '^\[REJECT\].*1 live-domain timer program' "$scan_probe_log"; then
     exit 1
 fi
 echo "ok: scanner rejected the planted live-counter probe"
-python3 "$GUEST_DIR/../spikes/arm-altra/host/aa5-counter-scan.py" \
+python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
     "$ARM64_KOBJ/vmlinux" "$ARM64_KOBJ/arch/arm64/kernel/vdso/vdso.so.dbg"
 
 # LL/SC changes the retired-branch clock when STXR fails spuriously and
@@ -154,7 +154,7 @@ python3 "$GUEST_DIR/../spikes/arm-altra/host/aa5-counter-scan.py" \
 # known fallback bodies; this raw executable-word scan is the fail-closed
 # artifact proof. Its planted negative control prevents a vacuous green gate.
 echo "== arm64 kernel: zero-LL/SC executable-image gate"
-exclusive_scan=$GUEST_DIR/../spikes/arm-altra/host/aa4-exclusive-scan.py
+exclusive_scan=$GUEST_DIR/scripts/aa4-exclusive-scan.py
 exclusive_probe=$BUILD_ROOT/aa4-exclusive-scan-probe.S
 exclusive_probe_elf=$BUILD_ROOT/aa4-exclusive-scan-probe
 exclusive_probe_log=$BUILD_ROOT/aa4-exclusive-scan-probe.log

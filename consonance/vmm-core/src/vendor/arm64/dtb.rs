@@ -153,6 +153,32 @@ fn u64_cells(v: u64) -> [u32; 2] {
 /// `bootargs` is the guest kernel command line (empty is fine for the
 /// skeleton). The returned bytes are a complete, aligned FDT.
 pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
+    build_inner(ram_len, pvclock_gpa, bootargs, None)
+}
+
+/// Build the Linux DTB variant with an external initramfs range. The end is
+/// exclusive, matching Linux's `linux,initrd-end` binding.
+pub(crate) fn build_with_initrd(
+    ram_len: u64,
+    pvclock_gpa: u64,
+    bootargs: &str,
+    initrd_start: u64,
+    initrd_end: u64,
+) -> Vec<u8> {
+    build_inner(
+        ram_len,
+        pvclock_gpa,
+        bootargs,
+        Some((initrd_start, initrd_end)),
+    )
+}
+
+fn build_inner(
+    ram_len: u64,
+    pvclock_gpa: u64,
+    bootargs: &str,
+    initrd: Option<(u64, u64)>,
+) -> Vec<u8> {
     let mut f = Fdt::new();
 
     // --- root ---------------------------------------------------------------
@@ -166,6 +192,10 @@ pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
     f.begin_node("chosen");
     f.prop_str("stdout-path", "/pl011@9000000");
     f.prop_str("bootargs", bootargs);
+    if let Some((start, end)) = initrd {
+        f.prop_bytes("linux,initrd-start", &start.to_be_bytes());
+        f.prop_bytes("linux,initrd-end", &end.to_be_bytes());
+    }
     f.end_node();
 
     // /psci — power state coordination (HVC method; the arm64 doorbell/PSCI seam).
@@ -555,6 +585,28 @@ mod tests {
     #[test]
     fn build_is_deterministic() {
         assert_eq!(sample(), sample());
+    }
+
+    #[test]
+    fn linux_initramfs_range_round_trips_as_two_address_cells() {
+        let start = RAM_BASE + 0x0200_0000;
+        let end = start + 0x0012_3456;
+        let dtb = build_with_initrd(
+            0x2000_0000,
+            SAMPLE_PVCLOCK_GPA,
+            "console=ttyAMA0",
+            start,
+            end,
+        );
+        let parsed = parse(&dtb).unwrap();
+        assert_eq!(
+            parsed.prop("chosen", "linux,initrd-start").unwrap(),
+            start.to_be_bytes()
+        );
+        assert_eq!(
+            parsed.prop("chosen", "linux,initrd-end").unwrap(),
+            end.to_be_bytes()
+        );
     }
 
     #[test]

@@ -21,7 +21,9 @@ exact publication. It is compiled with `-march=armv8.1-a+lse` and
 `-mno-outline-atomics`; `BINFMT_SCRIPT`, procfs, and futex are absent from the
 owned kernel config.
 
-Publication is fail-closed. `aa4-exclusive-scan.py` walks every raw ELF
+Publication is fail-closed. The maintained scanners live under
+`harmony-linux/scripts/` (not the archived historical spike tree).
+`aa4-exclusive-scan.py` walks every raw ELF
 executable-section word of `vmlinux`, `vdso.so.dbg`, and the exact init ELF and
 rejects the LL/SC family. Its decoder treats LSE CASP correctly rather than confusing
 CASP's broad encoding class with LDXP/STXP, pins both sides with real-word

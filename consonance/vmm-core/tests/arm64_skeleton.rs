@@ -484,15 +484,30 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
     let err = v.step().unwrap_err();
     assert!(format!("{err}").contains("GICv3 MMIO"), "{err}");
 
-    // Every modeled device arm rejects a non-32-bit width **before** touching
-    // device state — never a silent `v as u32` truncation. (r1: the GICv3
-    // frames; r2: swept across the PL011 console AND the reserved doorbell,
-    // all 32-bit-register/word-ABI.) The width guard precedes the
-    // unwired-fabric / doorbell-dispatch, so it surfaces regardless.
+    // Linux earlycon performs a byte UARTDR transfer. PL011 admits 1/2/4-byte
+    // accesses at a word-addressed register and masks high synthetic-backend
+    // bits exactly; 8-byte transfers remain unmodeled.
+    for size in [1u8, 2, 4] {
+        let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(0x0900_0000),
+            size,
+            write: Some(0xFFFF_FF51),
+        })]);
+        assert_eq!(v.step().unwrap(), Step::Continued);
+        assert_eq!(v.serial_output(), b"Q");
+    }
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x0900_0000),
+        size: 8,
+        write: Some(0),
+    })]);
+    assert!(format!("{}", v.step().unwrap_err()).contains("unmodeled size 8"));
+
+    // GIC and doorbell remain exact 32-bit word ABIs. The width guard precedes
+    // unwired-fabric / doorbell dispatch, so it surfaces regardless.
     for (name, gpa) in [
         ("GICD", 0x0800_0000u64),
         ("GICR", 0x080A_0000),
-        ("PL011", 0x0900_0000),
         ("doorbell", 0x0A00_0000),
     ] {
         for bad in [1u8, 2, 8] {
@@ -504,7 +519,7 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
             let err = v.step().unwrap_err();
             let msg = format!("{err}");
             assert!(
-                msg.contains(&format!("size {bad} != 4")),
+                msg.contains(&format!("unmodeled size {bad}")),
                 "{name} size {bad} must fail closed on width: {msg}"
             );
         }
@@ -529,7 +544,7 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
         let frame_len = match name {
             "GICD" => 0x1_0000u64,
             "GICR" => 0x2_0000,
-            _ => 0x1000, // PL011 / doorbell
+            _ => 0x1000, // doorbell
         };
         let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(gpa + frame_len - 4),
@@ -542,6 +557,21 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
             "{name} last-word size-8 must fail closed on straddle: {err}"
         );
     }
+
+    // PL011 has the same alignment and frame-boundary discipline even though
+    // it accepts sub-word widths at a register base.
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x0900_0001),
+        size: 1,
+        write: Some(0),
+    })]);
+    assert!(format!("{}", v.step().unwrap_err()).contains("not 4-byte aligned"));
+    let mut v = vmm(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(0x0900_0ffc),
+        size: 8,
+        write: Some(0),
+    })]);
+    assert!(format!("{}", v.step().unwrap_err()).contains("straddles the frame boundary"));
 }
 
 /// Review r5 P2(b): the GICv3 state feeds `state_hash` (the `GICV` chunk), so

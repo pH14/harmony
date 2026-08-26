@@ -222,7 +222,17 @@ work was begun before this evidence was recorded.
   The HVF root deliberately omits the legacy 8-KiB doorbell mapping because HVF
   requires 16-KiB mappings and M1 has no control channel. Integration with the
   prescriptive `IdlePlanner` remains outstanding.
-- **FAIL — paravirtual tick patch and `/init` boot:** not started.
+- **IN PROGRESS — paravirtual tick patch and `/init` boot:** the pinned
+  Linux 6.18.35 arm64 Image and initramfs now build natively in the audited
+  container. The maintained counter/timer and exclusive-instruction scanners
+  reject planted live instructions before accepting the real Image, vDSO, and
+  initramfs. The composition root places the initramfs in checked guest RAM and
+  publishes its exact range in `/chosen`. An entitlement-signed, event-bounded
+  `hvf_boot` run reaches Linux 6.18.35 on `harmony-arm64-virt`; it currently
+  stops at the first ARM pvclock registration write after Linux reports that no
+  GIC distributor was detected. These are precise modeled-surface failures,
+  not a claimed boot pass. The new prescriptive paravirtual tick patch and
+  `/init` ready marker remain outstanding.
 - **FAIL — ten same-seed full-boot normalized logs:** not started.
 - **FAIL — placement checker green for every boot:** not started.
 - **FAIL — no liveness-watchdog abort:** not started.
@@ -237,7 +247,10 @@ work was begun before this evidence was recorded.
   localize to exactly the corresponding class. A live HVF save/restore oracle
   remains outstanding.
 - **FAIL — exclusive-monitor canonicalization backed by the LL/SC image audit:**
-  not started.
+  the image-side audit is now non-vacuous and green: planted `LDXR`/`STXR`
+  instructions are rejected with the expected rows, while the real vmlinux,
+  vDSO, and initramfs contain no LL/SC instructions. Backend canonicalization
+  and its live restore oracle remain outstanding.
 - **PASS — honest `capabilities()` surface:** `HvfBackend` reports both
   `deterministic_cntvct` and `enforces_cntv_cval` false, matching the probe's
   direct `CNTVCT_EL0` and `CNTV_CVAL_EL0` results; it never calls `run_until`.
@@ -261,6 +274,18 @@ exit status 0 (pre-existing clippy.toml invalid-path notices only)
 The intentional additive `vm-state` and Linux-frozen `vmm-backend` API changes
 were regenerated with the pinned `nightly-2026-06-16` public-api tool and the
 diff contains only the new arm64 state classes and fields.
+
+The first native guest-build checkpoint produced these ignored artifacts:
+
+```text
+Image:                    857bc1c59666f8e2dc3a17f0b40f6db0b3c4e899f0cae6f12238d02fb32e0cac
+initramfs.cpio.gz:        d1ccc8d7cea812095bdf5cc77c4ac505c6a22f16b666f1ef111eb1317be67968
+initramfs-el0probe.cpio.gz: 292a1f40b428545b65706e5512e89f6754d0b62e8174de9b550c308ff0a8ba5a
+```
+
+`cargo nextest run -p vmm-core --all-features` passed 563/563 tests (4
+skipped), and the matching all-targets Clippy invocation completed with no
+diagnostics beyond the repository's pre-existing invalid-path notices.
 
 ## M2 — NES campaign on the M1 Max
 

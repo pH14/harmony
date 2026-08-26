@@ -24,9 +24,9 @@ arm64_init_cc() {
         "$@" "$LINUX_DIR/arm64-init.c"
 }
 arm64_init_cc -o "$arm64_init"
-python3 "$GUEST_DIR/../spikes/arm-altra/host/aa4-exclusive-scan.py" "$arm64_init"
+python3 "$GUEST_DIR/scripts/aa4-exclusive-scan.py" "$arm64_init"
 # The SHIPPED init must be counter-clean (AA-5 closure covers userspace too).
-python3 "$GUEST_DIR/../spikes/arm-altra/host/aa5-counter-scan.py" "$arm64_init"
+python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" "$arm64_init"
 
 # The el0probe variant carries ONE planted CNTVCT_EL0 read (the AA-5(b) live
 # closure probe). It ships only in its own initramfs, never the canonical one,
@@ -35,8 +35,8 @@ echo "== arm64 initramfs: building el0probe init variant"
 el0probe_init=$BUILD_ROOT/arm64-init-el0probe
 el0probe_log=$BUILD_ROOT/arm64-init-el0probe.scan.log
 arm64_init_cc -DHARMONY_AA5_EL0_PROBE -o "$el0probe_init"
-python3 "$GUEST_DIR/../spikes/arm-altra/host/aa4-exclusive-scan.py" "$el0probe_init"
-if python3 "$GUEST_DIR/../spikes/arm-altra/host/aa5-counter-scan.py" "$el0probe_init" >"$el0probe_log" 2>&1; then
+python3 "$GUEST_DIR/scripts/aa4-exclusive-scan.py" "$el0probe_init"
+if python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" "$el0probe_init" >"$el0probe_log" 2>&1; then
     echo "FAIL: AA-5 counter scanner accepted the el0probe init's planted CNTVCT_EL0 read" >&2
     exit 1
 fi
