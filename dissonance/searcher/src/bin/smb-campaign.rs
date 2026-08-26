@@ -77,10 +77,12 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     // The chord draw biases half of each draw toward recently retained
     // button sequences, seeded from every retained entry of a source
     // archive; the fold parameters are the registered head-to-head winners.
+    // Every run uses it: replaced draw policies survive only as stream
+    // identifiers, never as run options.
     // Retire thresholds are measured search statistics (99th-percentile
     // picks-before-first-keeper per class) and should be re-measured for a
     // new game rather than treated as universal constants.
-    let mut chord = chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,3,1,64,1024")?;
+    let chord = chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,3,1,64,1024")?;
     let mut retention = RetentionPolicy::AdmitAlive;
     let mut selector = SelectorPolicy::Retire(RetireThresholds {
         entry: 3,
@@ -97,13 +99,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .to_string_lossy(),
             )?;
             wall_budget = Some(Duration::from_secs(seconds));
-        } else if flag == "--chord" {
-            chord = chord_policy_from_identifier(
-                &args
-                    .next()
-                    .ok_or("missing --chord value")?
-                    .to_string_lossy(),
-            )?;
         } else if flag == "--retention" {
             retention = retention_policy_from_identifier(
                 &args
