@@ -11,6 +11,10 @@ CONFIG_DEVMEM=y
 # RAM; disabling STRICT_DEVMEM makes that access explicit and auditable.
 # CONFIG_STRICT_DEVMEM is not set
 CONFIG_MMU=y
+# tinyconfig explicitly disables SHMEM, while TMPFS depends on it. Request the
+# dependency rather than relying on SHMEM's default so the game profile cannot
+# silently publish a kernel without the tmpfs mounted by arm64-game-init.sh.
+CONFIG_SHMEM=y
 CONFIG_TMPFS=y
 CONFIG_FILE_LOCKING=y
 CONFIG_MULTIUSER=y

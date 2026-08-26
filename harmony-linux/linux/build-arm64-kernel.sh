@@ -134,7 +134,7 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
 if [ "$arm64_profile" = minimal ]; then
     assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
 else
-    assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU TMPFS
+    assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU SHMEM TMPFS
     assert_off STRICT_DEVMEM
 fi
 if ! grep -qxF 'CONFIG_NR_CPUS=2' "$arm64_object_root/.config"; then

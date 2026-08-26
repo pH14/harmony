@@ -263,6 +263,16 @@ dependency rather than silently weakening the criterion.
     bytes. A planted failure on the reset read proves the production path fails
     closed instead of allowing the former zero-filled fallback to reach the
     cross-build comparator.
+34. **The native ARM build host is Linux/aarch64, not Ampere Altra.** The
+    prescriptive contract is architecture-based and the available `msr1` host
+    is Linux/aarch64 on a CIX P1 (Cortex-A520/A720) with LSE. Build entry points
+    now name that actual requirement and validated host; historical Altra/KVM
+    evidence outside this M2 build path remains unchanged.
+35. **The M2 game profile requests TMPFS's SHMEM dependency explicitly.** The
+    first native msr1 build proved the prior profile could not pass its own
+    `CONFIG_TMPFS=y` publication gate because `tinyconfig` had explicitly
+    disabled SHMEM. The game fragment now sets `CONFIG_SHMEM=y`, and the kernel
+    builder asserts both SHMEM and TMPFS after `olddefconfig`.
 
 ## M0 — prescriptive advancement in pure logic
 
