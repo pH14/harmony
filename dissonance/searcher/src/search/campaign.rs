@@ -1980,7 +1980,7 @@ where
     let replay_retention = retention_policy_from_identifier(&header.retention_policy)?;
     let replay_selector = crate::search::archive::selector_policy_from_identifier(
         &header.parent_scheduler,
-        G::Key::groups() - 2,
+        G::Key::groups().saturating_sub(2),
     )?;
     if header.resume_policy != RESUME_IDENTIFIER {
         return Err("campaign stream resume policy is not recognized".into());

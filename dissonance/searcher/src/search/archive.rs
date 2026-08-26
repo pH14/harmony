@@ -20,12 +20,19 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// is the selection cell the recency window samples inside, and higher depths
 /// pool entries into ever-coarser selection classes up to `groups() - 1`, the
 /// coarsest class whose deepest member starts the selection walk.
+///
+/// A key may declare any `groups() >= 1`. Selection reads the coarsest depth
+/// as its walk class and `min(1, groups() - 1)` as its selection cell, so a
+/// one-group key collapses class, cell, and retention slot onto depth 0 and a
+/// two-group key collapses class onto the cell. Depths past the coarsest are
+/// never read, and `group` is never called with a depth at or past `groups()`.
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     /// One pooled identity at some depth.
     type Group: Copy + Ord;
-    /// Count of group depths, pinned by the recorded key policy.
+    /// Count of group depths, pinned by the recorded key policy. At least one.
     fn groups() -> usize;
     /// The key's pooled identity at `depth`; depth 0 is the retention slot.
+    /// Only depths below [`groups`](Self::groups) are ever passed.
     fn group(self, depth: usize) -> Self::Group;
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
@@ -634,6 +641,13 @@ where
         Self::coarsest_depth()
     }
 
+    /// The selection cell's depth. Depth 1 whenever the key declares one,
+    /// and the coarsest depth otherwise, so a key with fewer than two group
+    /// depths still indexes and walks.
+    fn cell_depth() -> usize {
+        1.min(Self::coarsest_depth())
+    }
+
     /// Rebuild the selector index for `max_actions`.
     fn rebuild_selector_index(&mut self, max_actions: usize) {
         self.frontier_cap = Some(max_actions);
@@ -645,7 +659,7 @@ where
             self.classes
                 .entry(Reverse(key.group(depth)))
                 .or_default()
-                .entry(key.group(1))
+                .entry(key.group(Self::cell_depth()))
                 .or_default()
                 .push(*id);
         }
@@ -665,7 +679,7 @@ where
         self.classes
             .entry(Reverse(key.group(Self::class_depth())))
             .or_default()
-            .entry(key.group(1))
+            .entry(key.group(Self::cell_depth()))
             .or_default()
             .push(id);
     }
@@ -680,7 +694,7 @@ where
         }
         let key = self.entries[id].report.key;
         let class = Reverse(key.group(Self::class_depth()));
-        let cell = key.group(1);
+        let cell = key.group(Self::cell_depth());
         if let Some(cells) = self.classes.get_mut(&class) {
             if let Some(members) = cells.get_mut(&cell) {
                 if let Ok(position) = members.binary_search(&id) {
@@ -1210,14 +1224,117 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        Archive, ArchiveCandidate, Input, RetireThresholds, SELECTION_EXHAUSTION_THRESHOLD,
-        SelectorDraw, SelectorPath, SelectorPolicy,
+        Archive, ArchiveCandidate, ArchiveKey, Input, RetireThresholds,
+        SELECTION_EXHAUSTION_THRESHOLD, SelectorDraw, SelectorPath, SelectorPolicy,
+        selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
     use crate::smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveKey};
     use crate::smb::target::ButtonChord;
+    use serde::{Deserialize, Serialize};
 
     type TestArchive = Archive<u8, SmbArchiveKey, (), ()>;
+
+    /// A key of exactly `DEPTHS` group depths over four components, for
+    /// covering geometries no compiled game declares. Depth `d` erases the
+    /// finest `d` components, and `group` asserts its depth is in range so a
+    /// selector that reads past the coarsest depth fails the test rather
+    /// than returning a plausible group.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct FlatKey<const DEPTHS: usize>([u16; 4]);
+
+    impl<const DEPTHS: usize> ArchiveKey for FlatKey<DEPTHS> {
+        type Group = [u16; 4];
+
+        fn groups() -> usize {
+            DEPTHS
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            assert!(depth < DEPTHS, "group depth {depth} is past {DEPTHS} depths");
+            let mut group = self.0;
+            for component in group.iter_mut().take(depth) {
+                *component = 0;
+            }
+            group
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    fn flat_archive<const DEPTHS: usize>(
+        keys: &[[u16; 4]],
+    ) -> Archive<u8, FlatKey<DEPTHS>, (), ()> {
+        let mut archive = Archive::<u8, FlatKey<DEPTHS>, (), ()>::new(|_| 1);
+        for (index, components) in keys.iter().enumerate() {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input: Input {
+                            actions: vec![u8::try_from(index).expect("input byte")],
+                        },
+                        key: FlatKey(*components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert flat entry")
+                .expect("retain flat entry");
+        }
+        archive
+    }
+
+    /// Selection must run on every geometry the key contract allows, down to
+    /// a single group depth where the walk class, the selection cell, and the
+    /// retention slot are all depth 0.
+    #[test]
+    fn selection_runs_on_keys_with_fewer_than_three_group_depths() {
+        fn draws<const DEPTHS: usize>(seed: u64) {
+            let keys = [[1, 2, 3, 4], [1, 2, 3, 5], [9, 8, 7, 4]];
+            let mut archive = flat_archive::<DEPTHS>(&keys);
+            let mut rand = RomuDuoJrRand::with_seed(seed);
+            for _ in 0..128 {
+                let (id, draw) = archive
+                    .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                    .expect("selection under a shallow key");
+                assert!(id < keys.len());
+                archive.record_selection(id, &draw);
+            }
+        }
+        draws::<1>(0x5eed_0001);
+        draws::<2>(0x5eed_0002);
+        draws::<3>(0x5eed_0003);
+    }
+
+    /// The retiring selector takes one threshold per pooled depth plus the
+    /// per-entry threshold. A key with fewer than three depths pools nothing,
+    /// so the identifier carries the entry threshold alone.
+    #[test]
+    fn the_retiring_selector_parses_under_a_shallow_key() {
+        for depths in [1_usize, 2] {
+            let pooled = depths.saturating_sub(2);
+            let policy = selector_policy_from_identifier("room_cell_uniform_128_retire:3", pooled)
+                .expect("shallow retiring selector");
+            assert_eq!(
+                policy,
+                SelectorPolicy::Retire(RetireThresholds {
+                    entry: 3,
+                    groups: Vec::new(),
+                })
+            );
+            assert!(
+                selector_policy_from_identifier("room_cell_uniform_128_retire:3,6", pooled).is_err()
+            );
+        }
+    }
 
     fn selector_archive(keys: &[(u8, u8, u16)]) -> TestArchive {
         let mut archive = TestArchive::new(|_| 1);

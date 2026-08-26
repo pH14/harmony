@@ -312,11 +312,30 @@ pub struct SmbChordSourceFilter {
     pub minimum_progress: u16,
 }
 
+/// Which retained source entries seed the chord tables.
+///
+/// Live folding always consumes every retained input; this source rule only
+/// selects the entries folded from a source archive at start-up. Serde stays
+/// untagged so headers recorded before the all-levels rule existed, which
+/// serialized the bare filter fields, still deserialize as `Level`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum SmbChordSource {
+    /// One `(world, level)` pair at or past a progress floor.
+    Level(SmbChordSourceFilter),
+    /// Every retained entry, so the rule carries no level knowledge.
+    All(SmbChordSourceAll),
+}
+
+/// Marker for the level-neutral source rule.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SmbChordSourceAll {}
+
 /// Complete registered derivation for one pair of mined chord tables.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbChordTableDerivation {
-    /// Thin SMB source filter.
-    pub source_filter: SmbChordSourceFilter,
+    /// Thin SMB source rule.
+    pub source_filter: SmbChordSource,
     /// Game-neutral extraction, mixture, update, and hash parameters.
     pub parameters: EmpiricalStepParameters,
     /// Table-hash rule, bound to the policy identifier so historical
@@ -353,17 +372,19 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
         SmbCampaignChordPolicy::Uniform => "chord_uniform".to_owned(),
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
-            let source = derivation.source_filter;
             let parameters = derivation.parameters;
             let prefix = match derivation.hash_rule {
                 EmpiricalStepHashRule::FullJson => "chord_draw_recorded_50",
                 EmpiricalStepHashRule::IncrementalHistory => "chord_draw_recorded_51",
             };
+            let source = match derivation.source_filter {
+                SmbChordSource::All(_) => "all".to_owned(),
+                SmbChordSource::Level(filter) => {
+                    format!("{},{},{}", filter.world, filter.level, filter.minimum_progress)
+                }
+            };
             format!(
-                "{prefix}:{},{},{},{},{},{},{},{},{}",
-                source.world,
-                source.level,
-                source.minimum_progress,
+                "{prefix}:{source},{},{},{},{},{},{}",
                 parameters.prefix_steps,
                 parameters.recent_successes,
                 parameters.recent_weight,
@@ -395,11 +416,16 @@ pub fn chord_policy_from_identifier(
         (None, EmpiricalStepHashRule::FullJson)
     };
     if let Some(fields) = fields {
-        let mut fields = fields.split(',');
-        let source_filter = SmbChordSourceFilter {
-            world: parse_chord_field(&mut fields, "world")?,
-            level: parse_chord_field(&mut fields, "level")?,
-            minimum_progress: parse_chord_field(&mut fields, "minimum progress")?,
+        let mut fields = fields.split(',').peekable();
+        let source_filter = if fields.peek() == Some(&"all") {
+            fields.next();
+            SmbChordSource::All(SmbChordSourceAll {})
+        } else {
+            SmbChordSource::Level(SmbChordSourceFilter {
+                world: parse_chord_field(&mut fields, "world")?,
+                level: parse_chord_field(&mut fields, "level")?,
+                minimum_progress: parse_chord_field(&mut fields, "minimum progress")?,
+            })
         };
         let parameters = EmpiricalStepParameters {
             prefix_steps: parse_chord_field(&mut fields, "prefix steps")?,
@@ -542,11 +568,16 @@ fn initial_chord_tables(
 }
 
 fn source_filter_matches(
-    filter: SmbChordSourceFilter,
+    source: SmbChordSource,
     entry: &crate::smb::archive::SmbArchiveEntryReport,
 ) -> bool {
-    (entry.key.world, entry.key.level) == (filter.world, filter.level)
-        && entry.key.progress >= filter.minimum_progress
+    match source {
+        SmbChordSource::All(_) => true,
+        SmbChordSource::Level(filter) => {
+            (entry.key.world, entry.key.level) == (filter.world, filter.level)
+                && entry.key.progress >= filter.minimum_progress
+        }
+    }
 }
 
 fn current_chord_checkpoint(
@@ -1129,11 +1160,11 @@ mod tests {
 
     fn derived_policy() -> SmbCampaignChordPolicy {
         SmbCampaignChordPolicy::DerivedHalf(super::SmbChordTableDerivation {
-            source_filter: super::SmbChordSourceFilter {
+            source_filter: super::SmbChordSource::Level(super::SmbChordSourceFilter {
                 world: 0,
                 level: 0,
                 minimum_progress: 0,
-            },
+            }),
             parameters: EmpiricalStepParameters {
                 prefix_steps: 0,
                 recent_successes: 4,
@@ -1167,6 +1198,27 @@ mod tests {
         assert_eq!(
             chord_policy_from_identifier(&identifier).expect("parse incremental policy"),
             incremental
+        );
+
+        derivation.source_filter = super::SmbChordSource::All(super::SmbChordSourceAll {});
+        let all_levels = SmbCampaignChordPolicy::DerivedHalf(derivation);
+        let identifier = chord_policy_identifier(all_levels);
+        assert!(identifier.starts_with("chord_draw_recorded_51:all,"));
+        assert_eq!(
+            chord_policy_from_identifier(&identifier).expect("parse all-levels policy"),
+            all_levels
+        );
+        let level_header = serde_json::json!({
+            "world": 2, "level": 1, "minimum_progress": 40
+        });
+        assert_eq!(
+            serde_json::from_value::<super::SmbChordSource>(level_header)
+                .expect("legacy source deserializes"),
+            super::SmbChordSource::Level(super::SmbChordSourceFilter {
+                world: 2,
+                level: 1,
+                minimum_progress: 40
+            })
         );
     }
 

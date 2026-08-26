@@ -12,7 +12,7 @@ use searcher::{
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
         SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint,
-        SmbCampaignChordPolicy, SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
+        SmbCampaignConfig, SmbCampaignModeReport, SmbCampaignOrigin,
         SmbSnapshotCheckpoint, button_vocabulary_from_identifier, chord_policy_from_identifier,
         replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
@@ -72,12 +72,16 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         .into_owned();
     let output = PathBuf::from(args.next().ok_or("missing output directory")?);
     let mut wall_budget = None;
-    let mut chord = SmbCampaignChordPolicy::Uniform;
     // Defaults are the current behavior; the older policies stay selectable
     // so historical recordings keep replaying under their own identifiers.
+    // The chord draw biases half of each draw toward recently retained
+    // button sequences, seeded from every retained entry of a source
+    // archive; the fold parameters are the registered head-to-head winners.
     // Retire thresholds are measured search statistics (99th-percentile
     // picks-before-first-keeper per class) and should be re-measured for a
     // new game rather than treated as universal constants.
+    let mut chord =
+        chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,3,1,64,1024")?;
     let mut retention = RetentionPolicy::AdmitAlive;
     let mut selector = SelectorPolicy::Retire(RetireThresholds {
         entry: 3,

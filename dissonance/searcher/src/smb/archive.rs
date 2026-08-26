@@ -22,7 +22,10 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 ///
 /// Returns an error for an unrecognized identifier.
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
-    crate::search::archive::selector_policy_from_identifier(identifier, SmbArchiveKey::groups() - 2)
+    crate::search::archive::selector_policy_from_identifier(
+        identifier,
+        SmbArchiveKey::groups().saturating_sub(2),
+    )
 }
 use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize};
