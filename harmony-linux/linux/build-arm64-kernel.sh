@@ -84,6 +84,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0005-arm64-harmony-pvclock-from-dt.patch" \
     "harmony DT-discovered pvclock page"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0006-arm64-harmony-lse-only-futex.patch" \
+    "harmony LSE-only futex atomics"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 

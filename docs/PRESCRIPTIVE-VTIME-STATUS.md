@@ -273,6 +273,17 @@ dependency rather than silently weakening the criterion.
     `CONFIG_TMPFS=y` publication gate because `tinyconfig` had explicitly
     disabled SHMEM. The game fragment now sets `CONFIG_SHMEM=y`, and the kernel
     builder asserts both SHMEM and TMPFS after `olddefconfig`.
+36. **FUTEX joins the LSE-only owned-kernel contract.** The corrected game
+    profile exposed 14 hard-coded LL/SC instructions in arm64's upstream futex
+    user-access helpers even though the ordinary atomic framework was already
+    LSE-only. A Harmony-config-only kernel patch uses the corresponding
+    acquire-release LSE operations with the same uaccess exception handling and
+    final barrier; non-Harmony configurations retain the upstream implementation.
+    The raw executable scanner remains the independent publication oracle. On
+    msr1 the planted probes were rejected, both `vmlinux` and the vDSO reported
+    zero live-counter programs and zero LL/SC instructions, and `Image-game`
+    published at 3,209,224 bytes with SHA-256
+    `c98c7b660abd550d9de120975132935204c6409799b3b01c33a17341d9d164fc`.
 
 ## M0 — prescriptive advancement in pure logic
 

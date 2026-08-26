@@ -1,0 +1,154 @@
+arm64: make Harmony futex atomics LSE-only
+
+The game payload needs FUTEX, but arm64's futex user-access helpers contain
+dedicated LL/SC loops outside the ordinary atomic alternative framework.  They
+therefore survive HARMONY_ARM_LSE_ONLY and fail the executable-image gate.
+
+Use the corresponding single-instruction acquire-release LSE operations for
+the owned Harmony configuration.  Keep the uaccess exception-table handling
+and final full barrier, and leave the upstream implementation unchanged for
+every other configuration.
+
+--- a/arch/arm64/include/asm/futex.h
++++ b/arch/arm64/include/asm/futex.h
+@@ -10,10 +10,35 @@
+ 
+ #include <asm/errno.h>
+ 
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++#include <asm/lse.h>
++#endif
++
+ #define FUTEX_MAX_LOOPS	128 /* What's the largest number you can think of? */
+ 
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++
+ #define __futex_atomic_op(insn, ret, oldval, uaddr, tmp, oparg)		\
+ do {									\
++	ret = 0;							\
++	(void)sizeof(tmp);						\
++	uaccess_enable_privileged();					\
++	asm volatile(							\
++	__LSE_PREAMBLE							\
++"1:\t" insn "\t%w[arg], %w[old], %[mem]\n"			\
++"2:\tdmb\tish\n"							\
++	_ASM_EXTABLE_UACCESS_ERR(1b, 2b, %w[ret])			\
++	: [ret] "+r" (ret), [old] "=&r" (oldval),			\
++	  [mem] "+Q" (*uaddr)						\
++	: [arg] "r" (oparg)						\
++	: "memory");							\
++	uaccess_disable_privileged();					\
++} while (0)
++
++#else
++
++#define __futex_atomic_op(insn, ret, oldval, uaddr, tmp, oparg)		\
++do {									\
+ 	unsigned int loops = FUTEX_MAX_LOOPS;				\
+ 									\
+ 	uaccess_enable_privileged();					\
+@@ -37,6 +62,8 @@
+ 	uaccess_disable_privileged();					\
+ } while (0)
+ 
++#endif
++
+ static inline int
+ arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *_uaddr)
+ {
+@@ -48,24 +75,44 @@
+ 
+ 	switch (op) {
+ 	case FUTEX_OP_SET:
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++		__futex_atomic_op("swpal", ret, oldval, uaddr, tmp, oparg);
++#else
+ 		__futex_atomic_op("mov	%w3, %w5",
+ 				  ret, oldval, uaddr, tmp, oparg);
++#endif
+ 		break;
+ 	case FUTEX_OP_ADD:
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++		__futex_atomic_op("ldaddal", ret, oldval, uaddr, tmp, oparg);
++#else
+ 		__futex_atomic_op("add	%w3, %w1, %w5",
+ 				  ret, oldval, uaddr, tmp, oparg);
++#endif
+ 		break;
+ 	case FUTEX_OP_OR:
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++		__futex_atomic_op("ldsetal", ret, oldval, uaddr, tmp, oparg);
++#else
+ 		__futex_atomic_op("orr	%w3, %w1, %w5",
+ 				  ret, oldval, uaddr, tmp, oparg);
++#endif
+ 		break;
+ 	case FUTEX_OP_ANDN:
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++		__futex_atomic_op("ldclral", ret, oldval, uaddr, tmp, oparg);
++#else
+ 		__futex_atomic_op("and	%w3, %w1, %w5",
+ 				  ret, oldval, uaddr, tmp, ~oparg);
++#endif
+ 		break;
+ 	case FUTEX_OP_XOR:
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++		__futex_atomic_op("ldeoral", ret, oldval, uaddr, tmp, oparg);
++#else
+ 		__futex_atomic_op("eor	%w3, %w1, %w5",
+ 				  ret, oldval, uaddr, tmp, oparg);
++#endif
+ 		break;
+ 	default:
+ 		ret = -ENOSYS;
+@@ -77,11 +124,43 @@
+ 	return ret;
+ }
+ 
++#ifdef CONFIG_HARMONY_ARM_LSE_ONLY
++
+ static inline int
+ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *_uaddr,
+ 			      u32 oldval, u32 newval)
+ {
+ 	int ret = 0;
++	u32 val = oldval;
++	u32 __user *uaddr;
++
++	if (!access_ok(_uaddr, sizeof(u32)))
++		return -EFAULT;
++
++	uaddr = __uaccess_mask_ptr(_uaddr);
++	uaccess_enable_privileged();
++	asm volatile(__LSE_PREAMBLE
++"1:\tcasal\t%w[val], %w[new], %[mem]\n"
++"2:\tdmb\tish\n"
++	_ASM_EXTABLE_UACCESS_ERR(1b, 2b, %w[ret])
++	: [ret] "+r" (ret), [val] "+&r" (val), [mem] "+Q" (*uaddr)
++	: [new] "r" (newval)
++	: "memory");
++	uaccess_disable_privileged();
++
++	if (!ret)
++		*uval = val;
++
++	return ret;
++}
++
++#else
++
++static inline int
++futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *_uaddr,
++			      u32 oldval, u32 newval)
++{
++	int ret = 0;
+ 	unsigned int loops = FUTEX_MAX_LOOPS;
+ 	u32 val, tmp;
+ 	u32 __user *uaddr;
+@@ -117,4 +196,6 @@
+ 	return ret;
+ }
+ 
++#endif
++
+ #endif /* __ASM_FUTEX_H */
