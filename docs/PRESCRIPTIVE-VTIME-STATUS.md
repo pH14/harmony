@@ -300,17 +300,17 @@ work was begun before this evidence was recorded.
   state_hash=6949042e3fd067b9610c2ed46fffcb720ae04462bfafb340533ea54cb43a1e60
   exit status 0; liveness watchdog did not fire
   ```
-- **IN PROGRESS — ten same-seed full-boot normalized logs:** the production run
-  loop now records all 14,141 exits, assigned V-time, exact payload digests,
-  clockevent schedule/delivery identity, 55 interval checkpoints plus the
-  `/init` checkpoint, and a canonical complete-log digest. One signed optimized
-  live run is green; the ten-run harness is committed but its corpus is not yet
-  recorded.
-- **IN PROGRESS — placement checker green for every boot:** one production boot
-  passed against its schedule with one real PPI20 delivery; the remaining nine
-  runs are pending.
-- **IN PROGRESS — no liveness-watchdog abort:** the first complete production
-  oracle boot passed; the required ten-run corpus is not yet recorded.
+- **PASS — ten same-seed full-boot normalized logs:** all ten signed optimized
+  HVF boots recorded the same 14,141 exits, assigned V-time at every event,
+  payload digests, one PPI20 placement, 55 interval checkpoints plus the
+  `/init` checkpoint, final state hash, and canonical log digest. The harness
+  compared the complete normalized text logs byte-for-byte in addition to
+  requiring the compact summaries to match.
+- **PASS — placement checker green for every boot:** all ten production logs
+  passed independently against their deadline schedules with one real PPI20
+  delivery each.
+- **PASS — no liveness-watchdog abort:** all ten boots reached `/init`; the
+  harness scanned stdout and stderr and reports `watchdogs=0`.
 - **PASS — one-exit-late tick comparator and consistent-error placement
   negatives on the production workload:** `hvf_boot` moves every live delivery
   one exit late, proves two identically late twins compare equal, then requires
@@ -393,6 +393,20 @@ log_digest=8604f41cd2373d0bb582982119d168c6da310098bd35f2005fadbd161e033a3e
 HVF_BOOT_READY event=14140
 state_hash=d9576a79a323fda8ee5aa49b9c998d7ace7d17d7f588f7d76f01368affa16af3
 exit status 0; liveness watchdog did not fire
+```
+
+Required ten-run corpus (`/private/tmp/harmony-m1-ten-c8829c7f`):
+
+```text
+runs 01..10, each:
+  events=14141 raw=14141 schedules=1 deliveries=1 checkpoints=56
+  placement=ok late_comparator_event=12529 late_placement_event=12529
+  log_digest=8604f41cd2373d0bb582982119d168c6da310098bd35f2005fadbd161e033a3e
+  HVF_BOOT_READY event=14140
+  state_hash=d9576a79a323fda8ee5aa49b9c998d7ace7d17d7f588f7d76f01368affa16af3
+Image sha256:     41cea2eb60e4155b31ac70300ff9c15205b1533a7b7ab9fb7642bdb17628a3c7
+initramfs sha256: 6194ec4be99b08e68a61f9020fcedd7aae515b00fa63d38a44b9070a23fea053
+M1_TEN_RUN_ORACLE_OK normalized_logs=10 watchdogs=0
 ```
 
 ## M2 — NES campaign on the M1 Max
