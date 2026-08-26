@@ -59,6 +59,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0004-arm64-harmony-work-clockevent.patch" \
     "harmony work clockevent"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0005-arm64-harmony-pvclock-from-dt.patch" \
+    "harmony DT-discovered pvclock page"
 
 mkdir -p "$ARM64_KOBJ" "$ARM64_ART_DIR"
 

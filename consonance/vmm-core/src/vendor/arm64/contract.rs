@@ -18,6 +18,28 @@
 use sha2::{Digest, Sha256};
 use vmm_backend::{Arm64Policy, IdRegModel, SysregTrapPolicy};
 
+use crate::prescriptive::PrescriptiveTiming;
+
+/// Assigned duration of one GIC distributor/redistributor/CPU-interface exit.
+pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of one PL011 access.
+pub const SERIAL_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of one pvclock/clockevent MMIO access.
+pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of a trapped counter-shaped time read.
+pub const TRAPPED_TIME_READ_VNS: u64 = 1;
+
+/// The normative arm64 prescriptive timing row set. Production composition
+/// never uses `PrescriptiveTiming::default()`'s M0 placeholders.
+pub fn prescriptive_timing() -> PrescriptiveTiming {
+    PrescriptiveTiming {
+        interrupt_controller_mmio_vns: INTERRUPT_CONTROLLER_EXIT_VNS,
+        serial_mmio_vns: SERIAL_EXIT_VNS,
+        paravirtual_device_mmio_vns: PARAVIRTUAL_EXIT_VNS,
+        trapped_time_read_vns: TRAPPED_TIME_READ_VNS,
+    }
+}
+
 /// The installable arm64 policy skeleton: an empty frozen-ID model and an
 /// empty trap table (`TODO(AA-6)`: the contract document's row sets).
 pub fn policy() -> Arm64Policy {
@@ -79,5 +101,15 @@ mod tests {
         h.update(0u64.to_le_bytes());
         let with_row: [u8; 32] = h.finalize().into();
         assert_ne!(contract_hash(), with_row);
+    }
+
+    #[test]
+    fn production_prescriptive_timing_is_explicit_not_the_m0_default() {
+        let timing = prescriptive_timing();
+        assert_ne!(timing, PrescriptiveTiming::default());
+        assert_eq!(timing.interrupt_controller_mmio_vns, 1_000);
+        assert_eq!(timing.serial_mmio_vns, 1_000);
+        assert_eq!(timing.paravirtual_device_mmio_vns, 1_000);
+        assert_eq!(timing.trapped_time_read_vns, 1);
     }
 }

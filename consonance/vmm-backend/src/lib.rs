@@ -149,7 +149,7 @@ pub use arm64_kvm::FakeKvm;
 pub use arm64_kvm::{Arm64Kvm, Arm64KvmBackend, KvmRunView, MmioView};
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
-pub use hvf::HvfBackend;
+pub use hvf::{HvfBackend, HvfExitHandle};
 
 // The box-only stock KVM/arm64 constructor — the concrete `(Arm64KvmBackend,
 // Arm64)` pair's syscall seam, named only on the aarch64-linux leg.

@@ -612,6 +612,65 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
     assert!(format!("{}", v.step().unwrap_err()).contains("straddles the frame boundary"));
 }
 
+#[test]
+fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::{CNTFRQ_HZ, PVCLOCK};
+    use vmm_core::vmm::VtimeWiring;
+    use vtime::VClockConfig;
+
+    // This portable helper's RAM base is zero; the live composition applies
+    // the same validator after setting the board's high RAM base.
+    let page_gpa = 0x1000;
+    let mut v = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(page_gpa),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 8),
+            size: 4,
+            write: None,
+        }),
+    ]);
+    v.wire_vtime(
+        VtimeWiring::new_prescriptive(
+            VClockConfig {
+                ratio_num: 1,
+                ratio_den: 1,
+                guest_hz: CNTFRQ_HZ,
+                guest_base: 0,
+                vns_base: 0,
+            },
+            7,
+        )
+        .unwrap(),
+    );
+    v.enable_pvclock(1);
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.pvclock_registration(), Some(page_gpa));
+    let first = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
+    assert_eq!(first.vns, 1_000);
+    assert_eq!(first.guest_clock_hz, CNTFRQ_HZ);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    let second = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
+    assert_eq!(second.vns, 2_000);
+
+    // Direction and width are one exact tuple. Neither invalid access consumes
+    // registration state or advances a fresh VM's clock.
+    for (offset, size, write) in [(0, 8, None), (8, 8, None), (8, 4, Some(1))] {
+        let mut bad = vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + offset),
+            size,
+            write,
+        })]);
+        assert!(format!("{}", bad.step().unwrap_err()).contains("protocol fault"));
+        assert_eq!(bad.pvclock_registration(), None);
+    }
+}
+
 /// Review r5 P2(b): the GICv3 state feeds `state_hash` (the `GICV` chunk), so
 /// `state_components()` must expose a labeled `gic` component — otherwise two
 /// runs differing **only** in GIC state hash differently while every diagnostic

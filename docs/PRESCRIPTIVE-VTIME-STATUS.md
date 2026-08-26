@@ -51,6 +51,20 @@ dependency rather than silently weakening the criterion.
    backend canonicalizes the trap ISS by clearing only Rt and direction, and
    vmm-core dispatches the ruled identities to the userspace GIC. Unknown
    identities still fail before any fabric-wiring check.
+9. **The arm64 pvclock page is reserved but remains in the linear map.** The
+   host stamps ordinary shared RAM while the sole vCPU is stopped. Marking the
+   DT reservation `no-map` forced Linux to create a device-memory alias for the
+   same physical page and the guest never observed the valid host frame. The DT
+   now reserves the page from the allocator without `no-map`, and a committed
+   structural test rejects reintroducing that incoherent alias.
+10. **Early pvclock validation uses the DT contract, not an uninitialized timer
+    global.** `harmony_arm_pvclock_register()` runs before
+    `arch_timer_of_configure_rate()`. Comparing the host frame against
+    `arch_timer_get_rate()` therefore compared `62,500,000` against zero and
+    produced the same panic as an absent stamp. The guest now reads and validates
+    the timer node's nonzero `clock-frequency` property directly before accepting
+    the page. The live run prints the accepted page and proceeds to the first
+    clockevent control write.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -231,10 +245,12 @@ work was begun before this evidence was recorded.
   `hvf_boot` run reaches Linux 6.18.35 on `harmony-arm64-virt`; it currently
   identifies the userspace GICv3 distributor, its single redistributor, and 64
   SPIs. Exact PIDR2, 64-bit GICR_TYPER, and single-affinity GICD_IROUTER
-  behavior were added from those fail-closed exits; the live run now stops at
-  the first ARM pvclock registration write. These are precise modeled-surface
-  failures, not a claimed boot pass. The new prescriptive paravirtual tick
-  patch and `/init` ready marker remain outstanding.
+  behavior were added from those fail-closed exits. The host now discovers the
+  page's checked DT placement (`0x40311000`), stamps it at prescriptive exits,
+  and Linux reports `Harmony pvclock: registered page 0x40311000 (ABI 1)`.
+  The live run then fails closed at event 7526 on the first clockevent `DISARM`
+  because deadline/control/PPI20 state is not wired yet. This is a precise next
+  modeled-surface failure, not a claimed boot pass.
 - **FAIL — ten same-seed full-boot normalized logs:** not started.
 - **FAIL — placement checker green for every boot:** not started.
 - **FAIL — no liveness-watchdog abort:** not started.
@@ -288,6 +304,24 @@ initramfs-el0probe.cpio.gz: 292a1f40b428545b65706e5512e89f6754d0b62e8174de9b550c
 `cargo nextest run -p vmm-core --all-features` passed 563/563 tests (4
 skipped), and the matching all-targets Clippy invocation completed with no
 diagnostics beyond the repository's pre-existing invalid-path notices.
+
+The DT-discovered page checkpoint rebuilt Linux 6.18.35 from the verified
+pristine tarball in the native arm64 container. Both planted negatives fired,
+and all real-image audits passed:
+
+```text
+counter scanner: planted live-counter probe rejected
+vmlinux/vDSO: no live counter reads; 3 allowed CNTFRQ reads; no CVAL/TVAL
+exclusive scanner: planted LDXR/STXR probe rejected
+vmlinux/vDSO: no LL/SC instructions
+Image sha256: 41cea2eb60e4155b31ac70300ff9c15205b1533a7b7ab9fb7642bdb17628a3c7
+initramfs.cpio.gz sha256: d1ccc8d7cea812095bdf5cc77c4ac505c6a22f16b666f1ef111eb1317be67968
+```
+
+`cargo nextest run -p vmm-core -p vmm-backend --all-features` passed
+656/656 tests (5 skipped), followed by an all-targets `clippy -D warnings`
+success (only the repository's pre-existing invalid-path notices) and a clean
+`cargo fmt --all -- --check`.
 
 ## M2 — NES campaign on the M1 Max
 

@@ -122,6 +122,7 @@ unsafe extern "C" {
     fn hv_vcpu_create(vcpu: *mut u64, exit: *mut *const HvVcpuExit, config: *mut c_void) -> i32;
     fn hv_vcpu_destroy(vcpu: u64) -> i32;
     fn hv_vcpu_run(vcpu: u64) -> i32;
+    fn hv_vcpus_exit(vcpus: *const u64, vcpu_count: u32) -> i32;
     fn hv_vcpu_get_reg(vcpu: u64, reg: u32, value: *mut u64) -> i32;
     fn hv_vcpu_set_reg(vcpu: u64, reg: u32, value: u64) -> i32;
     fn hv_vcpu_get_simd_fp_reg(vcpu: u64, reg: u32, value: *mut [u8; 16]) -> i32;
@@ -212,6 +213,27 @@ fn sysreg_rt(iss: u64) -> u32 {
     ((iss >> 5) & 0x1f) as u32
 }
 
+/// Cross-thread handle for the liveness monitor's non-guest-visible abort.
+/// Requesting an exit only makes `hv_vcpu_run` return canceled; it never
+/// injects state into the guest.
+#[derive(Clone, Copy, Debug)]
+pub struct HvfExitHandle {
+    vcpu: u64,
+}
+
+impl HvfExitHandle {
+    /// Ask Hypervisor.framework to return from the current vCPU entry.
+    /// Calling this while the vCPU is not running is harmless.
+    pub fn request_exit(self) -> Result<()> {
+        let vcpus = [self.vcpu];
+        // SAFETY: the array is live for the call. HVF treats vCPU identifiers
+        // as values and returns an error for an identifier no longer present.
+        hv("hv_vcpus_exit", unsafe {
+            hv_vcpus_exit(vcpus.as_ptr(), vcpus.len() as u32)
+        })
+    }
+}
+
 /// Hypervisor.framework backend for the measured Apple Silicon bring-up host.
 pub struct HvfBackend {
     vcpu: u64,
@@ -270,6 +292,12 @@ impl HvfBackend {
             counts: ExitCounts::default(),
             regions: Vec::new(),
         })
+    }
+
+    /// Obtain the token used by a host-only liveness monitor to abort a stuck
+    /// guest entry without perturbing guest state.
+    pub fn exit_handle(&self) -> HvfExitHandle {
+        HvfExitHandle { vcpu: self.vcpu }
     }
 
     fn reg(&self, reg: u32) -> Result<u64> {

@@ -227,14 +227,16 @@ fn build_inner(
     }
     f.end_node();
 
-    // /reserved-memory — the paravirt clock page (reserved, NOT populated: the
-    // hm-rk5 seam). no-map keeps the guest kernel from mapping it as normal RAM.
+    // /reserved-memory — the paravirt clock page. It is excluded from the
+    // allocator but deliberately retained in arm64's normal linear map: the
+    // host writes ordinary RAM while the sole vCPU is stopped, so the guest
+    // must not create a second device-memory alias for the same physical page.
     f.begin_node("reserved-memory");
     f.prop_u32("#address-cells", 2);
     f.prop_u32("#size-cells", 2);
     // An **empty `ranges`** is required by the /reserved-memory binding: it
     // signals a 1:1 child↔parent address mapping, without which OF consumers
-    // (Linux `of_reserved_mem`) do not honor a child's `reg`/`no-map`.
+    // (Linux `of_reserved_mem`) do not honor a child's `reg` reservation.
     f.prop_empty("ranges");
     // The child's **unit-address MUST equal its first `reg` address** (FDT node
     // naming rule) — `pvclock@<hex(pvclock_gpa)>`, not `@0`, or FDT validators
@@ -247,7 +249,6 @@ fn build_inner(
         reg.extend_from_slice(&u64_cells(0x1000).map(u32::to_be_bytes).concat());
         f.prop_bytes("reg", &reg);
     }
-    f.prop_empty("no-map");
     f.end_node();
     f.end_node();
 
@@ -558,8 +559,9 @@ mod tests {
         );
         // The GIC reg carries both frames (dist + redist), 4 cells each × 2.
         assert_eq!(p.prop("intc@8000000", "reg").unwrap().len(), 2 * 4 * 4);
-        // The reserved pvclock page is present and no-map.
-        assert!(p.prop(&pvclock_node, "no-map").is_some());
+        // The page is reserved from the allocator but stays in the normal
+        // linear map. `no-map` would force an incoherent device-memory alias.
+        assert!(p.prop(&pvclock_node, "no-map").is_none());
         assert_eq!(
             p.prop(&pvclock_node, "compatible").unwrap(),
             b"harmony,pvclock-page\0"
@@ -572,7 +574,7 @@ mod tests {
         assert_eq!(pvclock_node, format!("pvclock@{reg_addr:x}"));
         // Finding 4 (review r1): the /reserved-memory node MUST carry an empty
         // `ranges` (plus #address-cells/#size-cells) or OF consumers
-        // (`of_reserved_mem`) ignore the child's `reg`/`no-map`. Assert the
+        // (`of_reserved_mem`) ignore the child's `reg`. Assert the
         // full trio, `ranges` empty.
         assert_eq!(p.prop("reserved-memory", "ranges").unwrap(), b"");
         assert_eq!(

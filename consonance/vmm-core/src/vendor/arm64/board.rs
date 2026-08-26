@@ -39,6 +39,9 @@ pub const PL011_SPI: u32 = 1;
 /// by [`super::dispatch`]'s MMIO routing and handled as the doorbell.
 pub const DOORBELL: (u64, u64) = (0x0A00_0000, 0x0000_1000);
 
+/// ARM pvclock registration and clockevent MMIO frame.
+pub const PVCLOCK: (u64, u64) = (0x0B00_0000, 0x0000_1000);
+
 /// The generic timer's virtual-timer PPI INTID (PPI 11 ⇒ GIC INTID 27) — the
 /// `arm,armv8-timer` virtual-timer interrupt, the fabric's `timer_intid`.
 pub const VIRT_TIMER_INTID: u32 = 27;

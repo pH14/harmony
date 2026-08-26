@@ -15,7 +15,7 @@
 //! those absences **fails closed**, never silently succeeds — default-deny is
 //! the posture the contract will fill in, not a stub to be papered over.
 
-use hypercall_proto::Service;
+use hypercall_proto::{Service, Status};
 use vm_state::Arm64VmState;
 use vmm_backend::{Arm64, Arm64VcpuState, Backend, Gpa};
 
@@ -115,11 +115,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 "trapped sysreg {dir} ({sysreg:#010x}) has no ruled disposition for HVF"
             )));
         }
-        let Some(gic) = self.devices.gic.as_mut() else {
+        if self.devices.gic.is_none() {
             return Err(VmmError::ContractViolation(format!(
                 "trapped GIC CPU-interface sysreg {sysreg:#010x} with no userspace GIC wired"
             )));
-        };
+        }
+        if self.prescriptive_vtime_enabled() {
+            self.advance_prescriptive_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
+        }
+        let gic = self.devices.gic.as_mut().expect("is_none checked above");
         match (sysreg, write) {
             (ICC_IAR1_EL1, None) => {
                 let intid = gic
@@ -203,7 +207,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         size: u8,
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
-        use super::board::{DOORBELL, GICD, GICR, PL011};
+        use super::board::{DOORBELL, GICD, GICR, PL011, PVCLOCK};
 
         let addr = gpa.0;
 
@@ -221,6 +225,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         if let Some((frame_name, frame)) = [
             ("PL011", PL011),
             ("doorbell", DOORBELL),
+            ("pvclock", PVCLOCK),
             ("GICD", GICD),
             ("GICR", GICR),
         ]
@@ -246,6 +251,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 "PL011" => matches!(size, 1 | 2 | 4),
                 "GICR" => size == 4 || (size == 8 && addr - frame.0 == 0x8),
                 "GICD" => size == 4 || (size == 8 && is_gicd_irouter(addr)),
+                "pvclock" => matches!(size, 4 | 8),
                 _ => size == 4,
             };
             if !valid_width {
@@ -260,6 +266,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // bytes; mask explicitly so synthetic backends cannot smuggle high
         // bits that real HVF already truncates at the MMIO exit.
         if in_frame(addr, PL011) {
+            if self.prescriptive_vtime_enabled() {
+                self.advance_prescriptive_vtime(contract::SERIAL_EXIT_VNS)?;
+            }
             let offset = addr - PL011.0;
             let bits = u32::from(size) * 8;
             let mask = if bits == 32 {
@@ -292,10 +301,64 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return self.service_doorbell(v as u32);
         }
 
+        // The dedicated ARM pvclock + clockevent frame. Every tuple is exact:
+        // offset, width, and direction are one protocol surface, not three
+        // independently permissive checks.
+        if in_frame(addr, PVCLOCK) {
+            let offset = addr - PVCLOCK.0;
+            let exact = matches!(
+                (offset, size, write),
+                (0x000, 8, Some(_)) | (0x008, 4, None) | (0x010, 8, Some(_)) | (0x018, 4, Some(_))
+            );
+            if !exact {
+                return Err(VmmError::ContractViolation(format!(
+                    "arm64 pvclock MMIO protocol fault at offset {offset:#x}, size {size}, \
+                     direction {}",
+                    if write.is_some() { "write" } else { "read" }
+                )));
+            }
+            if self.prescriptive_vtime_enabled() {
+                self.advance_prescriptive_vtime(contract::PARAVIRTUAL_EXIT_VNS)?;
+            }
+            return match (offset, write) {
+                (0x000, Some(gpa)) => {
+                    let (status, abi) = self.pvclock_register(gpa);
+                    if status != Status::Ok || abi != Some(vtime::pvclock::PVCLOCK_ABI_VERSION) {
+                        return Err(VmmError::ContractViolation(format!(
+                            "arm64 pvclock registration rejected GPA {gpa:#x}: status \
+                             {status:?}, abi {abi:?}"
+                        )));
+                    }
+                    Ok(Step::Continued)
+                }
+                (0x008, None) => {
+                    let abi = if self.pvclock_registration().is_some() {
+                        vtime::pvclock::PVCLOCK_ABI_VERSION
+                    } else {
+                        0
+                    };
+                    self.backend.complete_read(u64::from(abi))?;
+                    Ok(Step::Continued)
+                }
+                (0x010, Some(_)) => Err(VmmError::ContractViolation(
+                    "arm64 pvclock deadline protocol is not wired yet".to_string(),
+                )),
+                (0x018, Some(_)) => Err(VmmError::ContractViolation(
+                    "arm64 pvclock control protocol is not wired yet".to_string(),
+                )),
+                _ => Err(VmmError::ContractViolation(
+                    "arm64 pvclock exact-shape validation disagreed with dispatch".to_string(),
+                )),
+            };
+        }
+
         // The GICv3 distributor / redistributor frames (width already checked
         // above). GICR_TYPER is composed from its two 32-bit halves so the
         // device model retains one canonical register-access primitive.
         if in_frame(addr, GICD) || in_frame(addr, GICR) {
+            if self.prescriptive_vtime_enabled() {
+                self.advance_prescriptive_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
+            }
             let (frame, base) = if in_frame(addr, GICD) {
                 (gicv3::GicFrame::Dist, GICD.0)
             } else {
@@ -366,7 +429,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
 
         Err(VmmError::ContractViolation(format!(
             "unmodeled MMIO at {addr:#x} (size {size}); only the PL011 console, the GICv3 \
-             frames, and the hypercall doorbell are modeled on the arm64 board"
+             frames, the pvclock frame, and the hypercall doorbell are modeled on the arm64 board"
         )))
     }
 

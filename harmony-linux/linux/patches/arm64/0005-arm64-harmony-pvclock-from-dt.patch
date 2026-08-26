@@ -1,0 +1,127 @@
+arm64: discover the Harmony pvclock page from DT
+
+The board places the page after the loaded kernel and initramfs and reserves it
+with a harmony,pvclock-page node while retaining it in arm64's linear map. Stop
+publishing the old fixed 0x40001000 GPA, which lies inside the loaded Image, and
+publish the exact reserved page from that node instead. The one-shot MMIO
+registration remains unchanged apart from the validated GPA it carries.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/clocksource/harmony_arm_pvclock.c
++++ b/drivers/clocksource/harmony_arm_pvclock.c
+@@ -2,29 +2,30 @@
+ /*
+  * Harmony's materialized work-derived arm64 clock page.
+  *
+- * The page is reserved from the guest allocator but deliberately retained in
+- * arm64's linear map: the counter accessor is used before general memremap()
+- * allocation is available. The guest publishes that page through a one-shot
+- * MMIO registration surface and waits for the first exact-work stamp before
+- * proceeding. Host updates happen only while the sole vCPU is stopped; the
+- * sequence field keeps the ABI correct for future SMP readers.
++ * The page is reserved from the guest allocator and described by the machine's
++ * `harmony,pvclock-page` DT node. The page stays in arm64's linear map and the
++ * guest publishes that exact address through a one-shot MMIO registration
++ * surface, then waits for the first host stamp. Host updates happen only while
++ * the sole vCPU is stopped; the sequence field keeps the ABI correct for future
++ * SMP readers.
+  */
+ 
+ #include <linux/types.h>
+ #include <linux/compiler.h>
+ #include <linux/init.h>
+ #include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/overflow.h>
+ #include <linux/panic.h>
+ #include <linux/printk.h>
+ 
+ #include <asm/arch_timer.h>
+ #include <asm/barrier.h>
+ #include <asm/byteorder.h>
+ #include <asm/memory.h>
+ #include <asm/processor.h>
+ 
+-#define HARMONY_PVCLOCK_GPA		0x40001000ULL
+ #define HARMONY_PVCLOCK_REGISTER_GPA	0x0b000000ULL
+ #define HARMONY_PVCLOCK_REGISTER_SIZE	0x1000
+ #define HARMONY_PVCLOCK_REGISTER_ABI	0x8
+@@ -54,10 +55,13 @@
+ static bool harmony_pvclock_ready __ro_after_init;
+ 
+ static void __iomem *harmony_registers;
++static void *harmony_page_base;
++static phys_addr_t harmony_pvclock_gpa;
++static u32 harmony_guest_clock_hz;
+ 
+ static __always_inline const struct harmony_arm_pvclock_page *harmony_page(void)
+ {
+-	return (const void *)__phys_to_virt(HARMONY_PVCLOCK_GPA);
++	return (const void *)harmony_page_base;
+ }
+ 
+ static __always_inline bool harmony_page_valid(void)
+@@ -69,6 +73,6 @@ static __always_inline bool harmony_page_valid(void)
+ 	       le32_to_cpu(READ_ONCE(p->vcpu_index)) == 0 &&
+ 	       le64_to_cpu(READ_ONCE(p->guest_clock_hz)) ==
+-			arch_timer_get_cntfrq();
++			harmony_guest_clock_hz;
+ }
+ 
+ /*
+@@ -79,15 +83,39 @@
+  */
+ void __init harmony_arm_pvclock_register(void)
+ {
++	struct device_node *node;
++	struct resource res;
++	struct device_node *timer;
+ 	u32 abi;
+ 	u32 spin;
++	int ret;
+ 
++	timer = of_find_compatible_node(NULL, NULL, "arm,armv8-timer");
++	if (!timer)
++		panic("Harmony pvclock DT timer is missing");
++	ret = of_property_read_u32(timer, "clock-frequency",
++				   &harmony_guest_clock_hz);
++	of_node_put(timer);
++	if (ret || !harmony_guest_clock_hz)
++		panic("Harmony pvclock DT timer frequency is invalid");
++
++	node = of_find_compatible_node(NULL, NULL, "harmony,pvclock-page");
++	if (!node)
++		panic("Harmony pvclock DT page is missing");
++	ret = of_address_to_resource(node, 0, &res);
++	of_node_put(node);
++	if (ret || resource_size(&res) != PAGE_SIZE ||
++	    !IS_ALIGNED(res.start, PAGE_SIZE))
++		panic("Harmony pvclock DT page has invalid reg");
++	harmony_pvclock_gpa = res.start;
++	harmony_page_base = (void *)__phys_to_virt(harmony_pvclock_gpa);
++
+ 	harmony_registers = ioremap(HARMONY_PVCLOCK_REGISTER_GPA,
+ 			    HARMONY_PVCLOCK_REGISTER_SIZE);
+ 	if (!harmony_registers)
+ 		panic("Harmony pvclock registration MMIO cannot be mapped");
+ 
+-	writeq(HARMONY_PVCLOCK_GPA, harmony_registers);
++	writeq(harmony_pvclock_gpa, harmony_registers);
+ 	abi = readl(harmony_registers + HARMONY_PVCLOCK_REGISTER_ABI);
+ 	if (abi != HARMONY_PVCLOCK_ABI)
+ 		panic("Harmony pvclock host returned ABI %u, expected %u",
+@@ -96,8 +124,8 @@
+ 	for (spin = 0; spin < HARMONY_PVCLOCK_REGISTER_SPINS; spin++) {
+ 		if (harmony_page_valid()) {
+ 			WRITE_ONCE(harmony_pvclock_ready, true);
+-			pr_info("Harmony pvclock: registered page %#llx (ABI %u)\n",
+-				HARMONY_PVCLOCK_GPA, HARMONY_PVCLOCK_ABI);
++			pr_info("Harmony pvclock: registered page %pa (ABI %u)\n",
++				&harmony_pvclock_gpa, HARMONY_PVCLOCK_ABI);
+ 			return;
+ 		}
+ 		cpu_relax();

@@ -337,6 +337,10 @@ pub struct VtimeWiring {
     /// clock to `X`). Stored as `u64` (two's-complement); hashed (it governs
     /// future clock output).
     pub(crate) guest_clock_offset: u64,
+    /// Assigned-at-exit mode: the whole clock lives in `vns_base`, work stays
+    /// zero, and backend deterministic-counter capability is intentionally not
+    /// required. This bit is part of state identity.
+    pub(crate) prescriptive: bool,
 }
 
 impl VtimeWiring {
@@ -345,7 +349,9 @@ impl VtimeWiring {
     /// through [`VtimeWiring::advance_prescriptive`]; no hardware or scripted
     /// retired-work count participates.
     pub fn new_prescriptive(cfg: VClockConfig, seed: u64) -> Result<VtimeWiring, VmmError> {
-        Self::new(cfg, Box::new(crate::work::ScriptedWork::new()), seed)
+        let mut wiring = Self::new(cfg, Box::new(crate::work::ScriptedWork::new()), seed)?;
+        wiring.prescriptive = true;
+        Ok(wiring)
     }
 
     /// Assign `vns_delta` at an exit while holding measured work at zero.
@@ -397,6 +403,7 @@ impl VtimeWiring {
             entropy: SeededEntropy::new(seed),
             last_intercept_work: 0,
             guest_clock_offset: 0,
+            prescriptive: false,
         })
     }
 
@@ -953,9 +960,32 @@ where
         self
     }
 
+    /// Assign V-time at a serviced exit. Prescriptive compositions call this
+    /// exactly once per classified exit; descriptive compositions fail closed.
+    pub(crate) fn advance_prescriptive_vtime(&mut self, delta_vns: u64) -> Result<(), VmmError> {
+        let Some(vt) = self.vtime.as_mut() else {
+            return Err(VmmError::ContractViolation(
+                "prescriptive exit advancement without V-time wiring".to_string(),
+            ));
+        };
+        if !vt.prescriptive {
+            return Err(VmmError::ContractViolation(
+                "prescriptive exit advancement on descriptive V-time wiring".to_string(),
+            ));
+        }
+        vt.advance_prescriptive(delta_vns);
+        self.vtime_synchronized = true;
+        Ok(())
+    }
+
     /// `true` once the determinism V-time path is wired.
     pub fn vtime_wired(&self) -> bool {
         self.vtime.is_some()
+    }
+
+    /// Whether this VM uses assigned-at-exit V-time.
+    pub(crate) fn prescriptive_vtime_enabled(&self) -> bool {
+        self.vtime.as_ref().is_some_and(|vt| vt.prescriptive)
     }
 
     /// Map the two hypercall-transport ABI pages (`REQ_GPA`/`RESP_GPA`) as a
@@ -2405,7 +2435,9 @@ where
     fn pvclock_available(&self) -> bool {
         self.pvclock.is_some()
             && self.vtime.is_some()
-            && self.backend.capabilities().arch.deterministic_clock()
+            && self.vtime.as_ref().is_some_and(|vt| {
+                vt.prescriptive || self.backend.capabilities().arch.deterministic_clock()
+            })
     }
 
     /// Is a doorbell `service` id **offered** by this composition? The generic
@@ -2730,7 +2762,7 @@ where
     /// [`pvclock_refresh`](Self::pvclock_refresh) for the handshake and
     /// [`PvclockChannel::armed`]. A guest that never performs the handshake is
     /// out of contract: it gets a stale-but-deterministic page and no refresh.
-    fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
+    pub(crate) fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
         if !self.pvclock_available() {
             return (Status::UnknownService, None);
         }
@@ -2874,7 +2906,8 @@ where
             // idle-warp restore — is `vtime_synchronized` too, but must NOT stamp or
             // arm the pending page (a page armed off an RDRAND draw or a deadline
             // would publish the clock the contract says only the counter read may).
-            if !self.tsc_read_intercept {
+            let prescriptive = self.vtime.as_ref().is_some_and(|vt| vt.prescriptive);
+            if !prescriptive && !self.tsc_read_intercept {
                 return Ok(()); // synchronized, but not the promised counter read
             }
             // The handshake: promote to armed and lay down the first (canonical)
@@ -2905,6 +2938,9 @@ where
     pub(crate) fn pvclock_refresh_deadline(&self) -> Option<Moment> {
         let pv = self.pvclock.as_ref()?;
         if pv.gpa.is_none() || !pv.armed {
+            return None;
+        }
+        if self.vtime.as_ref()?.prescriptive {
             return None;
         }
         if !self.backend.capabilities().arch.deterministic_clock() {
@@ -4173,6 +4209,14 @@ where
     }
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+impl Vmm<vmm_backend::HvfBackend> {
+    /// Handle for the host-only liveness monitor to abort a stuck HVF entry.
+    pub fn hvf_exit_handle(&self) -> vmm_backend::HvfExitHandle {
+        self.backend.exit_handle()
+    }
+}
+
 /// Append a domain-tagged, length-prefixed chunk: `tag(4) ‖ len(u64 LE) ‖ bytes`.
 pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
     out.extend_from_slice(tag);
@@ -4226,6 +4270,7 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
 /// off an intercept) — same skid fact, different correct resolution.
 fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     let mut v = Vec::new();
+    v.push(u8::from(vt.prescriptive));
     for x in [
         vt.cfg.ratio_num,
         vt.cfg.guest_hz,
