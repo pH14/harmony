@@ -189,6 +189,13 @@ dependency rather than silently weakening the criterion.
     codec sees it. Missing or changed data fails as a typed integrity error; it
     never degrades to a zero page or partially restores a fresh VM. Test-only
     corruption hooks are feature-gated and cannot enter a production build.
+26. **Every durable remote archive snapshot binds its canonical whole-state
+    hash.** The snapshot captures the control server's whole-state hash at the
+    same stopped chord boundary as its handle, WRAM, frame, and lineage. Fast
+    live-handle restore and genesis-lineage reconstruction both compare the
+    immediate restored hash before the target becomes usable. The remote
+    checkpoint format advances to v2 because this evidence is required, not an
+    optional field that an older checkpoint could silently omit.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -645,7 +652,7 @@ guest differential compares an independently configured TetaNES deck's full
 ```text
 cd dissonance
 cargo test -p searcher --lib smb::remote
-4 passed; 0 failed
+5 passed; 0 failed
 
 cargo test -p searcher --lib \
   smb::campaign::tests::live_campaign_replays_byte_identically
@@ -672,6 +679,11 @@ durable fallback remains byte-exact. The restore-accounting oracle runs a live
 and serially replayed campaign through a counting target, requires nonzero and
 class-separated totals, then increments one recorded continuation count and
 requires replay to reject that exact job.
+The continuation oracle snapshots after one chord, records the canonical hash
+after every chord of a two-chord uninterrupted suffix, restores the branch,
+requires the immediate hash to equal the snapshot, and reproduces the exact
+per-chord hash sequence. Flipping one bit of the retained expected hash makes
+the same restore fail loudly.
 
 The stored-snapshot integrity matrix is also green:
 
@@ -699,8 +711,8 @@ before restore decoding or VM replacement.
   whole retained archive and real guest remain open.
 - **IN PROGRESS — snapshot restore counter and uninterrupted-continuation hash
   oracle:** genesis/continuation counters are now recorded, replay-verified, and
-  tamper-evident, and focused restore evidence is green; sampled campaign
-  branch-point hashes remain open.
+  tamper-evident, and the focused immediate/per-chord continuation-hash oracle is
+  green; sampling branch points from the real campaign remains open.
 - **IN PROGRESS — in-process/guest/transport cross-build differential:** the
   independent synthetic-ROM chord-endpoint differential is green; the shipped
   guest image and external SMB ROM run remain open.

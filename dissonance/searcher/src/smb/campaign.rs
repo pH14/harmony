@@ -64,7 +64,7 @@ pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-snapshot-checkpoint-v1";
 
 /// Format tag for checkpoints whose snapshots carry durable guest lineages
 /// and session-local control handles.
-pub const REMOTE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-remote-snapshot-checkpoint-v1";
+pub const REMOTE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-remote-snapshot-checkpoint-v2";
 
 /// Identifier recorded for the hold distribution, see
 /// [`crate::smb::archive::sample_chord_from_masks`].

@@ -43,6 +43,8 @@ pub trait GuestControlMachine: Machine {
     fn mark_genesis(&mut self, snap: SnapId) -> Result<(), MachineError>;
     /// Genesis versus continuation restore counts.
     fn restore_counters(&self) -> RestoreCounters;
+    /// Canonical whole-machine state hash at the current stopped boundary.
+    fn state_hash(&mut self) -> Result<[u8; 32], MachineError>;
 }
 
 impl<S: Read + Write> GuestControlMachine for SocketMachine<S> {
@@ -61,6 +63,10 @@ impl<S: Read + Write> GuestControlMachine for SocketMachine<S> {
     fn restore_counters(&self) -> RestoreCounters {
         SocketMachine::restore_counters(self)
     }
+
+    fn state_hash(&mut self) -> Result<[u8; 32], MachineError> {
+        SocketMachine::state_hash(self)
+    }
 }
 
 /// Restorable remote SMB state. `handle` is deliberately session-local and is
@@ -72,6 +78,7 @@ pub struct RemoteSmbSnapshot {
     handle: Option<SnapId>,
     lineage: Vec<ButtonChord>,
     observation: SmbObservations,
+    state_hash: [u8; 32],
     dead: bool,
     failed: bool,
 }
@@ -87,6 +94,12 @@ impl RemoteSmbSnapshot {
     #[must_use]
     pub fn has_live_handle(&self) -> bool {
         self.handle.is_some()
+    }
+
+    /// Canonical whole-machine state hash captured at this chord boundary.
+    #[must_use]
+    pub fn state_hash(&self) -> [u8; 32] {
+        self.state_hash
     }
 }
 
@@ -224,6 +237,15 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
         self.machine.restore_counters()
     }
 
+    /// Canonical whole-machine state hash at the current chord boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a control transport or server hash error.
+    pub fn state_hash(&mut self) -> Result<[u8; 32], MachineError> {
+        self.machine.state_hash()
+    }
+
     fn apply_checked(&mut self, action: &ButtonChord) -> Result<(), MachineError> {
         let prior = read_wram(&self.machine, self.wram_gpa)?;
         let start_frame = self.machine.logical_frame();
@@ -310,6 +332,11 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
                 "restored WRAM differs from the snapshot evidence".into(),
             ));
         }
+        if self.machine.state_hash()? != snapshot.state_hash {
+            return Err(MachineError::Backend(
+                "restored whole-state hash differs from the snapshot evidence".into(),
+            ));
+        }
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.lineage.clone_from(&snapshot.lineage);
@@ -374,6 +401,14 @@ impl<M: GuestControlMachine> Target for RemoteSmbTarget<M> {
     fn snapshot(&mut self) -> Option<Self::Snapshot> {
         match self.machine.snapshot() {
             Ok(handle) => {
+                let state_hash = match self.machine.state_hash() {
+                    Ok(hash) => hash,
+                    Err(_) => {
+                        let _ = self.machine.drop_snapshot(handle);
+                        self.failed = true;
+                        return None;
+                    }
+                };
                 self.live_snapshots.push_back(handle);
                 if self.live_snapshots.len() > LIVE_SNAPSHOT_LIMIT {
                     let Some(evicted) = self.live_snapshots.pop_front() else {
@@ -389,6 +424,7 @@ impl<M: GuestControlMachine> Target for RemoteSmbTarget<M> {
                     handle: Some(handle),
                     lineage: self.lineage.clone(),
                     observation: self.observation.clone(),
+                    state_hash,
                     dead: self.dead,
                     failed: self.failed,
                 })
@@ -497,6 +533,7 @@ mod tests {
 
     use super::*;
     use crate::smb::target::SmbTarget;
+    use sha2::{Digest, Sha256};
 
     #[derive(Debug)]
     struct InProcessControl {
@@ -609,6 +646,16 @@ mod tests {
         fn restore_counters(&self) -> RestoreCounters {
             self.counters
         }
+
+        fn state_hash(&mut self) -> Result<[u8; 32], MachineError> {
+            let snap = self.machine.snapshot()?;
+            let bytes = self.machine.export_snapshot(snap)?;
+            self.machine.drop_snapshot(snap)?;
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            hasher.update(self.logical_frame.0.to_le_bytes());
+            Ok(hasher.finalize().into())
+        }
     }
 
     fn synthetic_nrom() -> Vec<u8> {
@@ -661,6 +708,45 @@ mod tests {
         assert_eq!(remote.wram().as_slice(), durable.wram());
         assert!(remote.restore_counters().genesis > 0);
         assert_eq!(remote.frames_clocked().saturating_sub(work_before), 22);
+    }
+
+    #[test]
+    fn restored_continuation_repeats_each_chord_state_hash() {
+        let rom = synthetic_nrom();
+        let control = InProcessControl {
+            machine: NesMachine::from_rom_bytes(&rom, RenderMode::Neither).unwrap(),
+            counters: RestoreCounters::default(),
+            genesis: None,
+            logical_frame: Moment(0),
+            snapshot_frames: BTreeMap::new(),
+            reported_deadline_offset: 0,
+            published_wram_len: WRAM_SIZE as u32,
+        };
+        let mut remote = RemoteSmbTarget::from_machine(control).unwrap();
+        remote.apply(&ButtonChord::new(0x81, 4));
+        let branch = remote.snapshot().unwrap();
+        let suffix = [ButtonChord::new(0, 2), ButtonChord::new(0x40, 3)];
+        let mut uninterrupted = Vec::new();
+        for action in suffix {
+            remote.apply(&action);
+            uninterrupted.push(remote.state_hash().unwrap());
+        }
+
+        remote.restore(&branch).unwrap();
+        assert_eq!(remote.state_hash().unwrap(), branch.state_hash());
+        let mut restored = Vec::new();
+        for action in suffix {
+            remote.apply(&action);
+            restored.push(remote.state_hash().unwrap());
+        }
+        assert_eq!(restored, uninterrupted);
+
+        let mut altered = branch;
+        altered.state_hash[0] ^= 0x80;
+        let error = remote
+            .restore(&altered)
+            .expect_err("altered snapshot hash must fail");
+        assert!(error.to_string().contains("whole-state hash"));
     }
 
     #[test]
