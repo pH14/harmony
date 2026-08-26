@@ -223,17 +223,18 @@ dependency rather than silently weakening the criterion.
     the comparator and fail-loud path can fire before the external-ROM run counts.
 30. **The live M2 oracle is one fail-closed, byte-attested operation.**
     `prescriptive-m2-oracle.sh` builds and entitlement-signs the production HVF
-    listener and searcher tools, then runs two 4,096-job one-worker campaigns at the
-    same seed, requires byte-identical archives, streams, reports, and snapshot
-    checkpoints, and replays the first campaign through a fresh VM. It rejects
-    fewer than 2,000 continuation restores or any absent genesis restore. The
-    game-image builder publishes the embedded ROM SHA-256 only after a successful
-    initramfs pack; the oracle matches that sidecar to the host ROM before launch
-    and writes a manifest binding the kernel, initramfs, ROM, signed listener,
-    campaign and continuation-oracle executables. Missing artifacts, skipped
-    payload markers, watchdogs, panics,
-    partial server session counts, or an existing output directory all fail
-    loudly and cannot produce the success record.
+    listener and searcher tools, runs the external-ROM `smb-smoke` gate, then
+    runs two 4,096-job one-worker campaigns at the same seed, requires
+    byte-identical archives, streams, reports, and snapshot checkpoints, and
+    replays the first campaign through a fresh VM. It rejects any false smoke
+    invariant, fewer than 2,000 continuation restores, or any absent genesis
+    restore. The game-image builder publishes the embedded ROM SHA-256 only after
+    a successful initramfs pack; the oracle matches that sidecar to the host ROM
+    before launch and writes a manifest binding the kernel, initramfs, ROM,
+    signed listener, smoke, campaign, and continuation-oracle executables.
+    Missing artifacts, skipped payload markers, watchdogs, panics, partial server
+    session counts, or an existing output directory all fail loudly and cannot
+    produce the success record.
 31. **Real continuation samples come from the retained campaign, not a toy
     lineage.** The live runner selects 32 evenly distributed, non-genesis
     snapshots from the first campaign's complete remote checkpoint. At each
@@ -624,6 +625,8 @@ green on the current M1 head. M2 did not begin before this evidence was recorded
   checkpoint format, and can replay a recorded stream through a fresh session.
   The Apple-HVF listener composition is now present and compile/lint clean; the
   missing external ROM and native Linux/aarch64 image remain the live blockers.
+  The live oracle runs and validates the existing real-ROM `smb-smoke` report
+  before it starts either production campaign.
 
 ### M2 payload-substrate checkpoint evidence
 

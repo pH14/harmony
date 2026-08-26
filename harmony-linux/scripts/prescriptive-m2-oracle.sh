@@ -80,12 +80,13 @@ trap cleanup EXIT
 echo "== M2: building production compositions"
 (cd "$repo_root" && cargo build --release -p vmm-core --bin hvf_control_server)
 (cd "$repo_root" && cargo build --release --manifest-path dissonance/Cargo.toml \
-    -p searcher --bin smb-campaign --bin smb-vtime-continuation)
+    -p searcher --bin smb-smoke --bin smb-campaign --bin smb-vtime-continuation)
 server=$repo_root/target/release/hvf_control_server
+smoke=$repo_root/dissonance/target/release/smb-smoke
 searcher=$repo_root/dissonance/target/release/smb-campaign
 continuation_oracle=$repo_root/dissonance/target/release/smb-vtime-continuation
 entitlements=$repo_root/consonance/vmm-backend/hvf.entitlements.plist
-for artifact in "$server" "$searcher" "$continuation_oracle" "$entitlements"; do
+for artifact in "$server" "$smoke" "$searcher" "$continuation_oracle" "$entitlements"; do
     if [[ ! -s "$artifact" ]]; then
         echo "FAIL: built M2 artifact is missing or empty: $artifact" >&2
         exit 1
@@ -106,6 +107,7 @@ fi
     printf '%s  initramfs-game.cpio.gz\n' "$(sha256_of "$initramfs")"
     printf '%s  smb.nes\n' "$rom_sha"
     printf '%s  hvf_control_server.signed\n' "$(sha256_of "$server")"
+    printf '%s  smb-smoke\n' "$(sha256_of "$smoke")"
     printf '%s  smb-campaign\n' "$(sha256_of "$searcher")"
     printf '%s  smb-vtime-continuation\n' "$(sha256_of "$continuation_oracle")"
 } >"$output_dir/MANIFEST.sha256"
@@ -170,6 +172,12 @@ run_campaign() {
         2>"$output_dir/$label-searcher.stderr"
     finish_server 2
 }
+
+echo "== M2: running the real-ROM SMB smoke gate"
+HARMONY_SMB_ROM="$rom" "$smoke" "$output_dir/smoke" \
+    >"$output_dir/smoke.stdout" 2>"$output_dir/smoke.stderr"
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert all(r[k] is True for k in ("same_input_identical_ram_trace", "snapshot_cache_equivalent", "headless_ram_trace_equivalent", "same_seed_campaign_reproducible"))' \
+    "$output_dir/smoke/smb-smoke-report.json"
 
 echo "== M2: running two same-seed production campaigns"
 run_campaign run-1
@@ -245,6 +253,7 @@ genesis_restores=$genesis_restores
 continuation_restores=$continuation_restores
 sampled_branch_points=$sampled_branch_points
 continuation_chord_hashes=$chord_hashes_compared
+smb_smoke_verified=true
 same_seed_archives=2
 fresh_vm_replay_verified=true
 EOF
