@@ -1326,11 +1326,13 @@ mod tests {
         },
         target::{ExitKind, SnapshotRestoreCounters, Target},
     };
+    use sha2::{Digest, Sha256};
 
     #[derive(Debug)]
     struct CountingTarget {
         inner: SmbTarget,
         restores: SnapshotRestoreCounters,
+        alter_next_action: bool,
     }
 
     impl Target for CountingTarget {
@@ -1344,7 +1346,14 @@ mod tests {
         }
 
         fn apply(&mut self, action: &Self::Action) {
-            self.inner.apply(action);
+            if self.alter_next_action {
+                self.alter_next_action = false;
+                let mut altered = *action;
+                altered.buttons ^= 0x01;
+                self.inner.apply(&altered);
+            } else {
+                self.inner.apply(action);
+            }
         }
 
         fn observe(&self) -> Self::Observations {
@@ -1411,6 +1420,27 @@ mod tests {
                 inner: SmbTarget::from_smb_rom_bytes_headless(rom)
                     .map_err(|error| error.to_string())?,
                 restores: SnapshotRestoreCounters::default(),
+                alter_next_action: false,
+            })
+        }
+
+        fn checkpoint_format(&self) -> &'static str {
+            SNAPSHOT_CHECKPOINT_FORMAT
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct AlterOneChordBackend;
+
+    impl SmbTargetBackend for AlterOneChordBackend {
+        type Target = CountingTarget;
+
+        fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
+            Ok(CountingTarget {
+                inner: SmbTarget::from_smb_rom_bytes_headless(rom)
+                    .map_err(|error| error.to_string())?,
+                restores: SnapshotRestoreCounters::default(),
+                alter_next_action: true,
             })
         }
 
@@ -1428,6 +1458,21 @@ mod tests {
         for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
             prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
         }
+        rom
+    }
+
+    fn input_sensitive_nrom() -> Vec<u8> {
+        let mut rom = synthetic_nrom();
+        let prg = &mut rom[16..16 + (16 * 1024)];
+        // Strobe controller 1, read its A bit, and write that bit to SMB's
+        // screen-page byte. The archive progress term therefore changes for
+        // every A-bit alteration without encoding any game route knowledge in
+        // production code.
+        let program = [
+            0xa9, 0x01, 0x8d, 0x16, 0x40, 0xa9, 0x00, 0x8d, 0x16, 0x40, 0xad, 0x16, 0x40, 0x29,
+            0x01, 0x8d, 0x1a, 0x07, 0x4c, 0x00, 0x80,
+        ];
+        prg[..program.len()].copy_from_slice(&program);
         rom
     }
 
@@ -1491,6 +1536,41 @@ mod tests {
         let error = replay_campaign_checkpointed(&game, altered.as_bytes(), None, None)
             .expect_err("altered restore accounting must fail");
         assert!(error.to_string().contains("snapshot restores"));
+    }
+
+    #[test]
+    fn archive_hash_comparator_catches_one_altered_chord() {
+        let rom = input_sensitive_nrom();
+        let mut config = genesis_config(0x5eed_ca21, 1, 1);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+
+        let baseline_game = SmbGame::with_backend(&rom, CountingBackend);
+        let baseline_config = config.generic::<SmbGame<CountingBackend>>();
+        let mut baseline_stream = Vec::new();
+        let (baseline, _) = run_campaign_checkpointed(
+            &baseline_game,
+            &baseline_config,
+            &CampaignOrigin::Genesis,
+            &mut baseline_stream,
+            None,
+        )
+        .expect("baseline campaign");
+
+        let altered_game = SmbGame::with_backend(&rom, AlterOneChordBackend);
+        let altered_config = config.generic::<SmbGame<AlterOneChordBackend>>();
+        let mut altered_stream = Vec::new();
+        let (altered, _) = run_campaign_checkpointed(
+            &altered_game,
+            &altered_config,
+            &CampaignOrigin::Genesis,
+            &mut altered_stream,
+            None,
+        )
+        .expect("altered campaign");
+
+        let baseline_hash = Sha256::digest(serde_json::to_vec(&baseline.archive).unwrap());
+        let altered_hash = Sha256::digest(serde_json::to_vec(&altered.archive).unwrap());
+        assert_ne!(baseline_hash, altered_hash);
     }
 
     #[test]

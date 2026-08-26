@@ -196,6 +196,13 @@ dependency rather than silently weakening the criterion.
     immediate restored hash before the target becomes usable. The remote
     checkpoint format advances to v2 because this evidence is required, not an
     optional field that an older checkpoint could silently omit.
+27. **The archive comparator negative changes input-visible state, not merely
+    serialized metadata.** Its synthetic NROM continuously strobes controller 1
+    and writes the A-button bit into the WRAM screen-page byte used by the
+    archive key. Two one-worker campaigns use the same seed and policies; the
+    negative backend flips that one bit for exactly the first chord. Different
+    archive SHA-256 values therefore prove the comparator observes an emulated
+    lineage divergence rather than a report-only field.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -667,6 +674,10 @@ exit status 0
 cargo test -p searcher --lib \
   restore_accounting_is_recorded_replayed_and_tamper_evident
 1 passed; 0 failed
+
+cargo test -p searcher --lib \
+  archive_hash_comparator_catches_one_altered_chord
+1 passed; 0 failed
 ```
 
 The adapter differential executes the same synthetic NROM and chords through
@@ -719,7 +730,9 @@ before restore decoding or VM replacement.
 - **IN PROGRESS — thousands of mid-workload branch/replay cycles:** the bounded
   cache eviction oracle crosses 1,024 stored snapshots, but a real campaign with
   thousands of mid-workload branches has not run.
-- **FAIL — altered-chord archive comparator negative:** not started.
+- **PASS — altered-chord archive comparator negative:** the input-sensitive ROM
+  and one-chord perturbation produce different archive SHA-256 values at one
+  otherwise identical seed and policy configuration.
 - **PASS — RAM, vCPU, and GIC/device stored-snapshot corruption negatives:** all
   three seeded corruptions fail at the retained-store integrity boundary before
   decode or VM replacement.
