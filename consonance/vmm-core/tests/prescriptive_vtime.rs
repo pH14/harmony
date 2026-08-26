@@ -2,11 +2,13 @@
 //! M0 oracles for assigned-at-exit V-time.  Every comparator used by the
 //! positive properties is also driven against a deliberately perturbed twin.
 
+use std::collections::BTreeSet;
+
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 use vmm_backend::{
-    Backend, CommonExit, Exit, Gpa, HypercallFrame, Injection, MockBackend, VcpuState, X86,
-    X86Exit, X86Policy,
+    Backend, CommonExit, Exit, ExitReason, Gpa, HypercallFrame, Injection, MockBackend, VcpuState,
+    X86, X86Exit, X86Policy,
 };
 use vmm_core::prescriptive::{
     ClassifiedExit, DeviceClass, LogField, NormalizedEventClass, PlacementViolation,
@@ -255,6 +257,49 @@ fn identical_scripts_have_identical_complete_normalized_logs() {
     assert_eq!(
         check_delivery_placement(right.schedule(), right.normalized_log()),
         Ok(())
+    );
+    assert_eq!(left.raw_log(), right.raw_log());
+    assert_eq!(left.raw_log().len(), left.normalized_log().events.len());
+    for (index, raw) in left.raw_log().iter().enumerate() {
+        assert_eq!(raw.event_index, u64::try_from(index).unwrap());
+        assert!(!raw.backend_debug.is_empty());
+    }
+    assert_eq!(left.raw_log().last().unwrap().reason, ExitReason::Shutdown);
+}
+
+#[test]
+fn payload_digest_is_domain_separated_by_event_class() {
+    let payload = b"same-complete-payload".to_vec();
+    let classified = [
+        ClassifiedExit::doorbell(payload.clone(), 0),
+        ClassifiedExit::device_mmio(DeviceClass::InterruptController, payload.clone()),
+        ClassifiedExit::device_mmio(DeviceClass::Serial, payload.clone()),
+        ClassifiedExit::device_mmio(DeviceClass::Paravirtual, payload.clone()),
+        ClassifiedExit::time_read(payload.clone()),
+        ClassifiedExit::terminal(payload.clone()),
+    ];
+    let mut digests = BTreeSet::new();
+    for exit_class in classified {
+        let mut run = configured_loop(vec![Exit::Common(CommonExit::Shutdown)], 1);
+        run.run_backend_once(|_, _| Ok(exit_class), deliver, checkpoint_hash)
+            .unwrap();
+        digests.insert(run.normalized_log().events[0].payload_digest);
+    }
+    let mut idle_run = configured_loop(vec![Exit::Common(CommonExit::Shutdown)], 1);
+    idle_run.schedule_interrupt(0, 1).unwrap();
+    idle_run
+        .run_backend_once(
+            |_, _| Ok(ClassifiedExit::idle(payload)),
+            deliver,
+            checkpoint_hash,
+        )
+        .unwrap();
+    digests.insert(idle_run.normalized_log().events[0].payload_digest);
+
+    assert_eq!(
+        digests.len(),
+        7,
+        "every event class must domain-separate the same complete payload"
     );
 }
 

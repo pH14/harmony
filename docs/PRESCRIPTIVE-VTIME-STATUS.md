@@ -26,6 +26,11 @@ dependency rather than silently weakening the criterion.
 4. **Raw logs are substrate-local; normalized logs are the comparator input.** The
    raw log retains the backend reason and full debug rendering. Cross-substrate
    claims compare only the normalized event stream.
+5. **Mutation findings become explicit anti-vacuity oracles.** The first shard-0
+   mutation run found that tests did not observe event-class domain separation or
+   the raw-log accessor. The suite now proves all seven event classes produce
+   distinct digests for identical payload bytes and checks the complete raw log.
+   The repaired shard-0 rerun is clean (7 caught, 7 compiler-rejected).
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -80,8 +85,8 @@ dependency rather than silently weakening the criterion.
 `cargo test -p vmm-core --test prescriptive_vtime --all-features -- --nocapture`
 
 ```text
-running 10 tests
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+running 11 tests
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
 `cargo test -p vmm-core --all-features`
@@ -123,6 +128,15 @@ byte-for-byte match; diff exit status 0
 workspace regions: 94.76%
 vmm-core/src/prescriptive.rs regions: 90.08%
 report/floor exit status 0
+```
+
+`cargo mutants --no-shuffle --in-diff /private/tmp/prescriptive-m0.diff --shard N/4`
+
+```text
+shard 3: 12 mutants tested: 11 caught, 1 compiler-rejected
+shard 0 first pass: 3 missed (the two oracle gaps recorded above)
+shard 0 repaired rerun: 14 mutants tested: 7 caught, 7 compiler-rejected
+shards 1 and 2: RUNNING serially
 ```
 
 `MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p vmm-core`
