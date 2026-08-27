@@ -11,9 +11,12 @@
 # functions; no new function carries a counter read). The per-function review
 # justifications live in rdtsc-allowlist.txt.
 #
-# Regenerate when the runner toolchain moves: the scan failure prints the
-# unlisted/stale sites in paste-ready form; re-verify the function-subset
-# property against rdtsc-allowlist.txt before committing.
+# Regenerate when the runner toolchain moves or the patch series changes: the
+# scan failure prints the unlisted/stale sites in paste-ready form; re-verify
+# the function-subset property against rdtsc-allowlist.txt before committing.
+# Last re-baseline: the decision-12 amendment to patch 0001 (entropy routed
+# through the clock page) shifted 12 sites — the random_get_entropy inline
+# callers and harmony_pvclock_init — with no function added or removed.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).
 vmlinux:.altinstr_replacement+0x1d18
@@ -50,9 +53,9 @@ vmlinux:__iommu_flush_context+0x5e
 vmlinux:__iommu_flush_context+0x79
 vmlinux:__iommu_flush_iotlb+0xeb
 vmlinux:__iommu_flush_iotlb+0xf9
-vmlinux:add_device_randomness+0x1d
-vmlinux:add_interrupt_randomness+0x5
-vmlinux:add_timer_randomness+0x1e
+vmlinux:add_device_randomness+0x26
+vmlinux:add_interrupt_randomness+0x16
+vmlinux:add_timer_randomness+0x2b
 vmlinux:check_tsc_warp+0x4c
 vmlinux:check_tsc_warp+0xe
 vmlinux:delay_halt+0x36
@@ -67,12 +70,12 @@ vmlinux:dmar_disable_qi+0xc4
 vmlinux:do_syscall_64+0x197
 vmlinux:ecmd_submit_sync+0x60
 vmlinux:ecmd_submit_sync+0x7b
-vmlinux:entropy_timer+0x18
+vmlinux:entropy_timer+0x25
 vmlinux:ext4_mb_generate_buddy+0x14c
 vmlinux:ext4_mb_generate_buddy+0x32
-vmlinux:extract_entropy.constprop.0+0xc3
-vmlinux:harmony_pvclock_init+0x10a
-vmlinux:harmony_pvclock_init+0x171
+vmlinux:extract_entropy.constprop.0+0xd0
+vmlinux:harmony_pvclock_init+0xfd
+vmlinux:harmony_pvclock_init+0x164
 vmlinux:hpet_enable+0x265
 vmlinux:hpet_enable+0x273
 vmlinux:iommu_disable_irq_remapping.part.0+0x3f
@@ -94,7 +97,7 @@ vmlinux:iommu_set_irq_remapping+0x8f
 vmlinux:iommu_set_root_entry+0x6a
 vmlinux:iommu_set_root_entry+0x86
 vmlinux:irqentry_exit_to_user_mode+0xc3
-vmlinux:jent_get_nstime+0x4
+vmlinux:jent_get_nstime+0xd
 vmlinux:lapic_cal_handler+0x1a
 vmlinux:lapic_next_deadline+0x6
 vmlinux:msr_event_add+0x18
@@ -112,7 +115,7 @@ vmlinux:quick_pit_calibrate+0x40
 vmlinux:quick_pit_calibrate+0x66
 vmlinux:quick_pit_calibrate+0x9b
 vmlinux:quick_pit_calibrate+0xc2
-vmlinux:random_init+0x13
+vmlinux:random_init+0x20
 vmlinux:read_current_timer+0xd
 vmlinux:read_tsc+0x0
 vmlinux:ret_from_fork+0xe8
@@ -121,9 +124,9 @@ vmlinux:setup_boot_APIC_clock+0xce
 vmlinux:timer_irq_works+0x36
 vmlinux:timer_irq_works+0x5b
 vmlinux:trace_clock_x86_tsc+0x0
-vmlinux:try_to_generate_entropy+0x1a9
-vmlinux:try_to_generate_entropy+0x4c
-vmlinux:try_to_generate_entropy+0x82
+vmlinux:try_to_generate_entropy+0x1d5
+vmlinux:try_to_generate_entropy+0x59
+vmlinux:try_to_generate_entropy+0x91
 vmlinux:tsc_enable_sched_clock+0x4a
 vmlinux:tsc_read_refs+0x2b
 vmlinux:tsc_read_refs+0x42
