@@ -1326,10 +1326,23 @@ recorded.
   and `snapshots-live.bin`
   `ae8d699c7bdb86180e3232452ee4a83441979be412deae8bffb359acb2f1b783`.
 - **FAIL — full NES campaign normalized log and checkpoint sequence:** the
-  control-server diagnostic currently exposes the final VMM segment for each
-  session. The endpoint segments and every replayable campaign artifact now
-  agree, but M5 still requires one accumulated normalized trace and checkpoint
-  sequence across every restore/replacement inside the campaign session.
+  control server now retains an ordered sequence of every restore-delimited
+  normalized log and immutable deadline schedule. It records whether each
+  segment began at initial boot, a branch, a replay, or a recoverable-restore
+  boot; this keeps real V-time rewinds and segment-local event/schedule indices
+  structurally valid instead of flattening them into a false single run. Both
+  production composition roots fail closed if the existing independent
+  placement checker rejects any segment, print total segments/events/schedules/
+  checkpoints and the full-session digest, and write a host-neutral complete
+  log under `HARMONY_CONTROL_DUMP_DIR`. Two independently driven portable ARM
+  control servers produced and compared all three segments across two real
+  replay replacements; the comparator's planted negative localized a one-V-ns
+  change in the middle segment to segment 1, event 0, `VnsAfter`. Focused
+  implementation evidence is green (`cargo test -p vmm-core --all-features
+  --lib`: 521 passed, two Miri-only ignores; strict all-target Clippy: exit 0).
+  This criterion remains **FAIL** until the byte-attested HVF and CPU-0-pinned
+  KVM NES campaigns are rerun and their complete emitted logs compare exactly;
+  the prior endpoint/artifact equality alone is not promoted retroactively.
 - **FAIL — immediate cross-host restore `state_hash` equality:** not started.
 - **FAIL — both-direction uninterrupted continuation comparison:** not started.
 - **PASS — planted cross-host increment mismatch:** the production normalized

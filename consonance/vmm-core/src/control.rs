@@ -116,6 +116,7 @@ use vmm_backend::Backend;
 use crate::vendor::{InterruptReject, Vendor};
 
 use crate::exec::ExecSession;
+use crate::session_trace::{SessionPrescriptiveTrace, SessionTraceSegment, SessionTraceStart};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
 use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
@@ -344,6 +345,12 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// `exec` is off the record, so this never needs to be reproducible — only
     /// unique-enough within a session.
     exec_nonce: u64,
+    /// Completed restore-delimited production-trace segments. The current
+    /// live VMM's segment is appended only in the read-only
+    /// [`session_prescriptive_trace`](Self::session_prescriptive_trace) view.
+    session_trace: Vec<SessionTraceSegment>,
+    /// Boundary that began the current live VMM's trace segment.
+    session_trace_start: SessionTraceStart,
 }
 
 /// The per-snapshot `Net` state the control server retains (task 61): the
@@ -424,6 +431,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             timeline_tainted: false,
             tainted_snaps: BTreeSet::new(),
             exec_nonce: 0,
+            session_trace: Vec::new(),
+            session_trace_start: SessionTraceStart::InitialBoot,
         }
     }
 
@@ -440,6 +449,53 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// the serial capture after a session ends). `None` after a fatal error.
     pub fn vmm(&self) -> Option<&Vmm<B>> {
         self.vmm.as_ref()
+    }
+
+    /// Complete restore-aware normalized trace for this control session.
+    ///
+    /// Each branch/replay replacement closes one segment. The current live
+    /// VMM is captured into the returned owned view without mutating the
+    /// server, so callers can write final evidence after [`Self::serve`]
+    /// returns. `None` means no VMM in the session had prescriptive tracing.
+    pub fn session_prescriptive_trace(&self) -> Option<SessionPrescriptiveTrace> {
+        let mut segments = self.session_trace.clone();
+        if let Some(trace) = self.vmm.as_ref().and_then(Vmm::prescriptive_trace) {
+            segments.push(SessionTraceSegment::capture(
+                self.session_trace_start,
+                trace,
+            ));
+        }
+        (!segments.is_empty()).then(|| SessionPrescriptiveTrace::from_segments(segments))
+    }
+
+    /// Move the accumulated session trace out of the server and append an owned
+    /// capture of the current live segment.
+    ///
+    /// Composition roots use this after [`Self::serve`] returns so a large
+    /// campaign is not duplicated in memory while its evidence file is written.
+    /// The live VMM and all determinism-relevant state are unchanged; only the
+    /// host-side completed-segment evidence buffer is drained.
+    pub fn take_session_prescriptive_trace(&mut self) -> Option<SessionPrescriptiveTrace> {
+        let mut segments = std::mem::take(&mut self.session_trace);
+        if let Some(trace) = self.vmm.as_ref().and_then(Vmm::prescriptive_trace) {
+            segments.push(SessionTraceSegment::capture(
+                self.session_trace_start,
+                trace,
+            ));
+        }
+        (!segments.is_empty()).then(|| SessionPrescriptiveTrace::from_segments(segments))
+    }
+
+    /// Close the current VMM's host-only trace immediately before replacing
+    /// the VMM. Validation failures that leave the VMM untouched never call
+    /// this method and therefore cannot create phantom segments.
+    fn finish_session_trace_segment(&mut self) {
+        if let Some(trace) = self.vmm.as_ref().and_then(Vmm::prescriptive_trace) {
+            self.session_trace.push(SessionTraceSegment::capture(
+                self.session_trace_start,
+                trace,
+            ));
+        }
     }
 
     /// Install the remap-restore factory (task 95 M2.2) **and switch the
@@ -1172,6 +1228,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         //    lazily, guest writes stay CoW-private. Otherwise the pre-task-95
         //    memcpy path runs byte-for-byte (`restore_snapshot`).
         let use_remap = self.restore_mode == RestoreMode::Remap && self.remap_factory.is_some();
+        self.finish_session_trace_segment();
         self.vmm = None;
         let (mut fresh, restore_result) = if use_remap {
             let factory = self
@@ -1231,6 +1288,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 // whatever the failed-to-restore handle's taint was. (An untainted
                 // state reachable only from an untainted ancestor: this boot is one.)
                 self.timeline_tainted = false;
+                self.session_trace_start = SessionTraceStart::RecoveryBoot;
                 // Task 73 (round-4 P3): the kept fresh VM must carry an SDK channel
                 // too — `GUEST_HAS_SDK` is advertised unconditionally, so a doorbell
                 // on it after a recoverable `RestoreFailed` would otherwise be a
@@ -1272,6 +1330,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
         }
         self.vmm = Some(fresh);
+        self.session_trace_start = if seed.is_some() {
+            SessionTraceStart::Branch { snapshot: snap.0 }
+        } else {
+            SessionTraceStart::Replay { snapshot: snap.0 }
+        };
         // Task 81: the restored timeline **inherits the snapshot's taint** — a
         // `branch`/`replay` from a tainted snapshot is tainted; from an untainted
         // one, untainted. This is the propagation rule that makes taint follow
@@ -1994,7 +2057,10 @@ mod tests {
         Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
     };
     use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
-    use vmm_backend::{Backend, CommonExit, Exit, MockBackend, X86, X86Exit, X86Policy};
+    use vmm_backend::{
+        Arm64, Arm64Policy, Backend, CommonExit, Exit, MockArm64Backend, MockBackend, X86, X86Exit,
+        X86Policy,
+    };
 
     use proptest::prelude::*;
 
@@ -2330,6 +2396,100 @@ mod tests {
             Ok(Reply::Stop(stop)) => stop,
             other => panic!("run reply: {other:?}"),
         }
+    }
+
+    /// Drive the production control replacement path twice so the returned
+    /// evidence contains the initial VMM plus two replay-delimited segments.
+    fn accumulated_session_trace() -> crate::session_trace::SessionPrescriptiveTrace {
+        let make_vmm = |exits: Vec<Exit<Arm64>>, seed: u64| {
+            let mut backend = MockArm64Backend::with_exits(exits);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            vmm.wire_vtime(VtimeWiring::new_prescriptive(contract_vclock_config(), seed).unwrap());
+            vmm.wire_snapshot_hashing();
+            vmm
+        };
+        let serial = || {
+            Exit::Common(CommonExit::Mmio {
+                gpa: vmm_backend::Gpa(crate::vendor::arm64::board::PL011.0),
+                size: 1,
+                write: Some(u64::from(b'x')),
+            })
+        };
+        let mut live = make_vmm(vec![serial(), Exit::Common(CommonExit::Idle)], 0xBA5E);
+        assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
+        let factory =
+            Box::new(move || Ok(make_vmm(vec![serial(), Exit::Common(CommonExit::Idle)], 0)));
+        let mut server = ControlServer::new(live, factory);
+        assert_eq!(
+            server.handle(&Request::Hello(server_caps())).unwrap(),
+            Ok(Reply::Hello(server_caps()))
+        );
+        let base = match server.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::Snapshot { id, .. }) => id,
+            other => panic!("snapshot reply: {other:?}"),
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                server.handle(&Request::Replay(base)).unwrap(),
+                Ok(Reply::Unit)
+            );
+            let reply = server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap();
+            assert!(matches!(
+                reply,
+                Ok(Reply::Stop(StopReason::Quiescent { .. }))
+            ));
+        }
+        server
+            .session_prescriptive_trace()
+            .expect("prescriptive control server produces a session trace")
+    }
+
+    /// The load-bearing positive oracle for restore-aware accumulation: two
+    /// independently driven servers retain and compare every replacement
+    /// segment, rather than agreeing only on the final live VMM's suffix.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and planted negative remain Miri-covered"
+    )]
+    fn control_session_accumulates_every_restore_delimited_trace() {
+        use crate::session_trace::{
+            SessionTraceStart, check_session_delivery_placement, compare_session_traces,
+        };
+
+        let left = accumulated_session_trace();
+        let right = accumulated_session_trace();
+        assert_eq!(left.segments().len(), 3);
+        assert_eq!(left.segments()[0].start(), SessionTraceStart::InitialBoot);
+        assert_eq!(
+            left.segments()[1].start(),
+            SessionTraceStart::Replay { snapshot: 1 }
+        );
+        assert_eq!(
+            left.segments()[2].start(),
+            SessionTraceStart::Replay { snapshot: 1 }
+        );
+        assert!(
+            left.event_count() > left.segments()[2].normalized_log().events.len(),
+            "the session oracle must cover more than the final VMM suffix: total={}, segments={:?}",
+            left.event_count(),
+            left.segments()
+                .iter()
+                .map(|segment| segment.normalized_log().events.len())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(compare_session_traces(&left, &right), Ok(()));
+        assert_eq!(check_session_delivery_placement(&left), Ok(()));
+        assert_eq!(left.digest(), right.digest());
     }
 
     // ---- task 95 M2: O(dirty) capture + remap restore -------------------------

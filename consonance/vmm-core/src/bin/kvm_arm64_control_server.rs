@@ -93,6 +93,25 @@ fn main() -> std::process::ExitCode {
             eprintln!("KVM control session {session} failed: {error}");
             return std::process::ExitCode::FAILURE;
         }
+        let Some(session_trace) = server.take_session_prescriptive_trace() else {
+            eprintln!("KVM control session {session} ended without a session trace");
+            return std::process::ExitCode::FAILURE;
+        };
+        if let Err(error) =
+            vmm_core::session_trace::check_session_delivery_placement(&session_trace)
+        {
+            eprintln!("KVM control session {session} placement check failed: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+        println!(
+            "KVM_CONTROL_SESSION_TRACE session={session} segments={} portable_events={} \
+             schedules={} checkpoints={} digest={} placement=PASS",
+            session_trace.segments().len(),
+            session_trace.event_count(),
+            session_trace.schedule_count(),
+            session_trace.checkpoint_count(),
+            hex(session_trace.digest()),
+        );
         let Some(vmm) = server.vmm() else {
             eprintln!("KVM control session {session} ended without a live VM");
             return std::process::ExitCode::FAILURE;
@@ -142,10 +161,30 @@ fn main() -> std::process::ExitCode {
                 );
                 return std::process::ExitCode::FAILURE;
             }
+            let session_trace_path =
+                directory.join(format!("kvm-session-{session}.prescriptive.log"));
+            let trace_file = match std::fs::File::create(&session_trace_path) {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!(
+                        "KVM control session {session} could not create {}: {error}",
+                        session_trace_path.display()
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            if let Err(error) = session_trace.write_text(std::io::BufWriter::new(trace_file)) {
+                eprintln!(
+                    "KVM control session {session} could not write {}: {error}",
+                    session_trace_path.display()
+                );
+                return std::process::ExitCode::FAILURE;
+            }
             println!(
-                "KVM_CONTROL_DUMP session={session} ram={} vcpu={}",
+                "KVM_CONTROL_DUMP session={session} ram={} vcpu={} prescriptive_log={}",
                 ram_path.display(),
-                vcpu_path.display()
+                vcpu_path.display(),
+                session_trace_path.display(),
             );
         }
         println!("KVM_CONTROL_SESSION_OK session={session}");

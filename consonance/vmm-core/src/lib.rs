@@ -58,6 +58,8 @@ pub mod prescriptive;
 // bookkeeping the box harness (`tests/seal_rate_sweep.rs`) feeds live measurements into.
 // Pure and portable (macOS + Linux); no `/dev/kvm`, no wall clock, no RNG.
 pub mod seal_rate;
+/// Restore-aware accumulation and comparison of control-session traces.
+pub mod session_trace;
 pub mod snapshot;
 // The engine/vendor seam (`docs/ARCH-BOUNDARY.md` §B): every module OUTSIDE
 // `vendor` is the arch-neutral engine; everything x86 lives under `vendor::x86`

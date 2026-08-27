@@ -16,11 +16,13 @@ pub fn vmm_core::control::ControlServer<B>::new(vmm_core::vmm::Vmm<B>, vmm_core:
 pub fn vmm_core::control::ControlServer<B>::recorded_env(&self) -> &environment::recorded::EnvSpec
 pub fn vmm_core::control::ControlServer<B>::restore_mode(&self) -> vmm_core::control::RestoreMode
 pub fn vmm_core::control::ControlServer<B>::serve<S: std::io::Read + std::io::Write>(&mut self, S) -> core::result::Result<(), vmm_core::control::ServeError>
+pub fn vmm_core::control::ControlServer<B>::session_prescriptive_trace(&self) -> core::option::Option<vmm_core::session_trace::SessionPrescriptiveTrace>
 pub fn vmm_core::control::ControlServer<B>::set_max_chain_len(&mut self, u32)
 pub fn vmm_core::control::ControlServer<B>::set_remap_factory(&mut self, vmm_core::control::RemapVmmFactory<B>)
 pub fn vmm_core::control::ControlServer<B>::set_restore_mode(&mut self, vmm_core::control::RestoreMode)
 pub fn vmm_core::control::ControlServer<B>::snapshot_chain_len(&self, control_proto::types::SnapId) -> core::option::Option<u32>
 pub fn vmm_core::control::ControlServer<B>::snapshot_store_stats(&self) -> snapshot_store::StoreStats
+pub fn vmm_core::control::ControlServer<B>::take_session_prescriptive_trace(&mut self) -> core::option::Option<vmm_core::session_trace::SessionPrescriptiveTrace>
 pub fn vmm_core::control::ControlServer<B>::vmm(&self) -> core::option::Option<&vmm_core::vmm::Vmm<B>>
 pub fn vmm_core::control::server_caps() -> control_proto::types::Caps
 pub type vmm_core::control::RemapVmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut(snapshot_store::mapping::Mapping) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
@@ -52,6 +54,76 @@ pub fn vmm_core::exec::ExecSession::is_done(&self) -> bool
 pub fn vmm_core::exec::ExecSession::new(&str, u64) -> vmm_core::exec::ExecSession
 pub fn vmm_core::exec::ExecSession::truncated(&self) -> bool
 pub const vmm_core::exec::MAX_CAPTURE: usize
+pub mod vmm_core::m3_report
+pub enum vmm_core::m3_report::M3ReportError
+pub vmm_core::m3_report::M3ReportError::BaselineFormat(&'static str)
+pub vmm_core::m3_report::M3ReportError::ComparatorMismatch
+pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::pvclock_count: u64
+pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::pvclock_max: u64
+pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::trace_count: u64
+pub vmm_core::m3_report::M3ReportError::ComparatorMismatch::trace_max: u64
+pub vmm_core::m3_report::M3ReportError::ExitCountMismatch
+pub vmm_core::m3_report::M3ReportError::ExitCountMismatch::event_loop: u64
+pub vmm_core::m3_report::M3ReportError::ExitCountMismatch::trace: u64
+pub vmm_core::m3_report::M3ReportError::FailureMarker(&'static str)
+pub vmm_core::m3_report::M3ReportError::GapTooLarge
+pub vmm_core::m3_report::M3ReportError::GapTooLarge::limit: u64
+pub vmm_core::m3_report::M3ReportError::GapTooLarge::observed: u64
+pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase
+pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::end_exits: u64
+pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::end_wall_ns: u64
+pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::phase: &'static str
+pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::start_exits: u64
+pub vmm_core::m3_report::M3ReportError::InvalidPerformancePhase::start_wall_ns: u64
+pub vmm_core::m3_report::M3ReportError::KernelLiveness(&'static str)
+pub vmm_core::m3_report::M3ReportError::MalformedRow
+pub vmm_core::m3_report::M3ReportError::MalformedRow::reason: &'static str
+pub vmm_core::m3_report::M3ReportError::MalformedRow::row: u64
+pub vmm_core::m3_report::M3ReportError::MissingMarker(&'static str)
+pub vmm_core::m3_report::M3ReportError::RepeatedUuid
+pub vmm_core::m3_report::M3ReportError::RepeatedUuid::row: u64
+pub vmm_core::m3_report::M3ReportError::TooFewVtimeObservations(u64)
+pub vmm_core::m3_report::M3ReportError::VtimeRegressed
+pub vmm_core::m3_report::M3ReportError::VtimeRegressed::after: u64
+pub vmm_core::m3_report::M3ReportError::VtimeRegressed::before: u64
+pub vmm_core::m3_report::M3ReportError::VtimeRegressed::observation: u64
+pub vmm_core::m3_report::M3ReportError::WrongRowCount
+pub vmm_core::m3_report::M3ReportError::WrongRowCount::expected: u64
+pub vmm_core::m3_report::M3ReportError::WrongRowCount::observed: u64
+pub struct vmm_core::m3_report::AcceptanceSummary
+impl vmm_core::m3_report::AcceptanceSummary
+pub fn vmm_core::m3_report::AcceptanceSummary::final_timestamp(&self) -> &str
+pub fn vmm_core::m3_report::AcceptanceSummary::final_uuid(&self) -> &str
+pub fn vmm_core::m3_report::AcceptanceSummary::rows(&self) -> u64
+pub struct vmm_core::m3_report::GapHistogram
+impl vmm_core::m3_report::GapHistogram
+pub fn vmm_core::m3_report::GapHistogram::analyze(&[u64]) -> core::result::Result<Self, vmm_core::m3_report::M3ReportError>
+pub fn vmm_core::m3_report::GapHistogram::counts(&self) -> &[u64; 8]
+pub fn vmm_core::m3_report::GapHistogram::gap_count(&self) -> u64
+pub fn vmm_core::m3_report::GapHistogram::max_gap_vns(&self) -> u64
+pub fn vmm_core::m3_report::GapHistogram::validate_bound(&self) -> core::result::Result<(), vmm_core::m3_report::M3ReportError>
+pub struct vmm_core::m3_report::PerformanceMark
+pub vmm_core::m3_report::PerformanceMark::exits: u64
+pub vmm_core::m3_report::PerformanceMark::wall_ns: u64
+pub struct vmm_core::m3_report::PhasePerformance
+impl vmm_core::m3_report::PhasePerformance
+pub fn vmm_core::m3_report::PhasePerformance::between(&'static str, vmm_core::m3_report::PerformanceMark, vmm_core::m3_report::PerformanceMark) -> core::result::Result<Self, vmm_core::m3_report::M3ReportError>
+pub fn vmm_core::m3_report::PhasePerformance::exits(self) -> u64
+pub fn vmm_core::m3_report::PhasePerformance::milli_exits_per_second(self) -> u128
+pub fn vmm_core::m3_report::PhasePerformance::wall_ns(self) -> u64
+pub struct vmm_core::m3_report::Throughput
+pub vmm_core::m3_report::Throughput::rows: u64
+pub vmm_core::m3_report::Throughput::wall_ns: u64
+impl vmm_core::m3_report::Throughput
+pub fn vmm_core::m3_report::Throughput::milli_rows_per_second(self) -> u128
+pub const vmm_core::m3_report::MAX_GAP_FACTOR: u64
+pub const vmm_core::m3_report::MAX_GAP_VNS: u64
+pub const vmm_core::m3_report::TICK_PERIOD_VNS: u64
+pub const vmm_core::m3_report::WORKLOAD_ROWS: u64
+pub fn vmm_core::m3_report::compare_exit_counts(u64, u64) -> core::result::Result<(), vmm_core::m3_report::M3ReportError>
+pub fn vmm_core::m3_report::compare_gap_oracles(&vmm_core::m3_report::GapHistogram, u64, u64) -> core::result::Result<(), vmm_core::m3_report::M3ReportError>
+pub fn vmm_core::m3_report::parse_x86_diagnostic(&[u8]) -> core::result::Result<vmm_core::m3_report::Throughput, vmm_core::m3_report::M3ReportError>
+pub fn vmm_core::m3_report::validate_acceptance(&[u8]) -> core::result::Result<vmm_core::m3_report::AcceptanceSummary, vmm_core::m3_report::M3ReportError>
 pub mod vmm_core::prescriptive
 pub enum vmm_core::prescriptive::DeviceClass
 pub vmm_core::prescriptive::DeviceClass::InterruptController
@@ -318,6 +390,43 @@ pub fn vmm_core::seal_rate::rule(&vmm_core::seal_rate::RulingInputs, vmm_core::s
 pub fn vmm_core::seal_rate::sealable(&vmm_core::seal_rate::CpuSnapshot) -> bool
 pub type vmm_core::seal_rate::Moment = u64
 pub type vmm_core::seal_rate::Span = u64
+pub mod vmm_core::session_trace
+pub enum vmm_core::session_trace::SessionTraceDivergence
+pub vmm_core::session_trace::SessionTraceDivergence::Log
+pub vmm_core::session_trace::SessionTraceDivergence::Log::divergence: vmm_core::prescriptive::LogDivergence
+pub vmm_core::session_trace::SessionTraceDivergence::Log::segment_index: usize
+pub vmm_core::session_trace::SessionTraceDivergence::Schedule
+pub vmm_core::session_trace::SessionTraceDivergence::Schedule::segment_index: usize
+pub vmm_core::session_trace::SessionTraceDivergence::SegmentCount
+pub vmm_core::session_trace::SessionTraceDivergence::SegmentCount::left: usize
+pub vmm_core::session_trace::SessionTraceDivergence::SegmentCount::right: usize
+pub vmm_core::session_trace::SessionTraceDivergence::Start
+pub vmm_core::session_trace::SessionTraceDivergence::Start::segment_index: usize
+pub enum vmm_core::session_trace::SessionTraceStart
+pub vmm_core::session_trace::SessionTraceStart::Branch
+pub vmm_core::session_trace::SessionTraceStart::Branch::snapshot: u64
+pub vmm_core::session_trace::SessionTraceStart::InitialBoot
+pub vmm_core::session_trace::SessionTraceStart::RecoveryBoot
+pub vmm_core::session_trace::SessionTraceStart::Replay
+pub vmm_core::session_trace::SessionTraceStart::Replay::snapshot: u64
+pub struct vmm_core::session_trace::SessionPlacementViolation
+pub vmm_core::session_trace::SessionPlacementViolation::segment_index: usize
+pub vmm_core::session_trace::SessionPlacementViolation::violation: vmm_core::prescriptive::PlacementViolation
+pub struct vmm_core::session_trace::SessionPrescriptiveTrace
+impl vmm_core::session_trace::SessionPrescriptiveTrace
+pub fn vmm_core::session_trace::SessionPrescriptiveTrace::checkpoint_count(&self) -> usize
+pub fn vmm_core::session_trace::SessionPrescriptiveTrace::digest(&self) -> [u8; 32]
+pub fn vmm_core::session_trace::SessionPrescriptiveTrace::event_count(&self) -> usize
+pub fn vmm_core::session_trace::SessionPrescriptiveTrace::schedule_count(&self) -> usize
+pub fn vmm_core::session_trace::SessionPrescriptiveTrace::segments(&self) -> &[vmm_core::session_trace::SessionTraceSegment]
+pub fn vmm_core::session_trace::SessionPrescriptiveTrace::write_text(&self, impl std::io::Write) -> std::io::error::Result<()>
+pub struct vmm_core::session_trace::SessionTraceSegment
+impl vmm_core::session_trace::SessionTraceSegment
+pub fn vmm_core::session_trace::SessionTraceSegment::normalized_log(&self) -> &vmm_core::prescriptive::NormalizedLog
+pub fn vmm_core::session_trace::SessionTraceSegment::schedule(&self) -> &[vmm_core::prescriptive::ScheduledInterrupt]
+pub fn vmm_core::session_trace::SessionTraceSegment::start(&self) -> vmm_core::session_trace::SessionTraceStart
+pub fn vmm_core::session_trace::check_session_delivery_placement(&vmm_core::session_trace::SessionPrescriptiveTrace) -> core::result::Result<(), vmm_core::session_trace::SessionPlacementViolation>
+pub fn vmm_core::session_trace::compare_session_traces(&vmm_core::session_trace::SessionPrescriptiveTrace, &vmm_core::session_trace::SessionPrescriptiveTrace) -> core::result::Result<(), vmm_core::session_trace::SessionTraceDivergence>
 pub mod vmm_core::snapshot
 pub enum vmm_core::snapshot::SnapshotError
 pub vmm_core::snapshot::SnapshotError::Codec(vm_state::error::VmStateError)
@@ -369,8 +478,10 @@ pub mod vmm_core::vendor::arm64::bringup
 pub fn vmm_core::vendor::arm64::bringup::boot<B: vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>>(B, &[u8], &str, usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
 pub mod vmm_core::vendor::arm64::contract
 pub const vmm_core::vendor::arm64::contract::ARCH_CONTROL_EXIT_VNS: u64
+pub const vmm_core::vendor::arm64::contract::IDENTITY_BASELINE: [(u32, u64); 21]
 pub const vmm_core::vendor::arm64::contract::INTERRUPT_CONTROLLER_EXIT_VNS: u64
 pub const vmm_core::vendor::arm64::contract::PARAVIRTUAL_EXIT_VNS: u64
+pub const vmm_core::vendor::arm64::contract::READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1]
 pub const vmm_core::vendor::arm64::contract::SERIAL_EXIT_VNS: u64
 pub const vmm_core::vendor::arm64::contract::TRAPPED_TIME_READ_VNS: u64
 pub fn vmm_core::vendor::arm64::contract::contract_hash() -> [u8; 32]
@@ -430,6 +541,10 @@ pub fn vmm_core::vendor::arm64::image_loader::parse_header(&[u8]) -> core::resul
 pub fn vmm_core::vendor::arm64::image_loader::wrap_image(&[u8], u64, u64) -> alloc::vec::Vec<u8>
 pub mod vmm_core::vendor::arm64::records
 pub struct vmm_core::vendor::arm64::Arm64Devices
+pub struct vmm_core::vendor::arm64::GicArchitectureDifference
+pub vmm_core::vendor::arm64::GicArchitectureDifference::field: &'static str
+pub vmm_core::vendor::arm64::GicArchitectureDifference::index: core::option::Option<usize>
+pub fn vmm_core::vendor::arm64::compare_gic_architecture(&gicv3::state::GicState, &gicv3::state::GicState) -> core::result::Result<(), vmm_core::vendor::arm64::GicArchitectureDifference>
 pub mod vmm_core::vendor::x86
 pub mod vmm_core::vendor::x86::bringup
 pub enum vmm_core::vendor::x86::bringup::BackendKind
@@ -677,14 +792,14 @@ pub fn vmm_core::vendor::Vendor::check_wire_interrupt<B: vmm_backend::backend::B
 pub fn vmm_core::vendor::Vendor::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_core::vendor::Vendor::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_core::vendor::Vendor::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
-pub fn vmm_core::vendor::Vendor::device_components(&Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
+pub fn vmm_core::vendor::Vendor::device_components(&Self::VcpuState, &Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_core::vendor::Vendor::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
 pub fn vmm_core::vendor::Vendor::encode_vcpu_chunk(&Self::VcpuState) -> alloc::vec::Vec<u8>
 pub fn vmm_core::vendor::Vendor::guest_interruptible<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::has_pending_guest_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::Vendor::hash_device_chunks(&Self::Devices, &mut alloc::vec::Vec<u8>)
+pub fn vmm_core::vendor::Vendor::hash_device_chunks(&Self::VcpuState, &Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_core::vendor::Vendor::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_core::vendor::Vendor::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::mmio_holes() -> &'static [(u64, u64)]
@@ -710,14 +825,14 @@ pub fn vmm_backend::arch::arm64::Arm64::check_wire_interrupt<B: vmm_backend::bac
 pub fn vmm_backend::arch::arm64::Arm64::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::arm64::Arm64::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::arm64::Arm64::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
-pub fn vmm_backend::arch::arm64::Arm64::device_components(&Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
+pub fn vmm_backend::arch::arm64::Arm64::device_components(&vmm_backend::arch::arm64::state::Arm64VcpuState, &Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_backend::arch::arm64::Arm64::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::arm64::Arm64Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
 pub fn vmm_backend::arch::arm64::Arm64::encode_vcpu_chunk(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> alloc::vec::Vec<u8>
 pub fn vmm_backend::arch::arm64::Arm64::guest_interruptible<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::has_pending_guest_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
-pub fn vmm_backend::arch::arm64::Arm64::hash_device_chunks(&Self::Devices, &mut alloc::vec::Vec<u8>)
+pub fn vmm_backend::arch::arm64::Arm64::hash_device_chunks(&vmm_backend::arch::arm64::state::Arm64VcpuState, &Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_backend::arch::arm64::Arm64::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_backend::arch::arm64::Arm64::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::mmio_holes() -> &'static [(u64, u64)]
@@ -743,14 +858,14 @@ pub fn vmm_backend::arch::x86::X86::check_wire_interrupt<B: vmm_backend::backend
 pub fn vmm_backend::arch::x86::X86::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::x86::X86::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::x86::X86::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
-pub fn vmm_backend::arch::x86::X86::device_components(&Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
+pub fn vmm_backend::arch::x86::X86::device_components(&Self::VcpuState, &Self::Devices, &mut alloc::vec::Vec<(&'static str, [u8; 32])>)
 pub fn vmm_backend::arch::x86::X86::dispatch_arch<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::arch::x86::X86Exit) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::dispatch_mmio<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, vmm_backend::types::Gpa, u8, core::option::Option<u64>) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::encode_device_state(&Self::Devices) -> alloc::vec::Vec<u8>
 pub fn vmm_backend::arch::x86::X86::encode_vcpu_chunk(&vmm_backend::arch::x86::state::VcpuState) -> alloc::vec::Vec<u8>
 pub fn vmm_backend::arch::x86::X86::guest_interruptible<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::has_pending_guest_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
-pub fn vmm_backend::arch::x86::X86::hash_device_chunks(&Self::Devices, &mut alloc::vec::Vec<u8>)
+pub fn vmm_backend::arch::x86::X86::hash_device_chunks(&vmm_backend::arch::x86::state::VcpuState, &Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_backend::arch::x86::X86::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_backend::arch::x86::X86::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::mmio_holes() -> &'static [(u64, u64)]
@@ -817,6 +932,7 @@ pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
 pub struct vmm_core::vmm::SdkSnapshot
 pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend> where <B as vmm_backend::backend::Backend>::A: vmm_core::vendor::Vendor
 impl<B: vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>> vmm_core::vmm::Vmm<B>
+pub fn vmm_core::vmm::Vmm<B>::canonical_arm64_gic_state(&self) -> core::result::Result<core::option::Option<gicv3::state::GicState>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::gic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_gic(&mut self, gicv3::device::Gicv3) -> &mut Self
 impl<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>> vmm_core::vmm::Vmm<B>
