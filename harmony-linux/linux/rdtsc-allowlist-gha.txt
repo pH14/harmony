@@ -21,16 +21,26 @@
 # function-neutral.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).
-vmlinux:.altinstr_replacement+0x1d18
-vmlinux:.altinstr_replacement+0x1d1a
-vmlinux:.altinstr_replacement+0x1d20
-vmlinux:.altinstr_replacement+0x1d22
-vmlinux:.altinstr_replacement+0x1d28
-vmlinux:.altinstr_replacement+0x1d2a
-vmlinux:.altinstr_replacement+0x1d30
-vmlinux:.altinstr_replacement+0x1d32
-vmlinux:.altinstr_replacement+0x1d38
-vmlinux:.altinstr_replacement+0x1d3a
+vmlinux:.altinstr_replacement+0x88c
+vmlinux:.altinstr_replacement+0x88e
+vmlinux:.altinstr_replacement+0x894
+vmlinux:.altinstr_replacement+0x896
+vmlinux:.altinstr_replacement+0x92e
+vmlinux:.altinstr_replacement+0x930
+vmlinux:.altinstr_replacement+0x94b
+vmlinux:.altinstr_replacement+0x94d
+vmlinux:.altinstr_replacement+0x953
+vmlinux:.altinstr_replacement+0x955
+vmlinux:.altinstr_replacement+0x1d15
+vmlinux:.altinstr_replacement+0x1d17
+vmlinux:.altinstr_replacement+0x1d1d
+vmlinux:.altinstr_replacement+0x1d1f
+vmlinux:.altinstr_replacement+0x1d25
+vmlinux:.altinstr_replacement+0x1d27
+vmlinux:.altinstr_replacement+0x1d2d
+vmlinux:.altinstr_replacement+0x1d2f
+vmlinux:.altinstr_replacement+0x1d35
+vmlinux:.altinstr_replacement+0x1d37
 vmlinux:.altinstr_replacement+0x322
 vmlinux:.altinstr_replacement+0x324
 vmlinux:.altinstr_replacement+0x32a
@@ -39,16 +49,6 @@ vmlinux:.altinstr_replacement+0x332
 vmlinux:.altinstr_replacement+0x334
 vmlinux:.altinstr_replacement+0x59f
 vmlinux:.altinstr_replacement+0x5a1
-vmlinux:.altinstr_replacement+0x88f
-vmlinux:.altinstr_replacement+0x891
-vmlinux:.altinstr_replacement+0x897
-vmlinux:.altinstr_replacement+0x899
-vmlinux:.altinstr_replacement+0x931
-vmlinux:.altinstr_replacement+0x933
-vmlinux:.altinstr_replacement+0x94e
-vmlinux:.altinstr_replacement+0x950
-vmlinux:.altinstr_replacement+0x956
-vmlinux:.altinstr_replacement+0x958
 vmlinux:__dmar_enable_qi+0x84
 vmlinux:__dmar_enable_qi+0xa0
 vmlinux:__iommu_flush_context+0x5e
