@@ -297,7 +297,51 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
             writeln!(out, "XSAVE_HDR {bv:#x} {comp:#x} MXCSR_MASK {mask:#x}")
                 .expect("write to string");
         }
+        for (name, seg) in [
+            ("cs", &vcpu.sregs.cs),
+            ("ds", &vcpu.sregs.ds),
+            ("es", &vcpu.sregs.es),
+            ("fs", &vcpu.sregs.fs),
+            ("gs", &vcpu.sregs.gs),
+            ("ss", &vcpu.sregs.ss),
+            ("tr", &vcpu.sregs.tr),
+            ("ldt", &vcpu.sregs.ldt),
+        ] {
+            writeln!(out, "SEG {name} {seg:?}").expect("write to string");
+        }
+        writeln!(
+            out,
+            "CR cr0={:#x} cr2={:#x} cr3={:#x} cr4={:#x} cr8={:#x} efer={:#x} apic_base={:#x} \
+             sregs_flags={:#x} gdt={:?} idt={:?}",
+            vcpu.sregs.cr0,
+            vcpu.sregs.cr2,
+            vcpu.sregs.cr3,
+            vcpu.sregs.cr4,
+            vcpu.sregs.cr8,
+            vcpu.sregs.efer,
+            vcpu.sregs.apic_base,
+            vcpu.sregs.flags,
+            vcpu.sregs.gdt,
+            vcpu.sregs.idt,
+        )
+        .expect("write to string");
     }
+    // Per-page RAM fingerprints (FNV-1a; zero pages elided with a count), so
+    // two hosts' dumps name the exact differing guest pages by address.
+    let ram = vmm.guest_memory();
+    let mut zero_pages = 0u64;
+    for (i, page) in ram.chunks(4096).enumerate() {
+        if page.iter().all(|&b| b == 0) {
+            zero_pages += 1;
+            continue;
+        }
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in page {
+            h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
+        }
+        writeln!(out, "PAGE {:#x} {h:016x}", i * 4096).expect("write to string");
+    }
+    writeln!(out, "ZERO_PAGES {zero_pages}").expect("write to string");
     writeln!(out, "DIGEST {}", hex(&run.digest)).expect("write to string");
     std::fs::write(path, out).expect("write the normalized-log dump");
     println!("X2_LOG_DUMP {path}");
