@@ -18,6 +18,8 @@
 //! vGICv3 round-trip verdict); the boot path lands with M3; the KVM backend
 //! with M4. Nothing here claims silicon behavior.
 
+use std::io::{self, Write};
+
 pub mod board;
 pub mod bringup;
 pub mod contract;
@@ -103,6 +105,166 @@ pub struct Arm64ArchitecturalState {
     pub vcpu: vmm_backend::Arm64VcpuState,
     /// Canonical GICv3 architectural record, independent of fabric ownership.
     pub gic: Option<gicv3::GicState>,
+}
+
+impl Arm64ArchitecturalState {
+    /// Write a stable, field-explicit architectural evidence record.
+    ///
+    /// This format is deliberately independent of the vendor snapshot codec
+    /// and `state_hash`. Every field consumed by [`compare_arm64_architecture`]
+    /// is emitted in comparator order, so ordinary byte comparison of records
+    /// captured on two hosts is a second implementation of the typed oracle.
+    pub fn write_text(&self, mut out: impl Write) -> io::Result<()> {
+        if self.vcpu.gic.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "architectural capture retains a non-canonical embedded GIC",
+            ));
+        }
+        writeln!(out, "format consonance.arm64-architecture.v1")?;
+        for (index, value) in self.vcpu.core.x.iter().enumerate() {
+            writeln!(out, "core.x.{index} {value:016x}")?;
+        }
+        write_u64(&mut out, "core.sp", self.vcpu.core.sp)?;
+        write_u64(&mut out, "core.pc", self.vcpu.core.pc)?;
+        write_u64(&mut out, "core.pstate", self.vcpu.core.pstate)?;
+        write_u64(&mut out, "core.sp_el1", self.vcpu.core.sp_el1)?;
+        write_u64(&mut out, "core.elr_el1", self.vcpu.core.elr_el1)?;
+        write_u64(&mut out, "core.spsr_el1", self.vcpu.core.spsr_el1)?;
+
+        write_u64(&mut out, "sysregs.sctlr_el1", self.vcpu.sysregs.sctlr_el1)?;
+        write_u64(&mut out, "sysregs.ttbr0_el1", self.vcpu.sysregs.ttbr0_el1)?;
+        write_u64(&mut out, "sysregs.ttbr1_el1", self.vcpu.sysregs.ttbr1_el1)?;
+        write_u64(&mut out, "sysregs.tcr_el1", self.vcpu.sysregs.tcr_el1)?;
+        write_u64(&mut out, "sysregs.mair_el1", self.vcpu.sysregs.mair_el1)?;
+        write_u64(&mut out, "sysregs.vbar_el1", self.vcpu.sysregs.vbar_el1)?;
+        write_u64(&mut out, "sysregs.cpacr_el1", self.vcpu.sysregs.cpacr_el1)?;
+        write_u64(&mut out, "sysregs.esr_el1", self.vcpu.sysregs.esr_el1)?;
+        write_u64(&mut out, "sysregs.far_el1", self.vcpu.sysregs.far_el1)?;
+        write_u64(&mut out, "sysregs.tpidr_el0", self.vcpu.sysregs.tpidr_el0)?;
+        write_u64(&mut out, "sysregs.tpidr_el1", self.vcpu.sysregs.tpidr_el1)?;
+        write_u64(
+            &mut out,
+            "sysregs.cntkctl_el1",
+            self.vcpu.sysregs.cntkctl_el1,
+        )?;
+
+        for (index, value) in self.vcpu.simd_fp.q.iter().enumerate() {
+            write!(out, "simd_fp.q.{index} ")?;
+            write_hex(&mut out, value)?;
+            writeln!(out)?;
+        }
+        write_u64(&mut out, "simd_fp.fpcr", self.vcpu.simd_fp.fpcr)?;
+        write_u64(&mut out, "simd_fp.fpsr", self.vcpu.simd_fp.fpsr)?;
+
+        write_u64_array(
+            &mut out,
+            "debug.breakpoint_value",
+            &self.vcpu.debug.breakpoint_value,
+        )?;
+        write_u64_array(
+            &mut out,
+            "debug.breakpoint_control",
+            &self.vcpu.debug.breakpoint_control,
+        )?;
+        write_u64_array(
+            &mut out,
+            "debug.watchpoint_value",
+            &self.vcpu.debug.watchpoint_value,
+        )?;
+        write_u64_array(
+            &mut out,
+            "debug.watchpoint_control",
+            &self.vcpu.debug.watchpoint_control,
+        )?;
+        write_u64(&mut out, "debug.mdscr_el1", self.vcpu.debug.mdscr_el1)?;
+        write_bool(
+            &mut out,
+            "debug.trap_debug_exceptions",
+            self.vcpu.debug.trap_debug_exceptions,
+        )?;
+        write_bool(
+            &mut out,
+            "debug.trap_debug_reg_accesses",
+            self.vcpu.debug.trap_debug_reg_accesses,
+        )?;
+
+        write_u64(
+            &mut out,
+            "vtimer.cntv_ctl_el0",
+            self.vcpu.vtimer.cntv_ctl_el0,
+        )?;
+        write_u64(
+            &mut out,
+            "vtimer.cntv_cval_el0",
+            self.vcpu.vtimer.cntv_cval_el0,
+        )?;
+        write_bool(&mut out, "vtimer.masked", self.vcpu.vtimer.masked)?;
+        write_u64(&mut out, "vtimer.offset", self.vcpu.vtimer.offset)?;
+        write_bool(&mut out, "interrupts.irq", self.vcpu.interrupts.irq)?;
+        write_bool(&mut out, "interrupts.fiq", self.vcpu.interrupts.fiq)?;
+        writeln!(
+            out,
+            "mp_state {}",
+            match self.vcpu.mp_state {
+                vmm_backend::MpState::Runnable => 0,
+                vmm_backend::MpState::Halted => 1,
+            }
+        )?;
+
+        let Some(gic) = &self.gic else {
+            writeln!(out, "gic none")?;
+            return Ok(());
+        };
+        writeln!(out, "gic present")?;
+        writeln!(out, "gic.version {:08x}", gic.version)?;
+        writeln!(out, "gic.impl_spis {:08x}", gic.impl_spis)?;
+        write_u64(&mut out, "gic.timer_hz", gic.timer_hz)?;
+        writeln!(out, "gic.timer_intid {:08x}", gic.timer_intid)?;
+        writeln!(out, "gic.gicd_ctlr {:08x}", gic.gicd_ctlr)?;
+        write_u32_array(&mut out, "gic.group", &gic.group)?;
+        write_u32_array(&mut out, "gic.enable", &gic.enable)?;
+        write_u32_array(&mut out, "gic.pending", &gic.pending)?;
+        write_u32_array(&mut out, "gic.active", &gic.active)?;
+        write_u32_array(&mut out, "gic.line_level", &gic.line_level)?;
+        for (index, value) in gic.priority.iter().enumerate() {
+            writeln!(out, "gic.priority.{index} {value:02x}")?;
+        }
+        writeln!(out, "gic.pmr {:02x}", gic.pmr)?;
+        write_bool(&mut out, "gic.igrpen1", gic.igrpen1)?;
+        write_u64(&mut out, "gic.cntv_ctl", gic.cntv_ctl)?;
+        write_u64(&mut out, "gic.cntv_cval", gic.cntv_cval)?;
+        write_bool(&mut out, "gic.timer_fired", gic.timer_fired)
+    }
+}
+
+fn write_u64(out: &mut impl Write, name: &str, value: u64) -> io::Result<()> {
+    writeln!(out, "{name} {value:016x}")
+}
+
+fn write_bool(out: &mut impl Write, name: &str, value: bool) -> io::Result<()> {
+    writeln!(out, "{name} {}", u8::from(value))
+}
+
+fn write_u64_array(out: &mut impl Write, name: &str, values: &[u64]) -> io::Result<()> {
+    for (index, value) in values.iter().enumerate() {
+        writeln!(out, "{name}.{index} {value:016x}")?;
+    }
+    Ok(())
+}
+
+fn write_u32_array(out: &mut impl Write, name: &str, values: &[u32]) -> io::Result<()> {
+    for (index, value) in values.iter().enumerate() {
+        writeln!(out, "{name}.{index} {value:08x}")?;
+    }
+    Ok(())
+}
+
+fn write_hex(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+    for byte in bytes {
+        write!(out, "{byte:02x}")?;
+    }
+    Ok(())
 }
 
 /// First field-level disagreement from the independent ARM comparator.
@@ -251,7 +413,12 @@ pub fn compare_arm64_architecture(
     scalar!("interrupts.irq", a.interrupts.irq, b.interrupts.irq);
     scalar!("interrupts.fiq", a.interrupts.fiq, b.interrupts.fiq);
     scalar!("mp_state", a.mp_state, b.mp_state);
-    scalar!("vcpu.gic", a.gic.is_some(), b.gic.is_some());
+    if a.gic.is_some() || b.gic.is_some() {
+        return Err(Arm64ArchitectureDifference::Vcpu {
+            field: "vcpu.gic",
+            index: None,
+        });
+    }
 
     match (&expected.gic, &actual.gic) {
         (None, None) => Ok(()),
@@ -521,8 +688,14 @@ mod comparator_tests {
             vcpu: vmm_backend::Arm64VcpuState::default(),
             gic: Some(board::new_gic().snapshot()),
         };
+        let mut expected_text = Vec::new();
+        expected.write_text(&mut expected_text).unwrap();
+        assert!(expected_text.starts_with(b"format consonance.arm64-architecture.v1\n"));
         let mut planted = expected.clone();
         planted.vcpu.core.x[7] = 1;
+        let mut planted_text = Vec::new();
+        planted.write_text(&mut planted_text).unwrap();
+        assert_ne!(expected_text, planted_text);
         assert_eq!(
             compare_arm64_architecture(&expected, &planted),
             Err(Arm64ArchitectureDifference::Vcpu {
@@ -531,5 +704,31 @@ mod comparator_tests {
             })
         );
         assert_eq!(compare_arm64_architecture(&expected, &expected), Ok(()));
+        let mut repeated_text = Vec::new();
+        expected.write_text(&mut repeated_text).unwrap();
+        assert_eq!(expected_text, repeated_text);
+    }
+
+    #[test]
+    fn architectural_capture_rejects_an_embedded_gic_as_noncanonical() {
+        let gic = board::new_gic().snapshot();
+        let embedded = Arm64ArchitecturalState {
+            vcpu: vmm_backend::Arm64VcpuState {
+                gic: Some(records::gic_to_backend(&gic)),
+                ..Default::default()
+            },
+            gic: Some(gic),
+        };
+        assert_eq!(
+            compare_arm64_architecture(&embedded, &embedded),
+            Err(Arm64ArchitectureDifference::Vcpu {
+                field: "vcpu.gic",
+                index: None,
+            })
+        );
+        assert_eq!(
+            embedded.write_text(Vec::new()).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

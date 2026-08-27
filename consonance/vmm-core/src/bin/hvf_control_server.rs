@@ -233,7 +233,17 @@ fn main() -> std::process::ExitCode {
                     return std::process::ExitCode::FAILURE;
                 }
             };
-            if let Err(error) = std::fs::write(&path, format!("{state:#?}\n")) {
+            let file = match std::fs::File::create(&path) {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!(
+                        "HVF session {session} cannot create {}: {error}",
+                        path.display()
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            if let Err(error) = state.write_text(std::io::BufWriter::new(file)) {
                 eprintln!(
                     "HVF session {session} cannot write {}: {error}",
                     path.display()

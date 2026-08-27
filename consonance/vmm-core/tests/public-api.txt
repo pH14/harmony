@@ -602,6 +602,8 @@ pub vmm_core::vendor::arm64::Arm64ArchitectureDifference::Vcpu::index: core::opt
 pub struct vmm_core::vendor::arm64::Arm64ArchitecturalState
 pub vmm_core::vendor::arm64::Arm64ArchitecturalState::gic: core::option::Option<gicv3::state::GicState>
 pub vmm_core::vendor::arm64::Arm64ArchitecturalState::vcpu: vmm_backend::arch::arm64::state::Arm64VcpuState
+impl vmm_core::vendor::arm64::Arm64ArchitecturalState
+pub fn vmm_core::vendor::arm64::Arm64ArchitecturalState::write_text(&self, impl std::io::Write) -> std::io::error::Result<()>
 pub struct vmm_core::vendor::arm64::Arm64Devices
 pub struct vmm_core::vendor::arm64::GicArchitectureDifference
 pub vmm_core::vendor::arm64::GicArchitectureDifference::field: &'static str
