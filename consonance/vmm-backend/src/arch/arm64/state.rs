@@ -14,24 +14,27 @@
 
 use crate::types::MpState;
 
-/// PSTATE.TCO (Tag Check Override).
+/// PSTATE fields whose architectural features are absent from Harmony's
+/// portable identity.
 ///
-/// Harmony's portable identity advertises `ID_AA64PFR1_EL1.MTE=0` and the
-/// vCPU feature bitmap does not opt into MTE. TCO is therefore outside the
-/// guest's architectural state contract. Some KVM hosts still expose the
-/// physical CPU's exception-entry value in `KVM_GET_ONE_REG(PSTATE)`, while
-/// HVF reports zero. Strip that substrate residue at the backend boundary.
+/// `ID_AA64PFR1_EL1` is zero, so both FEAT_MTE (`TCO`, bit 25) and FEAT_BTI
+/// (`BTYPE`, bits 11:10) are outside the guest's architectural state contract.
+/// Some KVM hosts still expose the physical CPU's exception-entry values in
+/// `KVM_GET_ONE_REG(PSTATE)`/`SPSR_EL1`, while HVF reports zero. Strip that
+/// substrate residue at the backend boundary.
 const PSTATE_TCO: u64 = 1 << 25;
+const PSTATE_BTYPE: u64 = 0b11 << 10;
+const PSTATE_UNSUPPORTED: u64 = PSTATE_TCO | PSTATE_BTYPE;
 
 /// Canonicalize core state whose feature is absent from the portable identity.
 pub(crate) fn canonicalize_core_regs(core: &mut Arm64CoreRegs) {
-    core.pstate &= !PSTATE_TCO;
-    core.spsr_el1 &= !PSTATE_TCO;
+    core.pstate &= !PSTATE_UNSUPPORTED;
+    core.spsr_el1 &= !PSTATE_UNSUPPORTED;
 }
 
 /// Whether a decoded snapshot contains non-canonical, unsupported core bits.
 pub(crate) fn has_noncanonical_core_regs(core: &Arm64CoreRegs) -> bool {
-    (core.pstate | core.spsr_el1) & PSTATE_TCO != 0
+    (core.pstate | core.spsr_el1) & PSTATE_UNSUPPORTED != 0
 }
 
 /// Full guest-visible arm64 vCPU state for snapshot/restore (skeleton subset;
@@ -249,15 +252,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn absent_mte_makes_tco_a_canonical_zero() {
+    fn absent_mte_and_bti_make_tco_and_btype_canonical_zero() {
         let canonical = Arm64CoreRegs {
             pstate: 0xc5,
             spsr_el1: 0x6000_0005,
             ..Default::default()
         };
         let mut physical_exception_residue = canonical;
-        physical_exception_residue.pstate |= PSTATE_TCO;
-        physical_exception_residue.spsr_el1 |= PSTATE_TCO;
+        physical_exception_residue.pstate |= PSTATE_TCO | PSTATE_BTYPE;
+        physical_exception_residue.spsr_el1 |= PSTATE_TCO | PSTATE_BTYPE;
 
         // Planted negative: an identity comparison without canonicalization
         // detects the exact host exception-entry residue seen in M5.
@@ -277,7 +280,7 @@ mod tests {
             ..Default::default()
         };
         canonicalize_core_regs(&mut core);
-        assert_eq!(core.pstate, !PSTATE_TCO);
-        assert_eq!(core.spsr_el1, !PSTATE_TCO);
+        assert_eq!(core.pstate, !PSTATE_UNSUPPORTED);
+        assert_eq!(core.spsr_el1, !PSTATE_UNSUPPORTED);
     }
 }

@@ -1874,13 +1874,15 @@ mod tests {
     }
 
     #[test]
-    fn save_strips_and_restore_rejects_host_tco_residue() {
+    fn save_strips_and_restore_rejects_host_pstate_residue() {
         const TCO: u64 = 1 << 25;
+        const BTYPE: u64 = 0b11 << 10;
 
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
-        fake.set_one_reg(core_reg(CORE_PSTATE), 0xc5 | TCO).unwrap();
-        fake.set_one_reg(core_reg(CORE_SPSR_EL1), 0x6000_0005 | TCO)
+        fake.set_one_reg(core_reg(CORE_PSTATE), 0xc5 | TCO | BTYPE)
+            .unwrap();
+        fake.set_one_reg(core_reg(CORE_SPSR_EL1), 0x6000_0005 | TCO | BTYPE)
             .unwrap();
 
         let saved = save_vcpu(&fake).unwrap();
@@ -1888,7 +1890,7 @@ mod tests {
         assert_eq!(saved.core.spsr_el1, 0x6000_0005);
 
         let mut noncanonical = saved;
-        noncanonical.core.pstate |= TCO;
+        noncanonical.core.pstate |= TCO | BTYPE;
         assert!(matches!(
             restore_vcpu(&mut fake, &noncanonical),
             Err(BackendError::InvalidState)

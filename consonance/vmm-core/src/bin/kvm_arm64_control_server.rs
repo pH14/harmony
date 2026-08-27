@@ -10,6 +10,10 @@ fn main() -> std::process::ExitCode {
     const RAM: usize = 128 * 1024 * 1024;
     const BOOTARGS: &str = "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/init nohlt";
 
+    fn hex(hash: [u8; 32]) -> String {
+        hash.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     let mut args = std::env::args_os().skip(1);
     let (Some(image_path), Some(initramfs_path), Some(socket_path)) =
         (args.next(), args.next(), args.next())
@@ -88,6 +92,61 @@ fn main() -> std::process::ExitCode {
         if let Err(error) = server.serve(stream) {
             eprintln!("KVM control session {session} failed: {error}");
             return std::process::ExitCode::FAILURE;
+        }
+        let Some(vmm) = server.vmm() else {
+            eprintln!("KVM control session {session} ended without a live VM");
+            return std::process::ExitCode::FAILURE;
+        };
+        let Some(trace) = vmm.prescriptive_trace() else {
+            eprintln!("KVM control session {session} ended without a prescriptive trace");
+            return std::process::ExitCode::FAILURE;
+        };
+        println!(
+            "KVM_CONTROL_SESSION_STATE session={session} portable_events={} \
+             normalized_digest={} state_hash={}",
+            trace.normalized_log().events.len(),
+            hex(trace.normalized_digest()),
+            hex(vmm.state_hash())
+        );
+        for (label, digest) in vmm.state_components() {
+            println!(
+                "KVM_CONTROL_COMPONENT session={session} label={label} digest={}",
+                hex(digest)
+            );
+        }
+        if let Some(directory) = std::env::var_os("HARMONY_CONTROL_DUMP_DIR") {
+            let directory = std::path::PathBuf::from(directory);
+            if let Err(error) = std::fs::create_dir_all(&directory) {
+                eprintln!(
+                    "KVM control session {session} could not create diagnostic directory {}: {error}",
+                    directory.display()
+                );
+                return std::process::ExitCode::FAILURE;
+            }
+            let ram_path = directory.join(format!("kvm-session-{session}.ram"));
+            if let Err(error) = std::fs::write(&ram_path, vmm.guest_memory()) {
+                eprintln!(
+                    "KVM control session {session} could not write {}: {error}",
+                    ram_path.display()
+                );
+                return std::process::ExitCode::FAILURE;
+            }
+            let vcpu_path = directory.join(format!("kvm-session-{session}.vcpu"));
+            if let Err(error) = std::fs::write(
+                &vcpu_path,
+                format!("{:#?}\n", vmm.inspect_vcpu()).as_bytes(),
+            ) {
+                eprintln!(
+                    "KVM control session {session} could not write {}: {error}",
+                    vcpu_path.display()
+                );
+                return std::process::ExitCode::FAILURE;
+            }
+            println!(
+                "KVM_CONTROL_DUMP session={session} ram={} vcpu={}",
+                ram_path.display(),
+                vcpu_path.display()
+            );
         }
         println!("KVM_CONTROL_SESSION_OK session={session}");
     }

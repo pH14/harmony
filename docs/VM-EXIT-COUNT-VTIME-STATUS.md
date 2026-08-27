@@ -383,6 +383,20 @@ dependency rather than silently weakening the criterion.
     `struct pt_regs` word in retained RAM. Focused fake-KVM tests prove both the
     positive round trip and planted TCO rejection; the whole-image kernel build
     remains independently gated for no MTE, no live counter reads, and no LL/SC.
+47. **PSTATE.BTYPE is canonical zero for the no-BTI guest identity.** The frozen
+    ARM identity advertises `ID_AA64PFR1_EL1=0`, and the admitted game kernel has
+    `CONFIG_ARM64_BTI=n`. The M5 game-state comparator localized the remaining
+    cross-host difference to `SPSR_EL1` bit `0x800` alone. The only RAM
+    differences were two guest exception-frame copies of that exact value, at
+    offsets `0x6ace11` and `0x6acfc9`; there was no independent data
+    divergence. Backend save now clears both BTYPE bits, restore rejects either
+    bit as non-canonical, and Linux clears `PSR_BTYPE_MASK` before publishing
+    `SPSR_EL1` in `struct pt_regs`. The focused fake-KVM negative and native
+    65-test backend suite are green. A fixed-root native kernel publication
+    rejected the planted live-counter and LL/SC probes and found neither class
+    in the real kernel or vDSO. The resulting two-session HVF/KVM game run has
+    byte-identical full RAM, portable vCPU state, state hashes, campaign
+    artifacts, and normalized endpoint traces.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -1281,15 +1295,41 @@ recorded.
   The independently transferred text logs were byte-identical: 38,740 lines,
   5,954,217 bytes, SHA-256
   `4b4e7a2758d4eead327bf999ef8324e26fe672429fac2c4b5ae7df396c9a27db`.
-- **FAIL — byte-attested NES campaign normalized logs and archive hashes:** the
-  additive KVM control composition now builds under native strict Clippy and a
-  CPU-0-pinned real-ROM smoke completed both control sessions with clean stderr.
-  Its one-job archive SHA-256 exactly matched the attested HVF run at
-  `384d30293fdbc766235e4b9a77ac3241ce2679d144cccb79f99a82cc2e4df6b2`.
-  This is not yet a pass: the job's whole-machine result hash differed across
-  substrates, so the stream and checkpoint bytes differed even after accounting
-  for the intentionally different host label. Component localization and the
-  complete campaign normalized-log comparison remain required.
+- **PASS — byte-attested NES campaign artifacts and endpoint state:** both hosts
+  consumed the same 3,209,224-byte game kernel
+  (`8cd386f8fcc3a6010f47b39c0a6aae50dbacdde2d1e36529a6dc926c618ea116`),
+  637,541-byte initramfs
+  (`887abba880be0af63807c3219d4f4300aa2736b4a1fdbfd28e7a4b30ae4bd239`),
+  and 40,976-byte ROM
+  (`0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea`).
+  The optimized HVF run and CPU-0-pinned KVM run completed both control
+  sessions with empty server and searcher stderr. Session 0 had normalized
+  digest `5cbb8b1342529de3aee5a602183d0be4265b68dfec2e070313dad0b9d55f25c7`
+  and state hash
+  `741e95a2ba98d340f4d022465bffbdc618a3591a092870c8d5d84c37bf9394d8`;
+  session 1 had normalized digest
+  `828a880243aab8bb4bc3e70abe6d5d15d46397de11f3b3ef007ada0433ef77af`
+  and state hash
+  `de72c90958b0213b8f435a48de8bfcc679e58f093f7c206e042cdd1614feed58`.
+  Every state-component digest matched. Direct `cmp` over each 128-MiB RAM
+  image was byte-exact (session SHA-256
+  `c27288a2f30610eae1357d9c91f77d61109ff1946e7ea0c1aa210b912143fba4`
+  and `0a02df734b40d3f57d69530005330dd3349e2028b9a8aae11bd5a675d41462b8`),
+  and the substrate-neutral portion of the exact vCPU dump matched in both
+  sessions. The four replayable campaign artifacts were byte-identical:
+  `archive-live.json` SHA-256
+  `384d30293fdbc766235e4b9a77ac3241ce2679d144cccb79f99a82cc2e4df6b2`,
+  `campaign-report.json`
+  `da32e0eb13bdf78ce28fcf3898bf437f8c631b5d0029300733aeb374a95e6eff`,
+  `stream.jsonl`
+  `5e00fcb0c34919b82ef2ee37275f01d55683f1bbd8d7146e44a56c79f6cba6f4`,
+  and `snapshots-live.bin`
+  `ae8d699c7bdb86180e3232452ee4a83441979be412deae8bffb359acb2f1b783`.
+- **FAIL — full NES campaign normalized log and checkpoint sequence:** the
+  control-server diagnostic currently exposes the final VMM segment for each
+  session. The endpoint segments and every replayable campaign artifact now
+  agree, but M5 still requires one accumulated normalized trace and checkpoint
+  sequence across every restore/replacement inside the campaign session.
 - **FAIL — immediate cross-host restore `state_hash` equality:** not started.
 - **FAIL — both-direction uninterrupted continuation comparison:** not started.
 - **PASS — planted cross-host increment mismatch:** the production normalized
