@@ -213,8 +213,9 @@ pub struct ScheduledInterrupt {
     /// boundary prevents the independent checker from requiring delivery at an
     /// earlier event, before the timer existed.
     pub armed_for_event: u64,
-    /// Exit that canceled/replaced this deadline before post-exit delivery.
-    /// `None` means it remains live until delivered.
+    /// Exit that canceled/replaced this deadline before post-exit delivery, or
+    /// closed one delivery-eligibility epoch while the guest IRQ mask was set.
+    /// `None` means this epoch remains live until delivered.
     pub canceled_at_event: Option<u64>,
     /// Vendor-neutral wire interrupt identity.
     pub interrupt_id: u32,
@@ -446,6 +447,50 @@ impl LivePrescriptiveTrace {
     pub(crate) fn cancel_clockevent(&mut self) -> Result<(), &'static str> {
         let event = self.current_event_index()?;
         self.cancel_clockevent_at(event)
+    }
+
+    /// Close the active delivery-eligibility epoch at this masked exit and
+    /// carry the same deadline into the next event. The immutable schedule
+    /// therefore gives the independent placement checker explicit evidence
+    /// that delivery was not legal at this boundary, without changing the
+    /// frozen normalized-event surface.
+    pub(crate) fn defer_clockevent(&mut self) -> Result<(), &'static str> {
+        // Substrate-private raw exits do not consume a portable event ordinal,
+        // so they cannot create an eligibility epoch in the normalized schedule.
+        if self.pending.is_none() {
+            return Ok(());
+        }
+        let event = self.current_event_index()?;
+        let active = self
+            .active_clockevent_schedule
+            .ok_or("clockevent deferral has no active prescriptive schedule")?;
+        let position = self
+            .schedule
+            .iter()
+            .position(|scheduled| scheduled.schedule_index == active)
+            .ok_or("deferred prescriptive clockevent schedule record is missing")?;
+        let prior = self.schedule[position];
+        if prior.canceled_at_event.is_some() {
+            return Err("active prescriptive clockevent schedule was already canceled");
+        }
+        let armed_for_event = event
+            .checked_add(1)
+            .ok_or("prescriptive clockevent deferral event exhausted")?;
+        let schedule_index = self.next_schedule_index;
+        self.next_schedule_index = self
+            .next_schedule_index
+            .checked_add(1)
+            .ok_or("prescriptive clockevent schedule index exhausted")?;
+        self.schedule[position].canceled_at_event = Some(event);
+        self.schedule.push(ScheduledInterrupt {
+            deadline_vns: prior.deadline_vns,
+            schedule_index,
+            armed_for_event,
+            canceled_at_event: None,
+            interrupt_id: prior.interrupt_id,
+        });
+        self.active_clockevent_schedule = Some(schedule_index);
+        Ok(())
     }
 
     fn cancel_clockevent_at(&mut self, event: u64) -> Result<(), &'static str> {
@@ -891,10 +936,11 @@ pub enum PlacementViolation {
 /// Independently verify the §2.1 delivery contract against one complete log.
 ///
 /// This deliberately does not reuse [`TimerQueue`].  It sorts the immutable
-/// schedule by `(deadline, insertion sequence)` and derives the expected
-/// deliveries from only the log's post-advance V-time values.  Therefore a run
-/// loop that is consistently one exit late cannot make this oracle agree with
-/// itself.
+/// effective schedule by `(deadline, insertion sequence)` and derives the
+/// expected deliveries from only the log's post-advance V-time values. Masked
+/// exits appear as closed schedule epochs, so the checker sees exactly where
+/// delivery was ineligible without reading backend state. Therefore a run loop
+/// that is consistently one exit late cannot make this oracle agree with itself.
 pub fn check_delivery_placement(
     schedule: &[ScheduledInterrupt],
     log: &NormalizedLog,
@@ -1057,6 +1103,77 @@ mod live_trace_tests {
 
         check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
         assert_eq!(trace.normalized.events[1].interrupts.len(), 1);
+    }
+
+    #[test]
+    fn masked_due_epochs_are_explicit_and_late_delivery_still_fails() {
+        let mut trace = LivePrescriptiveTrace::default();
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "program".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                vec![1],
+            )
+            .unwrap();
+        trace.schedule_clockevent(4, 27).unwrap();
+        trace.finish(1, None).unwrap();
+
+        // Deadline reached, but the architectural IRQ mask is set. Production
+        // records this eligibility-epoch boundary before returning without a
+        // delivery.
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "masked".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                vec![2],
+            )
+            .unwrap();
+        trace.defer_clockevent().unwrap();
+        trace.finish(4, None).unwrap();
+
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "unmask-fence".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                vec![3],
+            )
+            .unwrap();
+        trace.deliver_clockevent().unwrap();
+        trace.finish(5, None).unwrap();
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "next".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                vec![4],
+            )
+            .unwrap();
+        trace.finish(6, None).unwrap();
+
+        assert_eq!(trace.schedule.len(), 2);
+        assert_eq!(trace.schedule[0].canceled_at_event, Some(1));
+        assert_eq!(trace.schedule[1].armed_for_event, 2);
+        assert_eq!(trace.schedule[1].deadline_vns, 4);
+        check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
+
+        let mut early = trace.normalized_log().clone();
+        let delivery = early.events[2].interrupts.remove(0);
+        early.events[1].interrupts.push(delivery);
+        assert!(matches!(
+            check_delivery_placement(trace.schedule(), &early),
+            Err(PlacementViolation::WrongDelivery { event_index: 1, .. })
+        ));
+
+        let mut late = trace.normalized_log().clone();
+        let delivery = late.events[2].interrupts.remove(0);
+        late.events[3].interrupts.push(delivery);
+        assert!(matches!(
+            check_delivery_placement(trace.schedule(), &late),
+            Err(PlacementViolation::WrongDelivery { event_index: 2, .. })
+        ));
     }
 
     #[test]

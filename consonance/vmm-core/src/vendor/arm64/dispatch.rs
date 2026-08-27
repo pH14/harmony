@@ -673,6 +673,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // The cooperative guest exits immediately after every IRQ enable/restore,
         // making this PSTATE.I-clear exit the substrate-neutral delivery point.
         if self.backend.save()?.core.pstate & PSTATE_I != 0 {
+            self.trace_arm_clockevent_defer()?;
             return Ok(());
         }
         if self.devices.clockevent.line_asserted {

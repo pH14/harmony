@@ -1068,6 +1068,17 @@ where
             .map_err(|message| VmmError::ContractViolation(message.to_string()))
     }
 
+    /// Record that a due ARM clockevent remained masked at this exit and is
+    /// first eligible again at the next normalized event.
+    pub(crate) fn trace_arm_clockevent_defer(&mut self) -> Result<(), VmmError> {
+        let Some(trace) = self.prescriptive_trace.as_mut() else {
+            return Ok(());
+        };
+        trace
+            .defer_clockevent()
+            .map_err(|message| VmmError::ContractViolation(message.to_string()))
+    }
+
     /// Bind a delivered clockevent to the schedule active at this exit.
     pub(crate) fn trace_arm_clockevent_delivery(&mut self) -> Result<(), VmmError> {
         let Some(trace) = self.prescriptive_trace.as_mut() else {
