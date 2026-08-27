@@ -105,6 +105,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0010-arm64-harmony-irq-unmask-tick.patch" \
     "harmony IRQ-unmask tick"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0011-arm64-harmony-canonical-pstate.patch" \
+    "harmony canonical PSTATE"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
@@ -150,6 +153,7 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
     ARM_ARCH_TIMER_EVTSTREAM ARM_ARCH_TIMER_OOL_WORKAROUND \
     FSL_ERRATUM_A008585 HISILICON_ERRATUM_161010101 \
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
+    ARM64_MTE \
     BPF_SYSCALL BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH \
     PERF_EVENTS HW_PERF_EVENTS
 case "$arm64_profile" in

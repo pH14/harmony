@@ -97,6 +97,13 @@ exit itself:
 
 Every increment is a pure function of (exit class, exit payload). The constants are
 normative contract values, recorded alongside the MSR/sysreg dispositions.
+An exit that exists only because one substrate exposes an otherwise in-kernel
+architectural operation is not an exit class in this table: it remains in that
+backend's raw diagnostic log, consumes no portable event ordinal, and advances
+portable V-time by zero. In particular, HVF's trapped GIC CPU-interface accesses
+and OS debug-lock writes are raw-only because stock KVM services the same guest
+instructions without a userspace exit. A normalized log records guest-visible
+protocol boundaries, not substrate-specific trap mechanics.
 
 `TimerQueue` is unchanged. Delivery: after advancing at an exit, pop every due
 deadline and inject before reentry — the paths the codebase already defines as

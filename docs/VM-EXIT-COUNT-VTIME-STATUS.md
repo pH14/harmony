@@ -74,10 +74,14 @@ dependency rather than silently weakening the criterion.
 12. **HVF traps Linux's two OS debug-lock zero writes.** Live fail-closed boots
     identified canonical sysregs `0x00280406` and `0x00280400`; reconstructing
     and disassembling their architectural encodings identified `OSDLR_EL1` and
-    `OSLAR_EL1`. The contract accepts only Linux's deterministic zero unlock,
-    assigns the explicit architectural-control exit duration, and rejects reads
-    or nonzero writes. Retained debug registers remain the only stateful debug
-    surface.
+    `OSLAR_EL1`. The contract accepts only Linux's deterministic zero unlock and
+    rejects reads or nonzero writes. M1 initially assigned these traps an
+    architectural-control duration; M5's first full cross-host trace proved that
+    stock KVM services the same guest instructions in-kernel. They are therefore
+    retained in HVF's raw diagnostic log but consume no normalized ordinal and no
+    portable V-time. A planted classification negative rejects leaking either
+    trap into the portable log. Retained debug registers remain the only stateful
+    debug surface.
 13. **The minimal init reports through `/dev/kmsg`.** This board retains PL011
     as the early boot console and intentionally has no registered ttyAMA console,
     so PID 1 inherits closed standard descriptors. The owned freestanding init

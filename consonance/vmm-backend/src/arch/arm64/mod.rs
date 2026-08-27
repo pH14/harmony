@@ -21,6 +21,7 @@ pub use state::{
     Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState,
     Arm64VtimerState,
 };
+pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;

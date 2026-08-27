@@ -13,6 +13,7 @@ use std::ptr::{self, NonNull};
 
 use crate::arch::arm64::{
     Arm64, Arm64Caps, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState, GicIntId,
+    canonicalize_core_regs, has_noncanonical_core_regs,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -756,6 +757,7 @@ impl Backend for HvfBackend {
         state.core.sp_el1 = self.sysreg(HV_SYS_REG_SP_EL1)?;
         state.core.elr_el1 = self.sysreg(HV_SYS_REG_ELR_EL1)?;
         state.core.spsr_el1 = self.sysreg(HV_SYS_REG_SPSR_EL1)?;
+        canonicalize_core_regs(&mut state.core);
         state.simd_fp.fpcr = self.reg(HV_REG_FPCR)?;
         state.simd_fp.fpsr = self.reg(HV_REG_FPSR)?;
         for (reg, q) in state.simd_fp.q.iter_mut().enumerate() {
@@ -833,7 +835,8 @@ impl Backend for HvfBackend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
-        if state.mp_state != MpState::Runnable
+        if has_noncanonical_core_regs(&state.core)
+            || state.mp_state != MpState::Runnable
             || self.pending != Pending::None
             || !state.vtimer.masked
             || state.vtimer.offset != 0

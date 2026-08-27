@@ -109,16 +109,12 @@ pub(crate) fn normalize_prescriptive_exit_arm64(
             Some((class, payload))
         }
         Exit::Arch(vmm_backend::Arm64Exit::Sysreg { sysreg, write }) => {
-            let mut payload = sysreg.to_le_bytes().to_vec();
-            match write {
-                Some(value) => {
-                    payload.push(1);
-                    payload.extend_from_slice(&value.to_le_bytes());
-                }
-                None => payload.push(0),
-            }
-            matches!(*sysreg, OSDLR_EL1 | OSLAR_EL1)
-                .then_some((NormalizedEventClass::ArchitecturalControl, payload))
+            let _ = (sysreg, write);
+            // Stock KVM services the ruled GIC CPU-interface and OS debug-lock
+            // accesses without returning to userspace. HVF surfaces them only
+            // because its trap surface requires userspace emulation. They are
+            // substrate-private diagnostics, not portable event ordinals.
+            None
         }
         Exit::Common(CommonExit::Idle) => Some((NormalizedEventClass::Idle, Vec::new())),
         Exit::Common(CommonExit::Shutdown) => Some((NormalizedEventClass::Terminal, Vec::new())),
@@ -211,9 +207,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             )));
         }
         if matches!(sysreg, OSDLR_EL1 | OSLAR_EL1) {
-            if self.prescriptive_vtime_enabled() {
-                self.advance_prescriptive_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
-            }
             return match write {
                 Some(0) => {
                     // The deterministic zero write only clears the OS debug
@@ -1336,6 +1329,22 @@ mod tests {
             write: None,
         });
         assert_eq!(normalize_prescriptive_exit_arm64(&cpu_interface), None);
+
+        for sysreg in [OSDLR_EL1, OSLAR_EL1] {
+            let debug_unlock = Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
+                sysreg,
+                write: Some(0),
+            });
+            assert_eq!(normalize_prescriptive_exit_arm64(&debug_unlock), None);
+
+            // Planted negative: treating an HVF-only trap as a portable event
+            // would consume an ordinal and diverge from stock KVM.
+            let leaked = Some((
+                NormalizedEventClass::ArchitecturalControl,
+                sysreg.to_le_bytes().to_vec(),
+            ));
+            assert_ne!(normalize_prescriptive_exit_arm64(&debug_unlock), leaked);
+        }
 
         let serial = Exit::Common(CommonExit::Mmio {
             gpa: Gpa(PL011.0),

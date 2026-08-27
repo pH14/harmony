@@ -23,7 +23,10 @@
 //! of the policy are all `Unsupported`/AA-gated — the skeleton claims no
 //! determinism (`capabilities()` reports every field honestly `false`).
 
-use crate::arch::arm64::{Arm64, Arm64GicState, Arm64VcpuState, GicIntId};
+use crate::arch::arm64::{
+    Arm64, Arm64GicState, Arm64VcpuState, GicIntId, canonicalize_core_regs,
+    has_noncanonical_core_regs,
+};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
@@ -760,6 +763,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     s.core.sp_el1 = k.get_one_reg(core_reg(CORE_SP_EL1))?;
     s.core.elr_el1 = k.get_one_reg(core_reg(CORE_ELR_EL1))?;
     s.core.spsr_el1 = k.get_one_reg(core_reg(CORE_SPSR_EL1))?;
+    canonicalize_core_regs(&mut s.core);
     for &(id, sel) in SYSREGS {
         *sys_field(&mut s.sysregs, sel) = k.get_one_reg(id)?;
     }
@@ -792,7 +796,8 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
 
 /// Restore the full skeleton vCPU state over the reg-ID table.
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
-    if s.debug.trap_debug_exceptions
+    if has_noncanonical_core_regs(&s.core)
+        || s.debug.trap_debug_exceptions
         || s.debug.trap_debug_reg_accesses
         || !s.vtimer.masked
         || s.vtimer.offset != 0
@@ -1866,6 +1871,28 @@ mod tests {
 
         b.restore(&s).unwrap();
         assert_eq!(b.save().unwrap(), s);
+    }
+
+    #[test]
+    fn save_strips_and_restore_rejects_host_tco_residue() {
+        const TCO: u64 = 1 << 25;
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_one_reg(core_reg(CORE_PSTATE), 0xc5 | TCO).unwrap();
+        fake.set_one_reg(core_reg(CORE_SPSR_EL1), 0x6000_0005 | TCO)
+            .unwrap();
+
+        let saved = save_vcpu(&fake).unwrap();
+        assert_eq!(saved.core.pstate, 0xc5);
+        assert_eq!(saved.core.spsr_el1, 0x6000_0005);
+
+        let mut noncanonical = saved;
+        noncanonical.core.pstate |= TCO;
+        assert!(matches!(
+            restore_vcpu(&mut fake, &noncanonical),
+            Err(BackendError::InvalidState)
+        ));
     }
 
     /// The MMIO read/completion round-trip: a load stays pending until

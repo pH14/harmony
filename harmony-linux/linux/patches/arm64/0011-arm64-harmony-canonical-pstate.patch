@@ -1,0 +1,34 @@
+arm64: canonicalize unsupported TCO in exception frames
+
+The Harmony ARM identity advertises ID_AA64PFR1_EL1.MTE=0 and the guest
+kernel is built without CONFIG_ARM64_MTE.  PSTATE.TCO is therefore outside
+the guest contract.  A physical MTE-capable KVM CPU nevertheless sets TCO on
+exception entry, while the HVF substrate leaves it clear.  A later nested
+exception copied that substrate bit into struct pt_regs: the otherwise
+identical M5 RAM images differed by exactly PSR_TCO_BIT in one saved pstate.
+
+Under the cooperative Harmony clock configuration, clear TCO from SPSR_EL1
+before Linux publishes it in an exception frame.  This is an architectural
+no-op for the admitted no-MTE guest and prevents an unsupported host feature
+from becoming persistent guest RAM or snapshot state.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/arm64/kernel/entry.S
++++ b/arch/arm64/kernel/entry.S
+@@ -281,6 +281,13 @@ alternative_else_nop_endif
+ 	.endif /* \el == 0 */
+ 	mrs	x22, elr_el1
+ 	mrs	x23, spsr_el1
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	/*
++	 * FEAT_MTE is absent from Harmony's guest identity.  Do not retain a
++	 * physical CPU's exception-entry TCO residue in struct pt_regs.
++	 */
++	bic	x23, x23, #PSR_TCO_BIT
++#endif
+ 	stp	lr, x21, [sp, #S_LR]
+ 
+ 	/*

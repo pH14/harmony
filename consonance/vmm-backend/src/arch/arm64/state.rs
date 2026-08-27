@@ -14,6 +14,26 @@
 
 use crate::types::MpState;
 
+/// PSTATE.TCO (Tag Check Override).
+///
+/// Harmony's portable identity advertises `ID_AA64PFR1_EL1.MTE=0` and the
+/// vCPU feature bitmap does not opt into MTE. TCO is therefore outside the
+/// guest's architectural state contract. Some KVM hosts still expose the
+/// physical CPU's exception-entry value in `KVM_GET_ONE_REG(PSTATE)`, while
+/// HVF reports zero. Strip that substrate residue at the backend boundary.
+const PSTATE_TCO: u64 = 1 << 25;
+
+/// Canonicalize core state whose feature is absent from the portable identity.
+pub(crate) fn canonicalize_core_regs(core: &mut Arm64CoreRegs) {
+    core.pstate &= !PSTATE_TCO;
+    core.spsr_el1 &= !PSTATE_TCO;
+}
+
+/// Whether a decoded snapshot contains non-canonical, unsupported core bits.
+pub(crate) fn has_noncanonical_core_regs(core: &Arm64CoreRegs) -> bool {
+    (core.pstate | core.spsr_el1) & PSTATE_TCO != 0
+}
+
 /// Full guest-visible arm64 vCPU state for snapshot/restore (skeleton subset;
 /// full sysreg set `TODO(AA-6)`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -222,4 +242,42 @@ pub struct Arm64InterruptState {
     pub irq: bool,
     /// Pending FIQ level.
     pub fiq: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_mte_makes_tco_a_canonical_zero() {
+        let canonical = Arm64CoreRegs {
+            pstate: 0xc5,
+            spsr_el1: 0x6000_0005,
+            ..Default::default()
+        };
+        let mut physical_exception_residue = canonical;
+        physical_exception_residue.pstate |= PSTATE_TCO;
+        physical_exception_residue.spsr_el1 |= PSTATE_TCO;
+
+        // Planted negative: an identity comparison without canonicalization
+        // detects the exact host exception-entry residue seen in M5.
+        assert_ne!(physical_exception_residue, canonical);
+        assert!(has_noncanonical_core_regs(&physical_exception_residue));
+
+        canonicalize_core_regs(&mut physical_exception_residue);
+        assert_eq!(physical_exception_residue, canonical);
+        assert!(!has_noncanonical_core_regs(&physical_exception_residue));
+    }
+
+    #[test]
+    fn canonicalization_preserves_every_supported_pstate_bit() {
+        let mut core = Arm64CoreRegs {
+            pstate: u64::MAX,
+            spsr_el1: u64::MAX,
+            ..Default::default()
+        };
+        canonicalize_core_regs(&mut core);
+        assert_eq!(core.pstate, u64::MAX & !PSTATE_TCO);
+        assert_eq!(core.spsr_el1, u64::MAX & !PSTATE_TCO);
+    }
 }
