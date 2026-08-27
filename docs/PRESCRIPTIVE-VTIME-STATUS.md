@@ -1251,3 +1251,43 @@ on this branch may contain, fetch, or require a NES ROM.
   Rapids), Intel Xeon 6973P-C (Granite Rapids).
 
 X0 is PASS.
+
+## X1 — minimal guest, deterministic on the runner
+
+### Build criteria
+
+- `consonance/vmm-core/tests/x86_kvm_prescriptive.rs`: `PrescriptiveRunLoop`
+  over the public stock `KvmBackend`. The real-mode guest's doorbell `OUT`
+  values carry the prescribed durations `[3, 4, 5, 6, 7]`; two deadlines
+  (V-time 5 and 15) are scheduled as vector `0x20` and delivered through the
+  guest IVT to a handler that increments an in-guest witness counter; one
+  poweroff-port `OUT` is the terminal event. Classification fails closed on
+  any unmodeled exit.
+- Delivery is recorded decision 4: userspace xAPIC, `KVM_INTERRUPT`,
+  interrupt-window handshake — no new mechanism.
+- Workflow job `x1-minimal-guest`, two replicas per push, reports uploaded
+  as artifacts.
+
+### X1 command evidence
+
+- Run 33060911869 (commit `93e29734`), both replicas 3/3:
+  - `x1_ten_same_seed_runs_produce_one_normalized_log`: ten same-seed runs
+    produce one normalized log — pairwise `compare_normalized_logs` equality,
+    equal digests, delivery-placement checker green over every run's log,
+    `X1_GUEST_DELIVERIES=2` (both deadlines landed in-guest through the IVT),
+    deliveries at exactly events 1 and 3, `X1_EVENTS=6`.
+  - Comparator negative on this workload: a one-exit-late delivery is caught
+    at event 1, `LogField::Interrupts`.
+  - Placement negative on this workload: consistently-late twins compare
+    equal but fail `check_delivery_placement` with
+    `WrongDelivery { event_index: 1 }`.
+- Honest surface: `kvm_smoke::capabilities_are_honest` green on all six of
+  the same run's probe replicas.
+- Observation, recorded as X3 input: the two X1 replicas drew different
+  parts — AMD EPYC 7763 (Milan) and AMD EPYC 9V74 (Genoa) — and produced the
+  same digest `33f24b4411ea60ffb753b183859e9263559092802a20710f36e067cebeba1cb7`,
+  `state_hash` values included. Cross-host identity held across models within
+  one vendor before any §2.4 disposition work; the Intel/AMD pair remains
+  X3's claim.
+
+X1 is PASS.
