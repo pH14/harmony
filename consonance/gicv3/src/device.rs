@@ -58,12 +58,19 @@ const GICD_CTLR_ENABLE_GRP1: u32 = 1 << 1;
 /// `GICD_CTLR.ARE` — affinity routing enable. The model *is* an ARE=1 GICv3;
 /// the bit reads as one and writes to it are dropped.
 const GICD_CTLR_ARE: u32 = 1 << 4;
+/// `GICD_CTLR.DS` — the single-security-state view exposed by stock KVM's
+/// in-kernel vGICv3. It is fixed rather than retained mutable state.
+const GICD_CTLR_DS: u32 = 1 << 6;
 /// The writable `GICD_CTLR` bits (the two group enables; everything else is
 /// RO/RES0 here).
 const GICD_CTLR_WRITE_MASK: u32 = 0b11;
 
 /// `GICR_TYPER.Last` (bit 4) — this is the last (only) redistributor.
 const GICR_TYPER_LAST: u32 = 1 << 4;
+/// `GICR_TYPER.DirectLPI` — stock KVM's vGICv3 fixed redistributor surface.
+/// No ITS is composed, so Linux records the capability but cannot configure
+/// or deliver an LPI through this board.
+const GICR_TYPER_DIRECT_LPI: u32 = 1 << 3;
 const GICR_CTLR: u64 = 0x0000;
 const GICR_IIDR: u64 = 0x0004;
 const GICR_TYPER_LO: u64 = 0x0008;
@@ -219,7 +226,7 @@ impl Gicv3 {
 
     fn dist_read(&self, offset: u64) -> u32 {
         match offset {
-            GICD_CTLR => self.gicd_ctlr | GICD_CTLR_ARE,
+            GICD_CTLR => self.gicd_ctlr | GICD_CTLR_ARE | GICD_CTLR_DS,
             GICD_TYPER => self.gicd_typer(),
             GICD_IIDR => 0,
             GICD_PIDR2 => GIC_PIDR2_ARCH_GICV3,
@@ -323,7 +330,7 @@ impl Gicv3 {
             // The RD frame.
             return match offset {
                 GICR_CTLR | GICR_IIDR => 0,
-                GICR_TYPER_LO => GICR_TYPER_LAST,
+                GICR_TYPER_LO => GICR_TYPER_LAST | GICR_TYPER_DIRECT_LPI,
                 GICR_TYPER_HI => 0,
                 GICR_WAKER => 0, // awake: ProcessorSleep=0, ChildrenAsleep=0
                 GICR_PIDR2 => GIC_PIDR2_ARCH_GICV3,
@@ -874,6 +881,26 @@ mod tests {
         g.raise(40).unwrap();
         // Group 0, disabled, PMR 0, forwarding off: nothing deliverable.
         assert_eq!(g.peek_interrupt(), None);
+    }
+
+    #[test]
+    fn fixed_register_surface_matches_the_stock_kvm_vgicv3() {
+        let mut g = gic();
+        // Live M4 measurement: KVM fixes single-security state and affinity
+        // routing on, while retaining only the two group-enable bits.
+        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_CTLR, 0).unwrap(), 0x50);
+        g.mmio_write(GicFrame::Dist, GICD_CTLR, u32::MAX, 0)
+            .unwrap();
+        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_CTLR, 0).unwrap(), 0x53);
+        assert_eq!(g.snapshot().gicd_ctlr, 0x03);
+
+        // KVM's one-redistributor topology publishes Last + DirectLPI. The
+        // latter is inert without an ITS, which this board does not compose.
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, GICR_TYPER_LO, 0).unwrap(),
+            GICR_TYPER_LAST | GICR_TYPER_DIRECT_LPI
+        );
+        assert_eq!(g.mmio_read(GicFrame::Redist, GICR_TYPER_HI, 0).unwrap(), 0);
     }
 
     #[test]

@@ -82,7 +82,9 @@ const PSCI_MIGRATE_INFO_TYPE: u64 = 0x8400_0006;
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const PSCI_FEATURES: u64 = 0x8400_000a;
-const PSCI_VERSION_1_1: u64 = 0x0001_0001;
+const PSCI_VERSION_1_3: u64 = 0x0001_0003;
+const SMCCC_VERSION: u64 = 0x8000_0000;
+const SMCCC_VERSION_1_1: u64 = 0x0001_0001;
 const PSCI_NOT_SUPPORTED: u64 = (-1i64) as u64;
 const PSCI_ALREADY_ON: u64 = (-4i64) as u64;
 const PSCI_NOT_PRESENT: u64 = (-7i64) as u64;
@@ -375,13 +377,18 @@ impl HvfBackend {
 
     fn handle_psci(&self, function: u64) -> Result<Option<Exit<Arm64>>> {
         let result = match function {
-            PSCI_VERSION => PSCI_VERSION_1_1,
+            PSCI_VERSION => PSCI_VERSION_1_3,
+            SMCCC_VERSION => SMCCC_VERSION_1_1,
             PSCI_MIGRATE_INFO_TYPE => 2,
             PSCI_FEATURES => {
                 let queried = self.reg(1)?;
                 if matches!(
                     queried,
-                    PSCI_VERSION | PSCI_SYSTEM_OFF | PSCI_SYSTEM_RESET | PSCI_FEATURES
+                    SMCCC_VERSION
+                        | PSCI_VERSION
+                        | PSCI_SYSTEM_OFF
+                        | PSCI_SYSTEM_RESET
+                        | PSCI_FEATURES
                 ) {
                     0
                 } else {
@@ -429,7 +436,8 @@ impl HvfBackend {
                         exit
                     } else if matches!(
                         function,
-                        PSCI_VERSION
+                        SMCCC_VERSION
+                            | PSCI_VERSION
                             | PSCI_CPU_SUSPEND32
                             | PSCI_CPU_SUSPEND64
                             | PSCI_CPU_OFF

@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 CPU-contract **policy skeleton** (`tasks/112` non-goal 5).
+//! The arm64 CPU-contract policy shared by the HVF and KVM compositions.
 //!
 //! The x86 contract (`docs/cpu-msr-contract.toml`, the `vendor::x86::contract`
-//! module) is the **rigor template, not the content**: the ARM analogue is a
-//! new document — a frozen synthetic `ID_AA64*` model plus a default-deny
-//! trapped-sysreg table (`docs/ARCH-BOUNDARY.md` §B, ARM row) — and writing it
-//! is port work informed by AA-6's enforcement-mechanism truth table. This
-//! module supplies only the *shape*: an installable [`Arm64Policy`] whose row
-//! sets are empty (`TODO(AA-6)`), and a deterministic policy hash so the
-//! snapshot contract-mismatch check works end to end from day one.
+//! module) is the rigor template, not the content. M5 measured both live hosts,
+//! selected a conservative common feature surface, and validated every row
+//! through KVM's config-time writable-ID-register API. Values KVM does not
+//! permit userspace to reduce (ASID/VMID width and EL2-only fields) retain the
+//! KVM value; they are harmless to the EL1 payload and are installed into HVF
+//! as part of the same synthetic identity.
 //!
-//! Default-deny is the **posture**, not the row count: an ID register absent
-//! from the model is unfrozen only in the sense that no ruling exists yet, and
-//! nothing here claims enforcement completeness. The trap *enforcement* is the
-//! AA-3 patched backend's (`TODO(patched-abi)`).
+//! The runtime trap table remains empty because stock KVM has no userspace
+//! sysreg-exit surface; the cooperative-image and audit closures remain the
+//! enforcement posture for those instructions.
 
 use sha2::{Digest, Sha256};
 use vmm_backend::{Arm64Policy, IdRegModel, SysregTrapPolicy};
@@ -52,27 +50,48 @@ pub fn prescriptive_timing() -> PrescriptiveTiming {
     }
 }
 
-/// The installable arm64 policy skeleton: an empty frozen-ID model and an
-/// empty trap table (`TODO(AA-6)`: the contract document's row sets).
+/// Canonical packed system-register encodings and M5 cross-host baseline.
+///
+/// The values were read independently by `hvf_probe` and
+/// `arm64_kvm_id_probe`. The latter also writes and reads back each selected
+/// value before first entry, proving that stock KVM accepts the complete set.
+pub const IDENTITY_BASELINE: [(u32, u64); 13] = [
+    (0xc000, 0x0000_0000_410f_d811), // MIDR_EL1
+    (0xc005, 0x0000_0000_8000_0000), // MPIDR_EL1
+    (0xc020, 0x1101_0000_1111_0011), // ID_AA64PFR0_EL1
+    (0xc021, 0x0000_0000_0000_0000), // ID_AA64PFR1_EL1
+    (0xc024, 0x0000_0000_0000_0000), // ID_AA64ZFR0_EL1
+    (0xc025, 0x0000_0000_0000_0000), // ID_AA64SMFR0_EL1
+    (0xc028, 0x0000_00f0_1030_5006), // ID_AA64DFR0_EL1
+    (0xc029, 0x0000_0000_0000_0000), // ID_AA64DFR1_EL1
+    (0xc030, 0x0221_1001_1021_2120), // ID_AA64ISAR0_EL1
+    (0xc031, 0x0000_0111_0021_1002), // ID_AA64ISAR1_EL1
+    (0xc038, 0x0000_0111_0f10_0022), // ID_AA64MMFR0_EL1
+    (0xc039, 0x0000_0000_1121_2120), // ID_AA64MMFR1_EL1
+    (0xc03a, 0x1201_0111_0000_1011), // ID_AA64MMFR2_EL1
+];
+
+/// The installable arm64 policy: the frozen cross-host identity and the empty
+/// stock-substrate trap table.
 pub fn policy() -> Arm64Policy {
     Arm64Policy {
-        id_regs: IdRegModel::default(),
+        id_regs: IdRegModel {
+            regs: IDENTITY_BASELINE.into_iter().collect(),
+        },
         sysreg_traps: SysregTrapPolicy::default(),
     }
 }
 
 /// SHA-256 over the canonical encoding of the installed policy — the arm64
 /// snapshot's `contract_hash` anchor. Two builds whose policy rows differ
-/// stamp different hashes, so a snapshot taken under one contract skeleton is
+/// stamp different hashes, so a snapshot taken under one contract baseline is
 /// refused by a VMM enforcing another (the same anti-drift role as the x86
-/// `contract_hash`, INTEGRATION.md §4). The domain-separation prefix names the
-/// skeleton explicitly so the hash can never collide with a ratified ARM
-/// contract document's (which will hash its own canonical form, AA-6/port
-/// work).
+/// `contract_hash`, INTEGRATION.md §4). The domain-separation prefix names this
+/// baseline explicitly so it cannot collide with the earlier empty skeleton.
 pub fn contract_hash() -> [u8; 32] {
     let p = policy();
     let mut h = Sha256::new();
-    h.update(b"harmony-arm64-contract-skeleton-v0\0");
+    h.update(b"harmony-arm64-cross-host-baseline-v1\0");
     // Canonical encoding: sorted (BTreeMap/BTreeSet) rows, little-endian
     // fixed-width fields, length-prefixed sections — deterministic (rule #4).
     h.update((p.id_regs.regs.len() as u64).to_le_bytes());
@@ -92,24 +111,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_skeleton_is_empty_and_default_deny_shaped() {
+    fn policy_contains_the_sorted_cross_host_identity_and_empty_trap_table() {
         let p = policy();
-        assert!(p.id_regs.regs.is_empty(), "rows are AA-6's, not guessed");
+        assert_eq!(p.id_regs.regs.len(), IDENTITY_BASELINE.len());
+        assert_eq!(
+            p.id_regs
+                .regs
+                .iter()
+                .map(|(&encoding, &value)| (encoding, value))
+                .collect::<Vec<_>>(),
+            IDENTITY_BASELINE
+        );
         assert!(p.sysreg_traps.trapped.is_empty());
     }
 
     #[test]
     fn contract_hash_is_deterministic_and_row_sensitive() {
         assert_eq!(contract_hash(), contract_hash());
-        // A policy with a row must hash differently than the empty skeleton —
-        // the anti-drift property the snapshot check relies on.
+        // One changed row must hash differently — the anti-drift property the
+        // snapshot check relies on.
         let mut p = policy();
-        p.id_regs.regs.insert(0x0018_0000, 0x1122);
+        p.id_regs.regs.insert(0xc020, 0x1122);
         let mut h = Sha256::new();
-        h.update(b"harmony-arm64-contract-skeleton-v0\0");
-        h.update(1u64.to_le_bytes());
-        h.update(0x0018_0000u32.to_le_bytes());
-        h.update(0x1122u64.to_le_bytes());
+        h.update(b"harmony-arm64-cross-host-baseline-v1\0");
+        h.update((p.id_regs.regs.len() as u64).to_le_bytes());
+        for (encoding, value) in &p.id_regs.regs {
+            h.update(encoding.to_le_bytes());
+            h.update(value.to_le_bytes());
+        }
         h.update(0u64.to_le_bytes());
         let with_row: [u8; 32] = h.finalize().into();
         assert_ne!(contract_hash(), with_row);

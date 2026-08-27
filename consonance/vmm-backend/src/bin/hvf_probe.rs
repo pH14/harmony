@@ -328,6 +328,24 @@ mod arm64 {
     }
 
     fn probe_register_state(vcpu: &Vcpu) -> Result<(), String> {
+        for (name, reg) in [
+            ("MIDR_EL1", 0xc000),
+            ("MPIDR_EL1", 0xc005),
+            ("ID_AA64PFR0_EL1", 0xc020),
+            ("ID_AA64PFR1_EL1", 0xc021),
+            ("ID_AA64ZFR0_EL1", 0xc024),
+            ("ID_AA64SMFR0_EL1", 0xc025),
+            ("ID_AA64DFR0_EL1", 0xc028),
+            ("ID_AA64DFR1_EL1", 0xc029),
+            ("ID_AA64ISAR0_EL1", 0xc030),
+            ("ID_AA64ISAR1_EL1", 0xc031),
+            ("ID_AA64MMFR0_EL1", 0xc038),
+            ("ID_AA64MMFR1_EL1", 0xc039),
+            ("ID_AA64MMFR2_EL1", 0xc03a),
+        ] {
+            println!("identity.{name}: {:#018x}", vcpu.sys(reg)?);
+        }
+
         let mut scalar_count = 0;
         for reg in 0..=HV_REG_CPSR {
             let original = vcpu.reg(reg)?;
