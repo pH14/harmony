@@ -331,3 +331,55 @@ fn x2_same_seed_boots_one_normalized_log() {
         divergences.first()
     );
 }
+
+/// **X2 divergence localizer.** Two same-seed boots compared at terminal by
+/// the labeled state-component digests ([`Vmm::state_components`]). The tier-2
+/// measurement shows the exit stream identical with only the checkpoint state
+/// hash divergent (from the first checkpoint on); this names the component(s)
+/// carrying that divergence, so closure work targets the right state class.
+#[test]
+#[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
+fn x2_component_diff_two_boots() {
+    require_kvm();
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs.cpio.gz");
+
+    let mut vmm_a =
+        boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_prescriptive");
+    let run_a = run_boot(&mut vmm_a, true);
+    report_run("boot A", &run_a);
+    let mut vmm_b =
+        boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_prescriptive");
+    let run_b = run_boot(&mut vmm_b, false);
+    report_run("boot B", &run_b);
+    for (tag, run) in [("A", &run_a), ("B", &run_b)] {
+        assert!(
+            run.clean() && run.reached_userspace,
+            "boot {tag} must be a clean userspace boot (terminal {:?}, step_error {:?})",
+            run.reason,
+            run.step_error
+        );
+    }
+
+    let comps_a = vmm_a.state_components();
+    let comps_b = vmm_b.state_components();
+    assert_eq!(
+        comps_a.len(),
+        comps_b.len(),
+        "component breakdowns must have one shape"
+    );
+    let mut diffs = 0u32;
+    for ((label_a, dig_a), (label_b, dig_b)) in comps_a.iter().zip(&comps_b) {
+        assert_eq!(label_a, label_b, "component labels must align");
+        let verdict = if dig_a == dig_b {
+            "MATCH"
+        } else {
+            diffs += 1;
+            "DIFF"
+        };
+        println!("X2_COMPONENT {label_a}={verdict}");
+    }
+    println!("X2_COMPONENT_DIFFS={diffs}");
+}
