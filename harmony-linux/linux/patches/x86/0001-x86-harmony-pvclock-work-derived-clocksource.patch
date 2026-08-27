@@ -45,6 +45,13 @@ harmony-linux/linux/build-kernel.sh; the counter-opcode reachability gate
 reads in its reviewed allowlist.
 
 ---
+Under harmony_pvclock the FPU save paths also pin MXCSR_MASK: FXSAVE and
+the XSAVE variants store the host CPU's mask into every save image they
+write (uninterceptably), so fxsave()/os_xsave() overwrite the field with
+the frozen contract's architectural value and fpu__init_system_mxcsr pins
+mxcsr_feature_mask to match — saved FPU state and its kernel copies carry
+no host identity on any vendor.
+
 --- a/arch/x86/Kconfig
 +++ b/arch/x86/Kconfig
 @@ -831,6 +831,20 @@
@@ -448,12 +455,21 @@ reads in its reviewed allowlist.
 +early_initcall(harmony_pvclock_init);
 --- /dev/null
 +++ b/arch/x86/include/asm/harmony_pvclock.h
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,37 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef _ASM_X86_HARMONY_PVCLOCK_H
 +#define _ASM_X86_HARMONY_PVCLOCK_H
 +
 +#include <linux/types.h>
++
++/*
++ * The frozen CPU contract's pinned MXCSR_MASK (the architectural default,
++ * no vendor bits). FXSAVE and the XSAVE variants store the host's real mask
++ * into every save image they write, so harmony save paths overwrite the
++ * field with this value to keep saved FPU state host-neutral; the restore
++ * instructions ignore the field.
++ */
++#define HARMONY_MXCSR_MASK_PINNED 0x0000ffff
 +
 +/*
 + * The harmony determinism guest's time-ownership interface, consumed by the
@@ -590,3 +606,69 @@ reads in its reviewed allowlist.
  	jent_testing_init();
  
  	tfm = crypto_alloc_shash(JENT_CONDITIONING_HASH, 0, 0);
+--- a/arch/x86/kernel/fpu/init.c
++++ b/arch/x86/kernel/fpu/init.c
+@@ -3,6 +3,7 @@
+  * x86 FPU boot time init code:
+  */
+ #include <asm/fpu/api.h>
++#include <asm/harmony_pvclock.h>
+ #include <asm/tlbflush.h>
+ #include <asm/setup.h>
+ 
+@@ -120,6 +121,13 @@
+ 		if (mask == 0)
+ 			mask = 0x0000ffbf;
+ 	}
++	/*
++	 * The mask is a host CPU constant, so it must not shape guest state
++	 * under harmony_pvclock: pin it so vendor-specific bits (AMD's
++	 * misaligned-SSE bit 17) read as unsupported everywhere.
++	 */
++	if (harmony_pvclock_requested())
++		mask = HARMONY_MXCSR_MASK_PINNED;
+ 	mxcsr_feature_mask &= mask;
+ }
+ 
+--- a/arch/x86/kernel/fpu/legacy.h
++++ b/arch/x86/kernel/fpu/legacy.h
+@@ -3,6 +3,7 @@
+ #define __X86_KERNEL_FPU_LEGACY_H
+ 
+ #include <asm/fpu/types.h>
++#include <asm/harmony_pvclock.h>
+ 
+ extern unsigned int mxcsr_feature_mask;
+ 
+@@ -106,6 +107,10 @@
+ 		asm volatile( "fxsave %[fx]" : [fx] "=m" (*fx));
+ 	else
+ 		asm volatile("fxsaveq %[fx]" : [fx] "=m" (*fx));
++
++	/* See HARMONY_MXCSR_MASK_PINNED: keep the image host-neutral. */
++	if (harmony_pvclock_requested())
++		fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
+ }
+ 
+ #endif
+--- a/arch/x86/kernel/fpu/xstate.h
++++ b/arch/x86/kernel/fpu/xstate.h
+@@ -6,6 +6,7 @@
+ #include <asm/fpu/xstate.h>
+ #include <asm/fpu/xcr.h>
+ #include <asm/msr.h>
++#include <asm/harmony_pvclock.h>
+ 
+ #ifdef CONFIG_X86_64
+ DECLARE_PER_CPU(u64, xfd_state);
+@@ -227,6 +228,10 @@
+ 
+ 	/* We should never fault when copying to a kernel buffer: */
+ 	WARN_ON_FPU(err);
++
++	/* See HARMONY_MXCSR_MASK_PINNED: keep the image host-neutral. */
++	if (harmony_pvclock_requested())
++		fpstate->regs.xsave.i387.mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
+ }
+ 
+ /*

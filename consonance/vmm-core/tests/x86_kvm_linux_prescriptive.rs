@@ -297,6 +297,15 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
             writeln!(out, "XSAVE_HDR {bv:#x} {comp:#x} MXCSR_MASK {mask:#x}")
                 .expect("write to string");
         }
+        // Legacy area plus header as hex rows, so a cross-host diff names the
+        // exact differing image bytes.
+        for (row, bytes) in vcpu.xsave[..576.min(vcpu.xsave.len())]
+            .chunks(64)
+            .enumerate()
+        {
+            let hex_row: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            writeln!(out, "XSAVEHEX {:#05x} {hex_row}", row * 64).expect("write to string");
+        }
         for (name, seg) in [
             ("cs", &vcpu.sregs.cs),
             ("ds", &vcpu.sregs.ds),

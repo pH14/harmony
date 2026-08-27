@@ -1465,6 +1465,25 @@ on this branch may contain, fetch, or require a NES ROM.
    smoke dump now inlines those pages' bytes (`X2_PAGE_HEX`), so the
    next both-vendor pair names exact offsets and values.
 
+24. **The guest pins `MXCSR_MASK` in every kernel FPU save.** The
+   both-vendor byte dump (run 33103666520: 9V74 ×3, 8573C) resolves the
+   RAM component: all 97 differing spans are the same single byte —
+   `0x02` on AMD, `0x00` on Intel, byte 2 of a little-endian
+   `MXCSR_MASK` word (`0x2FFFF` vs `0xFFFF`). The sites are the kernel's
+   `mxcsr_feature_mask` and `init_fpstate` copies (two words in the data
+   page at `0x2400000`) and one FXSAVE-image word per task struct
+   (objects 0xF00 apart in the flagged slab blocks): `FXSAVE`/`XSAVE`
+   write the host's mask into every save image, and no vendor can
+   intercept them. Patch 0001 gains the pin under `harmony_pvclock`:
+   `fpu__init_system_mxcsr` pins the probed mask, and `fxsave()` /
+   `os_xsave()` overwrite the image field with the contract value after
+   every save (`HARMONY_MXCSR_MASK_PINNED`; restore ignores the field).
+   User-stack signal frames still carry the host mask — no divergence in
+   this workload, issue #201. Same run, still open: the vmm's
+   `xsave-legacy` record differs beyond the decision-22 pinned field;
+   the dump now inlines the image's legacy area and header
+   (`XSAVEHEX`), so the next pair names those bytes.
+
 ## X0 — runner probe
 
 ### Build criteria
