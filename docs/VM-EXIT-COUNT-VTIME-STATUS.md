@@ -1663,11 +1663,10 @@ cross-reference was corrected without changing the criterion.
   `922f75f6` passed all-feature build, strict all-target clippy, all-feature test,
   and format on msr1. The final audit changes are portable tests, frozen API
   snapshots, quality configuration, and Kani-only cfg guards.
-- **FAIL — exact final-commit Linux/aarch64 rerun:** pending the certification
-  commit. This line remains red until that immutable commit is archived to msr1
-  and its native build, strict clippy, tests, and format all exit zero.
+- **PASS — exact final-commit Linux/aarch64 rerun:** the checksum-verified source
+  archive for `3738a441` passed all-feature build, strict all-target clippy, the
+  complete all-feature test suite (1,333 listed tests), and format on msr1 with
+  every command pinned to CPU 0 and every command exiting zero.
 
-**Final plan status: FAIL pending the exact final-commit Linux/aarch64 rerun.**
-Milestones M0 through M6 themselves remain sealed in strict dependency order;
-this red line is the final repository certification step, not permission to
-reopen or skip a milestone.
+**Final plan status: PASS.** Milestones M0 through M6 and the final repository
+certification are sealed in strict dependency order.
