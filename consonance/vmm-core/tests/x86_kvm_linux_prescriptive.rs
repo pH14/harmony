@@ -303,6 +303,7 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
             let hex_row: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
             writeln!(out, "XSAVEHEX {:#05x} {hex_row}", row * 64).expect("write to string");
         }
+        writeln!(out, "REGS {:x?}", vcpu.regs).expect("write to string");
         for (name, seg) in [
             ("cs", &vcpu.sregs.cs),
             ("ds", &vcpu.sregs.ds),

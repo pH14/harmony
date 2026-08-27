@@ -239,11 +239,12 @@ jobs:
       # terminal); a bound of N dumps the state hashed at checkpoint N-1.
       - name: X2 mid-boot state dumps (step-bounded)
         run: |
-          # 0x2c40000 is the page the previous transient lived in (run
-          # 33119105087); its bytes go into each dump to name exact offsets
-          # if the same page is guilty again.
+          # 0x2603000 and 0x34b1000 are the single divergent pages the
+          # 17152/34560 dumps flagged (run 33126959002); their bytes go into
+          # every dump to name exact offsets. The 14336 window diverges in
+          # the GPRs only (the REGS line carries those).
           for bound in 14336 17152 34560; do
-            X2_PAGE_HEX=0x2c40000 \
+            X2_PAGE_HEX=0x2603000,0x34b1000 \
             X2_DUMP_AT_STEPS=$bound X2_LOG_DUMP=$PWD/x2-midboot-$bound.txt timeout -k 10 600 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
               x2_prescriptive_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tail -n 5 | tee -a x2-report.txt
