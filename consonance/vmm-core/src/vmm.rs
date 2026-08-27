@@ -382,6 +382,18 @@ impl VtimeWiring {
         self.clock.vns(0)
     }
 
+    /// The work-axis value a V-time intercept anchors to: the live counter on
+    /// the descriptive path, or zero on the prescriptive path (the whole clock
+    /// lives in `vns_base`; see [`VtimeWiring::advance_prescriptive`]), so a
+    /// prescriptive composition never reads a hardware counter.
+    pub(crate) fn intercept_work(&self) -> Result<u64, crate::work::WorkError> {
+        if self.prescriptive {
+            Ok(0)
+        } else {
+            self.work.work()
+        }
+    }
+
     /// Build the wiring from a clock config, a work source, and an entropy seed.
     ///
     /// **Fails closed on a fractional work→ns ratio** (`ratio_den != 1`):

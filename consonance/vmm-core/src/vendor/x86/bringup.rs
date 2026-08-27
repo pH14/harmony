@@ -444,6 +444,38 @@ pub fn boot_linux_selected(
     Ok(vmm)
 }
 
+/// The Linux composition for **assigned-at-exit (prescriptive) V-time on the
+/// stock backend** (`docs/VM-EXIT-COUNT-VTIME.md`): the stock `KvmBackend` with
+/// [`VtimeWiring::new_prescriptive`](crate::vmm::VtimeWiring::new_prescriptive)
+/// wired, so V-time is a pure function of the serviced exit stream and the
+/// production [`LivePrescriptiveTrace`](crate::prescriptive::LivePrescriptiveTrace)
+/// records every normalized exit.
+///
+/// Composes via [`compose_linux`] **without** the §1.1 `det-cfl-v1` host gate:
+/// that baseline freezes one physical CPU for the *descriptive* determinism
+/// claim (native instruction behavior must match across the fleet), while this
+/// model's claim is defined over the exit stream plus the frozen CPUID/MSR
+/// contract and is exercised on heterogeneous commodity hosts — residual
+/// native-behavior divergence is exactly what its determinism gates measure.
+/// No hardware work counter is opened; the prescriptive wiring holds the work
+/// axis at zero.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn boot_linux_stock_prescriptive(
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    seed: u64,
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
+    let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::KvmBackend::new()?);
+    let mut vmm = compose_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?;
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
+        super::contract_vclock_config(),
+        seed,
+    )?);
+    Ok(vmm)
+}
+
 /// [`boot_linux_selected`]'s `Patched` composition with the task-95 dirty-log
 /// knob explicit — **the one shared body both arms of the tracking-is-inert A/B
 /// gate boot through**, so the gate compares two identically-composed VMs that

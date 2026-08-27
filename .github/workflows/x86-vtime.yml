@@ -151,6 +151,59 @@ jobs:
             harmony-linux/build/initramfs.cpio.gz
           if-no-files-found: error
 
+  # X2: Linux boots to /init under assigned-at-exit V-time on the stock
+  # backend. The smoke tier (one boot) is the gate; the determinism tier
+  # (3 same-seed boots) runs informationally until the smoke tier is stable.
+  # Release build: the trace checkpoints hash the full 256 MiB guest RAM, which
+  # an unoptimized sha2 makes wall-clock-prohibitive. Two replicas so most
+  # pushes sample two hardware draws.
+  x2-linux-prescriptive:
+    needs: guest-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore image cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            harmony-linux/build/bzImage
+            harmony-linux/build/initramfs.cpio.gz
+          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+          fail-on-cache-miss: true
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: X2 smoke (one prescriptive stock boot)
+        run: |
+          grep -m1 "model name" /proc/cpuinfo | tee x2-report.txt
+          cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
+            x2_prescriptive_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee -a x2-report.txt
+      - name: X2 determinism measurement (3 same-seed boots; informational)
+        continue-on-error: true
+        run: |
+          X2_BOOTS=3 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
+            x2_same_seed_boots_one_normalized_log -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee -a x2-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-x2-replica-${{ matrix.replica }}
+          path: x2-report.txt
+          if-no-files-found: error
+
   # Linux compile/lint/test truth for the crates the x86 work touches; the
   # macOS development host cannot check cfg(linux) code.
   check:

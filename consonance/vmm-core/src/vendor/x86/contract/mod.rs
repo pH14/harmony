@@ -210,6 +210,29 @@ pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
 }
 
 // ---------------------------------------------------------------------------
+// Prescriptive (assigned-at-exit) V-time durations.
+// ---------------------------------------------------------------------------
+// The values are the arm64 row set (`vendor::arm64::contract`), carried over
+// unchanged pending an x86-specific ruling; only their assignment structure —
+// one constant per event class, applied exactly once per classified exit — is
+// contractual today.
+
+/// Assigned duration of one interrupt-controller access: the xAPIC MMIO page,
+/// the 8259 PIC data ports, and the ELCR ports.
+pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of one 8250 UART port access.
+pub const SERIAL_EXIT_VNS: u64 = 2_000;
+/// Assigned duration of one access to any other modeled platform device (the
+/// report channel and the accepted legacy ISA/PCI ports).
+pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of a trapped time read (the `emulate-vtime` TSC MSRs).
+pub const TRAPPED_TIME_READ_VNS: u64 = 1;
+/// Assigned duration of a deterministic architectural-control trap that is
+/// neither a device access nor a time read (a non-vtime MSR disposition, a
+/// surfaced CPUID).
+pub const ARCH_CONTROL_EXIT_VNS: u64 = 1_000;
+
+// ---------------------------------------------------------------------------
 // CPUID model (CPU-MSR-CONTRACT §2).
 // ---------------------------------------------------------------------------
 
