@@ -1040,15 +1040,15 @@ this evidence was recorded.
   20,000,000 V-ns. The independent guest-visible pvclock observation agreed on
   both count and maximum. Planted negatives reject a 20,000,001-V-ns gap and a
   one-unit comparator mismatch.
-- **PRE-CERTIFICATION — intrinsic ARM performance report:** the v2 report records
-  boot, PostgreSQL startup, ready-to-workload, workload, shutdown, and
-  kernel-health phases with wall time, exit count, and exit density; it records
-  workload rows/second and independently compares the event-loop count with the
-  normalized trace. Unit positives and planted empty/unordered-phase and
-  exit-count-mismatch negatives pass. Optional x86 diagnostic parsing remains
-  isolated from the issue list and cannot affect status. The replacement live
-  v2 capture from the immutable fixture was in progress when this pre-certified
-  commit was requested.
+- **PASS — intrinsic ARM performance report:** the v2 report records boot,
+  PostgreSQL startup, ready-to-workload, workload, shutdown, and kernel-health
+  phases with wall time, exit count, and integer exit density. The fixed
+  20-row workload took 141,161,759,875 host ns (141 milli-rows/second), while
+  the whole run took 946,149,572,291 host ns across 101,792 exits. The
+  independent normalized trace contains exactly the same 101,792 events.
+  Unit positives and planted empty/unordered-phase and exit-count-mismatch
+  negatives pass. Optional x86 diagnostic parsing is isolated from the issue
+  list; the live report records `NOT_PROVIDED non_blocking=true` and passes.
 - **PASS — fail-loud report capability:** the report includes the full histogram,
   intrinsic ARM phases, terminal source, watchdog, kernel health,
   interrupt-placement counters, and normalized-trace digest. Unit tests prove
@@ -1056,21 +1056,27 @@ this evidence was recorded.
   evidence, exit-count disagreement, and malformed workload output instead of
   producing a vacuous pass.
 
-Superseded v1 bounded report (retained as liveness/gap evidence; its x86-driven
-FAIL status is not a revised-M3 criterion):
+Final clean bounded report:
 
 ```text
-/private/tmp/harmony-m3-live/m3-hvf-91b4f578-ready-cap105000.report
-sha256 ede2fbf3e494fc9d862c95e0130d3415a45f88c27c6ae1e2ddc2e1ee7002c69f
-status FAIL
+/private/tmp/harmony-m3-live/m3-hvf-intrinsic-v2-clean-cap105000.report
+sha256 997f325d00fe8ef44be4bbef431e38812dd2fe281e81d5f9c3ae4fa1b37bf80c
+format consonance.prescriptive-m3-report.v2; status PASS
 terminal_event 101791; terminal_source ARM64_PG_M3_READY
 watchdog PASS; acceptance rows=20 PASS; kernel_health PASS
 clockevents deliveries=12022 placement_status=PASS
 gap_result count=94442 max_vns=10000000 status=PASS
 independent_pvclock gaps=94442 max_vns=10000000 status=PASS
-throughput_arm rows=20 wall_ns=690237112583
-throughput_x86 MISSING; throughput_status FAIL
-sole issue: descriptive-x86 baseline absent (explicit hard-fail mode)
+performance_intrinsic total_wall_ns=946149572291 total_exits=101792 PASS
+phase boot_to_postgres_start: wall_ns=276678465041 exits=21774
+phase postgres_startup:       wall_ns=400870293125 exits=36225
+phase ready_to_workload:      wall_ns=80401705709  exits=12954
+phase workload:               wall_ns=141161759875 exits=23179
+phase postgres_shutdown:      wall_ns=32964387208  exits=5435
+phase kernel_health:          wall_ns=14072961333  exits=2225
+workload_rate rows=20 wall_ns=141161759875 milli_rows_per_second=141
+exit_count_comparator event_loop=101792 normalized_trace=101792 PASS
+optional_x86_diagnostic NOT_PROVIDED non_blocking=true
 ```
 
 The live run also corrected two load-bearing implementation defects rather than
@@ -1082,12 +1088,32 @@ context-switch, and idle-poll seams; the latter was localized by an earlier
 watchdog report at `cpu_idle_poll`. Focused positive and wrong-register/
 direction/absent-IRQ negatives cover the acceptance fix.
 
-**M3 overall: IN PROGRESS (pre-certification commit).** The real-payload
-liveness, correctness, watchdog, kernel-health, interrupt-placement,
-bounded-gap, planted-negative, and independent-gap-comparator claims are green
-from the immutable snapshot. Revised intrinsic-performance unit oracles are
-green and the replacement live v2 capture is running. M3 is not sealed until
-that report passes; M4 has not begun.
+Focused and safety gates on the M3 implementation:
+
+```text
+cargo test -p vmm-core m3_report --all-features
+11 passed (positive acceptance/gap/performance plus all planted negatives)
+cargo test -p vmm-core --test arm64_skeleton --all-features
+21 passed
+cargo test -p vmm-backend pending_irq_is_accepted_only_at_the_guest_iar_read \
+  --all-features
+1 passed
+MIRIFLAGS=-Zmiri-permissive-provenance \
+  cargo +nightly-2026-06-16 miri test -p vmm-backend --all-features
+58 unit + 3 contract + 2 dynamic + 2 exhaustive + 20 run-loop + 1 vCPU-state passed
+cargo nextest run --all-features (pre-push hook)
+1277 passed, 25 skipped
+cargo clippy --all-features --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+cargo fmt --all -- --check
+exit status 0
+```
+
+**M3 overall: PASS.** The immutable real-payload fixture, correctness,
+watchdog, kernel-health, interrupt-placement, phase-separated intrinsic ARM
+performance, bounded-gap, planted-negative, independent pvclock, and independent
+exit-count claims are green. The absent optional x86 diagnostic is explicitly
+non-blocking. M3 is sealed; no M4 work began before this result was recorded.
 
 ## M4 — complete the ARM64 KVM backend on msr1
 
@@ -1117,16 +1143,17 @@ that report passes; M4 has not begun.
 
 ## Repository-wide final gates
 
-- **PASS at M2 — `cargo build --all-features`:** exit status 0.
-- **PASS at M2 — `cargo nextest run --all-features`:** 1265 passed, 25 skipped.
-  The sandboxed first attempt could not open telemetry's local test socket; the
-  unrestricted rerun passed every test.
-- **PASS at M2 — `cargo clippy --all-features --all-targets -- -D warnings`:**
+- **PASS at M3 — `cargo build --all-features`:** exit status 0.
+- **PASS at M3 — `cargo nextest run --all-features`:** 1277 passed, 25 skipped
+  in the pre-push gate.
+- **PASS at M3 — `cargo clippy --all-features --all-targets -- -D warnings`:**
   exit status 0 (the pre-existing invalid-path notices from `clippy.toml` remain
   non-fatal).
-- **PASS — `cargo fmt --all -- --check`:** green at M2.
-- **PASS at M2 — `cargo deny check`:** advisories, bans, licenses, and sources all
+- **PASS at M3 — `cargo fmt --all -- --check`:** exit status 0.
+- **PASS at M3 — `cargo deny check`:** advisories, bans, licenses, and sources all
   green.
+- **PASS at M3 — changed unsafe crate Miri:** the pinned vmm-backend suite passed
+  every platform-neutral unit and integration test under permissive provenance.
 - **PASS at M2 — standalone search workspace:** build, strict clippy, format,
   deny, and 96-test nextest suite are green; the full seed sweep remains a
   CI/nightly concern after this directly load-bearing M2 record.
