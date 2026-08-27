@@ -12,6 +12,7 @@ const LIMIT: u32 = 32 + IMPL_SPIS;
 const SGI_FRAME: u64 = 0x1_0000;
 const IGROUPR: u64 = 0x0080;
 const ISENABLER: u64 = 0x0100;
+const ICENABLER: u64 = 0x0180;
 const IPRIORITYR: u64 = 0x0400;
 const GICD_CTLR: u64 = 0x0000;
 
@@ -65,23 +66,43 @@ fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
     .unwrap();
     g.set_group1_enabled(grp1_enabled);
     g.set_pmr(pmr);
-    for (i, l) in lines.iter().enumerate() {
-        let intid = i as u32;
-        let (w, b) = (intid / 32, intid % 32);
+    // Replace the reset register files word-for-word. The GICv3 reset state
+    // intentionally starts all implemented INTIDs in Group 1 and all SGIs
+    // enabled, so a generated `false` must actively clear that bit rather
+    // than rely on zero initialization.
+    for w in 0..(LIMIT / 32) {
         let (frame, base) = if w == 0 {
             (GicFrame::Redist, SGI_FRAME)
         } else {
             (GicFrame::Dist, 0)
         };
-        if l.group1 {
-            let off = base + IGROUPR + u64::from(w) * 4;
-            let old = g.mmio_read(frame, off, 0).unwrap();
-            g.mmio_write(frame, off, old | (1 << b), 0).unwrap();
+        let first = (w * 32) as usize;
+        let mut group = 0u32;
+        let mut enable = 0u32;
+        for (bit, line) in lines[first..first + 32].iter().enumerate() {
+            if line.group1 {
+                group |= 1 << bit;
+            }
+            if line.enabled {
+                enable |= 1 << bit;
+            }
         }
-        if l.enabled {
-            g.mmio_write(frame, base + ISENABLER + u64::from(w) * 4, 1 << b, 0)
-                .unwrap();
-        }
+        let word_offset = u64::from(w) * 4;
+        g.mmio_write(frame, base + IGROUPR + word_offset, group, 0)
+            .unwrap();
+        g.mmio_write(frame, base + ICENABLER + word_offset, u32::MAX, 0)
+            .unwrap();
+        g.mmio_write(frame, base + ISENABLER + word_offset, enable, 0)
+            .unwrap();
+    }
+    for (i, l) in lines.iter().enumerate() {
+        let intid = i as u32;
+        let w = intid / 32;
+        let (frame, base) = if w == 0 {
+            (GicFrame::Redist, SGI_FRAME)
+        } else {
+            (GicFrame::Dist, 0)
+        };
         let off = base + IPRIORITYR + u64::from(intid & !3);
         let shift = 8 * (intid % 4);
         let old = g.mmio_read(frame, off, 0).unwrap();

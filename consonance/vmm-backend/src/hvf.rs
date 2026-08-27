@@ -313,6 +313,18 @@ impl HvfBackend {
             let _ = unsafe { hv_vm_destroy() };
             return Err(error);
         }
+        // KVM has no portable counterpart to HVF's host-counter offset. Fix
+        // the private substrate state at zero before first entry.
+        // SAFETY: `vcpu` is live and owned by this thread.
+        if let Err(error) = hv("hv_vcpu_set_vtimer_offset", unsafe {
+            hv_vcpu_set_vtimer_offset(vcpu, 0)
+        }) {
+            // SAFETY: constructor cleanup on the owning thread.
+            let _ = unsafe { hv_vcpu_destroy(vcpu) };
+            // SAFETY: the only vCPU is gone.
+            let _ = unsafe { hv_vm_destroy() };
+            return Err(error);
+        }
         Ok(Self {
             vcpu,
             exit,
@@ -781,7 +793,10 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_get_trap_debug_reg_accesses", unsafe {
             hv_vcpu_get_trap_debug_reg_accesses(self.vcpu, &mut state.debug.trap_debug_reg_accesses)
         })?;
-        state.vtimer.cntv_ctl_el0 = self.sysreg(HV_SYS_REG_CNTV_CTL_EL0)?;
+        // ISTATUS is a read-only, host-counter-derived observation and differs
+        // across substrates even while the timer is disabled. Only the two
+        // writable control bits belong in a portable snapshot.
+        state.vtimer.cntv_ctl_el0 = self.sysreg(HV_SYS_REG_CNTV_CTL_EL0)? & 0b11;
         state.vtimer.cntv_cval_el0 = self.sysreg(HV_SYS_REG_CNTV_CVAL_EL0)?;
         // SAFETY: outputs are live and this is the owning thread.
         hv("hv_vcpu_get_vtimer_mask", unsafe {
@@ -791,6 +806,9 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_get_vtimer_offset", unsafe {
             hv_vcpu_get_vtimer_offset(self.vcpu, &mut state.vtimer.offset)
         })?;
+        if !state.vtimer.masked || state.vtimer.offset != 0 {
+            return Err(BackendError::InvalidState);
+        }
         // SAFETY: outputs are live and this is the owning thread.
         hv("hv_vcpu_get_pending_interrupt(IRQ)", unsafe {
             hv_vcpu_get_pending_interrupt(
@@ -812,7 +830,12 @@ impl Backend for HvfBackend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
-        if state.mp_state != MpState::Runnable || self.pending != Pending::None {
+        if state.mp_state != MpState::Runnable
+            || self.pending != Pending::None
+            || !state.vtimer.masked
+            || state.vtimer.offset != 0
+            || state.vtimer.cntv_ctl_el0 & !0b11 != 0
+        {
             return Err(BackendError::InvalidState);
         }
         // The exclusive monitor remains the canonical empty value described in
@@ -876,15 +899,17 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_set_trap_debug_reg_accesses", unsafe {
             hv_vcpu_set_trap_debug_reg_accesses(self.vcpu, state.debug.trap_debug_reg_accesses)
         })?;
-        self.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, state.vtimer.cntv_ctl_el0)?;
         self.set_sysreg(HV_SYS_REG_CNTV_CVAL_EL0, state.vtimer.cntv_cval_el0)?;
+        // Arm only after restoring CVAL; CTL-first can transiently assert the
+        // host virtual-timer output against the old compare value.
+        self.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, state.vtimer.cntv_ctl_el0)?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_vtimer_mask", unsafe {
-            hv_vcpu_set_vtimer_mask(self.vcpu, state.vtimer.masked)
+            hv_vcpu_set_vtimer_mask(self.vcpu, true)
         })?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_vtimer_offset", unsafe {
-            hv_vcpu_set_vtimer_offset(self.vcpu, state.vtimer.offset)
+            hv_vcpu_set_vtimer_offset(self.vcpu, 0)
         })?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_pending_interrupt(IRQ)", unsafe {

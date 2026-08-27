@@ -105,6 +105,10 @@ fn main() -> std::process::ExitCode {
                 );
             }
             eprintln!("KVM_VCPU event={event} state={:?}", vmm.inspect_vcpu());
+            eprintln!(
+                "KVM_GIC event={event} state={:?}",
+                vmm.canonical_arm64_gic_state()
+            );
         }
         let serial = vmm.serial_output();
         if serial.len() > emitted {

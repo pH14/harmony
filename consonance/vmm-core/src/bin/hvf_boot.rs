@@ -208,6 +208,10 @@ fn main() -> std::process::ExitCode {
                 );
             }
             eprintln!("HVF_VCPU event={event} state={:?}", vmm.inspect_vcpu());
+            eprintln!(
+                "HVF_GIC event={event} state={:?}",
+                vmm.canonical_arm64_gic_state()
+            );
         }
         let serial = vmm.serial_output();
         if serial.len() > emitted {

@@ -125,13 +125,28 @@ impl Gicv3 {
         if !(16..SGI_PPI_COUNT).contains(&cfg.timer_intid) {
             return Err(GicError::InvalidState);
         }
+        // Match the stock KVM GICv3 reset state that M4 measured and the
+        // kernel initializes in `kvm_vgic_dist_init` /
+        // `vgic_allocate_private_irqs_locked`: every implemented interrupt is
+        // Group 1, and SGIs 0..15 start enabled. These are architecturally
+        // observable register-file values, so they belong in the canonical
+        // model rather than in a cross-host hash mask.
+        let mut group = [0; BITMAP_WORDS];
+        for word in group
+            .iter_mut()
+            .take((SGI_PPI_COUNT + cfg.impl_spis) as usize / 32)
+        {
+            *word = u32::MAX;
+        }
+        let mut enable = [0; BITMAP_WORDS];
+        enable[0] = u32::from(u16::MAX);
         Ok(Gicv3 {
             impl_spis: cfg.impl_spis,
             timer_hz: cfg.timer_hz,
             timer_intid: cfg.timer_intid,
             gicd_ctlr: 0,
-            group: [0; BITMAP_WORDS],
-            enable: [0; BITMAP_WORDS],
+            group,
+            enable,
             pending: [0; BITMAP_WORDS],
             active: [0; BITMAP_WORDS],
             line_level: [0; BITMAP_WORDS],
@@ -879,8 +894,20 @@ mod tests {
     fn reset_state_delivers_nothing() {
         let mut g = gic();
         g.raise(40).unwrap();
-        // Group 0, disabled, PMR 0, forwarding off: nothing deliverable.
+        // Although KVM's GICv3 reset state places every implemented INTID in
+        // Group 1 and enables SGIs, this SPI is disabled and both forwarding
+        // gates plus PMR remain closed: nothing is deliverable.
         assert_eq!(g.peek_interrupt(), None);
+    }
+
+    #[test]
+    fn reset_register_files_match_the_stock_kvm_vgicv3() {
+        let g = gic();
+        let state = g.snapshot();
+        assert_eq!(state.group[..3], [u32::MAX; 3]);
+        assert!(state.group[3..].iter().all(|&word| word == 0));
+        assert_eq!(state.enable[0], u32::from(u16::MAX));
+        assert!(state.enable[1..].iter().all(|&word| word == 0));
     }
 
     #[test]

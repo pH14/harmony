@@ -484,6 +484,15 @@ const CNTV_CTL_EL0: u64 = sysreg_id(3, 3, 14, 3, 1);
 const CNTV_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 0, 2);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
 
+// The admitted ID-register baseline makes EPAN and ITFSB architecturally
+// unsupported, but stock KVM retains Linux's writes to those SCTLR bits while
+// HVF reads them as RES0. Likewise, KVM retains TCR.AS while this HVF substrate
+// exposes only the common 8-bit-ASID behavior. Strip those substrate residues
+// from the portable boundary; restore refuses a non-canonical snapshot.
+const KVM_SCTLR_NONPORTABLE_BITS: u64 = (1 << 57) | (1 << 37);
+const KVM_TCR_NONPORTABLE_BITS: u64 = 1 << 36;
+const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
+
 const fn dbgbvr(index: u64) -> u64 {
     sysreg_id(2, 0, 0, index, 4)
 }
@@ -748,6 +757,8 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     for &(id, sel) in SYSREGS {
         *sys_field(&mut s.sysregs, sel) = k.get_one_reg(id)?;
     }
+    s.sysregs.sctlr_el1 &= !KVM_SCTLR_NONPORTABLE_BITS;
+    s.sysregs.tcr_el1 &= !KVM_TCR_NONPORTABLE_BITS;
     for (index, q) in s.simd_fp.q.iter_mut().enumerate() {
         *q = k.get_one_reg128(core_reg_sized(
             KVM_REG_SIZE_U128,
@@ -763,8 +774,11 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
         s.debug.watchpoint_control[index as usize] = k.get_one_reg(dbgwcr(index))?;
     }
     s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
-    s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)?;
+    s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)? & CNTV_CTL_WRITABLE_BITS;
     s.vtimer.cntv_cval_el0 = k.get_one_reg(CNTV_CVAL_EL0)?;
+    // KVM quarantines this host-backed timer by routing it to unused PPI20;
+    // the canonical bit records the invariant, not a KVM mask ioctl.
+    s.vtimer.masked = true;
     s.mp_state = k.get_mp_state()?;
     s.gic = Some(save_vgic(k)?);
     Ok(s)
@@ -774,8 +788,11 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
     if s.debug.trap_debug_exceptions
         || s.debug.trap_debug_reg_accesses
-        || s.vtimer.masked
+        || !s.vtimer.masked
         || s.vtimer.offset != 0
+        || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
+        || s.sysregs.sctlr_el1 & KVM_SCTLR_NONPORTABLE_BITS != 0
+        || s.sysregs.tcr_el1 & KVM_TCR_NONPORTABLE_BITS != 0
         || s.interrupts.irq
         || s.interrupts.fiq
     {
@@ -1816,6 +1833,7 @@ mod tests {
         s.debug.mdscr_el1 = 0x8000;
         s.vtimer.cntv_ctl_el0 = 2;
         s.vtimer.cntv_cval_el0 = 0x1234_5678;
+        s.vtimer.masked = true;
         s.mp_state = MpState::Halted;
         s.gic = Some(save_vgic(b.kvm()).unwrap());
 

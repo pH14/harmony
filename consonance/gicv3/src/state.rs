@@ -55,10 +55,11 @@ pub struct GicState {
     /// `GICD_CTLR` (Group-1 forwarding enable in bit 1; ARE modeled always-on).
     pub gicd_ctlr: u32,
     /// Group membership, one bit per INTID (`1` = Group 1, the deliverable
-    /// IRQ group; reset `0` = Group 0, not deliverable — the guest programs
-    /// `IGROUPR` before expecting delivery, as Linux does).
+    /// IRQ group). The single-security-state GICv3 reset has every implemented
+    /// INTID in Group 1, matching stock KVM's architectural register file.
     pub group: [u32; BITMAP_WORDS],
-    /// Enable bits, one per INTID.
+    /// Enable bits, one per INTID. SGIs `0..16` start enabled; all PPIs and
+    /// SPIs start disabled, matching stock KVM's GICv3 reset state.
     pub enable: [u32; BITMAP_WORDS],
     /// Pending bits, one per INTID.
     pub pending: [u32; BITMAP_WORDS],

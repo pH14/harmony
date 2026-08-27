@@ -36,15 +36,16 @@ pub fn boot_entry(entry_gpa: u64, dtb_gpa: u64) -> Arm64VcpuState {
     s
 }
 
-/// Overlay the boot entry registers onto a backend `save()` template, keeping
-/// the template's valid EL1 sysreg shape (which a live `restore` validates).
-/// The arm64 analogue of the x86 `apply_entry`.
+/// Overlay the boot entry registers onto a backend `save()` template. The
+/// substrate-specific valid SCTLR shape is retained, while every other carried
+/// EL1 register is assigned a deterministic reset value instead of preserving
+/// KVM's architecturally-UNKNOWN poison or another host's reset residue.
 pub fn apply_entry(state: &mut Arm64VcpuState, entry: &Arm64VcpuState) {
     state.core = entry.core;
     state.mp_state = entry.mp_state;
-    // The EL1 sysreg file is left as the template's (the guest sets up its own
-    // MMU/vectors from reset; the skeleton carries the reset values the backend
-    // reports).
+    let sctlr_el1 = state.sysregs.sctlr_el1;
+    state.sysregs = entry.sysregs;
+    state.sysregs.sctlr_el1 = sctlr_el1;
 }
 
 #[cfg(test)]
@@ -64,18 +65,21 @@ mod tests {
     }
 
     #[test]
-    fn apply_entry_overlays_core_regs_keeps_template_sysregs() {
+    fn apply_entry_overlays_core_regs_and_canonicalizes_unknown_sysregs() {
         let mut template = Arm64VcpuState::default();
         template.sysregs.sctlr_el1 = 0x30d0_0800; // the backend's reset SCTLR
         template.sysregs.mair_el1 = 0x00ff_0044;
+        template.sysregs.esr_el1 = 0x1de7_ec7e_dbad_c0de;
         let entry = boot_entry(0x4020_0000, 0x4f00_0000);
         apply_entry(&mut template, &entry);
         // Core registers came from the entry state...
         assert_eq!(template.core.pc, 0x4020_0000);
         assert_eq!(template.core.x[0], 0x4f00_0000);
         assert_eq!(template.core.pstate, 0x3c5);
-        // ...but the template's EL1 sysreg shape survived.
+        // ...and only the substrate-valid SCTLR reset shape survives. Every
+        // architecturally-UNKNOWN carried register starts from known zero.
         assert_eq!(template.sysregs.sctlr_el1, 0x30d0_0800);
-        assert_eq!(template.sysregs.mair_el1, 0x00ff_0044);
+        assert_eq!(template.sysregs.mair_el1, 0);
+        assert_eq!(template.sysregs.esr_el1, 0);
     }
 }

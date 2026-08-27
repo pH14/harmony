@@ -27,7 +27,7 @@ pub struct Arm64VcpuState {
     pub simd_fp: Arm64SimdFpState,
     /// Hardware breakpoint/watchpoint and debug trap-control state.
     pub debug: Arm64DebugState,
-    /// EL1 virtual-timer register and framework mask/offset state.
+    /// EL1 host virtual-timer registers and canonical quarantine state.
     pub vtimer: Arm64VtimerState,
     /// Pending IRQ/FIQ levels exposed by the backend.
     pub interrupts: Arm64InterruptState,
@@ -185,18 +185,34 @@ pub struct Arm64DebugState {
     pub trap_debug_reg_accesses: bool,
 }
 
-/// Virtual-timer state exposed by Hypervisor.framework.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// Substrate-neutral state of the host-backed architectural virtual timer.
+///
+/// Harmony's deterministic timer is the userspace exit-count clockevent. The
+/// host timer is therefore quarantined on both substrates: HVF masks its
+/// automatic exit, while KVM routes it to an unused PPI. `masked` records that
+/// shared invariant rather than either substrate's private mechanism.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Arm64VtimerState {
-    /// `CNTV_CTL_EL0`.
+    /// Writable `CNTV_CTL_EL0` bits (`ENABLE | IMASK`; never read-only ISTATUS).
     pub cntv_ctl_el0: u64,
     /// `CNTV_CVAL_EL0`.
     pub cntv_cval_el0: u64,
-    /// Framework automatic-VTimer-exit mask.
+    /// Whether the host-backed timer is quarantined from deterministic PPI27.
     pub masked: bool,
-    /// Framework host-counter offset (retained even though the deterministic
-    /// guest never consumes the resulting direct counter).
+    /// Canonical host-counter offset. The deterministic composition requires
+    /// zero because KVM has no portable counterpart to HVF's private offset.
     pub offset: u64,
+}
+
+impl Default for Arm64VtimerState {
+    fn default() -> Self {
+        Self {
+            cntv_ctl_el0: 0,
+            cntv_cval_el0: 0,
+            masked: true,
+            offset: 0,
+        }
+    }
 }
 
 /// Pending interrupt levels retained by the backend API.
