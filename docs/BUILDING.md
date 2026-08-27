@@ -1,26 +1,27 @@
 # Building & testing
 
-How to build and test each component, and where. Rule of thumb: **everything runs locally on
-a Mac** (Apple Silicon included) except the guest Linux kernel build, which needs a Linux
-environment (a container is fine). Nothing in tasks 01–05 needs `/dev/kvm` or any special
-hardware; the KVM/PMU work lives in vmm-core, later, on the Linux box.
+How to build and test each component, and where. Portable logic runs locally on
+macOS and Linux; the guest Linux kernel needs a Linux build environment. Hardware
+backend claims additionally run on their named native hosts. In particular, the
+ARM64 KVM backend is validated on `msr1`, a Linux/aarch64 CIX P1 host with
+Cortex-A520/A720 cores and LSE.
 
 ### Environment capability matrix
 
-| Work | macOS | Linux container | Linux bare-metal Intel |
-|---|---|---|---|
-| Delegated crates (01, 02, 03, 05) | ✅ | ✅ | ✅ |
-| Guest payloads (04 Part A) | ✅ QEMU TCG via brew | ✅ | ✅ |
-| Guest Linux image (04 Part B) | 🐳 linux/amd64 container only | ✅ | ✅ |
-| vmm-core KVM bring-up | ❌ | ❌ | ✅ needs VMX + `/dev/kvm` |
-| PMU / perf_event precise-count spike | ❌ | ❌ | ✅ needs PMU access (`perf_event_paranoid` or root) |
-| KVM snapshot / memslot / userfaultfd spike | ❌ | ⚠️ userfaultfd-only parts | ✅ |
-| Deterministic Linux integration (Phases 1+) | ❌ | ❌ | ✅ |
+| Work | macOS arm64 | Linux container | Linux/x86_64 bare metal | `msr1` Linux/aarch64 |
+|---|---|---|---|---|
+| Portable Rust crates | ✅ | ✅ | ✅ | ✅ |
+| x86 guest payloads | ✅ QEMU TCG via brew | ✅ | ✅ | ❌ wrong guest ISA |
+| Guest Linux image | 🐳 linux/amd64 container | ✅ native/cross | ✅ | ✅ native |
+| x86 KVM bring-up | ❌ | ❌ | ✅ needs VMX + `/dev/kvm` | ❌ wrong host ISA |
+| ARM64 KVM bring-up and vGIC migration | ❌ | ❌ no hardware | ❌ wrong host ISA | ✅ `/dev/kvm` |
+| PMU / perf_event precise-count work | ❌ | ❌ | ✅ needs PMU access | not used by exit-count mode |
+| Deterministic Linux integration | ❌ | ❌ | ✅ x86 | ✅ arm64 |
 
-Extra needs for the rows that run on a Mac: task 01 wants the `x86_64-unknown-none` target
-(compile-only check); 04 Part A wants QEMU + that target; 02/03/05 want Rust only. Nested
-virtualization is **not** a substitute for the bare-metal column — PMU behavior under
-nesting is exactly what we can't trust.
+Extra needs for the rows that run on a Mac: task 01 wants the
+`x86_64-unknown-none` target (compile-only check); 04 Part A wants QEMU + that
+target; 02/03/05 want Rust only. Nested virtualization is **not** a substitute
+for a hardware-validation column.
 
 ## One-time setup
 
@@ -61,6 +62,35 @@ any delegated crate. Where you need file-backed or mapped memory, use the portab
 `tempfile` + `memmap2`. Don't write `#[cfg(target_os)]` forks of your logic — if you think
 you need one, the design is wrong; ask in the PR instead. (vmm-core will be Linux-only; your
 crate is not vmm-core.)
+
+## Native ARM64 KVM validation
+
+Run the M4 live oracle on `msr1`. The image hashes must match the M1/HVF inputs
+recorded in `docs/VM-EXIT-COUNT-VTIME-STATUS.md`; different bytes make no
+cross-host claim.
+
+```sh
+ssh msr1
+cd /root/harmony-vtime-6kvrz6
+
+sha256sum harmony-linux/build/arm64/Image \
+  harmony-linux/build/arm64/initramfs.cpio.gz
+
+cargo build --release --locked -p vmm-core --bin kvm_arm64_boot
+taskset -c 10 target/release/kvm_arm64_boot \
+  harmony-linux/build/arm64/Image \
+  harmony-linux/build/arm64/initramfs.cpio.gz \
+  20000 /tmp/m4-normalized.log
+
+cargo test -p vmm-backend arm64_kvm --all-features
+cargo clippy -p gicv3 -p vm-state -p vmm-backend -p vmm-core \
+  --all-features --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+The live binary must print `KVM_VGIC_ROUNDTRIP`, `KVM_M1_ORACLE`, and
+`KVM_ARM64_BOOT_READY`. A ten-run claim additionally compares the complete
+normalized log files byte-for-byte; matching summaries alone do not count.
 
 Task 01 has one extra compile-only gate (works on any host, no execution):
 

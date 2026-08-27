@@ -38,7 +38,7 @@ const RUN_OFFSETS: RunOffsets = RunOffsets {
 };
 
 // --- compile-time UAPI pin ---------------------------------------------------
-// `docs/PRESCRIPTIVE-VTIME.md`: verify knowable UAPI surfaces against
+// `docs/VM-EXIT-COUNT-VTIME.md`: verify knowable UAPI surfaces against
 // the pinned kernel, never take a constant on faith. The portable `arm64_kvm`
 // exit-reason and register-class constants MUST equal the pinned kernel's
 // `uapi/linux/kvm.h` (reached here through `kvm-bindings`, generated from those
@@ -355,9 +355,9 @@ impl Arm64Kvm for LiveKvm {
 
     fn set_irq_line(&mut self, id: crate::arch::arm64::GicIntId, level: bool) -> Result<()> {
         let (kind, number) = if id.is_ppi() {
-            (kvm_bindings::KVM_ARM_IRQ_TYPE_PPI, u32::from(id.0))
+            (kvm_bindings::KVM_ARM_IRQ_TYPE_PPI, id.0)
         } else if id.is_spi() {
-            (kvm_bindings::KVM_ARM_IRQ_TYPE_SPI, u32::from(id.0))
+            (kvm_bindings::KVM_ARM_IRQ_TYPE_SPI, id.0)
         } else {
             return Err(BackendError::InvalidState);
         };

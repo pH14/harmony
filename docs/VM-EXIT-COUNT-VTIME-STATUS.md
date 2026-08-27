@@ -1,8 +1,8 @@
-# Prescriptive V-time implementation status
+# VM-exit-count V-time implementation status
 
 Branch: `claude/consonance-virtual-time-6kvrz6`
 
-This is the live evidence ledger for `docs/PRESCRIPTIVE-VTIME.md`. A criterion is
+This is the live evidence ledger for `docs/VM-EXIT-COUNT-VTIME.md`. A criterion is
 `PASS` only when its positive oracle and every applicable anti-vacuity oracle have
 both run. `FAIL` includes work not started. `BLOCKED` names an environmental
 dependency rather than silently weakening the criterion.
@@ -1117,11 +1117,134 @@ non-blocking. M3 is sealed; no M4 work began before this result was recorded.
 
 ## M4 — complete the ARM64 KVM backend on msr1
 
-- **FAIL — KVM/arm64 interrupt-delivery implementation:** not started.
-- **FAIL — M1 boot oracle on the byte-identical image:** not started.
-- **FAIL — GIC save/restore positive, planted negative, and independent
-  comparator:** not started.
-- **FAIL — honest backend capability publication:** not started.
+- **PASS — KVM/arm64 interrupt delivery:** the backend creates a stock in-kernel
+  GICv3 with 96 implemented IRQs, injects Harmony's level-triggered PPI27 through
+  `KVM_IRQ_LINE`, and reports guest acceptance only after the vGIC pending-to-
+  active transition. The host-backed architectural virtual timer is moved to
+  PPI20 before first entry, leaving PPI27 exclusively owned by the deterministic
+  exit-count clockevent. Linux's live boot reports one redistributor, 64 SPIs,
+  and reaches the real PPI27 delivery boundary.
+- **PASS — byte-identical M1 image inputs:** before the final corpus, msr1
+  independently reported the exact M1 hashes:
+
+  ```text
+  Image:              41cea2eb60e4155b31ac70300ff9c15205b1533a7b7ab9fb7642bdb17628a3c7
+  initramfs.cpio.gz:  6194ec4be99b08e68a61f9020fcedd7aae515b00fa63d38a44b9070a23fea053
+  ```
+- **PASS — M1 boot oracle verbatim:** ten final-head, same-seed boots pinned to
+  CPU 10 each reached `HARMONY_AA5_READY`. Each run independently passed the
+  production placement checker and the one-exit-late comparator/placement
+  negatives. All ten complete normalized text logs compared byte-for-byte and
+  had the same file digest:
+
+  ```text
+  runs 01..10, each:
+    events=15378 raw=15378 schedules=2 deliveries=1 checkpoints=61
+    placement=ok late_comparator_event=12621 late_placement_event=12621
+    log_digest=750480b533dba5233670a5f11e0fc33cf3651c0210f354c8b8dfc5bf696aaf80
+    KVM_ARM64_BOOT_READY event=15377
+    state_hash=14618dd2a344da50c9b627496fa3252cc3cb7b091e9ca923e50d065853fadf09
+  normalized-log file sha256:
+    e2e349bec7c857c6194474a9d989839dca820f3802e42c283ed000ebbe8a77a6
+  M4_TEN_RUN_ORACLE_OK normalized_logs=10 watchdogs=0
+  ```
+- **PASS — vGIC/vCPU save and restore positive:** at the live `/init` boundary,
+  the harness captures the exact VM-state and RAM bytes, restores them into the
+  running KVM composition, and requires immediate canonical `state_hash`
+  equality. The vCPU record includes core, EL1 sysregs, SIMD/FP, debug state,
+  virtual timer, MP state, and the canonical in-kernel GIC record. The GIC
+  migration record includes distributor/redistributor group, enable, pending,
+  active, line-level, priority, PMR, and Group-1 CPU-interface state.
+
+  ```text
+  KVM_VGIC_ROUNDTRIP
+    state_hash=14618dd2a344da50c9b627496fa3252cc3cb7b091e9ca923e50d065853fadf09
+    architectural=ok planted_field=priority planted_index=27
+  ```
+- **PASS — planted save/restore negative and genuinely independent comparator:**
+  the live harness flips priority byte 27 in the typed post-restore
+  architectural record. `compare_gic_architecture` rejects and localizes that
+  mutation without reading the snapshot encoding or state hash. Its committed
+  test repeats the mutation against the userspace model. The backend's fake-KVM
+  save/restore test separately round-trips the register and vGIC attribute maps,
+  so codec/hash agreement cannot make the live comparator pass vacuously.
+- **PASS — stable KVM timer migration ABI:** the first live round-trip exposed a
+  virtual-timer-only mismatch. Component digests localized it before the
+  criterion was claimed. Linux's stable arm64 KVM UAPI has historically swapped
+  the one-register IDs for `CNTV_CVAL_EL0` and `CNTVCT_EL0`; using the required
+  UAPI ID removed the live-counter residue. A committed numeric-ID regression
+  test pins the swapped ABI value, and a two-run full-log precheck passed before
+  the ten-run corpus began.
+- **PASS — honest backend capability publication:** the stock backend reports
+  `name=kvm-arm64-vgicv3` and `in_kernel_gic=true`, while keeping
+  `deterministic_rng=false`, `deterministic_cntvct=false`,
+  `enforces_cntv_cval=false`, and `run_until=Unsupported`. The deterministic
+  entropy closure comes from the VMM's seeded stream and the optional firmware
+  service bitmaps being disabled, not a false backend capability.
+
+### M4 command evidence
+
+Focused portable gates on the committed implementation:
+
+```text
+cargo test -p gicv3 --all-features
+16 unit + 3 property tests passed
+
+cargo test -p vmm-backend arm64_kvm --all-features
+14 passed
+
+cargo test -p vmm-core --test arm64_skeleton --all-features
+21 passed
+
+cargo clippy -p vmm-core --all-features --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+
+cargo fmt --all -- --check
+exit status 0
+```
+
+The push gate on commit `71b5b62e` ran the full local fast suite:
+
+```text
+cargo clippy --all-features --all-targets -- -D warnings: exit status 0
+cargo nextest run --all-features: 1280 passed, 25 skipped
+cargo fmt --all -- --check: exit status 0
+```
+
+Native Linux/aarch64 checkpoints on msr1 compiled the live binary and ran the
+following final gates:
+
+```text
+cargo test --release --locked -p vmm-backend arm64_kvm --all-features
+14 passed
+
+cargo clippy --locked -p gicv3 -p vm-state -p vmm-backend -p vmm-core \
+  --all-features --all-targets -- -D warnings
+exit status 0 (pre-existing clippy.toml invalid-path notices only)
+
+cargo fmt --all -- --check
+exit status 0
+```
+
+The changed unsafe crate passed its pinned macOS Miri gate:
+
+```text
+MIRIFLAGS=-Zmiri-permissive-provenance \
+  cargo +nightly-2026-06-16 miri test -p vmm-backend --all-features
+60 library tests, 20 run-loop tests, 1 vCPU-state test, and all remaining
+integration targets passed; no UB reported
+```
+
+The first native strict-Clippy run found two redundant `u32::from` conversions
+in the Linux/aarch64 IRQ-line encoder. They were removed before the final green
+run and before M4 was sealed. The final corpus is retained at
+`/tmp/harmony-m4-pair-71b5b62e` on that host.
+
+**M4 overall: PASS.** The stock in-kernel delivery decision, byte-attested M1
+image, ten-run full-log oracle, independent placement checker, production
+planted negatives, exact save/restore positive, typed independent GIC comparator,
+and honest capabilities are green. No M5 work began before this evidence was
+recorded.
 
 ## M5 — bidirectional HVF↔KVM determinism and snapshot portability
 
@@ -1143,17 +1266,20 @@ non-blocking. M3 is sealed; no M4 work began before this result was recorded.
 
 ## Repository-wide final gates
 
-- **PASS at M3 — `cargo build --all-features`:** exit status 0.
-- **PASS at M3 — `cargo nextest run --all-features`:** 1277 passed, 25 skipped
-  in the pre-push gate.
-- **PASS at M3 — `cargo clippy --all-features --all-targets -- -D warnings`:**
+- **PASS at M4 — `cargo build --all-features`:** exit status 0.
+- **PASS at M4 — `cargo nextest run --all-features`:** 1280 passed, 25 skipped.
+  The first sandboxed invocation was correctly treated as invalid evidence after
+  localhost listener creation returned `Operation not permitted`; the identical
+  suite passed with its normal loopback permission.
+- **PASS at M4 — `cargo clippy --all-features --all-targets -- -D warnings`:**
   exit status 0 (the pre-existing invalid-path notices from `clippy.toml` remain
   non-fatal).
-- **PASS at M3 — `cargo fmt --all -- --check`:** exit status 0.
-- **PASS at M3 — `cargo deny check`:** advisories, bans, licenses, and sources all
+- **PASS at M4 — `cargo fmt --all -- --check`:** exit status 0.
+- **PASS at M4 — `cargo deny check`:** advisories, bans, licenses, and sources all
   green.
-- **PASS at M3 — changed unsafe crate Miri:** the pinned vmm-backend suite passed
-  every platform-neutral unit and integration test under permissive provenance.
+- **PASS at M4 — changed unsafe crate Miri:** the pinned vmm-backend suite passed
+  60 library tests, 20 run-loop tests, the vCPU round-trip, and every remaining
+  integration target under permissive provenance; no UB was reported.
 - **PASS at M2 — standalone search workspace:** build, strict clippy, format,
   deny, and 96-test nextest suite are green; the full seed sweep remains a
   CI/nightly concern after this directly load-bearing M2 record.

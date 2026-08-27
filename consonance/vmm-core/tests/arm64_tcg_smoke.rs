@@ -19,7 +19,7 @@
 //!   says **nothing** about `BR_RETIRED` counts, PMIs, or skid — those require
 //!   independent native evidence.
 //!
-//! Evidence integrity (`docs/PRESCRIPTIVE-VTIME.md`): every constituent RC is
+//! Evidence integrity (`docs/VM-EXIT-COUNT-VTIME.md`): every constituent RC is
 //! propagated — a nonzero assemble/objcopy/QEMU status, a missing marker, or a
 //! non-clean poweroff fails the test. A done-marker is never a success
 //! condition; the success condition is `marker present AND QEMU exited 0` (the

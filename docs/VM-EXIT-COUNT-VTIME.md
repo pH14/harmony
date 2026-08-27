@@ -500,6 +500,20 @@ genuinely independent comparator. Broad workspace checks and exhaustive seed
 sweeps remain CI/nightly work unless a specific result is directly load-bearing
 for the milestone being sealed.
 
+**M4 delivery decision (recorded after native measurement).** M4 uses stock
+KVM's in-kernel GICv3, with 96 implemented IRQs, and drives PPI27 through
+`KVM_IRQ_LINE`. The host-backed architectural virtual timer is quarantined to
+PPI20; Harmony's exit-count clockevent exclusively owns PPI27. Snapshot state is
+read and restored through the KVM vGIC migration device-attribute groups, then
+normalized into the same substrate-neutral architectural GIC record used by the
+userspace model. The record keeps the pending latch and external line level as
+separate fields, as required by the KVM migration ABI. Native measurement on
+msr1 demonstrated a live PPI27 delivery, exact pre/post-restore canonical state
+hash equality, and field-by-field architectural GIC equality. The corresponding
+planted priority corruption was rejected at INTID 27. Stock KVM still cannot
+enforce a deterministic direct counter or trap guest timer-compare programming,
+so those capability bits remain false; `run_until` remains unsupported.
+
 ## 6. In-tree placement
 
 Everything lands in the existing crates: advancement and delivery in

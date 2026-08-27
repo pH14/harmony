@@ -9,7 +9,7 @@
 //! including the ioctl *ordering* (`KVM_ARM_VCPU_INIT` before the first
 //! `KVM_SET_ONE_REG`, policy-before-run, map-before-restore) — is asserted
 //! portably against a recording fake ([`FakeKvm`]) on the Mac and under Miri,
-//! with no `/dev/kvm` (`docs/PRESCRIPTIVE-VTIME.md`: mechanism attestation
+//! with no `/dev/kvm` (`docs/VM-EXIT-COUNT-VTIME.md`: mechanism attestation
 //! without the hardware). The real ioctl path against `/dev/kvm` has
 //! **no local oracle** — it runs natively on msr1 during M4 (`hm-7pb`; the
 //! Mac has no local KVM loop, `hm-8l3` REFUSE).
@@ -1219,7 +1219,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 // ---------------------------------------------------------------------------
 // A recording fake syscall seam — the portable + Miri test double that asserts
 // ioctl *shape* (ordering, the reg-ID set) with no `/dev/kvm`
-// (`docs/PRESCRIPTIVE-VTIME.md`: mechanism attestation). Behind
+// (`docs/VM-EXIT-COUNT-VTIME.md`: mechanism attestation). Behind
 // `cfg(any(test, ...))` so it never ships in a non-test build.
 // ---------------------------------------------------------------------------
 
