@@ -99,6 +99,12 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0008-arm64-harmony-fixed-counter-frequency.patch" \
     "harmony fixed counter frequency"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0009-arm64-harmony-fixed-cache-topology.patch" \
+    "harmony fixed cache topology"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0010-arm64-harmony-irq-unmask-tick.patch" \
+    "harmony IRQ-unmask tick"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 

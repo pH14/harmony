@@ -1,0 +1,63 @@
+arm64: make cache topology a guest contract constant
+
+CLIDR_EL1 is implementation identity.  The validated HVF substrate reports a
+separate L1 instruction/data cache while the validated KVM substrate reports a
+unified L1 through its virtual CPU model.  Linux copied that difference into
+the cacheinfo leaf array: one host allocated three leaves and the other two,
+making otherwise identical M5 guest RAM first diverge during cacheinfo setup.
+
+Under the dedicated HARMONY_ARM_PVCLOCK configuration, publish a fixed guest
+cache contract instead: separate 64-byte-line L1 instruction/data caches and a
+unified L2.  Cache geometry is guest identity, not a measurement of either
+host.  The fixed values affect only the cooperative guest's reported topology;
+cache maintenance instructions retain their architectural semantics.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/arm64/kernel/cacheinfo.c
++++ b/arch/arm64/kernel/cacheinfo.c
+@@ -13,22 +13,42 @@
+ #define MAX_CACHE_LEVEL			7	/* Max 7 level supported */
+ 
+ int cache_line_size(void)
+ {
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	/* Cache geometry is part of the fixed guest identity contract. */
++	return 64;
++#else
+ 	if (coherency_max_size != 0)
+ 		return coherency_max_size;
+ 
+ 	return cache_line_size_of_cpu();
++#endif
+ }
+ EXPORT_SYMBOL_GPL(cache_line_size);
+ 
+ static inline enum cache_type get_cache_type(int level)
+ {
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	/*
++	 * A conservative, substrate-independent two-level guest topology:
++	 * separate L1 instruction/data caches and one unified L2 cache.
++	 */
++	switch (level) {
++	case 1:
++		return CACHE_TYPE_SEPARATE;
++	case 2:
++		return CACHE_TYPE_UNIFIED;
++	default:
++		return CACHE_TYPE_NOCACHE;
++	}
++#else
+ 	u64 clidr;
+ 
+ 	if (level > MAX_CACHE_LEVEL)
+ 		return CACHE_TYPE_NOCACHE;
+ 	clidr = read_sysreg(clidr_el1);
+ 	return CLIDR_CTYPE(clidr, level);
++#endif
+ }
+ 
+ static void ci_leaf_init(struct cacheinfo *this_leaf,

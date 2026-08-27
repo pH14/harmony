@@ -984,9 +984,11 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         Ok(())
     }
 
-    /// Apply the latest one-slot level request before entry. A replacement is
-    /// ordered low-before-high so two identities are never asserted by this
-    /// backend simultaneously.
+    /// Apply the latest one-slot level request. A replacement is ordered
+    /// low-before-high so two identities are never asserted by this backend
+    /// simultaneously. `set_pending_irq` calls this at the serviced-exit
+    /// boundary, making the canonical vGIC line state observable before a
+    /// snapshot; the entry call is an idempotent safety net.
     fn apply_pending_irq(&mut self) -> Result<()> {
         if self.applied_irq == self.pending_irq {
             return Ok(());
@@ -1164,7 +1166,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             return Err(BackendError::InvalidState);
         }
         self.pending_irq = id;
-        Ok(())
+        self.apply_pending_irq()
     }
 
     fn take_accepted_interrupt(&mut self) -> Option<GicIntId> {
@@ -1967,12 +1969,22 @@ mod tests {
         let mut b = Arm64KvmBackend::new(fake);
         b.set_policy(&Arm64Policy::default()).unwrap();
         b.set_pending_irq(Some(GicIntId(27))).unwrap();
+        let asserted = b.save().unwrap().gic.unwrap();
+        assert_ne!(
+            asserted.line_level[0] & (1 << 27),
+            0,
+            "the serviced-exit boundary must expose the asserted architectural line; \
+             a one-entry-late application is the planted negative"
+        );
         assert!(matches!(
             b.run().unwrap(),
             Exit::Common(CommonExit::Mmio { .. })
         ));
         assert_eq!(b.take_accepted_interrupt(), Some(GicIntId(27)));
         assert_eq!(b.take_accepted_interrupt(), None);
+        b.set_pending_irq(None).unwrap();
+        let lowered = b.save().unwrap().gic.unwrap();
+        assert_eq!(lowered.line_level[0] & (1 << 27), 0);
 
         // Planted negative: the same asserted line and exit script cannot pass
         // the oracle when the fake kernel deliberately withholds the

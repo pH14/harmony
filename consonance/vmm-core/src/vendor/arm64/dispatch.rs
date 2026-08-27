@@ -604,7 +604,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                                 "arm64 clockevent DISARM could not lower its PPI: {e}"
                             ))
                         })?;
-                    } else if !self.backend.capabilities().arch.in_kernel_gic {
+                    } else if self.backend.capabilities().arch.in_kernel_gic {
+                        self.backend.set_pending_irq(None)?;
+                    } else {
                         return Err(VmmError::ContractViolation(
                             "arm64 clockevent DISARM with no interrupt controller".to_string(),
                         ));
@@ -620,7 +622,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                             "arm64 clockevent ACK could not lower its PPI: {e}"
                         ))
                     })?;
-                } else if !self.backend.capabilities().arch.in_kernel_gic {
+                } else if self.backend.capabilities().arch.in_kernel_gic {
+                    self.backend.set_pending_irq(None)?;
+                } else {
                     return Err(VmmError::ContractViolation(
                         "arm64 clockevent ACK with no interrupt controller".to_string(),
                     ));
@@ -661,6 +665,14 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         if guest_clock < deadline {
             return Ok(());
         }
+        // A due level may only become architecturally visible at a guest-declared
+        // interruptible boundary. Otherwise HVF and KVM are free to recognize the
+        // already-pending IRQ at different instructions after a later DAIF unmask.
+        // The cooperative guest exits immediately after every IRQ enable/restore,
+        // making this PSTATE.I-clear exit the substrate-neutral delivery point.
+        if self.backend.save()?.core.pstate & PSTATE_I != 0 {
+            return Ok(());
+        }
         if self.devices.clockevent.line_asserted {
             return Err(VmmError::ContractViolation(
                 "arm64 clockevent retained a deadline while its PPI was already asserted"
@@ -673,7 +685,10 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     "arm64 clockevent could not assert its PPI: {e}"
                 ))
             })?;
-        } else if !self.backend.capabilities().arch.in_kernel_gic {
+        } else if self.backend.capabilities().arch.in_kernel_gic {
+            self.backend
+                .set_pending_irq(Some(vmm_backend::GicIntId(PVCLOCK_PPI)))?;
+        } else {
             return Err(VmmError::ContractViolation(
                 "arm64 clockevent became due with no interrupt controller".to_string(),
             ));

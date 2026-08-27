@@ -62,6 +62,22 @@ fn main() -> std::process::ExitCode {
     let component_event = std::env::var("HARMONY_COMPONENT_EVENT")
         .ok()
         .and_then(|value| value.parse::<u64>().ok());
+    let mut portable_component_events = std::env::var("HARMONY_PORTABLE_COMPONENT_EVENTS")
+        .ok()
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .filter_map(|item| item.parse::<u64>().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(event) = std::env::var("HARMONY_PORTABLE_COMPONENT_EVENT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        portable_component_events.insert(event);
+    }
 
     let image = match std::fs::read(&image_path) {
         Ok(bytes) => bytes,
@@ -97,7 +113,16 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
         };
-        if component_event == Some(event) {
+        let current_portable_event = vmm
+            .prescriptive_trace()
+            .and_then(|trace| trace.normalized_log().events.last())
+            .map(|logged| logged.event_index);
+        let portable_component_match = current_portable_event
+            .is_some_and(|portable_event| portable_component_events.remove(&portable_event));
+        if component_event == Some(event) || portable_component_match {
+            eprintln!(
+                "KVM_STATE_BOUNDARY raw_event={event} portable_event={current_portable_event:?}"
+            );
             for (label, digest) in vmm.state_components() {
                 eprintln!(
                     "KVM_STATE_COMPONENT event={event} label={label} digest={}",

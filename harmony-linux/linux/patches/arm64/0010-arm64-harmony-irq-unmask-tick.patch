@@ -1,0 +1,50 @@
+arm64: exit after every deterministic IRQ unmask
+
+A due level interrupt that is asserted while PSTATE.I remains set may be
+recognized at different later instructions by HVF and KVM. The host cannot
+inject it early without violating the guest's critical section, and Linux's
+unmask itself is not otherwise an exit.
+
+Under the cooperative Harmony clock configuration, ring the existing
+prescriptive tick immediately after every local IRQ enable and restore. The
+VMM leaves a due deadline pending while PSTATE.I is set, then asserts it at
+this first explicit unmasked exit. Calling after a restore that remains masked
+is harmless: the VMM observes PSTATE.I and keeps the deadline pending.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/arm64/include/asm/irqflags.h
++++ b/arch/arm64/include/asm/irqflags.h
+@@ -8,6 +8,10 @@
+ #include <asm/ptrace.h>
+ #include <asm/sysreg.h>
+ 
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++void harmony_arm_prescriptive_tick(void);
++#endif
++
+ /*
+  * Aarch64 has flags for masking: Debug, Asynchronous (serror), Interrupts and
+  * FIQ exceptions, in the 'daif' register. We mask and unmask them in 'daif'
+@@ -48,6 +52,9 @@ static inline void arch_local_irq_enable(void)
+ 	} else {
+ 		__daif_local_irq_enable();
+ 	}
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	harmony_arm_prescriptive_tick();
++#endif
+ }
+ 
+ static __always_inline void __daif_local_irq_disable(void)
+@@ -196,6 +203,9 @@ static inline void arch_local_irq_restore(unsigned long flags)
+ 	} else {
+ 		__daif_local_irq_restore(flags);
+ 	}
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	harmony_arm_prescriptive_tick();
++#endif
+ }
+ 
+ #endif /* __ASM_IRQFLAGS_H */

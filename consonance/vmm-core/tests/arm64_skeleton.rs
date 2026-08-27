@@ -867,6 +867,56 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     assert!(format!("{err}").contains("ACK while its PPI is not asserted"));
 }
 
+/// A due clockevent remains only a deadline while IRQs are masked. The first
+/// explicit post-unmask exit is the sole delivery boundary, so HVF and KVM
+/// cannot choose different instructions from an implementation-defined
+/// pending-IRQ recognition window.
+#[test]
+fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::PVCLOCK;
+
+    let mut state = Arm64VcpuState::default();
+    state.core.pstate = 1 << 7; // PSTATE.I
+    let mut backend = MockArm64Backend::with_exits([
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(0x1000),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(125),
+        }),
+        // Models harmony_arm_prescriptive_tick() immediately after the guest
+        // clears PSTATE.I. Its exit is the deterministic delivery boundary.
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x20),
+            size: 4,
+            write: Some(1),
+        }),
+    ]);
+    backend.set_policy(&Arm64Policy::default()).unwrap();
+    backend.set_state(state);
+    let mut v = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+    wire_prescriptive_clock(&mut v);
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(
+        !v.has_pending_guest_interrupt().unwrap(),
+        "the planted early-delivery mutant would assert while PSTATE.I is set"
+    );
+
+    let mut unmasked = v.save_vm_state().unwrap();
+    unmasked.regs.pstate &= !(1 << 7);
+    v.restore_vm_state(&unmasked).unwrap();
+
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(v.has_pending_guest_interrupt().unwrap());
+}
+
 /// Protocol misuse is rejected rather than silently changing the one-shot
 /// state, while DISARM before expiry cancels both the deadline and delivery.
 #[test]
