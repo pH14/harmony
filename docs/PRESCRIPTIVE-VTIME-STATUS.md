@@ -1363,6 +1363,31 @@ X1 is PASS.
   `random_init`, `try_to_generate_entropy`, `ret_from_fork` classes execute
   natively); the measurement tiers exist to rank them before closure work.
 
-### X2 command evidence
+### X2 measurement (runs 33064621195, 33066193514)
 
-- Pending: first runner measurement.
+Smoke tier — PASS on both replicas of both runs (AMD EPYC 7763 Milan and
+EPYC 9V74 Genoa draws): prescriptive stock boot reaches userspace and
+`GUEST_READY`, terminal exit `Idle`, exactly 31848 steps / 31849 normalized
+events, final assigned V-time 65233003 vns, 28–37 s wall.
+
+Determinism tier (3 same-seed boots) — the exit stream is already one log:
+all 31849 events identical in class, payload digest, assigned V-time, and
+interrupt count on every boot. The only divergent field is the checkpoint
+state hash, first at event 255 (the first checkpoint), on every replica.
+
+Localizer — `x2_component_diff_two_boots` gives the same 5-component verdict
+on both CPU models. DIFF: `RAM:16M..`, `segments`, `control-regs`, `msrs`,
+`serial`. MATCH: the other 20 components, including all `vtim:*` (config,
+effective vns, entropy, last-intercept, work), low RAM, xsave, events,
+mp_state, debugregs. The serial capture difference is intermittent: the
+determinism tier's three boots had byte-identical serial payload digests in
+the same runs where the localizer pair differed. Step count and final vns
+are identical regardless.
+
+Reading: the guest's *inputs* under prescriptive V-time are already
+deterministic (identical exit stream and assigned time); the residue is
+boot-time state derived from the untrapped host TSC (allowlisted
+`native_sched_clock` / entropy-pool reads landing in high RAM, the raw TSC
+MSR in the hashed vCPU record) plus whatever the segments/control-regs
+verdict resolves to. The exact-byte dump extension of the localizer
+(commit `3f16f6f7`) exists to name those bytes before closure work.
