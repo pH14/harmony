@@ -36,14 +36,21 @@ use vmm_core::vmm::{Step, TerminalReason, Vmm};
 const GUEST_RAM_LEN: usize = 256 << 20;
 /// The pinned seed (same shape as the live boot gates' seed).
 const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
-/// The established live-boot kernel command line (`live_linux_boot.rs`),
-/// unchanged: printk on the modeled 8250, panic = immediate terminal, and the
-/// timer/entropy neutralization params the determinism overlay expects.
+/// The established live-boot kernel command line (`live_linux_boot.rs`) plus
+/// `harmony_pvclock`: printk on the modeled 8250, panic = immediate terminal,
+/// the timer/entropy neutralization params the determinism overlay expects,
+/// and the clock-page opt-in — on the prescriptive composition the guest's
+/// sched_clock, timekeeping, and entropy timing all route through the
+/// host-stamped page instead of the uninterceptable raw TSC.
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
      no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-     nox2apic hpet=disable";
+     nox2apic hpet=disable harmony_pvclock";
 /// The kernel message that proves Linux reached the userspace init process.
 const REACHED_USERSPACE: &[u8] = b"Run /init as init process";
+/// The guest driver's proof that the clock page registered (patch 0001); a
+/// boot that silently fell back to raw-TSC time must fail the gate, not pass
+/// nondeterministically.
+const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: work-derived clock page registered";
 /// `harmony-linux/linux/init.sh`'s userspace readiness announcement.
 const GUEST_READY: &[u8] = b"GUEST_READY";
 /// Step budget per boot (`X2_MAX_STEPS` overrides).
@@ -96,6 +103,7 @@ struct BootRun {
     steps: u64,
     reached_userspace: bool,
     guest_ready: bool,
+    pvclock_registered: bool,
     step_error: Option<String>,
     wall: Duration,
     log: NormalizedLog,
@@ -172,6 +180,7 @@ fn run_boot<B: vmm_backend::Backend<A = vmm_backend::X86>>(
         steps,
         reached_userspace: find(vmm.serial(), REACHED_USERSPACE),
         guest_ready: find(vmm.serial(), GUEST_READY),
+        pvclock_registered: find(vmm.serial(), PVCLOCK_REGISTERED),
         step_error,
         wall: start.elapsed(),
         log: trace.normalized_log().clone(),
@@ -196,12 +205,13 @@ fn boot_once(kernel: &[u8], initramfs: &[u8], stream: bool) -> BootRun {
 fn report_run(tag: &str, run: &BootRun) {
     eprintln!(
         "[x2] {tag}: terminal={:?} steps={} events={} reached_userspace={} GUEST_READY={} \
-         step_error={:?} wall_secs={:.1} last_vns={:?} digest={}",
+         pvclock_registered={} step_error={:?} wall_secs={:.1} last_vns={:?} digest={}",
         run.reason,
         run.steps,
         run.log.events.len(),
         run.reached_userspace,
         run.guest_ready,
+        run.pvclock_registered,
         run.step_error,
         run.wall.as_secs_f64(),
         run.log.events.last().map(|e| e.vns_after),
@@ -268,6 +278,11 @@ fn x2_prescriptive_stock_boot_smoke() {
         "prescriptive stock boot never reached userspace (terminal {:?} after {} steps)",
         run.reason, run.steps
     );
+    assert!(
+        run.pvclock_registered,
+        "the guest never registered the clock page — time fell back to the raw TSC, which the \
+         stock backend cannot intercept; look for a 'harmony_pvclock:' line in the serial above"
+    );
 }
 
 /// **X2 tier 2 — the determinism criterion.** N same-seed prescriptive stock
@@ -287,9 +302,9 @@ fn x2_same_seed_boots_one_normalized_log() {
     let reference = boot_once(&kernel, &initramfs, true);
     report_run("boot 0", &reference);
     assert!(
-        reference.clean() && reference.reached_userspace,
-        "boot 0 must be a clean userspace boot before determinism is measurable \
-         (terminal {:?}, step_error {:?})",
+        reference.clean() && reference.reached_userspace && reference.pvclock_registered,
+        "boot 0 must be a clean userspace boot with the clock page registered before \
+         determinism is measurable (terminal {:?}, step_error {:?})",
         reference.reason,
         reference.step_error
     );
@@ -299,8 +314,9 @@ fn x2_same_seed_boots_one_normalized_log() {
         let run = boot_once(&kernel, &initramfs, false);
         report_run(&format!("boot {i}"), &run);
         assert!(
-            run.clean() && run.reached_userspace,
-            "boot {i} must be a clean userspace boot (terminal {:?}, step_error {:?})",
+            run.clean() && run.reached_userspace && run.pvclock_registered,
+            "boot {i} must be a clean userspace boot with the clock page registered \
+             (terminal {:?}, step_error {:?})",
             run.reason,
             run.step_error
         );
@@ -356,8 +372,9 @@ fn x2_component_diff_two_boots() {
     report_run("boot B", &run_b);
     for (tag, run) in [("A", &run_a), ("B", &run_b)] {
         assert!(
-            run.clean() && run.reached_userspace,
-            "boot {tag} must be a clean userspace boot (terminal {:?}, step_error {:?})",
+            run.clean() && run.reached_userspace && run.pvclock_registered,
+            "boot {tag} must be a clean userspace boot with the clock page registered \
+             (terminal {:?}, step_error {:?})",
             run.reason,
             run.step_error
         );

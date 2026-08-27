@@ -1251,6 +1251,39 @@ on this branch may contain, fetch, or require a NES ROM.
    list). `build-kernel.sh` selects the list via `HARMONY_RDTSC_ALLOWLIST`
    (default unchanged: the box list).
 
+11. **The prescriptive x86 composition offers the task-110 clock page.**
+   `boot_linux_stock_prescriptive` calls `enable_pvclock(1)`, mirroring the
+   arm64 prescriptive compositions. The engine's prescriptive registration
+   semantics were already in place: with prescriptive wiring, a pending
+   registration arms at the doorbell exit itself (`pvclock_refresh` skips the
+   descriptive r17 RDTSC-handshake requirement, which stock KVM can never
+   satisfy), the page re-stamps at serviced-exit tails from
+   `guest_clock(work = 0)` — the assigned V-time — and the Δ forced-refresh
+   deadline stays unarmed. The guest opts in with the `harmony_pvclock`
+   cmdline token, now part of the X2 command line.
+
+12. **Guest patch 0001 gains an assigned-at-exit-host mode.** Driven by the
+   X2 localizer: the divergent terminal state was randomized userspace
+   layout (fs base, CR2, stack/mmap/brk pointers in ~420 RAM pages — CRNG
+   outputs) plus intermittently the printk timestamps (sched_clock), all
+   fed by the audited native TSC reads that stock KVM cannot intercept.
+   With `harmony_pvclock` requested the kernel now leaves the raw TSC
+   entirely: `__use_tsc` never enables (sched_clock holds the jiffies
+   fallback until the page routes it), `clocksource_tsc_early` never
+   registers (and the existing `mark_tsc_unstable` at registration keeps
+   the refined tsc clocksource out), and `random_get_entropy()` reads the
+   clock page — zero before the page is live, never a raw counter. The
+   registration flow is unchanged: on stock hosts the two deliberate
+   rdtscs execute natively with their values discarded, and the OUT-armed
+   stamp is already on the page when the driver validates it.
+
+13. **The decision-12 amendment re-baselines the runner scan.** Changing
+   patch 0001 shifts counter-opcode offsets (and the entropy sites), so
+   `rdtsc-allowlist-gha.txt` is re-captured from the runner build under the
+   same function-subset review as decision 10. The box-toolchain
+   `rdtsc-allowlist.txt` goes stale for box builds of this branch's tree
+   and needs a box re-baseline before any merge.
+
 ## X0 — runner probe
 
 ### Build criteria

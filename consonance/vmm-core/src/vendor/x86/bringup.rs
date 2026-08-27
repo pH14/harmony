@@ -473,6 +473,12 @@ pub fn boot_linux_stock_prescriptive(
         super::contract_vclock_config(),
         seed,
     )?);
+    // Offer the task-110 clock page: under prescriptive wiring a pending
+    // registration arms at the doorbell exit itself and the page re-stamps at
+    // serviced-exit tails, so the descriptive Δ `run_until` bound never applies
+    // (the nonzero value remains part of snapshot identity). The guest opts in
+    // with the `harmony_pvclock` cmdline token.
+    vmm.enable_pvclock(1);
     Ok(vmm)
 }
 
