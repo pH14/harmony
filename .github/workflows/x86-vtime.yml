@@ -17,6 +17,12 @@ concurrency:
 permissions:
   contents: read
 
+# The explicit `bash` shell runs with pipefail, so `cmd | tee` steps fail when
+# the command fails; the implicit default shell would report tee's exit status.
+defaults:
+  run:
+    shell: bash
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -69,6 +75,40 @@ jobs:
             probe-report.txt
             probe-negative.txt
             kvm-smoke.txt
+          if-no-files-found: error
+
+  # X1: ten same-seed runs of the prescriptive run loop over the stock
+  # KvmBackend and a real-mode guest must produce one normalized log, with the
+  # comparator and placement-checker negatives standing against the same
+  # workload's log. Two replicas so most pushes also sample two hardware draws.
+  x1-minimal-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: X1 live oracles
+        run: |
+          grep -m1 "model name" /proc/cpuinfo | tee x1-report.txt
+          cargo test -p vmm-core --test x86_kvm_prescriptive -- --ignored --test-threads=1 --nocapture 2>&1 | tee -a x1-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-x1-replica-${{ matrix.replica }}
+          path: x1-report.txt
           if-no-files-found: error
 
   # Linux compile/lint/test truth for the crates the x86 work touches; the

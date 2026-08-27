@@ -1202,6 +1202,12 @@ on this branch may contain, fetch, or require a NES ROM.
    (`chmod 600`) before expecting the probe to fail closed, because the runner
    image's default device mode is not documented and a permissive default
    would make the negative vacuous.
+4. **X1 delivery reuses the ruled userspace-xAPIC posture.** `KvmBackend`
+   creates no in-kernel irqchip (`KVM_IRQCHIP_NONE`, the R1 ruling recorded in
+   `kvm_sys.rs`); the prescriptive `deliver` callback injects through
+   `Injection::Interrupt` → `KVM_INTERRUPT`, and `plan_irq_entry`'s
+   interrupt-window handshake defers entry until the guest is interruptible.
+   No new delivery mechanism is introduced for X1.
 
 ## X0 — runner probe
 
