@@ -372,6 +372,17 @@ dependency rather than silently weakening the criterion.
     controlled deterministic exit policy. Descriptive-x86 throughput is an
     optional diagnostic only: absence or malformed diagnostic input cannot fail
     M3, and no cross-host slowdown ratio is an M3 threshold.
+46. **PSTATE.TCO is canonical zero for the no-MTE guest identity.** The frozen
+    ARM identity advertises `ID_AA64PFR1_EL1.MTE=0`, and the admitted kernel has
+    `CONFIG_ARM64_MTE=n`. The M5 component comparator localized the first
+    cross-host state difference to bit 25 alone: physical KVM exception entry
+    set `PSR_TCO_BIT`, while HVF left it clear. Backend save clears that
+    unsupported residue and restore rejects non-canonical input. Linux also
+    clears TCO from `SPSR_EL1` before publishing an exception frame, because a
+    nested exception had otherwise copied the host-only bit into one
+    `struct pt_regs` word in retained RAM. Focused fake-KVM tests prove both the
+    positive round trip and planted TCO rejection; the whole-image kernel build
+    remains independently gated for no MTE, no live counter reads, and no LL/SC.
 
 ## M0 — prescriptive advancement in pure logic
 
@@ -1252,11 +1263,38 @@ recorded.
 
 ## M5 — bidirectional HVF↔KVM determinism and snapshot portability
 
-- **FAIL — byte-attested bidirectional same-seed normalized logs:** not started.
+- **PASS — byte-attested boot fixture:** the freshly published canonical-PSTATE
+  kernel is 2,945,032 bytes and SHA-256
+  `47c6eac9d81f69d218decf500fcd4bb77a06917d4ed1bcdceb1900ace315bc96`
+  on both hosts. The immutable 1,313-byte initramfs is SHA-256
+  `6194ec4be99b08e68a61f9020fcedd7aae515b00fa63d38a44b9070a23fea053`
+  on both hosts. The native publication run applied every owned kernel patch,
+  rejected planted live-counter and LL/SC probes, and found neither class in
+  the real `vmlinux` or vDSO.
+- **PASS — full same-seed boot normalized log and checkpoint sequence:** the
+  signed HVF run and CPU-0-pinned KVM run each produced 38,453 portable events,
+  283 schedules, 136 deliveries, and 151 checkpoints; both placement checkers
+  were green. Their normalized-log digest was
+  `e2e7852e870648fe59615e2a06ddfdcf56fc6e5e2622fc1e2312cc5250989829`
+  and their final canonical state hash was
+  `1dc0c1da1b381e992f93d909741d41592bc6dd2ee51fd45f29fd040a1c178b17`.
+  The independently transferred text logs were byte-identical: 38,740 lines,
+  5,954,217 bytes, SHA-256
+  `4b4e7a2758d4eead327bf999ef8324e26fe672429fac2c4b5ae7df396c9a27db`.
+- **FAIL — byte-attested NES campaign normalized logs and archive hashes:** the
+  KVM control composition and cross-host campaign oracle are not yet complete.
 - **FAIL — immediate cross-host restore `state_hash` equality:** not started.
 - **FAIL — both-direction uninterrupted continuation comparison:** not started.
-- **FAIL — planted cross-host increment mismatch:** not started.
+- **PASS — planted cross-host increment mismatch:** the production normalized
+  comparator's committed one-V-ns perturbation reports event 1 / `VnsAfter`;
+  `cargo test -p vmm-core --test prescriptive_vtime
+  comparator_rejects_one_vns_increment_at_the_exact_event -- --exact` passed
+  before the real boot equality was accepted.
 - **FAIL — independent architectural-state comparator:** not started.
+
+**M5 remains open.** Boot convergence is sealed as a partial checkpoint only;
+the milestone cannot pass until the NES campaign and portable snapshot
+continuations succeed in both directions with the independent state comparator.
 
 ## M6 — instrumented concurrency-discovery measurement
 
