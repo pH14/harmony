@@ -8,7 +8,13 @@
 //! the key needs to complete itself (for Super Mario Bros, the visited-room
 //! list).
 
-use std::{cmp::Reverse, collections::BTreeMap, error::Error, fmt::Debug, num::NonZeroUsize};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt::Debug,
+    num::NonZeroUsize,
+};
 
 use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -639,6 +645,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     in_window_ever: Vec<bool>,
     /// Per entry: whether its retention slot was empty when it arrived.
     opened_slot: Vec<bool>,
+    opened_cell: Vec<bool>,
+    cells_seen: BTreeSet<K::Group>,
     selector_accounting: SelectorAccounting,
     /// Time each retained entry spent inside its own coarsest group, in
     /// entry-id order, in the game's action-duration unit.
@@ -690,6 +698,8 @@ where
             since_retained: Vec::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
+            opened_cell: Vec::new(),
+            cells_seen: BTreeSet::new(),
             selector_accounting: SelectorAccounting {
                 concentration: ConcentrationAccounting {
                     window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
@@ -941,6 +951,13 @@ where
         self.since_retained.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
+        // A one-group key has no pooled cell depth; slot novelty stands in.
+        let new_cell = if K::groups() > 1 {
+            self.cells_seen.insert(key.group(1))
+        } else {
+            new_slot
+        };
+        self.opened_cell.push(new_cell);
         self.slots.entry(key.group(0)).or_default().push(id);
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
@@ -1261,6 +1278,14 @@ where
         self.opened_slot.get(id).copied().unwrap_or(false)
     }
 
+    /// Whether entry `id` was the first to occupy its selection cell. Cell
+    /// novelty pools out the fingerprint bits, so per-pose noise variants do
+    /// not count as discovery.
+    #[must_use]
+    pub fn opened_new_cell(&self, id: usize) -> bool {
+        self.opened_cell.get(id).copied().unwrap_or(false)
+    }
+
     /// Account one recorded selection of `id`.
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
         // The reset-marked draw is the only place streak counters clear.
@@ -1332,6 +1357,7 @@ where
         id: usize,
         retained_descendant: bool,
         new_slot_descendant: bool,
+        new_cell_descendant: bool,
     ) {
         if !retained_descendant {
             return;
@@ -1344,9 +1370,8 @@ where
         // most results makes plain retention too common to signal anything.
         let clears_groups = match self.selector_policy {
             SelectorPolicy::Retire(_) => true,
-            SelectorPolicy::Energy(_)
-            | SelectorPolicy::EnergyFrontier(_)
-            | SelectorPolicy::EnergyFrontierCheapest(_) => new_slot_descendant,
+            SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
+            SelectorPolicy::EnergyFrontierCheapest(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
@@ -1627,7 +1652,7 @@ mod tests {
                 .entry((key.progress, key.player_y_bucket))
                 .or_default() += 1;
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, true, true);
+            archive.record_selection_outcome(id, true, true, true);
         }
         assert!(cell_draws > 600);
         assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
@@ -1682,7 +1707,7 @@ mod tests {
         // the retired band; a retained descendant of entry 1 clears the
         // pooled counter and the band returns to selection.
         archive.record_selection(1, &barren_draw);
-        archive.record_selection_outcome(1, true, true);
+        archive.record_selection_outcome(1, true, true, true);
         let mut upper_band_seen = false;
         for _ in 0..64 {
             let (id, draw) = archive

@@ -1851,10 +1851,14 @@ where
                 let new_slot_descendant = retained_ids
                     .iter()
                     .any(|id| core.archive.opened_new_slot(*id));
+                let new_cell_descendant = retained_ids
+                    .iter()
+                    .any(|id| core.archive.opened_new_cell(*id));
                 core.archive.record_selection_outcome(
                     parent_index,
                     !retained_ids.is_empty(),
                     new_slot_descendant,
+                    new_cell_descendant,
                 );
                 if let DrawMixture::Energy { .. } = config.mixture {
                     let biased_strategy = energy_strategy_is_biased(
@@ -2229,6 +2233,9 @@ where
                     retained_ids
                         .iter()
                         .any(|id| core.archive.opened_new_slot(*id)),
+                    retained_ids
+                        .iter()
+                        .any(|id| core.archive.opened_new_cell(*id)),
                 );
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {
