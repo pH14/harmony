@@ -238,6 +238,9 @@ jobs:
       # terminal; this dump measures the divergent bytes where they are live.
       - name: X2 mid-boot state dump (step-bounded)
         run: |
+          # 0x2c40000 is the single page the first mid-boot pair flagged (run
+          # 33119105087); its bytes go into the dump to name exact offsets.
+          X2_PAGE_HEX=0x2c40000 \
           X2_DUMP_AT_STEPS=25000 X2_LOG_DUMP=$PWD/x2-midboot-log.txt timeout -k 10 600 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
             x2_prescriptive_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tail -n 5 | tee -a x2-report.txt
