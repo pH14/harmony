@@ -1172,3 +1172,76 @@ non-blocking. M3 is sealed; no M4 work began before this result was recorded.
   for `aarch64-unknown-linux-gnu`, exit status 0.
 - **FAIL — Kani and remaining final quality-toolchain gates:** not yet run for the
   complete plan.
+
+## x86 — VM-exit-count V-time on GitHub-hosted runners
+
+Branch `claude/x86-prescriptive-vtime`, forked from `a51fe015`. Substrate: the
+standard GitHub-hosted `ubuntu-24.04` x86-64 runner (4 vCPU, Azure, nested
+virtualization; hardware alternates between Intel and AMD draws per job).
+Milestones X0–X3 apply the §3 oracle discipline to the stock-KVM x86 backend.
+`.github/workflows/x86-vtime.yml` runs six probe replicas per push — one push
+samples both vendors — plus a Linux fmt/clippy/test job for the touched crates,
+which the macOS development host cannot check. Every result is uploaded as an
+artifact because the runner is unreachable after the job ends. The repository
+and its Actions logs and artifacts are public: no workflow, test, or artifact
+on this branch may contain, fetch, or require a NES ROM.
+
+### Recorded decisions (x86)
+
+1. **Milestones are named X0–X3** to stay distinct from this document's ARM
+   M-milestones: X0 runner probe, X1 minimal guest deterministic on the runner,
+   X2 Linux boots to `/init` deterministically, X3 cross-vendor identity
+   (Intel and AMD draws produce byte-identical normalized logs).
+2. **Rust 1.98's `clippy::chunks_exact_to_as_chunks` fired at ten
+   constant-size call sites across the shared workspace**, so the branch's
+   Linux clippy check could not run `-D warnings`. All ten are converted to
+   `as_chunks`/`as_chunks_mut` (commits `0565a2cb`, `70c28e5c`), verified with
+   `cargo +1.98.0 clippy --workspace --all-features --all-targets -- -D
+   warnings`. Main carries the same latent failure: issue #197.
+3. **X0's planted negative sets the `/dev/kvm` pre-state explicitly**
+   (`chmod 600`) before expecting the probe to fail closed, because the runner
+   image's default device mode is not documented and a permissive default
+   would make the negative vacuous.
+
+## X0 — runner probe
+
+### Build criteria
+
+- `x86_kvm_probe` (`consonance/vmm-backend/src/bin/`): CPU identity, `/dev/kvm`
+  access, KVM API version, a 22-entry `KVM_CHECK_EXTENSION` table, then one
+  real-mode guest (`OUT` then `HLT`) through the public `KvmBackend`,
+  reported as `KEY=VALUE` lines with a single `PROBE=PASS`/`PROBE=FAIL`
+  verdict that fails closed.
+- The `x86-vtime` workflow above.
+
+### Passes-when criteria
+
+- The probe is green on at least one Intel draw and one AMD draw.
+- The planted negative fails closed with `FAIL_REASON=kvm_open` on every
+  replica before access is granted.
+- The independent comparator — the pre-existing four-test live `kvm_smoke`
+  suite, written for the retired determinism box — passes against the same
+  hosts.
+
+### X0 command evidence
+
+- Run 33027653620 (commit `6fe4d5e8`): 6/6 replicas `PROBE=PASS`,
+  `KVM_API_VERSION=12`, kernel `6.17.0-1022-azure`. Capability table on every
+  draw: `X86_USER_SPACE_MSR=1`, `X86_MSR_FILTER=1`, `XSAVE2=4096`,
+  `TSC_CONTROL=1`, `TSC_DEADLINE_TIMER=1`, `SPLIT_IRQCHIP=1`,
+  `IMMEDIATE_EXIT=1`, `X86_DETERMINISTIC_INTERCEPTS=0` (stock),
+  `X86_NOTIFY_VMEXIT=0`.
+- Run 33028194843 (commit `70c28e5c`): planted negative green on all six
+  replicas (mode 600 → probe exits 1 with `FAIL_REASON=kvm_open`), then the
+  udev grant → `PROBE=PASS`; `check` job green (fmt, clippy `-D warnings` on
+  Rust 1.98, `cargo test -p vmm-backend --all-features`).
+- `kvm_smoke` (`--ignored`, single-threaded): 4 passed / 0 failed on all
+  twelve replicas across both runs — bring-up `OUT`+`HLT`, save/restore
+  fixpoint over the XSAVE2 image, loud MSR filter with real-mode `#GP`
+  delivery, honest capabilities. First pass of this suite off the retired
+  box, first under nested virtualization, first on AMD.
+- CPU draws observed: AMD EPYC 7763 (Milan), AMD EPYC 9V74 (Genoa), Intel
+  Xeon Platinum 8370C (Ice Lake), Intel Xeon Platinum 8573C (Emerald
+  Rapids), Intel Xeon 6973P-C (Granite Rapids).
+
+X0 is PASS.
