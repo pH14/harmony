@@ -946,6 +946,13 @@ where
 
     /// The backend, for the vendor half's own dispatch (`pub(crate)`; the engine
     /// boundary, not a public accessor).
+    /// **Diagnostic only**: the live vCPU record set (a pure [`Backend::save`],
+    /// running no guest code), so a determinism localizer can print the exact
+    /// differing registers/MSRs that [`Vmm::state_components`] only digests.
+    pub fn vcpu_record(&self) -> Result<VcpuOf<B>, VmmError> {
+        Ok(self.backend.save()?)
+    }
+
     pub(crate) fn backend(&self) -> &B {
         &self.backend
     }

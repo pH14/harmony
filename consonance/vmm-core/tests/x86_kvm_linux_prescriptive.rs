@@ -382,4 +382,76 @@ fn x2_component_diff_two_boots() {
         println!("X2_COMPONENT {label_a}={verdict}");
     }
     println!("X2_COMPONENT_DIFFS={diffs}");
+
+    // Exact dumps for each divergent component class, so the closure work
+    // targets specific bytes rather than a digest.
+    let (ser_a, ser_b) = (vmm_a.serial().to_vec(), vmm_b.serial().to_vec());
+    if ser_a != ser_b {
+        println!("X2_SERIAL_LEN A={} B={}", ser_a.len(), ser_b.len());
+        if let Some(off) = (0..ser_a.len().min(ser_b.len())).find(|&i| ser_a[i] != ser_b[i]) {
+            let lo = off.saturating_sub(64);
+            for (tag, s) in [("A", &ser_a), ("B", &ser_b)] {
+                let hi = (off + 64).min(s.len());
+                println!(
+                    "X2_SERIAL_DIFF {tag} @{off}: {:?}",
+                    String::from_utf8_lossy(&s[lo..hi])
+                );
+            }
+        }
+    }
+
+    let (ram_a, ram_b) = (vmm_a.guest_memory(), vmm_b.guest_memory());
+    let mut diff_pages = Vec::new();
+    for (page, (pa, pb)) in ram_a.chunks(4096).zip(ram_b.chunks(4096)).enumerate() {
+        if pa != pb {
+            diff_pages.push(page);
+        }
+    }
+    println!("X2_RAM_DIFF_PAGES={}", diff_pages.len());
+    for page in diff_pages.iter().take(32) {
+        let base = page * 4096;
+        let off = (0..4096)
+            .find(|&i| ram_a[base + i] != ram_b[base + i])
+            .unwrap_or(0);
+        println!("X2_RAM_DIFF_PAGE gpa={base:#x} first_diff=+{off:#x}");
+    }
+
+    let vcpu_a = vmm_a.vcpu_record().expect("vcpu_record A");
+    let vcpu_b = vmm_b.vcpu_record().expect("vcpu_record B");
+    let msr_indices: std::collections::BTreeSet<_> =
+        vcpu_a.msrs.keys().chain(vcpu_b.msrs.keys()).collect();
+    for idx in msr_indices {
+        let (a, b) = (vcpu_a.msrs.get(idx), vcpu_b.msrs.get(idx));
+        if a != b {
+            println!("X2_MSR_DIFF {idx:#x}: A={a:x?} B={b:x?}");
+        }
+    }
+    for (name, a, b) in [
+        ("cr0", vcpu_a.sregs.cr0, vcpu_b.sregs.cr0),
+        ("cr2", vcpu_a.sregs.cr2, vcpu_b.sregs.cr2),
+        ("cr3", vcpu_a.sregs.cr3, vcpu_b.sregs.cr3),
+        ("cr4", vcpu_a.sregs.cr4, vcpu_b.sregs.cr4),
+        ("cr8", vcpu_a.sregs.cr8, vcpu_b.sregs.cr8),
+        ("efer", vcpu_a.sregs.efer, vcpu_b.sregs.efer),
+        ("apic_base", vcpu_a.sregs.apic_base, vcpu_b.sregs.apic_base),
+        ("flags", vcpu_a.sregs.flags, vcpu_b.sregs.flags),
+    ] {
+        if a != b {
+            println!("X2_CR_DIFF {name}: A={a:#x} B={b:#x}");
+        }
+    }
+    for (name, a, b) in [
+        ("cs", &vcpu_a.sregs.cs, &vcpu_b.sregs.cs),
+        ("ds", &vcpu_a.sregs.ds, &vcpu_b.sregs.ds),
+        ("es", &vcpu_a.sregs.es, &vcpu_b.sregs.es),
+        ("fs", &vcpu_a.sregs.fs, &vcpu_b.sregs.fs),
+        ("gs", &vcpu_a.sregs.gs, &vcpu_b.sregs.gs),
+        ("ss", &vcpu_a.sregs.ss, &vcpu_b.sregs.ss),
+        ("tr", &vcpu_a.sregs.tr, &vcpu_b.sregs.tr),
+        ("ldt", &vcpu_a.sregs.ldt, &vcpu_b.sregs.ldt),
+    ] {
+        if a != b {
+            println!("X2_SEG_DIFF {name}: A={a:x?} B={b:x?}");
+        }
+    }
 }
