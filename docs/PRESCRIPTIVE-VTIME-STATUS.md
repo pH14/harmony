@@ -1355,6 +1355,20 @@ on this branch may contain, fetch, or require a NES ROM.
    now computes the placement verdict per boot, prints it in the report,
    and asserts it in both the smoke and determinism tiers.
 
+18. **An intermittent divergence is localized by re-drawing bounded
+   boots.** The Intel draw of run 33088504233 diverges on 4 of 10 boots at
+   the first checkpoint while the exit stream stays identical, so a
+   single localizer pair sampled at terminal can land on two agreeing
+   boots and see nothing. `x2_component_diff_first_checkpoint` stops
+   same-seed boots just past the first checkpoint (~320 steps, sub-second
+   each), re-boots until a checkpoint hash differs from the reference
+   boot's, and prints the component and byte diff near the divergence
+   origin. Both localizer steps run under `if: always()`: they are
+   diagnostics, and a determinism-tier failure is exactly when their
+   output matters. The x2 matrix goes to four replicas per push because
+   the runner pool draws Intel rarely and the open divergence is
+   Intel-only.
+
 ## X0 — runner probe
 
 ### Build criteria
@@ -1467,31 +1481,33 @@ X1 is PASS.
   `random_init`, `try_to_generate_entropy`, `ret_from_fork` classes execute
   natively); the measurement tiers exist to rank them before closure work.
 
-### X2 measurement (runs 33064621195, 33066193514)
+### X2 measurement (runs 33086789801, 33088504233)
 
-Smoke tier — PASS on both replicas of both runs (AMD EPYC 7763 Milan and
-EPYC 9V74 Genoa draws): prescriptive stock boot reaches userspace and
-`GUEST_READY`, terminal exit `Idle`, exactly 31848 steps / 31849 normalized
-events, final assigned V-time 65233003 vns, 28–37 s wall.
+The first measurement rounds (runs 33064621195, 33066193514) found the
+exit stream already deterministic — identical event classes, payload
+digests, assigned V-time, and interrupt counts on every boot — with only
+the checkpoint state hash divergent, first at event 255. The localizer's
+component and byte dumps then named three state sources in sequence, each
+closed by a recorded decision: the jitter RNG's unbounded priming spin on
+frozen time (decision 14), natively executed RDRAND/RDSEED feeding the
+CRNG (decision 15), and the boot CPU's cyc2ns scale seeded from a native
+`rdtsc()` (decision 16).
 
-Determinism tier (3 same-seed boots) — the exit stream is already one log:
-all 31849 events identical in class, payload digest, assigned V-time, and
-interrupt count on every boot. The only divergent field is the checkpoint
-state hash, first at event 255 (the first checkpoint), on every replica.
+After the third fix, run 33086789801 (3 same-seed boots + localizer, both
+replicas): every boot reaches userspace in exactly 35313 steps / 35314
+events, final assigned V-time 71621003 vns, `X2_DIVERGENCES=0`, all 25
+localizer components MATCH, delivery placement OK on every boot. The
+full-log digest `c3bae072…` is byte-identical across the two replicas'
+CPU models (EPYC 7763 Milan, EPYC 9V74 Genoa), so the normalized log
+already crosses AMD generations.
 
-Localizer — `x2_component_diff_two_boots` gives the same 5-component verdict
-on both CPU models. DIFF: `RAM:16M..`, `segments`, `control-regs`, `msrs`,
-`serial`. MATCH: the other 20 components, including all `vtim:*` (config,
-effective vns, entropy, last-intercept, work), low RAM, xsave, events,
-mp_state, debugregs. The serial capture difference is intermittent: the
-determinism tier's three boots had byte-identical serial payload digests in
-the same runs where the localizer pair differed. Step count and final vns
-are identical regardless.
-
-Reading: the guest's *inputs* under prescriptive V-time are already
-deterministic (identical exit stream and assigned time); the residue is
-boot-time state derived from the untrapped host TSC (allowlisted
-`native_sched_clock` / entropy-pool reads landing in high RAM, the raw TSC
-MSR in the hashed vCPU record) plus whatever the segments/control-regs
-verdict resolves to. The exact-byte dump extension of the localizer
-(commit `3f16f6f7`) exists to name those bytes before closure work.
+Run 33088504233 (ten boots as the gate, decision 9's second stage): the
+EPYC 7763 replica passes 10/10 with one digest. The first Intel draw of
+the whole program (Xeon Platinum 8573C Emerald Rapids) fails 4 of 10
+boots. The exit stream is identical on all ten (35314 events, placement
+OK, same final V-time); the checkpoint state hash diverges first at event
+255, and all four divergent boots carry the same alternative hash there —
+a binary divergence at the first checkpoint — while their later
+checkpoints take three distinct value paths. Decision 18 records the
+localizer built for it. X2 stays open until an Intel draw passes ten
+boots (the passes-when criteria require one draw of each vendor).

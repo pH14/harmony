@@ -126,7 +126,14 @@ fn run_boot<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     vmm: &mut Vmm<B>,
     stream: bool,
 ) -> BootRun {
-    let max_steps = env_u64("X2_MAX_STEPS", DEFAULT_MAX_STEPS);
+    run_boot_bounded(vmm, stream, env_u64("X2_MAX_STEPS", DEFAULT_MAX_STEPS))
+}
+
+fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
+    vmm: &mut Vmm<B>,
+    stream: bool,
+    max_steps: u64,
+) -> BootRun {
     let wall_budget = Duration::from_secs(env_u64("X2_WALL_SECS", DEFAULT_WALL_SECS));
     // not order-observable: a test-only wall-clock watchdog; it bounds this
     // `#[ignore]`d live gate and never reaches guest state or any hash.
@@ -404,6 +411,16 @@ fn x2_component_diff_two_boots() {
         );
     }
 
+    dump_state_diff(&vmm_a, &vmm_b);
+}
+
+/// One VMM type all the live tests share: the stock-KVM composition root's.
+type StockVmm = Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
+
+/// Print the labeled component verdicts and exact byte/register diffs between
+/// two same-seed VMMs, so closure work targets specific state rather than a
+/// digest.
+fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
     let comps_a = vmm_a.state_components();
     let comps_b = vmm_b.state_components();
     assert_eq!(
@@ -424,8 +441,6 @@ fn x2_component_diff_two_boots() {
     }
     println!("X2_COMPONENT_DIFFS={diffs}");
 
-    // Exact dumps for each divergent component class, so the closure work
-    // targets specific bytes rather than a digest.
     let (ser_a, ser_b) = (vmm_a.serial().to_vec(), vmm_b.serial().to_vec());
     if ser_a != ser_b {
         println!("X2_SERIAL_LEN A={} B={}", ser_a.len(), ser_b.len());
@@ -525,4 +540,57 @@ fn x2_component_diff_two_boots() {
             println!("X2_SEG_DIFF {name}: A={a:x?} B={b:x?}");
         }
     }
+}
+
+/// The first recorded checkpoint state hash in a bounded boot's log.
+fn first_checkpoint_hash(run: &BootRun) -> [u8; 32] {
+    run.log
+        .events
+        .iter()
+        .find_map(|e| e.state_hash)
+        .expect("the bounded boot must cross the first state-hash checkpoint")
+}
+
+/// **X2 intermittent-divergence localizer.** The Intel tier-2 measurement
+/// shows a state-hash divergence at the first checkpoint on some boots of a
+/// pool whose exit streams stay identical. Boots here stop just past that
+/// checkpoint (sub-second each) and re-run until one checkpoint hash differs
+/// from the reference boot's; the divergent pair then gets the component and
+/// byte diff close to the divergence origin. Finding no divergent pair within
+/// the attempt budget is reported, never asserted: the divergence is
+/// intermittent, so absence in a finite draw proves nothing.
+#[test]
+#[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
+fn x2_component_diff_first_checkpoint() {
+    require_kvm();
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs.cpio.gz");
+    let stop_steps = env_u64("X2_CKPT_STEPS", 320);
+    let attempts = env_u64("X2_CKPT_ATTEMPTS", 12);
+
+    let mut vmm_ref =
+        boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_prescriptive");
+    let run_ref = run_boot_bounded(&mut vmm_ref, false, stop_steps);
+    report_run("ckpt reference", &run_ref);
+    let ref_hash = first_checkpoint_hash(&run_ref);
+
+    for attempt in 0..attempts {
+        let mut vmm =
+            boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+                .expect("boot_linux_stock_prescriptive");
+        let run = run_boot_bounded(&mut vmm, false, stop_steps);
+        let hash = first_checkpoint_hash(&run);
+        if hash != ref_hash {
+            report_run("ckpt divergent", &run);
+            println!(
+                "X2_CKPT_DIVERGENT_PAIR attempt={attempt} ref={} divergent={}",
+                hex(&ref_hash),
+                hex(&hash)
+            );
+            dump_state_diff(&vmm_ref, &vmm);
+            return;
+        }
+    }
+    println!("X2_CKPT_NO_DIVERGENT_PAIR attempts={attempts}");
 }
