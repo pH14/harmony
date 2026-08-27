@@ -14,9 +14,11 @@
 # Regenerate when the runner toolchain moves or the patch series changes: the
 # scan failure prints the unlisted/stale sites in paste-ready form; re-verify
 # the function-subset property against rdtsc-allowlist.txt before committing.
-# Last re-baseline: the decision-12 amendment to patch 0001 (entropy routed
-# through the clock page) shifted 12 sites — the random_get_entropy inline
-# callers and harmony_pvclock_init — with no function added or removed.
+# Last re-baseline: the decision-16 amendment to patch 0001 (cyc2ns seeded
+# from cycle 0) shifted one site — tsc_enable_sched_clock — with no function
+# added or removed. The decision-12 amendment before it shifted 12 sites (the
+# random_get_entropy inline callers and harmony_pvclock_init), likewise
+# function-neutral.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).
 vmlinux:.altinstr_replacement+0x1d18
@@ -127,7 +129,7 @@ vmlinux:trace_clock_x86_tsc+0x0
 vmlinux:try_to_generate_entropy+0x1d5
 vmlinux:try_to_generate_entropy+0x59
 vmlinux:try_to_generate_entropy+0x91
-vmlinux:tsc_enable_sched_clock+0x4a
+vmlinux:tsc_enable_sched_clock+0x55
 vmlinux:tsc_read_refs+0x2b
 vmlinux:tsc_read_refs+0x42
 vmlinux:vmclock_get_crosststamp+0x166
