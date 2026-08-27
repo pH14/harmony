@@ -703,6 +703,9 @@ fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
         (0x20, 4, Some(0)),
         (0x20, 8, Some(1)),
         (0x20, 4, None),
+        (0x24, 4, Some(0)),
+        (0x24, 8, Some(1)),
+        (0x24, 4, None),
     ] {
         let mut bad = vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(PVCLOCK.0 + offset),
@@ -889,10 +892,11 @@ fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
             size: 8,
             write: Some(125),
         }),
-        // Models harmony_arm_prescriptive_tick() immediately after the guest
-        // clears PSTATE.I. Its exit is the deterministic delivery boundary.
+        // Models harmony_arm_irq_unmask_fence() immediately after the guest
+        // clears PSTATE.I. Unlike the execution-density tick at 0x20, this
+        // carries only the ordinary paravirtual-exit V-time quantum.
         Exit::Common(CommonExit::Mmio {
-            gpa: Gpa(PVCLOCK.0 + 0x20),
+            gpa: Gpa(PVCLOCK.0 + 0x24),
             size: 4,
             write: Some(1),
         }),
@@ -915,6 +919,11 @@ fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
 
     assert_eq!(v.step().unwrap(), Step::Continued);
     assert!(v.has_pending_guest_interrupt().unwrap());
+    assert_eq!(
+        v.effective_vns(),
+        Some(3_000),
+        "the unmask fence must not assign the 1 ms execution-density tick"
+    );
 }
 
 /// Protocol misuse is rejected rather than silently changing the one-shot

@@ -5,16 +5,44 @@ recognized at different later instructions by HVF and KVM. The host cannot
 inject it early without violating the guest's critical section, and Linux's
 unmask itself is not otherwise an exit.
 
-Under the cooperative Harmony clock configuration, ring the existing
-prescriptive tick immediately after every local IRQ enable and restore. The
-VMM leaves a due deadline pending while PSTATE.I is set, then asserts it at
-this first explicit unmasked exit. Calling after a restore that remains masked
-is harmless: the VMM observes PSTATE.I and keeps the deadline pending.
+Under the cooperative Harmony clock configuration, ring a dedicated MMIO
+fence immediately after every local IRQ enable and restore. Unlike the 10 ms
+execution-density tick, this fence advances only the ordinary paravirtual-exit
+quantum, so frequent IRQ restores cannot manufacture clock periods. The VMM
+leaves a due deadline pending while PSTATE.I is set, then asserts it at this
+first explicit unmasked exit. Calling after a restore that remains masked is
+harmless: the VMM observes PSTATE.I and keeps the deadline pending.
 
 This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
 repository's designated guest-kernel patch exception.
 
 ---
+--- a/drivers/clocksource/harmony_arm_pvclock.c
++++ b/drivers/clocksource/harmony_arm_pvclock.c
+@@ -32,6 +32,7 @@
+ #define HARMONY_CLOCKEVENT_DISARM	1U
+ #define HARMONY_CLOCKEVENT_ACK		2U
+ #define HARMONY_PRESCRIPTIVE_TICK	0x20
++#define HARMONY_IRQ_UNMASK_FENCE	0x24
+ #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* host caps delta at 100M work */
+ #define HARMONY_PVCLOCK_ABI		1U
+ #define HARMONY_FLAG_MATERIALIZED	(1U << 0)
+@@ -214,3 +215,15 @@ void harmony_arm_prescriptive_tick(void)
+ 		return;
+ 	writel(1, harmony_registers + HARMONY_PRESCRIPTIVE_TICK);
+ }
++
++/*
++ * Expose the exact instruction boundary after Linux unmasks IRQs without
++ * assigning an execution-density tick. Userspace gives this ordinary exit
++ * only the paravirtual-exit quantum.
++ */
++void harmony_arm_irq_unmask_fence(void)
++{
++	if (!harmony_registers)
++		return;
++	writel(1, harmony_registers + HARMONY_IRQ_UNMASK_FENCE);
++}
 --- a/arch/arm64/include/asm/irqflags.h
 +++ b/arch/arm64/include/asm/irqflags.h
 @@ -8,6 +8,10 @@
@@ -22,7 +50,7 @@ repository's designated guest-kernel patch exception.
  #include <asm/sysreg.h>
  
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
-+void harmony_arm_prescriptive_tick(void);
++void harmony_arm_irq_unmask_fence(void);
 +#endif
 +
  /*
@@ -33,7 +61,7 @@ repository's designated guest-kernel patch exception.
  		__daif_local_irq_enable();
  	}
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
-+	harmony_arm_prescriptive_tick();
++	harmony_arm_irq_unmask_fence();
 +#endif
  }
  
@@ -43,7 +71,7 @@ repository's designated guest-kernel patch exception.
  		__daif_local_irq_restore(flags);
  	}
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
-+	harmony_arm_prescriptive_tick();
++	harmony_arm_irq_unmask_fence();
 +#endif
  }
  

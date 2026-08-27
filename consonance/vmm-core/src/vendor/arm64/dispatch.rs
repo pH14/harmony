@@ -437,6 +437,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     | (0x010, 8, Some(_))
                     | (0x018, 4, Some(_))
                     | (0x020, 4, Some(1))
+                    | (0x024, 4, Some(1))
             );
             if !exact {
                 return Err(VmmError::ContractViolation(format!(
@@ -487,6 +488,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     Ok(Step::Continued)
                 }
                 (0x020, Some(1)) => Ok(Step::Continued),
+                (0x024, Some(1)) => Ok(Step::Continued),
                 _ => Err(VmmError::ContractViolation(
                     "arm64 pvclock exact-shape validation disagreed with dispatch".to_string(),
                 )),
