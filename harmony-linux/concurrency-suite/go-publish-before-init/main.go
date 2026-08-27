@@ -117,6 +117,43 @@ type actor struct {
 	observed uint64
 }
 
+type stepResult struct {
+	actorID int
+	step    byte
+}
+
+func actorLoop(
+	actorID int,
+	commands <-chan bool,
+	completed chan<- stepResult,
+	stopped chan<- int,
+	published *bool,
+	initialized *byte,
+	consumerSawPublished *bool,
+	observedValue *byte,
+) {
+	defer func() { stopped <- actorID }()
+	step := byte(0)
+	for run := range commands {
+		if !run {
+			return
+		}
+		if actorID == 0 {
+			if step == 0 {
+				*published = true
+			} else {
+				*initialized = 42
+			}
+		} else if step == 0 {
+			*consumerSawPublished = *published
+		} else if *consumerSawPublished {
+			*observedValue = *initialized
+		}
+		step++
+		completed <- stepResult{actorID: actorID, step: step}
+	}
+}
+
 func runnable(actors *[2]actor) []int {
 	ready := make([]int, 0, 2)
 	for index := range actors {
@@ -134,6 +171,21 @@ func run() error {
 	initialized := byte(0)
 	consumerSawPublished := false
 	observedValue := byte(0xff)
+	commands := [2]chan bool{make(chan bool), make(chan bool)}
+	completed := make(chan stepResult)
+	stopped := make(chan int, 2)
+	for actorID := range commands {
+		go actorLoop(
+			actorID,
+			commands[actorID],
+			completed,
+			stopped,
+			&published,
+			&initialized,
+			&consumerSawPublished,
+			&observedValue,
+		)
+	}
 	selected, err := c.coverageYield(bootstrapThread, 1, 2)
 	if err != nil {
 		return err
@@ -144,21 +196,13 @@ func run() error {
 			return errors.New("host selected no runnable actor")
 		}
 		actorID := ready[selected]
-		a := &actors[actorID]
-		if actorID == 0 {
-			if a.step == 0 {
-				published = true
-			} else {
-				initialized = 42
-			}
-		} else {
-			if a.step == 0 {
-				consumerSawPublished = published
-			} else if consumerSawPublished {
-				observedValue = initialized
-			}
+		commands[actorID] <- true
+		result := <-completed
+		if result.actorID != actorID || result.step != actors[actorID].step+1 {
+			return errors.New("actor completion did not match the selected step")
 		}
-		a.step++
+		a := &actors[actorID]
+		a.step = result.step
 		a.observed++
 		ready = runnable(&actors)
 		if len(ready) == 0 {
@@ -168,6 +212,13 @@ func run() error {
 		if err != nil {
 			return err
 		}
+	}
+	for actorID := range commands {
+		commands[actorID] <- false
+		close(commands[actorID])
+	}
+	for range commands {
+		<-stopped
 	}
 	return c.result(consumerSawPublished && observedValue == 0, observedValue)
 }

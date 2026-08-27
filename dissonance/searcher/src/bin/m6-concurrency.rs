@@ -76,6 +76,10 @@ struct BugReport {
     seed: u64,
     wrong_schedule: Vec<u32>,
     wrong_schedule_reproduced: bool,
+    wrong_transcript_sha256: String,
+    wrong_coverage_exits: usize,
+    wrong_coverage: Vec<CoverageRecord>,
+    wrong_result_value: u8,
     reproducer_schedule: Vec<u32>,
     deterministic_replay: bool,
     transcript_sha256: String,
@@ -293,7 +297,11 @@ fn seeded_rust(program: &Path, plan: &SeededPlan) -> Result<BugReport, Box<dyn E
         attempts: 1,
         seed: plan.seed,
         wrong_schedule: wrong.choices,
-        wrong_schedule_reproduced: false,
+        wrong_schedule_reproduced: wrong.bug,
+        wrong_transcript_sha256: wrong.transcript_sha256,
+        wrong_coverage_exits: wrong.coverage.len(),
+        wrong_coverage: wrong.coverage,
+        wrong_result_value: wrong.value,
         reproducer_schedule: reproduced.choices,
         deterministic_replay: true,
         transcript_sha256: reproduced.transcript_sha256,
@@ -327,7 +335,11 @@ fn held_out_go(program: &Path, plan: &HeldOutPlan) -> Result<BugReport, Box<dyn 
         attempts,
         seed: plan.seed,
         wrong_schedule: wrong.choices,
-        wrong_schedule_reproduced: false,
+        wrong_schedule_reproduced: wrong.bug,
+        wrong_transcript_sha256: wrong.transcript_sha256,
+        wrong_coverage_exits: wrong.coverage.len(),
+        wrong_coverage: wrong.coverage,
+        wrong_result_value: wrong.value,
         reproducer_schedule: reproduced.choices,
         deterministic_replay: true,
         transcript_sha256: reproduced.transcript_sha256,
@@ -367,6 +379,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let rust = seeded_rust(&rust_program, &plan.rust_lost_update)?;
     let go = held_out_go(&go_program, &plan.go_publish_before_init)?;
     for result in [&rust, &go] {
+        println!(
+            "M6_NEGATIVE_OK id={} schedule={:?} result_value={} coverage_exits={} transcript={}",
+            result.id,
+            result.wrong_schedule,
+            result.wrong_result_value,
+            result.wrong_coverage_exits,
+            result.wrong_transcript_sha256
+        );
         println!(
             "M6_BUG_OK id={} mode={} attempts={}/{} schedule={:?} coverage_exits={} transcript={}",
             result.id,

@@ -59,6 +59,7 @@ extern crate std;
 #[cfg(feature = "host")]
 use std::{boxed::Box, collections::BTreeMap, vec::Vec};
 
+#[cfg(any(feature = "guest", not(feature = "host")))]
 use core::fmt;
 
 /// Maximum bytes in a hypercall frame, including the header.
@@ -176,6 +177,7 @@ pub enum Status {
 }
 
 impl Status {
+    #[cfg(feature = "guest")]
     fn from_u16(value: u16) -> Option<Self> {
         match value {
             0 => Some(Self::Ok),

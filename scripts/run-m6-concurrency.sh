@@ -36,5 +36,14 @@ if "$repo_root/scripts/m6-independent-oracle.py" \
     exit 1
 fi
 echo "M6_INDEPENDENT_NEGATIVE_OK id=go_publish_before_init field=reproducer_schedule"
+if "$repo_root/scripts/m6-independent-oracle.py" \
+    "$report" \
+    "$repo_root/harmony-linux/concurrency-suite/m6-plan.json" \
+    "$repo_root/dissonance/searcher/src/bin/m6-concurrency.rs" \
+    --plant-held-out-fixture; then
+    echo "M6 planted held-out fixture unexpectedly passed" >&2
+    exit 1
+fi
+echo "M6_FIXTURE_NEGATIVE_OK id=go_publish_before_init field=held_out_schedule"
 echo "M6_REPORT=$report"
 echo "M6_RUN_DIR=$run_dir"

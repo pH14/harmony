@@ -1506,12 +1506,43 @@ all green. M6 did not begin before this evidence was recorded.
   - **Independent comparator:** a separately materialized `RecordedEnv` resolves
     the Scheduler point and agrees with the VMM response without calling the
     VMM threshold helper.
-- **FAIL — deliberately racy Go/Rust suite with known schedules:** not started.
-- **FAIL — deterministic seeded reproduction:** not started.
-- **FAIL — held-out schedule discovery within predeclared budgets:** not started.
-- **FAIL — wrong-schedule negative for every entry:** not started.
-- **FAIL — held-out schedules absent from seeds/fixtures and per-bug report:** not
-  started.
+- **PASS — deliberately racy Go/Rust suite with known schedules:** the suite
+  builds two independent payload binaries. `rust-lost-update` runs two real OS
+  threads whose load/store split can lose an increment; `go-publish-before-init`
+  runs two real goroutines whose consumer can observe publication before value
+  initialization. The deterministic scheduler gives a step token to only the
+  selected actor and waits for its completion, so host thread scheduling cannot
+  reach the result. Every completed block crosses the exact HCP1 SDK op-2
+  threshold wire. The Rust payload uses only safe sequentially consistent
+  atomics; the Go payload is clean under the race detector.
+- **PASS — deterministic seeded reproduction:** Rust seed
+  `7869581770876780546` derives schedule `[0, 1, 0]`, which reproduces the lost
+  update twice with byte-identical full request/response transcript SHA-256
+  `d3e82e8c5a88327b8243ccfd882c327bb8076613c6872950ae18a21982a43c09`.
+  The independent model enumerates four reproducing words in the declared
+  three-choice vocabulary and agrees that this one leaves the value at `1`.
+- **PASS — held-out schedule discovery within predeclared budgets:** the
+  precommitted plan fixes Go seed `7869581770876780549`, three choices, and an
+  eight-attempt budget. The first seed-derived candidate is independently shown
+  clean. Generic seed-permuted enumeration discovers `[0, 1, 1]` on attempt
+  `4/8`; deterministic replay has transcript SHA-256
+  `90fe94adaabd79d68f4fd1873128e78796893f2fb90b8147b08d74ec1868df25`.
+  The independent model reconstructs the candidate order and identifies the
+  same first reproducer rather than trusting the report's attempt count.
+- **PASS — wrong-schedule negative for every entry:** `[0, 0]` is first run
+  through each compiled payload. Rust completes correctly at `2`, transcript
+  `9e09276cca97a8c2e496c67b4b32c7bc3a21321f967f1c0d19ed746f71bd9786`;
+  Go observes initialized value `42`, transcript
+  `1ec683ef7c152b7d0048e12f92dfde4b05b621a6a94819f9ad498dc16b85b731`.
+  Each negative's complete four-exit threshold trace is in its per-bug report
+  and exactly matches the separately implemented semantic model.
+- **PASS — held-out schedules absent from seeds/fixtures and per-bug report:**
+  `m6-plan.json` contains no schedule field; the held-out seed's first candidate
+  is not a reproducer; and the compact reproducer literal is absent from both
+  the plan and search driver. The independent absence checker was proven
+  sensitive by injecting that literal and rejecting it. The JSON records each
+  bug separately: language, mode, seed, budget, attempts, negative and positive
+  schedules, result values, transcript digests, and full threshold traces.
 
 ### M6 threshold-protocol command evidence
 
@@ -1534,6 +1565,46 @@ PASS: libvoidstar ABI symbols; ABI/threshold transaction test exited 0
 strict focused clippy and both workspace format checks
 exit status 0; only the pre-existing invalid-path notices from clippy.toml
 ```
+
+### M6 concurrency-discovery command evidence
+
+```text
+scripts/run-m6-concurrency.sh /private/tmp/harmony-m6-report-final.json
+M6_NEGATIVE_OK id=rust_lost_update schedule=[0, 0] result_value=2 coverage_exits=4
+M6_BUG_OK id=rust_lost_update attempts=1/1 schedule=[0, 1, 0] coverage_exits=4
+M6_NEGATIVE_OK id=go_publish_before_init schedule=[0, 0] result_value=42 coverage_exits=4
+M6_BUG_OK id=go_publish_before_init attempts=4/8 schedule=[0, 1, 1] coverage_exits=4
+M6_WITHHELD_OK budget=8 first_seed_candidate_negative=true fixture_schedule_absent=true
+M6_INDEPENDENT_OK id=rust_lost_update known_reproducers=4 schedule=[0, 1, 0]
+M6_INDEPENDENT_OK id=go_publish_before_init known_reproducers=1 schedule=[0, 1, 1]
+M6_INDEPENDENT_NEGATIVE_OK id=go_publish_before_init field=reproducer_schedule
+M6_FIXTURE_NEGATIVE_OK id=go_publish_before_init field=held_out_schedule
+exit status 0
+
+SHA-256 report: 713f9d432073e255748912f0c045133788078eca08eedf03717d9e68eceb2c10
+SHA-256 predeclared plan: d7ea3fd2c8d4bf214a29438e202d645b298ee132a95c64159e8d0d813c2324af
+
+cargo clippy --manifest-path harmony-linux/concurrency-suite/rust-lost-update/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path harmony-linux/concurrency-suite/rust-lost-update/Cargo.toml
+both exit status 0
+
+go test -race ./...  # from go-publish-before-init
+exit status 0
+
+cargo clippy --manifest-path dissonance/Cargo.toml -p searcher --all-features --all-targets -- -D warnings
+exit status 0; only the pre-existing invalid-path notice from clippy.toml
+
+cargo test -p hypercall-proto --all-features
+33 passed; 0 failed (one public-API job intentionally ignored)
+```
+
+**M6 overall: PASS.** The production threshold path, two real concurrent
+payloads, per-entry wrong-schedule negatives, deterministic seeded reproduction,
+held-out discovery under its unchanged fixed budget, exact per-bug traces, the
+independent semantic/attempt-order comparator, and both planted comparator and
+fixture negatives are green. Broad search-workspace seed sweeps remain the
+CI/nightly lane because they are not load-bearing for this fixed-budget
+measurement.
 
 **Recorded correction:** M6's build line formerly cited §2.4, which is the
 instruction-surface section; the threshold protocol is defined in §2.5. The
