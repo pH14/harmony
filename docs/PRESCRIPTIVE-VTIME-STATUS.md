@@ -1473,7 +1473,7 @@ X0 is PASS.
 
 X1 is PASS.
 
-## X2 — Linux boots to /init deterministically on the runner (in progress)
+## X2 — Linux boots to /init deterministically on the runner
 
 ### Build criteria
 
@@ -1531,6 +1531,17 @@ OK, same final V-time); the checkpoint state hash diverges first at event
 a binary divergence at the first checkpoint — while their later
 checkpoints take three distinct value paths. Decision 18 records the
 localizer built for it and decision 19 the measured cause (an XSAVE
-init-optimization encoding flip) and its canonicalization. X2 stays open
-until an Intel draw passes ten boots (the passes-when criteria require
-one draw of each vendor).
+init-optimization encoding flip) and its canonicalization.
+
+Run 33096707232 (decision-19 canonicalization in place): the gate matrix
+drew both vendors — two EPYC 9V74 and two Xeon 8573C replicas — and all
+four passed: smoke, ten same-seed boots with `X2_DIVERGENCES=0`, delivery
+placement OK on every boot, terminal localizer all-MATCH. Each host's
+twelve boots (smoke, the ten gate boots, the localizer pair) produce one
+digest: `670b8e9c…` on both AMD hosts, `b91a5d19…` on both Intel hosts,
+with 35314 events and the same final assigned V-time everywhere. The
+hunt job's bounded first-checkpoint draws stayed clean on every replica.
+The two vendor digests differ from each other; naming the divergent
+field is X3's opening measurement.
+
+X2 is PASS.
