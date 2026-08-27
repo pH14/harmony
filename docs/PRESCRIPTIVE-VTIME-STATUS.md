@@ -1240,6 +1240,16 @@ on this branch may contain, fetch, or require a NES ROM.
    on x86 yet (`trace_arm_clockevent_*` is arm64 clockevent wiring), so
    delivery placement rides the state-hash/vns comparison until the LAPIC
    timer is wired into the trace's schedule oracle.
+10. **The counter-opcode scan gets a per-toolchain site baseline.** The
+   reviewed `rdtsc-allowlist.txt` pins `symbol+offset` sites from the box
+   toolchain; offsets and inlining are toolchain-dependent, so the runner
+   build (ubuntu-24.04 default gcc 13) fails the exact-accounting scan with
+   the same audited kernel. `rdtsc-allowlist-gha.txt` is the runner
+   toolchain's captured baseline — 115 sites, verified at capture to be a
+   strict subset of the reviewed list at function granularity (no new
+   function carries a counter read; justifications stay with the reviewed
+   list). `build-kernel.sh` selects the list via `HARMONY_RDTSC_ALLOWLIST`
+   (default unchanged: the box list).
 
 ## X0 — runner probe
 

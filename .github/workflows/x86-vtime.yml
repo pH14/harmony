@@ -128,7 +128,7 @@ jobs:
           path: |
             harmony-linux/build/bzImage
             harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
       - name: Restore source cache
         if: steps.image-cache.outputs.cache-hit != 'true'
         uses: actions/cache@v4
@@ -159,7 +159,9 @@ jobs:
           }
           fetch "$KERNEL_URL" "$KERNEL_SHA256"
           fetch "$BUSYBOX_URL" "$BUSYBOX_SHA256"
-          make -C harmony-linux/linux image
+          cc --version | head -1
+          HARMONY_RDTSC_ALLOWLIST=$PWD/harmony-linux/linux/rdtsc-allowlist-gha.txt \
+            make -C harmony-linux/linux image
       - name: Record image identity
         run: |
           sha256sum harmony-linux/build/bzImage harmony-linux/build/initramfs.cpio.gz | tee guest-image-report.txt
@@ -197,7 +199,7 @@ jobs:
           path: |
             harmony-linux/build/bzImage
             harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
           fail-on-cache-miss: true
       - name: Install stable toolchain
         run: |

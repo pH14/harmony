@@ -1,0 +1,133 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Counter-read (rdtsc/rdtscp) per-site allowlist for the guest kernel as built
+# by the GitHub-hosted ubuntu-24.04 runner toolchain (default gcc 13).
+#
+# Same audit, same kernel sources, same config as rdtsc-allowlist.txt — that
+# file pins the box toolchain's site offsets, and offsets/inlining are
+# toolchain-dependent, so each build toolchain carries its own site baseline.
+# Mechanical property, verified at capture: every function named here appears
+# in the reviewed rdtsc-allowlist.txt function set (this list is a strict
+# subset at function granularity — 115 sites over the same reviewed
+# functions; no new function carries a counter read). The per-function review
+# justifications live in rdtsc-allowlist.txt.
+#
+# Regenerate when the runner toolchain moves: the scan failure prints the
+# unlisted/stale sites in paste-ready form; re-verify the function-subset
+# property against rdtsc-allowlist.txt before committing.
+# Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
+# workflow sets it).
+vmlinux:.altinstr_replacement+0x1d18
+vmlinux:.altinstr_replacement+0x1d1a
+vmlinux:.altinstr_replacement+0x1d20
+vmlinux:.altinstr_replacement+0x1d22
+vmlinux:.altinstr_replacement+0x1d28
+vmlinux:.altinstr_replacement+0x1d2a
+vmlinux:.altinstr_replacement+0x1d30
+vmlinux:.altinstr_replacement+0x1d32
+vmlinux:.altinstr_replacement+0x1d38
+vmlinux:.altinstr_replacement+0x1d3a
+vmlinux:.altinstr_replacement+0x322
+vmlinux:.altinstr_replacement+0x324
+vmlinux:.altinstr_replacement+0x32a
+vmlinux:.altinstr_replacement+0x32c
+vmlinux:.altinstr_replacement+0x332
+vmlinux:.altinstr_replacement+0x334
+vmlinux:.altinstr_replacement+0x59f
+vmlinux:.altinstr_replacement+0x5a1
+vmlinux:.altinstr_replacement+0x88f
+vmlinux:.altinstr_replacement+0x891
+vmlinux:.altinstr_replacement+0x897
+vmlinux:.altinstr_replacement+0x899
+vmlinux:.altinstr_replacement+0x931
+vmlinux:.altinstr_replacement+0x933
+vmlinux:.altinstr_replacement+0x94e
+vmlinux:.altinstr_replacement+0x950
+vmlinux:.altinstr_replacement+0x956
+vmlinux:.altinstr_replacement+0x958
+vmlinux:__dmar_enable_qi+0x84
+vmlinux:__dmar_enable_qi+0xa0
+vmlinux:__iommu_flush_context+0x5e
+vmlinux:__iommu_flush_context+0x79
+vmlinux:__iommu_flush_iotlb+0xeb
+vmlinux:__iommu_flush_iotlb+0xf9
+vmlinux:add_device_randomness+0x1d
+vmlinux:add_interrupt_randomness+0x5
+vmlinux:add_timer_randomness+0x1e
+vmlinux:check_tsc_warp+0x4c
+vmlinux:check_tsc_warp+0xe
+vmlinux:delay_halt+0x36
+vmlinux:delay_halt+0xa
+vmlinux:delay_tsc+0x2d
+vmlinux:delay_tsc+0x52
+vmlinux:delay_tsc+0xb
+vmlinux:dmar_disable_qi+0x0
+vmlinux:dmar_disable_qi+0x79
+vmlinux:dmar_disable_qi+0xa8
+vmlinux:dmar_disable_qi+0xc4
+vmlinux:do_syscall_64+0x197
+vmlinux:ecmd_submit_sync+0x60
+vmlinux:ecmd_submit_sync+0x7b
+vmlinux:entropy_timer+0x18
+vmlinux:ext4_mb_generate_buddy+0x14c
+vmlinux:ext4_mb_generate_buddy+0x32
+vmlinux:extract_entropy.constprop.0+0xc3
+vmlinux:harmony_pvclock_init+0x10a
+vmlinux:harmony_pvclock_init+0x171
+vmlinux:hpet_enable+0x265
+vmlinux:hpet_enable+0x273
+vmlinux:iommu_disable_irq_remapping.part.0+0x3f
+vmlinux:iommu_disable_irq_remapping.part.0+0x5b
+vmlinux:iommu_disable_protect_mem_regions.part.0+0x28
+vmlinux:iommu_disable_protect_mem_regions.part.0+0x41
+vmlinux:iommu_disable_translation+0x3c
+vmlinux:iommu_disable_translation+0x55
+vmlinux:iommu_enable_irq_remapping+0x25
+vmlinux:iommu_enable_irq_remapping+0x3f
+vmlinux:iommu_enable_irq_remapping+0x86
+vmlinux:iommu_enable_irq_remapping+0xa2
+vmlinux:iommu_enable_translation+0x25
+vmlinux:iommu_enable_translation+0x3e
+vmlinux:iommu_flush_write_buffer+0x35
+vmlinux:iommu_flush_write_buffer+0x51
+vmlinux:iommu_set_irq_remapping+0x73
+vmlinux:iommu_set_irq_remapping+0x8f
+vmlinux:iommu_set_root_entry+0x6a
+vmlinux:iommu_set_root_entry+0x86
+vmlinux:irqentry_exit_to_user_mode+0xc3
+vmlinux:jent_get_nstime+0x4
+vmlinux:lapic_cal_handler+0x1a
+vmlinux:lapic_next_deadline+0x6
+vmlinux:msr_event_add+0x18
+vmlinux:msr_event_start+0xc
+vmlinux:msr_event_update+0x1d
+vmlinux:native_sched_clock+0x2
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xa1
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xc2
+vmlinux:pvclock_clocksource_read+0x10
+vmlinux:pvclock_clocksource_read_nowd+0xa
+vmlinux:quick_pit_calibrate+0x182
+vmlinux:quick_pit_calibrate+0x189
+vmlinux:quick_pit_calibrate+0x19d
+vmlinux:quick_pit_calibrate+0x40
+vmlinux:quick_pit_calibrate+0x66
+vmlinux:quick_pit_calibrate+0x9b
+vmlinux:quick_pit_calibrate+0xc2
+vmlinux:random_init+0x13
+vmlinux:read_current_timer+0xd
+vmlinux:read_tsc+0x0
+vmlinux:ret_from_fork+0xe8
+vmlinux:setup_boot_APIC_clock+0x151
+vmlinux:setup_boot_APIC_clock+0xce
+vmlinux:timer_irq_works+0x36
+vmlinux:timer_irq_works+0x5b
+vmlinux:trace_clock_x86_tsc+0x0
+vmlinux:try_to_generate_entropy+0x1a9
+vmlinux:try_to_generate_entropy+0x4c
+vmlinux:try_to_generate_entropy+0x82
+vmlinux:tsc_enable_sched_clock+0x4a
+vmlinux:tsc_read_refs+0x2b
+vmlinux:tsc_read_refs+0x42
+vmlinux:vmclock_get_crosststamp+0x166
+vmlinux:vmclock_get_crosststamp+0x177
+vmlinux:vmware_platform_setup+0x229
+vmlinux:vmware_sched_clock+0x0
