@@ -1493,6 +1493,7 @@ name = "searcher"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "hypercall-proto",
  "machine",
  "postcard",
  "serde",

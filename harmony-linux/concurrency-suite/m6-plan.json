@@ -1,0 +1,15 @@
+{
+  "format": "consonance.m6-plan.v1",
+  "rust_lost_update": {
+    "mode": "seeded_reproducer",
+    "budget": 1,
+    "seed": 7869581770876780546,
+    "max_choices": 3
+  },
+  "go_publish_before_init": {
+    "mode": "held_out_discovery",
+    "budget": 8,
+    "seed": 7869581770876780549,
+    "max_choices": 3
+  }
+}
