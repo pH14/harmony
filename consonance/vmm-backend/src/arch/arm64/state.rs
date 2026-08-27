@@ -277,7 +277,7 @@ mod tests {
             ..Default::default()
         };
         canonicalize_core_regs(&mut core);
-        assert_eq!(core.pstate, u64::MAX & !PSTATE_TCO);
-        assert_eq!(core.spsr_el1, u64::MAX & !PSTATE_TCO);
+        assert_eq!(core.pstate, !PSTATE_TCO);
+        assert_eq!(core.spsr_el1, !PSTATE_TCO);
     }
 }
