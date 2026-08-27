@@ -27,6 +27,13 @@ random_get_entropy() reads the clock page — zero before the page is live —
 instead of rdtsc. Entropy timing, printk timestamps, and timekeeping are then
 pure functions of the deterministic exit stream.
 
+The jitter RNG cannot run on such a clock: between exits time is frozen, and
+the collector-priming loop in jent_entropy_collector_alloc() spins forever on
+stuck measurements (outside FIPS mode the health test never breaks the loop)
+before its own timer sanity checks can reject the clock. jent_mod_init
+therefore declines registration when the parameter is set, and the DRBG runs
+without that seed source.
+
 This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
 harmony-linux/linux/patches/ per the repo's kernel-patch licensing exception
 (patches/README.md); it is not first-party harmony source. Applied by
@@ -532,3 +539,34 @@ reads in its reviewed allowlist.
  	detect_art();
  }
  
+--- a/crypto/jitterentropy-kcapi.c
++++ b/crypto/jitterentropy-kcapi.c
+@@ -46,6 +46,7 @@
+ #include <linux/slab.h>
+ #include <linux/time.h>
+ #include <crypto/internal/rng.h>
++#include <asm/harmony_pvclock.h>
+ 
+ #include "jitterentropy.h"
+ 
+@@ -338,6 +339,20 @@
+ 	struct crypto_shash *tfm;
+ 	int ret = 0;
+ 
++	/*
++	 * With the harmony clock page active every guest time source is a
++	 * function of host-assigned time and freezes between VM exits, so
++	 * there is no physical timing jitter to harvest: the priming loop in
++	 * jent_entropy_collector_alloc() would spin on stuck measurements
++	 * forever (the non-FIPS health test never fails) before the timer
++	 * sanity checks could reject the clock. Decline up front; the DRBG
++	 * runs without this seed source outside FIPS mode.
++	 */
++	if (harmony_pvclock_requested()) {
++		pr_info("jitterentropy: disabled: harmony_pvclock time has no physical jitter\n");
++		return -ENODEV;
++	}
++
+ 	jent_testing_init();
+ 
+ 	tfm = crypto_alloc_shash(JENT_CONDITIONING_HASH, 0, 0);

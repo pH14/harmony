@@ -44,7 +44,7 @@ const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
 /// host-stamped page instead of the uninterceptable raw TSC.
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
      no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
-     nox2apic hpet=disable harmony_pvclock initcall_debug ignore_loglevel";
+     nox2apic hpet=disable harmony_pvclock";
 /// The kernel message that proves Linux reached the userspace init process.
 const REACHED_USERSPACE: &[u8] = b"Run /init as init process";
 /// The guest driver's proof that the clock page registered (patch 0001); a

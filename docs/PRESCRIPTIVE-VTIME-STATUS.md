@@ -1284,6 +1284,27 @@ on this branch may contain, fetch, or require a NES ROM.
    `rdtsc-allowlist.txt` goes stale for box builds of this branch's tree
    and needs a box re-baseline before any merge.
 
+14. **The jitter RNG declines to run under `harmony_pvclock`.** The first
+   decision-12 boots hung deterministically with the last serial line at
+   fs/9p (runs 33070782691, both replicas byte-identical), and an
+   `initcall_debug` boot (run 33080063285) named the site: `jent_mod_init`
+   is called and never returns. Cause: `jent_entropy_collector_alloc`
+   primes its data pad through `jent_gen_entropy` before any timer sanity
+   check runs; with every guest time source a function of assigned V-time,
+   time is frozen between VM exits, every jitter delta is zero, every
+   measurement is stuck and retried, and the only loop break —
+   `jent_health_failure` — returns 0 outside FIPS mode. The guest makes no
+   exits in that loop, so V-time stays frozen and the spin is permanent.
+   Patch 0001 now has `jent_mod_init` return `-ENODEV` (one deterministic
+   pr_info line) when `harmony_pvclock` is active: an assigned clock
+   carries no physical timing jitter, so declining is the honest behavior,
+   and the DRBG continues without the source outside FIPS mode
+   (`drbg_prepare_hrng`). The hunk adds no counter reads and shifts no
+   in-function offsets, so the decision-13 allowlist stands. This is the
+   first instance of the general class "exit-free guest spin on frozen
+   V-time"; the external per-tier `timeout` wrappers added alongside bound
+   any future instance to minutes instead of the job cap.
+
 ## X0 — runner probe
 
 ### Build criteria
