@@ -129,12 +129,36 @@ jobs:
             harmony-linux/build/bzImage
             harmony-linux/build/initramfs.cpio.gz
           key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+      - name: Restore source cache
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: harmony-linux/dl
+          key: x86-guest-sources-${{ hashFiles('harmony-linux/linux/versions.lock') }}
+      # The x86 image consumes only the kernel and busybox tarballs
+      # (`lib-build.sh` extract_kernel/extract_busybox); the full `make fetch`
+      # pulls several hundred MB of other pinned payloads from mirrors that
+      # reset connections from cloud runners. Fetch exactly the two inputs,
+      # hash-verified against versions.lock, with curl retries; the build
+      # scripts re-verify every tarball before extraction.
       - name: Build guest image
         if: steps.image-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flex bison bc libelf-dev libssl-dev
-          make -C harmony-linux fetch
+          . harmony-linux/linux/versions.lock
+          mkdir -p harmony-linux/dl
+          fetch() {
+            file="harmony-linux/dl/$(basename "$1")"
+            if [ -f "$file" ] && echo "$2  $file" | sha256sum -c --status; then
+              echo "ok: $file (cached, hash verified)"
+              return
+            fi
+            curl -fSL --retry 8 --retry-delay 15 --retry-all-errors -o "$file" "$1"
+            echo "$2  $file" | sha256sum -c
+          }
+          fetch "$KERNEL_URL" "$KERNEL_SHA256"
+          fetch "$BUSYBOX_URL" "$BUSYBOX_SHA256"
           make -C harmony-linux/linux image
       - name: Record image identity
         run: |
