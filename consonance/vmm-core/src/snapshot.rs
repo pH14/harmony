@@ -226,6 +226,13 @@ impl SnapshotEngine {
         Ok(S::decode(self.store.vm_state(snap)?)?)
     }
 
+    /// Borrow the integrity-checked canonical vendor VM-state bytes verbatim.
+    /// Portable snapshot export must preserve these exact bytes rather than
+    /// decode/re-encode them through a host-specific intermediate.
+    pub fn vm_state_bytes(&self, snap: SnapshotId) -> Result<&[u8], SnapshotError> {
+        Ok(self.store.vm_state(snap)?)
+    }
+
     /// Increment `snap`'s refcount (an explorer holding a fork alive). See
     /// [`snapshot_store::Store::retain`].
     pub fn retain(&mut self, snap: SnapshotId) -> Result<(), SnapshotError> {

@@ -90,6 +90,178 @@ pub fn compare_gic_architecture(
     Ok(())
 }
 
+/// Direct, substrate-neutral architectural capture used by M5's comparator.
+///
+/// The vCPU record comes straight from the backend's live save seam. Any
+/// backend-owned in-kernel GIC is removed from that record and normalized into
+/// `gic`, where it has the same typed form as the userspace HVF model. This is
+/// deliberately separate from `state_blob`, the vendor snapshot codec, and
+/// `state_hash`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Arm64ArchitecturalState {
+    /// Canonical live vCPU state, with `gic == None` by construction.
+    pub vcpu: vmm_backend::Arm64VcpuState,
+    /// Canonical GICv3 architectural record, independent of fabric ownership.
+    pub gic: Option<gicv3::GicState>,
+}
+
+/// First field-level disagreement from the independent ARM comparator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Arm64ArchitectureDifference {
+    /// A scalar or indexed vCPU register file differs.
+    Vcpu {
+        /// Stable architectural field name.
+        field: &'static str,
+        /// Array element, when the field is an architectural register bank.
+        index: Option<usize>,
+    },
+    /// One capture has an architectural GIC and the other does not.
+    GicPresence,
+    /// Both captures have a GIC and the independent GIC comparator localized it.
+    Gic(GicArchitectureDifference),
+}
+
+/// Compare two direct ARM architectural captures field by field.
+///
+/// This does not consume a state hash, a component digest, or the vendor
+/// snapshot encoding. It is therefore an independent comparator for the M5
+/// portability result rather than a second spelling of the canonical hash.
+pub fn compare_arm64_architecture(
+    expected: &Arm64ArchitecturalState,
+    actual: &Arm64ArchitecturalState,
+) -> Result<(), Arm64ArchitectureDifference> {
+    let a = &expected.vcpu;
+    let b = &actual.vcpu;
+    macro_rules! scalar {
+        ($field:literal, $a:expr, $b:expr) => {
+            if $a != $b {
+                return Err(Arm64ArchitectureDifference::Vcpu {
+                    field: $field,
+                    index: None,
+                });
+            }
+        };
+    }
+    macro_rules! array {
+        ($field:literal, $a:expr, $b:expr) => {
+            if let Some(index) = $a.iter().zip($b.iter()).position(|(x, y)| x != y) {
+                return Err(Arm64ArchitectureDifference::Vcpu {
+                    field: $field,
+                    index: Some(index),
+                });
+            }
+        };
+    }
+
+    array!("core.x", a.core.x, b.core.x);
+    scalar!("core.sp", a.core.sp, b.core.sp);
+    scalar!("core.pc", a.core.pc, b.core.pc);
+    scalar!("core.pstate", a.core.pstate, b.core.pstate);
+    scalar!("core.sp_el1", a.core.sp_el1, b.core.sp_el1);
+    scalar!("core.elr_el1", a.core.elr_el1, b.core.elr_el1);
+    scalar!("core.spsr_el1", a.core.spsr_el1, b.core.spsr_el1);
+
+    scalar!(
+        "sysregs.sctlr_el1",
+        a.sysregs.sctlr_el1,
+        b.sysregs.sctlr_el1
+    );
+    scalar!(
+        "sysregs.ttbr0_el1",
+        a.sysregs.ttbr0_el1,
+        b.sysregs.ttbr0_el1
+    );
+    scalar!(
+        "sysregs.ttbr1_el1",
+        a.sysregs.ttbr1_el1,
+        b.sysregs.ttbr1_el1
+    );
+    scalar!("sysregs.tcr_el1", a.sysregs.tcr_el1, b.sysregs.tcr_el1);
+    scalar!("sysregs.mair_el1", a.sysregs.mair_el1, b.sysregs.mair_el1);
+    scalar!("sysregs.vbar_el1", a.sysregs.vbar_el1, b.sysregs.vbar_el1);
+    scalar!(
+        "sysregs.cpacr_el1",
+        a.sysregs.cpacr_el1,
+        b.sysregs.cpacr_el1
+    );
+    scalar!("sysregs.esr_el1", a.sysregs.esr_el1, b.sysregs.esr_el1);
+    scalar!("sysregs.far_el1", a.sysregs.far_el1, b.sysregs.far_el1);
+    scalar!(
+        "sysregs.tpidr_el0",
+        a.sysregs.tpidr_el0,
+        b.sysregs.tpidr_el0
+    );
+    scalar!(
+        "sysregs.tpidr_el1",
+        a.sysregs.tpidr_el1,
+        b.sysregs.tpidr_el1
+    );
+    scalar!(
+        "sysregs.cntkctl_el1",
+        a.sysregs.cntkctl_el1,
+        b.sysregs.cntkctl_el1
+    );
+
+    array!("simd_fp.q", a.simd_fp.q, b.simd_fp.q);
+    scalar!("simd_fp.fpcr", a.simd_fp.fpcr, b.simd_fp.fpcr);
+    scalar!("simd_fp.fpsr", a.simd_fp.fpsr, b.simd_fp.fpsr);
+    array!(
+        "debug.breakpoint_value",
+        a.debug.breakpoint_value,
+        b.debug.breakpoint_value
+    );
+    array!(
+        "debug.breakpoint_control",
+        a.debug.breakpoint_control,
+        b.debug.breakpoint_control
+    );
+    array!(
+        "debug.watchpoint_value",
+        a.debug.watchpoint_value,
+        b.debug.watchpoint_value
+    );
+    array!(
+        "debug.watchpoint_control",
+        a.debug.watchpoint_control,
+        b.debug.watchpoint_control
+    );
+    scalar!("debug.mdscr_el1", a.debug.mdscr_el1, b.debug.mdscr_el1);
+    scalar!(
+        "debug.trap_debug_exceptions",
+        a.debug.trap_debug_exceptions,
+        b.debug.trap_debug_exceptions
+    );
+    scalar!(
+        "debug.trap_debug_reg_accesses",
+        a.debug.trap_debug_reg_accesses,
+        b.debug.trap_debug_reg_accesses
+    );
+    scalar!(
+        "vtimer.cntv_ctl_el0",
+        a.vtimer.cntv_ctl_el0,
+        b.vtimer.cntv_ctl_el0
+    );
+    scalar!(
+        "vtimer.cntv_cval_el0",
+        a.vtimer.cntv_cval_el0,
+        b.vtimer.cntv_cval_el0
+    );
+    scalar!("vtimer.masked", a.vtimer.masked, b.vtimer.masked);
+    scalar!("vtimer.offset", a.vtimer.offset, b.vtimer.offset);
+    scalar!("interrupts.irq", a.interrupts.irq, b.interrupts.irq);
+    scalar!("interrupts.fiq", a.interrupts.fiq, b.interrupts.fiq);
+    scalar!("mp_state", a.mp_state, b.mp_state);
+    scalar!("vcpu.gic", a.gic.is_some(), b.gic.is_some());
+
+    match (&expected.gic, &actual.gic) {
+        (None, None) => Ok(()),
+        (Some(expected), Some(actual)) => {
+            compare_gic_architecture(expected, actual).map_err(Arm64ArchitectureDifference::Gic)
+        }
+        _ => Err(Arm64ArchitectureDifference::GicPresence),
+    }
+}
+
 use control_proto::RegsView;
 use vm_state::Arm64VmState;
 use vmm_backend::{Arm64, Arm64Exit, Arm64VcpuState, Backend, Gpa};
@@ -341,5 +513,23 @@ mod comparator_tests {
             })
         );
         assert_eq!(compare_gic_architecture(&expected, &expected), Ok(()));
+    }
+
+    #[test]
+    fn full_architectural_comparator_localizes_a_planted_core_register() {
+        let expected = Arm64ArchitecturalState {
+            vcpu: vmm_backend::Arm64VcpuState::default(),
+            gic: Some(board::new_gic().snapshot()),
+        };
+        let mut planted = expected.clone();
+        planted.vcpu.core.x[7] = 1;
+        assert_eq!(
+            compare_arm64_architecture(&expected, &planted),
+            Err(Arm64ArchitectureDifference::Vcpu {
+                field: "core.x",
+                index: Some(7),
+            })
+        );
+        assert_eq!(compare_arm64_architecture(&expected, &expected), Ok(()));
     }
 }

@@ -215,6 +215,28 @@ impl<S: Read + Write> SocketMachine<S> {
         self.cuts.get(&snap.0).copied()
     }
 
+    /// Register an out-of-band imported snapshot and its source-authenticated
+    /// evidence cut. Portable artifacts are loaded by the control-server
+    /// composition root before this client connects, so the ordinary wire
+    /// protocol has no snapshot reply from which to learn the cut. Registration
+    /// restores exactly that missing session-local bookkeeping; `replay` then
+    /// uses the normal control verb and validation path.
+    pub fn register_imported_snapshot(
+        &mut self,
+        snap: SnapId,
+        cut: SnapshotCut,
+    ) -> Result<(), MachineError> {
+        u32::try_from(cut.sdk_events).map_err(|_| {
+            MachineError::Backend("snapshot SDK event cut exceeds protocol cursor".into())
+        })?;
+        if self.cuts.insert(snap.0, cut).is_some() {
+            return Err(MachineError::Backend(
+                "imported snapshot handle is already registered".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Read the server's canonical whole-state hash.
     ///
     /// # Errors

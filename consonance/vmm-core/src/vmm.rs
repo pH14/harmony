@@ -681,10 +681,10 @@ pub(crate) struct PvclockChannel {
 #[derive(Clone, Debug)]
 pub struct SdkSnapshot {
     /// The seeded stream position (buggify fault + entropy supply), 16 bytes.
-    stream: [u8; 16],
+    pub(crate) stream: [u8; 16],
     /// The `Moment`-stamped event log emitted up to the snapshot (incl. the
     /// declared catalog), which a fork carries forward.
-    events: Vec<(u64, u32, Vec<u8>)>,
+    pub(crate) events: Vec<(u64, u32, Vec<u8>)>,
     /// The deferred `setup_complete` snapshot-point flag
     /// ([`SdkChannel::pending_snapshot`]). Round-8 folds this into `state_blob`
     /// (the hash), so a verbatim replay MUST restore it — a snapshot sealed while
@@ -692,11 +692,11 @@ pub struct SdkSnapshot {
     /// sealable boundary) would otherwise restore to a state that hashes
     /// differently (the deferred point silently lost), breaking replay's
     /// round-trip hash equality.
-    pending_snapshot: bool,
+    pub(crate) pending_snapshot: bool,
     /// Canonical ordered-input state: only the unconsumed payload suffix.
     /// `None` means the service was not offered; `Some([])` is offered and
     /// exhausted.
-    payloads: Option<Vec<Vec<u8>>>,
+    pub(crate) payloads: Option<Vec<Vec<u8>>>,
 }
 
 impl SdkSnapshot {
@@ -717,7 +717,7 @@ impl SdkSnapshot {
 pub struct NetSnapshot {
     /// The `(moment, conn, answer)` decision log up to the snapshot, carried
     /// forward so a fork's decision evidence is complete.
-    decisions: Vec<(u64, u64, environment::Answer)>,
+    pub(crate) decisions: Vec<(u64, u64, environment::Answer)>,
 }
 
 /// The task-110 pvclock channel's **replay-relevant** state, captured with a

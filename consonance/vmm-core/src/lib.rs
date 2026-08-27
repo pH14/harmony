@@ -51,6 +51,8 @@ pub mod corpus;
 pub mod exec;
 /// M3's pure real-payload acceptance, V-time-gap, and throughput oracles.
 pub mod m3_report;
+/// Complete host-neutral snapshot artifacts for cross-host continuation.
+pub mod portable_snapshot;
 /// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
 pub mod prescriptive;
 // Task 63 — the pure-logic half of the arbitrary-V-time seal-rate measurement (the

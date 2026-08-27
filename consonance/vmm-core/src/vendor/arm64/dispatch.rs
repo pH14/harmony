@@ -161,6 +161,25 @@ impl Arm64Devices {
 }
 
 impl<B: Backend<A = Arm64>> Vmm<B> {
+    /// Capture live vCPU + GIC state directly for the independent M5
+    /// architectural comparator. This path does not call `save_vm_state`,
+    /// encode a vendor snapshot, or compute a state hash.
+    pub fn arm64_architectural_state(&self) -> Result<super::Arm64ArchitecturalState, VmmError> {
+        let mut vcpu = self.backend.save()?;
+        let backend_gic = vcpu.gic.take().map(|gic| records::gic_from_backend(&gic));
+        let userspace_gic = self.devices.gic.as_ref().map(gicv3::Gicv3::snapshot);
+        let gic = match (backend_gic, userspace_gic) {
+            (Some(_), Some(_)) => {
+                return Err(VmmError::ContractViolation(
+                    "both in-kernel and userspace GICv3 fabrics are wired".to_string(),
+                ));
+            }
+            (Some(gic), None) | (None, Some(gic)) => Some(gic),
+            (None, None) => None,
+        };
+        Ok(super::Arm64ArchitecturalState { vcpu, gic })
+    }
+
     /// Read the live interrupt controller in the canonical architectural form
     /// shared by the KVM in-kernel vGIC and the HVF userspace model.
     pub fn canonical_arm64_gic_state(&self) -> Result<Option<gicv3::GicState>, VmmError> {

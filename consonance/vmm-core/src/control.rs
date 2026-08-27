@@ -116,6 +116,7 @@ use vmm_backend::Backend;
 use crate::vendor::{InterruptReject, Vendor};
 
 use crate::exec::ExecSession;
+use crate::portable_snapshot::{PortableSnapshot, PortableSnapshotError, PortableSnapshotRef};
 use crate::session_trace::{SessionPrescriptiveTrace, SessionTraceSegment, SessionTraceStart};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
 use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
@@ -190,6 +191,28 @@ pub enum ServeError {
     /// (the server is poisoned; a prior [`ServeError`] was returned).
     #[error("server poisoned by a prior fatal error")]
     Poisoned,
+}
+
+/// Stable evidence returned by portable snapshot export/import.
+///
+/// The imported handle is session-local, while the remaining fields are the
+/// source seal's immutable cut and immediate whole-state oracle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PortableSnapshotReceipt {
+    /// Session-local handle for export or the newly imported base snapshot.
+    pub id: SnapId,
+    /// Exact synchronized V-time at the seal.
+    pub at: Moment,
+    /// SDK event-prefix length included in the snapshot.
+    pub sdk_events: u64,
+    /// Portable normalized-event prefix length at the seal.
+    pub trace_events: u64,
+    /// Portable deadline-schedule prefix length at the seal.
+    pub trace_schedules: u64,
+    /// Whether the sealed lineage was tainted by improvisation.
+    pub tainted: bool,
+    /// Source [`Vmm::state_hash`] at the same stopped seal boundary.
+    pub state_hash: [u8; 32],
 }
 
 /// The [`Caps`] this server negotiates: the current negotiated application
@@ -339,6 +362,10 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// Removed with its handle on `drop`. A `BTreeSet` so membership order never
     /// reaches an output.
     tainted_snaps: BTreeSet<u64>,
+    /// Immutable evidence and policy captured at each seal. Unlike the wire
+    /// reply, this side table also retains the immediate state hash and policy
+    /// required to export the complete replay state later in the session.
+    snapshot_meta: BTreeMap<u64, SnapshotMeta>,
     /// A monotonically-increasing counter salting each [`Request::Exec`]'s
     /// completion-sentinel marker ([`ExecSession`]), so two `exec`s on one session
     /// cannot alias their sentinels. Not wall-clock / RNG (conventions rule 4);
@@ -375,6 +402,17 @@ struct NetSnap {
 #[derive(Clone)]
 struct SdkSnap {
     channel: SdkSnapshot,
+    policy: FaultPolicy,
+}
+
+#[derive(Clone)]
+struct SnapshotMeta {
+    at: u64,
+    sdk_events: u64,
+    trace_events: u64,
+    trace_schedules: u64,
+    tainted: bool,
+    state_hash: [u8; 32],
     policy: FaultPolicy,
 }
 
@@ -430,6 +468,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             // A fresh session's live timeline is untainted; no snapshots exist yet.
             timeline_tainted: false,
             tainted_snaps: BTreeSet::new(),
+            snapshot_meta: BTreeMap::new(),
             exec_nonce: 0,
             session_trace: Vec::new(),
             session_trace_start: SessionTraceStart::InitialBoot,
@@ -547,6 +586,137 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// it here (`docs/TESTING.md`, rung 4).
     pub fn snapshot_store_stats(&self) -> snapshot_store::StoreStats {
         self.engine.store_stats()
+    }
+
+    /// Most recently minted live snapshot handle, if any. This is an
+    /// out-of-band composition-root convenience for exporting the final
+    /// midpoint selected by a one-shot portability driver; wire clients still
+    /// address snapshots only by explicit handles.
+    pub fn latest_snapshot(&self) -> Option<SnapId> {
+        self.snaps.last_key_value().map(|(&id, _)| SnapId(id))
+    }
+
+    /// Export one session-local snapshot as a complete host-neutral artifact.
+    ///
+    /// The artifact contains materialized RAM, the exact canonical vendor
+    /// VM-state bytes, SDK stream and remaining payload suffix, Net decision
+    /// prefix, fault policy, taint, seal cut, and source whole-state hash. It is
+    /// streamed in a fixed order and closed by a SHA-256 digest. No live-VM
+    /// state is read, so exporting after the source has continued cannot
+    /// accidentally capture a mixed-time artifact.
+    pub fn export_portable_snapshot<W: Write>(
+        &self,
+        snap: SnapId,
+        writer: W,
+    ) -> Result<PortableSnapshotReceipt, PortableSnapshotError> {
+        let store_id = *self
+            .snaps
+            .get(&snap.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))?;
+        let meta = self
+            .snapshot_meta
+            .get(&snap.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))?;
+        let memory = self.engine.materialize(store_id)?;
+        let vm_state = self.engine.vm_state_bytes(store_id)?;
+        PortableSnapshotRef {
+            memory: memory.as_slice(),
+            vm_state,
+            sdk: self.sdk_snaps.get(&snap.0).map(|s| &s.channel),
+            net: self.net_snaps.get(&snap.0).map(|s| &s.channel),
+            policy: &meta.policy,
+            at: meta.at,
+            sdk_events: meta.sdk_events,
+            trace_events: meta.trace_events,
+            trace_schedules: meta.trace_schedules,
+            tainted: meta.tainted,
+            state_hash: meta.state_hash,
+        }
+        .write_to(writer)?;
+        Ok(PortableSnapshotReceipt {
+            id: snap,
+            at: Moment(meta.at),
+            sdk_events: meta.sdk_events,
+            trace_events: meta.trace_events,
+            trace_schedules: meta.trace_schedules,
+            tainted: meta.tainted,
+            state_hash: meta.state_hash,
+        })
+    }
+
+    /// Import a complete host-neutral artifact as a fresh base snapshot.
+    ///
+    /// Import verifies the artifact digest, every bounded nested codec, the
+    /// exact configured RAM size, and the destination vendor's VM-state codec
+    /// before minting a handle. The VM is not replaced; a subsequent ordinary
+    /// `Replay` drives the same fresh-VM restore path as any local snapshot.
+    pub fn import_portable_snapshot<R: Read>(
+        &mut self,
+        reader: R,
+    ) -> Result<PortableSnapshotReceipt, PortableSnapshotError> {
+        let expected_memory_len = usize::try_from(
+            self.engine
+                .mem_pages()
+                .checked_mul(snapshot_store::PAGE_SIZE as u64)
+                .ok_or(PortableSnapshotError::Malformed(
+                    "configured memory length overflow",
+                ))?,
+        )
+        .map_err(|_| PortableSnapshotError::Malformed("configured memory length"))?;
+        let portable = PortableSnapshot::read_from(reader, expected_memory_len)?;
+        let _decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
+            .map_err(SnapshotError::from)?;
+        let store_id = self
+            .engine
+            .snapshot_base(&portable.memory, &portable.vm_state)?;
+        let id = self.next_snap;
+        self.next_snap = self
+            .next_snap
+            .checked_add(1)
+            .ok_or(PortableSnapshotError::Malformed("snapshot handle overflow"))?;
+        self.snaps.insert(id, store_id);
+        if let Some(channel) = portable.sdk {
+            self.sdk_snaps.insert(
+                id,
+                SdkSnap {
+                    channel,
+                    policy: portable.policy.clone(),
+                },
+            );
+        }
+        if let Some(channel) = portable.net {
+            self.net_snaps.insert(
+                id,
+                NetSnap {
+                    channel,
+                    policy: portable.policy.clone(),
+                },
+            );
+        }
+        if portable.tainted {
+            self.tainted_snaps.insert(id);
+        }
+        self.snapshot_meta.insert(
+            id,
+            SnapshotMeta {
+                at: portable.at,
+                sdk_events: portable.sdk_events,
+                trace_events: portable.trace_events,
+                trace_schedules: portable.trace_schedules,
+                tainted: portable.tainted,
+                state_hash: portable.state_hash,
+                policy: portable.policy,
+            },
+        );
+        Ok(PortableSnapshotReceipt {
+            id: SnapId(id),
+            at: Moment(portable.at),
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        })
     }
 
     /// Serve one session over a byte stream (a connected unix socket, or an
@@ -1007,6 +1177,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // so handle, Moment, count, and taint are one atomic observation.
         let at = vm_state.vtime().snapshot_vns;
         let sdk_events = vmm.sdk_events().len() as u64;
+        let (trace_events, trace_schedules) = vmm.prescriptive_trace().map_or((0, 0), |trace| {
+            (
+                trace.normalized_log().events.len() as u64,
+                trace.schedule().len() as u64,
+            )
+        });
+        let state_hash = vmm.state_hash();
+        let policy = self.recorded.policy().clone();
         // Task 95 M2.1: capture O(dirty) when the tracked window allows it,
         // full-scan otherwise — then re-arm the window with the new snapshot as
         // the next seal's parent (the arm fails ⇒ the next seal full-scans too).
@@ -1058,6 +1236,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if self.timeline_tainted {
             self.tainted_snaps.insert(id);
         }
+        self.snapshot_meta.insert(
+            id,
+            SnapshotMeta {
+                at,
+                sdk_events,
+                trace_events,
+                trace_schedules,
+                tainted: self.timeline_tainted,
+                state_hash,
+                policy,
+            },
+        );
         Ok(Ok(Reply::Snapshot {
             id: SnapId(id),
             at: Moment(at),
@@ -1080,6 +1270,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // monotonic — [`next_snap`] never reuses a number — so a later snapshot can
         // never inherit this one's taint by handle reuse.)
         self.tainted_snaps.remove(&snap.0);
+        self.snapshot_meta.remove(&snap.0);
         // The handle was minted by `snapshot`, which retains exactly one ref;
         // releasing it can only fail if the store lost the layer — an
         // invariant failure we still answer on the wire (the handle is gone
@@ -3677,6 +3868,101 @@ mod tests {
         // And the pending scripted exit was NOT consumed: a deadline-free run
         // still reaches its Hlt terminal.
         assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
+    }
+
+    /// M5's portable artifact must carry the control side tables, not merely
+    /// RAM + VM-state. Consume one ordered payload, export the midpoint, then
+    /// prove a fresh server restores the same immediate whole-state hash and
+    /// consumes the exact same remaining payload to the same next hash.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "portable export/import materializes snapshot-store mappings through tempfile+mmap; the strict artifact codec and SDK/Net state logic run under Miri separately"
+    )]
+    fn portable_snapshot_replays_the_complete_mid_lineage_future() {
+        let mut source = payload_server();
+        hello(&mut source);
+        let base = snap(&mut source);
+        let first = vec![0x81, 4];
+        let second = vec![0, 2];
+        assert_eq!(
+            source
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: payload_env(7, vec![first.clone(), second.clone()]),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            ring_payload(&mut source, 2),
+            (hypercall_proto::Status::Ok as u16, first)
+        );
+        let midpoint = snap(&mut source);
+        let mut artifact = Vec::new();
+        let exported = source
+            .export_portable_snapshot(midpoint, &mut artifact)
+            .unwrap();
+        assert_eq!(hash(&mut source), exported.state_hash);
+        assert_eq!(
+            ring_payload(&mut source, 2),
+            (hypercall_proto::Status::Ok as u16, second.clone())
+        );
+        let uninterrupted_next = hash(&mut source);
+
+        let mut destination = payload_server();
+        let imported = destination
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        assert_eq!(imported.at, exported.at);
+        assert_eq!(imported.sdk_events, exported.sdk_events);
+        assert_eq!(imported.state_hash, exported.state_hash);
+        hello(&mut destination);
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            hash(&mut destination),
+            exported.state_hash,
+            "cross-server restore must equal the source at the cut"
+        );
+        assert_eq!(
+            ring_payload(&mut destination, 2),
+            (hypercall_proto::Status::Ok as u16, second)
+        );
+        assert_eq!(
+            hash(&mut destination),
+            uninterrupted_next,
+            "the restored payload suffix must reproduce the uninterrupted future"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "portable export/import materializes snapshot-store mappings through tempfile+mmap; strict corruption rejection is covered by the Miri-safe codec test"
+    )]
+    fn portable_import_rejects_a_planted_ram_corruption_before_minting_a_handle() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let snap = snap(&mut source);
+        let mut artifact = Vec::new();
+        source
+            .export_portable_snapshot(snap, &mut artifact)
+            .unwrap();
+        // Fixed header is 116 bytes; the first byte after it is RAM.
+        artifact[116] ^= 1;
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        let before = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_portable_snapshot(artifact.as_slice()),
+            Err(crate::portable_snapshot::PortableSnapshotError::DigestMismatch)
+        ));
+        let after = destination.snapshot_store_stats();
+        assert_eq!(after.snapshots, before.snapshots);
+        assert_eq!(after.stored_unique_pages, before.stored_unique_pages);
     }
 
     #[test]

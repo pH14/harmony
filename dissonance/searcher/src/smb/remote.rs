@@ -200,6 +200,14 @@ impl<M: GuestControlMachine> RemoteSmbTarget<M> {
         })
     }
 
+    /// Return the negotiated machine stopped at gameplay genesis together with
+    /// the held genesis handle. M5's portability driver uses this to stage a
+    /// multi-chord tape whose midpoint can continue without a restore; normal
+    /// campaigns keep using the target abstraction.
+    pub fn into_genesis_machine(self) -> (M, SnapId) {
+        (self.machine, self.genesis)
+    }
+
     /// Complete WRAM from the last successful chord-boundary read.
     #[must_use]
     pub fn wram(&self) -> [u8; WRAM_SIZE] {

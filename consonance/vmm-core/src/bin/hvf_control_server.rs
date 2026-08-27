@@ -89,9 +89,100 @@ fn main() -> std::process::ExitCode {
             bringup::boot_hvf_control(&factory_image, &factory_initramfs, BOOTARGS, RAM)
         });
         let mut server = ControlServer::new(live, factory);
+        if let Some(path) = std::env::var_os("HARMONY_PORTABLE_IMPORT") {
+            let path = std::path::PathBuf::from(path);
+            let file = match std::fs::File::open(&path) {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!(
+                        "HVF session {session} cannot open {}: {error}",
+                        path.display()
+                    );
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            match server.import_portable_snapshot(std::io::BufReader::new(file)) {
+                Ok(receipt) => println!(
+                    "HVF_PORTABLE_IMPORT session={session} id={} at={} sdk_events={} trace_events={} trace_schedules={} tainted={} state_hash={} path={}",
+                    receipt.id.0,
+                    receipt.at.0,
+                    receipt.sdk_events,
+                    receipt.trace_events,
+                    receipt.trace_schedules,
+                    receipt.tainted,
+                    hex(receipt.state_hash),
+                    path.display(),
+                ),
+                Err(error) => {
+                    eprintln!("HVF session {session} portable import failed: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+        }
         if let Err(error) = server.serve(stream) {
             eprintln!("HVF control session {session} failed: {error}");
             return std::process::ExitCode::FAILURE;
+        }
+        match (
+            std::env::var_os("HARMONY_PORTABLE_EXPORT"),
+            std::env::var_os("HARMONY_PORTABLE_EXPORT_HANDLE"),
+        ) {
+            (Some(path), Some(handle)) => {
+                let path = std::path::PathBuf::from(path);
+                let handle = if handle == "last" {
+                    match server.latest_snapshot() {
+                        Some(handle) => handle,
+                        None => {
+                            eprintln!("HVF session {session} has no snapshot to export");
+                            return std::process::ExitCode::FAILURE;
+                        }
+                    }
+                } else {
+                    match handle.to_string_lossy().parse::<u64>() {
+                        Ok(handle) if handle != 0 => control_proto::SnapId(handle),
+                        _ => {
+                            eprintln!(
+                                "HARMONY_PORTABLE_EXPORT_HANDLE must be a positive integer or last"
+                            );
+                            return std::process::ExitCode::from(2);
+                        }
+                    }
+                };
+                let file = match std::fs::File::create(&path) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        eprintln!(
+                            "HVF session {session} cannot create {}: {error}",
+                            path.display()
+                        );
+                        return std::process::ExitCode::FAILURE;
+                    }
+                };
+                match server.export_portable_snapshot(handle, std::io::BufWriter::new(file)) {
+                    Ok(receipt) => println!(
+                        "HVF_PORTABLE_EXPORT session={session} id={} at={} sdk_events={} trace_events={} trace_schedules={} tainted={} state_hash={} path={}",
+                        receipt.id.0,
+                        receipt.at.0,
+                        receipt.sdk_events,
+                        receipt.trace_events,
+                        receipt.trace_schedules,
+                        receipt.tainted,
+                        hex(receipt.state_hash),
+                        path.display(),
+                    ),
+                    Err(error) => {
+                        eprintln!("HVF session {session} portable export failed: {error}");
+                        return std::process::ExitCode::FAILURE;
+                    }
+                }
+            }
+            (None, None) => {}
+            _ => {
+                eprintln!(
+                    "HARMONY_PORTABLE_EXPORT and HARMONY_PORTABLE_EXPORT_HANDLE must be set together"
+                );
+                return std::process::ExitCode::from(2);
+            }
         }
         let Some(session_trace) = server.take_session_prescriptive_trace() else {
             eprintln!("HVF control session {session} ended without a session trace");
@@ -131,6 +222,27 @@ fn main() -> std::process::ExitCode {
             println!(
                 "HVF_CONTROL_COMPONENT session={session} label={label} digest={}",
                 hex(digest)
+            );
+        }
+        if let Some(path) = std::env::var_os("HARMONY_ARM64_ARCH_DUMP") {
+            let path = std::path::PathBuf::from(path);
+            let state = match vmm.arm64_architectural_state() {
+                Ok(state) => state,
+                Err(error) => {
+                    eprintln!("HVF session {session} architectural capture failed: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
+            if let Err(error) = std::fs::write(&path, format!("{state:#?}\n")) {
+                eprintln!(
+                    "HVF session {session} cannot write {}: {error}",
+                    path.display()
+                );
+                return std::process::ExitCode::FAILURE;
+            }
+            println!(
+                "HVF_ARM64_ARCH_DUMP session={session} path={}",
+                path.display()
             );
         }
         if let Some(directory) = std::env::var_os("HARMONY_CONTROL_DUMP_DIR") {
