@@ -653,22 +653,69 @@ no host identity on any vendor.
  #endif
 --- a/arch/x86/kernel/fpu/xstate.h
 +++ b/arch/x86/kernel/fpu/xstate.h
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,8 @@
  #include <asm/fpu/xstate.h>
  #include <asm/fpu/xcr.h>
  #include <asm/msr.h>
 +#include <asm/harmony_pvclock.h>
++#include <linux/string.h>
  
  #ifdef CONFIG_X86_64
  DECLARE_PER_CPU(u64, xfd_state);
-@@ -227,6 +228,10 @@
+@@ -206,7 +208,46 @@
+ 	return -EPERM;
+ }
+ #endif
++
++/*
++ * Keep every save buffer host-neutral (see HARMONY_MXCSR_MASK_PINNED): pin
++ * the hardware-written MXCSR_MASK, and collapse the two encodings of x87/SSE
++ * init state to one. Whether an XSAVE variant records an in-init component as
++ * present-with-init-values or as absent is a microarchitecture choice, so the
++ * same guest state would otherwise leave different bytes in every save buffer
++ * on different hosts. The restore instructions read none of the rewritten
++ * bytes: an absent component's area is ignored, and a cleared bit restores
++ * the same init values the area now holds.
++ */
++static inline void harmony_canonicalize_xsave(struct xregs_state *xs)
++{
++	struct fxregs_state *fx = &xs->i387;
++
++	fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
++
++	if (!(xs->header.xfeatures & XFEATURE_MASK_FP)) {
++		fx->cwd = 0x37f;
++		fx->swd = 0;
++		fx->twd = 0;
++		fx->fop = 0;
++		fx->rip = 0;
++		fx->rdp = 0;
++		memset(fx->st_space, 0, sizeof(fx->st_space));
++	} else if (fx->cwd == 0x37f && !fx->swd && !fx->twd && !fx->fop &&
++		   !fx->rip && !fx->rdp &&
++		   !memchr_inv(fx->st_space, 0, sizeof(fx->st_space))) {
++		xs->header.xfeatures &= ~XFEATURE_MASK_FP;
++	}
+ 
++	if (!(xs->header.xfeatures & XFEATURE_MASK_SSE)) {
++		fx->mxcsr = MXCSR_DEFAULT;
++		memset(fx->xmm_space, 0, sizeof(fx->xmm_space));
++	} else if (fx->mxcsr == MXCSR_DEFAULT &&
++		   !memchr_inv(fx->xmm_space, 0, sizeof(fx->xmm_space))) {
++		xs->header.xfeatures &= ~XFEATURE_MASK_SSE;
++	}
++}
++
+ /*
+  * Save processor xstate to xsave area.
+  *
+@@ -227,6 +268,9 @@
  
  	/* We should never fault when copying to a kernel buffer: */
  	WARN_ON_FPU(err);
 +
-+	/* See HARMONY_MXCSR_MASK_PINNED: keep the image host-neutral. */
 +	if (harmony_pvclock_requested())
-+		fpstate->regs.xsave.i387.mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
++		harmony_canonicalize_xsave(&fpstate->regs.xsave);
  }
  
  /*

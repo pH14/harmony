@@ -289,6 +289,11 @@ const SSE_XMM: std::ops::Range<usize> = 160..416;
 const X87_INIT_FCW: [u8; 2] = 0x037Fu16.to_le_bytes();
 /// SSE init state: `MXCSR = 0x1F80`, every XMM register 0.
 const SSE_INIT_MXCSR: [u8; 4] = 0x1F80u32.to_le_bytes();
+/// The legacy area's reserved padding plus software-available tail. Hardware
+/// never writes it; the exporting host kernel stamps its own template there
+/// (`xstate_fx_sw_bytes`: the host's supported-feature mask at byte 464), and
+/// the restore path reads none of it.
+const LEGACY_TAIL: std::ops::Range<usize> = 416..512;
 
 /// Canonicalize the x87 and SSE components of a standard-format XSAVE image to
 /// init-compressed form, in place.
@@ -304,7 +309,8 @@ const SSE_INIT_MXCSR: [u8; 4] = 0x1F80u32.to_le_bytes();
 /// whose bit is clear gets the init values written into its ignored area.
 /// `MXCSR_MASK` — a host capability constant the save instruction writes, which
 /// differs across vendors — is pinned to the contract value for the same
-/// reason: it is not guest state, and restore ignores it.
+/// reason: it is not guest state, and restore ignores it; the legacy tail —
+/// the exporting host kernel's own template — is zeroed likewise.
 /// Compacted-format images (nonzero `XCOMP_BV`) have a different layout and
 /// are left untouched.
 pub fn canonicalize_xsave(image: &mut [u8]) {
@@ -313,6 +319,7 @@ pub fn canonicalize_xsave(image: &mut [u8]) {
     }
 
     image[MXCSR_MASK].copy_from_slice(&MXCSR_MASK_PINNED);
+    image[LEGACY_TAIL].fill(0);
 
     let is_zero = |r: std::ops::Range<usize>, image: &[u8]| image[r].iter().all(|&b| b == 0);
     let x87_init = |image: &[u8]| {
@@ -393,6 +400,20 @@ mod tests {
         image[MXCSR_MASK].copy_from_slice(&0x0002FFFFu32.to_le_bytes());
         canonicalize_xsave(&mut image);
         assert_eq!(image[MXCSR_MASK], MXCSR_MASK_PINNED);
+    }
+
+    #[test]
+    fn legacy_tail_host_template_is_zeroed() {
+        // The measured pair: the exporting kernel stamps its host feature mask
+        // at byte 464 (0x7 on Zen 3, 0x600e7 on Granite Rapids).
+        let mut a = init_image(0x2);
+        let mut b = init_image(0x2);
+        a[464..472].copy_from_slice(&0x7u64.to_le_bytes());
+        b[464..472].copy_from_slice(&0x600e7u64.to_le_bytes());
+        canonicalize_xsave(&mut a);
+        canonicalize_xsave(&mut b);
+        assert_eq!(a, b);
+        assert!(a[LEGACY_TAIL].iter().all(|&x| x == 0));
     }
 
     #[test]

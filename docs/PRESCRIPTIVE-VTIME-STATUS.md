@@ -1484,6 +1484,26 @@ on this branch may contain, fetch, or require a NES ROM.
    the dump now inlines the image's legacy area and header
    (`XSAVEHEX`), so the next pair names those bytes.
 
+25. **The last two divergent surfaces are the same two hardware
+   artifacts, closed at their own boundaries.** With decisions 22–24
+   live, the first mask-pinned both-vendor pair (run 33110701877:
+   7763, 9V74 ×2, and a 6973P-C draw) narrows the whole cross-vendor
+   diff to two RAM pages and one 64-byte record row. (a) Guest RAM: two
+   task save buffers differ in exactly one byte each — the `XSTATE_BV`
+   x87 bit (`0x3` Intel vs `0x2` AMD), the decision-19 two-encodings
+   artifact appearing inside guest memory, where the vmm cannot reach
+   it. Patch 0001's save hook grows into `harmony_canonicalize_xsave`:
+   after every kernel FPU save it pins `MXCSR_MASK` and collapses
+   x87/SSE init state to the absent encoding (writing the init values
+   into an absent component's area), mirroring the vmm's
+   `canonicalize_xsave`; the restore instructions read none of the
+   rewritten bytes. (b) The vmm's `xsave-legacy` record: bytes 464–471
+   hold the exporting host kernel's `xstate_fx_sw_bytes` template — the
+   host's supported-feature mask (`0x7` Zen 3 vs `0x600e7` Granite
+   Rapids, AVX-512+AMX), stamped into the software-available tail by
+   `__copy_xstate_to_uabi_buf`. Host identity, ignored on restore:
+   `canonicalize_xsave` now zeroes the legacy tail (416–512).
+
 ## X0 — runner probe
 
 ### Build criteria
