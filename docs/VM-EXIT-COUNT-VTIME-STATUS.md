@@ -1282,7 +1282,14 @@ recorded.
   5,954,217 bytes, SHA-256
   `4b4e7a2758d4eead327bf999ef8324e26fe672429fac2c4b5ae7df396c9a27db`.
 - **FAIL — byte-attested NES campaign normalized logs and archive hashes:** the
-  KVM control composition and cross-host campaign oracle are not yet complete.
+  additive KVM control composition now builds under native strict Clippy and a
+  CPU-0-pinned real-ROM smoke completed both control sessions with clean stderr.
+  Its one-job archive SHA-256 exactly matched the attested HVF run at
+  `384d30293fdbc766235e4b9a77ac3241ce2679d144cccb79f99a82cc2e4df6b2`.
+  This is not yet a pass: the job's whole-machine result hash differed across
+  substrates, so the stream and checkpoint bytes differed even after accounting
+  for the intentionally different host label. Component localization and the
+  complete campaign normalized-log comparison remain required.
 - **FAIL — immediate cross-host restore `state_hash` equality:** not started.
 - **FAIL — both-direction uninterrupted continuation comparison:** not started.
 - **PASS — planted cross-host increment mismatch:** the production normalized

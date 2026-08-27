@@ -291,6 +291,35 @@ pub fn boot_selected(
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, false)
+}
+
+/// Compose the Linux/aarch64 KVM backend with the canonical retained control
+/// slot used by the cooperating NES payload. The in-kernel GICv3, assigned
+/// V-time, pvclock, image, initramfs, and entry state are otherwise identical
+/// to [`boot_selected`].
+///
+/// # Errors
+/// Returns the same fail-closed construction and composition errors as
+/// [`boot_selected`], including any KVM rejection of the control memslot.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub fn boot_selected_control(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, true)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn boot_selected_inner(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+    map_doorbell: bool,
+) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
     hostassert::enforce()?;
     let live = vmm_backend::LiveKvm::new()?;
     let backend: Box<dyn Backend<A = Arm64>> = Box::new(vmm_backend::Arm64KvmBackend::new(live));
@@ -300,7 +329,7 @@ pub fn boot_selected(
         Some(initramfs),
         bootargs,
         guest_ram_len,
-        false,
+        map_doorbell,
     )?;
     vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
         vtime::VClockConfig {
