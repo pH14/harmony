@@ -55,20 +55,37 @@ pub fn prescriptive_timing() -> PrescriptiveTiming {
 /// The values were read independently by `hvf_probe` and
 /// `arm64_kvm_id_probe`. The latter also writes and reads back each selected
 /// value before first entry, proving that stock KVM accepts the complete set.
-pub const IDENTITY_BASELINE: [(u32, u64); 13] = [
+pub const IDENTITY_BASELINE: [(u32, u64); 21] = [
     (0xc000, 0x0000_0000_410f_d811), // MIDR_EL1
     (0xc005, 0x0000_0000_8000_0000), // MPIDR_EL1
     (0xc020, 0x1101_0000_1111_0011), // ID_AA64PFR0_EL1
     (0xc021, 0x0000_0000_0000_0000), // ID_AA64PFR1_EL1
+    (0xc022, 0x0000_0000_0000_0000), // ID_AA64PFR2_EL1
     (0xc024, 0x0000_0000_0000_0000), // ID_AA64ZFR0_EL1
     (0xc025, 0x0000_0000_0000_0000), // ID_AA64SMFR0_EL1
+    (0xc027, 0x0000_0000_0000_0000), // ID_AA64FPFR0_EL1
     (0xc028, 0x0000_00f0_1030_5006), // ID_AA64DFR0_EL1
     (0xc029, 0x0000_0000_0000_0000), // ID_AA64DFR1_EL1
+    (0xc02a, 0x0000_0000_0000_0000), // ID_AA64DFR2_EL1
     (0xc030, 0x0221_1001_1021_2120), // ID_AA64ISAR0_EL1
     (0xc031, 0x0000_0111_0021_1002), // ID_AA64ISAR1_EL1
+    (0xc032, 0x0000_0000_0000_0000), // ID_AA64ISAR2_EL1
+    (0xc033, 0x0000_0000_0000_0000), // ID_AA64ISAR3_EL1
     (0xc038, 0x0000_0111_0f10_0022), // ID_AA64MMFR0_EL1
     (0xc039, 0x0000_0000_1121_2120), // ID_AA64MMFR1_EL1
     (0xc03a, 0x1201_0111_0000_1011), // ID_AA64MMFR2_EL1
+    (0xc03b, 0x0000_0000_0000_0000), // ID_AA64MMFR3_EL1
+    (0xc03c, 0x0000_0000_0000_0000), // ID_AA64MMFR4_EL1
+    (0xd801, 0x0000_0000_8444_c004), // CTR_EL0
+];
+
+/// Guest-visible identity that neither substrate exposes as writable state.
+///
+/// Both live instruction probes read this exact value. It is bound into the
+/// contract hash even though it cannot be installed through either substrate's
+/// configuration API; a host with a different value is not M5-qualified.
+pub const READ_ONLY_IDENTITY_BASELINE: [(u32, u64); 1] = [
+    (0xd807, 0x0000_0000_0000_0004), // DCZID_EL0
 ];
 
 /// The installable arm64 policy: the frozen cross-host identity and the empty
@@ -91,13 +108,18 @@ pub fn policy() -> Arm64Policy {
 pub fn contract_hash() -> [u8; 32] {
     let p = policy();
     let mut h = Sha256::new();
-    h.update(b"harmony-arm64-cross-host-baseline-v1\0");
+    h.update(b"harmony-arm64-cross-host-baseline-v2\0");
     // Canonical encoding: sorted (BTreeMap/BTreeSet) rows, little-endian
     // fixed-width fields, length-prefixed sections — deterministic (rule #4).
     h.update((p.id_regs.regs.len() as u64).to_le_bytes());
     for (enc, val) in &p.id_regs.regs {
         h.update(enc.to_le_bytes());
         h.update(val.to_le_bytes());
+    }
+    h.update((READ_ONLY_IDENTITY_BASELINE.len() as u64).to_le_bytes());
+    for (encoding, value) in READ_ONLY_IDENTITY_BASELINE {
+        h.update(encoding.to_le_bytes());
+        h.update(value.to_le_bytes());
     }
     h.update((p.sysreg_traps.trapped.len() as u64).to_le_bytes());
     for enc in &p.sysreg_traps.trapped {
@@ -122,6 +144,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             IDENTITY_BASELINE
         );
+        assert_eq!(READ_ONLY_IDENTITY_BASELINE, [(0xd807, 4)]);
         assert!(p.sysreg_traps.trapped.is_empty());
     }
 
@@ -133,9 +156,14 @@ mod tests {
         let mut p = policy();
         p.id_regs.regs.insert(0xc020, 0x1122);
         let mut h = Sha256::new();
-        h.update(b"harmony-arm64-cross-host-baseline-v1\0");
+        h.update(b"harmony-arm64-cross-host-baseline-v2\0");
         h.update((p.id_regs.regs.len() as u64).to_le_bytes());
         for (encoding, value) in &p.id_regs.regs {
+            h.update(encoding.to_le_bytes());
+            h.update(value.to_le_bytes());
+        }
+        h.update((READ_ONLY_IDENTITY_BASELINE.len() as u64).to_le_bytes());
+        for (encoding, value) in READ_ONLY_IDENTITY_BASELINE {
             h.update(encoding.to_le_bytes());
             h.update(value.to_le_bytes());
         }

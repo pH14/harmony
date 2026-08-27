@@ -428,6 +428,27 @@ impl Arm64Kvm for LiveKvm {
         }
     }
 
+    fn complete_mmio_exit(&mut self) -> Result<()> {
+        // KVM consumes the prior MMIO exit before checking `immediate_exit`.
+        // The resulting EINTR therefore means the load/store instruction and
+        // PC are architecturally complete while no following guest instruction
+        // has executed.
+        // SAFETY: `self.run` is this vCPU's live shared `kvm_run` mapping and
+        // the vCPU is not concurrently running.
+        unsafe { (*self.run).immediate_exit = 1 };
+        let result = self.vcpu.run();
+        // SAFETY: same exclusive mapping access as above; always clear the
+        // one-shot flag before interpreting the ioctl result.
+        unsafe { (*self.run).immediate_exit = 0 };
+        match result {
+            Err(error) if error.errno() == libc::EINTR => Ok(()),
+            Err(error) => Err(kvm_err(error)),
+            Ok(_) => Err(BackendError::Internal(
+                "KVM immediate-exit MMIO completion executed guest code",
+            )),
+        }
+    }
+
     fn run(&mut self) -> Result<KvmRunView> {
         // Issue `KVM_RUN` through kvm-ioctls' safe wrapper (it uses the mmap'd
         // `kvm_run` we also hold a pointer to), then read the shared page through

@@ -65,6 +65,16 @@ mod arm64 {
     const INSN_MRS_X5_ICC_SRE_EL1: u32 = 0xd538_cca5;
     const INSN_LDR_X4_X5: u32 = 0xf940_00a4;
 
+    const fn mrs_instruction(encoding: u16, rt: u32) -> u32 {
+        let encoding = encoding as u32;
+        let op0 = (encoding >> 14) & 0x3;
+        let op1 = (encoding >> 11) & 0x7;
+        let crn = (encoding >> 7) & 0xf;
+        let crm = (encoding >> 3) & 0xf;
+        let op2 = encoding & 0x7;
+        0xd520_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+    }
+
     // Stable Rust deliberately rejects the platform SIMD type in an FFI
     // signature (`simd_ffi` is nightly-only). This AAPCS64 thunk accepts the
     // bytes by pointer in X2, loads the required by-value vector argument into
@@ -566,6 +576,35 @@ mod arm64 {
         vcpu.run()
     }
 
+    fn probe_instruction_identity(page: &mut GuestPage, vcpu: &Vcpu) -> Result<(), String> {
+        for (name, encoding) in [
+            ("ID_AA64PFR2_EL1", 0xc022),
+            ("ID_AA64FPFR0_EL1", 0xc027),
+            ("ID_AA64DFR2_EL1", 0xc02a),
+            ("ID_AA64ISAR2_EL1", 0xc032),
+            ("ID_AA64ISAR3_EL1", 0xc033),
+            ("ID_AA64MMFR3_EL1", 0xc03b),
+            ("ID_AA64MMFR4_EL1", 0xc03c),
+            ("CTR_EL0", 0xd801),
+            ("DCZID_EL0", 0xd807),
+        ] {
+            vcpu.set_reg(HV_REG_X0, 0)?;
+            let exit = run_program(
+                page,
+                vcpu,
+                &[mrs_instruction(encoding, HV_REG_X0), INSN_HVC_0],
+            )?;
+            if exit.reason != HV_EXIT_REASON_EXCEPTION || ec(exit) != 0x16 {
+                return Err(format!(
+                    "guest MRS {name} did not reach the following HVC: {}",
+                    describe_exit(exit)
+                ));
+            }
+            println!("identity-insn.{name}: {:#018x}", vcpu.reg(HV_REG_X0)?);
+        }
+        Ok(())
+    }
+
     fn probe_exit_surface(page: &mut GuestPage, vcpu: &Vcpu) -> Result<(), String> {
         vcpu.set_reg(HV_REG_X0, 0)?;
         let counter = run_program(page, vcpu, &[INSN_MRS_X0_CNTVCT_EL0, INSN_HVC_0])?;
@@ -683,6 +722,7 @@ mod arm64 {
         let vcpu = Vcpu::new()?;
 
         probe_register_state(&vcpu)?;
+        probe_instruction_identity(&mut page, &vcpu)?;
         probe_exit_surface(&mut page, &vcpu)?;
         Ok(())
     }

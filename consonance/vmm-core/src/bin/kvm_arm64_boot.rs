@@ -59,6 +59,9 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::from(2);
     }
+    let component_event = std::env::var("HARMONY_COMPONENT_EVENT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
 
     let image = match std::fs::read(&image_path) {
         Ok(bytes) => bytes,
@@ -94,6 +97,15 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
         };
+        if component_event == Some(event) {
+            for (label, digest) in vmm.state_components() {
+                eprintln!(
+                    "KVM_STATE_COMPONENT event={event} label={label} digest={}",
+                    hex(&digest)
+                );
+            }
+            eprintln!("KVM_VCPU event={event} state={:?}", vmm.inspect_vcpu());
+        }
         let serial = vmm.serial_output();
         if serial.len() > emitted {
             if let Err(error) = std::io::stdout().write_all(&serial[emitted..]) {

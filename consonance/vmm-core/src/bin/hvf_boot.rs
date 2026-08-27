@@ -106,6 +106,9 @@ fn main() -> std::process::ExitCode {
         eprintln!("usage: hvf_boot <Image> <initramfs.cpio.gz> [max-events] [normalized-log]");
         return std::process::ExitCode::from(2);
     }
+    let component_event = std::env::var("HARMONY_COMPONENT_EVENT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
 
     let image = match std::fs::read(&image_path) {
         Ok(bytes) => bytes,
@@ -197,6 +200,15 @@ fn main() -> std::process::ExitCode {
             }
         };
         let _ = watchdog_tx.send(WatchdogCommand::Disarm);
+        if component_event == Some(event) {
+            for (label, digest) in vmm.state_components() {
+                eprintln!(
+                    "HVF_STATE_COMPONENT event={event} label={label} digest={}",
+                    hex(&digest)
+                );
+            }
+            eprintln!("HVF_VCPU event={event} state={:?}", vmm.inspect_vcpu());
+        }
         let serial = vmm.serial_output();
         if serial.len() > emitted {
             if let Err(error) = std::io::stdout().write_all(&serial[emitted..]) {

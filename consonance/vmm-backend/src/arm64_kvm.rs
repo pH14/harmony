@@ -886,6 +886,15 @@ pub trait Arm64Kvm {
     /// equivalent, below the trait).
     fn write_mmio_data(&mut self, data: [u8; 8]) -> Result<()>;
 
+    /// Re-enter only far enough for KVM to retire the pending MMIO instruction.
+    ///
+    /// The live implementation sets `kvm_run.immediate_exit` before
+    /// `KVM_RUN`. KVM consumes the prior MMIO completion, updates the target
+    /// register/PC, then returns `EINTR` without executing the next guest
+    /// instruction. This turns the substrate-local in-flight exit into the
+    /// fully serviced architectural boundary the VMM hashes and snapshots.
+    fn complete_mmio_exit(&mut self) -> Result<()>;
+
     /// `KVM_RUN`, returning the plain-data view [`decode_exit`] consumes.
     fn run(&mut self) -> Result<KvmRunView>;
 }
@@ -1012,6 +1021,9 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             let view = self.kvm.run()?;
             self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
+                if view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write {
+                    self.kvm.complete_mmio_exit()?;
+                }
                 self.counts.bump(exit.reason());
                 self.pending = pending;
                 return Ok(exit);
@@ -1132,7 +1144,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     fn complete_read(&mut self, value: u64) -> Result<()> {
         match self.pending {
             Pending::MmioLoad { len } => {
-                self.staged_read = Some(le_data(value, len));
+                self.kvm.write_mmio_data(le_data(value, len))?;
+                self.kvm.complete_mmio_exit()?;
                 self.pending = Pending::None;
                 Ok(())
             }
@@ -1391,6 +1404,11 @@ impl Arm64Kvm for FakeKvm {
     fn write_mmio_data(&mut self, data: [u8; 8]) -> Result<()> {
         self.calls.push("write_mmio_data");
         self.last_mmio_data = Some(data);
+        Ok(())
+    }
+
+    fn complete_mmio_exit(&mut self) -> Result<()> {
+        self.calls.push("complete_mmio_exit");
         Ok(())
     }
 
@@ -1806,8 +1824,8 @@ mod tests {
     }
 
     /// The MMIO read/completion round-trip: a load stays pending until
-    /// `complete_read`, which stages the little-endian data the next `run`
-    /// writes back.
+    /// `complete_read`, which writes the little-endian data and performs a
+    /// completion-only reentry before the backend exposes a sealable boundary.
     #[test]
     fn mmio_load_completion_stages_data_for_the_next_run() {
         let mut fake = FakeKvm::new();
@@ -1829,7 +1847,13 @@ mod tests {
         // Resuming without completing is fail-closed.
         assert!(matches!(b.run(), Err(BackendError::PendingCompletion)));
         b.complete_read(0x90).unwrap();
-        // The next run stages the LE data and reaches shutdown.
+        assert!(
+            b.kvm()
+                .calls
+                .windows(2)
+                .any(|calls| calls == ["write_mmio_data", "complete_mmio_exit"])
+        );
+        // The next ordinary run reaches shutdown; no completion remains.
         let exit = b.run().unwrap();
         assert_eq!(exit, CommonExit::Shutdown.into());
         assert_eq!(b.kvm().last_mmio_data, Some(le_data(0x90, 4)));

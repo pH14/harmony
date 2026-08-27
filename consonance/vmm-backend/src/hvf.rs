@@ -85,9 +85,27 @@ const PSCI_FEATURES: u64 = 0x8400_000a;
 const PSCI_VERSION_1_3: u64 = 0x0001_0003;
 const SMCCC_VERSION: u64 = 0x8000_0000;
 const SMCCC_VERSION_1_1: u64 = 0x0001_0001;
+const SMCCC_ARCH_FEATURES: u64 = 0x8000_0001;
+const SMCCC_ARCH_WORKAROUND_1: u64 = 0x8000_8000;
+const SMCCC_ARCH_WORKAROUND_2: u64 = 0x8000_7fff;
+const SMCCC_ARCH_WORKAROUND_3: u64 = 0x8000_3fff;
+const SMCCC_TRNG_VERSION: u64 = 0x8400_0050;
+const SMCCC_VENDOR_HYP_CALL_UID: u64 = 0x8600_ff01;
 const PSCI_NOT_SUPPORTED: u64 = (-1i64) as u64;
 const PSCI_ALREADY_ON: u64 = (-4i64) as u64;
 const PSCI_NOT_PRESENT: u64 = (-7i64) as u64;
+
+/// Identity rows visible to guest `MRS` instructions but absent from the
+/// Hypervisor.framework get/set enum on this validated host. The M5 probe
+/// measured these exact native values. A policy may acknowledge only those
+/// values; any attempted drift fails closed instead of being silently skipped.
+const fn hvf_implicit_identity_value(encoding: u32) -> Option<u64> {
+    match encoding {
+        0xc022 | 0xc027 | 0xc02a | 0xc032 | 0xc033 | 0xc03b | 0xc03c => Some(0),
+        0xd801 => Some(0x0000_0000_8444_c004),
+        _ => None,
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -379,6 +397,14 @@ impl HvfBackend {
         let result = match function {
             PSCI_VERSION => PSCI_VERSION_1_3,
             SMCCC_VERSION => SMCCC_VERSION_1_1,
+            SMCCC_ARCH_FEATURES => match self.reg(1)? {
+                SMCCC_ARCH_WORKAROUND_1 => 1,              // unaffected
+                SMCCC_ARCH_WORKAROUND_2 => (-2i64) as u64, // not required
+                SMCCC_ARCH_WORKAROUND_3 => 0,              // available
+                _ => PSCI_NOT_SUPPORTED,
+            },
+            SMCCC_TRNG_VERSION => PSCI_NOT_SUPPORTED,
+            SMCCC_VENDOR_HYP_CALL_UID => PSCI_NOT_SUPPORTED,
             PSCI_MIGRATE_INFO_TYPE => 2,
             PSCI_FEATURES => {
                 let queried = self.reg(1)?;
@@ -437,6 +463,9 @@ impl HvfBackend {
                     } else if matches!(
                         function,
                         SMCCC_VERSION
+                            | SMCCC_ARCH_FEATURES
+                            | SMCCC_TRNG_VERSION
+                            | SMCCC_VENDOR_HYP_CALL_UID
                             | PSCI_VERSION
                             | PSCI_CPU_SUSPEND32
                             | PSCI_CPU_SUSPEND64
@@ -544,6 +573,12 @@ impl Backend for HvfBackend {
 
     fn set_policy(&mut self, policy: &Arm64Policy) -> Result<()> {
         for (&encoding, &value) in &policy.id_regs.regs {
+            if let Some(measured) = hvf_implicit_identity_value(encoding) {
+                if value != measured {
+                    return Err(BackendError::InvalidState);
+                }
+                continue;
+            }
             let reg = u16::try_from(encoding).map_err(|_| BackendError::InvalidState)?;
             self.set_sysreg(reg, value)?;
         }
@@ -897,6 +932,19 @@ mod tests {
                 physical_address: ipa,
             },
         }
+    }
+
+    #[test]
+    fn implicit_identity_allowlist_is_exact_and_value_sensitive() {
+        for encoding in [0xc022, 0xc027, 0xc02a, 0xc032, 0xc033, 0xc03b, 0xc03c] {
+            assert_eq!(hvf_implicit_identity_value(encoding), Some(0));
+        }
+        assert_eq!(
+            hvf_implicit_identity_value(0xd801),
+            Some(0x0000_0000_8444_c004)
+        );
+        assert_eq!(hvf_implicit_identity_value(0xc020), None);
+        assert_ne!(hvf_implicit_identity_value(0xc032), Some(2));
     }
 
     #[test]
