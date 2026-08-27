@@ -161,7 +161,7 @@ impl SnapshotEngine {
     ) -> Result<SnapshotId, SnapshotError> {
         self.check_image_len(memory)?;
         let mut builder = self.store.begin_base();
-        for (gfn, frame) in memory.chunks_exact(PAGE_SIZE).enumerate() {
+        for (gfn, frame) in memory.as_chunks::<PAGE_SIZE>().0.iter().enumerate() {
             builder.write_page(gfn as u64, frame)?;
         }
         Ok(builder.seal(vm_state.to_vec()))
@@ -200,7 +200,7 @@ impl SnapshotEngine {
                 }
             }
             None => {
-                for (gfn, frame) in memory.chunks_exact(PAGE_SIZE).enumerate() {
+                for (gfn, frame) in memory.as_chunks::<PAGE_SIZE>().0.iter().enumerate() {
                     builder.write_page(gfn as u64, frame)?;
                 }
             }
