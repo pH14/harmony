@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: x86-vtime
+
+# The x86 VM-exit-count V-time bring-up lives on GitHub-hosted runners: standard
+# x86-64 Linux runners expose /dev/kvm (nested virtualization), and the hardware
+# alternates between Intel and AMD draws — the probe runs as replicas so one push
+# samples both vendors. Every result is uploaded as an artifact because the
+# runner is unreachable after the job ends.
+on:
+  push:
+    branches: [claude/x86-prescriptive-vtime]
+
+concurrency:
+  group: x86-vtime-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # X0: CPU identity, /dev/kvm, the KVM capability table, and one minimal
+  # real-mode guest through the public KvmBackend.
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build probe
+        run: cargo build -p vmm-backend --bin x86_kvm_probe
+      - name: Run probe
+        run: ./target/debug/x86_kvm_probe | tee probe-report.txt
+      - name: kvm_smoke (live stock-KVM tests; informational at X0)
+        if: always()
+        continue-on-error: true
+        run: cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1 2>&1 | tee kvm-smoke.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-probe-replica-${{ matrix.replica }}
+          path: |
+            probe-report.txt
+            kvm-smoke.txt
+          if-no-files-found: error
+
+  # Linux compile/lint/test truth for the crates the x86 work touches; the
+  # macOS development host cannot check cfg(linux) code.
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check -p vmm-backend -p vmm-core
+      - name: clippy
+        run: cargo clippy -p vmm-backend -p vmm-core --all-features --all-targets -- -D warnings
+      - name: tests (portable)
+        run: cargo test -p vmm-backend --all-features
