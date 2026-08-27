@@ -297,12 +297,9 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
             writeln!(out, "XSAVE_HDR {bv:#x} {comp:#x} MXCSR_MASK {mask:#x}")
                 .expect("write to string");
         }
-        // Legacy area plus header as hex rows, so a cross-host diff names the
-        // exact differing image bytes.
-        for (row, bytes) in vcpu.xsave[..576.min(vcpu.xsave.len())]
-            .chunks(64)
-            .enumerate()
-        {
+        // The full image as hex rows, so a cross-host diff names the exact
+        // differing image bytes (extended components included).
+        for (row, bytes) in vcpu.xsave.chunks(64).enumerate() {
             let hex_row: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
             writeln!(out, "XSAVEHEX {:#05x} {hex_row}", row * 64).expect("write to string");
         }
@@ -385,6 +382,27 @@ fn x2_prescriptive_stock_boot_smoke() {
 
     let mut vmm = boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
         .expect("boot_linux_stock_prescriptive");
+    // With `X2_DUMP_AT_STEPS` set, stop the boot at that step count and dump
+    // the full state record there: a mid-boot measurement point for a
+    // divergence that has converged again by the terminal.
+    if let Ok(bound) = std::env::var("X2_DUMP_AT_STEPS") {
+        let bound: u64 = bound.parse().expect("X2_DUMP_AT_STEPS is a step count");
+        let run = run_boot_bounded(&mut vmm, false, bound);
+        let path =
+            std::env::var("X2_LOG_DUMP").expect("X2_DUMP_AT_STEPS requires X2_LOG_DUMP for output");
+        dump_normalized_log(&path, &run, &vmm);
+        println!(
+            "X2_MIDBOOT_STEPS={} events={}",
+            run.steps,
+            run.log.events.len()
+        );
+        assert!(
+            run.step_error.is_none(),
+            "mid-boot bounded run tripped a contract violation: {:?}",
+            run.step_error
+        );
+        return;
+    }
     let run = run_boot(&mut vmm, true);
     report_run("smoke", &run);
     if let Ok(path) = std::env::var("X2_LOG_DUMP") {
