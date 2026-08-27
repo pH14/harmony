@@ -1612,35 +1612,62 @@ cross-reference was corrected without changing the criterion.
 
 ## Repository-wide final gates
 
-- **PASS at M4 — `cargo build --all-features`:** exit status 0.
-- **PASS at M4 — `cargo nextest run --all-features`:** 1280 passed, 25 skipped.
-  The first sandboxed invocation was correctly treated as invalid evidence after
-  localhost listener creation returned `Operation not permitted`; the identical
-  suite passed with its normal loopback permission.
-- **PASS at M4 — `cargo clippy --all-features --all-targets -- -D warnings`:**
-  exit status 0 (the pre-existing invalid-path notices from `clippy.toml` remain
-  non-fatal).
-- **PASS at M4 — `cargo fmt --all -- --check`:** exit status 0.
-- **PASS at M4 — `cargo deny check`:** advisories, bans, licenses, and sources all
-  green.
-- **PASS at M4 — changed unsafe crate Miri:** the pinned vmm-backend suite passed
-  60 library tests, 20 run-loop tests, the vCPU round-trip, and every remaining
-  integration target under permissive provenance; no UB was reported.
-- **PASS at M2 — standalone search workspace:** build, strict clippy, format,
-  deny, and 96-test nextest suite are green; the full seed sweep remains a
-  CI/nightly concern after this directly load-bearing M2 record.
-- **PASS at M2 — unsafe-crate Miri:** pinned Miri passed the hypercall-doorbell
-  loopback suite and the agent's pure tests; full-frame agent tests are explicitly
-  excluded only under Miri.
-- **PASS at M2 — native Linux/aarch64 validation on msr1:** exact-source
-  hypercall-doorbell and agent tests plus strict clippy passed, and published
-  image hashes matched the local build inputs and outputs.
-- **PASS at M0 — Linux-frozen `vmm-core` public API:** exact cross-target match.
-- **PASS at M0 — coverage ratchet:** 94.76% workspace region coverage against the
-  workflow's 90% floor; the new module measures 90.08%.
-- **PASS at M0 — mutation gate:** all 53 changed-code mutants accounted for; no
-  survivors or timeouts.
-- **PASS at M0 — aarch64 architecture seam:** full all-feature/all-target clippy
-  for `aarch64-unknown-linux-gnu`, exit status 0.
-- **FAIL — Kani and remaining final quality-toolchain gates:** not yet run for the
-  complete plan.
+- **PASS — final root build/test/lint/format/dependency gates:**
+  `cargo build --all-features`, `cargo nextest run --all-features` (**1314 / 1314
+  passed**, 25 intentionally skipped),
+  `cargo clippy --all-features --all-targets -- -D warnings`,
+  `cargo fmt --all -- --check`, and `cargo deny check` all exited zero. The
+  clippy configuration's pre-existing invalid-path notices and cargo-deny's
+  explicitly allowed duplicate/unmatched-license notices remain non-fatal; the
+  final deny verdict is `advisories ok, bans ok, licenses ok, sources ok`.
+- **PASS — coverage ratchet on the final source:** the exact workflow command ran
+  all 1314 tests and reported **93.73% region coverage** (53,105 / 56,657), above
+  the 90% floor. The first sandboxed run was invalid because localhost listener
+  creation was denied. The first permission-valid run, before narrowing the
+  workflow's exclusion to live host-only composition/FFI entrypoints, honestly
+  failed at 88.16%. Portable ARM dispatch, state, snapshot, comparator, and
+  backend logic remain counted; excluding only entrypoints that require live HVF
+  or KVM raised the valid result to 93.66%, and the final planted-negative tests
+  raised it to 93.73%.
+- **PASS — M6 incremental mutation gate:** the corrected all-feature run tested
+  all 150 changed-code mutants. An initial attempt was discarded after package-
+  isolated build probes omitted the guest feature and misclassified viable
+  mutants as compiler failures; `.cargo/mutants.toml` now applies `all_features`
+  to both build and test phases. The corrected exhaustive run produced 112
+  caught, 28 compiler-rejected, 10 surviving, and zero timeouts. Focused
+  independent-field/state-framing negatives then caught all ten survivors. The
+  final combined accounting is **122 caught, 28 compiler-rejected, 0 missed, 0
+  timed out**. The out-of-workspace SDK diff contains zero mutable lines.
+- **PASS — formal verification:** the exact Kani workflow commands passed all
+  harnesses: `vtime` 8 / 8, `lapic` 15 / 15, `vmm-backend` 4 / 4, and
+  `environment` 3 / 3 (**30 / 30 total**). Kani initially exposed that the live
+  macOS HVF assembly was being compiled into the verifier; live HVF modules and
+  probe binaries now take their existing fail-loud fallback under `cfg(kani)`,
+  after which every proof completed.
+- **PASS — frozen public APIs:** all native root snapshots and the standalone SDK
+  snapshot passed with pinned nightly/cargo-public-api. The macOS run loudly
+  skips the two Linux-frozen surfaces; independent pinned generation for
+  `x86_64-unknown-linux-gnu` byte-matched the reviewed `vmm-backend` and
+  `vmm-core` snapshots exactly. The `gicv3` and `vmm-backend` additions are the
+  intentional M4 vGIC/state/backend seams.
+- **PASS — unsafe-crate Miri:** the pinned `vmm-backend` suite passed 60 library
+  tests, 20 run-loop tests, the vCPU round-trip, and every remaining integration
+  target under permissive provenance; no UB was reported. The pinned M2 Miri
+  lanes also passed the hypercall-doorbell loopback and guest agent pure tests;
+  no final-audit change adds or modifies unsafe logic.
+- **PASS — standalone search workspace:** its build, strict clippy, format, deny,
+  and **96 / 96** nextest suite passed. The historical full seed sweep also
+  completed all 96 tests (the long sweep took 1400.654 s); future broad sweeps
+  remain CI/nightly unless a milestone claim directly depends on them.
+- **PASS — native Linux/aarch64 pre-final audit:** an exact source archive at
+  `922f75f6` passed all-feature build, strict all-target clippy, all-feature test,
+  and format on msr1. The final audit changes are portable tests, frozen API
+  snapshots, quality configuration, and Kani-only cfg guards.
+- **FAIL — exact final-commit Linux/aarch64 rerun:** pending the certification
+  commit. This line remains red until that immutable commit is archived to msr1
+  and its native build, strict clippy, tests, and format all exit zero.
+
+**Final plan status: FAIL pending the exact final-commit Linux/aarch64 rerun.**
+Milestones M0 through M6 themselves remain sealed in strict dependency order;
+this red line is the final repository certification step, not permission to
+reopen or skip a milestone.

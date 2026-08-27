@@ -599,6 +599,10 @@ mod tests {
         assert_eq!(decoded.sdk.as_ref().unwrap().stream, [0x5a; 16]);
         assert_eq!(decoded.sdk.as_ref().unwrap().events.len(), 2);
         assert_eq!(
+            decoded.sdk.as_ref().unwrap().coverage_thresholds,
+            BTreeMap::from([(2, 9), (7, 14)])
+        );
+        assert_eq!(
             decoded.sdk.as_ref().unwrap().payloads.as_ref().unwrap()[0],
             [4, 5]
         );
@@ -665,6 +669,31 @@ mod tests {
                 section: "vm_state",
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn sdk_coverage_threshold_fields_fail_independently() {
+        let (_, _, sdk, _, _) = fixture();
+        let bytes = encode_sdk(&sdk).unwrap();
+        let covr = bytes
+            .windows(4)
+            .position(|window| window == b"COVR")
+            .expect("fixture has coverage extension");
+
+        let mut zero = bytes.clone();
+        zero[covr + 16..covr + 24].copy_from_slice(&0_u64.to_le_bytes());
+        assert!(matches!(
+            decode_sdk(&zero),
+            Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
+        ));
+
+        let mut duplicate = bytes;
+        let first_thread = duplicate[covr + 12..covr + 16].to_vec();
+        duplicate[covr + 24..covr + 28].copy_from_slice(&first_thread);
+        assert!(matches!(
+            decode_sdk(&duplicate),
+            Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
     }
 }

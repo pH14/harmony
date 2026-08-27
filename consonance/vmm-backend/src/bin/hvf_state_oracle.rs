@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Live retained-state round-trip oracle for the Apple Silicon HVF backend.
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 fn main() -> std::process::ExitCode {
     use vmm_backend::{Arm64Policy, Arm64VcpuState, Backend, HvfBackend};
 
@@ -83,8 +83,8 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64", not(miri))))]
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani))))]
 fn main() -> std::process::ExitCode {
-    eprintln!("hvf_state_oracle requires an Apple Silicon macOS host outside Miri");
+    eprintln!("hvf_state_oracle requires an Apple Silicon macOS host outside Miri/Kani");
     std::process::ExitCode::from(2)
 }

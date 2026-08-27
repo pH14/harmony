@@ -2,7 +2,7 @@
 //! Empirical probe for the Apple Silicon Hypervisor.framework surface used by
 //! the prescriptive V-time bring-up backend.
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 mod arm64 {
     use core::ffi::c_void;
     use std::alloc::{Layout, alloc_zeroed, dealloc};
@@ -728,7 +728,7 @@ mod arm64 {
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 fn main() {
     if let Err(error) = arm64::run() {
         eprintln!("hvf probe failed: {error}");
@@ -736,8 +736,8 @@ fn main() {
     }
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64", not(miri))))]
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani))))]
 fn main() {
-    eprintln!("hvf_probe requires an Apple Silicon macOS host outside Miri");
+    eprintln!("hvf_probe requires an Apple Silicon macOS host outside Miri/Kani");
     std::process::exit(2);
 }

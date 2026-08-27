@@ -77,7 +77,7 @@ sha256sum harmony-linux/build/arm64/Image \
   harmony-linux/build/arm64/initramfs.cpio.gz
 
 cargo build --release --locked -p vmm-core --bin kvm_arm64_boot
-taskset -c 10 target/release/kvm_arm64_boot \
+taskset -c 0 target/release/kvm_arm64_boot \
   harmony-linux/build/arm64/Image \
   harmony-linux/build/arm64/initramfs.cpio.gz \
   20000 /tmp/m4-normalized.log

@@ -277,6 +277,24 @@ impl Transport for DispatcherLoopback {
     }
 }
 
+/// Host response seam for pinning each half of the coverage response guard.
+struct CoverageResponseTransport {
+    next: u64,
+    selected: u32,
+}
+
+impl Transport for CoverageResponseTransport {
+    type Error = ();
+
+    fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {
+        let (header, _) = decode(req).map_err(|_| ())?;
+        let mut payload = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+        payload[0..8].copy_from_slice(&self.next.to_le_bytes());
+        payload[8..12].copy_from_slice(&self.selected.to_le_bytes());
+        encode_response(ServiceId::Sdk, 2, header.seq, Status::Ok, &payload, resp).map_err(|_| ())
+    }
+}
+
 #[derive(Clone)]
 struct OnePayload(Option<Vec<u8>>);
 
@@ -404,6 +422,40 @@ fn coverage_yield_rejects_skipped_stale_and_invalid_thresholds() {
     );
 }
 
+/// Each response invariant is independently load-bearing: a host cannot hide
+/// one malformed field behind a valid value in the other field.
+#[test]
+fn coverage_yield_rejects_each_malformed_response_field_independently() {
+    for (next, selected) in [(7, 0), (8, 2)] {
+        let mut client = Client::new(CoverageResponseTransport { next, selected });
+        assert_eq!(
+            client.coverage_yield(4, 7, 2),
+            Err(ClientError::Protocol(ProtoError::BadPayload))
+        );
+    }
+}
+
+/// Request and response buffer lengths are separate protocol invariants.
+#[test]
+fn sdk_coverage_rejects_each_bad_buffer_length_independently() {
+    let mut svc = SdkBuggify::new(false);
+    let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+    request[0..4].copy_from_slice(&7_u32.to_le_bytes());
+    request[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
+    request[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    let mut response = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+
+    assert_eq!(
+        svc.handle(2, &request[..request.len() - 1], &mut response),
+        (Status::BadRequest, 0)
+    );
+    assert_eq!(
+        svc.handle(2, &request, &mut response[..SDK_COVERAGE_RESPONSE_LEN - 1]),
+        (Status::BadRequest, 0)
+    );
+    assert!(svc.coverage_asked().is_empty());
+}
+
 /// `SdkBuggify` snapshots and restores its table + asked log, so a buggify
 /// service survives a corpus snapshot exactly like the other reference services.
 #[test]
@@ -427,6 +479,7 @@ fn sdk_buggify_state_round_trips() {
         (Status::Ok, SDK_COVERAGE_RESPONSE_LEN)
     );
     assert_eq!(svc.asked(), [3, 7]);
+    assert_eq!(svc.coverage_asked(), [(11, SDK_COVERAGE_QUANTUM, 2, 0)]);
     let saved = svc.save_state();
     let mut restored = SdkBuggify::new(false);
     restored.restore_state(&saved).unwrap();
@@ -435,6 +488,43 @@ fn sdk_buggify_state_round_trips() {
         restored.save_state(),
         saved,
         "bytes are stable across restore"
+    );
+}
+
+/// The optional coverage-state extension is absent only when both collections
+/// are empty, and remains present when exactly one collection is populated.
+#[test]
+fn sdk_coverage_state_extension_presence_is_exact() {
+    let empty = SdkBuggify::new(false);
+    let empty_state = vec![0_u8; 9];
+    assert_eq!(empty.save_state(), empty_state);
+
+    let mut thresholds_only = empty_state;
+    thresholds_only.extend_from_slice(b"COVR");
+    thresholds_only.extend_from_slice(&1_u32.to_le_bytes());
+    thresholds_only.extend_from_slice(&4_u32.to_le_bytes());
+    thresholds_only.extend_from_slice(&7_u64.to_le_bytes());
+    thresholds_only.extend_from_slice(&0_u32.to_le_bytes());
+    let mut restored = SdkBuggify::new(true);
+    restored.restore_state(&thresholds_only).unwrap();
+    assert_eq!(restored.save_state(), thresholds_only);
+}
+
+/// A persisted runnable selection is checked even when `ready` itself is
+/// nonzero; `selected == ready` is out of range and must fail closed.
+#[test]
+fn sdk_coverage_restore_rejects_out_of_range_selection() {
+    let mut state = vec![0_u8; 9];
+    state.extend_from_slice(b"COVR");
+    state.extend_from_slice(&0_u32.to_le_bytes());
+    state.extend_from_slice(&1_u32.to_le_bytes());
+    state.extend_from_slice(&3_u32.to_le_bytes());
+    state.extend_from_slice(&5_u64.to_le_bytes());
+    state.extend_from_slice(&2_u32.to_le_bytes());
+    state.extend_from_slice(&2_u32.to_le_bytes());
+    assert_eq!(
+        SdkBuggify::new(false).restore_state(&state),
+        Err(ProtoError::BadState)
     );
 }
 

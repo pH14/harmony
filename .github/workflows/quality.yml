@@ -5,7 +5,7 @@ name: quality
 # jobs used to run on the self-hosted determinism box (private-repo minutes were
 # exhausted, "not to be paid for") is gone. Every job here is a CONTENT check: fmt,
 # clippy -D warnings, cargo-deny, nextest, coverage, mutation, Kani, public-api, and
-# the arm-altra pre-build apparatus incl. its Miri gate. None of them need bare metal
+# the ARM64 pre-build apparatus incl. its Miri gate. None of them need bare metal
 # — a cache-thrashed slower run produces the same artifact and the same hash, so the
 # runner's microarchitecture and contention do not affect the verdict
 # (docs/BOX-PINNING.md, "CI runner isolation": "Correctness gates are contention-
@@ -208,7 +208,13 @@ jobs:
       # task-21 determinism backend (`…/src/patched_kvm.rs`), the task-47 run_until
       # PMU syscall orchestration (`…/src/pmu_sys.rs` — its PURE config `pmu.rs`
       # stays covered), vmm-core's `perf_event` work counter
-      # (`consonance/vmm-core/src/work_perf.rs`). This
+      # (`consonance/vmm-core/src/vendor/x86/work_perf.rs`), and the live ARM
+      # substrate entrypoints. The latter are the Hypervisor.framework FFI module
+      # and its probe/oracle binaries plus the HVF/KVM boot and control-server
+      # composition binaries; they require entitlements or `/dev/kvm` and built
+      # guest images. Their portable mechanisms remain coverage-counted in
+      # `arm64_kvm.rs`, the ARM value/state modules, `mock_arm64.rs`, and vmm-core's
+      # ARM dispatch/snapshot/oracle logic. This
       # coverage job runs **without `--ignored`** (and on every crate's matrix), so
       # the box-only `#[ignore]` integration tests that exercise the FFI / perf
       # orchestration end-to-end never run here — counting those paths would only
@@ -228,7 +234,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/(vendor/x86/work_perf\.rs|bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs)|consonance/acceptance-suite/src/realvmm\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()

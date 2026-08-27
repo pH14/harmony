@@ -5102,7 +5102,21 @@ mod tests {
             vmm
         };
         let mut base = build();
+        assert!(
+            !encode_sdk_channel(base.sdk.as_ref().unwrap())
+                .windows(4)
+                .any(|window| window == b"COVR"),
+            "an unused coverage channel preserves the pre-M6 hash bytes"
+        );
         let first = base.decide_coverage(4, 1, 1, 2).unwrap();
+        let mut coverage_suffix = b"COVR".to_vec();
+        coverage_suffix.extend_from_slice(&1_u64.to_le_bytes());
+        coverage_suffix.extend_from_slice(&1_u32.to_le_bytes());
+        coverage_suffix.extend_from_slice(&first.0.to_le_bytes());
+        assert!(
+            encode_sdk_channel(base.sdk.as_ref().unwrap()).ends_with(&coverage_suffix),
+            "an exercised threshold is canonical hash state"
+        );
         let snap = base.sdk_snapshot().unwrap();
         let hash_after_first = base.state_hash();
         let log_after_first = base.sdk_coverage().to_vec();

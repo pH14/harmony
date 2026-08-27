@@ -13,7 +13,7 @@
 # Run the nextest suite (process-isolated, faster) as the mutation oracle and
 # build/test with all features so the `cli`-gated code is included.
 test_tool = "nextest"
-additional_cargo_test_args = ["--all-features"]
+all_features = true
 
 # A handful of mutants flip a loop condition or its index arithmetic (the
 # `while` in compare_runs / bisect_divergence) into a non-terminating loop;

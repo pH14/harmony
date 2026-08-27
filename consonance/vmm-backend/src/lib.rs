@@ -73,7 +73,7 @@ mod arm64_kvm;
 // Apple Silicon bring-up backend over Hypervisor.framework. The framework and
 // AArch64 ABI are both target-specific, so no part of this module is compiled
 // on Linux or Intel macOS.
-#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 mod hvf;
 // The box-only syscall half (`LiveKvm`, real ioctls), gated on the arch it
 // traps as well as the OS — `kvm_bindings` exposes a different register ABI per
@@ -149,7 +149,7 @@ pub use mock_arm64::{Arm64MockCompletion, MockArm64Backend, MockArm64Caps};
 pub use arm64_kvm::FakeKvm;
 pub use arm64_kvm::{Arm64Kvm, Arm64KvmBackend, KvmRunView, MmioView};
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 pub use hvf::{HvfBackend, HvfExitHandle};
 
 // The box-only stock KVM/arm64 constructor — the concrete `(Arm64KvmBackend,
