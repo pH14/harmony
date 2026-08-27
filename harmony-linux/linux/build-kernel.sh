@@ -127,10 +127,12 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 # `test-publish-gate.sh` with a planted rejection.
 # Site offsets are toolchain-dependent, so each build toolchain carries its
 # own committed baseline over the same reviewed function set;
-# HARMONY_RDTSC_ALLOWLIST selects it (default: the box toolchain's list).
-echo "== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)"
+# HARMONY_RDTSC_ALLOWLIST / HARMONY_RDRAND_ALLOWLIST select them (default:
+# the box toolchain's lists).
+echo "== kernel: counter-opcode scan (rdtsc/rdtscp + rdrand/rdseed reachability gate)"
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
-    "${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}"
+    "${HARMONY_RDTSC_ALLOWLIST:-$LINUX_DIR/rdtsc-allowlist.txt}" \
+    "${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}"
 
 # Publish ONLY after the scan passed.
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/bzImage"
