@@ -233,3 +233,129 @@ pub struct VcpuEvents {
     /// it a snapshot taken with a queued triple fault restores as if none occurred.
     pub triple_fault_pending: u8,
 }
+
+/// `XSTATE_BV` in the XSAVE header (Intel SDM vol. 1, XSAVE area layout).
+const XSTATE_BV: usize = 512;
+/// `XCOMP_BV` in the XSAVE header; nonzero selects the compacted format.
+const XCOMP_BV: usize = 520;
+/// x87 control/status/tag/opcode/instruction/operand words in the legacy area.
+const X87_CONTROL: std::ops::Range<usize> = 0..24;
+/// ST0–ST7 in the legacy area.
+const X87_ST: std::ops::Range<usize> = 32..160;
+/// MXCSR in the legacy area (SSE component; `MXCSR_MASK` at 28 is a host
+/// capability constant, not guest state).
+const SSE_MXCSR: std::ops::Range<usize> = 24..28;
+/// XMM0–XMM15 in the legacy area.
+const SSE_XMM: std::ops::Range<usize> = 160..416;
+/// x87 init state: `FCW = 0x037F`, every other control word and ST register 0.
+const X87_INIT_FCW: [u8; 2] = 0x037Fu16.to_le_bytes();
+/// SSE init state: `MXCSR = 0x1F80`, every XMM register 0.
+const SSE_INIT_MXCSR: [u8; 4] = 0x1F80u32.to_le_bytes();
+
+/// Canonicalize the x87 and SSE components of a standard-format XSAVE image to
+/// init-compressed form, in place.
+///
+/// XSAVE's init optimization gives one guest-visible state two encodings: a
+/// component can be recorded present (`XSTATE_BV` bit set, area holding the
+/// init values) or absent (bit clear, area architecturally ignored), and which
+/// one hardware writes varies with host scheduling rather than guest behavior
+/// (observed on Xeon Platinum 8573C: the x87 bit flips across same-seed boots
+/// while every state byte matches). Determinism rule #4 forbids host-derived
+/// bytes in `VcpuState`, so both encodings must collapse to one: a component
+/// whose area holds the init values gets its bit cleared, and a component
+/// whose bit is clear gets the init values written into its ignored area.
+/// Compacted-format images (nonzero `XCOMP_BV`) have a different layout and
+/// are left untouched.
+pub fn canonicalize_xsave(image: &mut [u8]) {
+    if image.len() < XCOMP_BV + 8 || image[XCOMP_BV..XCOMP_BV + 8] != [0u8; 8] {
+        return;
+    }
+
+    let is_zero = |r: std::ops::Range<usize>, image: &[u8]| image[r].iter().all(|&b| b == 0);
+    let x87_init = |image: &[u8]| {
+        image[X87_CONTROL.start..X87_CONTROL.start + 2] == X87_INIT_FCW
+            && is_zero(X87_CONTROL.start + 2..X87_CONTROL.end, image)
+            && is_zero(X87_ST, image)
+    };
+    let sse_init = |image: &[u8]| image[SSE_MXCSR] == SSE_INIT_MXCSR && is_zero(SSE_XMM, image);
+
+    let mut bv = u64::from_le_bytes(image[XSTATE_BV..XSTATE_BV + 8].try_into().expect("8 bytes"));
+    if bv & 1 == 0 {
+        image[X87_CONTROL.start..X87_CONTROL.start + 2].copy_from_slice(&X87_INIT_FCW);
+        image[X87_CONTROL.start + 2..X87_CONTROL.end].fill(0);
+        image[X87_ST].fill(0);
+    } else if x87_init(image) {
+        bv &= !1;
+    }
+    if bv & 2 == 0 {
+        image[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        image[SSE_XMM].fill(0);
+    } else if sse_init(image) {
+        bv &= !2;
+    }
+    image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&bv.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A standard-format image holding the x87+SSE init values with the given
+    /// `XSTATE_BV` — the shape KVM returns for an early-boot guest.
+    fn init_image(xstate_bv: u64) -> Vec<u8> {
+        let mut image = vec![0u8; 4096];
+        image[0..2].copy_from_slice(&X87_INIT_FCW);
+        image[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        image[28..32].copy_from_slice(&0xFFFFu32.to_le_bytes());
+        image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&xstate_bv.to_le_bytes());
+        image
+    }
+
+    #[test]
+    fn init_state_encodings_collapse_to_one_image() {
+        // The measured Xeon 8573C flip: same bytes, XSTATE_BV 0x3 vs 0x2.
+        let mut a = init_image(0x3);
+        let mut b = init_image(0x2);
+        canonicalize_xsave(&mut a);
+        canonicalize_xsave(&mut b);
+        assert_eq!(a, b);
+        assert_eq!(a[XSTATE_BV..XSTATE_BV + 8], 0u64.to_le_bytes());
+    }
+
+    #[test]
+    fn live_state_is_untouched() {
+        let mut image = init_image(0x3);
+        image[0..2].copy_from_slice(&0x027Fu16.to_le_bytes());
+        image[SSE_XMM.start] = 0x5A;
+        let before = image.clone();
+        canonicalize_xsave(&mut image);
+        assert_eq!(image, before);
+    }
+
+    #[test]
+    fn ignored_area_bytes_become_the_init_values() {
+        // Bit clear ⇒ the area is architecturally ignored; residue there must
+        // not reach the state hash.
+        let mut image = init_image(0x0);
+        image[X87_ST.start] = 0xEE;
+        image[SSE_XMM.start + 7] = 0xEE;
+        canonicalize_xsave(&mut image);
+        assert_eq!(image, init_image(0x0));
+    }
+
+    #[test]
+    fn mxcsr_mask_survives_canonicalization() {
+        let mut image = init_image(0x2);
+        canonicalize_xsave(&mut image);
+        assert_eq!(image[28..32], 0xFFFFu32.to_le_bytes());
+    }
+
+    #[test]
+    fn compacted_images_are_untouched() {
+        let mut image = init_image(0x3);
+        image[XCOMP_BV..XCOMP_BV + 8].copy_from_slice(&(1u64 << 63 | 0x3).to_le_bytes());
+        let before = image.clone();
+        canonicalize_xsave(&mut image);
+        assert_eq!(image, before);
+    }
+}

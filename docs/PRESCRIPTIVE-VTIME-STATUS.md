@@ -1369,6 +1369,27 @@ on this branch may contain, fetch, or require a NES ROM.
    the runner pool draws Intel rarely and the open divergence is
    Intel-only.
 
+19. **The XSAVE image is canonicalized to init-compressed x87/SSE at the
+   save boundary.** The decision-18 localizer caught the divergent pair on
+   the Xeon 8573C draw of run 33095087969: the two 4096-byte images differ
+   in exactly one word — `XSTATE_BV` flips between 0x3 and 0x2 — with
+   `XCOMP_BV` zero both ways and every state byte identical, including the
+   x87 area. XSAVE's init optimization gives one guest-visible state two
+   encodings (component present with the init values in its area, or
+   component absent with the area ignored), and which one hardware writes
+   varies with host scheduling rather than guest behavior: Ice Lake draws
+   (8370C, 120 bounded boots across two hosts) never flip, Emerald Rapids
+   (8573C) flips on roughly 4 of 10 boots. `canonicalize_xsave`
+   (vmm-backend `arch::x86::state`, unit-tested portably) collapses both
+   encodings: an x87 or SSE component whose area holds the architectural
+   init values gets its `XSTATE_BV` bit cleared, and a cleared component's
+   ignored area bytes are set to those init values. `MXCSR_MASK` (a host
+   capability constant) and compacted-format images are untouched. Applied
+   in `save_xsave`, so the state hash, the component breakdown, and
+   snapshots all see one form. The ARM precedent is the BTYPE
+   canonicalization: state the architecture calls absent leaves no host
+   residue in the saved record.
+
 ## X0 — runner probe
 
 ### Build criteria
@@ -1509,5 +1530,7 @@ OK, same final V-time); the checkpoint state hash diverges first at event
 255, and all four divergent boots carry the same alternative hash there —
 a binary divergence at the first checkpoint — while their later
 checkpoints take three distinct value paths. Decision 18 records the
-localizer built for it. X2 stays open until an Intel draw passes ten
-boots (the passes-when criteria require one draw of each vendor).
+localizer built for it and decision 19 the measured cause (an XSAVE
+init-optimization encoding flip) and its canonicalization. X2 stays open
+until an Intel draw passes ten boots (the passes-when criteria require
+one draw of each vendor).
