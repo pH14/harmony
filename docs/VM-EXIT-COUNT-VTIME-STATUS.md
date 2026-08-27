@@ -1360,18 +1360,124 @@ recorded.
   four control sessions exited cleanly. This is the first evidence that covers
   the entire executed normalized/checkpoint sequence rather than inferring it
   from the final VMM suffix or endpoint state.
-- **FAIL — immediate cross-host restore `state_hash` equality:** not started.
-- **FAIL — both-direction uninterrupted continuation comparison:** not started.
+- **PASS — strict host-neutral midpoint artifact and immediate restore hash:**
+  `ControlServer` now exports/imports a total, versioned `HMSNAP01` stream that
+  contains the materialized 128-MiB RAM image, exact canonical ARM VM state,
+  SDK stream and remaining payload suffix, Net decisions, active fault policy,
+  seal cut, and source whole-state hash, followed by a SHA-256 over every prior
+  byte. Import verifies the digest, bounded section lengths, nested codecs,
+  configured RAM size, and destination ARM state decoder before minting a
+  handle. The artifact taken at frame 365 / V-time 2,158,003,000 / SDK event 9
+  was 134,243,185 bytes and SHA-256
+  `7639ec2f4512a01613cd60881a0f4dd6fda0dc1ce4a5bd86a864cdaaca3c7c57`
+  in both independently produced host directions. Its source cut carried three
+  normalized events, zero schedules, was untainted, and carried immediate
+  `state_hash`
+  `203d76ebf4d53eb26361b5d7473d134aac78d1dfe09f192406ef7ae387175a9e`.
+  Both KVM import of the HVF artifact and HVF import of the KVM artifact minted
+  handle 1 and reported that exact hash before the first continued action.
+  The committed positive restores a complete mid-lineage future; planted RAM,
+  VM-state, SDK, Net, and policy corruptions each fail the enclosing digest,
+  every truncation and hostile `u64` length is total, and a planted RAM byte is
+  rejected before any handle is minted.
+- **PASS — both-direction uninterrupted continuation comparison:** source and
+  destination used seed `1592642082` and the seed-derived generic action
+  vocabulary `(buttons, hold) = (65,4), (193,7), (65,7)`; no route, coordinate,
+  or obstacle knowledge enters the driver. Both uninterrupted sources reached
+  frame boundaries 365, 372, and 379 with whole-state hashes, in order:
+
+  ```text
+  203d76ebf4d53eb26361b5d7473d134aac78d1dfe09f192406ef7ae387175a9e
+  bf4d964e23e520feec19957a1532d3a02af8b884397afbf65f558b38e6968d14
+  0e23f616ca77e285ecc854a22797d0105bcd669dd16bec929301ee182c281e64
+  ```
+
+  Each opposite-host restore reproduced the same three hashes and frames. Each
+  source full session contained three restore-delimited segments, 50,940
+  portable events, 393 schedules, 198 checkpoints, session digest
+  `67d778f64fbe38c0e7e3e5b310b5d16e9ef61564f0169977b2a803f6808bfd6d`,
+  and passed independent placement. The source text logs were byte-identical
+  across hosts (51,339 lines, 8,031,450 bytes, SHA-256
+  `6d2cdf918e3a52975e00c92a76d308a8e78c392e2f855d82b59fdf4cbf189976`).
+  Each destination trace had the imported replay segment followed by the exact
+  six-event source suffix, zero schedules, and session digest
+  `5bbeec2319a5ebafc431235b5d5abda9b2d7c2dcb33b816b454d705e27dafa90`;
+  the destination text logs were likewise byte-identical (SHA-256
+  `01b775d12cfdb0857a1af6693d9258e5869d774fd4db3e036e9c07a392a1801d`).
+  `compare-m5-portability.py` independently verifies each trace's committed
+  body digest, rebases the source event/schedule cut, compares every remaining
+  event class, payload digest, post-advance V-time, interrupt placement,
+  embedded checkpoint, schedule record, and the three out-of-band whole-state
+  boundaries. It printed `M5_CONTINUATION_OK events=6 schedules=0
+  checkpoints=0 boundaries=3` in both directions. The zero embedded checkpoints
+  are non-vacuous here because all three action boundaries carry the independent
+  whole-state hashes above; the complete campaign checkpoint sequence is the
+  preceding full-session oracle.
 - **PASS — planted cross-host increment mismatch:** the production normalized
   comparator's committed one-V-ns perturbation reports event 1 / `VnsAfter`;
   `cargo test -p vmm-core --test prescriptive_vtime
   comparator_rejects_one_vns_increment_at_the_exact_event -- --exact` passed
-  before the real boot equality was accepted.
-- **FAIL — independent architectural-state comparator:** not started.
+  before the real boot equality was accepted. The new continuation comparator
+  additionally rebases a nonzero cut and localizes a planted increment to
+  relative event 1 / `VnsAfter`; its live evidence parser localized an injected
+  increment to relative event 2 in each direction and printed
+  `M5_CONTINUATION_NEGATIVE_OK`. A separately planted boundary-hash byte was
+  localized to boundary 1, proving the external state sequence is also
+  load-bearing.
+- **PASS — independent architectural-state comparator:** the comparator reads
+  live ARM state directly through `Backend::save`, removes any backend-owned
+  GIC record from the vCPU, and normalizes it to the same typed GICv3
+  architectural form as the userspace model. It does not call the snapshot
+  codec, `state_blob`, component digests, or `state_hash`. A fixed
+  `consonance.arm64-architecture.v1` writer emits every compared core register,
+  sysreg, SIMD/FP byte, debug register/control, quarantined virtual-timer field,
+  pending IRQ/FIQ level, MP state, and normalized GIC register/bitmap/priority
+  field explicitly. The final source and opposite-host-restored captures were
+  byte-identical in both directions: 1,349 lines, 30,316 bytes, SHA-256
+  `4c95264e85ac4b11dc08901e689faa3136e09a7f6596b3efefbfad4bb5b7b6dc`.
+  The typed comparator's planted core-register negative reports `core.x[7]`;
+  the independent GIC comparator reports planted priority corruption at INTID
+  27 and a planted distributor-control corruption by name. An embedded backend
+  GIC is rejected as non-canonical rather than silently compared twice.
 
-**M5 remains open.** Boot convergence is sealed as a partial checkpoint only;
-the milestone cannot pass until the NES campaign and portable snapshot
-continuations succeed in both directions with the independent state comparator.
+### M5 portability command evidence
+
+```text
+cargo test -p vmm-core --all-features --lib portable -- --nocapture
+10 passed; 0 failed
+
+cargo test -p vmm-core --all-features --lib \
+  vendor::arm64::comparator_tests -- --nocapture
+3 passed; 0 failed
+
+compare-m5-portability.py ... --source-event-cut 3 --source-schedule-cut 0
+M5_CONTINUATION_OK events=6 schedules=0 checkpoints=0 boundaries=3
+
+compare-m5-portability.py ... --plant-vns-relative-event 2
+M5_CONTINUATION_NEGATIVE_OK location='event 2' field=VnsAfter
+
+compare-m5-portability.py ... --plant-boundary-hash 1
+M5_CONTINUATION_NEGATIVE_OK location='boundary 1' field=StateHash
+
+cmp <source>.arch <restored>.arch
+exit status 0 in HVF→KVM and KVM→HVF directions
+
+pre-push fast gate after the portable comparator:
+1304 tests run: 1304 passed, 25 skipped
+pre-push fast gate after the independent architecture record:
+1305 tests run: 1305 passed, 25 skipped
+```
+
+The game kernel and initramfs were re-attested around the reverse run on both
+hosts with the same SHA-256 values recorded above; the transferred
+artifact and source report reproduced their pre-transfer hashes exactly. Every
+KVM runtime in this evidence was pinned with `taskset -c 0`.
+
+**M5 overall: PASS.** Byte identity, full boot and campaign logs/checkpoints,
+archive equality, bidirectional immediate restore and uninterrupted
+continuations, production and live planted negatives, independent direct ARM
+state comparison, and in-kernel/userspace GIC architectural normalization are
+all green. M6 did not begin before this evidence was recorded.
 
 ## M6 — instrumented concurrency-discovery measurement
 
