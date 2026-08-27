@@ -61,9 +61,10 @@ const GICD_CTLR_ARE: u32 = 1 << 4;
 /// `GICD_CTLR.DS` — the single-security-state view exposed by stock KVM's
 /// in-kernel vGICv3. It is fixed rather than retained mutable state.
 const GICD_CTLR_DS: u32 = 1 << 6;
-/// The writable `GICD_CTLR` bits (the two group enables; everything else is
-/// RO/RES0 here).
-const GICD_CTLR_WRITE_MASK: u32 = 0b11;
+/// The sole writable `GICD_CTLR` bit. Group 0/FIQ is not modeled, so retaining
+/// its enable bit would create state with no architectural effect and would
+/// disagree with stock KVM's single-security-state Group-1 view.
+const GICD_CTLR_WRITE_MASK: u32 = GICD_CTLR_ENABLE_GRP1;
 
 /// `GICR_TYPER.Last` (bit 4) — this is the last (only) redistributor.
 const GICR_TYPER_LAST: u32 = 1 << 4;
@@ -913,13 +914,20 @@ mod tests {
     #[test]
     fn fixed_register_surface_matches_the_stock_kvm_vgicv3() {
         let mut g = gic();
-        // Live M4 measurement: KVM fixes single-security state and affinity
-        // routing on, while retaining only the two group-enable bits.
+        // Live M5 measurement: KVM fixes single-security state and affinity
+        // routing on, while retaining only the modeled Group-1 enable bit.
         assert_eq!(g.mmio_read(GicFrame::Dist, GICD_CTLR, 0).unwrap(), 0x50);
         g.mmio_write(GicFrame::Dist, GICD_CTLR, u32::MAX, 0)
             .unwrap();
-        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_CTLR, 0).unwrap(), 0x53);
-        assert_eq!(g.snapshot().gicd_ctlr, 0x03);
+        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_CTLR, 0).unwrap(), 0x52);
+        assert_eq!(g.snapshot().gicd_ctlr, 0x02);
+
+        let mut invalid = g.snapshot();
+        invalid.gicd_ctlr |= 1;
+        assert!(matches!(
+            Gicv3::restore(&invalid, 0),
+            Err(GicError::InvalidState)
+        ));
 
         // KVM's one-redistributor topology publishes Last + DirectLPI. The
         // latter is inert without an ITS, which this board does not compose.

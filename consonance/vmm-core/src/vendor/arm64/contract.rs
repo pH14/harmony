@@ -18,19 +18,26 @@ use vmm_backend::{Arm64Policy, IdRegModel, SysregTrapPolicy};
 
 use crate::prescriptive::PrescriptiveTiming;
 
-/// Assigned duration of one GIC distributor/redistributor/CPU-interface exit.
-pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 1_000;
+/// Portable duration of interrupt-controller transactions.
+///
+/// Stock KVM consumes GIC distributor, redistributor, and CPU-interface
+/// accesses inside the in-kernel vGIC, while HVF surfaces them to userspace.
+/// They therefore remain raw diagnostics but contribute no portable V-time.
+pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 0;
 /// Assigned duration of one PL011 access.
 pub const SERIAL_EXIT_VNS: u64 = 2_000;
 /// Assigned duration of one pvclock/clockevent MMIO access.
 pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
 /// Assigned duration of the kernel's deterministic execution tick.
 ///
-/// The guest emits one tick on every syscall entry and context switch.
-/// Advancing by the full 100 Hz period makes an already-armed clockevent due
-/// at that exit, so a process that blocks cannot strand the vCPU in an
-/// exit-free idle loop.
-pub(crate) const EXECUTION_TICK_VNS: u64 = 10_000_000;
+/// The guest emits one tick on every syscall entry and context switch. This
+/// quantum must remain strictly below Linux's 100 Hz clockevent period: a
+/// timer interrupt can itself cause a context switch, and advancing by a full
+/// period there would immediately mature its successor and create a
+/// self-sustaining interrupt loop.
+pub(crate) const EXECUTION_TICK_VNS: u64 = 1_000_000;
+pub(crate) const LINUX_CLOCKEVENT_PERIOD_VNS: u64 = 10_000_000;
+const _: () = assert!(EXECUTION_TICK_VNS < LINUX_CLOCKEVENT_PERIOD_VNS);
 /// Assigned duration of a trapped counter-shaped time read.
 pub const TRAPPED_TIME_READ_VNS: u64 = 1;
 /// Assigned duration of a deterministic architectural-control trap that is
@@ -176,7 +183,7 @@ mod tests {
     fn production_prescriptive_timing_is_explicit_not_the_m0_default() {
         let timing = prescriptive_timing();
         assert_ne!(timing, PrescriptiveTiming::default());
-        assert_eq!(timing.interrupt_controller_mmio_vns, 1_000);
+        assert_eq!(timing.interrupt_controller_mmio_vns, 0);
         assert_eq!(timing.serial_mmio_vns, 2_000);
         assert_eq!(timing.paravirtual_device_mmio_vns, 1_000);
         assert_eq!(timing.trapped_time_read_vns, 1);

@@ -71,9 +71,15 @@ fn is_gicd_irouter(addr: u64) -> bool {
 /// Convert an ARM backend exit to the substrate-independent M1 log shape.
 /// Payloads are fixed-order little-endian encodings of every field that can
 /// affect dispatch; no backend debug string or host address enters this log.
+///
+/// GIC distributor/redistributor MMIO and CPU-interface sysregs are deliberately
+/// raw-only. HVF surfaces those transactions so the userspace GIC can service
+/// them, while stock KVM consumes the same architectural operations inside its
+/// in-kernel vGIC. Counting them would bind the portable clock and normalized
+/// log to the substrate's implementation boundary.
 pub(crate) fn normalize_prescriptive_exit_arm64(
     exit: &Exit<Arm64>,
-) -> (NormalizedEventClass, Vec<u8>) {
+) -> Option<(NormalizedEventClass, Vec<u8>)> {
     use super::board::{DOORBELL, GICD, GICR, PL011, PVCLOCK};
 
     match exit {
@@ -90,7 +96,7 @@ pub(crate) fn normalize_prescriptive_exit_arm64(
             let class = if in_frame(gpa.0, PL011) {
                 NormalizedEventClass::DeviceMmio(DeviceClass::Serial)
             } else if in_frame(gpa.0, GICD) || in_frame(gpa.0, GICR) {
-                NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
+                return None;
             } else if in_frame(gpa.0, PVCLOCK) {
                 NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
             } else if in_frame(gpa.0, DOORBELL) {
@@ -100,7 +106,7 @@ pub(crate) fn normalize_prescriptive_exit_arm64(
                 // failure trace without pretending it was a modeled device.
                 NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
             };
-            (class, payload)
+            Some((class, payload))
         }
         Exit::Arch(vmm_backend::Arm64Exit::Sysreg { sysreg, write }) => {
             let mut payload = sysreg.to_le_bytes().to_vec();
@@ -111,26 +117,22 @@ pub(crate) fn normalize_prescriptive_exit_arm64(
                 }
                 None => payload.push(0),
             }
-            let class = if matches!(*sysreg, OSDLR_EL1 | OSLAR_EL1) {
-                NormalizedEventClass::ArchitecturalControl
-            } else {
-                NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
-            };
-            (class, payload)
+            matches!(*sysreg, OSDLR_EL1 | OSLAR_EL1)
+                .then_some((NormalizedEventClass::ArchitecturalControl, payload))
         }
-        Exit::Common(CommonExit::Idle) => (NormalizedEventClass::Idle, Vec::new()),
-        Exit::Common(CommonExit::Shutdown) => (NormalizedEventClass::Terminal, Vec::new()),
+        Exit::Common(CommonExit::Idle) => Some((NormalizedEventClass::Idle, Vec::new())),
+        Exit::Common(CommonExit::Shutdown) => Some((NormalizedEventClass::Terminal, Vec::new())),
         Exit::Common(CommonExit::Hypercall(frame)) => {
             let mut payload = Vec::new();
             for arg in frame.args {
                 payload.extend_from_slice(&arg.to_le_bytes());
             }
-            (NormalizedEventClass::Doorbell, payload)
+            Some((NormalizedEventClass::Doorbell, payload))
         }
-        Exit::Common(CommonExit::Deadline { reached }) => (
+        Exit::Common(CommonExit::Deadline { reached }) => Some((
             NormalizedEventClass::TimeRead,
             reached.0.to_le_bytes().to_vec(),
-        ),
+        )),
     }
 }
 
@@ -233,9 +235,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return Err(VmmError::ContractViolation(format!(
                 "trapped GIC CPU-interface sysreg {sysreg:#010x} with no userspace GIC wired"
             )));
-        }
-        if self.prescriptive_vtime_enabled() {
-            self.advance_prescriptive_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
         }
         let gic = self.devices.gic.as_mut().expect("is_none checked above");
         match (sysreg, write) {
@@ -498,9 +497,6 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // above). GICR_TYPER is composed from its two 32-bit halves so the
         // device model retains one canonical register-access primitive.
         if in_frame(addr, GICD) || in_frame(addr, GICR) {
-            if self.prescriptive_vtime_enabled() {
-                self.advance_prescriptive_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
-            }
             let (frame, base) = if in_frame(addr, GICD) {
                 (gicv3::GicFrame::Dist, GICD.0)
             } else {
@@ -1299,4 +1295,35 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
         vmm_backend::MpState::Halted => 1,
     };
     out.push(("mp_state", dig(&[mp])));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vendor::arm64::board::{GICD, GICR, PL011};
+
+    #[test]
+    fn substrate_private_gic_transactions_are_raw_only() {
+        for gpa in [GICD.0, GICR.0] {
+            let exit = Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(gpa),
+                size: 4,
+                write: None,
+            });
+            assert_eq!(normalize_prescriptive_exit_arm64(&exit), None);
+        }
+
+        let cpu_interface = Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
+            sysreg: ICC_IAR1_EL1,
+            write: None,
+        });
+        assert_eq!(normalize_prescriptive_exit_arm64(&cpu_interface), None);
+
+        let serial = Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PL011.0),
+            size: 4,
+            write: None,
+        });
+        assert!(normalize_prescriptive_exit_arm64(&serial).is_some());
+    }
 }

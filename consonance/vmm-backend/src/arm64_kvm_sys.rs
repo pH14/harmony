@@ -58,6 +58,7 @@ const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_REG_SIZE_U64 == kvm_bindings::KVM_REG_SIZE_U64);
     assert!(crate::arm64_kvm::KVM_REG_ARM_CORE == kvm_bindings::KVM_REG_ARM_CORE as u64);
     assert!(crate::arm64_kvm::KVM_REG_ARM64_SYSREG == kvm_bindings::KVM_REG_ARM64_SYSREG as u64);
+    assert!(crate::arm64_kvm::KVM_REG_ARM_FW == kvm_bindings::KVM_REG_ARM_FW as u64);
     assert!(0x0016 << 16 == kvm_bindings::KVM_REG_ARM_FW_FEAT_BMAP);
     assert!(crate::arm64_kvm::KVM_ARM_VCPU_PSCI_0_2 == kvm_bindings::KVM_ARM_VCPU_PSCI_0_2);
     assert!(

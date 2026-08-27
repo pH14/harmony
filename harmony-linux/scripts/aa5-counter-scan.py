@@ -13,9 +13,12 @@
 # tested): MRS Xt, <sysreg> is 0xD53_xxxxx, the counter registers live at op0=3,op1=3,CRn=14,
 # CRm=0, distinguished by op2 (0=CNTFRQ 1=CNTPCT 2=CNTVCT 5=CNTPCTSS 6=CNTVCTSS). The raw-opcode
 # decode SELF-VALIDATES against objdump's mnemonic on every instruction, so it can neither miss a
-# counter read nor invent one. CNTFRQ_EL0 (a constant frequency register, not a live counter) is
-# reported but does NOT trip the reject: reading the frequency is deterministic; reading the
-# COUNT is the hazard.
+# counter read nor invent one. CNTFRQ_EL0 is rejected too: it is constant on one
+# machine, but its value differs across the supported HVF and KVM substrates and
+# therefore leaks host identity into guest RAM. The owned kernel must obtain the
+# fixed guest frequency through its compiled Harmony accessor instead. The
+# implementation-defined REVIDR_EL1 and AIDR_EL1 values are rejected for the
+# same reason; the owned kernel records neutral values instead.
 import importlib.util
 import re
 import subprocess
@@ -23,7 +26,10 @@ import sys
 from pathlib import Path
 
 OP2 = {0: "CNTFRQ_EL0", 1: "CNTPCT_EL0", 2: "CNTVCT_EL0", 5: "CNTPCTSS_EL0", 6: "CNTVCTSS_EL0"}
-LIVE_COUNTERS = {"CNTPCT_EL0", "CNTVCT_EL0", "CNTPCTSS_EL0", "CNTVCTSS_EL0"}
+HOST_ID_READS = {
+    0xD53800C0: "REVIDR_EL1",
+    0xD53900E0: "AIDR_EL1",
+}
 TIMER_PROGRAMS = {
     (2, 0): "CNTP_TVAL_EL0",
     (2, 2): "CNTP_CVAL_EL0",
@@ -44,6 +50,11 @@ def decode_counter_read(word: int):
     if o0 != 1 or op1 != 3 or crn != 14 or crm != 0:
         return None
     return OP2.get(op2)
+
+
+def decode_host_identity_read(word: int):
+    """Return a non-portable implementation ID read, ignoring the Rt field."""
+    return HOST_ID_READS.get(word & ~0x1F)
 
 
 def decode_timer_program(word: int):
@@ -92,6 +103,7 @@ def scan(path: str):
             decoded[int(addr, 16)] = (word, asm)
             continue
         counter = decode_counter_read(word)
+        identity = decode_host_identity_read(word)
         timer = decode_timer_program(word)
         mnem_counter = low.startswith("mrs") and bool(
             re.search(r"cnt(frq|pct|vct)(ss)?_el0", low)
@@ -99,7 +111,14 @@ def scan(path: str):
         mnem_timer = low.startswith("msr") and bool(
             re.search(r"cnt[vp]_(tval|cval)_el0", low)
         )
-        if (counter is not None) != mnem_counter or (timer is not None) != mnem_timer:
+        mnem_identity = low.startswith("mrs") and bool(
+            re.search(r"(revidr|aidr)_el1", low)
+        )
+        if (
+            (counter is not None) != mnem_counter
+            or (identity is not None) != mnem_identity
+            or (timer is not None) != mnem_timer
+        ):
             disagreements.append(addr)
         decoded[int(addr, 16)] = (word, asm)
 
@@ -124,9 +143,9 @@ def scan(path: str):
     timer_programs = []
     for address, word, section in words:
         asm = decoded.get(address, (word, f"<raw executable word in {section}>"))[1]
-        counter = decode_counter_read(word)
-        if counter:
-            reads.append((f"{address:x}", f"{word:08x}", asm, counter))
+        host_read = decode_counter_read(word) or decode_host_identity_read(word)
+        if host_read:
+            reads.append((f"{address:x}", f"{word:08x}", asm, host_read))
         timer = decode_timer_program(word)
         if timer:
             timer_programs.append((f"{address:x}", f"{word:08x}", asm, timer))
@@ -140,16 +159,13 @@ def main():
     for path in sys.argv[1:]:
         reads, timer_programs = scan(path)
         name = path.split("/")[-1]
-        live = [r for r in reads if r[3] in LIVE_COUNTERS]
-        freq = [r for r in reads if r[3] not in LIVE_COUNTERS]
-        if live:
+        if reads:
             any_live = True
-            print(f"[REJECT] {name}: {len(live)} live counter read(s) — closure requires the clock page, not the counter")
-            for addr, raw, asm, reg in live:
+            print(f"[REJECT] {name}: {len(reads)} host-dependent register read(s) — closure requires the fixed guest contract, not a host register")
+            for addr, raw, asm, reg in reads:
                 print(f"    {addr}: {raw}  {asm}   [{reg}]")
         else:
-            note = f" ({len(freq)} CNTFRQ_EL0 constant-freq read(s), allowed)" if freq else ""
-            print(f"[CLEAN]  {name}: no live generic-timer counter reads{note} (raw ELF/mask self-check passed)")
+            print(f"[CLEAN]  {name}: no raw host-dependent register reads (raw ELF/mask self-check passed)")
         if timer_programs:
             any_live = True
             print(f"[REJECT] {name}: {len(timer_programs)} live-domain timer program(s)")
@@ -162,4 +178,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

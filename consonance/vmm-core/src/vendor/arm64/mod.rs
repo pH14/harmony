@@ -143,7 +143,7 @@ impl Vendor for Arm64 {
     fn normalize_prescriptive_exit(
         exit: &vmm_backend::Exit<Self>,
     ) -> Option<(crate::prescriptive::NormalizedEventClass, Vec<u8>)> {
-        Some(dispatch::normalize_prescriptive_exit_arm64(exit))
+        dispatch::normalize_prescriptive_exit_arm64(exit)
     }
 
     fn service_pending_irqs<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
@@ -329,6 +329,15 @@ mod comparator_tests {
             Err(GicArchitectureDifference {
                 field: "priority",
                 index: Some(27),
+            })
+        );
+        let mut planted = expected.clone();
+        planted.gicd_ctlr ^= 1 << 1;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "gicd_ctlr",
+                index: None,
             })
         );
         assert_eq!(compare_gic_architecture(&expected, &expected), Ok(()));

@@ -381,7 +381,7 @@ impl LivePrescriptiveTrace {
         if self.pending.is_some() {
             return Err("prescriptive trace began a second event before finishing the first");
         }
-        let event_index = u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX);
+        let event_index = u64::try_from(self.raw.len()).unwrap_or(u64::MAX);
         self.pending = Some(PendingLiveEvent {
             raw: RawEvent {
                 event_index,
@@ -398,8 +398,26 @@ impl LivePrescriptiveTrace {
     pub(crate) fn current_event_index(&self) -> Result<u64, &'static str> {
         self.pending
             .as_ref()
-            .map(|pending| pending.raw.event_index)
+            .map(|_| u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX))
             .ok_or("prescriptive trace operation outside an active event")
+    }
+
+    /// Retain a substrate-private exit in the raw diagnostic stream without
+    /// assigning portable V-time or a normalized event ordinal.
+    pub(crate) fn record_raw_only(
+        &mut self,
+        reason: ExitReason,
+        backend_debug: String,
+    ) -> Result<(), &'static str> {
+        if self.pending.is_some() {
+            return Err("prescriptive trace recorded a raw-only exit during an active event");
+        }
+        self.raw.push(RawEvent {
+            event_index: u64::try_from(self.raw.len()).unwrap_or(u64::MAX),
+            reason,
+            backend_debug,
+        });
+        Ok(())
     }
 
     pub(crate) fn schedule_clockevent(
@@ -956,6 +974,30 @@ pub fn check_delivery_placement(
 #[cfg(test)]
 mod live_trace_tests {
     use super::*;
+
+    #[test]
+    fn raw_only_exit_does_not_consume_a_portable_ordinal() {
+        let mut trace = LivePrescriptiveTrace::default();
+        trace
+            .record_raw_only(ExitReason::Mmio, "private GIC MMIO".to_string())
+            .unwrap();
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "portable serial MMIO".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Serial),
+                vec![1],
+            )
+            .unwrap();
+
+        assert_eq!(trace.current_event_index().unwrap(), 0);
+        trace.finish(2, None).unwrap();
+        assert_eq!(trace.raw.len(), 2);
+        assert_eq!(trace.raw[0].event_index, 0);
+        assert_eq!(trace.raw[1].event_index, 1);
+        assert_eq!(trace.normalized.events.len(), 1);
+        assert_eq!(trace.normalized.events[0].event_index, 0);
+    }
 
     #[test]
     fn replacement_and_disarm_are_recorded_as_cancellations() {

@@ -691,7 +691,8 @@ fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
     assert_eq!(second.vns, 2_000);
     assert_eq!(v.step().unwrap(), Step::Continued);
     let tick = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
-    assert_eq!(tick.vns, 10_002_000);
+    // The execution exit advances by the production contract's 1 ms quantum.
+    assert_eq!(tick.vns, 1_002_000);
 
     // Direction and width are one exact tuple. Neither invalid access consumes
     // registration state or advances a fresh VM's clock.

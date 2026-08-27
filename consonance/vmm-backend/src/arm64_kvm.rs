@@ -101,7 +101,7 @@ const HARMONY_GIC_IMPL_SPIS: u32 = 64;
 pub(crate) const HARMONY_GIC_NR_IRQS: u32 = 32 + HARMONY_GIC_IMPL_SPIS;
 const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
-const GIC_STATE_VERSION: u32 = 2;
+const GIC_STATE_VERSION: u32 = 3;
 
 const fn vgic_sysreg(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
     op0 << 14 | op1 << 11 | crn << 7 | crm << 3 | op2
@@ -425,6 +425,12 @@ pub(crate) const KVM_REG_ARM_CORE: u64 = 0x0010 << KVM_REG_ARM_COPROC_SHIFT;
 /// the class of EL1 system registers; the `op0:op1:CRn:CRm:op2` encoding fills
 /// bits 0..15 below it.
 pub(crate) const KVM_REG_ARM64_SYSREG: u64 = 0x0013 << KVM_REG_ARM_COPROC_SHIFT;
+/// KVM-as-firmware pseudo-register class (`uapi/asm/kvm.h`).
+pub(crate) const KVM_REG_ARM_FW: u64 = 0x0014 << KVM_REG_ARM_COPROC_SHIFT;
+/// Writable PSCI-version pseudo-register. This must be set before first entry.
+const KVM_REG_ARM_PSCI_VERSION: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_FW;
+/// PSCI 1.0, encoded by the architectural `PSCI_VERSION(1, 0)` macro.
+const KVM_ARM_PSCI_1_0: u64 = 0x0001_0000;
 /// Firmware-feature bitmap pseudo-register class (`uapi/asm/kvm.h`).
 const KVM_REG_ARM_FW_FEAT_BMAP: u64 = 0x0016 << KVM_REG_ARM_COPROC_SHIFT;
 /// Optional Standard Secure Service bitmap: bit 0 is SMCCC TRNG v1.0.
@@ -610,7 +616,7 @@ fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
         ..Arm64GicState::default()
     };
     s.gicd_ctlr =
-        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)? & 0b11)
+        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)? & 0b10)
             .map_err(|_| BackendError::InvalidState)?;
 
     let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
@@ -654,7 +660,7 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.impl_spis != HARMONY_GIC_IMPL_SPIS
         || s.timer_hz != HARMONY_TIMER_HZ
         || s.timer_intid != HARMONY_TIMER_INTID
-        || s.gicd_ctlr & !0b11 != 0
+        || s.gicd_ctlr & !0b10 != 0
         || s.cntv_ctl != 0
         || s.cntv_cval != 0
         || s.timer_fired
@@ -1053,6 +1059,13 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     type A = Arm64;
 
     fn set_policy(&mut self, policy: &crate::arch::arm64::Arm64Policy) -> Result<()> {
+        // KVM otherwise exposes the host kernel's latest implemented PSCI
+        // version. PSCI 1.1 adds SYSTEM_RESET2, which Linux probes and records
+        // in guest RAM, so that default leaks the substrate into canonical
+        // state. Pin the VM firmware to the DTB's `arm,psci-1.0` contract
+        // before first entry; HVF reports the same version and service set.
+        self.kvm
+            .set_one_reg(KVM_REG_ARM_PSCI_VERSION, KVM_ARM_PSCI_1_0)?;
         // Stock KVM enables optional SMCCC services by default. In particular,
         // its TRNG service returns `get_random_long()` from the host kernel,
         // which the owned Linux guest consumes during `random_init_early()`.
@@ -1579,6 +1592,7 @@ mod tests {
         // The register-class selectors live at bits 16..28, not 48+.
         assert_eq!(KVM_REG_ARM_CORE, 0x10_0000, "0x0010 << 16");
         assert_eq!(KVM_REG_ARM64_SYSREG, 0x13_0000, "0x0013 << 16");
+        assert_eq!(KVM_REG_ARM_FW, 0x14_0000, "0x0014 << 16");
 
         // Full IDs vs the canonical KVM values (the strongest, non-circular
         // pin — verifies the whole encoding: class shift + field layout):
@@ -1587,6 +1601,11 @@ mod tests {
         //   SCTLR_EL1 = ARM64 | SIZE_U64 | ARM64_SYSREG | (op0=3<<14 | crn=1<<7)
         assert_eq!(core_reg(0), 0x6030_0000_0010_0000, "x0");
         assert_eq!(core_reg(CORE_PC), 0x6030_0000_0010_0040, "pc");
+        assert_eq!(
+            KVM_REG_ARM_PSCI_VERSION, 0x6030_0000_0014_0000,
+            "KVM firmware pseudo-register 0"
+        );
+        assert_eq!(KVM_ARM_PSCI_1_0, 0x0001_0000);
         assert_eq!(
             sysreg_id(3, 0, 1, 0, 0),
             0x6030_0000_0013_c080,
@@ -1761,7 +1780,8 @@ mod tests {
         // Not configured yet: run fails closed.
         assert!(matches!(b.run(), Err(BackendError::NotConfigured)));
 
-        // A policy with one ID-reg freeze row → one config-time set_one_reg.
+        // A policy with one ID-reg freeze row. Firmware and identity are all
+        // installed through config-time set_one_reg calls.
         let mut policy = Arm64Policy {
             id_regs: IdRegModel::default(),
             ..Default::default()
@@ -1783,6 +1803,11 @@ mod tests {
         // The frozen ID value was written through the seam.
         let id = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG | u64::from(enc);
         assert_eq!(b.kvm().reg(id), Some(0x1122_3344));
+        assert_eq!(
+            b.kvm().reg(KVM_REG_ARM_PSCI_VERSION),
+            Some(KVM_ARM_PSCI_1_0),
+            "PSCI must be pinned to the portable 1.0 firmware contract"
+        );
         for fw_id in OPTIONAL_FIRMWARE_BITMAPS {
             assert_eq!(
                 b.kvm().reg(fw_id),

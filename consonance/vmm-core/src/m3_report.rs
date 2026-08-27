@@ -15,7 +15,7 @@ use thiserror::Error;
 /// The fixed number of rows emitted by the acceptance workload.
 pub const WORKLOAD_ROWS: u64 = 20;
 /// The guest's `HZ=100` paravirtual tick period, in virtual nanoseconds.
-pub const TICK_PERIOD_VNS: u64 = crate::vendor::arm64::contract::EXECUTION_TICK_VNS;
+pub const TICK_PERIOD_VNS: u64 = crate::vendor::arm64::contract::LINUX_CLOCKEVENT_PERIOD_VNS;
 /// The documented maximum inter-exit gap is two tick periods.
 pub const MAX_GAP_FACTOR: u64 = 2;
 /// The largest permitted inter-exit gap, in virtual nanoseconds.

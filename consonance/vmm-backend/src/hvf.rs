@@ -66,7 +66,6 @@ const ESR_EC_SYSREG: u64 = 0x18;
 const ESR_EC_DATA_ABORT_LOWER: u64 = 0x24;
 const ESR_EC_DATA_ABORT_SAME: u64 = 0x25;
 
-const PSTATE_I: u64 = 1 << 7;
 const ICC_IAR1_EL1_CANONICAL: u32 = 0x0030_3018;
 
 // PSCI 0.2+ function IDs used by a uniprocessor Linux boot.
@@ -82,7 +81,12 @@ const PSCI_MIGRATE_INFO_TYPE: u64 = 0x8400_0006;
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
 const PSCI_SYSTEM_RESET: u64 = 0x8400_0009;
 const PSCI_FEATURES: u64 = 0x8400_000a;
-const PSCI_VERSION_1_3: u64 = 0x0001_0003;
+/// The portable virtual-firmware contract advertised by the guest DTB.
+///
+/// Reporting a newer host-dependent version is observable: PSCI 1.1 adds
+/// `SYSTEM_RESET2`, and Linux records that capability in guest RAM during
+/// boot. Keep this pinned to 1.0 on both HVF and KVM.
+const PSCI_VERSION_1_0: u64 = 0x0001_0000;
 const SMCCC_VERSION: u64 = 0x8000_0000;
 const SMCCC_VERSION_1_1: u64 = 0x0001_0001;
 const SMCCC_ARCH_FEATURES: u64 = 0x8000_0001;
@@ -394,12 +398,11 @@ impl HvfBackend {
     }
 
     fn apply_pending_irq(&mut self) -> Result<()> {
-        let irq_enabled = self.reg(HV_REG_CPSR)? & PSTATE_I == 0;
-        let inject = irq_enabled && self.pending_irq.is_some();
+        let inject = self.pending_irq.is_some();
         // SAFETY: this is the owning thread. Keep the level asserted across
-        // unrelated exits; acceptance is observable only when the guest reads
-        // ICC_IAR1_EL1, not merely because PSTATE.I happened to be clear before
-        // an entry that exited for some other reason.
+        // unrelated exits and while PSTATE.I is masked. HVF holds the level
+        // until the guest unmasks IRQs, matching an in-kernel vGIC; acceptance
+        // is observable only when the guest reads ICC_IAR1_EL1.
         hv("hv_vcpu_set_pending_interrupt", unsafe {
             hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, inject)
         })
@@ -407,7 +410,7 @@ impl HvfBackend {
 
     fn handle_psci(&self, function: u64) -> Result<Option<Exit<Arm64>>> {
         let result = match function {
-            PSCI_VERSION => PSCI_VERSION_1_3,
+            PSCI_VERSION => PSCI_VERSION_1_0,
             SMCCC_VERSION => SMCCC_VERSION_1_1,
             SMCCC_ARCH_FEATURES => match self.reg(1)? {
                 SMCCC_ARCH_WORKAROUND_1 => 1,              // unaffected
@@ -970,6 +973,12 @@ mod tests {
         );
         assert_eq!(hvf_implicit_identity_value(0xc020), None);
         assert_ne!(hvf_implicit_identity_value(0xc032), Some(2));
+    }
+
+    #[test]
+    fn psci_version_matches_the_portable_firmware_contract() {
+        assert_eq!(PSCI_VERSION_1_0, 0x0001_0000);
+        assert_ne!(PSCI_VERSION_1_0, 0x0001_0001);
     }
 
     #[test]

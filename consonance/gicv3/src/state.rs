@@ -28,9 +28,10 @@ pub const CNTV_CTL_ENABLE: u64 = 1;
 /// `CNTV_CTL_EL0.IMASK` — the virtual timer's interrupt output is masked.
 pub const CNTV_CTL_IMASK: u64 = 1 << 1;
 
-/// The [`GicState`] layout version. v2 separates external input-line levels
-/// from the pending latch, as required by the KVM vGIC migration ABI.
-pub const GIC_STATE_VERSION: u32 = 2;
+/// The [`GicState`] layout version. v2 separated external input-line levels
+/// from the pending latch; v3 additionally canonicalizes the unimplemented
+/// Group-0 enable bit out of the single-security-state Group-1 model.
+pub const GIC_STATE_VERSION: u32 = 3;
 
 /// The complete GICv3 model snapshot. Plain data, deterministic field order,
 /// no map, no float (rule #4); the firing **deadline is derived, never

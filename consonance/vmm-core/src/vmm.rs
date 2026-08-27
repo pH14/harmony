@@ -1986,6 +1986,11 @@ where
                     .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
                 true
             } else {
+                let reason = exit.reason();
+                let backend_debug = format!("{reason:?}");
+                trace
+                    .record_raw_only(reason, backend_debug)
+                    .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
                 false
             }
         } else {

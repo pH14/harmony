@@ -96,6 +96,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0007-arm64-harmony-syscall-tick.patch" \
     "harmony prescriptive syscall tick"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0008-arm64-harmony-fixed-counter-frequency.patch" \
+    "harmony fixed counter frequency"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
@@ -171,8 +174,10 @@ fi
 echo "== arm64 kernel: building Image + vmlinux"
 make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Image
 
-# ARM has no generic-counter trap on the reachable execution target. Unlike x86's
-# reviewed allowlist, one reachable CNTVCT/CNTPCT opcode is a determinism hole.
+# ARM has no generic-timer-register trap on the reachable execution target.
+# Unlike x86's reviewed allowlist, one reachable CNTFRQ/CNTVCT/CNTPCT opcode is
+# a determinism hole: CNTFRQ differs across the supported substrates, while the
+# count registers also vary with host execution.
 # The canonical Image is therefore published only after the empty-allowlist
 # scanner accepts the symbolized vmlinux.
 echo "== arm64 kernel: zero-live-counter reachability gate"
@@ -186,6 +191,8 @@ cat >"$scan_probe" <<'EOF'
 _start:
 	mrs x0, cntfrq_el0
 	mrs x1, cntvct_el0
+	mrs x2, revidr_el1
+	mrs x3, aidr_el1
 	.word 0xd51be340 // executable data mapping: msr cntv_cval_el0, x0
 	ret
 EOF
@@ -194,8 +201,8 @@ if python3 "$scan" "$scan_probe_elf" >"$scan_probe_log" 2>&1; then
     echo "FAIL: AA-5 counter scanner accepted the planted CNTVCT_EL0 probe" >&2
     exit 1
 fi
-if ! grep -q '^\[REJECT\].*1 live counter read' "$scan_probe_log"; then
-    echo "FAIL: AA-5 counter scanner did not identify exactly one planted live read" >&2
+if ! grep -q '^\[REJECT\].*4 host-dependent register read' "$scan_probe_log"; then
+    echo "FAIL: AA-5 scanner did not identify all four planted host-dependent reads" >&2
     cat "$scan_probe_log" >&2
     exit 1
 fi

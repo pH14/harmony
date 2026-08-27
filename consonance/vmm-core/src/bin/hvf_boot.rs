@@ -212,6 +212,13 @@ fn main() -> std::process::ExitCode {
                 "HVF_GIC event={event} state={:?}",
                 vmm.canonical_arm64_gic_state()
             );
+            if let Some(path) = std::env::var_os("HARMONY_DUMP_RAM")
+                && let Err(error) = std::fs::write(&path, vmm.guest_memory())
+            {
+                eprintln!("cannot write diagnostic guest RAM {path:?}: {error}");
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
         }
         let serial = vmm.serial_output();
         if serial.len() > emitted {
@@ -356,6 +363,21 @@ fn main() -> std::process::ExitCode {
         }
     }
 
+    if let Some(path) = normalized_log_path.as_deref() {
+        if let Err(error) = vmm.checkpoint_prescriptive_trace() {
+            eprintln!("cannot checkpoint bounded prescriptive trace: {error}");
+            stop_watchdog(&watchdog_tx, watchdog);
+            return std::process::ExitCode::FAILURE;
+        }
+        let trace = vmm
+            .prescriptive_trace()
+            .expect("prescriptive HVF composition wires a production trace");
+        if let Err(error) = write_normalized_log(std::path::Path::new(path), trace) {
+            eprintln!("cannot write bounded normalized log {path:?}: {error}");
+            stop_watchdog(&watchdog_tx, watchdog);
+            return std::process::ExitCode::FAILURE;
+        }
+    }
     eprintln!("HVF boot watchdog reached {max_events} events before /init marker");
     stop_watchdog(&watchdog_tx, watchdog);
     std::process::ExitCode::FAILURE
