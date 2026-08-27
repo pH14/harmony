@@ -616,7 +616,22 @@ no host identity on any vendor.
  #include <asm/tlbflush.h>
  #include <asm/setup.h>
  
-@@ -120,6 +121,13 @@
+@@ -113,6 +114,14 @@
+ 		mask = fxregs.mxcsr_mask;
+ 
+ 		/*
++		 * The probe buffer itself is hashed guest memory until the
++		 * kernel frees init data, so its hardware-written mask must be
++		 * host-neutral too.
++		 */
++		if (harmony_pvclock_requested())
++			fxregs.mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
++
++		/*
+ 		 * If zero then use the default features mask,
+ 		 * which has all features set, except the
+ 		 * denormals-are-zero feature bit:
+@@ -120,6 +129,13 @@
  		if (mask == 0)
  			mask = 0x0000ffbf;
  	}

@@ -1509,6 +1509,21 @@ on this branch may contain, fetch, or require a NES ROM.
    allowlist was re-baselined per the decision-13 flow, no site outside
    that section.
 
+26. **The mask probe buffer is pinned too.** With decision 25 live the
+   terminal state matches across vendors (run 33114655236: one AMD log
+   hash from 7763 and 9V74, Intel differing only in 71 mid-boot
+   checkpoint hashes that re-converge before the terminal). A
+   step-bounded mid-boot dump (`X2_DUMP_AT_STEPS`, run 33119105087)
+   isolates the live divergence to one page, and its byte dump (run
+   33122885495: 9V74 ×2, 9V45, 6973P-C) to one byte — the `MXCSR_MASK`
+   signature at a 16-byte-aligned image offset: a raw `FXSAVE`, and the
+   image's only raw-`FXSAVE` writer into kernel memory is
+   `fpu__init_system_mxcsr`'s `__initdata` probe buffer, which patch
+   0001's helper pins do not reach. The buffer page is hashed guest
+   memory until the kernel frees init data — the measured
+   re-convergence. Patch 0001 now pins the probe buffer's field right
+   after the read.
+
 ## X0 — runner probe
 
 ### Build criteria
