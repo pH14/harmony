@@ -342,6 +342,21 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
         writeln!(out, "PAGE {:#x} {h:016x}", i * 4096).expect("write to string");
     }
     writeln!(out, "ZERO_PAGES {zero_pages}").expect("write to string");
+    // With `X2_PAGE_HEX` set to a comma-separated guest-physical page list, the
+    // named pages' bytes go into the dump, so a cross-host diff names the exact
+    // differing offsets and values inside pages the fingerprints flagged.
+    if let Ok(list) = std::env::var("X2_PAGE_HEX") {
+        for gpa in list.split(',').filter(|s| !s.is_empty()) {
+            let gpa = usize::from_str_radix(gpa.trim().trim_start_matches("0x"), 16)
+                .expect("X2_PAGE_HEX entries are hex guest-physical addresses");
+            let page = &ram[gpa..gpa + 4096];
+            for (row, bytes) in page.chunks(64).enumerate() {
+                let hex_row: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                writeln!(out, "PAGEHEX {gpa:#x} {:#05x} {hex_row}", row * 64)
+                    .expect("write to string");
+            }
+        }
+    }
     writeln!(out, "DIGEST {}", hex(&run.digest)).expect("write to string");
     std::fs::write(path, out).expect("write the normalized-log dump");
     println!("X2_LOG_DUMP {path}");

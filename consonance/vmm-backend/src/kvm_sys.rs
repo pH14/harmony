@@ -38,8 +38,8 @@ use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
-use crate::arch::x86::canonicalize_xsave;
 use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
+use crate::arch::x86::{canonicalize_sregs, canonicalize_xsave};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
@@ -1549,9 +1549,11 @@ impl Backend for KvmBackend {
         let xsave = self.save_xsave()?;
         let msrs = self.save_msrs()?;
 
+        let mut sregs = from_kvm_sregs2(&sregs2);
+        canonicalize_sregs(&mut sregs);
         Ok(VcpuState {
             regs: from_kvm_regs(&regs),
-            sregs: from_kvm_sregs2(&sregs2),
+            sregs,
             xcr0: xcr0_of(&xcrs),
             debugregs: from_kvm_debugregs(&dregs),
             events: from_kvm_events(&kevents),

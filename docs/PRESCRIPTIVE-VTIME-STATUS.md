@@ -1447,6 +1447,24 @@ on this branch may contain, fetch, or require a NES ROM.
    The `segments` component (vendor-distinct hidden attributes, the
    SYSRET class) is also open pending the same dump.
 
+23. **Unusable-segment residue is canonicalized at save.** The first
+   both-vendor page dump (run 33102326007: 9V74 ×2, 8573C, and a first
+   6973P-C draw — a third Intel microarchitecture whose ten-boot tier and
+   log matched 8573C byte for byte) resolves the `segments` component:
+   the only differing fields are the architecturally-ignored limit and
+   attribute bits of the unusable segments (DS/ES/FS/GS/LDT after
+   SYSRET's null loads: SVM reports zeros, VMX the stale cached
+   descriptor — limit `0xFFFFFFFF`, type/`D/B`/`G` set), while base and
+   selector match. `canonicalize_sregs` zeroes limit and attributes on
+   any unusable segment at the save boundary, keeping base, selector,
+   and the unusable flag — base MSRs and `MOV` from the register are the
+   observable state. Same-run RAM measurement: 94 differing pages, the
+   same guest-physical set on both vendors — one page at `0x2400000`
+   plus 32K/64K-block runs between `0x3490000` and `0x437c000`. Whole
+   blocks differing rules out scattered 4-byte mask copies alone; the
+   smoke dump now inlines those pages' bytes (`X2_PAGE_HEX`), so the
+   next both-vendor pair names exact offsets and values.
+
 ## X0 — runner probe
 
 ### Build criteria

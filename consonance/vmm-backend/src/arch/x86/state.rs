@@ -234,6 +234,37 @@ pub struct VcpuEvents {
     pub triple_fault_pending: u8,
 }
 
+/// Canonicalize the architecturally-ignored fields of unusable segments, in
+/// place.
+///
+/// For a segment KVM marks unusable, the cached limit and attribute bits carry
+/// no guest-visible state, and the two vendors report different residue there
+/// (SVM returns zeros; VMX returns the stale cached descriptor — limit
+/// `0xFFFFFFFF`, `type`/`D/B`/`G` set — for the null-loaded data segments and
+/// LDT). Base and selector stay: a null selector is readable with `MOV` from
+/// the register, and the FS/GS bases are live state through the base MSRs.
+pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
+    for seg in [
+        &mut sregs.cs,
+        &mut sregs.ds,
+        &mut sregs.es,
+        &mut sregs.fs,
+        &mut sregs.gs,
+        &mut sregs.ss,
+        &mut sregs.tr,
+        &mut sregs.ldt,
+    ] {
+        if seg.unusable != 0 {
+            *seg = Segment {
+                base: seg.base,
+                selector: seg.selector,
+                unusable: 1,
+                ..Segment::default()
+            };
+        }
+    }
+}
+
 /// `XSTATE_BV` in the XSAVE header (Intel SDM vol. 1, XSAVE area layout).
 const XSTATE_BV: usize = 512;
 /// `XCOMP_BV` in the XSAVE header; nonzero selects the compacted format.
@@ -362,6 +393,59 @@ mod tests {
         image[MXCSR_MASK].copy_from_slice(&0x0002FFFFu32.to_le_bytes());
         canonicalize_xsave(&mut image);
         assert_eq!(image[MXCSR_MASK], MXCSR_MASK_PINNED);
+    }
+
+    #[test]
+    fn unusable_segment_residue_collapses_to_the_zeroed_form() {
+        // The measured cross-vendor pair: VMX reports the stale cached
+        // descriptor for a null-loaded segment, SVM reports zeros.
+        let intel = Segment {
+            base: 726582208,
+            limit: 0xFFFF_FFFF,
+            type_: 1,
+            db: 1,
+            g: 1,
+            unusable: 1,
+            ..Segment::default()
+        };
+        let amd = Segment {
+            base: 726582208,
+            unusable: 1,
+            ..Segment::default()
+        };
+        let mut a = VcpuSregs {
+            fs: intel,
+            ..VcpuSregs::default()
+        };
+        let mut b = VcpuSregs {
+            fs: amd,
+            ..VcpuSregs::default()
+        };
+        canonicalize_sregs(&mut a);
+        canonicalize_sregs(&mut b);
+        assert_eq!(a, b);
+        assert_eq!(a.fs.base, 726582208);
+    }
+
+    #[test]
+    fn usable_segments_are_untouched() {
+        let cs = Segment {
+            limit: 0xFFFF_FFFF,
+            selector: 0x10,
+            type_: 11,
+            present: 1,
+            s: 1,
+            l: 1,
+            g: 1,
+            ..Segment::default()
+        };
+        let mut sregs = VcpuSregs {
+            cs,
+            ..VcpuSregs::default()
+        };
+        let before = sregs;
+        canonicalize_sregs(&mut sregs);
+        assert_eq!(sregs, before);
     }
 
     #[test]
