@@ -11,7 +11,10 @@ pub vmm_core::control::ServeError::Snapshot(vmm_core::snapshot::SnapshotError)
 pub vmm_core::control::ServeError::Vmm(vmm_core::vmm::VmmError)
 pub struct vmm_core::control::ControlServer<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>>
 impl<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>> vmm_core::control::ControlServer<B>
+pub fn vmm_core::control::ControlServer<B>::export_portable_snapshot<W: std::io::Write>(&self, control_proto::types::SnapId, W) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::handle(&mut self, &control_proto::types::Request) -> core::result::Result<core::result::Result<control_proto::types::Reply, control_proto::error::ControlError>, vmm_core::control::ServeError>
+pub fn vmm_core::control::ControlServer<B>::import_portable_snapshot<R: std::io::Read>(&mut self, R) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
+pub fn vmm_core::control::ControlServer<B>::latest_snapshot(&self) -> core::option::Option<control_proto::types::SnapId>
 pub fn vmm_core::control::ControlServer<B>::new(vmm_core::vmm::Vmm<B>, vmm_core::control::VmmFactory<B>) -> Self
 pub fn vmm_core::control::ControlServer<B>::recorded_env(&self) -> &environment::recorded::EnvSpec
 pub fn vmm_core::control::ControlServer<B>::restore_mode(&self) -> vmm_core::control::RestoreMode
@@ -24,6 +27,14 @@ pub fn vmm_core::control::ControlServer<B>::snapshot_chain_len(&self, control_pr
 pub fn vmm_core::control::ControlServer<B>::snapshot_store_stats(&self) -> snapshot_store::StoreStats
 pub fn vmm_core::control::ControlServer<B>::take_session_prescriptive_trace(&mut self) -> core::option::Option<vmm_core::session_trace::SessionPrescriptiveTrace>
 pub fn vmm_core::control::ControlServer<B>::vmm(&self) -> core::option::Option<&vmm_core::vmm::Vmm<B>>
+pub struct vmm_core::control::PortableSnapshotReceipt
+pub vmm_core::control::PortableSnapshotReceipt::at: control_proto::types::Moment
+pub vmm_core::control::PortableSnapshotReceipt::id: control_proto::types::SnapId
+pub vmm_core::control::PortableSnapshotReceipt::sdk_events: u64
+pub vmm_core::control::PortableSnapshotReceipt::state_hash: [u8; 32]
+pub vmm_core::control::PortableSnapshotReceipt::tainted: bool
+pub vmm_core::control::PortableSnapshotReceipt::trace_events: u64
+pub vmm_core::control::PortableSnapshotReceipt::trace_schedules: u64
 pub fn vmm_core::control::server_caps() -> control_proto::types::Caps
 pub type vmm_core::control::RemapVmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut(snapshot_store::mapping::Mapping) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
 pub type vmm_core::control::VmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut() -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
@@ -124,6 +135,21 @@ pub fn vmm_core::m3_report::compare_exit_counts(u64, u64) -> core::result::Resul
 pub fn vmm_core::m3_report::compare_gap_oracles(&vmm_core::m3_report::GapHistogram, u64, u64) -> core::result::Result<(), vmm_core::m3_report::M3ReportError>
 pub fn vmm_core::m3_report::parse_x86_diagnostic(&[u8]) -> core::result::Result<vmm_core::m3_report::Throughput, vmm_core::m3_report::M3ReportError>
 pub fn vmm_core::m3_report::validate_acceptance(&[u8]) -> core::result::Result<vmm_core::m3_report::AcceptanceSummary, vmm_core::m3_report::M3ReportError>
+pub mod vmm_core::portable_snapshot
+pub enum vmm_core::portable_snapshot::PortableSnapshotError
+pub vmm_core::portable_snapshot::PortableSnapshotError::BadFlags
+pub vmm_core::portable_snapshot::PortableSnapshotError::BadMagic
+pub vmm_core::portable_snapshot::PortableSnapshotError::BadVersion(u16)
+pub vmm_core::portable_snapshot::PortableSnapshotError::DigestMismatch
+pub vmm_core::portable_snapshot::PortableSnapshotError::Environment(environment::error::EnvError)
+pub vmm_core::portable_snapshot::PortableSnapshotError::Io(std::io::error::Error)
+pub vmm_core::portable_snapshot::PortableSnapshotError::Length
+pub vmm_core::portable_snapshot::PortableSnapshotError::Length::got: u64
+pub vmm_core::portable_snapshot::PortableSnapshotError::Length::max: u64
+pub vmm_core::portable_snapshot::PortableSnapshotError::Length::section: &'static str
+pub vmm_core::portable_snapshot::PortableSnapshotError::Malformed(&'static str)
+pub vmm_core::portable_snapshot::PortableSnapshotError::Snapshot(vmm_core::snapshot::SnapshotError)
+pub vmm_core::portable_snapshot::PortableSnapshotError::UnknownSnapshot(u64)
 pub mod vmm_core::prescriptive
 pub enum vmm_core::prescriptive::DeviceClass
 pub vmm_core::prescriptive::DeviceClass::InterruptController
@@ -391,6 +417,31 @@ pub fn vmm_core::seal_rate::sealable(&vmm_core::seal_rate::CpuSnapshot) -> bool
 pub type vmm_core::seal_rate::Moment = u64
 pub type vmm_core::seal_rate::Span = u64
 pub mod vmm_core::session_trace
+pub enum vmm_core::session_trace::ContinuationDivergence
+pub vmm_core::session_trace::ContinuationDivergence::BoundaryHashCount
+pub vmm_core::session_trace::ContinuationDivergence::BoundaryHashCount::restored_count: usize
+pub vmm_core::session_trace::ContinuationDivergence::BoundaryHashCount::source_count: usize
+pub vmm_core::session_trace::ContinuationDivergence::BoundaryStateHash
+pub vmm_core::session_trace::ContinuationDivergence::BoundaryStateHash::boundary_index: usize
+pub vmm_core::session_trace::ContinuationDivergence::CutOutOfRange
+pub vmm_core::session_trace::ContinuationDivergence::CutOutOfRange::event_cut: usize
+pub vmm_core::session_trace::ContinuationDivergence::CutOutOfRange::schedule_cut: usize
+pub vmm_core::session_trace::ContinuationDivergence::CutOutOfRange::source_events: usize
+pub vmm_core::session_trace::ContinuationDivergence::CutOutOfRange::source_schedules: usize
+pub vmm_core::session_trace::ContinuationDivergence::Log
+pub vmm_core::session_trace::ContinuationDivergence::Log::divergence: vmm_core::prescriptive::LogDivergence
+pub vmm_core::session_trace::ContinuationDivergence::Schedule
+pub vmm_core::session_trace::ContinuationDivergence::Schedule::field: vmm_core::session_trace::ContinuationScheduleField
+pub vmm_core::session_trace::ContinuationDivergence::Schedule::schedule_index: u64
+pub vmm_core::session_trace::ContinuationDivergence::ScheduleCount
+pub vmm_core::session_trace::ContinuationDivergence::ScheduleCount::restored_count: usize
+pub vmm_core::session_trace::ContinuationDivergence::ScheduleCount::source_count: usize
+pub enum vmm_core::session_trace::ContinuationScheduleField
+pub vmm_core::session_trace::ContinuationScheduleField::ArmedForEvent
+pub vmm_core::session_trace::ContinuationScheduleField::CanceledAtEvent
+pub vmm_core::session_trace::ContinuationScheduleField::DeadlineVns
+pub vmm_core::session_trace::ContinuationScheduleField::InterruptId
+pub vmm_core::session_trace::ContinuationScheduleField::ScheduleIndex
 pub enum vmm_core::session_trace::SessionTraceDivergence
 pub vmm_core::session_trace::SessionTraceDivergence::Log
 pub vmm_core::session_trace::SessionTraceDivergence::Log::divergence: vmm_core::prescriptive::LogDivergence
@@ -426,6 +477,7 @@ pub fn vmm_core::session_trace::SessionTraceSegment::normalized_log(&self) -> &v
 pub fn vmm_core::session_trace::SessionTraceSegment::schedule(&self) -> &[vmm_core::prescriptive::ScheduledInterrupt]
 pub fn vmm_core::session_trace::SessionTraceSegment::start(&self) -> vmm_core::session_trace::SessionTraceStart
 pub fn vmm_core::session_trace::check_session_delivery_placement(&vmm_core::session_trace::SessionPrescriptiveTrace) -> core::result::Result<(), vmm_core::session_trace::SessionPlacementViolation>
+pub fn vmm_core::session_trace::compare_portable_continuation(&vmm_core::session_trace::SessionTraceSegment, usize, usize, &[[u8; 32]], &vmm_core::session_trace::SessionTraceSegment, &[[u8; 32]]) -> core::result::Result<(), vmm_core::session_trace::ContinuationDivergence>
 pub fn vmm_core::session_trace::compare_session_traces(&vmm_core::session_trace::SessionPrescriptiveTrace, &vmm_core::session_trace::SessionPrescriptiveTrace) -> core::result::Result<(), vmm_core::session_trace::SessionTraceDivergence>
 pub mod vmm_core::snapshot
 pub enum vmm_core::snapshot::SnapshotError
@@ -457,6 +509,7 @@ pub fn vmm_core::snapshot::SnapshotEngine::stats(&self, snapshot_store::Snapshot
 pub fn vmm_core::snapshot::SnapshotEngine::store(&self) -> &snapshot_store::Store
 pub fn vmm_core::snapshot::SnapshotEngine::store_stats(&self) -> snapshot_store::StoreStats
 pub fn vmm_core::snapshot::SnapshotEngine::vm_state<S: vm_state::records::SnapshotRecords>(&self, snapshot_store::SnapshotId) -> core::result::Result<S, vmm_core::snapshot::SnapshotError>
+pub fn vmm_core::snapshot::SnapshotEngine::vm_state_bytes(&self, snapshot_store::SnapshotId) -> core::result::Result<&[u8], vmm_core::snapshot::SnapshotError>
 pub const vmm_core::snapshot::DEFAULT_MAX_CHAIN_LEN: u32
 pub mod vmm_core::vendor
 pub mod vmm_core::vendor::arm64
@@ -540,10 +593,20 @@ pub fn vmm_core::vendor::arm64::image_loader::load(&[u8], &mut [u8]) -> core::re
 pub fn vmm_core::vendor::arm64::image_loader::parse_header(&[u8]) -> core::result::Result<vmm_core::vendor::arm64::image_loader::ImageHeader, vmm_core::vendor::arm64::image_loader::ImageLoadError>
 pub fn vmm_core::vendor::arm64::image_loader::wrap_image(&[u8], u64, u64) -> alloc::vec::Vec<u8>
 pub mod vmm_core::vendor::arm64::records
+pub enum vmm_core::vendor::arm64::Arm64ArchitectureDifference
+pub vmm_core::vendor::arm64::Arm64ArchitectureDifference::Gic(vmm_core::vendor::arm64::GicArchitectureDifference)
+pub vmm_core::vendor::arm64::Arm64ArchitectureDifference::GicPresence
+pub vmm_core::vendor::arm64::Arm64ArchitectureDifference::Vcpu
+pub vmm_core::vendor::arm64::Arm64ArchitectureDifference::Vcpu::field: &'static str
+pub vmm_core::vendor::arm64::Arm64ArchitectureDifference::Vcpu::index: core::option::Option<usize>
+pub struct vmm_core::vendor::arm64::Arm64ArchitecturalState
+pub vmm_core::vendor::arm64::Arm64ArchitecturalState::gic: core::option::Option<gicv3::state::GicState>
+pub vmm_core::vendor::arm64::Arm64ArchitecturalState::vcpu: vmm_backend::arch::arm64::state::Arm64VcpuState
 pub struct vmm_core::vendor::arm64::Arm64Devices
 pub struct vmm_core::vendor::arm64::GicArchitectureDifference
 pub vmm_core::vendor::arm64::GicArchitectureDifference::field: &'static str
 pub vmm_core::vendor::arm64::GicArchitectureDifference::index: core::option::Option<usize>
+pub fn vmm_core::vendor::arm64::compare_arm64_architecture(&vmm_core::vendor::arm64::Arm64ArchitecturalState, &vmm_core::vendor::arm64::Arm64ArchitecturalState) -> core::result::Result<(), vmm_core::vendor::arm64::Arm64ArchitectureDifference>
 pub fn vmm_core::vendor::arm64::compare_gic_architecture(&gicv3::state::GicState, &gicv3::state::GicState) -> core::result::Result<(), vmm_core::vendor::arm64::GicArchitectureDifference>
 pub mod vmm_core::vendor::x86
 pub mod vmm_core::vendor::x86::bringup
@@ -932,6 +995,7 @@ pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
 pub struct vmm_core::vmm::SdkSnapshot
 pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend> where <B as vmm_backend::backend::Backend>::A: vmm_core::vendor::Vendor
 impl<B: vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>> vmm_core::vmm::Vmm<B>
+pub fn vmm_core::vmm::Vmm<B>::arm64_architectural_state(&self) -> core::result::Result<vmm_core::vendor::arm64::Arm64ArchitecturalState, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::canonical_arm64_gic_state(&self) -> core::result::Result<core::option::Option<gicv3::state::GicState>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::gic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_gic(&mut self, gicv3::device::Gicv3) -> &mut Self

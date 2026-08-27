@@ -250,6 +250,226 @@ pub fn compare_session_traces(
     Ok(())
 }
 
+/// Field within a continuation schedule record that differs after rebasing the
+/// source snapshot cut to destination event/schedule zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContinuationScheduleField {
+    /// Absolute V-time deadline.
+    DeadlineVns,
+    /// FIFO schedule identity.
+    ScheduleIndex,
+    /// First event at which the deadline is eligible.
+    ArmedForEvent,
+    /// Optional cancellation event.
+    CanceledAtEvent,
+    /// Vendor-neutral interrupt identity.
+    InterruptId,
+}
+
+/// Exact first mismatch in a portable midpoint continuation.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ContinuationDivergence {
+    /// A source cut lies beyond the source segment it names.
+    #[error(
+        "portable continuation cut is out of range: events {event_cut}/{source_events}, schedules {schedule_cut}/{source_schedules}"
+    )]
+    CutOutOfRange {
+        /// Requested source event prefix length.
+        event_cut: usize,
+        /// Complete source event count.
+        source_events: usize,
+        /// Requested source schedule prefix length.
+        schedule_cut: usize,
+        /// Complete source schedule count.
+        source_schedules: usize,
+    },
+    /// The rebased normalized event streams differ.
+    #[error("portable continuation {divergence}")]
+    Log {
+        /// Exact relative event and field.
+        divergence: LogDivergence,
+    },
+    /// The rebased schedule suffixes have different lengths.
+    #[error(
+        "portable continuation schedule count differs: source {source_count}, restored {restored_count}"
+    )]
+    ScheduleCount {
+        /// Number of source schedules after the cut.
+        source_count: usize,
+        /// Number of schedules in the restored continuation.
+        restored_count: usize,
+    },
+    /// One rebased schedule record differs.
+    #[error("portable continuation schedule {schedule_index} differs in {field:?}")]
+    Schedule {
+        /// Relative schedule index.
+        schedule_index: u64,
+        /// Exact differing schedule field.
+        field: ContinuationScheduleField,
+    },
+    /// The independently sampled whole-state boundary sequences differ in length.
+    #[error(
+        "portable continuation boundary-hash count differs: source {source_count}, restored {restored_count}"
+    )]
+    BoundaryHashCount {
+        /// Source boundary count.
+        source_count: usize,
+        /// Restored boundary count.
+        restored_count: usize,
+    },
+    /// An independently sampled whole-state boundary hash differs.
+    #[error("portable continuation state hash differs at boundary {boundary_index}")]
+    BoundaryStateHash {
+        /// Zero-based boundary after restore; zero is the immediate restore hash.
+        boundary_index: usize,
+    },
+}
+
+/// Compare a source segment after a portable snapshot cut with the complete
+/// restored segment and an independently sampled whole-state hash sequence.
+///
+/// Source event and schedule identities are rebased by their respective cut
+/// prefix lengths. The comparison then covers every normalized event field,
+/// embedded checkpoint hash, interrupt delivery, schedule record, and supplied
+/// boundary hash. The restored segment must begin at event/schedule zero. A
+/// delivery or schedule that refers to an identity before the cut fails closed;
+/// callers must choose a seal boundary with no pre-cut deadline still live.
+pub fn compare_portable_continuation(
+    source: &SessionTraceSegment,
+    source_event_cut: usize,
+    source_schedule_cut: usize,
+    source_boundary_hashes: &[[u8; 32]],
+    restored: &SessionTraceSegment,
+    restored_boundary_hashes: &[[u8; 32]],
+) -> Result<(), ContinuationDivergence> {
+    if source_event_cut > source.normalized.events.len()
+        || source_schedule_cut > source.schedule.len()
+    {
+        return Err(ContinuationDivergence::CutOutOfRange {
+            event_cut: source_event_cut,
+            source_events: source.normalized.events.len(),
+            schedule_cut: source_schedule_cut,
+            source_schedules: source.schedule.len(),
+        });
+    }
+
+    let event_base = u64::try_from(source_event_cut).unwrap_or(u64::MAX);
+    let schedule_base = u64::try_from(source_schedule_cut).unwrap_or(u64::MAX);
+    let source_events = &source.normalized.events[source_event_cut..];
+    for (offset, (a, b)) in source_events
+        .iter()
+        .zip(&restored.normalized.events)
+        .enumerate()
+    {
+        let relative = u64::try_from(offset).unwrap_or(u64::MAX);
+        let field = if a.event_index.checked_sub(event_base) != Some(relative)
+            || b.event_index != relative
+        {
+            Some(crate::prescriptive::LogField::EventIndex)
+        } else if a.class != b.class {
+            Some(crate::prescriptive::LogField::Class)
+        } else if a.payload_digest != b.payload_digest {
+            Some(crate::prescriptive::LogField::PayloadDigest)
+        } else if a.vns_after != b.vns_after {
+            Some(crate::prescriptive::LogField::VnsAfter)
+        } else if !interrupts_equal_rebased(&a.interrupts, &b.interrupts, schedule_base) {
+            Some(crate::prescriptive::LogField::Interrupts)
+        } else if a.state_hash != b.state_hash {
+            Some(crate::prescriptive::LogField::StateHash)
+        } else {
+            None
+        };
+        if let Some(field) = field {
+            return Err(ContinuationDivergence::Log {
+                divergence: LogDivergence {
+                    event_index: relative,
+                    field,
+                },
+            });
+        }
+    }
+    if source_events.len() != restored.normalized.events.len() {
+        return Err(ContinuationDivergence::Log {
+            divergence: LogDivergence {
+                event_index: u64::try_from(
+                    source_events.len().min(restored.normalized.events.len()),
+                )
+                .unwrap_or(u64::MAX),
+                field: crate::prescriptive::LogField::Length,
+            },
+        });
+    }
+
+    let source_schedules = &source.schedule[source_schedule_cut..];
+    for (offset, (a, b)) in source_schedules.iter().zip(&restored.schedule).enumerate() {
+        let relative = u64::try_from(offset).unwrap_or(u64::MAX);
+        let field = if a.deadline_vns != b.deadline_vns {
+            Some(ContinuationScheduleField::DeadlineVns)
+        } else if a.schedule_index.checked_sub(schedule_base) != Some(relative)
+            || b.schedule_index != relative
+        {
+            Some(ContinuationScheduleField::ScheduleIndex)
+        } else if a.armed_for_event.checked_sub(event_base) != Some(b.armed_for_event) {
+            Some(ContinuationScheduleField::ArmedForEvent)
+        } else if rebase_optional(a.canceled_at_event, event_base) != Some(b.canceled_at_event) {
+            Some(ContinuationScheduleField::CanceledAtEvent)
+        } else if a.interrupt_id != b.interrupt_id {
+            Some(ContinuationScheduleField::InterruptId)
+        } else {
+            None
+        };
+        if let Some(field) = field {
+            return Err(ContinuationDivergence::Schedule {
+                schedule_index: relative,
+                field,
+            });
+        }
+    }
+    if source_schedules.len() != restored.schedule.len() {
+        return Err(ContinuationDivergence::ScheduleCount {
+            source_count: source_schedules.len(),
+            restored_count: restored.schedule.len(),
+        });
+    }
+
+    for (boundary_index, (source, restored)) in source_boundary_hashes
+        .iter()
+        .zip(restored_boundary_hashes)
+        .enumerate()
+    {
+        if source != restored {
+            return Err(ContinuationDivergence::BoundaryStateHash { boundary_index });
+        }
+    }
+    if source_boundary_hashes.len() != restored_boundary_hashes.len() {
+        return Err(ContinuationDivergence::BoundaryHashCount {
+            source_count: source_boundary_hashes.len(),
+            restored_count: restored_boundary_hashes.len(),
+        });
+    }
+    Ok(())
+}
+
+fn interrupts_equal_rebased(
+    source: &[crate::prescriptive::InterruptDelivery],
+    restored: &[crate::prescriptive::InterruptDelivery],
+    schedule_base: u64,
+) -> bool {
+    source.len() == restored.len()
+        && source.iter().zip(restored).all(|(a, b)| {
+            a.deadline_vns == b.deadline_vns
+                && a.schedule_index.checked_sub(schedule_base) == Some(b.schedule_index)
+                && a.interrupt_id == b.interrupt_id
+        })
+}
+
+fn rebase_optional(value: Option<u64>, base: u64) -> Option<Option<u64>> {
+    match value {
+        Some(value) => value.checked_sub(base).map(Some),
+        None => Some(None),
+    }
+}
+
 /// Independent delivery-placement failure localized to a session segment.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("session trace segment {segment_index}: {violation}")]
@@ -278,7 +498,7 @@ pub fn check_session_delivery_placement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prescriptive::{LogField, NormalizedEvent, NormalizedEventClass};
+    use crate::prescriptive::{InterruptDelivery, LogField, NormalizedEvent, NormalizedEventClass};
 
     fn segment(start: SessionTraceStart, vns: u64) -> SessionTraceSegment {
         SessionTraceSegment {
@@ -339,5 +559,117 @@ mod tests {
             segment(SessionTraceStart::Replay { snapshot: 1 }, 10),
         ]);
         assert_eq!(check_session_delivery_placement(&trace), Ok(()));
+    }
+
+    fn portable_pair() -> (SessionTraceSegment, SessionTraceSegment) {
+        let event =
+            |event_index: u64, vns_after: u64, schedule_index: Option<u64>| NormalizedEvent {
+                event_index,
+                class: NormalizedEventClass::TimeRead,
+                payload_digest: [event_index as u8; 32],
+                vns_after,
+                interrupts: schedule_index
+                    .map(|schedule_index| {
+                        vec![InterruptDelivery {
+                            deadline_vns: 30,
+                            schedule_index,
+                            interrupt_id: 27,
+                        }]
+                    })
+                    .unwrap_or_default(),
+                state_hash: Some([event_index as u8; 32]),
+            };
+        let source = SessionTraceSegment {
+            start: SessionTraceStart::Branch { snapshot: 8 },
+            normalized: NormalizedLog {
+                events: vec![
+                    event(0, 10, None),
+                    event(1, 20, None),
+                    event(2, 30, Some(1)),
+                ],
+            },
+            schedule: vec![
+                ScheduledInterrupt {
+                    deadline_vns: 9,
+                    schedule_index: 0,
+                    armed_for_event: 0,
+                    canceled_at_event: Some(0),
+                    interrupt_id: 27,
+                },
+                ScheduledInterrupt {
+                    deadline_vns: 30,
+                    schedule_index: 1,
+                    armed_for_event: 1,
+                    canceled_at_event: Some(2),
+                    interrupt_id: 27,
+                },
+            ],
+        };
+        let mut restored_events = source.normalized.events[1..].to_vec();
+        for (event_index, event) in restored_events.iter_mut().enumerate() {
+            event.event_index = u64::try_from(event_index).unwrap();
+            for delivery in &mut event.interrupts {
+                delivery.schedule_index -= 1;
+            }
+        }
+        let restored = SessionTraceSegment {
+            start: SessionTraceStart::Replay { snapshot: 1 },
+            normalized: NormalizedLog {
+                events: restored_events,
+            },
+            schedule: vec![ScheduledInterrupt {
+                deadline_vns: 30,
+                schedule_index: 0,
+                armed_for_event: 0,
+                canceled_at_event: Some(1),
+                interrupt_id: 27,
+            }],
+        };
+        (source, restored)
+    }
+
+    #[test]
+    fn portable_continuation_rebases_and_compares_every_retained_field() {
+        let (source, restored) = portable_pair();
+        let hashes = [[7; 32], [8; 32], [9; 32]];
+        assert_eq!(
+            compare_portable_continuation(&source, 1, 1, &hashes, &restored, &hashes),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn portable_continuation_catches_a_planted_increment_at_the_exact_event() {
+        let (source, mut restored) = portable_pair();
+        restored.normalized.events[1].vns_after += 1;
+        let hashes = [[7; 32], [8; 32], [9; 32]];
+        assert_eq!(
+            compare_portable_continuation(&source, 1, 1, &hashes, &restored, &hashes),
+            Err(ContinuationDivergence::Log {
+                divergence: LogDivergence {
+                    event_index: 1,
+                    field: LogField::VnsAfter,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn portable_continuation_catches_a_planted_boundary_hash() {
+        let (source, restored) = portable_pair();
+        let source_hashes = [[7; 32], [8; 32], [9; 32]];
+        let mut restored_hashes = source_hashes;
+        restored_hashes[1][17] ^= 1;
+        assert_eq!(
+            compare_portable_continuation(
+                &source,
+                1,
+                1,
+                &source_hashes,
+                &restored,
+                &restored_hashes,
+            ),
+            Err(ContinuationDivergence::BoundaryStateHash { boundary_index: 1 })
+        );
     }
 }
