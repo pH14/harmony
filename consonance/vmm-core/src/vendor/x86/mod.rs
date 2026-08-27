@@ -104,6 +104,10 @@ impl Vendor for X86 {
         Some(dispatch::normalize_prescriptive_exit_x86(exit))
     }
 
+    fn post_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
+        vmm.service_lapic_timer_due()
+    }
+
     fn service_pending_irqs<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
         vmm.service_pending_irqs()
     }

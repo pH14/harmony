@@ -364,14 +364,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
         }
         let now_vns = self.now_vns()?;
         let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
-        let lapic = self
-            .devices
-            .lapic
-            .as_mut()
-            .expect("in_apic_page implies wired");
         match write {
             None => {
                 // xAPIC register load (32-bit). `complete_read` masks to `size`.
+                let lapic = self
+                    .devices
+                    .lapic
+                    .as_mut()
+                    .expect("in_apic_page implies wired");
                 let value = lapic.mmio_read(offset, now_vns).map_err(|e| {
                     VmmError::ContractViolation(format!("xAPIC read {offset:#x}: {e}"))
                 })?;
@@ -379,13 +379,73 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 Ok(Step::Continued)
             }
             Some(v) => {
-                // xAPIC register store (32-bit); no completion.
-                lapic.mmio_write(offset, v as u32, now_vns).map_err(|e| {
-                    VmmError::ContractViolation(format!("xAPIC write {offset:#x}: {e}"))
-                })?;
+                // xAPIC register store (32-bit); no completion. A store may arm,
+                // re-arm, or disarm the LVT timer; mirror any deadline change
+                // into the independent prescriptive schedule (a no-op without a
+                // wired trace).
+                let (deadline_before, deadline_after, timer_id) = {
+                    let lapic = self
+                        .devices
+                        .lapic
+                        .as_mut()
+                        .expect("in_apic_page implies wired");
+                    let before = lapic.next_timer_deadline();
+                    lapic.mmio_write(offset, v as u32, now_vns).map_err(|e| {
+                        VmmError::ContractViolation(format!("xAPIC write {offset:#x}: {e}"))
+                    })?;
+                    (
+                        before,
+                        lapic.next_timer_deadline(),
+                        u32::from(lapic.timer_vector()),
+                    )
+                };
+                if deadline_after != deadline_before {
+                    match deadline_after {
+                        Some(deadline_vns) => {
+                            self.trace_clockevent_schedule_vns(deadline_vns, timer_id)?;
+                        }
+                        None => self.trace_clockevent_cancel()?,
+                    }
+                }
                 Ok(Step::Continued)
             }
         }
+    }
+
+    /// After the exit's V-time advance and pvclock publication, fire the LAPIC
+    /// timer if this exit crossed its deadline, recording the delivery — and,
+    /// for a periodic reload, the next deadline — in the independent
+    /// prescriptive schedule. The fire is recorded inside the crossing event
+    /// because the placement oracle requires each delivery at the first event
+    /// whose post-advance V-time covers the deadline
+    /// ([`crate::prescriptive::check_delivery_placement`]); the next entry's
+    /// [`Self::service_pending_irqs`] `advance_to` is then an idempotent no-op
+    /// for the same V-time and injects the fired vector as before. Prescriptive
+    /// compositions only: the descriptive path keeps firing at the next entry,
+    /// so its state and hashes are byte-for-byte unchanged.
+    pub(crate) fn service_lapic_timer_due(&mut self) -> Result<(), VmmError> {
+        if !self.prescriptive_vtime_enabled() || self.devices.lapic.is_none() {
+            return Ok(());
+        }
+        let now_vns = self.now_vns()?;
+        let (fired, next_deadline, timer_id) = {
+            let lapic = self.devices.lapic.as_mut().expect("is_some checked above");
+            let fired = lapic.advance_to(now_vns);
+            (
+                fired,
+                lapic.next_timer_deadline(),
+                u32::from(lapic.timer_vector()),
+            )
+        };
+        if fired {
+            self.trace_clockevent_delivery()?;
+            // A periodic timer reloaded inside `advance_to`; that reload is
+            // the next scheduled deadline.
+            if let Some(deadline_vns) = next_deadline {
+                self.trace_clockevent_schedule_vns(deadline_vns, timer_id)?;
+            }
+        }
+        Ok(())
     }
 
     /// Raise `vector` into the userspace-LAPIC IRR so the existing IRQ

@@ -1236,10 +1236,10 @@ on this branch may contain, fetch, or require a NES ROM.
    `/init` and a clean terminal) is the workflow gate; the determinism tier
    (same-seed boots → one normalized log) runs informationally at three boots
    until the smoke tier is stable, then goes to ten as the gate. Known
-   remaining for the seal: the Vmm-path trace records no interrupt schedule
-   on x86 yet (`trace_arm_clockevent_*` is arm64 clockevent wiring), so
-   delivery placement rides the state-hash/vns comparison until the LAPIC
-   timer is wired into the trace's schedule oracle.
+   remaining for the seal at the time of this decision: the Vmm-path trace
+   recorded no interrupt schedule on x86, so delivery placement rode the
+   state-hash/vns comparison. Decision 17 wires the LAPIC timer into the
+   schedule oracle.
 10. **The counter-opcode scan gets a per-toolchain site baseline.** The
    reviewed `rdtsc-allowlist.txt` pins `symbol+offset` sites from the box
    toolchain; offsets and inlining are toolchain-dependent, so the runner
@@ -1341,6 +1341,19 @@ on this branch may contain, fetch, or require a NES ROM.
    pure function of `tsc_khz`; the unreachable re-seeding callers (cpufreq
    notifier, suspend resume) are unchanged. The runner allowlist needs
    another re-baseline for the shifted tsc.c site (the scan names it).
+
+17. **The LAPIC timer feeds the trace's schedule oracle.** This closes the
+   decision-9 remaining item. A LAPIC MMIO write that changes
+   `next_timer_deadline()` records a schedule (deadline V-ns, timer vector)
+   in the prescriptive trace; a write that disarms the timer records a
+   cancel. The x86 vendor post-exit step advances the LAPIC to the event's
+   assigned V-time and records any fire as a delivery inside that same
+   event, which is what `check_delivery_placement` requires: each delivery
+   at the first event whose post-advance V-time covers its deadline, armed
+   strictly earlier. Unit tests cover the one-shot fire and the
+   disarm-cancels-schedule path against a mock backend. The X2 boot test
+   now computes the placement verdict per boot, prints it in the report,
+   and asserts it in both the smoke and determinism tiers.
 
 ## X0 — runner probe
 

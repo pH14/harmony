@@ -28,7 +28,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vmm_core::prescriptive::{NormalizedLog, compare_normalized_logs};
+use vmm_core::prescriptive::{NormalizedLog, check_delivery_placement, compare_normalized_logs};
 use vmm_core::vendor::x86::bringup::boot_linux_stock_prescriptive;
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
@@ -105,6 +105,10 @@ struct BootRun {
     guest_ready: bool,
     pvclock_registered: bool,
     step_error: Option<String>,
+    /// The §2.1 placement oracle's verdict over this boot's schedule + log
+    /// (`None` = every LAPIC-timer delivery sat at the first event whose
+    /// post-advance V-time covered its deadline).
+    placement_error: Option<String>,
     wall: Duration,
     log: NormalizedLog,
     digest: [u8; 32],
@@ -175,6 +179,9 @@ fn run_boot<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     let trace = vmm
         .prescriptive_trace()
         .expect("boot_linux_stock_prescriptive wires the prescriptive trace");
+    let placement_error = check_delivery_placement(trace.schedule(), trace.normalized_log())
+        .err()
+        .map(|e| e.to_string());
     BootRun {
         reason,
         steps,
@@ -182,6 +189,7 @@ fn run_boot<B: vmm_backend::Backend<A = vmm_backend::X86>>(
         guest_ready: find(vmm.serial(), GUEST_READY),
         pvclock_registered: find(vmm.serial(), PVCLOCK_REGISTERED),
         step_error,
+        placement_error,
         wall: start.elapsed(),
         log: trace.normalized_log().clone(),
         digest: trace.normalized_digest(),
@@ -205,7 +213,8 @@ fn boot_once(kernel: &[u8], initramfs: &[u8], stream: bool) -> BootRun {
 fn report_run(tag: &str, run: &BootRun) {
     eprintln!(
         "[x2] {tag}: terminal={:?} steps={} events={} reached_userspace={} GUEST_READY={} \
-         pvclock_registered={} step_error={:?} wall_secs={:.1} last_vns={:?} digest={}",
+         pvclock_registered={} step_error={:?} placement={} wall_secs={:.1} last_vns={:?} \
+         digest={}",
         run.reason,
         run.steps,
         run.log.events.len(),
@@ -213,6 +222,7 @@ fn report_run(tag: &str, run: &BootRun) {
         run.guest_ready,
         run.pvclock_registered,
         run.step_error,
+        run.placement_error.as_deref().unwrap_or("OK"),
         run.wall.as_secs_f64(),
         run.log.events.last().map(|e| e.vns_after),
         hex(&run.digest),
@@ -283,6 +293,11 @@ fn x2_prescriptive_stock_boot_smoke() {
         "the guest never registered the clock page — time fell back to the raw TSC, which the \
          stock backend cannot intercept; look for a 'harmony_pvclock:' line in the serial above"
     );
+    assert!(
+        run.placement_error.is_none(),
+        "LAPIC-timer delivery placement violated the §2.1 oracle: {}",
+        run.placement_error.as_deref().unwrap_or_default()
+    );
 }
 
 /// **X2 tier 2 — the determinism criterion.** N same-seed prescriptive stock
@@ -302,11 +317,16 @@ fn x2_same_seed_boots_one_normalized_log() {
     let reference = boot_once(&kernel, &initramfs, true);
     report_run("boot 0", &reference);
     assert!(
-        reference.clean() && reference.reached_userspace && reference.pvclock_registered,
-        "boot 0 must be a clean userspace boot with the clock page registered before \
-         determinism is measurable (terminal {:?}, step_error {:?})",
+        reference.clean()
+            && reference.reached_userspace
+            && reference.pvclock_registered
+            && reference.placement_error.is_none(),
+        "boot 0 must be a clean userspace boot with the clock page registered and delivery \
+         placement verified before determinism is measurable (terminal {:?}, step_error {:?}, \
+         placement {:?})",
         reference.reason,
-        reference.step_error
+        reference.step_error,
+        reference.placement_error
     );
 
     let mut divergences = Vec::new();
@@ -314,11 +334,15 @@ fn x2_same_seed_boots_one_normalized_log() {
         let run = boot_once(&kernel, &initramfs, false);
         report_run(&format!("boot {i}"), &run);
         assert!(
-            run.clean() && run.reached_userspace && run.pvclock_registered,
-            "boot {i} must be a clean userspace boot with the clock page registered \
-             (terminal {:?}, step_error {:?})",
+            run.clean()
+                && run.reached_userspace
+                && run.pvclock_registered
+                && run.placement_error.is_none(),
+            "boot {i} must be a clean userspace boot with the clock page registered and \
+             delivery placement verified (terminal {:?}, step_error {:?}, placement {:?})",
             run.reason,
-            run.step_error
+            run.step_error,
+            run.placement_error
         );
         match compare_normalized_logs(&reference.log, &run.log) {
             Ok(()) => {
