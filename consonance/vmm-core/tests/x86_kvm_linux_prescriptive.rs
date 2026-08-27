@@ -540,6 +540,33 @@ fn dump_state_diff(vmm_a: &StockVmm, vmm_b: &StockVmm) {
             println!("X2_SEG_DIFF {name}: A={a:x?} B={b:x?}");
         }
     }
+
+    // The XSAVE image in the words the architecture names: XSTATE_BV at
+    // byte 512, XCOMP_BV at 520, then any differing 64-byte windows.
+    let (xs_a, xs_b) = (&vcpu_a.xsave, &vcpu_b.xsave);
+    if xs_a != xs_b {
+        println!("X2_XSAVE_LEN A={} B={}", xs_a.len(), xs_b.len());
+        for (tag, xs) in [("A", xs_a), ("B", xs_b)] {
+            if xs.len() >= 528 {
+                let bv = u64::from_le_bytes(xs[512..520].try_into().expect("8 bytes"));
+                let comp = u64::from_le_bytes(xs[520..528].try_into().expect("8 bytes"));
+                println!("X2_XSAVE_HDR {tag}: xstate_bv={bv:#x} xcomp_bv={comp:#x}");
+            }
+        }
+        let n = xs_a.len().min(xs_b.len());
+        let mut printed = 0;
+        let mut off = 0;
+        while off < n && printed < 8 {
+            let hi = (off + 64).min(n);
+            if xs_a[off..hi] != xs_b[off..hi] {
+                for (tag, xs) in [("A", xs_a), ("B", xs_b)] {
+                    println!("X2_XSAVE_DIFF {tag} @{off:#x}: {}", hex(&xs[off..hi]));
+                }
+                printed += 1;
+            }
+            off += 64;
+        }
+    }
 }
 
 /// The first recorded checkpoint state hash in a bounded boot's log.
