@@ -12,12 +12,9 @@
 //! `(Arm64KvmBackend, Arm64)` pair is named is the M4 `boot_selected`
 //! (Linux+aarch64-gated) — not here.
 //!
-//! **The interrupt fabric is left unwired** (`docs/ARCH-BOUNDARY.md` §D / M2
-//! §Delivery): the stock `Arm64KvmBackend`'s `set_pending_irq` is `Unsupported`
-//! and guest delivery is AA-6-gated (the vGICv3 round-trip verdict), so a
-//! stock-safe boot root never wires the userspace GICv3. The DTB still
-//! advertises the GICv3 so a guest can program it; wiring its delivery is a
-//! later bead.
+//! HVF composes the userspace GICv3. KVM/arm64 instead owns an in-kernel
+//! GICv3, so its boot root leaves the userspace model unwired and drives the
+//! clockevent PPI through the backend's level-input seam.
 
 use vmm_backend::{Arm64, Backend, Gpa};
 
@@ -274,25 +271,15 @@ pub fn boot_hvf_control(
 /// `(Arm64KvmBackend, Arm64)` pair is named — Linux+aarch64-gated, mirroring
 /// x86's `boot_selected`. Constructs the stock KVM/arm64 backend
 /// (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` in
-/// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, and [`boot`]s the
-/// `Image`+DTB. No V-time is wired: the stock backend claims no determinism
-/// (its `capabilities()` are honestly false), so the determinism path is a
-/// later bead (the AA-3 patched backend + the paravirt clock, `hm-rk5`).
+/// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, composes the
+/// same Image + initramfs bytes as the HVF oracle, and wires exit-assigned
+/// V-time plus the paravirtual clock. The in-kernel GICv3 owns guest GIC MMIO
+/// and ICC system registers; no userspace GIC model is composed.
 ///
 /// The real `KVM_RUN` boot to a console marker and the same-seed `state_hash`
 /// determinism gate over this pair run natively on msr1 during M4; there is no
 /// local KVM loop (`hm-8l3` REFUSE), so this root has no
 /// local oracle — only the aarch64-linux cross-check compiles it.
-///
-/// **No interrupt-driven guest boot is claimed here** (`tasks/112` M2 §Delivery).
-/// The stock backend wires **no** delivery fabric — `set_pending_irq`/inject are
-/// `Unsupported`, and this root never creates an in-kernel
-/// `KVM_DEV_TYPE_ARM_VGIC_V3`: guest interrupt delivery is `TODO(AA-6)` (the
-/// vGICv3 round-trip verdict). So a guest that programs the GICv3 (the DTB
-/// advertises it) and blocks on a device interrupt does **not** boot to
-/// completion on this path — an interrupt-driven Linux is **deferred to AA-6**,
-/// not offered by the skeleton. What this boots is the polled / PSCI-`SYSTEM_OFF`
-/// console path (the M3 TCG smoke's shape).
 ///
 /// # Errors
 /// [`VmmError::Backend`] if `/dev/kvm` is unavailable or an init ioctl fails;
@@ -300,12 +287,33 @@ pub fn boot_hvf_control(
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub fn boot_selected(
     image: &[u8],
+    initramfs: &[u8],
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    hostassert::enforce()?;
     let live = vmm_backend::LiveKvm::new()?;
     let backend: Box<dyn Backend<A = Arm64>> = Box::new(vmm_backend::Arm64KvmBackend::new(live));
-    boot(backend, image, bootargs, guest_ram_len)
+    let mut vmm = compose_inner(
+        backend,
+        image,
+        Some(initramfs),
+        bootargs,
+        guest_ram_len,
+        false,
+    )?;
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
+        vtime::VClockConfig {
+            ratio_num: 1,
+            ratio_den: 1,
+            guest_hz: super::board::CNTFRQ_HZ,
+            guest_base: 0,
+            vns_base: 0,
+        },
+        0,
+    )?);
+    vmm.enable_pvclock(1);
+    Ok(vmm)
 }
 
 #[cfg(test)]

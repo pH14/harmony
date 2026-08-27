@@ -195,7 +195,11 @@ impl Vendor for X86 {
         v
     }
 
-    fn hash_device_chunks(devices: &Self::Devices, out: &mut Vec<u8>) {
+    fn hash_device_chunks(
+        _vcpu: &vmm_backend::VcpuState,
+        devices: &Self::Devices,
+        out: &mut Vec<u8>,
+    ) {
         // The xAPIC chunk is present **only** on the Linux boot path (`lapic`
         // wired); M1/M2/corpus emit none, so their hash is byte-for-byte
         // unchanged. It captures the register file + timer bookkeeping that

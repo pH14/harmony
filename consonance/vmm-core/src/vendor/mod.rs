@@ -229,7 +229,7 @@ pub trait Vendor: Arch + Sized {
 
     /// Append the vendor's own device hash chunks (x86: `LAPC` + `LEGY`), in the
     /// vendor's fixed order, at the engine's fixed position in the blob.
-    fn hash_device_chunks(devices: &Self::Devices, out: &mut Vec<u8>);
+    fn hash_device_chunks(vcpu: &Self::VcpuState, devices: &Self::Devices, out: &mut Vec<u8>);
 
     /// The wire register view for the `regs` observation verb (task 80): which
     /// registers a machine *has* is per-arch, so the vendor fills the view. The
@@ -250,7 +250,12 @@ pub trait Vendor: Arch + Sized {
     /// diagnostic component matches, defeating localization. **Additive only**:
     /// a vendor appends *new* labels; it never renames an existing one (the O1
     /// box localizer pins `regs`/`desc-tables`). The default appends nothing.
-    fn device_components(_devices: &Self::Devices, _out: &mut Vec<(&'static str, [u8; 32])>) {}
+    fn device_components(
+        _vcpu: &Self::VcpuState,
+        _devices: &Self::Devices,
+        _out: &mut Vec<(&'static str, [u8; 32])>,
+    ) {
+    }
 
     /// Whether the vCPU carries an event-injection record a quiescent-only codec
     /// would reject (the full task-39 set, inert residuals included).

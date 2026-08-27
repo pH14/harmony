@@ -17,8 +17,9 @@
 mod state;
 
 pub use state::{
-    Arm64CoreRegs, Arm64DebugState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile,
-    Arm64VcpuState, Arm64VtimerState,
+    ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64CoreRegs, Arm64DebugState,
+    Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState,
+    Arm64VtimerState,
 };
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
@@ -191,6 +192,13 @@ pub struct SysregTrapPolicy {
 /// own registers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Arm64Caps {
+    /// The backend owns an in-kernel GICv3 whose guest MMIO and ICC system
+    /// register interface do not exit to the userspace `gicv3` model. In that
+    /// composition the VMM drives level inputs through
+    /// [`Backend::set_pending_irq`](crate::Backend::set_pending_irq), and the
+    /// backend carries the controller's canonical migration state in its vCPU
+    /// snapshot. `false` means interrupt state is userspace-owned or absent.
+    pub in_kernel_gic: bool,
     /// Guest reads of the virtual counter resolve to V-time — on arm64 via the
     /// paravirt work-derived clock page (`docs/PARAVIRT-CLOCK.md` §4.2: no
     /// `CNTVCT` trap exists on reachable silicon, so closure is contract-level,
@@ -257,11 +265,13 @@ mod tests {
     #[test]
     fn arm64_caps_answer_the_neutral_clock_question() {
         let stock = Arm64Caps {
+            in_kernel_gic: false,
             deterministic_cntvct: false,
             enforces_cntv_cval: false,
         };
         assert!(!stock.deterministic_clock());
         let det = Arm64Caps {
+            in_kernel_gic: false,
             deterministic_cntvct: true,
             enforces_cntv_cval: false,
         };

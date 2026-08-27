@@ -28,9 +28,9 @@ pub const CNTV_CTL_ENABLE: u64 = 1;
 /// `CNTV_CTL_EL0.IMASK` — the virtual timer's interrupt output is masked.
 pub const CNTV_CTL_IMASK: u64 = 1 << 1;
 
-/// The [`GicState`] layout version. v1: the skeleton model (`tasks/112` M2) —
-/// register files, PMR, and the one-shot-latched virtual timer.
-pub const GIC_STATE_VERSION: u32 = 1;
+/// The [`GicState`] layout version. v2 separates external input-line levels
+/// from the pending latch, as required by the KVM vGIC migration ABI.
+pub const GIC_STATE_VERSION: u32 = 2;
 
 /// The complete GICv3 model snapshot. Plain data, deterministic field order,
 /// no map, no float (rule #4); the firing **deadline is derived, never
@@ -64,11 +64,17 @@ pub struct GicState {
     pub pending: [u32; BITMAP_WORDS],
     /// Active bits, one per INTID.
     pub active: [u32; BITMAP_WORDS],
+    /// External input-line levels, one per INTID. This is deliberately separate
+    /// from `pending`: a level-triggered interrupt's pending value is the OR of
+    /// its input level and its software latch, and migration requires both.
+    pub line_level: [u32; BITMAP_WORDS],
     /// Priority bytes, one per INTID (lower value = higher priority).
     pub priority: [u8; PRIORITY_BYTES],
     /// The CPU interface's priority mask (`ICC_PMR_EL1`; reset `0` masks
     /// everything — the guest raises it before expecting delivery).
     pub pmr: u8,
+    /// `ICC_IGRPEN1_EL1`, the CPU-interface Group-1 enable.
+    pub igrpen1: bool,
     /// `CNTV_CTL_EL0` (`ENABLE` | `IMASK`).
     pub cntv_ctl: u64,
     /// `CNTV_CVAL_EL0` — the absolute compare value in timer ticks.

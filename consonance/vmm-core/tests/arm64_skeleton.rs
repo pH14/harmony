@@ -319,6 +319,7 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
     gic.mmio_write(GicFrame::Dist, 0x0400 + 40, 0x40, 0)
         .unwrap(); // IPRIORITYR
     gic.set_pmr(0xFF);
+    gic.set_group1_enabled(true);
 
     let mut v = vmm(vec![Exit::Common(CommonExit::Idle)]);
     v.wire_gic(gic);
@@ -421,6 +422,7 @@ fn arm64_generic_timer_feeds_the_deadline_seam() {
     gic.mmio_write(GicFrame::Redist, sgi + 0x0100, 1 << 27, 0)
         .unwrap();
     gic.set_pmr(0xFF);
+    gic.set_group1_enabled(true);
     gic.write_cntv_cval(125);
     gic.write_cntv_ctl(CNTV_CTL_ENABLE);
     assert_eq!(gic.next_timer_deadline(), Some(2000));
@@ -433,6 +435,7 @@ fn arm64_generic_timer_feeds_the_deadline_seam() {
         name: "mock-arm64-stockish",
         deterministic_rng: true,
         arch: vmm_backend::Arm64Caps {
+            in_kernel_gic: false,
             deterministic_cntvct: false,
             enforces_cntv_cval: false,
         },
@@ -724,6 +727,7 @@ fn clockevent_gic() -> gicv3::Gicv3 {
     gic.mmio_write(GicFrame::Redist, sgi + 0x0100, 1 << PVCLOCK_PPI, 0)
         .unwrap();
     gic.set_pmr(0xff);
+    gic.set_group1_enabled(true);
     gic
 }
 
@@ -1006,6 +1010,7 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
         gic.mmio_write(GicFrame::Dist, 0x0400 + 40, 0x40, 0)
             .unwrap();
         gic.set_pmr(0xFF);
+        gic.set_group1_enabled(true);
         if let Some(intid) = raise {
             gic.raise(intid).unwrap();
         }

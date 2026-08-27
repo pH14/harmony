@@ -2147,6 +2147,7 @@ where
     /// byte unchanged from before this was added.
     pub fn state_blob(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        let vcpu = self.current_vcpu();
         put_chunk(&mut out, b"MEM\0", self.ram.as_bytes());
         // The dedicated hypercall-transport ABI pages are guest-visible memory
         // (arm64: a separate low-GPA memslot; x86 keeps them inside `MEM`). Fold
@@ -2160,7 +2161,7 @@ where
         put_chunk(
             &mut out,
             b"VCPU",
-            &<B::A as Vendor>::encode_vcpu_chunk(&self.current_vcpu()),
+            &<B::A as Vendor>::encode_vcpu_chunk(&vcpu),
         );
         put_chunk(
             &mut out,
@@ -2175,7 +2176,7 @@ where
         // `LAPC` then `LEGY`). A vendor emits none for a device it has not wired
         // (M1/M2/corpus never wire the xAPIC or the legacy platform), so their hash
         // is byte-for-byte unchanged.
-        <B::A as Vendor>::hash_device_chunks(&self.devices, &mut out);
+        <B::A as Vendor>::hash_device_chunks(&vcpu, &self.devices, &mut out);
         // The task-73 SDK channel's **replay-relevant** state — present **only**
         // when a channel is wired (`enable_sdk`), so an SDK-less run's blob
         // (M1/M2/corpus/Linux-boot) is byte-for-byte unchanged (round-7). It folds
@@ -2338,7 +2339,7 @@ where
         // (arm64: the `GICV` chunk's register files / pending-active / timer)
         // would hash differently while every component above matched. Additive:
         // the vendor appends new labels only (never renames a pinned one).
-        <B::A as Vendor>::device_components(&self.devices, &mut out);
+        <B::A as Vendor>::device_components(&vcpu, &self.devices, &mut out);
         if let Some(vt) = &self.vtime {
             // V-time chunk broken out for the O1 localizer (PR #51 box-review). The
             // first three components are a **faithful cover** of the bytes

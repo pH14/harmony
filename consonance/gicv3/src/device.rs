@@ -93,8 +93,10 @@ pub struct Gicv3 {
     enable: [u32; BITMAP_WORDS],
     pending: [u32; BITMAP_WORDS],
     active: [u32; BITMAP_WORDS],
+    line_level: [u32; BITMAP_WORDS],
     priority: [u8; PRIORITY_BYTES],
     pmr: u8,
+    igrpen1: bool,
     cntv_ctl: u64,
     cntv_cval: u64,
     timer_fired: bool,
@@ -125,8 +127,10 @@ impl Gicv3 {
             enable: [0; BITMAP_WORDS],
             pending: [0; BITMAP_WORDS],
             active: [0; BITMAP_WORDS],
+            line_level: [0; BITMAP_WORDS],
             priority: [0; PRIORITY_BYTES],
             pmr: 0,
+            igrpen1: false,
             cntv_ctl: 0,
             cntv_cval: 0,
             timer_fired: false,
@@ -417,8 +421,7 @@ impl Gicv3 {
 
     // --- interrupt file ------------------------------------------------------
 
-    /// Raise `intid` pending (the host-injection / device-line entry point;
-    /// normal arbitration then delivers it).
+    /// Latch `intid` pending (the edge/software-injection entry point).
     ///
     /// # Errors
     /// [`GicError::BadIntId`] outside the implemented identity space.
@@ -430,10 +433,8 @@ impl Gicv3 {
         Ok(())
     }
 
-    /// Drive an external interrupt input low by clearing an unaccepted pending
-    /// assertion. An already-active interrupt remains active until EOI; this is
-    /// the GIC level-line behavior needed when a device deasserts from inside
-    /// its handler.
+    /// Clear an unaccepted latched pending event. An already-active interrupt
+    /// remains active until EOI.
     ///
     /// # Errors
     /// [`GicError::BadIntId`] outside the implemented identity space.
@@ -442,6 +443,33 @@ impl Gicv3 {
             return Err(GicError::BadIntId(intid));
         }
         self.pending[(intid / 32) as usize] &= !(1 << (intid % 32));
+        Ok(())
+    }
+
+    /// Latch one edge/software-pending event without holding an external line.
+    ///
+    /// # Errors
+    /// [`GicError::BadIntId`] outside the implemented identity space.
+    pub fn pulse(&mut self, intid: u32) -> Result<(), GicError> {
+        self.raise(intid)
+    }
+
+    /// Drive a level-triggered device input high.
+    pub fn assert_line(&mut self, intid: u32) -> Result<(), GicError> {
+        if !self.implemented(intid) {
+            return Err(GicError::BadIntId(intid));
+        }
+        self.line_level[(intid / 32) as usize] |= 1 << (intid % 32);
+        Ok(())
+    }
+
+    /// Drive a level-triggered device input low without changing its pending
+    /// latch or active state.
+    pub fn deassert_line(&mut self, intid: u32) -> Result<(), GicError> {
+        if !self.implemented(intid) {
+            return Err(GicError::BadIntId(intid));
+        }
+        self.line_level[(intid / 32) as usize] &= !(1 << (intid % 32));
         Ok(())
     }
 
@@ -468,14 +496,17 @@ impl Gicv3 {
     /// ∧ priority strictly higher (value strictly lower) than both `PMR` and
     /// the running priority. Ties resolve to the lowest INTID (deterministic).
     pub fn peek_interrupt(&self) -> Option<u32> {
-        if self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 {
+        if self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1 {
             return None;
         }
         let running = self.running_priority();
         let pmr = u16::from(self.pmr);
         let mut best: Option<(u16, u32)> = None;
         for w in 0..BITMAP_WORDS {
-            let mut bits = self.pending[w] & self.enable[w] & self.group[w] & !self.active[w];
+            let mut bits = (self.pending[w] | self.line_level[w])
+                & self.enable[w]
+                & self.group[w]
+                & !self.active[w];
             while bits != 0 {
                 let bit = bits.trailing_zeros();
                 bits &= bits - 1;
@@ -508,7 +539,8 @@ impl Gicv3 {
     /// active-state gates without mutating the pending bitmap. Unimplemented
     /// identities are simply not deliverable.
     pub fn input_deliverable(&self, intid: u32) -> bool {
-        if !self.implemented(intid) || self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 {
+        if !self.implemented(intid) || self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1
+        {
             return false;
         }
         let (w, b) = ((intid / 32) as usize, intid % 32);
@@ -580,6 +612,16 @@ impl Gicv3 {
     /// The current priority mask.
     pub fn pmr(&self) -> u8 {
         self.pmr
+    }
+
+    /// Set the CPU interface's Group-1 enable (`ICC_IGRPEN1_EL1`).
+    pub fn set_group1_enabled(&mut self, enabled: bool) {
+        self.igrpen1 = enabled;
+    }
+
+    /// Current `ICC_IGRPEN1_EL1` value.
+    pub fn group1_enabled(&self) -> bool {
+        self.igrpen1
     }
 
     // --- the virtual timer ----------------------------------------------------
@@ -677,8 +719,10 @@ impl Gicv3 {
             enable: self.enable,
             pending: self.pending,
             active: self.active,
+            line_level: self.line_level,
             priority: self.priority,
             pmr: self.pmr,
+            igrpen1: self.igrpen1,
             cntv_ctl: self.cntv_ctl,
             cntv_cval: self.cntv_cval,
             timer_fired: self.timer_fired,
@@ -715,7 +759,13 @@ impl Gicv3 {
         }
         for w in 0..BITMAP_WORDS {
             let mask = g.word_mask(w);
-            for file in [&state.group, &state.enable, &state.pending, &state.active] {
+            for file in [
+                &state.group,
+                &state.enable,
+                &state.pending,
+                &state.active,
+                &state.line_level,
+            ] {
                 if file[w] & !mask != 0 {
                     return Err(GicError::InvalidState);
                 }
@@ -730,8 +780,10 @@ impl Gicv3 {
         g.enable = state.enable;
         g.pending = state.pending;
         g.active = state.active;
+        g.line_level = state.line_level;
         g.priority = state.priority;
         g.pmr = state.pmr;
+        g.igrpen1 = state.igrpen1;
         g.cntv_ctl = state.cntv_ctl;
         g.cntv_cval = state.cntv_cval;
         g.timer_fired = state.timer_fired;
@@ -783,6 +835,7 @@ mod tests {
     fn arm(g: &mut Gicv3, intid: u32, prio: u8) {
         g.mmio_write(GicFrame::Dist, GICD_CTLR, GICD_CTLR_ENABLE_GRP1, 0)
             .unwrap();
+        g.set_group1_enabled(true);
         g.set_pmr(0xFF);
         let (w, b) = (intid / 32, intid % 32);
         // A 32-bit IPRIORITYR store writes all four priority bytes, so the

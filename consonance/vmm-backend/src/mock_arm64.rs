@@ -84,6 +84,7 @@ const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
     name: "mock-arm64",
     deterministic_rng: true,
     arch: crate::arch::arm64::Arm64Caps {
+        in_kernel_gic: false,
         deterministic_cntvct: true,
         enforces_cntv_cval: true,
     },

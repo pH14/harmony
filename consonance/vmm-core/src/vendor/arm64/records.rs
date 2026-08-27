@@ -14,8 +14,8 @@ use vm_state::{
     Arm64Debug, Arm64Interrupts, Arm64Regs, Arm64SimdFp, Arm64Sysregs, Arm64VmState, Arm64Vtimer,
 };
 use vmm_backend::{
-    Arm64CoreRegs, Arm64DebugState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile,
-    Arm64VcpuState, Arm64VtimerState,
+    Arm64CoreRegs, Arm64DebugState, Arm64GicState, Arm64InterruptState, Arm64SimdFpState,
+    Arm64SysregFile, Arm64VcpuState, Arm64VtimerState,
 };
 
 use crate::snapshot::SnapshotError;
@@ -122,6 +122,53 @@ pub(crate) fn vcpu_state_from(s: &Arm64VmState) -> Arm64VcpuState {
             fiq: s.interrupts.fiq,
         },
         mp_state: from_vm_mp_state(s.mp_state),
+        gic: None,
+    }
+}
+
+/// Convert the backend-owned in-kernel vGIC record to the canonical userspace
+/// architectural record carried by the arm64 device blob.
+pub(crate) fn gic_from_backend(s: &Arm64GicState) -> gicv3::GicState {
+    gicv3::GicState {
+        version: s.version,
+        impl_spis: s.impl_spis,
+        timer_hz: s.timer_hz,
+        timer_intid: s.timer_intid,
+        gicd_ctlr: s.gicd_ctlr,
+        group: s.group,
+        enable: s.enable,
+        pending: s.pending,
+        active: s.active,
+        line_level: s.line_level,
+        priority: s.priority,
+        pmr: s.pmr,
+        igrpen1: s.igrpen1,
+        cntv_ctl: s.cntv_ctl,
+        cntv_cval: s.cntv_cval,
+        timer_fired: s.timer_fired,
+    }
+}
+
+/// Convert a decoded canonical device-blob GIC record to the backend-owned
+/// form used when the target has an in-kernel vGIC.
+pub(crate) fn gic_to_backend(s: &gicv3::GicState) -> Arm64GicState {
+    Arm64GicState {
+        version: s.version,
+        impl_spis: s.impl_spis,
+        timer_hz: s.timer_hz,
+        timer_intid: s.timer_intid,
+        gicd_ctlr: s.gicd_ctlr,
+        group: s.group,
+        enable: s.enable,
+        pending: s.pending,
+        active: s.active,
+        line_level: s.line_level,
+        priority: s.priority,
+        pmr: s.pmr,
+        igrpen1: s.igrpen1,
+        cntv_ctl: s.cntv_ctl,
+        cntv_cval: s.cntv_cval,
+        timer_fired: s.timer_fired,
     }
 }
 
@@ -286,13 +333,14 @@ pub(crate) fn encode_gic_state(out: &mut Vec<u8>, s: &gicv3::GicState) {
     out.extend_from_slice(&s.timer_hz.to_le_bytes());
     put_u32(out, s.timer_intid);
     put_u32(out, s.gicd_ctlr);
-    for file in [&s.group, &s.enable, &s.pending, &s.active] {
+    for file in [&s.group, &s.enable, &s.pending, &s.active, &s.line_level] {
         for w in file {
             put_u32(out, *w);
         }
     }
     out.extend_from_slice(&s.priority);
     out.push(s.pmr);
+    out.push(u8::from(s.igrpen1));
     out.extend_from_slice(&s.cntv_ctl.to_le_bytes());
     out.extend_from_slice(&s.cntv_cval.to_le_bytes());
     out.push(u8::from(s.timer_fired));
@@ -306,16 +354,21 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
     let timer_hz = c.u64()?;
     let timer_intid = c.u32()?;
     let gicd_ctlr = c.u32()?;
-    let mut files = [[0u32; 32]; 4];
+    let mut files = [[0u32; 32]; 5];
     for file in &mut files {
         for w in file.iter_mut() {
             *w = c.u32()?;
         }
     }
-    let [group, enable, pending, active] = files;
+    let [group, enable, pending, active, line_level] = files;
     let mut priority = [0u8; 1020];
     priority.copy_from_slice(c.take(1020)?);
     let pmr_byte = c.take(1)?[0];
+    let igrpen1 = match c.take(1)?[0] {
+        0 => false,
+        1 => true,
+        _ => return Err(SnapshotError::DeviceBlob("bad igrpen1 flag")),
+    };
     let cntv_ctl = c.u64()?;
     let cntv_cval = c.u64()?;
     let timer_fired = match c.take(1)?[0] {
@@ -333,8 +386,10 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         enable,
         pending,
         active,
+        line_level,
         priority,
         pmr: pmr_byte,
+        igrpen1,
         cntv_ctl,
         cntv_cval,
         timer_fired,

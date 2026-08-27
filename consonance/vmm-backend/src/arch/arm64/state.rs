@@ -7,12 +7,10 @@
 //! rule #2 this crate does not depend on `vm-state`, so the field set is
 //! mirrored plain data kept consistent by review.
 //!
-//! **A skeleton subset, deliberately.** The core registers (`x0..x30`, `SP`,
-//! `PC`, `PSTATE`) and a small named EL1 system-register file are enough to
-//! build, seal, and round-trip a trivial vCPU through the container — the M1
-//! keystone. **Which sysregs a snapshot must carry is M4's measured
-//! decision** (`docs/PRESCRIPTIVE-VTIME.md`); the full record set is
-//! `TODO(AA-6)`, never guessed here. designed-not-frozen (AA-3).
+//! The vCPU record also carries a substrate-neutral GICv3 record when the
+//! backend owns an in-kernel interrupt controller. `vmm-core` moves that record
+//! into the existing arm64 device blob, so an in-kernel KVM vGIC and the HVF
+//! userspace model have one canonical snapshot representation.
 
 use crate::types::MpState;
 
@@ -35,6 +33,80 @@ pub struct Arm64VcpuState {
     pub interrupts: Arm64InterruptState,
     /// Runnable vs halted (`KVM_GET_MP_STATE`; WFI-halted on arm64).
     pub mp_state: MpState,
+    /// Canonical architectural GICv3 state when the backend owns the fabric.
+    /// Userspace-fabric backends leave this `None` and retain the equivalent
+    /// record in their device model.
+    pub gic: Option<Arm64GicState>,
+}
+
+/// Bitmap words in the canonical GICv3 ordinary-INTID space.
+pub const ARM64_GIC_BITMAP_WORDS: usize = 32;
+
+/// Priority bytes in the canonical GICv3 ordinary-INTID space.
+pub const ARM64_GIC_PRIORITY_BYTES: usize = 1020;
+
+/// Substrate-neutral GICv3 architectural state.
+///
+/// `pending` is the software/edge pending latch. `line_level` is separate:
+/// KVM's migration ABI explicitly requires both to reproduce a level-triggered
+/// input, because neither can be derived from the other.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Arm64GicState {
+    /// Canonical record layout version.
+    pub version: u32,
+    /// Implemented shared peripheral interrupt count.
+    pub impl_spis: u32,
+    /// Architectural timer frequency fixed by the board contract.
+    pub timer_hz: u64,
+    /// Virtual-timer PPI INTID.
+    pub timer_intid: u32,
+    /// Writable Group-1 forwarding bits of `GICD_CTLR`.
+    pub gicd_ctlr: u32,
+    /// Group membership (`1` is Group 1).
+    pub group: [u32; ARM64_GIC_BITMAP_WORDS],
+    /// Enable bitmap.
+    pub enable: [u32; ARM64_GIC_BITMAP_WORDS],
+    /// Software/edge pending latch bitmap.
+    pub pending: [u32; ARM64_GIC_BITMAP_WORDS],
+    /// Active bitmap.
+    pub active: [u32; ARM64_GIC_BITMAP_WORDS],
+    /// External input-line levels, distinct from the pending latch.
+    pub line_level: [u32; ARM64_GIC_BITMAP_WORDS],
+    /// One priority byte per ordinary INTID.
+    pub priority: [u8; ARM64_GIC_PRIORITY_BYTES],
+    /// `ICC_PMR_EL1`.
+    pub pmr: u8,
+    /// `ICC_IGRPEN1_EL1` Group-1 CPU-interface enable.
+    pub igrpen1: bool,
+    /// Canonical virtual-timer control bits.
+    pub cntv_ctl: u64,
+    /// Canonical virtual-timer compare value.
+    pub cntv_cval: u64,
+    /// Whether the current timer arming has fired.
+    pub timer_fired: bool,
+}
+
+impl Default for Arm64GicState {
+    fn default() -> Self {
+        Self {
+            version: 2,
+            impl_spis: 0,
+            timer_hz: 0,
+            timer_intid: 0,
+            gicd_ctlr: 0,
+            group: [0; ARM64_GIC_BITMAP_WORDS],
+            enable: [0; ARM64_GIC_BITMAP_WORDS],
+            pending: [0; ARM64_GIC_BITMAP_WORDS],
+            active: [0; ARM64_GIC_BITMAP_WORDS],
+            line_level: [0; ARM64_GIC_BITMAP_WORDS],
+            priority: [0; ARM64_GIC_PRIORITY_BYTES],
+            pmr: 0,
+            igrpen1: false,
+            cntv_ctl: 0,
+            cntv_cval: 0,
+            timer_fired: false,
+        }
+    }
 }
 
 /// The arm64 core register file (`struct kvm_regs.regs` — `user_pt_regs` —

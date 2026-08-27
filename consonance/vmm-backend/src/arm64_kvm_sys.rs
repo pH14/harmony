@@ -15,8 +15,10 @@
 
 use std::os::fd::AsRawFd;
 
-use kvm_bindings::{kvm_run, kvm_userspace_memory_region, kvm_vcpu_init};
-use kvm_ioctls::{Kvm, VcpuFd, VmFd};
+use kvm_bindings::{
+    kvm_create_device, kvm_device_attr, kvm_run, kvm_userspace_memory_region, kvm_vcpu_init,
+};
+use kvm_ioctls::{DeviceFd, Kvm, VcpuFd, VmFd};
 
 use crate::arm64_kvm::{Arm64Kvm, KvmRunView, RunOffsets, RunPage};
 use crate::error::{BackendError, Result};
@@ -56,8 +58,30 @@ const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_REG_SIZE_U64 == kvm_bindings::KVM_REG_SIZE_U64);
     assert!(crate::arm64_kvm::KVM_REG_ARM_CORE == kvm_bindings::KVM_REG_ARM_CORE as u64);
     assert!(crate::arm64_kvm::KVM_REG_ARM64_SYSREG == kvm_bindings::KVM_REG_ARM64_SYSREG as u64);
+    assert!(0x0016 << 16 == kvm_bindings::KVM_REG_ARM_FW_FEAT_BMAP);
     assert!(crate::arm64_kvm::KVM_ARM_VCPU_PSCI_0_2 == kvm_bindings::KVM_ARM_VCPU_PSCI_0_2);
+    assert!(
+        crate::arm64_kvm::KVM_DEV_ARM_VGIC_GRP_DIST_REGS
+            == kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS
+    );
+    assert!(
+        crate::arm64_kvm::KVM_DEV_ARM_VGIC_GRP_REDIST_REGS
+            == kvm_bindings::KVM_DEV_ARM_VGIC_GRP_REDIST_REGS
+    );
+    assert!(
+        crate::arm64_kvm::KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS
+            == kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS
+    );
+    assert!(7 == kvm_bindings::KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO);
 };
+
+const GICD_BASE: u64 = 0x0800_0000;
+const GICR_BASE: u64 = 0x080a_0000;
+/// Unused PPI to which KVM's host-time virtual timer is quarantined. The DTB
+/// deliberately advertises only PPI27 for the guest virtual timer, and the
+/// Harmony clockevent owns that line through `KVM_IRQ_LINE`; PPI20 is therefore
+/// unregistered and masked in the guest.
+const QUARANTINED_VTIMER_PPI: u32 = 20;
 
 /// Map a `kvm-ioctls` error to the crate's portable [`BackendError`].
 fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
@@ -72,6 +96,7 @@ pub struct LiveKvm {
     // Field order matters for `Drop`: the vCPU must outlive nothing that borrows
     // it; `kvm` is kept alive so its fd outlives the VM/vCPU.
     vcpu: VcpuFd,
+    vgic: Option<DeviceFd>,
     _vm: VmFd,
     _kvm: Kvm,
     run: *mut kvm_run,
@@ -113,13 +138,106 @@ impl LiveKvm {
 
         let mut this = Self {
             vcpu,
+            vgic: None,
             _vm: vm,
             _kvm: kvm,
             run,
             mmap_size,
         };
         this.vcpu_init()?;
+        this.create_vgic()?;
         Ok(this)
+    }
+
+    /// Move KVM's host-time-backed EL1 virtual-timer output away from PPI27,
+    /// which is exclusively owned by Harmony's work-derived clockevent. This
+    /// attribute is write-once before the first `KVM_RUN`.
+    fn quarantine_host_vtimer(&self) -> Result<()> {
+        let irq = QUARANTINED_VTIMER_PPI;
+        self.vcpu
+            .set_device_attr(&kvm_device_attr {
+                flags: 0,
+                group: kvm_bindings::KVM_ARM_VCPU_TIMER_CTRL,
+                attr: u64::from(kvm_bindings::KVM_ARM_VCPU_TIMER_IRQ_VTIMER),
+                addr: std::ptr::from_ref(&irq) as u64,
+            })
+            .map_err(kvm_err)
+    }
+
+    /// Create the in-kernel GICv3 at the MMIO addresses advertised in the
+    /// arm64 board DTB, then finalise it after vCPU initialisation.
+    fn create_vgic(&mut self) -> Result<()> {
+        let mut device = kvm_create_device {
+            type_: kvm_bindings::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3,
+            fd: 0,
+            flags: 0,
+        };
+        let vgic = self._vm.create_device(&mut device).map_err(kvm_err)?;
+
+        fn set_addr(vgic: &DeviceFd, attr: u64, value: &u64) -> Result<()> {
+            vgic.set_device_attr(&kvm_device_attr {
+                flags: 0,
+                group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_ADDR,
+                attr,
+                addr: std::ptr::from_ref(value) as u64,
+            })
+            .map_err(kvm_err)
+        }
+
+        set_addr(
+            &vgic,
+            u64::from(kvm_bindings::KVM_VGIC_V3_ADDR_TYPE_DIST),
+            &GICD_BASE,
+        )?;
+        set_addr(
+            &vgic,
+            u64::from(kvm_bindings::KVM_VGIC_V3_ADDR_TYPE_REDIST),
+            &GICR_BASE,
+        )?;
+        let nr_irqs = crate::arm64_kvm::HARMONY_GIC_NR_IRQS;
+        vgic.set_device_attr(&kvm_device_attr {
+            flags: 0,
+            group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_NR_IRQS,
+            attr: 0,
+            addr: std::ptr::from_ref(&nr_irqs) as u64,
+        })
+        .map_err(kvm_err)?;
+        // Migration compatibility handshake: acknowledge this KVM vGIC
+        // implementation revision before mutable state and before CTRL_INIT
+        // makes the field read-only.
+        let mut iidr = 0u32;
+        let mut iidr_attr = kvm_device_attr {
+            flags: 0,
+            group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            attr: 0x0008,
+            addr: std::ptr::from_mut(&mut iidr) as u64,
+        };
+        // SAFETY: `addr` points to a live writable `u32` for the duration of
+        // this 32-bit distributor-register ioctl.
+        unsafe { vgic.get_device_attr(&mut iidr_attr) }.map_err(kvm_err)?;
+        vgic.set_device_attr(&kvm_device_attr {
+            addr: std::ptr::from_ref(&iidr) as u64,
+            ..iidr_attr
+        })
+        .map_err(kvm_err)?;
+        // KVM accepts the per-vCPU timer routing only after the irqchip device
+        // and its address windows exist, but before CTRL_INIT finalises it.
+        self.quarantine_host_vtimer()?;
+        vgic.set_device_attr(&kvm_device_attr {
+            flags: 0,
+            group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL,
+            attr: u64::from(kvm_bindings::KVM_DEV_ARM_VGIC_CTRL_INIT),
+            addr: 0,
+        })
+        .map_err(kvm_err)?;
+        self.vgic = Some(vgic);
+        Ok(())
+    }
+
+    fn vgic(&self) -> Result<&DeviceFd> {
+        self.vgic
+            .as_ref()
+            .ok_or(BackendError::Internal("vGICv3 is not initialised"))
     }
 
     /// Read the current `kvm_run` into the portable [`KvmRunView`] through the
@@ -187,6 +305,30 @@ impl Arm64Kvm for LiveKvm {
         Ok(())
     }
 
+    fn get_one_reg32(&self, id: u64) -> Result<u32> {
+        let mut data = [0u8; 4];
+        self.vcpu.get_one_reg(id, &mut data).map_err(kvm_err)?;
+        Ok(u32::from_le_bytes(data))
+    }
+
+    fn set_one_reg32(&mut self, id: u64, value: u32) -> Result<()> {
+        self.vcpu
+            .set_one_reg(id, &value.to_le_bytes())
+            .map_err(kvm_err)?;
+        Ok(())
+    }
+
+    fn get_one_reg128(&self, id: u64) -> Result<[u8; 16]> {
+        let mut data = [0u8; 16];
+        self.vcpu.get_one_reg(id, &mut data).map_err(kvm_err)?;
+        Ok(data)
+    }
+
+    fn set_one_reg128(&mut self, id: u64, value: [u8; 16]) -> Result<()> {
+        self.vcpu.set_one_reg(id, &value).map_err(kvm_err)?;
+        Ok(())
+    }
+
     fn get_mp_state(&self) -> Result<MpState> {
         let mp = self.vcpu.get_mp_state().map_err(kvm_err)?;
         // arm64 uses RUNNABLE / STOPPED (a WFI-halted vCPU stays RUNNABLE — KVM
@@ -209,6 +351,71 @@ impl Arm64Kvm for LiveKvm {
             .set_mp_state(kvm_bindings::kvm_mp_state { mp_state })
             .map_err(kvm_err)?;
         Ok(())
+    }
+
+    fn set_irq_line(&mut self, id: crate::arch::arm64::GicIntId, level: bool) -> Result<()> {
+        let (kind, number) = if id.is_ppi() {
+            (kvm_bindings::KVM_ARM_IRQ_TYPE_PPI, u32::from(id.0))
+        } else if id.is_spi() {
+            (kvm_bindings::KVM_ARM_IRQ_TYPE_SPI, u32::from(id.0))
+        } else {
+            return Err(BackendError::InvalidState);
+        };
+        let irq = (kind << kvm_bindings::KVM_ARM_IRQ_TYPE_SHIFT)
+            | (0 << kvm_bindings::KVM_ARM_IRQ_VCPU_SHIFT)
+            | (number << kvm_bindings::KVM_ARM_IRQ_NUM_SHIFT);
+        self._vm.set_irq_line(irq, level).map_err(kvm_err)
+    }
+
+    fn get_vgic_attr(&self, group: u32, attr: u64, width64: bool) -> Result<u64> {
+        let vgic = self.vgic()?;
+        if width64 {
+            let mut value = 0u64;
+            let mut device_attr = kvm_device_attr {
+                flags: 0,
+                group,
+                attr,
+                addr: std::ptr::from_mut(&mut value) as u64,
+            };
+            // SAFETY: `addr` points to the live, writable `u64` value for the
+            // duration of the ioctl and the selected group uses a 64-bit ABI.
+            unsafe { vgic.get_device_attr(&mut device_attr) }.map_err(kvm_err)?;
+            Ok(value)
+        } else {
+            let mut value = 0u32;
+            let mut device_attr = kvm_device_attr {
+                flags: 0,
+                group,
+                attr,
+                addr: std::ptr::from_mut(&mut value) as u64,
+            };
+            // SAFETY: `addr` points to the live, writable `u32` value for the
+            // duration of the ioctl and the selected group uses a 32-bit ABI.
+            unsafe { vgic.get_device_attr(&mut device_attr) }.map_err(kvm_err)?;
+            Ok(u64::from(value))
+        }
+    }
+
+    fn set_vgic_attr(&mut self, group: u32, attr: u64, width64: bool, value: u64) -> Result<()> {
+        let vgic = self.vgic()?;
+        if width64 {
+            vgic.set_device_attr(&kvm_device_attr {
+                flags: 0,
+                group,
+                attr,
+                addr: std::ptr::from_ref(&value) as u64,
+            })
+            .map_err(kvm_err)
+        } else {
+            let value = u32::try_from(value).map_err(|_| BackendError::InvalidState)?;
+            vgic.set_device_attr(&kvm_device_attr {
+                flags: 0,
+                group,
+                attr,
+                addr: std::ptr::from_ref(&value) as u64,
+            })
+            .map_err(kvm_err)
+        }
     }
 
     fn write_mmio_data(&mut self, data: [u8; 8]) -> Result<()> {

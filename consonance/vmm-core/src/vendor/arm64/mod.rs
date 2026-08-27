@@ -29,6 +29,67 @@ pub mod hostassert;
 pub mod image_loader;
 pub mod records;
 
+/// First field-level disagreement reported by the independent architectural
+/// GIC comparator. This comparator does not consume the snapshot encoding or
+/// its hash; it compares the typed architectural record directly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GicArchitectureDifference {
+    /// Stable field name.
+    pub field: &'static str,
+    /// Element index for an array field.
+    pub index: Option<usize>,
+}
+
+/// Compare two canonical GICv3 records field by field, independently of the
+/// state-hash and device-blob codecs.
+pub fn compare_gic_architecture(
+    expected: &gicv3::GicState,
+    actual: &gicv3::GicState,
+) -> Result<(), GicArchitectureDifference> {
+    macro_rules! scalar {
+        ($field:ident) => {
+            if expected.$field != actual.$field {
+                return Err(GicArchitectureDifference {
+                    field: stringify!($field),
+                    index: None,
+                });
+            }
+        };
+    }
+    scalar!(version);
+    scalar!(impl_spis);
+    scalar!(timer_hz);
+    scalar!(timer_intid);
+    scalar!(gicd_ctlr);
+    scalar!(pmr);
+    scalar!(igrpen1);
+    scalar!(cntv_ctl);
+    scalar!(cntv_cval);
+    scalar!(timer_fired);
+    macro_rules! array {
+        ($field:ident) => {
+            if let Some(index) = expected
+                .$field
+                .iter()
+                .zip(actual.$field.iter())
+                .position(|(a, b)| a != b)
+            {
+                return Err(GicArchitectureDifference {
+                    field: stringify!($field),
+                    index: Some(index),
+                });
+            }
+        };
+    }
+    array!(group);
+    array!(enable);
+    array!(pending);
+    array!(active);
+    array!(line_level);
+    array!(priority);
+    Ok(())
+}
+
 use control_proto::RegsView;
 use vm_state::Arm64VmState;
 use vmm_backend::{Arm64, Arm64Exit, Arm64VcpuState, Backend, Gpa};
@@ -158,14 +219,17 @@ impl Vendor for Arm64 {
         v
     }
 
-    fn hash_device_chunks(devices: &Self::Devices, out: &mut Vec<u8>) {
+    fn hash_device_chunks(vcpu: &Arm64VcpuState, devices: &Self::Devices, out: &mut Vec<u8>) {
         // The GICv3 chunk is present **only** when the fabric is wired;
         // unwired compositions emit none, so their hash is byte-for-byte
         // unchanged (the x86 LAPC discipline). It captures the register files
         // + timer bookkeeping that govern future interrupt delivery.
-        if let Some(gic) = &devices.gic {
+        let backend_gic = vcpu.gic.as_ref().map(records::gic_from_backend);
+        let userspace_gic = devices.gic.as_ref().map(gicv3::Gicv3::snapshot);
+        let gic = backend_gic.as_ref().or(userspace_gic.as_ref());
+        if let Some(gic) = gic {
             let mut bytes = Vec::new();
-            records::encode_gic_state(&mut bytes, &gic.snapshot());
+            records::encode_gic_state(&mut bytes, gic);
             crate::vmm::put_chunk(out, b"GICV", &bytes);
         }
         if devices.clockevent != records::Arm64ClockeventState::default() {
@@ -202,14 +266,18 @@ impl Vendor for Arm64 {
         dispatch::vcpu_components(vcpu, out);
     }
 
-    fn device_components(devices: &Self::Devices, out: &mut Vec<(&'static str, [u8; 32])>) {
+    fn device_components(
+        vcpu: &Arm64VcpuState,
+        devices: &Self::Devices,
+        out: &mut Vec<(&'static str, [u8; 32])>,
+    ) {
         // Expose the GICv3 to the diagnostic breakdown when the fabric is wired,
         // digesting **exactly the bytes the `GICV` hash chunk hashes** (see
         // [`hash_device_chunks`]) — so a `state_hash` divergence that lives only
         // in the GIC (register files / pending-active / the virtual timer)
         // localizes to the `gic` component instead of "diverged but every
         // component matched". A new label (never a rename); unwired ⇒ nothing.
-        dispatch::device_components(devices, out);
+        dispatch::device_components(vcpu, devices, out);
     }
 
     fn vcpu_has_inflight_injection(vcpu: &Arm64VcpuState) -> bool {
@@ -244,5 +312,25 @@ impl Vendor for Arm64 {
 
     fn commit_restore<B: Backend<A = Self>>(vmm: &mut Vmm<B>, prep: Self::RestorePrep) {
         vmm.commit_restore_arm64(prep);
+    }
+}
+
+#[cfg(test)]
+mod comparator_tests {
+    use super::*;
+
+    #[test]
+    fn architectural_comparator_localizes_a_planted_gic_corruption() {
+        let expected = board::new_gic().snapshot();
+        let mut planted = expected.clone();
+        planted.priority[27] ^= 1;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "priority",
+                index: Some(27),
+            })
+        );
+        assert_eq!(compare_gic_architecture(&expected, &expected), Ok(()));
     }
 }

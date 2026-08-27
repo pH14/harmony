@@ -867,6 +867,7 @@ impl Backend for HvfBackend {
             name: "hvf-arm64-prescriptive",
             deterministic_rng: false,
             arch: Arm64Caps {
+                in_kernel_gic: false,
                 deterministic_cntvct: false,
                 enforces_cntv_cval: false,
             },

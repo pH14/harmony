@@ -17,6 +17,17 @@
 
 use super::board::{CNTFRQ_HZ, GICD, GICR, PL011, PL011_SPI, RAM_BASE, VIRT_TIMER_INTID};
 
+/// The fixed 64-byte AA-5/M1 bootloader seed, supplied unchanged to the M4
+/// guest. The owned kernel credits all 512 bits before it can enter the
+/// wall-time jitter harvester. Keeping the established M1 value is also part
+/// of running the M1 guest-input oracle verbatim on the KVM substrate.
+const BOOT_RNG_SEED: [u8; 64] = [
+    0x48, 0x61, 0x72, 0x6d, 0x6f, 0x6e, 0x79, 0x2d, 0x41, 0x41, 0x35, 0x2d, 0x72, 0x6e, 0x67, 0x2d,
+    0x73, 0x65, 0x65, 0x64, 0x2d, 0x76, 0x31, 0x2d, 0x64, 0x65, 0x74, 0x65, 0x72, 0x6d, 0x69, 0x6e,
+    0x69, 0x73, 0x74, 0x69, 0x63, 0x2d, 0x66, 0x69, 0x78, 0x65, 0x64, 0x2d, 0x62, 0x79, 0x2d, 0x63,
+    0x6f, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x2d, 0x30, 0x30, 0x30, 0x31,
+];
+
 /// FDT header magic (`0xd00dfeed`), stored big-endian at offset 0.
 pub const FDT_MAGIC: u32 = 0xd00d_feed;
 /// FDT format version this writer emits.
@@ -192,6 +203,7 @@ fn build_inner(
     f.begin_node("chosen");
     f.prop_str("stdout-path", "/pl011@9000000");
     f.prop_str("bootargs", bootargs);
+    f.prop_bytes("rng-seed", &BOOT_RNG_SEED);
     if let Some((start, end)) = initrd {
         f.prop_bytes("linux,initrd-start", &start.to_be_bytes());
         f.prop_bytes("linux,initrd-end", &end.to_be_bytes());
@@ -547,6 +559,11 @@ mod tests {
         assert_eq!(
             p.prop("chosen", "stdout-path").unwrap(),
             b"/pl011@9000000\0"
+        );
+        assert_eq!(
+            p.prop("chosen", "rng-seed").unwrap(),
+            BOOT_RNG_SEED,
+            "the guest CRNG must receive the fixed seed the owned kernel contract requires"
         );
         assert_eq!(p.prop("psci", "method").unwrap(), b"hvc\0");
         assert_eq!(

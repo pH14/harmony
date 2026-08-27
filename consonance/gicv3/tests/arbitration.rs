@@ -63,6 +63,7 @@ fn program(lines: &[Line], pmr: u8, grp1_enabled: bool) -> Gicv3 {
         0,
     )
     .unwrap();
+    g.set_group1_enabled(grp1_enabled);
     g.set_pmr(pmr);
     for (i, l) in lines.iter().enumerate() {
         let intid = i as u32;
