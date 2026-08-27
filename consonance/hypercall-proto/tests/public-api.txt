@@ -37,6 +37,7 @@ pub fn hypercall_proto::Client<T>::block_capacity(&mut self) -> core::result::Re
 pub fn hypercall_proto::Client<T>::block_read(&mut self, u64, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::buggify_decide(&mut self, u32) -> core::result::Result<bool, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::console_write(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
+pub fn hypercall_proto::Client<T>::coverage_yield(&mut self, u32, u64, u32) -> core::result::Result<(u64, u32), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::entropy_fill(&mut self, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::event_emit(&mut self, u32, &[u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::net_decide(&mut self, u32, u32, u64, u16, &mut [u8]) -> core::result::Result<usize, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
@@ -114,6 +115,7 @@ pub fn hypercall_proto::PvclockRegistrar::save_state(&self) -> alloc::vec::Vec<u
 pub struct hypercall_proto::SdkBuggify
 impl hypercall_proto::SdkBuggify
 pub fn hypercall_proto::SdkBuggify::asked(&self) -> &[u32]
+pub fn hypercall_proto::SdkBuggify::coverage_asked(&self) -> &[(u32, u64, u32, u32)]
 pub fn hypercall_proto::SdkBuggify::new(bool) -> Self
 pub fn hypercall_proto::SdkBuggify::set_point(&mut self, u32, bool)
 impl hypercall_proto::Service for hypercall_proto::SdkBuggify
@@ -131,6 +133,9 @@ pub const hypercall_proto::HEADER_LEN: usize
 pub const hypercall_proto::MAX_FRAME: usize
 pub const hypercall_proto::MAX_PAYLOAD: usize
 pub const hypercall_proto::NET_REQUEST_LEN: usize
+pub const hypercall_proto::SDK_COVERAGE_QUANTUM: u64
+pub const hypercall_proto::SDK_COVERAGE_REQUEST_LEN: usize
+pub const hypercall_proto::SDK_COVERAGE_RESPONSE_LEN: usize
 pub trait hypercall_proto::Service
 pub fn hypercall_proto::Service::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::Service::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>

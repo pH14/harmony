@@ -12,7 +12,8 @@ else
 fi
 for symbol in fuzz_json_data fuzz_get_random fuzz_flush init_coverage_module \
     notify_coverage __sanitizer_cov_trace_pc_guard_init \
-    __sanitizer_cov_trace_pc_guard_internal __sanitizer_cov_trace_pc_guard; do
+    __sanitizer_cov_trace_pc_guard_internal __sanitizer_cov_trace_pc_guard \
+    harmony_coverage_configure harmony_coverage_selected; do
     if ! printf '%s\n' "$symbols" | grep -Eq "[[:space:]]${prefix}${symbol}(@@HARMONY_VOIDSTAR_1\\.0)?$"; then
         echo "FAIL: $lib does not export $symbol" >&2
         exit 1

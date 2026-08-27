@@ -84,17 +84,29 @@ fn golden_request_bytes_for_every_service_opcode() {
     sdk.extend_from_slice(&le32(50)); // point 50
     assert_eq!(enc_req(ServiceId::Sdk, 1, 12, &le32(50)), sdk);
 
+    let mut coverage_payload = Vec::new();
+    coverage_payload.extend_from_slice(&le32(7));
+    coverage_payload.extend_from_slice(&le64(1));
+    coverage_payload.extend_from_slice(&le32(3));
+    let mut coverage = b"HCP1".to_vec();
+    coverage.extend_from_slice(&[1, 0, 6, 0, 2, 0, 0, 0]);
+    coverage.extend_from_slice(&le32(13));
+    coverage.extend_from_slice(&le32(SDK_COVERAGE_REQUEST_LEN as u32));
+    coverage.extend_from_slice(&le32(0));
+    coverage.extend_from_slice(&coverage_payload);
+    assert_eq!(enc_req(ServiceId::Sdk, 2, 13, &coverage_payload), coverage);
+
     let mut payload = Vec::new();
     payload.extend_from_slice(b"HCP1");
     payload.extend_from_slice(&1_u16.to_le_bytes());
     payload.extend_from_slice(&(ServiceId::Payload as u16).to_le_bytes());
     payload.extend_from_slice(&1_u16.to_le_bytes());
     payload.extend_from_slice(&0_u16.to_le_bytes());
-    payload.extend_from_slice(&13_u32.to_le_bytes());
+    payload.extend_from_slice(&14_u32.to_le_bytes());
     payload.extend_from_slice(&le32(4));
     payload.extend_from_slice(&0_u32.to_le_bytes());
     payload.extend_from_slice(&le32(2));
-    assert_eq!(enc_req(ServiceId::Payload, 1, 13, &le32(2)), payload);
+    assert_eq!(enc_req(ServiceId::Payload, 1, 14, &le32(2)), payload);
 }
 
 #[test]
@@ -107,6 +119,14 @@ fn golden_response_bytes_for_every_service_opcode() {
         (ServiceId::Event, 1, 5, Status::Ok, Vec::new()),
         // SDK `buggify_decide` reply: one byte, fire = 1 (task 73).
         (ServiceId::Sdk, 1, 6, Status::Ok, vec![1]),
+        // SDK `coverage_yield`: next threshold 2, runnable index 1.
+        (
+            ServiceId::Sdk,
+            2,
+            7,
+            Status::Ok,
+            [le64(2).as_slice(), le32(1).as_slice()].concat(),
+        ),
     ];
     for (service, opcode, seq, status, payload) in cases {
         let got = enc_resp(service, opcode, seq, status, &payload);
@@ -347,6 +367,43 @@ fn buggify_decide_without_sdk_service_is_a_clean_status() {
     );
 }
 
+/// M6 threshold handshake: the first per-thread threshold is one, each exit
+/// prescribes the next exact count, and the selected runnable is in range.
+#[test]
+fn coverage_yield_round_trips_threshold_and_scheduler_selection() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    assert_eq!(client.coverage_yield(7, 1, 3).unwrap(), (2, 0));
+    assert_eq!(client.coverage_yield(7, 2, 3).unwrap(), (3, 2));
+    assert_eq!(client.coverage_yield(9, 1, 2).unwrap(), (2, 0));
+}
+
+/// A wrong counter is the planted protocol negative: it must fail before a
+/// scheduling answer is minted, proving the previous-exit threshold is
+/// load-bearing rather than advisory.
+#[test]
+fn coverage_yield_rejects_skipped_stale_and_invalid_thresholds() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    assert_eq!(
+        client.coverage_yield(7, 2, 3),
+        Err(ClientError::Status(Status::BadRequest))
+    );
+    assert_eq!(client.coverage_yield(7, 1, 3).unwrap(), (2, 0));
+    assert_eq!(
+        client.coverage_yield(7, 1, 3),
+        Err(ClientError::Status(Status::BadRequest))
+    );
+    assert_eq!(
+        client.coverage_yield(7, 2, 0),
+        Err(ClientError::InvalidLength)
+    );
+}
+
 /// `SdkBuggify` snapshots and restores its table + asked log, so a buggify
 /// service survives a corpus snapshot exactly like the other reference services.
 #[test]
@@ -360,6 +417,15 @@ fn sdk_buggify_state_round_trips() {
         assert_eq!(status, Status::Ok);
         assert_eq!(n, 1);
     }
+    let mut coverage = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+    coverage[0..4].copy_from_slice(&11_u32.to_le_bytes());
+    coverage[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
+    coverage[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    let mut coverage_out = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+    assert_eq!(
+        svc.handle(2, &coverage, &mut coverage_out),
+        (Status::Ok, SDK_COVERAGE_RESPONSE_LEN)
+    );
     assert_eq!(svc.asked(), [3, 7]);
     let saved = svc.save_state();
     let mut restored = SdkBuggify::new(false);

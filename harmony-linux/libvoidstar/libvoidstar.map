@@ -9,5 +9,7 @@ HARMONY_VOIDSTAR_1.0 {
         __sanitizer_cov_trace_pc_guard_init;
         __sanitizer_cov_trace_pc_guard_internal;
         __sanitizer_cov_trace_pc_guard;
+        harmony_coverage_configure;
+        harmony_coverage_selected;
     local: *;
 };

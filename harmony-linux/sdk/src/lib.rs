@@ -20,6 +20,9 @@
 //! - **`buggify(point)`** asks the host to resolve a deliberate perturbation
 //!   ([FoundationDB BUGGIFY], minus the anonymity — the point is a *named,
 //!   steerable, auditable* coordinate) and records the result on the event stream.
+//! - **`coverage_yield(thread, observed, ready)`** surfaces a crossed
+//!   per-thread instrumentation threshold. The host returns the next threshold
+//!   and one index in the cooperating runtime's runnable set.
 //! - **`setup_complete`** and **`frame_complete`** are lifecycle hooks the host
 //!   turns into `StopReason::SnapshotPoint`; the latter carries the guest's
 //!   cumulative emulated-frame count, never host time.
@@ -36,7 +39,8 @@
 //! doorbell shim with zero new transport code. Every emission rides the existing
 //! Event service (`ServiceId::Event`, op 1) under the byte-deterministic,
 //! versioned payload convention in [`wire`]; the round-trip `buggify` verb rides
-//! the SDK control service (`ServiceId::Sdk`, op 1). Task 74's OTel bridge reuses
+//! the SDK control service (`ServiceId::Sdk`, op 1); the M6 threshold handshake
+//! uses op 2 on that same service. Task 74's OTel bridge reuses
 //! these same transport conventions (a reserved event-id namespace).
 //!
 //! [FoundationDB BUGGIFY]: https://www.youtube.com/watch?v=4fFDFbi3toc
@@ -387,6 +391,21 @@ impl<T: Transport> Sdk<T> {
         let fired = self.client.buggify_decide(point)?;
         self.emit(wire::event_id(wire::NS_BUGGIFY, point), &[u8::from(fired)])?;
         Ok(fired)
+    }
+
+    /// Surface a crossed instrumented basic-block threshold and obtain the
+    /// next threshold plus the selected runnable index. The cooperating runtime
+    /// must use stable logical thread ids and dispatch `selected` from the same
+    /// `ready`-entry ordering it declared in this request.
+    pub fn coverage_yield(
+        &mut self,
+        thread: u32,
+        observed: u64,
+        ready: u32,
+    ) -> Result<(u64, u32), SdkError<T::Error>> {
+        self.client
+            .coverage_yield(thread, observed, ready)
+            .map_err(SdkError::Client)
     }
 
     /// Fill `out` with deterministic guest entropy. **Not a new primitive** — it

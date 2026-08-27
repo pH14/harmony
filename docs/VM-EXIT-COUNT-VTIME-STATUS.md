@@ -1481,13 +1481,63 @@ all green. M6 did not begin before this evidence was recorded.
 
 ## M6 — instrumented concurrency-discovery measurement
 
-- **FAIL — SDK threshold protocol:** not started.
+- **PASS — SDK threshold protocol:** `ServiceId::Sdk` opcode 2 is the single
+  production protocol from guest SDK through the VMM doorbell. Its fixed
+  little-endian request is `(thread u32, observed u64, ready u32)` and its
+  response is `(next_threshold u64, selected u32)`. The initial per-thread
+  threshold and quantum are both one basic block. The VMM rejects a stale or
+  skipped count without advancing the supply stream, resolves `selected`
+  through the existing `DecisionPoint::Scheduler { ready }` vocabulary, and
+  records every decision per call. Per-thread host expectations are folded into
+  `state_hash`, the SDK snapshot sidecar, and the portable cross-host artifact;
+  replay reproduces the same continuation. `libvoidstar`'s formerly inert
+  callbacks now keep a TLS basic-block counter, ring `/dev/harmony` only at the
+  prescribed threshold, and install the returned threshold before resuming.
+  Its command-1 device transaction is a 17-byte write followed by a 12-byte
+  read; the in-tree character-device patch forwards it to the same SDK opcode.
+  `harmony_coverage_configure` gives a cooperating runtime a stable logical
+  thread id and runnable-set width.
+  - **Meaningful positive:** the real guest `Client` and SDK wrapper traverse a
+    reference dispatcher; the production VMM doorbell independently resolves
+    the same seeded Scheduler answer and returns an in-range selection.
+  - **Planted negative:** skipped/stale counters are `BadRequest`, record no
+    phantom schedule decision, leave the state hash unchanged, and do not
+    consume the next correct threshold.
+  - **Independent comparator:** a separately materialized `RecordedEnv` resolves
+    the Scheduler point and agrees with the VMM response without calling the
+    VMM threshold helper.
 - **FAIL — deliberately racy Go/Rust suite with known schedules:** not started.
 - **FAIL — deterministic seeded reproduction:** not started.
 - **FAIL — held-out schedule discovery within predeclared budgets:** not started.
 - **FAIL — wrong-schedule negative for every entry:** not started.
 - **FAIL — held-out schedules absent from seeds/fixtures and per-bug report:** not
   started.
+
+### M6 threshold-protocol command evidence
+
+```text
+cargo test -p hypercall-proto --all-features
+33 passed; 0 failed (32 protocol + 1 stateful; public-API job intentionally ignored)
+
+cargo test -p vmm-core --all-features coverage --lib -- --nocapture
+3 passed; 0 failed
+
+cargo test -p vmm-core --all-features portable_snapshot --lib
+4 passed; 0 failed
+
+cargo test --manifest-path harmony-linux/sdk/Cargo.toml
+12 passed; 0 failed (public-API job intentionally ignored)
+
+make -C harmony-linux/libvoidstar check
+PASS: libvoidstar ABI symbols; ABI/threshold transaction test exited 0
+
+strict focused clippy and both workspace format checks
+exit status 0; only the pre-existing invalid-path notices from clippy.toml
+```
+
+**Recorded correction:** M6's build line formerly cited §2.4, which is the
+instruction-surface section; the threshold protocol is defined in §2.5. The
+cross-reference was corrected without changing the criterion.
 
 ## Repository-wide final gates
 

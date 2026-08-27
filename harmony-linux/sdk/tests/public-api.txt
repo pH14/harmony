@@ -61,6 +61,7 @@ pub fn harmony_sdk::Sdk<T>::assert_sometimes(&mut self, bool, u32) -> core::resu
 pub fn harmony_sdk::Sdk<T>::assert_unreachable(&mut self, u32) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::buggify(&mut self, u32) -> core::result::Result<bool, harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::client_mut(&mut self) -> &mut hypercall_proto::guest::Client<T>
+pub fn harmony_sdk::Sdk<T>::coverage_yield(&mut self, u32, u64, u32) -> core::result::Result<(u64, u32), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::entropy_fill(&mut self, &mut [u8]) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::frame_complete(&mut self, u64) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
 pub fn harmony_sdk::Sdk<T>::init(T, &[harmony_sdk::Point]) -> core::result::Result<Self, harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>

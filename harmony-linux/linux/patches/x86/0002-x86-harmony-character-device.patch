@@ -3,9 +3,10 @@ x86: add the /dev/harmony synchronous SDK transport
 Applications must not need iopl(2) or /dev/mem to reach Harmony's deterministic
 doorbell. Add a built-in misc character device which owns the fixed request and
 response pages, serializes every exchange, emits attributed Antithesis JSON on
-write(2), and implements deterministic entropy as a one-byte write followed by
-an eight-byte read. The hypercall remains the existing OUT 0x0ca1 path; there is
-no consonance-side protocol change.
+write(2), implements deterministic entropy as a one-byte write followed by an
+eight-byte read, and carries the SDK coverage-threshold command as a 17-byte
+write followed by a 12-byte read. The hypercall remains the existing OUT 0x0ca1
+path.
 
 This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
 harmony-linux/linux/patches/ per the repository's kernel-patch exception.
@@ -43,7 +44,7 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
  obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
 --- /dev/null
 +++ b/drivers/misc/harmony.c
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,396 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/* Synchronous /dev/harmony transport over the deterministic doorbell ABI. */
 +#define pr_fmt(fmt) "harmony: " fmt
@@ -77,7 +78,9 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +#define HC_KIND_RESPONSE	2U
 +#define HC_SERVICE_ENTROPY	2U
 +#define HC_SERVICE_EVENT	4U
++#define HC_SERVICE_SDK		6U
 +#define HC_OPCODE_ONE		1U
++#define HC_OPCODE_COVERAGE	2U
 +#define HC_STATUS_OK		0U
 +#define HC_HEADER_LEN		24U
 +#define HC_MAX_PAYLOAD		(HARMONY_PAGE_SIZE - HC_HEADER_LEN)
@@ -96,6 +99,8 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +struct harmony_file {
 +	u8 entropy[8];
 +	bool entropy_ready;
++	u8 coverage[12];
++	bool coverage_ready;
 +};
 +
 +static DEFINE_MUTEX(harmony_lock);
@@ -112,7 +117,8 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +	return seq;
 +}
 +
-+static int harmony_exchange(u16 service, const void *payload, u32 payload_len,
++static int harmony_exchange(u16 service, u16 opcode, const void *payload,
++			    u32 payload_len,
 +			    void *response, u32 response_capacity,
 +			    u32 *response_len)
 +{
@@ -132,7 +138,7 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +	req->magic = cpu_to_le32(HC_MAGIC);
 +	req->kind = cpu_to_le16(HC_KIND_REQUEST);
 +	req->service = cpu_to_le16(service);
-+	req->opcode = cpu_to_le16(HC_OPCODE_ONE);
++	req->opcode = cpu_to_le16(opcode);
 +	req->status = 0;
 +	req->seq = cpu_to_le32(seq);
 +	req->payload_len = cpu_to_le32(payload_len);
@@ -148,7 +154,7 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +	if (le32_to_cpu(resp->magic) != HC_MAGIC ||
 +	    le16_to_cpu(resp->kind) != HC_KIND_RESPONSE ||
 +	    le16_to_cpu(resp->service) != service ||
-+	    le16_to_cpu(resp->opcode) != HC_OPCODE_ONE ||
++	    le16_to_cpu(resp->opcode) != opcode ||
 +	    le32_to_cpu(resp->seq) != seq ||
 +	    le32_to_cpu(resp->reserved) != 0 ||
 +	    len > HC_MAX_PAYLOAD)
@@ -170,7 +176,8 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +	int ret;
 +
 +	put_unaligned_le32(sizeof(state->entropy), request);
-+	ret = harmony_exchange(HC_SERVICE_ENTROPY, request, sizeof(request),
++	ret = harmony_exchange(HC_SERVICE_ENTROPY, HC_OPCODE_ONE,
++			       request, sizeof(request),
 +			       state->entropy, sizeof(state->entropy),
 +			       &response_len);
 +	if (ret)
@@ -178,6 +185,26 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +	if (response_len != sizeof(state->entropy))
 +		return -EPROTO;
 +	state->entropy_ready = true;
++	return 0;
++}
++
++static int harmony_request_coverage(struct harmony_file *state,
++				    const char __user *user)
++{
++	u8 request[16];
++	u32 response_len = 0;
++	int ret;
++
++	if (copy_from_user(request, user + 1, sizeof(request)))
++		return -EFAULT;
++	ret = harmony_exchange(HC_SERVICE_SDK, HC_OPCODE_COVERAGE,
++			       request, sizeof(request), state->coverage,
++			       sizeof(state->coverage), &response_len);
++	if (ret)
++		return ret;
++	if (response_len != sizeof(state->coverage))
++		return -EPROTO;
++	state->coverage_ready = true;
 +	return 0;
 +}
 +
@@ -262,7 +289,8 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +		payload[4 + start + 1 + attr_len] = ',';
 +	memcpy(payload + 4 + start + 1 + attr_len + comma_len,
 +	       input + start + 1, count - start - 1);
-+	ret = harmony_exchange(HC_SERVICE_EVENT, payload, json_len + 4,
++	ret = harmony_exchange(HC_SERVICE_EVENT, HC_OPCODE_ONE,
++			       payload, json_len + 4,
 +			       NULL, 0, &response_len);
 +	if (!ret && response_len != 0)
 +		ret = -EPROTO;
@@ -288,6 +316,7 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +	struct harmony_file *state = file->private_data;
 +
 +	memzero_explicit(state->entropy, sizeof(state->entropy));
++	memzero_explicit(state->coverage, sizeof(state->coverage));
 +	kfree(state);
 +	return 0;
 +}
@@ -311,6 +340,18 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +			return ret ? ret : 1;
 +		}
 +	}
++	if (count == 17) {
++		if (get_user(command, buffer))
++			return -EFAULT;
++		if (command == 1) {
++			if (mutex_lock_interruptible(&harmony_lock))
++				return -ERESTARTSYS;
++			state->coverage_ready = false;
++			ret = harmony_request_coverage(state, buffer);
++			mutex_unlock(&harmony_lock);
++			return ret ? ret : 17;
++		}
++	}
 +	if (mutex_lock_interruptible(&harmony_lock))
 +		return -ERESTARTSYS;
 +	ret = harmony_emit_json(buffer, count);
@@ -323,10 +364,23 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +{
 +	struct harmony_file *state = file->private_data;
 +
-+	if (count < sizeof(state->entropy))
-+		return -EINVAL;
 +	if (mutex_lock_interruptible(&harmony_lock))
 +		return -ERESTARTSYS;
++	if (state->coverage_ready) {
++		if (count < sizeof(state->coverage))
++			goto invalid;
++		if (copy_to_user(buffer, state->coverage,
++				 sizeof(state->coverage))) {
++			mutex_unlock(&harmony_lock);
++			return -EFAULT;
++		}
++		memzero_explicit(state->coverage, sizeof(state->coverage));
++		state->coverage_ready = false;
++		mutex_unlock(&harmony_lock);
++		return sizeof(state->coverage);
++	}
++	if (count < sizeof(state->entropy))
++		goto invalid;
 +	if (!state->entropy_ready) {
 +		mutex_unlock(&harmony_lock);
 +		return -EAGAIN;
@@ -339,6 +393,10 @@ harmony-linux/linux/patches/ per the repository's kernel-patch exception.
 +	state->entropy_ready = false;
 +	mutex_unlock(&harmony_lock);
 +	return sizeof(state->entropy);
++
++invalid:
++	mutex_unlock(&harmony_lock);
++	return -EINVAL;
 +}
 +
 +static const struct file_operations harmony_fops = {

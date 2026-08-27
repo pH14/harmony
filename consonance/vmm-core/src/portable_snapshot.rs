@@ -8,7 +8,10 @@
 //! RAM and the canonical vendor VM-state blob. The format is fixed-order,
 //! little-endian, length-bounded, and protected by a trailing SHA-256 digest.
 
-use std::io::{Read, Write};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+};
 
 use environment::{Answer, EnvError, FaultPolicy};
 use sha2::{Digest, Sha256};
@@ -250,6 +253,14 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
             }
         }
     }
+    if !sdk.coverage_thresholds.is_empty() {
+        out.extend_from_slice(b"COVR");
+        put_vec_len(&mut out, sdk.coverage_thresholds.len());
+        for (thread, threshold) in &sdk.coverage_thresholds {
+            out.extend_from_slice(&thread.to_le_bytes());
+            out.extend_from_slice(&threshold.to_le_bytes());
+        }
+    }
     check_len("sdk", out.len(), MAX_SDK_LEN)?;
     Ok(out)
 }
@@ -285,12 +296,27 @@ fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
         }
         _ => return Err(PortableSnapshotError::Malformed("SDK payload option")),
     };
+    let mut coverage_thresholds = BTreeMap::new();
+    if input.remaining() != 0 {
+        if input.take(4)? != b"COVR" {
+            return Err(PortableSnapshotError::Malformed("SDK coverage tag"));
+        }
+        let count = input.count("SDK coverage threshold count", 12)?;
+        for _ in 0..count {
+            let thread = input.u32()?;
+            let threshold = input.u64()?;
+            if threshold == 0 || coverage_thresholds.insert(thread, threshold).is_some() {
+                return Err(PortableSnapshotError::Malformed("SDK coverage threshold"));
+            }
+        }
+    }
     input.finish("SDK")?;
     Ok(SdkSnapshot {
         stream,
         events,
         pending_snapshot,
         payloads,
+        coverage_thresholds,
     })
 }
 
@@ -535,6 +561,7 @@ mod tests {
             events: vec![(7, 3, vec![1, 2, 3]), (11, 9, Vec::new())],
             pending_snapshot: true,
             payloads: Some(vec![vec![4, 5], Vec::new()]),
+            coverage_thresholds: BTreeMap::from([(2, 9), (7, 14)]),
         };
         let net = NetSnapshot {
             decisions: vec![(13, 17, Answer::Nominal)],

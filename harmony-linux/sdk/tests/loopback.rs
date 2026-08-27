@@ -11,7 +11,9 @@ use std::rc::Rc;
 
 use harmony_sdk::wire;
 use harmony_sdk::{Point, Sdk, SdkError};
-use hypercall_proto::{Client, Dispatcher, ProtoError, Service, ServiceId, Status, Transport};
+use hypercall_proto::{
+    Client, Dispatcher, ProtoError, SdkBuggify, Service, ServiceId, Status, Transport,
+};
 
 // ---------------------------------------------------------------------------
 // A safe loopback transport over one preconfigured dispatcher.
@@ -272,6 +274,21 @@ fn buggify_round_trips_and_records_the_result() {
             (wire::event_id(wire::NS_BUGGIFY, 50), vec![0]),
         ]
     );
+}
+
+/// M6 SDK surface is the production op-2 protocol, not a test-only scheduler:
+/// the wrapper returns the host-prescribed next threshold and runnable index.
+#[test]
+fn coverage_yield_round_trips_through_the_sdk() {
+    let events: EventLog = Rc::new(RefCell::new(Vec::new()));
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Event, Box::new(SharedEvent(events)));
+    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    let mut sdk = Sdk::init(DispatcherLoopback(dispatcher), &[]).unwrap();
+
+    assert_eq!(sdk.coverage_yield(7, 1, 3).unwrap(), (2, 0));
+    assert_eq!(sdk.coverage_yield(7, 2, 3).unwrap(), (3, 2));
+    assert!(sdk.coverage_yield(7, 4, 3).is_err());
 }
 
 /// setup_complete emits the lifecycle event (empty payload).

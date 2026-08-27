@@ -454,7 +454,7 @@ kernel GIC state is normalized to the userspace model's architectural form befor
 serialization, with committed model-equivalence tests.
 
 **M6 — instrumented concurrency payload (absolute finding measurement).**
-*Build:* the SDK threshold protocol of §2.4; a small suite of deliberately racy
+*Build:* the SDK threshold protocol of §2.5; a small suite of deliberately racy
 instrumented Go/Rust programs, each with a known bug and a known reproducing
 schedule.
 *Passes when:* (a) the searcher, given the schedule vocabulary of instrumented

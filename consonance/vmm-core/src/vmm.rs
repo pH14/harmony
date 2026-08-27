@@ -11,10 +11,12 @@
 //! all observable state.
 
 use hypercall_proto::{
-    MAX_PAYLOAD, NetFlowPoint, SeededEntropy, Service, ServiceId, Status, decode, encode_error,
+    MAX_PAYLOAD, NetFlowPoint, SDK_COVERAGE_QUANTUM, SDK_COVERAGE_REQUEST_LEN,
+    SDK_COVERAGE_RESPONSE_LEN, SeededEntropy, Service, ServiceId, Status, decode, encode_error,
     encode_response,
 };
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use vm_state::SnapshotRecords;
 use vmm_backend::{Arch, ArchCaps, Backend, CommonExit, Exit, Moment};
 use vtime::{IdlePlanner, VClock, VClockConfig};
@@ -563,6 +565,12 @@ pub(crate) struct SdkChannel {
     /// The buggify decisions this run resolved, `(moment, answer)`, for the
     /// control server to fold into the recorded reproducer.
     buggify: Vec<(u64, environment::Answer)>,
+    /// The exact next basic-block count each stable logical thread must report.
+    /// Absent means the protocol-defined initial threshold of one.
+    coverage_thresholds: BTreeMap<u32, u64>,
+    /// Coverage scheduling evidence in arrival order:
+    /// `(moment, thread, observed, ready, selected)`.
+    coverage: Vec<(u64, u32, u64, u32, u32)>,
     /// A pending SDK stop to surface at the next step boundary.
     pending_stop: Option<SdkStop>,
     /// A `setup_complete` was seen but its doorbell `OUT` is **not** a sealable
@@ -697,6 +705,10 @@ pub struct SdkSnapshot {
     /// `None` means the service was not offered; `Some([])` is offered and
     /// exhausted.
     pub(crate) payloads: Option<Vec<Vec<u8>>>,
+    /// Per-logical-thread next coverage thresholds. The guest's counters live
+    /// in RAM; these host-side expectations govern whether its next callback is
+    /// accepted, so both sides are replay-relevant.
+    pub(crate) coverage_thresholds: BTreeMap<u32, u64>,
 }
 
 impl SdkSnapshot {
@@ -2498,6 +2510,8 @@ where
             env,
             events: Vec::new(),
             buggify: Vec::new(),
+            coverage_thresholds: BTreeMap::new(),
+            coverage: Vec::new(),
             pending_stop: None,
             pending_snapshot: false,
             policy: policy.to_bytes(),
@@ -3141,6 +3155,7 @@ where
             events: s.events.clone(),
             pending_snapshot: s.pending_snapshot,
             payloads: s.env.remaining_payloads(),
+            coverage_thresholds: s.coverage_thresholds.clone(),
         })
     }
 
@@ -3159,6 +3174,7 @@ where
             // re-surface an already-sealed deferred point.
             s.pending_snapshot = snap.pending_snapshot;
             s.env.restore_payloads(snap.payloads.clone());
+            s.coverage_thresholds = snap.coverage_thresholds.clone();
         }
     }
 
@@ -3169,6 +3185,7 @@ where
     pub fn sdk_restore_events(&mut self, snap: &SdkSnapshot) {
         if let Some(s) = self.sdk.as_mut() {
             s.events = snap.events.clone();
+            s.coverage_thresholds = snap.coverage_thresholds.clone();
         }
     }
 
@@ -3206,6 +3223,15 @@ where
         self.sdk
             .as_ref()
             .map(|s| s.buggify.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Instrumented coverage scheduling decisions as
+    /// `(moment, thread, observed, ready, selected)`, in arrival order.
+    pub fn sdk_coverage(&self) -> &[(u64, u32, u64, u32, u32)] {
+        self.sdk
+            .as_ref()
+            .map(|s| s.coverage.as_slice())
             .unwrap_or(&[])
     }
 
@@ -3622,6 +3648,59 @@ where
             .unwrap_or(0);
             return (n, None);
         }
+        // M6 SDK threshold protocol (id 6, op 2): a cooperating instrumented
+        // runtime reports the exact basic-block count prescribed at its prior
+        // exit. The response prescribes the next threshold and resolves one
+        // scheduler decision through the same RecordedEnv used by every other
+        // guest control-plane choice.
+        if header.service == ServiceId::Sdk as u16 && header.opcode == 2 {
+            if self.sdk.is_none() {
+                let n = encode_response(
+                    ServiceId::Sdk,
+                    2,
+                    header.seq,
+                    Status::UnknownService,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
+            if payload.len() != SDK_COVERAGE_REQUEST_LEN {
+                let n =
+                    encode_response(ServiceId::Sdk, 2, header.seq, Status::BadRequest, &[], resp)
+                        .unwrap_or(0);
+                return (n, None);
+            }
+            let thread = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            let observed = u64::from_le_bytes([
+                payload[4],
+                payload[5],
+                payload[6],
+                payload[7],
+                payload[8],
+                payload[9],
+                payload[10],
+                payload[11],
+            ]);
+            let ready = u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]);
+            match self.decide_coverage(moment, thread, observed, ready) {
+                Ok((next, selected)) => {
+                    let mut answer = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+                    answer[0..8].copy_from_slice(&next.to_le_bytes());
+                    answer[8..12].copy_from_slice(&selected.to_le_bytes());
+                    let n =
+                        encode_response(ServiceId::Sdk, 2, header.seq, Status::Ok, &answer, resp)
+                            .unwrap_or(0);
+                    return (n, None);
+                }
+                Err(status) => {
+                    let n = encode_response(ServiceId::Sdk, 2, header.seq, status, &[], resp)
+                        .unwrap_or(0);
+                    return (n, None);
+                }
+            }
+        }
         // The Net service (id 5, op 1): resolve one per-flow decision. Decode the
         // fixed 18-byte `NetFlow` decision point, ask the reproducer, and answer
         // the opaque encoded flow policy the guest enforces. One decision per
@@ -3848,6 +3927,51 @@ where
         let fire = matches!(ans, Answer::Fault(Fault::BuggifyFire));
         sdk.buggify.push((moment, ans));
         fire
+    }
+
+    /// Validate one crossed coverage threshold and resolve the runnable index.
+    /// No state advances on rejection: a stale/skipped count, zero runnable
+    /// set, overflow, or malformed environment answer is a clean protocol
+    /// failure and cannot mint a phantom schedule decision.
+    fn decide_coverage(
+        &mut self,
+        moment: u64,
+        thread: u32,
+        observed: u64,
+        ready: u32,
+    ) -> Result<(u64, u32), Status> {
+        use environment::{Answer, DecisionPoint, Environment, Outcome};
+        let Some(sdk) = self.sdk.as_mut() else {
+            return Err(Status::UnknownService);
+        };
+        let expected = sdk
+            .coverage_thresholds
+            .get(&thread)
+            .copied()
+            .unwrap_or(SDK_COVERAGE_QUANTUM);
+        if ready == 0 || observed != expected {
+            return Err(Status::BadRequest);
+        }
+        let next = observed
+            .checked_add(SDK_COVERAGE_QUANTUM)
+            .ok_or(Status::OutOfRange)?;
+        sdk.env.set_moment(moment);
+        let answer = match sdk.env.decide(&DecisionPoint::Scheduler { ready }) {
+            Outcome::Resolved(answer) => answer,
+            Outcome::NeedsHost => return Err(Status::Internal),
+        };
+        let Answer::Supply(bytes) = answer else {
+            return Err(Status::Internal);
+        };
+        let selected_bytes: [u8; 4] = bytes.as_slice().try_into().map_err(|_| Status::Internal)?;
+        let selected = u32::from_le_bytes(selected_bytes);
+        if selected >= ready {
+            return Err(Status::Internal);
+        }
+        sdk.coverage_thresholds.insert(thread, next);
+        sdk.coverage
+            .push((moment, thread, observed, ready, selected));
+        Ok((next, selected))
     }
 
     /// Resolve one `net_decide` flow decision (task 61): stamp the surfacing
@@ -4625,6 +4749,18 @@ fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
             v.extend_from_slice(&entry);
         }
     }
+    // Preserve every pre-M6 SDK hash byte until the threshold protocol is
+    // actually exercised. Once it is, the host-side expected counters govern
+    // which future guest callback is accepted and are therefore state.
+    if !sdk.coverage_thresholds.is_empty() {
+        v.extend_from_slice(b"COVR");
+        let count = u64::try_from(sdk.coverage_thresholds.len()).unwrap_or(u64::MAX);
+        v.extend_from_slice(&count.to_le_bytes());
+        for (thread, threshold) in &sdk.coverage_thresholds {
+            v.extend_from_slice(&thread.to_le_bytes());
+            v.extend_from_slice(&threshold.to_le_bytes());
+        }
+    }
     v
 }
 
@@ -4897,6 +5033,97 @@ mod tests {
         let ids: Vec<u32> = vmm.sdk_events().iter().map(|(_, id, _)| *id).collect();
         assert_eq!(ids, vec![hit_id, viol_id, setup_id]);
         assert_eq!(vmm.sdk_buggify(), &[(0, Answer::Fault(Fault::BuggifyFire))]);
+    }
+
+    /// M6 production doorbell path: op 2 consumes the Scheduler decision class,
+    /// returns the next threshold + selected runnable, and records the exact
+    /// per-call evidence. A separately materialized environment is the expected
+    /// selection comparator; it does not call the VMM's coverage helper.
+    #[test]
+    fn coverage_doorbell_uses_the_scheduler_vocabulary() {
+        use environment::{Answer, DecisionPoint, EnvSpec, Environment, FaultPolicy, Outcome};
+
+        let spec = EnvSpec::Seeded {
+            seed: 0x6d36,
+            policy: FaultPolicy::none(),
+        };
+        let mut expected_env = spec.materialize();
+        expected_env.set_moment(0);
+        let expected = match expected_env.decide(&DecisionPoint::Scheduler { ready: 3 }) {
+            Outcome::Resolved(Answer::Supply(bytes)) => {
+                u32::from_le_bytes(bytes.try_into().expect("scheduler answer is four bytes"))
+            }
+            other => panic!("unexpected scheduler answer: {other:?}"),
+        };
+
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+        let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+        request[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        request[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
+        request[12..16].copy_from_slice(&3_u32.to_le_bytes());
+        let mut frame = [0_u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Sdk, 2, 9, &request, &mut frame)
+            .expect("coverage request");
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        assert_eq!(vmm.service_doorbell(n as u32).unwrap(), Step::Continued);
+        let page = &vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE];
+        let (header, payload) = decode(page).expect("coverage response");
+        assert_eq!(header.status, Status::Ok as u16);
+        assert_eq!(payload.len(), SDK_COVERAGE_RESPONSE_LEN);
+        assert_eq!(
+            u64::from_le_bytes(payload[0..8].try_into().unwrap()),
+            SDK_COVERAGE_QUANTUM * 2
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload[8..12].try_into().unwrap()),
+            expected
+        );
+        assert_eq!(
+            vmm.sdk_coverage(),
+            &[(0, 7, SDK_COVERAGE_QUANTUM, 3, expected)]
+        );
+    }
+
+    /// Planted protocol negative plus replay closure: a skipped count is
+    /// rejected without moving the stream or expected threshold; the correct
+    /// count still succeeds, and snapshot restore reproduces the same future.
+    #[test]
+    fn coverage_threshold_is_enforced_and_snapshot_replay_reproduces() {
+        use environment::{EnvSpec, FaultPolicy};
+
+        let spec = EnvSpec::Seeded {
+            seed: 0x51ced,
+            policy: FaultPolicy::none(),
+        };
+        let build = || {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            vmm.enable_sdk(spec.materialize(), spec.policy());
+            vmm
+        };
+        let mut base = build();
+        let first = base.decide_coverage(4, 1, 1, 2).unwrap();
+        let snap = base.sdk_snapshot().unwrap();
+        let hash_after_first = base.state_hash();
+        let log_after_first = base.sdk_coverage().to_vec();
+
+        assert_eq!(
+            base.decide_coverage(5, 1, 3, 2),
+            Err(Status::BadRequest),
+            "a skipped threshold is the planted negative"
+        );
+        assert_eq!(base.state_hash(), hash_after_first);
+        assert_eq!(base.sdk_coverage(), log_after_first);
+        let continuation = base.decide_coverage(5, 1, first.0, 2).unwrap();
+
+        let mut replay = build();
+        replay.sdk_restore(&snap);
+        assert_eq!(replay.state_hash(), hash_after_first);
+        assert_eq!(
+            replay.decide_coverage(5, 1, first.0, 2).unwrap(),
+            continuation
+        );
+        assert_eq!(replay.state_hash(), base.state_hash());
     }
 
     #[test]
