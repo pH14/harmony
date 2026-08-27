@@ -408,12 +408,42 @@ fn x2_component_diff_two_boots() {
         }
     }
     println!("X2_RAM_DIFF_PAGES={}", diff_pages.len());
-    for page in diff_pages.iter().take(32) {
+    // Merged runs of differing pages: the address map of the divergence.
+    let mut run_start = None;
+    let mut prev = None;
+    for &page in diff_pages.iter().chain(std::iter::once(&usize::MAX)) {
+        match (run_start, prev) {
+            (Some(s), Some(p)) if page != p + 1 => {
+                println!(
+                    "X2_RAM_DIFF_RANGE {:#x}..{:#x} pages={}",
+                    s * 4096,
+                    (p + 1) * 4096,
+                    p + 1 - s
+                );
+                run_start = Some(page);
+            }
+            (None, _) => run_start = Some(page),
+            _ => {}
+        }
+        prev = Some(page);
+    }
+    // Content of the first differing bytes, to identify what the pages hold
+    // (printk records, RNG pool words, page-table entries).
+    for page in diff_pages.iter().take(8) {
         let base = page * 4096;
         let off = (0..4096)
             .find(|&i| ram_a[base + i] != ram_b[base + i])
             .unwrap_or(0);
-        println!("X2_RAM_DIFF_PAGE gpa={base:#x} first_diff=+{off:#x}");
+        let lo = base + (off & !0xf);
+        let hi = (lo + 64).min(base + 4096);
+        for (tag, ram) in [("A", ram_a), ("B", ram_b)] {
+            let bytes: Vec<String> = ram[lo..hi].iter().map(|b| format!("{b:02x}")).collect();
+            println!(
+                "X2_RAM_DIFF_DUMP gpa={base:#x} +{:#x} {tag}: {}",
+                lo - base,
+                bytes.join(" ")
+            );
+        }
     }
 
     let vcpu_a = vmm_a.vcpu_record().expect("vcpu_record A");
