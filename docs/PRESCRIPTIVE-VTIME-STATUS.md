@@ -1502,7 +1502,12 @@ on this branch may contain, fetch, or require a NES ROM.
    host's supported-feature mask (`0x7` Zen 3 vs `0x600e7` Granite
    Rapids, AVX-512+AMX), stamped into the software-available tail by
    `__copy_xstate_to_uabi_buf`. Host identity, ignored on restore:
-   `canonicalize_xsave` now zeroes the legacy tail (416–512).
+   `canonicalize_xsave` now zeroes the legacy tail (416–512). The patch
+   change moved the alternatives section: the runner scan named a clean
+   20-for-20 offset shift of the already-reviewed
+   `.altinstr_replacement` rdtsc thunks (run 33112083756) and the gha
+   allowlist was re-baselined per the decision-13 flow, no site outside
+   that section.
 
 ## X0 — runner probe
 
