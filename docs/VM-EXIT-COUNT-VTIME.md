@@ -1,6 +1,6 @@
-# Exit-count V-time — consonance on ARM
+# VM-VM-exit-count V-time — consonance on ARM
 
-Plan of record for bringing up consonance with **exit-count V-time** — virtual
+Plan of record for bringing up consonance with **VM-exit-count V-time** — virtual
 time derived from the guest's stream of VM exits, advanced by the run loop at
 each one — on ARM, with the M1 Max (macOS, Hypervisor.framework) as the
 development and bring-up host. The `msr1` box (arm64 Linux/KVM, via ssh) joins
@@ -55,7 +55,7 @@ ISA baseline.
 **The deviation, stated plainly.** Descriptive V-time can preempt the guest at
 any retired-branch boundary: the counter lets a timer interrupt land mid-stream,
 at an exact instruction, anywhere in the guest — including inside a stretch of
-code that performs no I/O and takes no trap. Exit-count V-time gives that
+code that performs no I/O and takes no trap. VM-VM-exit-count V-time gives that
 capability up, deliberately. Interrupt delivery stays fully deterministic — the
 placement contract of §2.1 fixes every delivery to an exact, reproducible
 instruction boundary — but the set of boundaries available is the guest's exit
@@ -73,7 +73,7 @@ x86 box — descriptive V-time retains the full capability. The two modes are th
 same VMM making a different trade per host, and M4's suite is the standing
 instrument for measuring what the trade costs in found bugs.
 
-x86 descriptive V-time on the box continues unchanged. Exit-count V-time is how
+x86 descriptive V-time on the box continues unchanged. VM-VM-exit-count V-time is how
 consonance runs everywhere else, arm64 first.
 
 ## 2. Design
@@ -81,7 +81,7 @@ consonance runs everywhere else, arm64 first.
 ### 2.1 The clock
 
 `VClock` is reused as-is. Its model is already
-`vns(work) = vns_base + work·ratio`; exit-count V-time carries the whole clock
+`vns(work) = vns_base + work·ratio`; VM-exit-count V-time carries the whole clock
 in `vns_base` and holds `work` at zero. Every advance goes through the existing
 `VClock::advance_idle` — the one mutation the clock already defines for time
 moving without measured work (idle skip and snapshot restore today).
@@ -106,7 +106,7 @@ delivery path. **The delivery contract:** each deadline `D` is delivered exactly
 once, at the first exit whose post-advance vns is at or after `D`, with equal
 deadlines in `TimerQueue`'s FIFO order. Which exit that is is itself
 deterministic, so two same-seed runs deliver every interrupt at the same
-instruction boundary. The exit-count run loop drives the backend with plain
+instruction boundary. The VM-exit-count run loop drives the backend with plain
 `Backend::run` — run to the next exit — and does all deadline bookkeeping
 above the trait: advance the clock, deliver what is due, reenter.
 `Backend::run_until`, whose late-only-stop contract is the descriptive-mode
@@ -143,13 +143,13 @@ one impl per (substrate, arch) pair, nothing above it branching on substrate.
   injection before reentry, and `hv_vcpus_exit` as the watchdog's abort path.
   Interrupt state lives in the userspace `consonance/gicv3` model; injection
   happens at exits. The backend implements `run` and reports `run_until`
-  `Unsupported` — per §2.1 the exit-count run loop never calls it — so it
+  `Unsupported` — per §2.1 the VM-exit-count run loop never calls it — so it
   needs no guest-work counter and no mid-stream stop, which is what makes
   Hypervisor.framework's exit surface sufficient.
 - **`Arm64KvmBackend` (msr1, follow-up §5).** The existing stock-KVM/arm64
   skeleton (`arm64_kvm.rs`) grows the pieces its `capabilities()` currently
   reports absent — interrupt injection (`run` already works; `run_until` stays
-  `Unsupported`, per §2.1 the exit-count run loop never calls it). Delivery
+  `Unsupported`, per §2.1 the VM-exit-count run loop never calls it). Delivery
   on KVM/arm64 requires a decision the `gicv3` crate already
   frames as the AA-6 verdict: stock KVM couples the GICv3 CPU interface and
   the timer PPI to the in-kernel vGICv3, so the backend either creates the
@@ -161,7 +161,7 @@ one impl per (substrate, arch) pair, nothing above it branching on substrate.
   delivery ruling in `AGENTS.md` deferred — that deferral is superseded by
   this plan.
 
-The run loop drives either backend through `run` with exit-count advancement;
+The run loop drives either backend through `run` with VM-exit-count advancement;
 the `WorkSource` in use reads zero, and the injection planner's
 overflow/single-step states are never entered.
 
@@ -262,7 +262,7 @@ repeat.
 - `read(addr, len)` → control-proto `Read` against the payload's WRAM buffer,
   pinned at a guest-physical address registered at startup (the
   `live_moment_address` pattern). The searcher's WRAM decoders are untouched.
-- `snapshot` / `replay` → the snapshot store. Exit-count restore is simpler
+- `snapshot` / `replay` → the snapshot store. VM-exit-count restore is simpler
   than today's: `vns_base` carries the whole clock, with no counter reset and no
   sub-nanosecond remainder.
 
@@ -283,7 +283,7 @@ its checks are too weak to fail. Three rules apply to every milestone:
    serialization of *all* observable state: RAM, vCPU registers and sysregs,
    device and GIC state, serial capture, V-time, entropy position, SDK channel
    (`vmm-core/src/vmm.rs`, `state_blob`) — at every checkpoint interval and at
-   the end. The exit-count V-time and entropy chunks are wired into
+   the end. The VM-exit-count V-time and entropy chunks are wired into
    `state_blob` on these backends as part of M0. Two runs are "identical" only
    if their normalized logs, including every `state_hash`, are. Divergences are
    bracketed with `unison::compare_runs`.
@@ -315,7 +315,7 @@ Each milestone lists what is built, what passing means, and the conditions under
 which a pass does not count. Later milestones depend on earlier ones; none is
 declared done from a subset of its oracle.
 
-**M0 — exit-count advancement in pure logic.**
+**M0 — VM-exit-count advancement in pure logic.**
 *Build:* the run-loop advancement and delivery rules of §2.1 in `vmm-core`,
 driven against `MockBackend` and scripted exit streams; the normalized log and
 its comparator; the delivery-placement checker of rule 2; the exit-count
@@ -386,7 +386,7 @@ GIC/device field of a stored snapshot (rule 3 applied to the restore path).
 
 **M3 — liveness on a real payload.**
 *Build:* the postgres container payload from the acceptance suite, booted and
-driven under exit-count V-time with the paravirtual tick and §2.4's
+driven under VM-exit-count V-time with the paravirtual tick and §2.4's
 guest-kernel userspace traps active — this is the first milestone whose
 payload carries unaudited binaries, so layer 3 is load-bearing here.
 *Passes when:* the payload's existing acceptance checks pass; two same-seed

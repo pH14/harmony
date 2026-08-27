@@ -1,15 +1,15 @@
-# Exit-count V-time: completing the instruction-surface closure
+# VM-VM-exit-count V-time: completing the instruction-surface closure
 
-Follow-on workstream to `docs/EXIT-VTIME.md` §2.4. That section
+Follow-on workstream to `docs/VM-EXIT-COUNT-VTIME.md` §2.4. That section
 defines the four-layer closure of the untrusted instruction surface and the
 milestones build two layers in passing (M1 virtualizes the identity registers
 and seeds the disposition table; M3 activates the guest-kernel userspace
 traps). This document plans the rest: proving the closure works, completing
 its recording artifact, deciding its open entries, and arming its hardening
-layer. **None of this is part of the standing `EXIT-VTIME.md`
+layer. **None of this is part of the standing `VM-EXIT-COUNT-VTIME.md`
 milestone sequence** — it layers on after M3 exists, and its own ordering is
 T0 → T1 → (T2, T3 in either order) → T4. The verification rules of
-`EXIT-VTIME.md` §3 apply to every item here unchanged.
+`VM-EXIT-COUNT-VTIME.md` §3 apply to every item here unchanged.
 
 ## T0 — adversarial trap verification
 
@@ -113,8 +113,8 @@ failed to stop.
 
 ## T4 — the x86 port of the closure
 
-When an x86 exit-count mode exists (stock `KvmBackend` plus the
-exit-count run loop — the configuration that runs on default GitHub
+When an x86 VM-exit-count mode exists (stock `KvmBackend` plus the
+VM-exit-count run loop — the configuration that runs on default GitHub
 runners), the closure ports with it: `CR4.TSD` and `CR4.PCE=0` with the
 guest kernel completing reads from the pvclock page, the x86 rows of the
 disposition table (`RDRAND`/`RDSEED` as the recorded residual,
@@ -130,7 +130,7 @@ then); running it earlier requires only the M1 backend plus a minimal guest,
 which is a legitimate pull-forward if trap code lands before M3 assembles
 the postgres payload. T1 can start as soon as M1's probe emits data. T2 and
 T3 are independent of each other. T4 waits on a decision outside this
-document (building the x86 exit-count mode at all). The one closure item
+document (building the x86 VM-exit-count mode at all). The one closure item
 that could not wait was M3's same-seed condition — the oracle that catches a
-fail-open trap — which is why it lives in `EXIT-VTIME.md` M3 rather
+fail-open trap — which is why it lives in `VM-EXIT-COUNT-VTIME.md` M3 rather
 than here.
