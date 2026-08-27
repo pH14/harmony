@@ -36,10 +36,13 @@ use crate::search::archive::{
     retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
 };
 use crate::search::draw::{
-    DrawMixture, MIXTURE_BIASED_HALF_IDENTIFIER, MixtureDraw, MixtureEnergy, SuffixShape,
-    draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy_is_biased,
+    DrawMixture, EnergyStrategy, MIXTURE_BIASED_HALF_IDENTIFIER, MixtureDraw, MixtureEnergy,
+    SuffixShape, draw_mixture_from_identifier, draw_mixture_identifier, energy_strategy,
     suffix_shape_from_identifier, suffix_shape_identifier,
 };
+
+/// Longest stored tail one splice draw appends, bounding a single job.
+pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::parallel::with_worker_pool;
 use crate::search::rand::RomuDuoJrRand;
@@ -588,6 +591,10 @@ pub struct CampaignJobRecord {
     /// streams written before the mixture adapted.
     #[serde(default = "default_mixture_weight")]
     pub mixture_weight: u8,
+    /// Splice-strategy weight out of 256 the splice mixture used for this
+    /// draw; zero for every other mixture and for older streams.
+    #[serde(default)]
+    pub splice_weight: u8,
 
     /// Selector draw record.
     pub selector: SelectorDraw,
@@ -623,6 +630,10 @@ pub struct CampaignSkipRecord {
     /// streams written before the mixture adapted.
     #[serde(default = "default_mixture_weight")]
     pub mixture_weight: u8,
+    /// Splice-strategy weight out of 256 the splice mixture used for this
+    /// draw; zero for every other mixture and for older streams.
+    #[serde(default)]
+    pub splice_weight: u8,
 
     /// Selector draw record.
     pub selector: SelectorDraw,
@@ -1567,6 +1578,7 @@ struct PendingJob {
     parent_id: u64,
     mutation_seed: u64,
     mixture_weight: u8,
+    splice_weight: u8,
     selector: SelectorDraw,
     draw_table_before: Option<EmpiricalStepCheckpoint>,
 }
@@ -1749,21 +1761,37 @@ where
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let mutation_seed = rand.next_u64();
-                    let mixture_weight = match config.mixture {
-                        DrawMixture::Energy { scale } => core.mixture_energy.biased_weight(scale),
-                        _ => default_mixture_weight(),
+                    let (mixture_weight, splice_weight) = match config.mixture {
+                        DrawMixture::Energy { scale } => {
+                            (core.mixture_energy.biased_weight(scale), 0)
+                        }
+                        DrawMixture::EnergySplice { scale } => {
+                            core.mixture_energy.splice_weights(scale)
+                        }
+                        _ => (default_mixture_weight(), 0),
                     };
                     let draw_table_before = game.draw_checkpoint(draw_state)?;
-                    let suffix = game.expand_suffix(
-                        &config.run,
-                        draw_state,
-                        config.suffix,
-                        MixtureDraw {
-                            mixture: config.mixture,
-                            weight: mixture_weight,
-                        },
-                        mutation_seed,
-                    )?;
+                    let spliced = if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
+                        == EnergyStrategy::Splice
+                    {
+                        core.archive.splice_tail(parent_index, SPLICE_ACTION_CAP)
+                    } else {
+                        None
+                    };
+                    let suffix = match spliced {
+                        Some(tail) => tail,
+                        None => game.expand_suffix(
+                            &config.run,
+                            draw_state,
+                            config.suffix,
+                            MixtureDraw {
+                                mixture: config.mixture,
+                                weight: mixture_weight,
+                                splice_weight,
+                            },
+                            mutation_seed,
+                        )?,
+                    };
                     if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix)
                     {
@@ -1774,6 +1802,7 @@ where
                             parent_id: u64::try_from(parent_index)?,
                             mutation_seed,
                             mixture_weight,
+                            splice_weight,
                             selector,
                             draw_table_before,
                             draw_table_after,
@@ -1798,6 +1827,7 @@ where
                             parent_id: u64::try_from(parent_index)?,
                             mutation_seed,
                             mixture_weight,
+                            splice_weight,
                             selector,
                             draw_table_before,
                         },
@@ -1860,13 +1890,16 @@ where
                     new_slot_descendant,
                     new_cell_descendant,
                 );
-                if let DrawMixture::Energy { .. } = config.mixture {
-                    let biased_strategy = energy_strategy_is_biased(
+                if let DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } =
+                    config.mixture
+                {
+                    let strategy = energy_strategy(
                         pending_job.mutation_seed,
                         pending_job.mixture_weight,
+                        pending_job.splice_weight,
                     )?;
                     core.mixture_energy
-                        .record_outcome(biased_strategy, new_slot_descendant);
+                        .record_outcome(strategy, new_slot_descendant);
                 }
                 if victories_before == 0
                     && let (Some(path), Some(input)) =
@@ -1885,6 +1918,7 @@ where
                     result_sha256: result_sha256::<G>(&result)?,
                     decisions,
                     mixture_weight: pending_job.mixture_weight,
+                    splice_weight: pending_job.splice_weight,
                     selector: pending_job.selector,
                     draw_table_before: pending_job.draw_table_before,
                     draw_table_after,
@@ -2114,17 +2148,31 @@ where
                 if parent_index >= core.archive.entries.len() {
                     return Err("recorded skip names a parent the archive does not hold".into());
                 }
-                let suffix = game.expand_suffix_recorded(
-                    &replay_run,
-                    &draw_state,
-                    replay_suffix,
-                    MixtureDraw {
-                        mixture: replay_mixture,
-                        weight: skip.mixture_weight,
-                    },
-                    skip.draw_table_before.as_ref(),
+                let spliced = if energy_strategy(
                     skip.mutation_seed,
-                )?;
+                    skip.mixture_weight,
+                    skip.splice_weight,
+                )? == EnergyStrategy::Splice
+                {
+                    core.archive.splice_tail(parent_index, SPLICE_ACTION_CAP)
+                } else {
+                    None
+                };
+                let suffix = match spliced {
+                    Some(tail) => tail,
+                    None => game.expand_suffix_recorded(
+                        &replay_run,
+                        &draw_state,
+                        replay_suffix,
+                        MixtureDraw {
+                            mixture: replay_mixture,
+                            weight: skip.mixture_weight,
+                            splice_weight: skip.splice_weight,
+                        },
+                        skip.draw_table_before.as_ref(),
+                        skip.mutation_seed,
+                    )?,
+                };
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -2154,17 +2202,29 @@ where
                 let snapshot = entry.snapshot.clone();
                 let parent_actions = entry.report.input.actions.len();
                 let parent_milestones = entry.report.milestones;
-                let suffix = game.expand_suffix_recorded(
-                    &replay_run,
-                    &draw_state,
-                    replay_suffix,
-                    MixtureDraw {
-                        mixture: replay_mixture,
-                        weight: job.mixture_weight,
-                    },
-                    job.draw_table_before.as_ref(),
-                    job.mutation_seed,
-                )?;
+                let spliced =
+                    if energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?
+                        == EnergyStrategy::Splice
+                    {
+                        core.archive.splice_tail(parent_index, SPLICE_ACTION_CAP)
+                    } else {
+                        None
+                    };
+                let suffix = match spliced {
+                    Some(tail) => tail,
+                    None => game.expand_suffix_recorded(
+                        &replay_run,
+                        &draw_state,
+                        replay_suffix,
+                        MixtureDraw {
+                            mixture: replay_mixture,
+                            weight: job.mixture_weight,
+                            splice_weight: job.splice_weight,
+                        },
+                        job.draw_table_before.as_ref(),
+                        job.mutation_seed,
+                    )?,
+                };
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &mut target,

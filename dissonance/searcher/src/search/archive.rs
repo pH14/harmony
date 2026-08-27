@@ -654,6 +654,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     replacement_time_displaced: u64,
     /// Per-entry lineage, aligned with `entries`.
     lineages: Vec<K::Lineage>,
+    /// Per entry: the greatest key in its subtree and the entry holding it,
+    /// maintained on insert so splice draws find a stored tail without a
+    /// scan.
+    deepest_leaf: Vec<(K, usize)>,
     /// Parent selector this archive selects under.
     pub selector_policy: SelectorPolicy,
     /// Pooled barren streak per group, one map per depth `1..groups() - 1`,
@@ -710,6 +714,7 @@ where
             time_in_group: Vec::new(),
             replacement_time_displaced: 0,
             lineages: Vec::new(),
+            deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
             action_time,
@@ -958,11 +963,52 @@ where
             new_slot
         };
         self.opened_cell.push(new_cell);
+        self.deepest_leaf.push((key, id));
+        let mut ancestor = parent_id;
+        while let Some(current) = ancestor {
+            if self.deepest_leaf[current] >= (key, id) {
+                break;
+            }
+            self.deepest_leaf[current] = (key, id);
+            ancestor = self.entries[current]
+                .report
+                .parent_id
+                .and_then(|parent| usize::try_from(parent).ok());
+        }
         self.slots.entry(key.group(0)).or_default().push(id);
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
         Ok(Some(id))
+    }
+
+    /// The stored tail a splice draw would append to `parent`: the actions
+    /// past a cell-mate's own input on the path to the deepest descendant
+    /// key in the parent's selection cell, capped at `cap` actions. The
+    /// choice is a pure function of archive state, so replay re-derives it.
+    /// Returns nothing when no cell-mate's subtree reaches past the
+    /// parent's own key.
+    #[must_use]
+    pub fn splice_tail(&self, parent: usize, cap: usize) -> Option<Vec<A>> {
+        self.frontier_cap?;
+        let parent_key = self.entries[parent].report.key;
+        let class = Reverse(parent_key.group(Self::class_depth()));
+        let cell = parent_key.group(Self::cell_depth());
+        let members = self.classes.get(&class)?.get(&cell)?;
+        let donor = members
+            .iter()
+            .filter(|member| **member != parent)
+            .max_by_key(|member| self.deepest_leaf[**member])?;
+        let (leaf_key, leaf) = self.deepest_leaf[*donor];
+        if leaf_key <= parent_key {
+            return None;
+        }
+        let prefix = self.entries[*donor].report.input.actions.len();
+        let tail = &self.entries[leaf].report.input.actions;
+        if prefix >= tail.len() {
+            return None;
+        }
+        Some(tail[prefix..tail.len().min(prefix + cap)].to_vec())
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -1533,6 +1579,52 @@ mod tests {
                 .expect("retain flat entry");
         }
         archive
+    }
+
+    /// A splice tail is the cell-mate's stored path to its deepest
+    /// descendant, capped, and absent when no cell-mate reaches deeper than
+    /// the parent.
+    #[test]
+    fn a_splice_tail_extends_past_the_parent_from_a_cell_mate() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        input: Input { actions },
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry")
+        };
+        let root = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let middle = insert(&mut archive, Some(root), [1, 2, 3, 6], vec![0, 1]);
+        let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
+        let arrival = insert(&mut archive, None, [0, 2, 3, 4], vec![9]);
+        assert_eq!(
+            archive.splice_tail(arrival, 8),
+            None,
+            "no tail before the selector index exists"
+        );
+        let mut rand = RomuDuoJrRand::with_seed(7);
+        archive
+            .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+            .expect("build the selector index");
+        assert_eq!(archive.splice_tail(arrival, 8), Some(vec![1, 2]));
+        assert_eq!(archive.splice_tail(arrival, 1), Some(vec![1]));
+        assert_eq!(
+            archive.splice_tail(leaf, 8),
+            None,
+            "the deepest entry has no deeper cell-mate"
+        );
     }
 
     /// Selection must run on every geometry the key contract allows, down to

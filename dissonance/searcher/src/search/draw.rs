@@ -69,6 +69,25 @@ pub enum DrawMixture {
         /// Barren suffixes per halving of a strategy's share.
         scale: u64,
     },
+    /// The energy mixture with a third strategy: splice the stored tail of a
+    /// cell-mate's deepest descendant onto the selected parent. The splice
+    /// strategy draws no actions of its own; when the archive offers no tail
+    /// its suffix falls back to the alphabet.
+    EnergySplice {
+        /// Barren suffixes per halving of a strategy's share.
+        scale: u64,
+    },
+}
+
+/// Which strategy an energy draw assigned to one suffix.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnergyStrategy {
+    /// Every action offered by the biased table.
+    Table,
+    /// The suffix is a stored descendant tail from the parent's cell.
+    Splice,
+    /// Every action from the target's alphabet.
+    Alphabet,
 }
 
 /// Identifier recorded for the alphabet-only mixture.
@@ -80,6 +99,9 @@ pub const MIXTURE_BIASED_HALF_IDENTIFIER: &str = "biased_half";
 /// Identifier prefix recorded for the energy mixture; the scale follows.
 pub const MIXTURE_ENERGY_PREFIX: &str = "energy:";
 
+/// Identifier prefix recorded for the energy mixture with splice.
+pub const MIXTURE_ENERGY_SPLICE_PREFIX: &str = "energy_splice:";
+
 /// The recorded identifier of a draw mixture.
 #[must_use]
 pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
@@ -87,6 +109,7 @@ pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
         DrawMixture::AlphabetOnly => MIXTURE_ALPHABET_ONLY_IDENTIFIER.to_owned(),
         DrawMixture::BiasedHalf => MIXTURE_BIASED_HALF_IDENTIFIER.to_owned(),
         DrawMixture::Energy { scale } => format!("{MIXTURE_ENERGY_PREFIX}{scale}"),
+        DrawMixture::EnergySplice { scale } => format!("{MIXTURE_ENERGY_SPLICE_PREFIX}{scale}"),
     }
 }
 
@@ -96,6 +119,13 @@ pub fn draw_mixture_identifier(mixture: DrawMixture) -> String {
 ///
 /// Returns an error when the identifier names no compiled mixture.
 pub fn draw_mixture_from_identifier(identifier: &str) -> Result<DrawMixture, Box<dyn Error>> {
+    if let Some(scale) = identifier.strip_prefix(MIXTURE_ENERGY_SPLICE_PREFIX) {
+        let scale = scale.parse::<u64>()?;
+        if scale == 0 {
+            return Err("energy mixture scale must be nonzero".into());
+        }
+        return Ok(DrawMixture::EnergySplice { scale });
+    }
     if let Some(scale) = identifier.strip_prefix(MIXTURE_ENERGY_PREFIX) {
         let scale = scale.parse::<u64>()?;
         if scale == 0 {
@@ -118,6 +148,9 @@ pub struct MixtureDraw {
     pub mixture: DrawMixture,
     /// Biased-strategy weight out of 256 at this draw.
     pub weight: u8,
+    /// Splice-strategy weight out of 256 at this draw; zero outside the
+    /// splice mixture, which keeps older streams byte-identical.
+    pub splice_weight: u8,
 }
 
 /// Per-stream shares of the energy mixture's two strategies. Live updates
@@ -126,28 +159,50 @@ pub struct MixtureDraw {
 /// alone and never needs the counters.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MixtureEnergy {
-    /// Consecutive suffixes per strategy (biased, alphabet) that opened no
-    /// new retention slot.
-    barren: [u64; 2],
+    /// Consecutive suffixes per strategy (biased, splice, alphabet) that
+    /// opened no new retention slot.
+    barren: [u64; 3],
+}
+
+fn energy_share(barren: u64, scale: u64) -> u64 {
+    let halvings = u32::try_from((barren / scale).min(8)).unwrap_or(8);
+    (256_u64 >> halvings).max(1)
 }
 
 impl MixtureEnergy {
-    /// The biased strategy's current weight out of 256, kept off both ends
-    /// so each strategy always has a live share.
+    /// The biased strategy's current weight out of 256 in the two-strategy
+    /// energy mixture, kept off both ends so each strategy always has a
+    /// live share.
     #[must_use]
     pub fn biased_weight(&self, scale: u64) -> u8 {
-        let share = |barren: u64| -> u64 {
-            let halvings = u32::try_from((barren / scale).min(8)).unwrap_or(8);
-            (256_u64 >> halvings).max(1)
-        };
-        let biased = share(self.barren[0]);
-        let total = biased + share(self.barren[1]);
+        let biased = energy_share(self.barren[0], scale);
+        let total = biased + energy_share(self.barren[2], scale);
         u8::try_from(((256 * biased) / total).clamp(1, 255)).unwrap_or(128)
     }
 
+    /// The (biased, splice) weights out of 256 in the three-strategy splice
+    /// mixture. Each strategy keeps a live share and the alphabet keeps at
+    /// least one point of the 256.
+    #[must_use]
+    pub fn splice_weights(&self, scale: u64) -> (u8, u8) {
+        let shares = self.barren.map(|barren| energy_share(barren, scale));
+        let total: u64 = shares.iter().sum();
+        let weight = |share: u64| ((256 * share) / total).clamp(1, 253);
+        let biased = weight(shares[0]);
+        let splice = weight(shares[1]).min(254 - biased);
+        (
+            u8::try_from(biased).unwrap_or(85),
+            u8::try_from(splice.max(1)).unwrap_or(85),
+        )
+    }
+
     /// Fold one suffix outcome into the strategy that drew it.
-    pub fn record_outcome(&mut self, biased_strategy: bool, new_slot: bool) {
-        let index = usize::from(!biased_strategy);
+    pub fn record_outcome(&mut self, strategy: EnergyStrategy, new_slot: bool) {
+        let index = match strategy {
+            EnergyStrategy::Table => 0,
+            EnergyStrategy::Splice => 1,
+            EnergyStrategy::Alphabet => 2,
+        };
         if new_slot {
             self.barren[index] = 0;
         } else {
@@ -156,9 +211,30 @@ impl MixtureEnergy {
     }
 }
 
+/// The strategy the energy mixtures assign to this suffix. The strategy
+/// draw is the seeded generator's first draw, so the campaign re-derives it
+/// at outcome time from the recorded seed and weights alone.
+///
+/// # Errors
+///
+/// Returns an error when the weight bound is invalid.
+pub fn energy_strategy(
+    mutation_seed: u64,
+    biased_weight: u8,
+    splice_weight: u8,
+) -> Result<EnergyStrategy, Box<dyn Error>> {
+    let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
+    let draw = rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?);
+    if draw < usize::from(biased_weight) {
+        return Ok(EnergyStrategy::Table);
+    }
+    if draw < usize::from(biased_weight) + usize::from(splice_weight) {
+        return Ok(EnergyStrategy::Splice);
+    }
+    Ok(EnergyStrategy::Alphabet)
+}
+
 /// Whether the energy mixture assigns this suffix to the biased strategy.
-/// The strategy draw is the seeded generator's first draw, so the campaign
-/// re-derives it at outcome time from the recorded seed and weight.
 ///
 /// # Errors
 ///
@@ -167,11 +243,7 @@ pub fn energy_strategy_is_biased(
     mutation_seed: u64,
     biased_weight: u8,
 ) -> Result<bool, Box<dyn Error>> {
-    let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
-    Ok(
-        rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
-            < usize::from(biased_weight),
-    )
+    Ok(energy_strategy(mutation_seed, biased_weight, 0)? == EnergyStrategy::Table)
 }
 
 /// Expand one mutation seed into a complete suffix.
@@ -198,9 +270,12 @@ where
 {
     let mut rand = RomuDuoJrRand::with_seed(mutation_seed);
     // The energy strategy draw comes first so it is re-derivable from the
-    // seed and recorded weight alone; see `energy_strategy_is_biased`.
+    // seed and recorded weights alone; see `energy_strategy`. A suffix the
+    // splice strategy could not fill reaches this function and lands in the
+    // alphabet arm, since the draw is below the table weight only for the
+    // table strategy.
     let energy_biased = match mixture {
-        DrawMixture::Energy { .. } => Some(
+        DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } => Some(
             rand.below(NonZeroUsize::new(256).ok_or("invalid mixture weight bound")?)
                 < usize::from(mixture_weight),
         ),
@@ -237,8 +312,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        DrawMixture, MixtureEnergy, SuffixShape, draw_mixture_from_identifier,
-        draw_mixture_identifier, draw_suffix, energy_strategy_is_biased,
+        DrawMixture, EnergyStrategy, MixtureEnergy, SuffixShape, draw_mixture_from_identifier,
+        draw_mixture_identifier, draw_suffix, energy_strategy, energy_strategy_is_biased,
         suffix_shape_from_identifier, suffix_shape_identifier,
     };
 
@@ -258,6 +333,7 @@ mod tests {
             DrawMixture::AlphabetOnly,
             DrawMixture::BiasedHalf,
             DrawMixture::Energy { scale: 6 },
+            DrawMixture::EnergySplice { scale: 6 },
         ] {
             assert_eq!(
                 draw_mixture_from_identifier(&draw_mixture_identifier(mixture))
@@ -365,14 +441,47 @@ mod tests {
         let mut energy = MixtureEnergy::default();
         assert_eq!(energy.biased_weight(6), 128);
         for _ in 0..12 {
-            energy.record_outcome(true, false);
+            energy.record_outcome(EnergyStrategy::Table, false);
         }
         assert!(energy.biased_weight(6) < 70);
-        energy.record_outcome(true, true);
+        energy.record_outcome(EnergyStrategy::Table, true);
         assert_eq!(energy.biased_weight(6), 128);
         for _ in 0..60 {
-            energy.record_outcome(false, false);
+            energy.record_outcome(EnergyStrategy::Alphabet, false);
         }
         assert!(energy.biased_weight(6) > 240);
+    }
+
+    /// The three-strategy weights shift toward whichever strategy keeps
+    /// discovering, the strategy helper follows the recorded segments, and
+    /// every strategy keeps a live share.
+    #[test]
+    fn splice_weights_shift_between_three_strategies() {
+        let mut energy = MixtureEnergy::default();
+        let (table, splice) = energy.splice_weights(6);
+        assert_eq!((table, splice), (85, 85));
+        for _ in 0..60 {
+            energy.record_outcome(EnergyStrategy::Splice, false);
+        }
+        let (table, splice) = energy.splice_weights(6);
+        assert!(splice <= 2, "a cold splice share must collapse: {splice}");
+        assert!(table > 100);
+        energy.record_outcome(EnergyStrategy::Splice, true);
+        let (_, splice) = energy.splice_weights(6);
+        assert_eq!(splice, 85);
+        let mut counts = [0_u32; 3];
+        for seed in 0..4_096_u64 {
+            match energy_strategy(seed, 85, 85).expect("strategy") {
+                EnergyStrategy::Table => counts[0] += 1,
+                EnergyStrategy::Splice => counts[1] += 1,
+                EnergyStrategy::Alphabet => counts[2] += 1,
+            }
+        }
+        for count in counts {
+            assert!(
+                (1_100..=1_650).contains(&count),
+                "strategy counts {counts:?}"
+            );
+        }
     }
 }
