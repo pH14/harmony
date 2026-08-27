@@ -136,13 +136,10 @@ struct PageHashHasher(u64);
 
 impl std::hash::Hasher for PageHashHasher {
     fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            // `chunks_exact(8)` yields exactly 8 bytes; the conversion cannot fail.
-            let word: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
-            self.0 ^= u64::from_le_bytes(word);
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            self.0 ^= u64::from_le_bytes(*word);
         }
-        let rest = chunks.remainder();
         if !rest.is_empty() {
             let mut word = [0u8; 8];
             word[..rest.len()].copy_from_slice(rest);

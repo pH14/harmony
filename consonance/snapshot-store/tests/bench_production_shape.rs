@@ -83,10 +83,10 @@ fn splitmix64(seed: u64) -> u64 {
 /// Fill one page with content unique to `seed` (distinct seeds ⇒ distinct pages).
 fn fill_page(buf: &mut [u8], seed: u64) {
     debug_assert_eq!(buf.len(), PAGE_SIZE);
-    for (i, chunk) in buf.chunks_exact_mut(8).enumerate() {
+    for (i, chunk) in buf.as_chunks_mut::<8>().0.iter_mut().enumerate() {
         // (seed, i) -> a single u64; injective for seed < 2^32 and i < 2^32.
         let v = splitmix64(seed.wrapping_mul(0x1_0000_0001).wrapping_add(i as u64));
-        chunk.copy_from_slice(&v.to_le_bytes());
+        *chunk = v.to_le_bytes();
     }
 }
 

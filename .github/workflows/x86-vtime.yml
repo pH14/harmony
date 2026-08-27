@@ -32,12 +32,6 @@ jobs:
         replica: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
-      - name: Grant /dev/kvm access
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
       - name: Install stable toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
@@ -45,6 +39,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build probe
         run: cargo build -p vmm-backend --bin x86_kvm_probe
+      # Planted negative: with /dev/kvm unreadable the probe must fail closed
+      # with the kvm_open reason, never report PASS.
+      - name: Probe fails closed without /dev/kvm access
+        run: |
+          sudo chmod 600 /dev/kvm
+          rc=0
+          ./target/debug/x86_kvm_probe > probe-negative.txt || rc=$?
+          cat probe-negative.txt
+          [ "$rc" -eq 1 ]
+          grep -q "FAIL_REASON=kvm_open" probe-negative.txt
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
       - name: Run probe
         run: ./target/debug/x86_kvm_probe | tee probe-report.txt
       - name: kvm_smoke (live stock-KVM tests; informational at X0)
@@ -57,6 +67,7 @@ jobs:
           name: x86-probe-replica-${{ matrix.replica }}
           path: |
             probe-report.txt
+            probe-negative.txt
             kvm-smoke.txt
           if-no-files-found: error
 
