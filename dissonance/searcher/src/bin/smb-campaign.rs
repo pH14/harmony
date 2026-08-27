@@ -77,15 +77,15 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut wall_budget = None;
     // Defaults are the current behavior; the older policies stay selectable
     // so historical recordings keep replaying under their own identifiers.
-    // The chord draw biases half of each draw toward recently retained
-    // button sequences, seeded from every retained entry of a source
-    // archive; the fold parameters are the registered head-to-head winners.
+    // The chord draw takes its button sequences from only the most recent
+    // retained window, so the visible table tracks the current level's
+    // successful presses and old regimes age out on their own.
     // Every run uses it: replaced draw policies survive only as stream
     // identifiers, never as run options.
     // Retire thresholds are measured search statistics (99th-percentile
     // picks-before-first-keeper per class) and should be re-measured for a
     // new game rather than treated as universal constants.
-    let chord = chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,3,1,64,1024")?;
+    let chord = chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,1,0,64,1024")?;
     let mut retention = RetentionPolicy::AdmitAlive;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
         entry: 3,
