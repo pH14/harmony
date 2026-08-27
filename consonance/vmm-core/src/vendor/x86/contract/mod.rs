@@ -274,6 +274,29 @@ pub fn cpuid_model() -> CpuidModel {
     CpuidModel { entries }
 }
 
+/// [`cpuid_model`] with the hardware-RNG bits — CPUID.1:ECX[30] (`RDRAND`) and
+/// CPUID.7.0:EBX[18] (`RDSEED`) — cleared, for the stock-backend prescriptive
+/// composition. §2 exposes both bits as exposed-but-trapped, a justification
+/// that requires the VMX RDRAND/RDSEED-exiting controls; stock KVM never
+/// surfaces that exit (§2's own caveat), so left exposed the instructions
+/// execute natively and feed true hardware entropy into the guest CRNG —
+/// measured as the X2 userspace-ASLR divergence. The pinned kernel reaches
+/// both instructions only through `cpu_feature_enabled` checks on these bits,
+/// so hiding them keeps the guest on its deterministic fallbacks; the X2
+/// determinism gates measure the closure.
+pub fn cpuid_model_hw_rng_hidden() -> CpuidModel {
+    let mut m = cpuid_model();
+    for e in &mut m.entries {
+        if e.leaf == 0x1 && e.subleaf == 0 {
+            e.ecx &= !(1 << 30);
+        }
+        if e.leaf == 0x7 && e.subleaf == 0 {
+            e.ebx &= !(1 << 18);
+        }
+    }
+    m
+}
+
 /// Overlay the three dynamic CPUID cells (see [`cpuid_model`]) onto the frozen
 /// `base` entry when servicing a userspace `X86Exit::Cpuid`, from the guest's live
 /// `CR4`/`XCR0` (`base.leaf`/`base.subleaf` select which rule applies). Never
@@ -449,6 +472,32 @@ mod tests {
             .find(|e| e.leaf == 0x4000_0000)
             .expect("PV leaf");
         assert_eq!((pv.eax, pv.ebx, pv.ecx, pv.edx), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn cpuid_model_hw_rng_hidden_clears_exactly_the_rng_bits() {
+        let base = cpuid_model();
+        let hidden = cpuid_model_hw_rng_hidden();
+        assert_eq!(base.entries.len(), hidden.entries.len());
+        for (b, h) in base.entries.iter().zip(&hidden.entries) {
+            match (b.leaf, b.subleaf) {
+                (0x1, 0) => {
+                    // The base exposes RDRAND; the variant clears only ECX[30].
+                    assert_ne!(b.ecx & (1 << 30), 0, "base exposes RDRAND");
+                    let mut want = *b;
+                    want.ecx &= !(1 << 30);
+                    assert_eq!(*h, want);
+                }
+                (0x7, 0) => {
+                    // The base exposes RDSEED; the variant clears only EBX[18].
+                    assert_ne!(b.ebx & (1 << 18), 0, "base exposes RDSEED");
+                    let mut want = *b;
+                    want.ebx &= !(1 << 18);
+                    assert_eq!(*h, want);
+                }
+                _ => assert_eq!(b, h),
+            }
+        }
     }
 
     #[test]

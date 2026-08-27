@@ -1305,6 +1305,26 @@ on this branch may contain, fetch, or require a NES ROM.
    V-time"; the external per-tier `timeout` wrappers added alongside bound
    any future instance to minutes instead of the job cap.
 
+15. **The stock prescriptive composition hides the hardware-RNG CPUID
+   bits.** With decision 14 in place the boot reaches `/init` with identical
+   step counts (35413) and matching serial on every boot (run 33081862334),
+   but tier-2 still diverged at the terminal 256-event `StateHash`: the
+   localizer shows the pre-decision-12 userspace-ASLR signature again
+   (`FS_BASE`, userspace `CR2`, `CR3` one page, 309 user-space RAM pages;
+   serial and all vtim components MATCH). Remaining feed: the frozen
+   contract model exposes RDRAND (CPUID.1:ECX[30]) and RDSEED
+   (CPUID.7.0:EBX[18]) as exposed-but-trapped, a justification §2 itself
+   caveats as requiring the VMX exiting controls stock KVM never surfaces —
+   so the instructions executed natively and fed true entropy into the CRNG
+   at every reseed. `boot_linux_stock_prescriptive` now installs
+   `cpuid_model_hw_rng_hidden()` — the frozen model with exactly those two
+   bits cleared — via a CPUID-model parameter on `compose_linux`; the
+   descriptive substrates keep the unmodified model. Host-side only, so the
+   goal doc's RDRAND stop condition (guest changes beyond the patch set) is
+   not triggered; the pinned kernel reaches both instructions only through
+   `cpu_feature_enabled` checks on these bits. The frozen §2 table is
+   unchanged; the variant is recorded here.
+
 ## X0 — runner probe
 
 ### Build criteria
