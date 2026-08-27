@@ -1325,6 +1325,23 @@ on this branch may contain, fetch, or require a NES ROM.
    `cpu_feature_enabled` checks on these bits. The frozen §2 table is
    unchanged; the variant is recorded here.
 
+16. **The boot CPU's cyc2ns scale is seeded from cycle 0 under
+   `harmony_pvclock`.** With decision 15 in place the localizer narrowed to
+   ONE differing RAM page (run 33084120303, gpa `0xf81c000+0xa80` on both
+   replicas): two copies of `{cyc2ns_mul=0x40000000, cyc2ns_shift=31,
+   cyc2ns_offset}` plus a seqcount of 2 — tsc.c's per-cpu
+   `struct cyc2ns` for the frozen 2.0 GHz TSC, with the offset varying per
+   boot around −0.23 s. Cause: `cyc2ns_init_boot_cpu` seeds
+   `__set_cyc2ns_scale` with a native `rdtsc()`, so the offset is
+   `−tsc_now/2` ns — host boot latency — written into per-cpu state even
+   though `__use_tsc` never enables and nothing converts cycles at runtime.
+   This also explains the tier-2 divergence at the first checkpoint (event
+   255): the seeding runs in `tsc_early_init`. Patch 0001 now seeds with
+   cycle 0 when `harmony_pvclock` is requested, making the scale data a
+   pure function of `tsc_khz`; the unreachable re-seeding callers (cpufreq
+   notifier, suspend resume) are unchanged. The runner allowlist needs
+   another re-baseline for the shifted tsc.c site (the scan names it).
+
 ## X0 — runner probe
 
 ### Build criteria

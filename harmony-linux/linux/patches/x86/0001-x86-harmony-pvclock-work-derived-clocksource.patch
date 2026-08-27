@@ -24,7 +24,10 @@ fallback until the page routes it (the __use_tsc static key never enables),
 the tsc-early clocksource never registers (and the harmony initcall's
 mark_tsc_unstable keeps the refined tsc clocksource out), and
 random_get_entropy() reads the clock page — zero before the page is live —
-instead of rdtsc. Entropy timing, printk timestamps, and timekeeping are then
+instead of rdtsc. The boot CPU's cyc2ns scale is seeded from cycle 0
+instead of a live rdtsc, so the per-cpu conversion data (dead while
+__use_tsc is off) is a pure function of tsc_khz rather than of host boot
+latency. Entropy timing, printk timestamps, and timekeeping are then
 pure functions of the deterministic exit stream.
 
 The jitter RNG cannot run on such a clock: between exits time is frozen, and
@@ -508,7 +511,24 @@ reads in its reviewed allowlist.
  #include <asm/hpet.h>
  #include <asm/timer.h>
  #include <asm/vgtod.h>
-@@ -1506,7 +1507,13 @@
+@@ -206,7 +207,15 @@
+ 	struct cyc2ns *c2n = this_cpu_ptr(&cyc2ns);
+ 
+ 	seqcount_latch_init(&c2n->seq);
+-	__set_cyc2ns_scale(tsc_khz, smp_processor_id(), rdtsc());
++	/*
++	 * Under harmony_pvclock the kernel never converts TSC cycles to time
++	 * (__use_tsc stays off), but the offset computed here from a native
++	 * rdtsc would still land in per-cpu state as a host-time-derived
++	 * value. Seed with cycle 0 so the scale data is a pure function of
++	 * tsc_khz.
++	 */
++	__set_cyc2ns_scale(tsc_khz, smp_processor_id(),
++			   harmony_pvclock_requested() ? 0 : rdtsc());
+ }
+ 
+ /*
+@@ -1506,7 +1515,13 @@
  	/* Sanitize TSC ADJUST before cyc2ns gets initialized */
  	tsc_store_and_check_tsc_adjust(true);
  	cyc2ns_init_boot_cpu();
@@ -523,7 +543,7 @@ reads in its reviewed allowlist.
  }
  
  void __init tsc_early_init(void)
-@@ -1565,7 +1572,14 @@
+@@ -1565,7 +1580,14 @@
  	if (tsc_clocksource_reliable || no_tsc_watchdog)
  		tsc_disable_clocksource_watchdog();
  
