@@ -1390,6 +1390,25 @@ on this branch may contain, fetch, or require a NES ROM.
    canonicalization: state the architecture calls absent leaves no host
    residue in the saved record.
 
+20. **Every hardware-RNG instruction site in the image is enumerated and
+   feature-gated.** The counter-opcode scan gained a second mnemonic class
+   (rdrand `0f c7 /6`, rdseed `0f c7 /7`) with its own per-site allowlist
+   and self-test fixtures, including the modrm decode that separates those
+   forms from cmpxchg8b (`/1`). The justification regime is the opposite
+   of the counter class: a counter read is survivable-by-trap, but SVM
+   cannot intercept RDRAND/RDSEED, so a reachable site is a true-entropy
+   hole; a site is allowlistable only when it sits behind the
+   X86_FEATURE_RDRAND / X86_FEATURE_RDSEED check that the decision-15
+   CPUID hiding turns off. The runner capture (run 33099482655) names five
+   sites — `extract_entropy` (2), `random_init_early` (2),
+   `x86_init_rdrand` (1) — each confirmed gated in source (archrandom.h's
+   `static_cpu_has` inlines; rdrand.c's `cpu_has` early return). The
+   setup/decompressor raw-byte scan covers the same opcodes with zero
+   allowance (`CONFIG_RANDOMIZE_BASE` is off, so the decompressor carries
+   no KASLR rdrand). The box-toolchain list ships unarmed until a box
+   capture exists (issue #199). This is the goal doc's X3 RDRAND
+   prohibition audit.
+
 ## X0 — runner probe
 
 ### Build criteria
