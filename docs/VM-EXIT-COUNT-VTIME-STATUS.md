@@ -1325,7 +1325,7 @@ recorded.
   `5e00fcb0c34919b82ef2ee37275f01d55683f1bbd8d7146e44a56c79f6cba6f4`,
   and `snapshots-live.bin`
   `ae8d699c7bdb86180e3232452ee4a83441979be412deae8bffb359acb2f1b783`.
-- **FAIL — full NES campaign normalized log and checkpoint sequence:** the
+- **PASS — full NES campaign normalized log and checkpoint sequence:** the
   control server now retains an ordered sequence of every restore-delimited
   normalized log and immutable deadline schedule. It records whether each
   segment began at initial boot, a branch, a replay, or a recoverable-restore
@@ -1340,9 +1340,26 @@ recorded.
   change in the middle segment to segment 1, event 0, `VnsAfter`. Focused
   implementation evidence is green (`cargo test -p vmm-core --all-features
   --lib`: 521 passed, two Miri-only ignores; strict all-target Clippy: exit 0).
-  This criterion remains **FAIL** until the byte-attested HVF and CPU-0-pinned
-  KVM NES campaigns are rerun and their complete emitted logs compare exactly;
-  the prior endpoint/artifact equality alone is not promoted retroactively.
+  Revision `959dadac` then reran the byte-attested one-job/two-session NES
+  campaign on signed HVF and CPU-0-pinned KVM. Session 0 matched at three
+  segments, 50,931 portable events, 393 schedules, 198 checkpoints, and session
+  digest
+  `0c4936c414293a0fde17dfc9bfb0e31560bc9d044081db695b2c2833af5f7478`;
+  session 1 matched at four segments, 50,934 portable events, 393 schedules,
+  198 checkpoints, and digest
+  `431057570943436c2c62a98a61b22764089eeef9e5578004793913b4cf54ad21`.
+  Every segment passed its independent placement check on both hosts. Direct
+  `cmp` accepted both transferred complete logs: session 0 was 51,330 lines /
+  8,030,145 bytes / SHA-256
+  `a801bfb068200d7f13e7da05197f8868c71469b0f77b6fcc3dec026945279d45`;
+  session 1 was 51,334 lines / 8,030,626 bytes / SHA-256
+  `ffdd9dbd32a42b8303552a3672374d87f8d2796b62b5f43a2ee96e93e2d16eda`.
+  The newly produced archive, report, stream, and snapshot-checkpoint artifact
+  hashes also matched across hosts (`384d3029…6b2`, `b3032b4a…c46`,
+  `584e0d3a…8b2`, and `ae8d699c…b783`, respectively). Both campaigns and all
+  four control sessions exited cleanly. This is the first evidence that covers
+  the entire executed normalized/checkpoint sequence rather than inferring it
+  from the final VMM suffix or endpoint state.
 - **FAIL — immediate cross-host restore `state_hash` equality:** not started.
 - **FAIL — both-direction uninterrupted continuation comparison:** not started.
 - **PASS — planted cross-host increment mismatch:** the production normalized
