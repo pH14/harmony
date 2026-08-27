@@ -262,9 +262,51 @@ fn print_window(tag: &str, log: &NormalizedLog, idx: u64) {
     }
 }
 
+/// Serialize the boot's full normalized log and terminal state breakdown to
+/// `path`, one line per record. Uploaded as a per-replica artifact, two of
+/// these are the X3 cross-vendor comparison: an Intel draw's file and an AMD
+/// draw's file must be byte-identical.
+fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for e in &run.log.events {
+        writeln!(
+            out,
+            "EVENT {} {:?} {} {} {:?} {}",
+            e.event_index,
+            e.class,
+            hex(&e.payload_digest),
+            e.vns_after,
+            e.interrupts,
+            e.state_hash.map(|h| hex(&h)).unwrap_or_else(|| "-".into()),
+        )
+        .expect("write to string");
+    }
+    for (label, digest) in vmm.state_components() {
+        writeln!(out, "COMPONENT {label} {}", hex(&digest)).expect("write to string");
+    }
+    if let Ok(vcpu) = vmm.vcpu_record() {
+        for (idx, val) in &vcpu.msrs {
+            writeln!(out, "MSR {idx:#x} {val:#x}").expect("write to string");
+        }
+        writeln!(out, "XSAVE_LEN {}", vcpu.xsave.len()).expect("write to string");
+        if vcpu.xsave.len() >= 528 {
+            let bv = u64::from_le_bytes(vcpu.xsave[512..520].try_into().expect("8 bytes"));
+            let comp = u64::from_le_bytes(vcpu.xsave[520..528].try_into().expect("8 bytes"));
+            let mask = u32::from_le_bytes(vcpu.xsave[28..32].try_into().expect("4 bytes"));
+            writeln!(out, "XSAVE_HDR {bv:#x} {comp:#x} MXCSR_MASK {mask:#x}")
+                .expect("write to string");
+        }
+    }
+    writeln!(out, "DIGEST {}", hex(&run.digest)).expect("write to string");
+    std::fs::write(path, out).expect("write the normalized-log dump");
+    println!("X2_LOG_DUMP {path}");
+}
+
 /// **X2 tier 1 — the smoke measurement.** One prescriptive stock boot must run
 /// Linux to userspace and a clean terminal, with the trace recording every
 /// exit. Reports the trace size and wall cost that size the tier-2 fleet.
+/// With `X2_LOG_DUMP` set, writes the [`dump_normalized_log`] artifact there.
 #[test]
 #[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
 fn x2_prescriptive_stock_boot_smoke() {
@@ -273,8 +315,13 @@ fn x2_prescriptive_stock_boot_smoke() {
     let initramfs = require_artifact("initramfs.cpio.gz");
     eprintln!("[x2] cmdline: {CMDLINE}");
 
-    let run = boot_once(&kernel, &initramfs, true);
+    let mut vmm = boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+        .expect("boot_linux_stock_prescriptive");
+    let run = run_boot(&mut vmm, true);
     report_run("smoke", &run);
+    if let Ok(path) = std::env::var("X2_LOG_DUMP") {
+        dump_normalized_log(&path, &run, &vmm);
+    }
     println!("X2_SMOKE_TERMINAL={:?}", run.reason);
     println!("X2_SMOKE_STEPS={}", run.steps);
     println!("X2_SMOKE_EVENTS={}", run.log.events.len());
