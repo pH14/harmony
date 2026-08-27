@@ -1208,6 +1208,38 @@ on this branch may contain, fetch, or require a NES ROM.
    `Injection::Interrupt` → `KVM_INTERRUPT`, and `plan_irq_entry`'s
    interrupt-window handshake defers entry until the guest is interruptible.
    No new delivery mechanism is introduced for X1.
+5. **The prescriptive Linux composition skips the §1.1 `det-cfl-v1` host
+   gate.** `boot_linux_stock_prescriptive` composes via `compose_linux`
+   without `hostassert::enforce()`: that baseline freezes one physical CPU for
+   the descriptive determinism claim, while this model's claim is defined over
+   the exit stream plus the frozen CPUID/MSR contract and is exercised on
+   heterogeneous commodity hosts. Residual native-behavior divergence is
+   exactly what the X2/X3 gates measure.
+6. **The x86 prescriptive per-class durations are the arm64 row values**
+   (`vendor::x86::contract`: interrupt-controller 1000, serial 2000,
+   paravirtual 1000, trapped time read 1, architectural control 1000),
+   carried over unchanged pending an x86-specific ruling. Only the assignment
+   structure — one constant per class, exactly once per classified exit — is
+   contractual today.
+7. **x86 arch-exit normalized payloads carry a leading variant discriminant
+   byte.** `X86Exit` has eight variants and several share a normalized class
+   (`Rdtsc`/`Rdtscp`; `Rdrand`/`Rdseed`); the discriminant keeps any two
+   variants from aliasing byte-for-byte. arm64's single-variant arch exit
+   needs none, so its payload shape is unchanged.
+8. **V-time intercepts read `VtimeWiring::intercept_work()`** — the live
+   counter on the descriptive path, constant zero on the prescriptive path
+   (the whole clock lives in `vns_base`). This is what lets the
+   `emulate-vtime` TSC MSRs, which Linux reads early in boot, be serviced on
+   the prescriptive stock path without a hardware work counter. Descriptive
+   behavior is byte-identical.
+9. **X2 runs measure-first.** The smoke tier (one prescriptive stock boot to
+   `/init` and a clean terminal) is the workflow gate; the determinism tier
+   (same-seed boots → one normalized log) runs informationally at three boots
+   until the smoke tier is stable, then goes to ten as the gate. Known
+   remaining for the seal: the Vmm-path trace records no interrupt schedule
+   on x86 yet (`trace_arm_clockevent_*` is arm64 clockevent wiring), so
+   delivery placement rides the state-hash/vns comparison until the LAPIC
+   timer is wired into the trace's schedule oracle.
 
 ## X0 — runner probe
 
@@ -1291,3 +1323,36 @@ X0 is PASS.
   X3's claim.
 
 X1 is PASS.
+
+## X2 — Linux boots to /init deterministically on the runner (in progress)
+
+### Build criteria
+
+- x86 vendor prescriptive wiring (commit `a282c83c`):
+  `normalize_prescriptive_exit_x86` + the `Vendor` hook, per-class assigned
+  advancement in the port/MMIO/MSR/CPUID dispatch handlers, the per-class
+  duration constants (recorded decision 6), and the
+  `boot_linux_stock_prescriptive` composition root (recorded decision 5).
+- `consonance/vmm-core/tests/x86_kvm_linux_prescriptive.rs`: the smoke tier
+  boots the committed image once under prescriptive V-time on stock KVM and
+  asserts userspace + a clean terminal; the determinism tier compares N
+  same-seed boots' normalized logs and prints the first divergent event with
+  a surrounding window from both runs.
+- Workflow jobs: `guest-image` builds and caches the bzImage + initramfs on
+  the runner (commit `1ff852e9`); `x2-linux-prescriptive` restores the cache
+  and runs both tiers in release (the trace's 256-event checkpoints hash the
+  full 256 MiB RAM).
+
+### Passes-when criteria (goal doc X2)
+
+- Ten same-seed boots to `/init` produce one normalized log: identical event
+  classes/payloads, identical assigned V-time, identical checkpoint state
+  hashes, no watchdog, on at least one Intel draw and one AMD draw.
+- The expected initial divergence sources are the audited stock-KVM counter
+  reads (`harmony-linux/linux/rdtsc-allowlist.txt`: `native_sched_clock`,
+  `random_init`, `try_to_generate_entropy`, `ret_from_fork` classes execute
+  natively); the measurement tiers exist to rank them before closure work.
+
+### X2 command evidence
+
+- Pending: first runner measurement.
