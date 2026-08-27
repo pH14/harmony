@@ -242,9 +242,16 @@ const XCOMP_BV: usize = 520;
 const X87_CONTROL: std::ops::Range<usize> = 0..24;
 /// ST0–ST7 in the legacy area.
 const X87_ST: std::ops::Range<usize> = 32..160;
-/// MXCSR in the legacy area (SSE component; `MXCSR_MASK` at 28 is a host
-/// capability constant, not guest state).
+/// MXCSR in the legacy area (SSE component).
 const SSE_MXCSR: std::ops::Range<usize> = 24..28;
+/// `MXCSR_MASK` in the legacy area: a host capability constant `FXSAVE`/`XSAVE`
+/// write into the image, not guest state, and the restore path ignores it.
+const MXCSR_MASK: std::ops::Range<usize> = 28..32;
+/// The frozen contract's pinned `MXCSR_MASK` (`docs/CPU-MSR-CONTRACT.md` §2,
+/// "FPU/XSAVE save-image determinism"). Intel parts report this value; AMD
+/// parts report `0x0002FFFF` (bit 17, misaligned-SSE), so an un-pinned image
+/// diverges across vendors.
+const MXCSR_MASK_PINNED: [u8; 4] = 0x0000FFFFu32.to_le_bytes();
 /// XMM0–XMM15 in the legacy area.
 const SSE_XMM: std::ops::Range<usize> = 160..416;
 /// x87 init state: `FCW = 0x037F`, every other control word and ST register 0.
@@ -264,12 +271,17 @@ const SSE_INIT_MXCSR: [u8; 4] = 0x1F80u32.to_le_bytes();
 /// bytes in `VcpuState`, so both encodings must collapse to one: a component
 /// whose area holds the init values gets its bit cleared, and a component
 /// whose bit is clear gets the init values written into its ignored area.
+/// `MXCSR_MASK` — a host capability constant the save instruction writes, which
+/// differs across vendors — is pinned to the contract value for the same
+/// reason: it is not guest state, and restore ignores it.
 /// Compacted-format images (nonzero `XCOMP_BV`) have a different layout and
 /// are left untouched.
 pub fn canonicalize_xsave(image: &mut [u8]) {
     if image.len() < XCOMP_BV + 8 || image[XCOMP_BV..XCOMP_BV + 8] != [0u8; 8] {
         return;
     }
+
+    image[MXCSR_MASK].copy_from_slice(&MXCSR_MASK_PINNED);
 
     let is_zero = |r: std::ops::Range<usize>, image: &[u8]| image[r].iter().all(|&b| b == 0);
     let x87_init = |image: &[u8]| {
@@ -344,10 +356,12 @@ mod tests {
     }
 
     #[test]
-    fn mxcsr_mask_survives_canonicalization() {
+    fn mxcsr_mask_is_pinned_to_the_contract_value() {
+        // The measured cross-vendor divergence: AMD writes 0x2FFFF, Intel 0xFFFF.
         let mut image = init_image(0x2);
+        image[MXCSR_MASK].copy_from_slice(&0x0002FFFFu32.to_le_bytes());
         canonicalize_xsave(&mut image);
-        assert_eq!(image[28..32], 0xFFFFu32.to_le_bytes());
+        assert_eq!(image[MXCSR_MASK], MXCSR_MASK_PINNED);
     }
 
     #[test]

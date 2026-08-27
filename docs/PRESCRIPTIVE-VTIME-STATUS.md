@@ -1409,6 +1409,44 @@ on this branch may contain, fetch, or require a NES ROM.
    capture exists (issue #199). This is the goal doc's X3 RDRAND
    prohibition audit.
 
+21. **The §2.4 disposition table for the x86 stock prescriptive
+   composition.** Each untrusted-instruction channel of
+   `docs/VM-EXIT-COUNT-VTIME.md` §2.4, its closure layer, and the
+   disposition on stock KVM:
+
+   | Channel | Instructions | Layer | Disposition |
+   |---|---|---|---|
+   | Identity | `CPUID` | 1 | Intercepted unconditionally on both vendors (architectural on VMX; SVM arms the intercept at vcpu init). Every leaf is answered from the frozen §2 `det-cfl-v1` model with the decision-15 hardware-RNG variant; the model's other hidden features (MONITOR/MWAIT, PMU leaf 0xA v0, PT, ARCH_LBR) ride the same trap. Identical on both vendors by construction. |
+   | Time | `RDTSC`, `RDTSCP` | 1 + 2 | Stock KVM leaves both native, so the raw value is host-real; the closure is that no guest code consults it. Patch 0001 under `harmony_pvclock` leaves the raw TSC entirely (decisions 12, 16), and the exact-accounting scan enumerates every image site against the reviewed allowlist (decisions 10, 13). Layer 3 (`CR4.TSD`) is not engaged: the only userspace is the image's own static busybox `/init`. |
+   | Machine measurement | `RDPMC` | 1 + 4 | The frozen model's leaf 0xA is version 0, so conforming code never issues it, and stock KVM intercepts it unconditionally on both vendors (VMX: `CPU_BASED_RDPMC_EXITING` is in KVM's required exec-control set; SVM: `INTERCEPT_RDPMC` at vcpu init), emulating against the empty vPMU. |
+   | Entropy | `RDRAND`, `RDSEED` | 1 + 2, residual | The §2.4 named residual: SVM cannot intercept them, stock KVM never arms the VMX exiting controls, and there is no user-mode disable. Decision-15 CPUID hiding makes every feature-gated site dead code; the decision-20 scan proves every image site is feature-gated. The residual — an unaudited binary ignoring the pinned feature bits — does not exist on X-milestone workloads (the initramfs is the pinned static busybox) and falls to the cooperative posture in general. |
+   | Identity | `MXCSR_MASK` (the `FXSAVE`/`XSAVE` image byte) | pin at save | Uninterceptable and vendor-distinct; decision 22. |
+
+   The initramfs binaries (busybox, libvoidstar) are built from pinned
+   sources in the image bake but are outside the opcode scan today; the
+   scan covers the kernel proper plus the setup and decompressor stubs.
+   Extending the scan over the initramfs is issue #200.
+
+22. **`MXCSR_MASK` is pinned in the saved XSAVE image.** The first
+   both-vendor log pair (run 33098100923: one 8573C draw, AMD 7763 and
+   9V74 draws) shows the X2 event streams already byte-identical across
+   vendors — every `EVENT` line matches, class, payload digest,
+   `vns_after`, interrupts — with the state hash diverging in exactly
+   three components: `xsave-legacy`, `segments`, and RAM. The
+   `xsave-legacy` cause is `MXCSR_MASK` at legacy-area offset 28: AMD
+   writes `0x2FFFF` (bit 17, misaligned SSE), Intel `0xFFFF`. The
+   contract already rules the field (`docs/CPU-MSR-CONTRACT.md` §2,
+   "FPU/XSAVE save-image determinism"): pinned `0x0000FFFF`, asserted on
+   the host at VM start. The runner pool spans both vendors and decision 5
+   skips the host assert, so the pin moves to the save boundary:
+   `canonicalize_xsave` writes the contract value into the image field,
+   which `FXRSTOR`/`XRSTOR` ignore on restore. The guest kernel's own
+   `FXSAVE` at FPU init still reads the host value into guest RAM
+   (`mxcsr_feature_mask` and its `init_fpstate` copy); that is part of the
+   open RAM component, measured next by the per-page fingerprint dump.
+   The `segments` component (vendor-distinct hidden attributes, the
+   SYSRET class) is also open pending the same dump.
+
 ## X0 — runner probe
 
 ### Build criteria
