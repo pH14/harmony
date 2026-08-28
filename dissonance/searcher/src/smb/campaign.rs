@@ -1183,6 +1183,7 @@ mod tests {
         smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
         target::Target,
     };
+    use sha2::{Digest, Sha256};
 
     fn synthetic_nrom() -> Vec<u8> {
         let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
@@ -1537,6 +1538,13 @@ mod tests {
         let live_bytes = serde_json::to_vec_pretty(&live).expect("serialize live report");
         let replay_bytes = serde_json::to_vec_pretty(&replayed).expect("serialize replayed report");
         assert_eq!(live_bytes, replay_bytes);
+        let malformed = String::from_utf8(stream.clone())
+            .expect("stream is utf-8")
+            .replacen("\"workers\":4", "\"workers\":0", 1);
+        assert!(
+            replay_smb_campaign(&rom, malformed.as_bytes(), None).is_err(),
+            "replay must reject a stream with no recorded workers"
+        );
         let accounting = live.archive.selector;
         assert_eq!(
             accounting
@@ -1632,6 +1640,44 @@ mod tests {
             serde_json::to_vec_pretty(&live).expect("serialize live"),
             serde_json::to_vec_pretty(&replayed).expect("serialize replayed")
         );
+    }
+
+    #[test]
+    fn legacy_splice_stream_reconstructs_each_worker_dispatch_frontier() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca23, 4, 96);
+        config.mixture = DrawMixture::EnergySplice { scale: 6 };
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("splice campaign");
+        let text = std::str::from_utf8(&stream).expect("stream is utf-8");
+        let mut lines = text.lines();
+        let mut legacy = String::from(lines.next().expect("stream header"));
+        legacy.push('\n');
+        let mut explicit = 0_usize;
+        for line in lines {
+            let mut record: SmbCampaignStreamRecord =
+                serde_json::from_str(line).expect("stream record parses");
+            match &mut record {
+                SmbCampaignStreamRecord::Job(job) => {
+                    explicit += usize::from(job.splice.take().is_some());
+                }
+                SmbCampaignStreamRecord::Skip(skip) => {
+                    explicit += usize::from(skip.splice.take().is_some());
+                }
+            }
+            legacy.push_str(&serde_json::to_string(&record).expect("legacy record serializes"));
+            legacy.push('\n');
+        }
+        assert!(
+            explicit > 0,
+            "fixture must exercise splice dispatch evidence"
+        );
+        let replayed = replay_smb_campaign(&rom, legacy.as_bytes(), None)
+            .expect("legacy splice stream replays");
+        let mut expected = live;
+        expected.stream_sha256 = format!("{:x}", Sha256::digest(legacy.as_bytes()));
+        assert_eq!(expected, replayed);
     }
 
     #[test]

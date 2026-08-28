@@ -19,7 +19,7 @@
 //! search layer reads.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
     io::Write,
@@ -44,7 +44,7 @@ use crate::search::draw::{
 /// Longest stored tail one splice draw appends, bounding a single job.
 pub const SPLICE_ACTION_CAP: usize = 128;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
-use crate::search::parallel::with_worker_pool;
+use crate::search::parallel::{WorkerPool, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 
 /// A campaign's finished report and its whole-tree snapshot checkpoint.
@@ -1599,6 +1599,12 @@ struct JobSpec<G: Game + ?Sized> {
     suffix: Vec<G::Action>,
 }
 
+/// One replay job assigned to a private physical worker.
+struct ReplayJobSpec<G: Game + ?Sized> {
+    record_index: usize,
+    job: JobSpec<G>,
+}
+
 /// A selected job's worker specification and its coordinator-side record.
 type SelectedJob<G> = (JobSpec<G>, PendingJob);
 
@@ -1641,6 +1647,186 @@ fn replay_splice<G: Game>(
             .splice_tail_for_campaign(parent, max_actions, SPLICE_ACTION_CAP)
             .map(|splice| splice.actions)),
     }
+}
+
+/// Prepare one recorded job at its reconstructed dispatch frontier.
+#[allow(clippy::too_many_arguments)]
+fn prepare_replay_job<G: Game>(
+    game: &G,
+    core: &mut CoordinatorCore<G>,
+    draw_state: &G::DrawState,
+    run: &G::Run,
+    suffix_shape: SuffixShape,
+    mixture: DrawMixture,
+    action_limit: usize,
+    job: &CampaignJobRecord,
+) -> Result<JobSpec<G>, Box<dyn Error>> {
+    let draw_checkpoint = game.draw_checkpoint(draw_state)?;
+    if draw_checkpoint != job.draw_table_before {
+        return Err(format!(
+            "recorded job {} was not dispatched at its recorded draw-table checkpoint",
+            job.sequence
+        )
+        .into());
+    }
+    let parent_index = usize::try_from(job.parent_id)?;
+    let entry = core
+        .archive
+        .entries
+        .get(parent_index)
+        .ok_or("recorded job names a parent absent at its dispatch frontier")?;
+    let snapshot = entry.snapshot.clone();
+    let parent_actions = entry.report.input.actions.len();
+    let parent_milestones = entry.report.milestones;
+    let strategy = energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
+    let spliced = replay_splice(core, parent_index, action_limit, strategy, job.splice)?;
+    let suffix = match spliced {
+        Some(tail) => tail,
+        None => game.expand_suffix_recorded(
+            run,
+            draw_state,
+            suffix_shape,
+            MixtureDraw {
+                mixture,
+                weight: job.mixture_weight,
+                splice_weight: job.splice_weight,
+            },
+            job.draw_table_before.as_ref(),
+            job.mutation_seed,
+        )?,
+    };
+    Ok(JobSpec {
+        snapshot,
+        parent_actions,
+        parent_milestones,
+        suffix,
+    })
+}
+
+/// Verify and apply one duplicate skip at its reconstructed selection point.
+#[allow(clippy::too_many_arguments)]
+fn replay_skip_record<G: Game>(
+    game: &G,
+    core: &mut CoordinatorCore<G>,
+    draw_state: &mut G::DrawState,
+    counters: &mut CampaignCounters,
+    required_draw_versions: &BTreeSet<u64>,
+    run: &G::Run,
+    suffix_shape: SuffixShape,
+    mixture: DrawMixture,
+    action_limit: usize,
+    skip: &CampaignSkipRecord,
+) -> Result<(), Box<dyn Error>> {
+    let draw_checkpoint = game.draw_checkpoint(draw_state)?;
+    if draw_checkpoint != skip.draw_table_before {
+        return Err("recorded skip is not at its recorded draw-table checkpoint".into());
+    }
+    let parent_index = usize::try_from(skip.parent_id)?;
+    if parent_index >= core.archive.entries.len() {
+        return Err("recorded skip names a parent absent at its selection frontier".into());
+    }
+    let strategy = energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
+    let spliced = replay_splice(core, parent_index, action_limit, strategy, skip.splice)?;
+    let suffix = match spliced {
+        Some(tail) => tail,
+        None => game.expand_suffix_recorded(
+            run,
+            draw_state,
+            suffix_shape,
+            MixtureDraw {
+                mixture,
+                weight: skip.mixture_weight,
+                splice_weight: skip.splice_weight,
+            },
+            skip.draw_table_before.as_ref(),
+            skip.mutation_seed,
+        )?,
+    };
+    if !core.all_prefixes_archived(parent_index, &suffix) {
+        return Err("recorded skip is not a duplicate at its stream position".into());
+    }
+    let worker = usize::try_from(skip.worker)?;
+    if worker >= counters.skips_per_worker.len() {
+        return Err("recorded skip names an unknown worker".into());
+    }
+    verify_selector_annotation(&skip.selector)?;
+    core.archive.record_selection(parent_index, &skip.selector);
+    counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
+    counters.skips_per_worker[worker] = counters.skips_per_worker[worker].saturating_add(1);
+    let draw_table_after = game.finish_stream_record(run, draw_state, &[])?;
+    if draw_table_after != skip.draw_table_after {
+        return Err("replayed skip draw-table checkpoint diverged".into());
+    }
+    game.remember_draw_version(draw_state, required_draw_versions)?;
+    Ok(())
+}
+
+/// Prepare and enqueue one recorded worker's next logical in-flight job.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_replay_job<G: Game>(
+    game: &G,
+    core: &mut CoordinatorCore<G>,
+    draw_state: &G::DrawState,
+    run: &G::Run,
+    suffix_shape: SuffixShape,
+    mixture: DrawMixture,
+    action_limit: usize,
+    records: &[CampaignStreamRecord],
+    jobs_by_worker: &mut [VecDeque<usize>],
+    pending: &mut [Option<usize>],
+    worker: usize,
+    stream_cursor: usize,
+    replay_workers: u32,
+    pool: &WorkerPool<ReplayJobSpec<G>, (usize, CampaignJobResult<G>, u64)>,
+) -> Result<bool, Box<dyn Error>> {
+    if pending
+        .get(worker)
+        .ok_or("recorded replay worker is outside the pending table")?
+        .is_some()
+    {
+        return Err("recorded worker already has an in-flight replay job".into());
+    }
+    let Some(record_index) = jobs_by_worker
+        .get_mut(worker)
+        .ok_or("recorded replay worker is outside the job table")?
+        .pop_front()
+    else {
+        return Ok(false);
+    };
+    if record_index < stream_cursor {
+        return Err("recorded worker job queue fell behind the stream cursor".into());
+    }
+    let CampaignStreamRecord::Job(job) = records
+        .get(record_index)
+        .ok_or("recorded replay job index is outside the stream")?
+    else {
+        return Err("recorded replay job queue names a skip".into());
+    };
+    if usize::try_from(job.worker)? != worker {
+        return Err("recorded replay job queue names another worker".into());
+    }
+    let spec = prepare_replay_job(
+        game,
+        core,
+        draw_state,
+        run,
+        suffix_shape,
+        mixture,
+        action_limit,
+        job,
+    )?;
+    *pending
+        .get_mut(worker)
+        .ok_or("recorded replay worker is outside the pending table")? = Some(record_index);
+    let physical_worker = u32::try_from(worker)? % replay_workers;
+    pool.send(
+        physical_worker,
+        ReplayJobSpec {
+            record_index,
+            job: spec,
+        },
+    )?;
+    Ok(true)
 }
 
 /// One periodic observation of a live run.
@@ -2110,12 +2296,14 @@ fn finish_record<G: Game>(
     game.finish_stream_record(run, draw_state, &retained_inputs)
 }
 
-/// Replay a recorded campaign stream serially and rebuild its report.
+/// Replay a recorded campaign stream and rebuild its report.
 ///
-/// Replay re-executes every recorded job from (parent id, mutation seed) on a
-/// single target, verifies each result digest and frame count byte for byte,
-/// re-applies the retention rules, and verifies every recomputed
-/// admission decision against the recorded one. Any mismatch is an error.
+/// Replay re-executes every recorded job from (parent id, mutation seed),
+/// verifies each result digest and frame count byte for byte, re-applies the
+/// retention rules, and verifies every recomputed admission decision against
+/// the recorded one. Independent jobs may execute in parallel, but their
+/// results are always verified and admitted in stream order. Any mismatch is
+/// an error.
 ///
 /// When the recorded header names a snapshot checkpoint, `origin_checkpoint`
 /// must be that file and its hash must match; a replay without it re-emulates
@@ -2140,13 +2328,14 @@ where
     let mut lines = text.lines();
     let header: CampaignStreamHeader<G::TableHeader> =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
-    let record_lines = lines.collect::<Vec<_>>();
+    let records = lines
+        .map(serde_json::from_str)
+        .collect::<Result<Vec<CampaignStreamRecord>, _>>()?;
     let mut required_draw_versions = BTreeSet::new();
-    for line in &record_lines {
-        let record: CampaignStreamRecord = serde_json::from_str(line)?;
+    for record in &records {
         let before = match record {
-            CampaignStreamRecord::Job(job) => job.draw_table_before,
-            CampaignStreamRecord::Skip(skip) => skip.draw_table_before,
+            CampaignStreamRecord::Job(job) => job.draw_table_before.as_ref(),
+            CampaignStreamRecord::Skip(skip) => skip.draw_table_before.as_ref(),
         };
         if let Some(before) = before {
             required_draw_versions.insert(before.records);
@@ -2219,6 +2408,9 @@ where
     game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
     let mut core = CoordinatorCore::new(game, header.action_limit, header.archive_entry_limit);
     core.archive.selector_policy = replay_selector.clone();
+    if header.workers == 0 {
+        return Err("campaign replay requires at least one recorded worker".into());
+    }
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -2226,105 +2418,143 @@ where
     let frames_before = game.frames_clocked(&target);
     counters.tree_import = bootstrap_core(game, &mut core, &mut target, &replay_origin)?;
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    drop(target);
 
-    for line in record_lines {
-        let record: CampaignStreamRecord = serde_json::from_str(line)?;
-        match record {
-            CampaignStreamRecord::Skip(skip) => {
-                let parent_index = usize::try_from(skip.parent_id)?;
-                if parent_index >= core.archive.entries.len() {
-                    return Err("recorded skip names a parent the archive does not hold".into());
-                }
-                let strategy =
-                    energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
-                let spliced = replay_splice(
-                    &mut core,
-                    parent_index,
-                    header.action_limit,
-                    strategy,
-                    skip.splice,
-                )?;
-                let suffix = match spliced {
-                    Some(tail) => tail,
-                    None => game.expand_suffix_recorded(
+    let available_workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let replay_workers = header
+        .workers
+        .min(u32::try_from(available_workers).unwrap_or(u32::MAX));
+    let recorded_workers = usize::try_from(header.workers)?;
+    let mut jobs_by_worker = Vec::with_capacity(recorded_workers);
+    jobs_by_worker.resize_with(recorded_workers, VecDeque::new);
+    for (record_index, record) in records.iter().enumerate() {
+        let worker = usize::try_from(match record {
+            CampaignStreamRecord::Job(job) => job.worker,
+            CampaignStreamRecord::Skip(skip) => skip.worker,
+        })?;
+        if worker >= recorded_workers {
+            return Err("campaign stream record names an unknown worker".into());
+        }
+        if matches!(record, CampaignStreamRecord::Job(_)) {
+            jobs_by_worker[worker].push_back(record_index);
+        }
+    }
+    let mut cursor = 0_usize;
+    let mut pending = vec![None; recorded_workers];
+    let mut completed = Vec::with_capacity(records.len());
+    completed.resize_with(records.len(), || None);
+    with_worker_pool(
+        replay_workers,
+        |_| game.new_target(),
+        |target, replay: ReplayJobSpec<G>| {
+            let frames_before = game.frames_clocked(target);
+            game.execute_job(
+                target,
+                &replay.job.snapshot,
+                replay.job.parent_actions,
+                replay.job.parent_milestones,
+                &replay.job.suffix,
+                header.action_limit,
+                replay_retention,
+            )
+            .map(|result| {
+                (
+                    replay.record_index,
+                    result,
+                    game.frames_clocked(target).saturating_sub(frames_before),
+                )
+            })
+            .map_err(|error| error.to_string())
+        },
+        |pool| -> Result<(), Box<dyn Error>> {
+            // Live dispatch visits every worker once before waiting for the
+            // first completion. Its duplicate skips are written immediately,
+            // while the corresponding job record appears only on admission.
+            for worker in 0..recorded_workers {
+                while let Some(CampaignStreamRecord::Skip(skip)) = records.get(cursor) {
+                    if usize::try_from(skip.worker)? != worker {
+                        break;
+                    }
+                    replay_skip_record(
+                        game,
+                        &mut core,
+                        &mut draw_state,
+                        &mut counters,
+                        &required_draw_versions,
                         &replay_run,
-                        &draw_state,
                         replay_suffix,
-                        MixtureDraw {
-                            mixture: replay_mixture,
-                            weight: skip.mixture_weight,
-                            splice_weight: skip.splice_weight,
-                        },
-                        skip.draw_table_before.as_ref(),
-                        skip.mutation_seed,
-                    )?,
-                };
-                if !core.all_prefixes_archived(parent_index, &suffix) {
-                    return Err("recorded skip is not a duplicate at its stream position".into());
+                        replay_mixture,
+                        header.action_limit,
+                        skip,
+                    )?;
+                    cursor = cursor
+                        .checked_add(1)
+                        .ok_or("replay record cursor overflowed")?;
                 }
-                let worker = usize::try_from(skip.worker)?;
-                if worker >= counters.skips_per_worker.len() {
-                    return Err("recorded skip names an unknown worker".into());
-                }
-                verify_selector_annotation(&skip.selector)?;
-                core.archive.record_selection(parent_index, &skip.selector);
-                counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
-                counters.skips_per_worker[worker] =
-                    counters.skips_per_worker[worker].saturating_add(1);
-                let draw_table_after =
-                    game.finish_stream_record(&replay_run, &mut draw_state, &[])?;
-                if draw_table_after != skip.draw_table_after {
-                    return Err("replayed skip draw-table checkpoint diverged".into());
-                }
-                game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
+                dispatch_replay_job(
+                    game,
+                    &mut core,
+                    &draw_state,
+                    &replay_run,
+                    replay_suffix,
+                    replay_mixture,
+                    header.action_limit,
+                    &records,
+                    &mut jobs_by_worker,
+                    &mut pending,
+                    worker,
+                    cursor,
+                    replay_workers,
+                    pool,
+                )?;
             }
-            CampaignStreamRecord::Job(job) => {
-                let parent_index = usize::try_from(job.parent_id)?;
-                let entry = core
-                    .archive
-                    .entries
-                    .get(parent_index)
-                    .ok_or("recorded job names a parent the archive does not hold")?;
-                let snapshot = entry.snapshot.clone();
-                let parent_actions = entry.report.input.actions.len();
-                let parent_milestones = entry.report.milestones;
-                let strategy =
-                    energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
-                let spliced = replay_splice(
-                    &mut core,
-                    parent_index,
-                    header.action_limit,
-                    strategy,
-                    job.splice,
-                )?;
-                let suffix = match spliced {
-                    Some(tail) => tail,
-                    None => game.expand_suffix_recorded(
-                        &replay_run,
-                        &draw_state,
-                        replay_suffix,
-                        MixtureDraw {
-                            mixture: replay_mixture,
-                            weight: job.mixture_weight,
-                            splice_weight: job.splice_weight,
-                        },
-                        job.draw_table_before.as_ref(),
-                        job.mutation_seed,
-                    )?,
+            if matches!(records.get(cursor), Some(CampaignStreamRecord::Skip(_))) {
+                return Err(
+                    "initial replay skips are not in recorded-worker dispatch order".into(),
+                );
+            }
+
+            while cursor < records.len() {
+                let CampaignStreamRecord::Job(job) = records
+                    .get(cursor)
+                    .ok_or("replay record cursor is outside the stream")?
+                else {
+                    return Err("replay encountered a skip outside a dispatch event".into());
                 };
-                let job_frames_before = game.frames_clocked(&target);
-                let result = game.execute_job(
-                    &mut target,
-                    &snapshot,
-                    parent_actions,
-                    parent_milestones,
-                    &suffix,
-                    header.action_limit,
-                    replay_retention,
-                )?;
-                let frames = game
-                    .frames_clocked(&target)
-                    .saturating_sub(job_frames_before);
+                let worker = usize::try_from(job.worker)?;
+                if pending
+                    .get(worker)
+                    .ok_or("recorded job names an unknown worker")?
+                    != &Some(cursor)
+                {
+                    return Err("recorded job was not pending at its admission position".into());
+                }
+
+                while completed
+                    .get(cursor)
+                    .ok_or("replay completion cursor is outside the stream")?
+                    .is_none()
+                {
+                    let reply = pool.receive()?;
+                    let (record_index, result, frames) =
+                        reply.outcome.map_err(|error| -> Box<dyn Error> {
+                            format!("campaign replay worker {} failed: {error}", reply.worker)
+                                .into()
+                        })?;
+                    let output = completed
+                        .get_mut(record_index)
+                        .ok_or("replay worker returned an unknown record index")?;
+                    if output.is_some() {
+                        return Err("replay worker returned a duplicate job result".into());
+                    }
+                    *output = Some((result, frames));
+                }
+
+                let (result, frames) = completed
+                    .get_mut(cursor)
+                    .ok_or("replay completion cursor is outside the stream")?
+                    .take()
+                    .ok_or("replay job result is missing")?;
                 if frames != job.frames {
                     return Err(format!(
                         "replayed job {} emulated {frames} frames against recorded {}",
@@ -2366,6 +2596,7 @@ where
                 }
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
+                let parent_index = usize::try_from(job.parent_id)?;
                 core.archive.record_selection(parent_index, &job.selector);
                 let retained_ids = decisions
                     .iter()
@@ -2384,16 +2615,73 @@ where
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id)),
                 );
-                let worker = usize::try_from(job.worker)?;
-                if worker >= counters.jobs_per_worker.len() {
-                    return Err("recorded job names an unknown worker".into());
-                }
                 counters.jobs_per_worker[worker] =
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
+                *pending
+                    .get_mut(worker)
+                    .ok_or("recorded job names an unknown worker")? = None;
+                cursor = cursor
+                    .checked_add(1)
+                    .ok_or("replay record cursor overflowed")?;
+
+                let mut skips = 0_usize;
+                while let Some(CampaignStreamRecord::Skip(skip)) = records.get(cursor) {
+                    if usize::try_from(skip.worker)? != worker {
+                        break;
+                    }
+                    replay_skip_record(
+                        game,
+                        &mut core,
+                        &mut draw_state,
+                        &mut counters,
+                        &required_draw_versions,
+                        &replay_run,
+                        replay_suffix,
+                        replay_mixture,
+                        header.action_limit,
+                        skip,
+                    )?;
+                    skips = skips.checked_add(1).ok_or("replay skip count overflowed")?;
+                    cursor = cursor
+                        .checked_add(1)
+                        .ok_or("replay record cursor overflowed")?;
+                }
+                if matches!(records.get(cursor), Some(CampaignStreamRecord::Skip(_))) {
+                    return Err("replay skip names a worker without a completion event".into());
+                }
+                let dispatched = dispatch_replay_job(
+                    game,
+                    &mut core,
+                    &draw_state,
+                    &replay_run,
+                    replay_suffix,
+                    replay_mixture,
+                    header.action_limit,
+                    &records,
+                    &mut jobs_by_worker,
+                    &mut pending,
+                    worker,
+                    cursor,
+                    replay_workers,
+                    pool,
+                )?;
+                if skips > 0 && !dispatched {
+                    return Err("recorded skips are not followed by a worker job".into());
+                }
             }
-        }
-    }
+            if pending.iter().any(Option::is_some)
+                || jobs_by_worker.iter().any(|jobs| !jobs.is_empty())
+            {
+                return Err("replay ended with undisposed recorded worker jobs".into());
+            }
+            for worker in 0..replay_workers {
+                pool.close(worker)?;
+            }
+            Ok(())
+        },
+    )?;
+
     core.finish_curve();
 
     let origin = CampaignOriginRecord {
