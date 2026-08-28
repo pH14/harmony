@@ -26,7 +26,7 @@ operations = ["MRS CNTVCT_EL0", "MRS CNTVCTSS_EL0"]
 claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code reads the pvclock page, executable-image scans reject raw reads, and EL0 counter access is disabled."
-evidence = ["harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
+evidence = ["consonance/harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
 verification = "tested-image-audit; traps-off negative and JIT probe untested"
 
 [[instruction]]
@@ -37,7 +37,7 @@ operations = ["MRS CNTPCT_EL0", "MRS CNTPCTSS_EL0"]
 claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code reads the pvclock page, executable-image scans reject raw reads, and EL0 physical-counter access is disabled."
-evidence = ["harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
+evidence = ["consonance/harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
 verification = "tested-image-audit; traps-off negative and JIT probe untested"
 
 [[instruction]]
@@ -48,7 +48,7 @@ operations = ["MSR CNTV_TVAL_EL0", "MSR CNTV_CVAL_EL0", "MSR CNTP_TVAL_EL0", "MS
 claim = "execute"
 layers = ["protocol", "image-audit"]
 disposition = "The owned kernel programs the deterministic Harmony clockevent; executable-image scans reject programming the host counter domains."
-evidence = ["harmony-linux/scripts/aa5-counter-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
+evidence = ["consonance/harmony-linux/scripts/aa5-counter-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
 verification = "tested-image-audit; generated hostile probe untested"
 
 [[instruction]]
@@ -70,7 +70,7 @@ operations = ["MRS ID_AA64*_EL1", "MRS MIDR_EL1", "MRS MPIDR_EL1", "MRS REVIDR_E
 claim = "execute"
 layers = ["protocol", "hypervisor-policy", "image-audit"]
 disposition = "The backend installs the frozen identity model; implementation revision reads that are not safely virtualized are rejected from owned executable images."
-evidence = ["consonance/vmm-core/src/vendor/arm64/contract.rs", "harmony-linux/scripts/aa5-counter-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M5--bidirectional-HVFKVM-determinism-and-snapshot-portability"]
+evidence = ["consonance/vmm-core/src/vendor/arm64/contract.rs", "consonance/harmony-linux/scripts/aa5-counter-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M5--bidirectional-HVFKVM-determinism-and-snapshot-portability"]
 verification = "cross-host workload evidence and selected image audit exist; complete generated listing and probe untested"
 
 [[instruction]]
@@ -103,7 +103,7 @@ operations = ["LDXR/LDAXR/LDXP/LDAXP", "STXR/STLXR/STXP/STLXP"]
 claim = "execute"
 layers = ["protocol", "image-audit"]
 disposition = "Only side-effect-free EL0 retry loops are admitted by argument; the owned kernel and retry-observing loops remain prohibited, and the latter is a documented cooperative residual."
-evidence = ["harmony-linux/scripts/aa4-exclusive-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
+evidence = ["consonance/harmony-linux/scripts/aa4-exclusive-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
 verification = "tested-image-audit; noisy/quiet convergence and accumulating-retry negative untested"
 
 [[instruction]]

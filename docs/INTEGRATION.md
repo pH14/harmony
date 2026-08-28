@@ -70,7 +70,10 @@ covers only the `VMCALL` *instruction*'s disposition under the determinism backe
 doorbell (the package/type keep their `vmcall` names to avoid churn; the mechanism is port-I/O).
 `RealIoDoorbell` emits the single `OUT`; the `IoDoorbell` seam lets the whole round-trip be
 unit-tested over a mock with no KVM. A `Client<VmcallTransport>` composes with the task-01
-`Client` unchanged.
+`Client` unchanged. On x86 Linux, production applications and agents do not map these pages
+directly: the guest kernel's `/dev/harmony` driver owns them, and its raw-frame ioctl implements
+`Transport` while holding one mutex from request staging through `OUT` and response copy. This
+preserves the same wire frames while preventing an agent from racing an instrumented process.
 
 **Patched-backend variant (task 21):** on `PatchedKvmBackend`/`DirectVmxBackend` the same frame
 semantics may instead ride a `VMCALL` doorbell surfaced as `Exit::Hypercall(HypercallRegs)` (RAX

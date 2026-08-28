@@ -68,7 +68,7 @@ const DOORBELL_MAP_GPA: usize = 0x0000_C000;
 /// The arm64 control memslot is exactly one 16-KiB HVF page.
 const DOORBELL_MAP_LEN: usize = 4 * HC_PAGE;
 
-// The SDK event-id wire layout (task 73), mirrored from `harmony-linux/sdk/src/wire.rs`
+// The SDK event-id wire layout (task 73), mirrored from `consonance/harmony-linux/sdk/src/wire.rs`
 // (the canonical source). The doorbell needs only enough to route a stop: the
 // namespace (top 8 bits of `event_id`) and the assert disposition byte.
 const SDK_NS_SHIFT: u32 = 24;

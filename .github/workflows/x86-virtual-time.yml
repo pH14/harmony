@@ -129,15 +129,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            harmony-linux/build/bzImage
-            harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/linux/rdrand-allowlist.txt', 'harmony-linux/linux/rdrand-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs.cpio.gz
+          key: x86-guest-image-${{ hashFiles('consonance/harmony-linux/linux/versions.lock', 'consonance/harmony-linux/linux/config-fragment', 'consonance/harmony-linux/linux/kata/**', 'consonance/harmony-linux/linux/patches/x86/**', 'consonance/harmony-linux/linux/build-kernel.sh', 'consonance/harmony-linux/linux/build-initramfs.sh', 'consonance/harmony-linux/linux/init.sh', 'consonance/harmony-linux/linux/lib-build.sh', 'consonance/harmony-linux/linux/scan-counter-opcodes.sh', 'consonance/harmony-linux/linux/rdtsc-allowlist.txt', 'consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt', 'consonance/harmony-linux/linux/rdrand-allowlist.txt', 'consonance/harmony-linux/linux/rdrand-allowlist-gha.txt', 'consonance/harmony-linux/scripts/fetch.sh', 'consonance/harmony-linux/scripts/lib.sh') }}
       - name: Restore source cache
         if: steps.image-cache.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
-          path: harmony-linux/dl
-          key: x86-guest-sources-${{ hashFiles('harmony-linux/linux/versions.lock') }}
+          path: consonance/harmony-linux/dl
+          key: x86-guest-sources-${{ hashFiles('consonance/harmony-linux/linux/versions.lock') }}
       # The x86 image consumes only the kernel and busybox tarballs
       # (`lib-build.sh` extract_kernel/extract_busybox); the full `make fetch`
       # pulls several hundred MB of other pinned payloads from mirrors that
@@ -149,10 +149,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flex bison bc libelf-dev libssl-dev
-          . harmony-linux/linux/versions.lock
-          mkdir -p harmony-linux/dl
+          . consonance/harmony-linux/linux/versions.lock
+          mkdir -p consonance/harmony-linux/dl
           fetch() {
-            file="harmony-linux/dl/$(basename "$1")"
+            file="consonance/harmony-linux/dl/$(basename "$1")"
             if [ -f "$file" ] && echo "$2  $file" | sha256sum -c --status; then
               echo "ok: $file (cached, hash verified)"
               return
@@ -163,22 +163,22 @@ jobs:
           fetch "$KERNEL_URL" "$KERNEL_SHA256"
           fetch "$BUSYBOX_URL" "$BUSYBOX_SHA256"
           cc --version | head -1
-          HARMONY_RDTSC_ALLOWLIST=$PWD/harmony-linux/linux/rdtsc-allowlist-gha.txt \
-          HARMONY_RDRAND_ALLOWLIST=$PWD/harmony-linux/linux/rdrand-allowlist-gha.txt \
-            make -C harmony-linux/linux image
+          HARMONY_RDTSC_ALLOWLIST=$PWD/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt \
+          HARMONY_RDRAND_ALLOWLIST=$PWD/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt \
+            make -C consonance/harmony-linux/linux image
       - name: Record image identity
         run: |
-          sha256sum harmony-linux/build/bzImage harmony-linux/build/initramfs.cpio.gz | tee guest-image-report.txt
+          sha256sum consonance/harmony-linux/build/bzImage consonance/harmony-linux/build/initramfs.cpio.gz | tee guest-image-report.txt
           echo "box-built reference hashes (MANIFEST.sha256):" | tee -a guest-image-report.txt
-          cat harmony-linux/linux/MANIFEST.sha256 | tee -a guest-image-report.txt
+          cat consonance/harmony-linux/linux/MANIFEST.sha256 | tee -a guest-image-report.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: x86-guest-image
           path: |
             guest-image-report.txt
-            harmony-linux/build/bzImage
-            harmony-linux/build/initramfs.cpio.gz
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs.cpio.gz
           if-no-files-found: error
 
   # X2: Linux boots to /init under assigned-at-exit V-time on the stock
@@ -205,9 +205,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            harmony-linux/build/bzImage
-            harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/linux/rdrand-allowlist.txt', 'harmony-linux/linux/rdrand-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs.cpio.gz
+          key: x86-guest-image-${{ hashFiles('consonance/harmony-linux/linux/versions.lock', 'consonance/harmony-linux/linux/config-fragment', 'consonance/harmony-linux/linux/kata/**', 'consonance/harmony-linux/linux/patches/x86/**', 'consonance/harmony-linux/linux/build-kernel.sh', 'consonance/harmony-linux/linux/build-initramfs.sh', 'consonance/harmony-linux/linux/init.sh', 'consonance/harmony-linux/linux/lib-build.sh', 'consonance/harmony-linux/linux/scan-counter-opcodes.sh', 'consonance/harmony-linux/linux/rdtsc-allowlist.txt', 'consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt', 'consonance/harmony-linux/linux/rdrand-allowlist.txt', 'consonance/harmony-linux/linux/rdrand-allowlist-gha.txt', 'consonance/harmony-linux/scripts/fetch.sh', 'consonance/harmony-linux/scripts/lib.sh') }}
           fail-on-cache-miss: true
       - name: Install stable toolchain
         run: |
@@ -278,9 +278,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            harmony-linux/build/bzImage
-            harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/linux/rdrand-allowlist.txt', 'harmony-linux/linux/rdrand-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs.cpio.gz
+          key: x86-guest-image-${{ hashFiles('consonance/harmony-linux/linux/versions.lock', 'consonance/harmony-linux/linux/config-fragment', 'consonance/harmony-linux/linux/kata/**', 'consonance/harmony-linux/linux/patches/x86/**', 'consonance/harmony-linux/linux/build-kernel.sh', 'consonance/harmony-linux/linux/build-initramfs.sh', 'consonance/harmony-linux/linux/init.sh', 'consonance/harmony-linux/linux/lib-build.sh', 'consonance/harmony-linux/linux/scan-counter-opcodes.sh', 'consonance/harmony-linux/linux/rdtsc-allowlist.txt', 'consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt', 'consonance/harmony-linux/linux/rdrand-allowlist.txt', 'consonance/harmony-linux/linux/rdrand-allowlist-gha.txt', 'consonance/harmony-linux/scripts/fetch.sh', 'consonance/harmony-linux/scripts/lib.sh') }}
           fail-on-cache-miss: true
       - name: Install stable toolchain
         run: |

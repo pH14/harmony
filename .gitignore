@@ -1,7 +1,7 @@
 /target
-/harmony-linux/build
-/harmony-linux/dl
-/harmony-linux/libvoidstar/build
+/consonance/harmony-linux/build
+/consonance/harmony-linux/dl
+/consonance/harmony-linux/libvoidstar/build
 /consonance/acceptance-suite/payloads/target
 *.img
 *.bin

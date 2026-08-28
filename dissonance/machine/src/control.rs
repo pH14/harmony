@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// SDK lifecycle `frame_complete` event id, mirrored from
-/// `harmony-linux/sdk/src/wire.rs`. Its payload is one little-endian `u64`
+/// `consonance/harmony-linux/sdk/src/wire.rs`. Its payload is one little-endian `u64`
 /// cumulative emulated-frame count.
 const FRAME_COMPLETE_EVENT_ID: u32 = (4_u32 << 24) | 1;
 /// TetaNES guest state-register event ids, mirrored from the guest agent. A

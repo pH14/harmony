@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 const RESULT_EVENT: u32 = 0x0600_0001;
 const WRONG_SCHEDULE: [u32; 3] = [0, 0, 0];
-const PLAN: &str = include_str!("../../../../harmony-linux/concurrency-suite/m6-plan.json");
+const PLAN: &str = include_str!("../../../../consonance/harmony-linux/concurrency-suite/m6-plan.json");
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

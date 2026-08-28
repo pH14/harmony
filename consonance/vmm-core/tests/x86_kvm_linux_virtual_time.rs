@@ -51,7 +51,7 @@ const REACHED_USERSPACE: &[u8] = b"Run /init as init process";
 /// boot that silently fell back to raw-TSC time must fail the gate, not pass
 /// nondeterministically.
 const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: exit-count clock page registered";
-/// `harmony-linux/linux/init.sh`'s userspace readiness announcement.
+/// `consonance/harmony-linux/linux/init.sh`'s userspace readiness announcement.
 const GUEST_READY: &[u8] = b"GUEST_READY";
 /// Step budget per boot (`X2_MAX_STEPS` overrides).
 const DEFAULT_MAX_STEPS: u64 = 50_000_000;
@@ -64,13 +64,17 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact from `harmony-linux/build/<name>` or
-/// `harmony-linux/linux/<name>`. Panics loudly with the build command if
+/// Read a built guest artifact from `consonance/harmony-linux/build/<name>` or
+/// `consonance/harmony-linux/linux/<name>`. Panics loudly with the build command if
 /// absent — the workflow's guest-image job populates the cache first.
 fn require_artifact(name: &str) -> Vec<u8> {
     let candidates = [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ];
     for p in &candidates {
         if let Ok(bytes) = std::fs::read(p) {
@@ -78,8 +82,8 @@ fn require_artifact(name: &str) -> Vec<u8> {
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build \
-         it first: `make -C harmony-linux fetch && make -C harmony-linux/linux image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build \
+         it first: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux image`."
     );
 }
 

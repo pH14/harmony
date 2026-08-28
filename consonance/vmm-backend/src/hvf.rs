@@ -736,7 +736,7 @@ impl Backend for HvfBackend {
         }
         // Exclusive-monitor canonicalization (VM-EXIT-COUNT-VTIME M1). HVF has
         // no public monitor get/set/clear API. The cooperative image is scanned
-        // at build time by `harmony-linux/scripts/aa4-exclusive-scan.py`, whose
+        // at build time by `consonance/harmony-linux/scripts/aa4-exclusive-scan.py`, whose
         // planted LDXR/STXR negative must fail before the real kernel, vDSO, and
         // init are accepted. Therefore no instruction in the admitted image can
         // create a reservation: the monitor starts empty at vCPU creation and

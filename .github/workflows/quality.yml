@@ -95,66 +95,66 @@ jobs:
           rustup target add aarch64-unknown-linux-gnu
           CARGO_FEATURE_NO_NEON=1 cargo clippy --target aarch64-unknown-linux-gnu \
             --all-features --all-targets -- -D warnings
-      # harmony-linux/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
+      # consonance/harmony-linux/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
       # root fmt/clippy/nextest above never see it. Gate it explicitly on its own
       # manifest — its host-side loopback tests (duplicate-coordinate rejection,
       # emission dispositions, determinism) must stay green like any other crate.
-      - name: harmony-linux/sdk gates (out-of-workspace manifest)
+      - name: consonance/harmony-linux/sdk gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path harmony-linux/sdk/Cargo.toml --all -- --check
-          cargo clippy --manifest-path harmony-linux/sdk/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path harmony-linux/sdk/Cargo.toml --all-features
+          cargo fmt --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all -- --check
+          cargo clippy --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all-features
           # License-check its deps against the same allow-list (like the guest/fuzz
           # manifests above) — the root `cargo deny` never sees this manifest.
-          cargo deny --manifest-path harmony-linux/sdk/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path consonance/harmony-linux/sdk/Cargo.toml check --config deny.toml licenses
           # no_std build proof: the crate and its deps must compile for the bare
           # metal target the guest actually runs in (host-only tests can't catch a
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
-          cargo build --manifest-path harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
+          cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
       # Actually LINK the SDK-instrumented demo guest for bare metal — from its own
       # dir, so consonance/acceptance-suite/payloads/.cargo/config.toml (target + linker) applies. The
-      # harmony-linux/sdk `--lib` proof above compiles the library, but only a full payload
+      # consonance/harmony-linux/sdk `--lib` proof above compiles the library, but only a full payload
       # link exercises the SDK end-to-end against the boot shim; a regression that
       # breaks the demo (the box gate's guest) would otherwise surface only on the box.
       - name: consonance/acceptance-suite/payloads sdk-demo build (bare metal, from its dir)
         working-directory: consonance/acceptance-suite/payloads
         run: cargo build -p sdk-demo
-      # harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest).
+      # consonance/harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
       # doorbell glue, which the macOS dev host skips. Dynamic glibc build (it
       # dlopens the pinned core at runtime), so the native build IS the ship
       # target here — no musl step.
-      - name: harmony-linux/play-agent gates (out-of-workspace manifest)
+      - name: consonance/harmony-linux/play-agent gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path harmony-linux/play-agent/Cargo.toml --all -- --check
-          cargo clippy --manifest-path harmony-linux/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path harmony-linux/play-agent/Cargo.toml --all-features
-          cargo deny --manifest-path harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
-          cargo build --manifest-path harmony-linux/play-agent/Cargo.toml --bin play-agent
+          cargo fmt --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all -- --check
+          cargo clippy --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features
+          cargo deny --manifest-path consonance/harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
+          cargo build --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --bin play-agent
       # M2's arm64 TetaNES agent is another standalone guest workspace. Its
       # portable loop tests prove exact chord consumption, frame reports, WRAM
       # mirrors, and an independent TetaNES deck differential. The cross-target
       # check compiles the live /dev/mem + MMIO composition without executing it.
-      - name: harmony-linux/tetanes-agent gates (out-of-workspace manifest)
+      - name: consonance/harmony-linux/tetanes-agent gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path harmony-linux/tetanes-agent/Cargo.toml --all -- --check
-          cargo clippy --locked --manifest-path harmony-linux/tetanes-agent/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path harmony-linux/tetanes-agent/Cargo.toml
-          cargo deny --manifest-path harmony-linux/tetanes-agent/Cargo.toml check --config deny.toml licenses
+          cargo fmt --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml
+          cargo deny --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml check --config deny.toml licenses
           rustup target add aarch64-unknown-linux-gnu
-          cargo check --locked --manifest-path harmony-linux/tetanes-agent/Cargo.toml --target aarch64-unknown-linux-gnu
-      # harmony-linux/libvoidstar (task 43) is a C subtree with its own Makefile — the
+          cargo check --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --target aarch64-unknown-linux-gnu
+      # consonance/harmony-linux/libvoidstar (task 43) is a C subtree with its own Makefile — the
       # root cargo gates never see it, and nothing else in CI builds it, so a change
       # that broke the clean-room ABI shim would merge green. `make test-libvoidstar`
       # builds the .so under the strict warning set (-Werror -Wconversion -Wpedantic),
       # runs the ABI mock test (tests/abi_test.c), and asserts the exported symbol set
       # (check-symbols.sh). Runs on any host — no Linux/KVM needed — so the C shim is
       # gated here even though the guest-image repro that installs the .so is box-only.
-      - name: harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
-        run: make -C harmony-linux test-libvoidstar
+      - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
+        run: make -C consonance/harmony-linux test-libvoidstar
       # dissonance/differential-lineage is a standalone workspace root, so the
       # root gates above never see it — gate it explicitly or its test suite
       # rots green. --locked: the committed Cargo.lock
@@ -318,18 +318,18 @@ jobs:
             echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
           done
           echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
-      # harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
+      # consonance/harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
       # never mutates it even when the PR diff touches its files — leaving the SDK
       # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
       # diffed lines on their own manifest, mirroring the fmt/clippy/test/public-api
-      # split the `gates` job already applies to harmony-linux/sdk. `--in-diff` filters to
-      # the PR's changed harmony-linux/sdk lines; its own `.cargo/mutants.toml` (if any)
+      # split the `gates` job already applies to consonance/harmony-linux/sdk. `--in-diff` filters to
+      # the PR's changed consonance/harmony-linux/sdk lines; its own `.cargo/mutants.toml` (if any)
       # auto-discovers, else the run is config-free.
-      - name: cargo mutants --in-diff (harmony-linux/sdk, out-of-workspace manifest)
+      - name: cargo mutants --in-diff (consonance/harmony-linux/sdk, out-of-workspace manifest)
         # Infra-only retry (same contract as the root step above).
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
@@ -422,7 +422,7 @@ jobs:
           cargo test \
             -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto -p acceptance-suite \
             --test public_api -- --ignored --nocapture
-          # harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
+          # consonance/harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.
-          cargo test --manifest-path harmony-linux/sdk/Cargo.toml \
+          cargo test --manifest-path consonance/harmony-linux/sdk/Cargo.toml \
             --test public_api -- --ignored --nocapture

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "harmony-tetanes-agent"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Arm64 guest TetaNES payload for the virtual_time virtual-time M2 campaign"
+
+[workspace]
+
+[dependencies]
+harmony-sdk = { path = "../sdk", version = "0.1.0" }
+hypercall-proto = { path = "../../hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
+hypercall-doorbell = { path = "../../hypercall-doorbell", version = "0.1.0" }
+# Keep TetaNES's serialization dependency identical to the in-process machine
+# workspace so the two builds differ only at the substrate boundary.
+serde = "=1.0.228"
+tetanes-core = "=0.15.0"
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+libc = "0.2"

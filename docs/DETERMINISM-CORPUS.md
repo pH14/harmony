@@ -225,7 +225,7 @@ guest; external/fault-injected networking is deliberately deferred.
   "no sibling deps" rule of wave-1 parallel crates doesn't apply — it's the layer that *binds*).
 - **`consonance/acceptance-suite/payloads/`** *(task 18)* — the C1 micro-payloads, via the documented "add a payload"
   flow; goldens in `consonance/acceptance-suite/golden/`.
-- **`harmony-linux/linux/` Postgres + k3s tier** *(tasks 36–38, 48, 49 — delivered)* — the C3a
+- **`consonance/harmony-linux/linux/` Postgres + k3s tier** *(tasks 36–38, 48, 49 — delivered)* — the C3a
   real workload: bare Postgres escalating through runc to a single-node k3s cluster, all against
   guest-RAM-backed ext4. Supersedes the struck task 20 (SQLite-over-`Block`).
 - **Tasks 22 and 20 are struck** (host `BLOCK_WRITE` device + the SQLite-over-`Block` workload

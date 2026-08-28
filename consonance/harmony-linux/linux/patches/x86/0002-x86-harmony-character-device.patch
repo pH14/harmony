@@ -1,0 +1,709 @@
+x86: add the /dev/harmony synchronous SDK transport
+
+Applications and agents must not need iopl(2) or /dev/mem to reach Harmony's
+deterministic doorbell. Add a built-in misc character device which owns the
+fixed request and response pages, serializes every exchange, emits attributed
+Antithesis JSON on write(2), implements deterministic entropy as a one-byte
+write followed by an eight-byte read, carries the SDK coverage-threshold command
+as a 17-byte write followed by a 12-byte read, and exposes a bounded raw-frame
+ioctl for guest agents. The hypercall remains the existing OUT 0x0ca1 path. A
+KUnit concurrency test blocks one in-flight transaction and proves a second
+ringer cannot enter the page/doorbell critical section.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch exception.
+
+---
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -647,6 +647,29 @@
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
++
++config HARMONY_DEVICE
++	bool "Harmony deterministic hypercall character device"
++	depends on X86_64
++	default n
++	help
++	  Expose /dev/harmony for synchronous application traffic to the
++	  Harmony deterministic hypervisor. Writes emit Antithesis-compatible
++	  JSON with caller attribution; a one-byte NUL write followed by an
++	  eight-byte read obtains entropy from the seeded hypercall stream.
++	  The driver owns the fixed 0xe000/0xf000 frame pages and rings I/O
++	  port 0x0ca1, so applications need neither /dev/mem nor iopl(2).
++
++config HARMONY_DEVICE_KUNIT_TEST
++	bool "KUnit test for Harmony transaction serialization"
++	depends on HARMONY_DEVICE && KUNIT
++	default KUNIT_ALL_TESTS
++	help
++	  Drive two concurrent callers against an intentionally blocked Harmony
++	  transaction and prove that only one caller can enter the fixed-page
++	  exchange at a time. This catches removal or narrowing of the driver
++	  mutex which owns the request page, doorbell, and response page.
++
+ source "drivers/misc/lis3lv02d/Kconfig"
+ source "drivers/misc/altera-stapl/Kconfig"
+ source "drivers/misc/mei/Kconfig"
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -71,4 +71,5 @@ obj-$(CONFIG_NSM)              += nsm.o
+ obj-$(CONFIG_MARVELL_CN10K_DPI)	+= mrvl_cn10k_dpi.o
++obj-$(CONFIG_HARMONY_DEVICE)	+= harmony.o
+ lan966x-pci-objs		:= lan966x_pci.o
+ lan966x-pci-objs		+= lan966x_pci.dtbo.o
+ obj-$(CONFIG_MCHP_LAN966X_PCI)	+= lan966x-pci.o
+--- /dev/null
++++ b/drivers/misc/harmony.c
+@@ -0,0 +1,650 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Synchronous /dev/harmony transport over the deterministic doorbell ABI. */
++#define pr_fmt(fmt) "harmony: " fmt
++
++#include <linux/ctype.h>
++#include <linux/errno.h>
++#include <linux/fs.h>
++#include <linux/io.h>
++#include <linux/ioctl.h>
++#include <linux/kernel.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/sched.h>
++#include <linux/sched/task.h>
++#include <linux/sched/task_stack.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/unaligned.h>
++#if IS_ENABLED(CONFIG_HARMONY_DEVICE_KUNIT_TEST)
++#include <kunit/test.h>
++#include <linux/completion.h>
++#include <linux/kthread.h>
++#endif
++
++#include <asm/io.h>
++#include <asm/ptrace.h>
++
++#define HARMONY_DOORBELL_PORT	0x0ca1
++#define HARMONY_REQ_GPA		0xe000UL
++#define HARMONY_RESP_GPA	0xf000UL
++#define HARMONY_PAGE_SIZE	4096U
++
++#define HC_MAGIC		0x31504348U
++#define HC_KIND_REQUEST		1U
++#define HC_KIND_RESPONSE	2U
++#define HC_SERVICE_ENTROPY	2U
++#define HC_SERVICE_EVENT	4U
++#define HC_SERVICE_SDK		6U
++#define HC_OPCODE_ONE		1U
++#define HC_OPCODE_COVERAGE	2U
++#define HC_STATUS_OK		0U
++#define HC_HEADER_LEN		24U
++#define HC_MAX_PAYLOAD		(HARMONY_PAGE_SIZE - HC_HEADER_LEN)
++#define HARMONY_IOC_MAGIC	'H'
++
++struct harmony_hc_header {
++	__le32 magic;
++	__le16 kind;
++	__le16 service;
++	__le16 opcode;
++	__le16 status;
++	__le32 seq;
++	__le32 payload_len;
++	__le32 reserved;
++} __packed;
++
++struct harmony_ioc_exchange {
++	__u64 request;
++	__u64 response;
++	__u32 request_len;
++	__u32 response_capacity;
++	__u32 response_len;
++	__u32 reserved;
++};
++
++#define HARMONY_IOC_EXCHANGE \
++	_IOWR(HARMONY_IOC_MAGIC, 1, struct harmony_ioc_exchange)
++
++struct harmony_file {
++	u8 entropy[8];
++	bool entropy_ready;
++	u8 coverage[12];
++	bool coverage_ready;
++};
++
++static DEFINE_MUTEX(harmony_lock);
++static void *harmony_req_page;
++static void *harmony_resp_page;
++static u32 harmony_seq = 1;
++
++static u32 harmony_next_seq(void)
++{
++	u32 seq = harmony_seq++;
++
++	if (harmony_seq == 0)
++		harmony_seq = 1;
++	return seq;
++}
++
++typedef int (*harmony_locked_fn)(void *context);
++
++static int harmony_run_serialized(harmony_locked_fn function, void *context)
++{
++	int ret;
++
++	if (mutex_lock_interruptible(&harmony_lock))
++		return -ERESTARTSYS;
++	ret = function(context);
++	mutex_unlock(&harmony_lock);
++	return ret;
++}
++
++static int harmony_exchange_frame(const u8 *request, u32 request_len,
++				  u8 *response, u32 response_capacity,
++				  u32 *response_len)
++{
++	const struct harmony_hc_header *req;
++	const struct harmony_hc_header *resp = harmony_resp_page;
++	u32 payload_len;
++	u32 frame_len;
++
++	if (request_len < HC_HEADER_LEN || request_len > HARMONY_PAGE_SIZE)
++		return -EMSGSIZE;
++	req = (const struct harmony_hc_header *)request;
++	payload_len = le32_to_cpu(req->payload_len);
++	if (le32_to_cpu(req->magic) != HC_MAGIC ||
++	    le16_to_cpu(req->kind) != HC_KIND_REQUEST ||
++	    le16_to_cpu(req->status) != 0 ||
++	    le32_to_cpu(req->reserved) != 0 ||
++	    payload_len > HC_MAX_PAYLOAD ||
++	    request_len != HC_HEADER_LEN + payload_len)
++		return -EPROTO;
++	if (response_capacity > HARMONY_PAGE_SIZE)
++		return -EMSGSIZE;
++
++	memset(harmony_req_page, 0, HARMONY_PAGE_SIZE);
++	memset(harmony_resp_page, 0, HARMONY_PAGE_SIZE);
++	memcpy(harmony_req_page, request, request_len);
++	virt_wmb();
++	outl(request_len, HARMONY_DOORBELL_PORT);
++	virt_rmb();
++
++	payload_len = le32_to_cpu(resp->payload_len);
++	if (payload_len > HC_MAX_PAYLOAD)
++		return -EPROTO;
++	frame_len = HC_HEADER_LEN + payload_len;
++	if (frame_len > response_capacity)
++		return -EMSGSIZE;
++	memcpy(response, harmony_resp_page, frame_len);
++	*response_len = frame_len;
++	return 0;
++}
++
++struct harmony_raw_context {
++	const u8 *request;
++	u32 request_len;
++	u8 *response;
++	u32 response_capacity;
++	u32 *response_len;
++};
++
++static int harmony_exchange_raw(void *opaque)
++{
++	struct harmony_raw_context *raw = opaque;
++
++	return harmony_exchange_frame(raw->request, raw->request_len,
++				      raw->response, raw->response_capacity,
++				      raw->response_len);
++}
++
++static int harmony_exchange(u16 service, u16 opcode, const void *payload,
++			    u32 payload_len,
++			    void *response, u32 response_capacity,
++			    u32 *response_len)
++{
++	struct harmony_hc_header *req = harmony_req_page;
++	const struct harmony_hc_header *resp = harmony_resp_page;
++	u32 seq;
++	u32 len;
++
++	if (payload_len > HC_MAX_PAYLOAD)
++		return -EMSGSIZE;
++	if (payload_len != 0 && !payload)
++		return -EINVAL;
++
++	memset(harmony_req_page, 0, HARMONY_PAGE_SIZE);
++	memset(harmony_resp_page, 0, HARMONY_PAGE_SIZE);
++	seq = harmony_next_seq();
++	req->magic = cpu_to_le32(HC_MAGIC);
++	req->kind = cpu_to_le16(HC_KIND_REQUEST);
++	req->service = cpu_to_le16(service);
++	req->opcode = cpu_to_le16(opcode);
++	req->status = 0;
++	req->seq = cpu_to_le32(seq);
++	req->payload_len = cpu_to_le32(payload_len);
++	req->reserved = 0;
++	if (payload_len != 0)
++		memcpy((u8 *)harmony_req_page + HC_HEADER_LEN, payload, payload_len);
++
++	virt_wmb();
++	outl(HC_HEADER_LEN + payload_len, HARMONY_DOORBELL_PORT);
++	virt_rmb();
++
++	len = le32_to_cpu(resp->payload_len);
++	if (le32_to_cpu(resp->magic) != HC_MAGIC ||
++	    le16_to_cpu(resp->kind) != HC_KIND_RESPONSE ||
++	    le16_to_cpu(resp->service) != service ||
++	    le16_to_cpu(resp->opcode) != opcode ||
++	    le32_to_cpu(resp->seq) != seq ||
++	    le32_to_cpu(resp->reserved) != 0 ||
++	    len > HC_MAX_PAYLOAD)
++		return -EPROTO;
++	if (le16_to_cpu(resp->status) != HC_STATUS_OK)
++		return -EIO;
++	if (len > response_capacity || (len != 0 && !response))
++		return -EMSGSIZE;
++	if (len != 0)
++		memcpy(response, (const u8 *)harmony_resp_page + HC_HEADER_LEN, len);
++	*response_len = len;
++	return 0;
++}
++
++static int harmony_request_entropy(struct harmony_file *state)
++{
++	u8 request[4];
++	u32 response_len = 0;
++	int ret;
++
++	put_unaligned_le32(sizeof(state->entropy), request);
++	ret = harmony_exchange(HC_SERVICE_ENTROPY, HC_OPCODE_ONE,
++			       request, sizeof(request),
++			       state->entropy, sizeof(state->entropy),
++			       &response_len);
++	if (ret)
++		return ret;
++	if (response_len != sizeof(state->entropy))
++		return -EPROTO;
++	state->entropy_ready = true;
++	return 0;
++}
++
++static int harmony_request_coverage(struct harmony_file *state,
++				    const char __user *user)
++{
++	u8 request[16];
++	u32 response_len = 0;
++	int ret;
++
++	if (copy_from_user(request, user + 1, sizeof(request)))
++		return -EFAULT;
++	ret = harmony_exchange(HC_SERVICE_SDK, HC_OPCODE_COVERAGE,
++			       request, sizeof(request), state->coverage,
++			       sizeof(state->coverage), &response_len);
++	if (ret)
++		return ret;
++	if (response_len != sizeof(state->coverage))
++		return -EPROTO;
++	state->coverage_ready = true;
++	return 0;
++}
++
++static size_t harmony_hex_comm(char *out, size_t capacity, const char *comm)
++{
++	static const char hex[] = "0123456789abcdef";
++	size_t index;
++	size_t length = strnlen(comm, TASK_COMM_LEN);
++
++	if (capacity < length * 2 + 1)
++		return 0;
++	for (index = 0; index < length; index++) {
++		u8 byte = comm[index];
++
++		out[index * 2] = hex[byte >> 4];
++		out[index * 2 + 1] = hex[byte & 0x0f];
++	}
++	out[length * 2] = '\0';
++	return length * 2;
++}
++
++static int harmony_emit_json(const char __user *user, size_t count)
++{
++	char comm[TASK_COMM_LEN];
++	char comm_hex[TASK_COMM_LEN * 2 + 1];
++	char attribution[128];
++	char *input;
++	u8 *payload;
++	unsigned long rip;
++	size_t start = 0;
++	size_t end;
++	size_t after_brace;
++	size_t attr_len;
++	size_t comma_len;
++	size_t json_len;
++	u32 response_len = 0;
++	int ret;
++
++	/* Leave room for event_id plus the bounded attribution object. */
++	if (count == 0 || count > HC_MAX_PAYLOAD - 4 - sizeof(attribution) - 1)
++		return -EMSGSIZE;
++	input = memdup_user_nul(user, count);
++	if (IS_ERR(input))
++		return PTR_ERR(input);
++	end = count;
++	while (start < end && isspace(input[start]))
++		start++;
++	while (end > start && isspace(input[end - 1]))
++		end--;
++	if (end - start < 2 || input[start] != '{' || input[end - 1] != '}') {
++		ret = -EINVAL;
++		goto out_input;
++	}
++	after_brace = start + 1;
++	while (after_brace < end && isspace(input[after_brace]))
++		after_brace++;
++
++	get_task_comm(comm, current);
++	if (harmony_hex_comm(comm_hex, sizeof(comm_hex), comm) == 0 && comm[0]) {
++		ret = -EOVERFLOW;
++		goto out_input;
++	}
++	rip = instruction_pointer(task_pt_regs(current));
++	attr_len = scnprintf(attribution, sizeof(attribution),
++		"\"harmony_attribution\":{\"rip\":\"0x%lx\",\"pid\":%d,"
++		"\"comm_hex\":\"%s\"}", rip, task_pid_nr(current), comm_hex);
++	comma_len = input[after_brace] == '}' ? 0 : 1;
++	json_len = count + attr_len + comma_len;
++	if (json_len > HC_MAX_PAYLOAD - 4) {
++		ret = -EMSGSIZE;
++		goto out_input;
++	}
++	payload = kmalloc(json_len + 4, GFP_KERNEL);
++	if (!payload) {
++		ret = -ENOMEM;
++		goto out_input;
++	}
++	put_unaligned_le32(0, payload);
++	memcpy(payload + 4, input, start + 1);
++	memcpy(payload + 4 + start + 1, attribution, attr_len);
++	if (comma_len != 0)
++		payload[4 + start + 1 + attr_len] = ',';
++	memcpy(payload + 4 + start + 1 + attr_len + comma_len,
++	       input + start + 1, count - start - 1);
++	ret = harmony_exchange(HC_SERVICE_EVENT, HC_OPCODE_ONE,
++			       payload, json_len + 4,
++			       NULL, 0, &response_len);
++	if (!ret && response_len != 0)
++		ret = -EPROTO;
++	kfree(payload);
++out_input:
++	kfree(input);
++	return ret;
++}
++
++static int harmony_open(struct inode *inode, struct file *file)
++{
++	struct harmony_file *state;
++
++	state = kzalloc(sizeof(*state), GFP_KERNEL);
++	if (!state)
++		return -ENOMEM;
++	file->private_data = state;
++	return nonseekable_open(inode, file);
++}
++
++static int harmony_release(struct inode *inode, struct file *file)
++{
++	struct harmony_file *state = file->private_data;
++
++	memzero_explicit(state->entropy, sizeof(state->entropy));
++	memzero_explicit(state->coverage, sizeof(state->coverage));
++	kfree(state);
++	return 0;
++}
++
++static ssize_t harmony_write(struct file *file, const char __user *buffer,
++			     size_t count, loff_t *offset)
++{
++	struct harmony_file *state = file->private_data;
++	u8 command;
++	int ret;
++
++	if (count == 1) {
++		if (get_user(command, buffer))
++			return -EFAULT;
++		if (command == 0) {
++			if (mutex_lock_interruptible(&harmony_lock))
++				return -ERESTARTSYS;
++			state->entropy_ready = false;
++			ret = harmony_request_entropy(state);
++			mutex_unlock(&harmony_lock);
++			return ret ? ret : 1;
++		}
++	}
++	if (count == 17) {
++		if (get_user(command, buffer))
++			return -EFAULT;
++		if (command == 1) {
++			if (mutex_lock_interruptible(&harmony_lock))
++				return -ERESTARTSYS;
++			state->coverage_ready = false;
++			ret = harmony_request_coverage(state, buffer);
++			mutex_unlock(&harmony_lock);
++			return ret ? ret : 17;
++		}
++	}
++	if (mutex_lock_interruptible(&harmony_lock))
++		return -ERESTARTSYS;
++	ret = harmony_emit_json(buffer, count);
++	mutex_unlock(&harmony_lock);
++	return ret ? ret : count;
++}
++
++static ssize_t harmony_read(struct file *file, char __user *buffer,
++			    size_t count, loff_t *offset)
++{
++	struct harmony_file *state = file->private_data;
++
++	if (mutex_lock_interruptible(&harmony_lock))
++		return -ERESTARTSYS;
++	if (state->coverage_ready) {
++		if (count < sizeof(state->coverage))
++			goto invalid;
++		if (copy_to_user(buffer, state->coverage,
++				 sizeof(state->coverage))) {
++			mutex_unlock(&harmony_lock);
++			return -EFAULT;
++		}
++		memzero_explicit(state->coverage, sizeof(state->coverage));
++		state->coverage_ready = false;
++		mutex_unlock(&harmony_lock);
++		return sizeof(state->coverage);
++	}
++	if (count < sizeof(state->entropy))
++		goto invalid;
++	if (!state->entropy_ready) {
++		mutex_unlock(&harmony_lock);
++		return -EAGAIN;
++	}
++	if (copy_to_user(buffer, state->entropy, sizeof(state->entropy))) {
++		mutex_unlock(&harmony_lock);
++		return -EFAULT;
++	}
++	memzero_explicit(state->entropy, sizeof(state->entropy));
++	state->entropy_ready = false;
++	mutex_unlock(&harmony_lock);
++	return sizeof(state->entropy);
++
++invalid:
++	mutex_unlock(&harmony_lock);
++	return -EINVAL;
++}
++
++static long harmony_ioctl(struct file *file, unsigned int command,
++			  unsigned long argument)
++{
++	struct harmony_ioc_exchange exchange;
++	void __user *argp = (void __user *)argument;
++	void __user *response_user;
++	u8 *request;
++	u8 *response;
++	u32 response_len = 0;
++	struct harmony_raw_context context;
++	int ret;
++
++	if (command != HARMONY_IOC_EXCHANGE)
++		return -ENOTTY;
++	if (copy_from_user(&exchange, argp, sizeof(exchange)))
++		return -EFAULT;
++	if (exchange.reserved != 0 ||
++	    exchange.request_len < HC_HEADER_LEN ||
++	    exchange.request_len > HARMONY_PAGE_SIZE ||
++	    exchange.response_capacity > HARMONY_PAGE_SIZE)
++		return -EINVAL;
++	request = memdup_user(u64_to_user_ptr(exchange.request),
++			      exchange.request_len);
++	if (IS_ERR(request))
++		return PTR_ERR(request);
++	response = kmalloc(exchange.response_capacity, GFP_KERNEL);
++	if (!response) {
++		ret = -ENOMEM;
++		goto out_request;
++	}
++	context.request = request;
++	context.request_len = exchange.request_len;
++	context.response = response;
++	context.response_capacity = exchange.response_capacity;
++	context.response_len = &response_len;
++	ret = harmony_run_serialized(harmony_exchange_raw, &context);
++	if (ret)
++		goto out_response;
++	response_user = u64_to_user_ptr(exchange.response);
++	if (copy_to_user(response_user, response, response_len)) {
++		ret = -EFAULT;
++		goto out_response;
++	}
++	exchange.response_len = response_len;
++	if (copy_to_user(argp, &exchange, sizeof(exchange))) {
++		ret = -EFAULT;
++		goto out_response;
++	}
++	ret = 0;
++out_response:
++	kfree(response);
++out_request:
++	kfree(request);
++	return ret;
++}
++
++#if IS_ENABLED(CONFIG_HARMONY_DEVICE_KUNIT_TEST)
++struct harmony_lock_test {
++	atomic_t in_flight;
++	atomic_t maximum;
++	struct completion entered;
++	struct completion release;
++};
++
++struct harmony_lock_worker {
++	struct harmony_lock_test *test;
++	struct completion done;
++	int result;
++};
++
++static int harmony_test_blocked_exchange(void *opaque)
++{
++	struct harmony_lock_test *test = opaque;
++	int maximum;
++	int current;
++
++	current = atomic_inc_return(&test->in_flight);
++	maximum = atomic_read(&test->maximum);
++	while (current > maximum &&
++	       atomic_cmpxchg(&test->maximum, maximum, current) != maximum)
++		maximum = atomic_read(&test->maximum);
++	complete(&test->entered);
++	wait_for_completion(&test->release);
++	atomic_dec(&test->in_flight);
++	return 0;
++}
++
++static int harmony_test_worker(void *opaque)
++{
++	struct harmony_lock_worker *worker = opaque;
++
++	worker->result = harmony_run_serialized(harmony_test_blocked_exchange,
++						 worker->test);
++	complete(&worker->done);
++	return 0;
++}
++
++static void harmony_concurrent_ringer_test(struct kunit *test)
++{
++	struct harmony_lock_test state;
++	struct harmony_lock_worker first = { .test = &state };
++	struct harmony_lock_worker second = { .test = &state };
++	struct task_struct *first_task;
++	struct task_struct *second_task;
++	unsigned long entered;
++
++	atomic_set(&state.in_flight, 0);
++	atomic_set(&state.maximum, 0);
++	init_completion(&state.entered);
++	init_completion(&state.release);
++	init_completion(&first.done);
++	init_completion(&second.done);
++
++	first_task = kthread_run(harmony_test_worker, &first,
++				 "harmony-lock-first");
++	if (IS_ERR(first_task)) {
++		KUNIT_FAIL(test, "could not start first transaction thread");
++		return;
++	}
++	entered = wait_for_completion_timeout(&state.entered, HZ);
++	if (entered == 0) {
++		KUNIT_FAIL(test, "first transaction did not enter");
++		complete_all(&state.release);
++		kthread_stop(first_task);
++		return;
++	}
++	reinit_completion(&state.entered);
++	second_task = kthread_run(harmony_test_worker, &second,
++				  "harmony-lock-second");
++	if (IS_ERR(second_task)) {
++		KUNIT_FAIL(test, "could not start concurrent transaction thread");
++		complete_all(&state.release);
++		kthread_stop(first_task);
++		return;
++	}
++
++	/* The second caller must remain outside while the first is in flight. */
++	entered = wait_for_completion_timeout(&state.entered, HZ / 10);
++	KUNIT_EXPECT_EQ(test, entered, 0UL);
++	complete_all(&state.release);
++	wait_for_completion(&first.done);
++	wait_for_completion(&second.done);
++	KUNIT_EXPECT_EQ(test, first.result, 0);
++	KUNIT_EXPECT_EQ(test, second.result, 0);
++	KUNIT_EXPECT_EQ(test, atomic_read(&state.maximum), 1);
++	kthread_stop(first_task);
++	kthread_stop(second_task);
++}
++
++static struct kunit_case harmony_test_cases[] = {
++	KUNIT_CASE(harmony_concurrent_ringer_test),
++	{}
++};
++
++static struct kunit_suite harmony_test_suite = {
++	.name = "harmony-transaction-lock",
++	.test_cases = harmony_test_cases,
++};
++
++kunit_test_suite(harmony_test_suite);
++#endif
++
++static const struct file_operations harmony_fops = {
++	.owner = THIS_MODULE,
++	.open = harmony_open,
++	.release = harmony_release,
++	.read = harmony_read,
++	.write = harmony_write,
++	.unlocked_ioctl = harmony_ioctl,
++	.compat_ioctl = harmony_ioctl,
++	.llseek = noop_llseek,
++};
++
++static struct miscdevice harmony_device = {
++	.minor = MISC_DYNAMIC_MINOR,
++	.name = "harmony",
++	.fops = &harmony_fops,
++	.mode = 0666,
++};
++
++static int __init harmony_init(void)
++{
++	int ret;
++
++	harmony_req_page = memremap(HARMONY_REQ_GPA, HARMONY_PAGE_SIZE,
++				     MEMREMAP_WB);
++	harmony_resp_page = memremap(HARMONY_RESP_GPA, HARMONY_PAGE_SIZE,
++				      MEMREMAP_WB);
++	if (!harmony_req_page || !harmony_resp_page) {
++		ret = -ENOMEM;
++		goto out_unmap;
++	}
++	ret = misc_register(&harmony_device);
++	if (ret)
++		goto out_unmap;
++	pr_info("registered /dev/harmony\n");
++	return 0;
++
++out_unmap:
++	if (harmony_req_page)
++		memunmap(harmony_req_page);
++	if (harmony_resp_page)
++		memunmap(harmony_resp_page);
++	return ret;
++}
++device_initcall(harmony_init);

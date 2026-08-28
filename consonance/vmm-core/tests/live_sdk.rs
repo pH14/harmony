@@ -53,7 +53,7 @@ const ALWAYS_POINT: u32 = 20;
 /// The two `sometimes` points: one fires every iteration, one never.
 const COMMIT_SEEN: u32 = 1;
 const ROLLBACK_SEEN: u32 = 2;
-/// SDK wire layout (mirror of `harmony-linux/sdk/src/wire.rs`) — the assert namespace.
+/// SDK wire layout (mirror of `consonance/harmony-linux/sdk/src/wire.rs`) — the assert namespace.
 const NS_ASSERT: u32 = 1;
 const NS_SHIFT: u32 = 24;
 

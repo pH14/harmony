@@ -9,14 +9,14 @@ resolver = "2"
 # consonance is their only consumer). The v1 dissonance searcher was removed;
 # its rebuild lives in the standalone `dissonance/` workspace.
 members = ["consonance/*"]
-# harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
+# consonance/harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
 # payloads use custom targets/linker flags. Neither belongs to this workspace.
 # dissonance/ is a standalone workspace root by design (the LibAFL rebuild,
 # docs/LIBAFL-PLAN.md); it must not share this build graph before its phase 5.
 # dissonance/differential-lineage inside it is in turn its own workspace root,
 # keeping the differential-dataflow/timely graph separate from both.
 exclude = [
-  "harmony-linux",
+  "consonance/harmony-linux",
   "dissonance",
 ]
 

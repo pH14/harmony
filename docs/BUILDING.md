@@ -72,13 +72,13 @@ cross-host claim.
 ssh msr1
 cd /root/harmony-vtime-6kvrz6
 
-sha256sum harmony-linux/build/arm64/Image \
-  harmony-linux/build/arm64/initramfs.cpio.gz
+sha256sum consonance/harmony-linux/build/arm64/Image \
+  consonance/harmony-linux/build/arm64/initramfs.cpio.gz
 
 cargo build --release --locked -p vmm-core --bin kvm_arm64_boot
 taskset -c 0 target/release/kvm_arm64_boot \
-  harmony-linux/build/arm64/Image \
-  harmony-linux/build/arm64/initramfs.cpio.gz \
+  consonance/harmony-linux/build/arm64/Image \
+  consonance/harmony-linux/build/arm64/initramfs.cpio.gz \
   20000 /tmp/m4-normalized.log
 
 cargo test -p vmm-backend arm64_kvm --all-features
@@ -120,11 +120,11 @@ container (Docker Desktop, OrbStack, or colima all work):
 ```sh
 docker run --rm -it --platform linux/amd64 -v "$PWD":/work -w /work debian:stable bash
 # inside: apt-get update && apt-get install -y <the Linux dep list above>
-make -C harmony-linux fetch        # downloads to harmony-linux/dl/, hash-verified; network needed once
-make -C harmony-linux test-linux   # boot gate + reproducibility gate
+make -C consonance/harmony-linux fetch        # downloads to consonance/harmony-linux/dl/, hash-verified; network needed once
+make -C consonance/harmony-linux test-linux   # boot gate + reproducibility gate
 ```
 
-`make -C harmony-linux test` runs Part A everywhere and Part B only when on Linux; on macOS it must
+`make -C consonance/harmony-linux test` runs Part A everywhere and Part B only when on Linux; on macOS it must
 fail fast for Part B with a clear "run this in a container" message, never skip silently.
 
 ## Worker orchestration
@@ -147,7 +147,7 @@ latest message".
 
 ## Hygiene
 
-- Network access: crates.io, plus the hash-pinned downloads in `harmony-linux/dl/` (task 04 only).
+- Network access: crates.io, plus the hash-pinned downloads in `consonance/harmony-linux/dl/` (task 04 only).
   Nothing else.
 - Install no global tools beyond this document; if you need one, say so in your PR
   description instead of installing it.

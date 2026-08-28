@@ -18,10 +18,10 @@
 //!   CPU-pinned per `docs/BOX-PINNING.md`:
 //!   `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored --test-threads=1`
 //! - **Kernel image**: the task-110 pvclock build —
-//!   `make -C harmony-linux fetch && make -C harmony-linux/linux kernel` (applies the kernel
+//!   `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux kernel` (applies the kernel
 //!   diff under `patches/`, runs the armed counter-opcode scan). Pinned
-//!   against `harmony-linux/linux/MANIFEST.sha256` (regenerate + commit via
-//!   `harmony-linux/linux/run-tests.sh` after the first box build); override
+//!   against `consonance/harmony-linux/linux/MANIFEST.sha256` (regenerate + commit via
+//!   `consonance/harmony-linux/linux/run-tests.sh` after the first box build); override
 //!   deliberately with `BZIMAGE_SHA256=<hex>` (hm-xdp: never a bare path).
 //! - **Initramfs images**: minimal `initramfs.cpio.gz` (MANIFEST-pinned) and
 //!   Postgres `initramfs-postgres.cpio.gz` (const-pinned, the task-78-proven build).
@@ -99,16 +99,20 @@ fn require_host_baseline() {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it on the box \
-         first (`make -C harmony-linux fetch && make -C harmony-linux/linux kernel` + the image target; see the \
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it on the box \
+         first (`make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux kernel` + the image target; see the \
          Environment section of this file)."
     );
 }
@@ -124,15 +128,16 @@ fn verify_pin(name: &str, bytes: &[u8], expected_sha256: &str) {
         observed, expected_sha256,
         "guest artifact `{name}` does not match its pinned content hash (hm-xdp: gates \
          reference images BY HASH, never a mutable path). Rebuild the pinned artifact, \
-         regenerate+commit harmony-linux/linux/MANIFEST.sha256, or override DELIBERATELY via the \
+         regenerate+commit consonance/harmony-linux/linux/MANIFEST.sha256, or override DELIBERATELY via the \
          *_SHA256 env vars."
     );
 }
 
-/// The committed `harmony-linux/linux/MANIFEST.sha256` pin for `name`, if present.
+/// The committed `consonance/harmony-linux/linux/MANIFEST.sha256` pin for `name`, if present.
 fn manifest_pin(name: &str) -> Option<String> {
     let manifest =
-        std::fs::read_to_string(repo_root().join("harmony-linux/linux/MANIFEST.sha256")).ok()?;
+        std::fs::read_to_string(repo_root().join("consonance/harmony-linux/linux/MANIFEST.sha256"))
+            .ok()?;
     manifest.lines().find_map(|l| {
         let mut it = l.split_whitespace();
         let hash = it.next()?;
@@ -149,8 +154,8 @@ fn pinned_artifact(name: &str, var: &str) -> Vec<u8> {
         .or_else(|| manifest_pin(name))
         .unwrap_or_else(|| {
             panic!(
-                "no content pin for `{name}`: not in harmony-linux/linux/MANIFEST.sha256 and {var} not \
-                 set. After the first box build, run harmony-linux/linux/run-tests.sh to regenerate the \
+                "no content pin for `{name}`: not in consonance/harmony-linux/linux/MANIFEST.sha256 and {var} not \
+                 set. After the first box build, run consonance/harmony-linux/linux/run-tests.sh to regenerate the \
                  MANIFEST and commit it — or supply {var}=<sha256> deliberately. Observed hash \
                  of the staged file (verify before trusting!): {}",
                 sha256_hex(&bytes)
