@@ -1,15 +1,16 @@
-# Model-in-the-loop plan: current SMB campaign
+# Model-in-the-loop plan: historical SMB campaign
 
-**Status: Step 3 execution plan, companion to
-`docs/DISSONANCE-FROM-SCRATCH.md` and `docs/LIBAFL-PLAN.md`.** M0–M7 are
-complete and are evidence, not instructions. Read `dissonance/CLAUDE.md`
-before working here and obey its rules.
+**Status: historical model-in-the-loop execution record.** This file is no
+longer the current plan. Search-performance and autoresearch work is governed
+by `docs/DISSONANCE-AUTORESEARCH.md`. M0–M7 and the later Step 3 instructions
+remain here as evidence and rationale, not instructions. Read
+`dissonance/CLAUDE.md` before working in `dissonance/` and obey its rules.
 
-## Current status
+## Historical status at execution
 
 The typed inputs, deterministic replay, labels, generated code, retirement,
-SMB executor, baseline, live-model campaign, and films are built. Step 3
-starts from the measured M6 plateau and changes only the existing SMB path.
+SMB executor, baseline, live-model campaign, and films were built. Step 3
+started from the measured M6 plateau and changed only the existing SMB path.
 The record of M0–M7 decisions and results (`dissonance/NOTES.md`) lives in git history.
 
 ## The model harness

@@ -1,22 +1,26 @@
 # dissonance
 
-A from-scratch rebuild of the dissonance search loop on LibAFL. This
-directory is its own Cargo workspace, deliberately outside the harmony root
-workspace.
+The standalone deterministic search prototype. This directory is its own
+Cargo workspace, deliberately outside the harmony root workspace. The
+prototype learned from LibAFL but no longer embeds it; `searcher` and
+`machine` are the live crates.
 
-## The only three design docs that apply here
+## The governing docs
 
-- `docs/DISSONANCE-FROM-SCRATCH.md` — the design
-- `docs/LIBAFL-PLAN.md` — the verified LibAFL surface and the phased plan
-- `docs/MODEL-IN-THE-LOOP-PLAN.md` — the current SMB Step 3 execution plan;
-  completed M0–M7 evidence is in git history (`NOTES.md`)
+- `docs/DISSONANCE-FROM-SCRATCH.md` — conceptual background and model boundary
+- `docs/LIBAFL-PLAN.md` — historical LibAFL surface and implementation rationale
+- `docs/DISSONANCE-AUTORESEARCH.md` — the current search-performance and
+  autoresearch charter
+
+`docs/MODEL-IN-THE-LOOP-PLAN.md` is retained as historical evidence for the
+completed model-in-the-loop campaign. It is not a current execution plan.
 
 ## Do not read the old stack
 
 When working in this directory, do NOT read or take vocabulary, abstractions,
 or patterns from:
 
-- `dissonance/` (the v1 crates — explorer, campaign-runner, resolution, etc.)
+- removed v1 crates in git history (explorer, campaign-runner, resolution, etc.)
 - `docs/GLOSSARY.md`, `docs/RESOLUTION.md`, `docs/DISSONANCE.md`,
   `docs/DISSONANCE-STRATEGY.md`, or other legacy design docs
 
@@ -26,12 +30,13 @@ out.
 
 ## Rules
 
-- Vocabulary: LibAFL's own terms only — testcase, corpus, input, executor,
-  observer, feedback, scheduler, stage, metadata. Do not coin new terms.
+- Vocabulary: reuse the live code's existing terms — machine, target, action,
+  observation, input, archive, scheduler, executor, snapshot, and campaign.
+  Do not introduce synonyms or turn research-workflow terms into code abstractions.
 - No dependencies on harmony crates (`consonance/*`, `dissonance/*`) before
   phase 5.
-- No LLM calls in unit tests. Model quality is measured in A/B campaigns,
-  never in CI (see "Determinism and testing" in docs/LIBAFL-PLAN.md).
+- No LLM calls in the search loop or tests. Autoresearch agents modify code
+  between fixed experiments; CI and campaign replay remain model-free.
 - No disabled-by-default features. Per-run recorded switches exist to run
   experiments; when an experiment concludes, the new behavior either
   becomes the default or its switch is deleted. Never land a feature that

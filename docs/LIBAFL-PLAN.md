@@ -1,17 +1,16 @@
 # LibAFL integration plan
 
-**Status: implementation plan, companion to `docs/DISSONANCE-FROM-SCRATCH.md`.**
-Phases 0–4b are complete in the prototype; current work is defined in
-`docs/MODEL-IN-THE-LOOP-PLAN.md`. Read the design first, then
-`dissonance/CLAUDE.md` before working in `dissonance/`.
+**Status: historical implementation plan and verified LibAFL reference, companion to
+`docs/DISSONANCE-FROM-SCRATCH.md`.** Phases 0–4b are completed evidence. Current
+work is governed by `docs/DISSONANCE-AUTORESEARCH.md`; read `dissonance/CLAUDE.md`
+before working in `dissonance/`.
 
 Every API claim below was checked against the **libafl 0.15.4** source (the
 crates.io release), not against docs or memory. File references are to that
 crate.
 
-Vocabulary rule: use LibAFL's own terms only — *testcase, corpus, input,
-executor, observer, feedback, scheduler, stage, metadata*. Do not coin new
-terms.
+This document uses LibAFL's vocabulary. The live-code vocabulary rule is in
+`dissonance/CLAUDE.md`.
 
 ## 1. What LibAFL provides (verified)
 
@@ -203,7 +202,7 @@ better stats file or a query script — operator tooling.
 ## 3. Prototype phases
 
 Phases 0–4b are completed evidence, not current instructions. Do not rerun or
-refactor them unless the current SMB plan requires a regression test. Phase 5
+refactor them unless the autoresearch charter requires a regression test. Phase 5
 remains a separate future decision.
 
 **Phase 0 — vanilla spike (days).** A stock byte-input fuzzer against a toy
@@ -247,8 +246,8 @@ configuration. This phase carries the science; phase 4b is the showpiece.
 **Phase 4b — NES demo (completed).** The deterministic SMB executor uses
 `tetanes-core` for per-frame stepping, joypad input, RAM access, and in-memory
 save states. Its ROM is supplied externally through `HARMONY_SMB_ROM`; no ROM
-is copied into or committed to the repository. Current NES work is specified
-only in `docs/MODEL-IN-THE-LOOP-PLAN.md`.
+is copied into or committed to the repository. Current NES and search work is
+specified only in `docs/DISSONANCE-AUTORESEARCH.md`.
 
 **Phase 5 — the real executor (later, a separate decision).** Consonance
 slots in behind the same one-method `Executor` trait; fault schedules become

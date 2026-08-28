@@ -1,11 +1,12 @@
 # Dissonance from scratch — a fuzzing-vocabulary design sketch
 
-**Status: governing design for the standalone `dissonance` prototype.**
-It uses LibAFL's vocabulary directly and has no translation layer to the old
-dissonance stack.
+**Status: conceptual background for the standalone `dissonance` prototype.**
+The current mechanical-search program is governed by
+`docs/DISSONANCE-AUTORESEARCH.md`; its model-in-the-loop mechanisms are deferred.
+This sketch records the original separation of the fast mechanical loop from models.
 
-The implementation plan that goes with this document is `docs/LIBAFL-PLAN.md`.
-The code lives in `dissonance/`.
+The historical implementation plan is `docs/LIBAFL-PLAN.md`. The code lives in
+`dissonance/`.
 
 ## The idea in one paragraph
 
