@@ -14,23 +14,22 @@
 # Regenerate when the runner toolchain moves or the patch series changes: the
 # scan failure prints the unlisted/stale sites in paste-ready form; re-verify
 # the function-subset property against rdtsc-allowlist.txt before committing.
-# Last re-baseline: the decision-16 amendment to patch 0001 (cyc2ns seeded
-# from cycle 0) shifted one site — tsc_enable_sched_clock — with no function
-# added or removed. The decision-12 amendment before it shifted 12 sites (the
-# random_get_entropy inline callers and harmony_pvclock_init), likewise
-# function-neutral.
+# Last re-baseline: N2's guest-config and patch cleanup shifted ten sites in
+# the alternatives replacement section by eleven bytes. The old and new
+# captures contain the same ten counter reads in the same reviewed synthetic
+# function; no function or opcode count was added or removed.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).
-vmlinux:.altinstr_replacement+0x1d15
-vmlinux:.altinstr_replacement+0x1d17
-vmlinux:.altinstr_replacement+0x1d1d
-vmlinux:.altinstr_replacement+0x1d1f
-vmlinux:.altinstr_replacement+0x1d25
-vmlinux:.altinstr_replacement+0x1d27
-vmlinux:.altinstr_replacement+0x1d2d
-vmlinux:.altinstr_replacement+0x1d2f
-vmlinux:.altinstr_replacement+0x1d35
-vmlinux:.altinstr_replacement+0x1d37
+vmlinux:.altinstr_replacement+0x1d20
+vmlinux:.altinstr_replacement+0x1d22
+vmlinux:.altinstr_replacement+0x1d28
+vmlinux:.altinstr_replacement+0x1d2a
+vmlinux:.altinstr_replacement+0x1d30
+vmlinux:.altinstr_replacement+0x1d32
+vmlinux:.altinstr_replacement+0x1d38
+vmlinux:.altinstr_replacement+0x1d3a
+vmlinux:.altinstr_replacement+0x1d40
+vmlinux:.altinstr_replacement+0x1d42
 vmlinux:.altinstr_replacement+0x322
 vmlinux:.altinstr_replacement+0x324
 vmlinux:.altinstr_replacement+0x32a
