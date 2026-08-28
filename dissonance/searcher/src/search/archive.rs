@@ -1103,22 +1103,20 @@ where
             for members in cell_map.values() {
                 // Every member of a cell shares its groups, so the pooled
                 // barren thresholds are checked once per cell; only the
-                // per-entry streak varies inside.
+                // per-entry streak varies inside. Liveness is counted here
+                // and only the finally chosen cell's live members are
+                // materialized, so a draw allocates one member list rather
+                // than one per cell.
                 let key = self.entries[members[0]].report.key;
                 let group_live = ignore_streaks || self.groups_unexhausted(key);
-                let live = if group_live {
-                    members
+                let live = group_live
+                    && members
                         .iter()
-                        .copied()
-                        .filter(|id| ignore_streaks || self.entry_unexhausted(*id))
-                        .collect::<Vec<usize>>()
-                } else {
-                    Vec::new()
-                };
+                        .any(|id| ignore_streaks || self.entry_unexhausted(*id));
                 let subclass = subclass_live.entry(key.group(skip_depth)).or_insert(false);
-                *subclass |= !live.is_empty();
-                if !live.is_empty() {
-                    cells.push((key, live));
+                *subclass |= live;
+                if live {
+                    cells.push((key, members));
                 }
             }
             *classes_skipped = classes_skipped.saturating_add(
@@ -1154,7 +1152,14 @@ where
                 let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
                 rand.below(count)
             };
-            return Ok(Some(cells.swap_remove(index).1));
+            let members = cells.swap_remove(index).1;
+            return Ok(Some(
+                members
+                    .iter()
+                    .copied()
+                    .filter(|id| ignore_streaks || self.entry_unexhausted(*id))
+                    .collect(),
+            ));
         }
         Ok(None)
     }

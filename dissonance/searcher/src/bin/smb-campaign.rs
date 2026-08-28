@@ -85,7 +85,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     // Retire thresholds are measured search statistics (99th-percentile
     // picks-before-first-keeper per class) and should be re-measured for a
     // new game rather than treated as universal constants.
-    let chord = chord_policy_from_identifier("chord_draw_recorded_51:all,0,128,3,1,64,1024")?;
+    let chord = chord_policy_from_identifier("chord_draw_recorded_52:all,0,128,3,1,64,1024")?;
     let mut retention = RetentionPolicy::AdmitAlive;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
         entry: 3,

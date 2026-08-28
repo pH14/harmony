@@ -268,7 +268,9 @@ pub trait Game: Sync {
         mutation_seed: u64,
     ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
     /// Fold the record's retained inputs into the draw state and close the
-    /// record, returning the periodic checkpoint when one is due.
+    /// record, returning the periodic checkpoint when one is due. Each
+    /// retained input arrives with its parent's action count so the game's
+    /// recorded fold rule can consume the full input or only its new suffix.
     ///
     /// # Errors
     ///
@@ -277,7 +279,7 @@ pub trait Game: Sync {
         &self,
         run: &Self::Run,
         state: &mut Self::DrawState,
-        retained_inputs: &[&[Self::Action]],
+        retained: &[(usize, &[Self::Action])],
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>>;
     /// Remember the current draw-state version when a recorded stream will
     /// need it, so replay can re-derive suffixes drawn against it.
@@ -2018,7 +2020,13 @@ fn finish_record<G: Game>(
             .entries
             .get(index)
             .ok_or("retained draw-table entry is missing from the run archive")?;
-        retained_inputs.push(entry.report.input.actions.as_slice());
+        let parent_actions = entry
+            .report
+            .parent_id
+            .and_then(|parent| usize::try_from(parent).ok())
+            .and_then(|parent| core.archive.entries.get(parent))
+            .map_or(0, |parent| parent.report.input.actions.len());
+        retained_inputs.push((parent_actions, entry.report.input.actions.as_slice()));
     }
     game.finish_stream_record(run, draw_state, &retained_inputs)
 }
