@@ -13,6 +13,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ExitAccounting {
     raw: u64,
@@ -20,6 +21,7 @@ struct ExitAccounting {
     substrate_private: u64,
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 fn audit_exit_accounting(
     event_loop: u64,
     raw: &[vmm_core::virtual_time::RawEvent],
@@ -70,6 +72,7 @@ fn audit_exit_accounting(
     })
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 fn record_pvclock_boundary(
     event: &vmm_core::virtual_time::RawEvent,
     vns: u64,
