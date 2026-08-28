@@ -113,6 +113,9 @@ rm -rf "$postgres_root"
 mkdir -p "$postgres_root"/{bin,dev,proc,sys,run,tmp}
 mkdir -p "$container_root"/{bin,dev/shm,etc,proc,tmp,var/lib/postgresql}
 mkdir -p "$stage_prefix"/{bin,lib,share}
+"$musl_cc" -static -Os -march=armv8.1-a+lse -mno-outline-atomics \
+    -Wall -Wextra -Werror \
+    "$LINUX_DIR/arm64-mmio-console.c" -o "$postgres_root/bin/mmio-console"
 
 install -m 0755 "$busybox_object/busybox" "$postgres_root/bin/busybox"
 install -m 0755 "$busybox_object/busybox" "$container_root/bin/busybox"
