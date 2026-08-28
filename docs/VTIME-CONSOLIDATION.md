@@ -87,7 +87,8 @@ milestone is checked against. Contents:
    userspace confinement, hypervisor tripwires — written out separately for
    arm64 and x86. Each architecture gets a frozen table of the untrusted
    instructions, and for each one: which layer handles it and which test
-   demonstrates that. The x86 table is the one that needs the most new
+   demonstrates that. The table is committed in a machine-readable form,
+   because N6 generates its instruction-sweep payload from it. The x86 table is the one that needs the most new
    writing; PR #204's decisions (RDTSC through the clock page, RDRAND/RDSEED
    CPUID hiding and opcode allowlists, the flags/FPU pinning) are its raw
    material. The instructions no layer can reach (unprivileged entropy
@@ -247,13 +248,28 @@ hash — the reproducibility check must be able to fail.
 
 Implement the verification work `docs/DETERMINISM.md` §3 prescribes (the
 successor to the closure document's T0–T4), for **both** architectures,
-skipping what prior milestones already proved and saying so per item: trap
-verification with a JIT-emitted in-guest probe per architecture (a kernel
-configuration with the traps off must fail the check); completing both
-frozen instruction tables against their generated listings; the LL/SC
-decision with a demonstration that the accumulating variant diverges; and
-the tripwire audit for whichever intercept patches N0 decided to keep. Each
-item lands with its meaningful positive and planted negative, per the
+skipping what prior milestones already proved and saying so per item:
+
+- **The instruction sweep.** A guest payload generated from the frozen
+  tables that executes every instruction in them — every row, not a sample —
+  twice from the same seed on each machine. A row a layer handles must
+  produce byte-identical results across the two runs. A row no layer can
+  reach (the unprivileged entropy instructions) can never be made
+  deterministic by executing it, so its assertion is the mask instead: the
+  feature bit is hidden from the guest, and the image audit rejects the
+  opcode. Every row carries exactly one of those two claims; there is no
+  third category. Because the payload is generated from the table, a table
+  row without a probe fails the build, and the sweep report states the row
+  count it exercised against the table's row count.
+- Trap verification with a JIT-emitted in-guest probe per architecture (a
+  kernel configuration with the traps off must fail the check).
+- Completing both frozen instruction tables against their generated
+  listings.
+- The LL/SC decision with a demonstration that the accumulating variant
+  diverges.
+- The tripwire audit for whichever intercept patches N0 decided to keep.
+
+Each item lands with its meaningful positive and planted negative, per the
 closure document's original discipline.
 
 **Passes when** every item in the doc's verification section is either
@@ -261,7 +277,9 @@ recorded as passed with evidence in the status file or explicitly recorded
 as out of scope with a reason, and `docs/DETERMINISM.md` is updated so its
 *untested* markings from N0 reflect what N6 actually tested.
 **Does not count unless** the traps-off configurations demonstrably fail
-their checks before the traps-on configurations are credited.
+their checks before the traps-on configurations are credited, and the
+instruction sweep's exercised-row count equals the table's row count on both
+architectures — a sweep that silently skips rows does not count.
 
 ## 4. Out of scope
 
