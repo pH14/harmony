@@ -510,10 +510,123 @@ This is the accepted pre-optimization phase table and ≥10× denominator:
 | **total** | **229,640,712,125** | **41,278** |
 
 No performance optimization predates this committed baseline and profile.
-N3 remains **IN PROGRESS** until a post-change run is at most
-22,964,071,212 ns, every optimization commit has its reference rerun listed,
-the three-machine normalized logs and state-hash sequences remain identical,
-and the benchmark harness is committed.
+
+### Optimization and fail-capable audit
+
+Commit `88b0b7fe` moves only the sparse checkpoint digest off the event-loop
+critical path. `Vmm` still creates the checkpoint at the exact portable-event
+boundary, but an explicitly enabled host-runner mode returns the canonical
+owned state blob and leaves that checkpoint's hash slot empty. The M3 runner
+submits the blob to a bounded eight-worker pool and installs completed digests
+back at their original event indices before accepting the trace. The total
+wall measurement includes draining and joining all workers; work cannot be
+hidden outside the denominator.
+
+The normal `Vmm` path remains synchronous. Deferred mode must be enabled before
+the trace starts, accepts only exact 256-event boundaries, rejects duplicate or
+nonexistent checkpoints, and cannot be used without a virtual-time trace. The
+frozen public API snapshot records the two deliberately exposed controls,
+`defer_virtual_time_checkpoint_hashes` and
+`checkpoint_virtual_time_trace_at`. The runner's independent audit requires
+all 149 expected checkpoints and no others. Its planted missing-checkpoint and
+stray-checkpoint mutants are both rejected, in addition to the two exit-stream
+partition mutants recorded above, so a green performance report cannot omit
+hash work or compare a shortened stream.
+
+The same commit adds `scripts/benchmark-vtime-m3.sh`. The harness pins the
+scenario, attests both guest images, builds the release runner, requires every
+acceptance and comparator line, requires 149 digests produced by eight workers,
+and checks the frozen portable trace digest before reporting throughput. It is
+an M1 Max measurement tool, not a heterogeneous CI timing gate.
+
+The first implementation enabled `sha2`'s assembly feature for the macOS
+runner. Cargo feature unification made that feature reachable in Linux and
+Miri builds, which violated the intended host isolation even though the live
+reference output remained exact. Its x86 workflow run `33194896286` therefore
+failed in the repository-check job because `CheckpointPool` was not exercised
+on Linux; all X1/X2 live determinism jobs and both vendor hunts themselves
+passed. This caused failure is not waived. Corrective optimization commit
+`7cbdf6df` removes `sha2-asm` and its lockfile entry entirely, exercises the
+pool on every host, and confines the accelerated one-shot digest to macOS
+CommonCrypto outside Miri. The small FFI boundary has an adjacent safety
+argument and parity tests against portable `sha2` at lengths 0, 1, 55, 56, 63,
+64, 65, 127, 128, 129, and 1,048,579 bytes. Miri selects the portable function,
+so the new unsafe boundary does not create an uninterpretable test path.
+
+### Measured result and post-optimization profile
+
+The exact `7cbdf6df` benchmark report is
+`/private/tmp/harmony-n3-benchmark-commoncrypto.report` (SHA-256
+`d3a440e3…2504`). It passes every workload, health, placement, gap, checkpoint,
+and independent exit-count oracle. The portable trace remains 38,295 events
+with digest `84181418…c5ab8`, partitioned from 41,278 raw exits into 38,295
+portable and 2,983 substrate-private exits. Its total is 4,956,055,334 ns, or
+8,328.801 exits/second and **46.335×** faster than the accepted
+229,640,712,125 ns baseline. This is below the required 22,964,071,212 ns
+ceiling by more than 4.6×.
+
+| Phase | Before wall ns | After wall ns | Host loop exits |
+| --- | ---: | ---: | ---: |
+| boot to PostgreSQL start | 119,338,860,708 | 2,502,447,250 | 20,084 |
+| PostgreSQL startup | 52,292,723,750 | 1,067,159,334 | 10,080 |
+| ready to workload | 13,779,767,083 | 273,870,083 | 2,836 |
+| workload | 30,485,590,709 | 578,796,000 | 5,771 |
+| PostgreSQL shutdown | 9,181,723,708 | 150,070,583 | 1,650 |
+| kernel health | 4,562,046,167 | 60,989,917 | 857 |
+| **total** | **229,640,712,125** | **4,956,055,334** | **41,278** |
+
+The independent post-change profile run completed in 5,849,533,542 ns. Its
+report SHA-256 is `19286da4…448a`; the `sample(1)` capture SHA-256 is
+`87dd0258…ab7d`. Of 2,507 main-thread samples, 1,416 (56.5%) are now the
+canonical state-blob copy, 333 (13.3%) are serial scanning, and 127 (5.1%) are
+the HVF trap. Each of the eight workers spends 2,239–2,416 samples in
+`CC_SHA256`. The former 99% synchronous SHA-256 main-thread bottleneck is gone;
+the remaining largest serial cost is the unavoidable owned-state copy that
+makes concurrent hashing race-free.
+
+### Per-optimization reference reruns
+
+The following evidence is tied to each optimization commit rather than only to
+the final tree:
+
+- `88b0b7fe`: ten signed-HVF boots on the M1 Max and ten CPU0-pinned KVM boots
+  on msr1 independently produced normalized-log SHA-256
+  `4b4e7a27…7db`, 38,453 portable events, 283 schedules, 136 deliveries, 151
+  checkpoints, placement PASS, trace digest `e2e7852e…9829`, and terminal
+  state hash `1dc0c1da…8b17`. The one-job/two-session NES campaign then matched
+  across HVF (`/private/tmp/harmony-n3-hvf-campaign-88b0b7fe-v2`) and pinned
+  KVM (`/root/harmony-n3-kvm-campaign-88b0b7fe-v2`): session logs
+  `a801bfb0…9d45` and `ffdd9dbd…6eda`; archive `384d3029…f6b2`; report
+  `b3032b4a…6c46`; stream `584e0d3a…78b2`; snapshots `ae8d699c…b783`.
+  The corrected KVM run deliberately used the canonical recorded host token;
+  an earlier diagnostic run used `msr1`, which left the VM logs exact but
+  changed host-bearing JSON and was rejected rather than counted. GitHub run
+  `33194896286` passed every x86 live reference but failed the Linux dead-code
+  check described above, motivating the immediately following corrective
+  commit.
+- `7cbdf6df`: ten signed-HVF boots again produced the same
+  `4b4e7a27…7db` normalized log and the same event, schedule, delivery,
+  checkpoint, placement, trace-digest, and terminal-state values. GitHub x86
+  run `33195869000` passed the portable check, six probes, both X1 minimal
+  guests, all eight vendor hunts, and all four full ten-boot X2 jobs. Ten
+  CPU0-pinned msr1 boots (`/root/harmony-n3-kvm-boot-7cbdf6df`) independently
+  reproduced the same normalized log and every listed oracle value. The final
+  NES campaign matched across HVF
+  (`/private/tmp/harmony-n3-hvf-campaign-7cbdf6df`) and pinned KVM
+  (`/root/harmony-n3-kvm-campaign-7cbdf6df`), reproducing the two session and
+  four portable-artifact hashes listed above.
+
+The exact final local code tree passes `cargo build --all-features`, all 1,171
+tests under `cargo nextest run --all-features`, all-target Clippy with warnings
+denied (apart from the standing unreachable-entry parser notices emitted by
+`clippy.toml`), formatting, and `cargo deny check`. All instrumented tests also
+pass under `cargo llvm-cov`; its macOS aggregate is 87.15% because Linux-only
+paths are absent, so it is recorded as portability evidence rather than
+misrepresented as the repository's authoritative Linux 90% floor. Every
+non-Linux frozen public-API guard passes locally; the Linux surfaces are
+exercised by the exact-commit x86 workflow. N3 remains **IN PROGRESS** pending
+only the dispatched pinned-nightly Miri run `33196807345`; it is not presumed
+green in advance.
 
 ## N4 — the guest is part of Consonance
 
