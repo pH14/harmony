@@ -40,18 +40,18 @@ performance counters, no host clocks, no vendor-specific measurement. So the
 question "where does consonance run?" reduces to "where can the guest enter
 and exit?" — any hardware-virtualization surface, at any depth. The matrix
 below is the go-everywhere goal made concrete. **Proven** means recorded
-evidence exists (the milestone in parentheses); **aim** means no evidence
-yet, and the entry is a claim to be earned, not asserted. N0 carries this
+evidence exists (the milestone in parentheses); **expected** means the design says
+it should work but no evidence exists yet — still a claim to be earned. N0 carries this
 matrix into `docs/DETERMINISM.md`, which then owns it; a cell moves from
-aim to proven only with the evidence cited in the cell.
+expected to proven only with the evidence cited in the cell.
 
 | Host                                                                | x86-64 Intel    | x86-64 AMD      | arm64                     |
 | ------------------------------------------------------------------- | --------------- | --------------- | ------------------------- |
-| Linux KVM, bare metal                                               | aim             | aim             | **proven** (M4–M5, msr1)  |
-| Linux KVM, inside a VM — nested virtualization: cloud VMs, GitHub Actions default runners | **proven** (X2) | **proven** (X2) | aim, where hosts offer it |
-| Linux KVM, inside a container with `/dev/kvm`                       | aim             | aim             | aim                       |
+| Linux KVM, bare metal                                               | expected        | expected        | **proven** (M4–M5, msr1)  |
+| Linux KVM, inside a VM — nested virtualization: cloud VMs, GitHub Actions default runners | **proven** (X2) | **proven** (X2) | expected, where hosts offer it |
+| Linux KVM, inside a container with `/dev/kvm`                       | expected        | expected        | expected                  |
 | macOS HVF, bare metal — Apple silicon                               | —               | —               | **proven** (M0–M6, M1 Max) |
-| macOS HVF, inside a macOS VM — M3+ hosts, macOS 15 nested virtualization | —               | —               | aim                       |
+| macOS HVF, inside a macOS VM — M3+ hosts, macOS 15 nested virtualization | —               | —               | expected                  |
 
 Within a column, sessions are portable across every row: the same seed and
 image produce the same bytes on any host of that ISA. That is proven for
@@ -126,8 +126,8 @@ milestone is checked against. Contents:
    architectures.
 4. **The support matrix.** The "Where consonance runs" table from this
    plan's §1 moves here and this copy becomes the one that is maintained:
-   every proven cell cites its evidence, every aim cell stays an aim until
-   evidence exists.
+   every proven cell cites its evidence, every expected cell stays
+   expected until evidence exists.
 5. **What is trusted, stated honestly.** What must be true of the hypervisor
    layer (HVF, stock KVM) and what must be true of the guest kernel; that
    the guest kernel's patches are essential to determinism, so the guest
