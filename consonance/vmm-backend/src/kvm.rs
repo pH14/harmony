@@ -22,11 +22,9 @@ use kvm_bindings::{
     // NB: `SIGNIFCANT` (missing the 'I') is an upstream typo in kvm-bindings /
     // the kernel uapi, faithfully preserved here.
     KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
-    KVM_EXIT_DEBUG,
     KVM_EXIT_FAIL_ENTRY,
     KVM_EXIT_HLT,
     KVM_EXIT_INTERNAL_ERROR,
-    KVM_EXIT_INTR,
     KVM_EXIT_IO,
     KVM_EXIT_IO_IN,
     KVM_EXIT_IRQ_WINDOW_OPEN,

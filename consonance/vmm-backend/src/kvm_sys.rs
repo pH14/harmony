@@ -40,7 +40,7 @@ use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Po
 use crate::arch::x86::{canonicalize_regs, canonicalize_sregs, canonicalize_xsave};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::kvm::*;
 use crate::region::{MemRegions, split_around_hole};
 use crate::types::Gpa;
