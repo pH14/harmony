@@ -241,10 +241,11 @@ jobs:
         run: |
           # Checkpoint 35071 is the one cross-vendor divergent sample left
           # on the AF-pinned kernel (run 33132135167); this dump captures the
-          # state it hashes. 0x34b1000 is the task-stack page the earlier
-          # flags capture lived in, dumped in case the same page is guilty.
+          # state it hashes. 0x25ff000 is the page its fingerprint flagged
+          # (run 33133566870) — a dynamically allocated page, so the bytes
+          # name the owner.
           for bound in 35072; do
-            X2_PAGE_HEX=0x34b1000 \
+            X2_PAGE_HEX=0x25ff000 \
             X2_DUMP_AT_STEPS=$bound X2_LOG_DUMP=$PWD/x2-midboot-$bound.txt timeout -k 10 600 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
               x2_prescriptive_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
               2>&1 | tail -n 5 | tee -a x2-report.txt
