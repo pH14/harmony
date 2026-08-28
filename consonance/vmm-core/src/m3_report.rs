@@ -501,7 +501,7 @@ pub fn compare_gap_oracles(
     }
 }
 
-/// Compare the intrinsic event-loop exit count with the normalized trace.
+/// Compare the intrinsic event-loop exit count with the backend-local raw trace.
 ///
 /// # Errors
 /// Rejects any disagreement, including a trace truncated by one event.

@@ -247,6 +247,9 @@ impl From<ScheduledInterrupt> for InterruptDelivery {
 pub struct RawEvent {
     /// Zero-based exit index.
     pub event_index: u64,
+    /// Portable event ordinal produced by this exit, or `None` when the exit is
+    /// a substrate-private implementation detail that consumes no V-time.
+    pub portable_event_index: Option<u64>,
     /// Payload-free backend exit reason.
     pub reason: ExitReason,
     /// Backend's debug rendering of the complete exit.
@@ -387,6 +390,9 @@ impl LiveVirtualTimeTrace {
         self.pending = Some(PendingLiveEvent {
             raw: RawEvent {
                 event_index,
+                portable_event_index: Some(
+                    u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX),
+                ),
                 reason,
                 backend_debug,
             },
@@ -416,6 +422,7 @@ impl LiveVirtualTimeTrace {
         }
         self.raw.push(RawEvent {
             event_index: u64::try_from(self.raw.len()).unwrap_or(u64::MAX),
+            portable_event_index: None,
             reason,
             backend_debug,
         });
@@ -794,6 +801,7 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
 
         self.raw.push(RawEvent {
             event_index,
+            portable_event_index: Some(event_index),
             reason,
             backend_debug,
         });
@@ -1054,7 +1062,9 @@ mod live_trace_tests {
         trace.finish(2, None).unwrap();
         assert_eq!(trace.raw.len(), 2);
         assert_eq!(trace.raw[0].event_index, 0);
+        assert_eq!(trace.raw[0].portable_event_index, None);
         assert_eq!(trace.raw[1].event_index, 1);
+        assert_eq!(trace.raw[1].portable_event_index, Some(0));
         assert_eq!(trace.normalized.events.len(), 1);
         assert_eq!(trace.normalized.events[0].event_index, 0);
     }

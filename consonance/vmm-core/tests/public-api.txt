@@ -755,6 +755,7 @@ pub vmm_core::virtual_time::NormalizedLog::events: alloc::vec::Vec<vmm_core::vir
 pub struct vmm_core::virtual_time::RawEvent
 pub vmm_core::virtual_time::RawEvent::backend_debug: alloc::string::String
 pub vmm_core::virtual_time::RawEvent::event_index: u64
+pub vmm_core::virtual_time::RawEvent::portable_event_index: core::option::Option<u64>
 pub vmm_core::virtual_time::RawEvent::reason: vmm_backend::exit::ExitReason
 pub struct vmm_core::virtual_time::ScheduledInterrupt
 pub vmm_core::virtual_time::ScheduledInterrupt::armed_for_event: u64

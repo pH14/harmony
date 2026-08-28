@@ -13,6 +13,73 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExitAccounting {
+    raw: u64,
+    portable: u64,
+    substrate_private: u64,
+}
+
+fn audit_exit_accounting(
+    event_loop: u64,
+    raw: &[vmm_core::virtual_time::RawEvent],
+    normalized_len: usize,
+) -> Result<ExitAccounting, String> {
+    let raw_count = u64::try_from(raw.len()).unwrap_or(u64::MAX);
+    if event_loop != raw_count {
+        return Err(format!(
+            "event loop/raw trace mismatch: event loop {event_loop}, raw trace {raw_count}"
+        ));
+    }
+
+    let mut portable = 0u64;
+    let mut substrate_private = 0u64;
+    for (position, event) in raw.iter().enumerate() {
+        let expected_raw = u64::try_from(position).unwrap_or(u64::MAX);
+        if event.event_index != expected_raw {
+            return Err(format!(
+                "raw exit ordinal mismatch at position {position}: got {}",
+                event.event_index
+            ));
+        }
+        match event.portable_event_index {
+            Some(index) if index == portable => portable += 1,
+            Some(index) => {
+                return Err(format!(
+                    "portable exit ordinal mismatch at raw {expected_raw}: expected {portable}, got {index}"
+                ));
+            }
+            None => substrate_private += 1,
+        }
+    }
+
+    let normalized = u64::try_from(normalized_len).unwrap_or(u64::MAX);
+    if portable != normalized {
+        return Err(format!(
+            "raw disposition/normalized trace mismatch: {portable} portable dispositions, {normalized} normalized events"
+        ));
+    }
+    if portable.saturating_add(substrate_private) != raw_count {
+        return Err("raw dispositions do not partition the raw trace".to_string());
+    }
+
+    Ok(ExitAccounting {
+        raw: raw_count,
+        portable,
+        substrate_private,
+    })
+}
+
+fn record_pvclock_boundary(
+    event: &vmm_core::virtual_time::RawEvent,
+    vns: u64,
+    values: &mut Vec<u64>,
+) -> Option<u64> {
+    let portable = event.portable_event_index?;
+    values.push(vns);
+    Some(portable)
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 fn arm64_gic_diagnostic(blob: &[u8]) -> Result<String, &'static str> {
     struct Cursor<'a> {
@@ -343,10 +410,23 @@ fn main() -> std::process::ExitCode {
                 ));
                 break;
             }
-            if pvclock_trace_start.is_none() {
-                pvclock_trace_start = Some(trace.normalized_log().events.len() - 1);
+            let Some(raw) = trace.raw_log().last() else {
+                run_error = Some("pvclock registered before the first raw exit".to_string());
+                break;
+            };
+            if let Some(portable_index) =
+                record_pvclock_boundary(raw, frame.vns, &mut pvclock_values)
+                && pvclock_trace_start.is_none()
+            {
+                pvclock_trace_start = match usize::try_from(portable_index) {
+                    Ok(index) => Some(index),
+                    Err(_) => {
+                        run_error =
+                            Some("pvclock portable event index does not fit usize".to_string());
+                        break;
+                    }
+                };
             }
-            pvclock_values.push(frame.vns);
         }
 
         // The guest emits READY only after the 20-row oracle, clean PostgreSQL
@@ -489,8 +569,11 @@ fn main() -> std::process::ExitCode {
                     if let Some(last) = trace.raw_log().last() {
                         writeln!(
                             report,
-                            "last_raw event={} reason={:?} backend_debug={:?}",
-                            last.event_index, last.reason, last.backend_debug
+                            "last_raw event={} portable_event={:?} reason={:?} backend_debug={:?}",
+                            last.event_index,
+                            last.portable_event_index,
+                            last.reason,
+                            last.backend_debug
                         )?;
                     }
                     if let Some(last) = trace.normalized_log().events.last() {
@@ -646,10 +729,21 @@ fn main() -> std::process::ExitCode {
             None
         }
     };
-    let trace_event_count = u64::try_from(trace.normalized_log().events.len()).unwrap_or(u64::MAX);
-    if let Err(error) = compare_exit_counts(total_exits, trace_event_count) {
+    let raw_trace_count = u64::try_from(trace.raw_log().len()).unwrap_or(u64::MAX);
+    if let Err(error) = compare_exit_counts(total_exits, raw_trace_count) {
         issues.push(format!("performance comparator: {error}"));
     }
+    let exit_accounting = match audit_exit_accounting(
+        total_exits,
+        trace.raw_log(),
+        trace.normalized_log().events.len(),
+    ) {
+        Ok(accounting) => Some(accounting),
+        Err(error) => {
+            issues.push(format!("exit accounting: {error}"));
+            None
+        }
+    };
     let workload_wall_ns = phases
         .iter()
         .find_map(|(name, phase)| (*name == "workload").then_some(phase.wall_ns()))
@@ -781,9 +875,11 @@ fn main() -> std::process::ExitCode {
         )?;
         writeln!(
             report,
-            "exit_count_comparator event_loop={total_exits} normalized_trace={trace_event_count} \
-             status={}",
-            if total_exits == trace_event_count {
+            "exit_count_comparator event_loop={total_exits} raw_trace={raw_trace_count} \
+             portable_trace={} substrate_private={} status={}",
+            exit_accounting.map_or(0, |accounting| accounting.portable),
+            exit_accounting.map_or(0, |accounting| accounting.substrate_private),
+            if exit_accounting.is_some() && total_exits == raw_trace_count {
                 "PASS"
             } else {
                 "FAIL"
@@ -852,4 +948,51 @@ fn main() -> std::process::ExitCode {
 fn main() -> std::process::ExitCode {
     eprintln!("hvf_postgres_m3 requires an Apple Silicon macOS host outside Miri");
     std::process::ExitCode::from(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{audit_exit_accounting, record_pvclock_boundary};
+    use vmm_backend::ExitReason;
+    use vmm_core::virtual_time::RawEvent;
+
+    fn raw(event_index: u64, portable_event_index: Option<u64>) -> RawEvent {
+        RawEvent {
+            event_index,
+            portable_event_index,
+            reason: ExitReason::Mmio,
+            backend_debug: String::new(),
+        }
+    }
+
+    #[test]
+    fn exit_accounting_partitions_every_raw_exit() {
+        let events = [raw(0, Some(0)), raw(1, None), raw(2, Some(1))];
+        let accounting = audit_exit_accounting(3, &events, 2).unwrap();
+        assert_eq!(accounting.raw, 3);
+        assert_eq!(accounting.portable, 2);
+        assert_eq!(accounting.substrate_private, 1);
+    }
+
+    #[test]
+    fn planted_dropped_portable_event_fails_accounting() {
+        let events = [raw(0, Some(0)), raw(1, None), raw(2, Some(2))];
+        assert!(audit_exit_accounting(3, &events, 3).is_err());
+    }
+
+    #[test]
+    fn planted_private_to_portable_misclassification_fails_accounting() {
+        let events = [raw(0, Some(0)), raw(1, Some(1)), raw(2, Some(1))];
+        assert!(audit_exit_accounting(3, &events, 2).is_err());
+    }
+
+    #[test]
+    fn pvclock_boundaries_keep_zero_time_portable_events() {
+        let events = [raw(0, Some(0)), raw(1, None), raw(2, Some(1))];
+        let mut values = Vec::new();
+        assert_eq!(record_pvclock_boundary(&events[0], 7, &mut values), Some(0));
+        assert_eq!(record_pvclock_boundary(&events[1], 7, &mut values), None);
+        assert_eq!(record_pvclock_boundary(&events[2], 7, &mut values), Some(1));
+        assert_eq!(values, [7, 7]);
+    }
 }
