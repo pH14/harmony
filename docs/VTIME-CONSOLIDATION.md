@@ -81,8 +81,13 @@ These hold for every milestone.
   vendor pools, as in X2).
 - **Repository checks** (`AGENTS.md`) stay green at every milestone close:
   build, nextest, clippy `-D warnings`, fmt, deny, all `--all-features`;
-  Miri for unsafe crates. No new CI jobs are required by this plan beyond
-  keeping the existing workflows passing; locking more in comes later.
+  Miri for unsafe crates. These are the locally run commands, and they are
+  what "checks green" means in this plan. CI workflows are handled by
+  cause, not by color: a workflow failure this work caused is fixed before
+  the milestone closes; a failure that also reproduces on the tree as it
+  stood before the milestone's changes is not this plan's blocker — record
+  it in the status file, file an issue, and continue. No new CI jobs are
+  required by this plan; locking more in comes later.
 - **Bugs found along the way are filed** as GitHub issues (`gh`), not only
   fixed — each with the evidence that found it. Fixing in place is fine; the
   issue records that it happened.
