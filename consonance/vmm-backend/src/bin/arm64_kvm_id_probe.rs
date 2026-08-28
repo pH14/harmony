@@ -136,12 +136,15 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    // DCZID_EL0 is guest-visible but intentionally absent from KVM's
-    // one-register list. Measure what the guest actually reads: MRS X0,
-    // DCZID_EL0 followed by an eight-byte store to an unmapped IPA, whose
-    // KVM_EXIT_MMIO payload is an independent copy of X0.
-    page.put(0, 0xd53b_00e0); // mrs x0, dczid_el0
+    // A KVM_SET_ONE_REG/get-one-reg round trip is not sufficient for the
+    // implementation ID registers: without KVM_CAP_ARM_WRITABLE_IMP_ID_REGS,
+    // the guest can still read the physical core's MIDR_EL1. Execute the MRS
+    // and export X0 through an unmapped MMIO store, then repeat the same
+    // guest-visible check for DCZID_EL0 (which has no one-reg entry).
+    page.put(0, 0xd538_0000); // mrs x0, midr_el1
     page.put(4, 0xf900_0020); // str x0, [x1]
+    page.put(8, 0xd53b_00e0); // mrs x0, dczid_el0
+    page.put(12, 0xf900_0020); // str x0, [x1]
     // SAFETY: the aligned allocation is PAGE_SIZE bytes and outlives `kvm`.
     if let Err(error) =
         unsafe { kvm.set_user_memory_region(0, 0, page.ptr.as_ptr(), PAGE_SIZE as u64) }
@@ -159,21 +162,36 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     }
-    let view = match kvm.run() {
-        Ok(view) => view,
-        Err(error) => {
-            eprintln!("guest DCZID_EL0 probe failed: {error}");
+    for (name, expected) in [
+        ("MIDR_EL1", Some(0x0000_0000_410f_d811)),
+        ("DCZID_EL0", None),
+    ] {
+        let view = match kvm.run() {
+            Ok(view) => view,
+            Err(error) => {
+                eprintln!("guest {name} probe failed: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+        if !view.mmio.is_write || view.mmio.phys_addr != 0x1_0000 || view.mmio.len != 8 {
+            eprintln!("guest {name} probe returned unexpected exit: {view:?}");
             return std::process::ExitCode::FAILURE;
         }
-    };
-    if !view.mmio.is_write || view.mmio.phys_addr != 0x1_0000 || view.mmio.len != 8 {
-        eprintln!("guest DCZID_EL0 probe returned unexpected exit: {view:?}");
-        return std::process::ExitCode::FAILURE;
+        let value = u64::from_le_bytes(view.mmio.data);
+        if let Some(expected) = expected
+            && value != expected
+        {
+            eprintln!("guest {name} read {value:#018x}, expected {expected:#018x}");
+            return std::process::ExitCode::FAILURE;
+        }
+        println!("identity-insn.{name}: {value:#018x}");
+        if name == "MIDR_EL1"
+            && let Err(error) = kvm.complete_mmio_exit()
+        {
+            eprintln!("cannot complete guest MIDR_EL1 probe store: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
     }
-    println!(
-        "identity-insn.DCZID_EL0: {:#018x}",
-        u64::from_le_bytes(view.mmio.data)
-    );
     std::process::ExitCode::SUCCESS
 }
 

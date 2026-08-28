@@ -16,7 +16,8 @@
 use std::os::fd::AsRawFd;
 
 use kvm_bindings::{
-    kvm_create_device, kvm_device_attr, kvm_run, kvm_userspace_memory_region, kvm_vcpu_init,
+    kvm_create_device, kvm_device_attr, kvm_enable_cap, kvm_run, kvm_userspace_memory_region,
+    kvm_vcpu_init,
 };
 use kvm_ioctls::{DeviceFd, Kvm, VcpuFd, VmFd};
 
@@ -84,6 +85,20 @@ const GICR_BASE: u64 = 0x080a_0000;
 /// unregistered and masked in the guest.
 const QUARANTINED_VTIMER_PPI: u32 = 20;
 
+/// `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)` from `linux/kvm.h`.
+///
+/// `kvm-ioctls` 0.25 exposes `VmFd::enable_cap` only on architectures which
+/// used this ioctl when that crate's cfg list was written; arm64's newer
+/// writable-implementation-ID capability is nevertheless a VM capability and
+/// uses the same UAPI ioctl. Keep the request derived from the pinned 104-byte
+/// binding, and compile-time-pin both the capability number and structure size.
+const KVM_ENABLE_CAP_IOCTL: libc::c_ulong = 0x4068_aea3;
+
+const _: () = {
+    assert!(kvm_bindings::KVM_CAP_ARM_WRITABLE_IMP_ID_REGS == 239);
+    assert!(size_of::<kvm_enable_cap>() == 104);
+};
+
 /// Map a `kvm-ioctls` error to the crate's portable [`BackendError`].
 fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
     BackendError::Io(std::io::Error::from_raw_os_error(e.errno()))
@@ -113,6 +128,7 @@ impl LiveKvm {
     pub fn new() -> Result<Self> {
         let kvm = Kvm::new().map_err(kvm_err)?;
         let vm = kvm.create_vm().map_err(kvm_err)?;
+        Self::enable_writable_imp_id_regs(&vm)?;
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
 
         let mmap_size = kvm.get_vcpu_mmap_size().map_err(kvm_err)?;
@@ -148,6 +164,34 @@ impl LiveKvm {
         this.vcpu_init()?;
         this.create_vgic()?;
         Ok(this)
+    }
+
+    /// Make MIDR_EL1, REVIDR_EL1, and AIDR_EL1 VM-scoped writable values
+    /// before the vCPU exists. Without this capability, KVM can accept a
+    /// `KVM_SET_ONE_REG` whose value happens to equal the boot CPU while an
+    /// in-guest `MRS` still exposes whichever physical CPU runs the vCPU.
+    fn enable_writable_imp_id_regs(vm: &VmFd) -> Result<()> {
+        let capability = kvm_bindings::KVM_CAP_ARM_WRITABLE_IMP_ID_REGS;
+        if vm.check_extension_raw(libc::c_ulong::from(capability)) <= 0 {
+            return Err(BackendError::Capability {
+                cap: "KVM_CAP_ARM_WRITABLE_IMP_ID_REGS",
+            });
+        }
+        let cap = kvm_enable_cap {
+            cap: capability,
+            flags: 0,
+            args: [0; 4],
+            pad: [0; 64],
+        };
+        // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
+        // input structure required by KVM_ENABLE_CAP. The kernel only reads it
+        // for this ioctl; the reference remains live for the entire call.
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(BackendError::Io(std::io::Error::last_os_error()))
+        }
     }
 
     /// Move KVM's host-time-backed EL1 virtual-timer output away from PPI27,
