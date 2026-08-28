@@ -172,8 +172,18 @@ part of this milestone; merging over a known-red check forfeits the
 milestone. Since the fork point, only four files were modified on both sides
 (`consonance/vmm-core/src/vmm.rs`, `snapshot.rs`, `vendor/arm64/dispatch.rs`,
 `vendor/x86/mod.rs`); those merges are validated by the reference runs, not
-by compilation. PR #204's apparent dissonance diff is the shared pre-fork
-history and dissolves in the merge; nothing is stripped.
+by compilation.
+
+One known trap: commit `57b16ce` on the x86 branch deleted the dissonance
+machine/searcher code (and its deny.toml license allowances) to keep PR
+#204's diff scoped to x86 work. That deletion is PR scoping, not a design
+decision, and the ARM reference runs (M2/M5, the NES campaign) need that
+code. In the merge, the ARM branch's dissonance tree wins everywhere:
+resolve every modify/delete conflict by keeping the file, and restore any
+dissonance file or deny.toml allowance the merge would silently drop — a
+silent drop will not conflict, so check the merged dissonance tree against
+the ARM branch's explicitly rather than trusting conflict markers to
+surface it.
 
 **Passes when** the merged tree re-runs, green, on all three machines: the M5
 same-seed boot and NES-campaign runs (HVF and msr1-KVM, byte-identical
