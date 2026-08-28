@@ -40,7 +40,7 @@ if python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" "$el0probe_init" >"$el0probe
     echo "FAIL: AA-5 counter scanner accepted the el0probe init's planted CNTVCT_EL0 read" >&2
     exit 1
 fi
-if ! grep -q '^\[REJECT\].*1 live counter read' "$el0probe_log"; then
+if ! grep -q '^\[REJECT\].*1 host-dependent register read' "$el0probe_log"; then
     echo "FAIL: AA-5 counter scanner did not identify exactly one planted live read in el0probe init" >&2
     cat "$el0probe_log" >&2
     exit 1
