@@ -242,6 +242,12 @@ weakening either architecture's evidence.
   uses the retired qualifier; new behavior and artifact names say virtual
   time. A future format rename would require a new version and a separately
   approved rebaseline, which this milestone forbids.
+- **Preserve the post-doorbell seal boundary.** Exit-count V-time makes every
+  serviced exit exact, but `setup_complete` still leaves a userspace-I/O
+  completion for the next guest entry to commit. A transient control latch
+  therefore defers the SDK snapshot point through exactly that successful
+  re-entry. This retains N1 session segmentation without retaining a work
+  counter, exact-stop backend path, or snapshot-visible compatibility state.
 
 ### Issue sweep
 
@@ -295,10 +301,10 @@ surface snapshots are re-run on msr1 before this milestone can close.
 Searches over the non-historical tree find no retired modules, symbols,
 feature flags, patch names, or file names. A case-insensitive filename search
 for the retired qualifier returns only `docs/PRESCRIPTIVE-VTIME-STATUS.md`.
-  Text matches outside the plan/status ledgers are links to that historical
-  record or the seven occurrences of frozen v1 log/event tokens in the encoder,
-  dumpers, and byte-comparison oracle described above. The workflow display
-name and concurrency group are `x86-virtual-time`.
+Text matches outside the plan/status ledgers are links to that historical
+record or the seven occurrences of frozen v1 log/event tokens in the encoder,
+dumpers, and byte-comparison oracle described above. The workflow display name
+and concurrency group are `x86-virtual-time`.
 
 ### Verification still required before N2 can be marked PASS
 

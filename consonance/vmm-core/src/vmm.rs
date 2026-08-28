@@ -739,6 +739,11 @@ where
     /// [`Vmm::restore_vm_state`] requires a fresh/committed backend. Set after each
     /// `step`'s `run` from the serviced exit; `false` initially and after a restore.
     pub(crate) completion_staged: bool,
+    /// A `setup_complete` doorbell requested a deferred snapshot point and the
+    /// guest has not yet re-entered to commit that userspace-I/O completion.
+    /// Cleared only after a successful subsequent backend entry. This is a
+    /// host-control latch, not guest or replay state.
+    pub(crate) sdk_snapshot_reentry_required: bool,
     /// `true` when the current point is a **V-time intercept boundary** — the last
     /// serviced exit was a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a TSC
     /// MSR), or the VM is fresh (work 0) — so the **exact** effective V-time is known:
@@ -842,6 +847,7 @@ where
             virtual_time_trace: None,
             rng_completion_staged: false,
             completion_staged: false,
+            sdk_snapshot_reentry_required: false,
             // A fresh VM is at work 0: the effective V-time is exactly `vns_base`, so
             // a snapshot here is exact (synchronized).
             // No intercept has happened yet, let alone a counter read — a fresh VM's
@@ -1705,6 +1711,10 @@ where
         // re-entry did not commit the staged completion.)
         //
         let exit = self.backend.run()?;
+        // A successful entry commits the prior exit's userspace-I/O completion.
+        // If `setup_complete` armed the deferred snapshot latch on that prior
+        // exit, the point may now surface after this exit is serviced.
+        self.sdk_snapshot_reentry_required = false;
         let trace_started = if let Some(trace) = self.virtual_time_trace.as_mut() {
             if let Some((class, payload)) = <B::A as Vendor>::normalize_virtual_time_exit(&exit) {
                 let reason = exit.reason();
@@ -3164,6 +3174,9 @@ where
                     sdk.pending_snapshot = true;
                 }
             }
+            if defer {
+                self.sdk_snapshot_reentry_required = true;
+            }
             let n = encode_response(ServiceId::Event, 1, header.seq, Status::Ok, &[], resp)
                 .unwrap_or(0);
             return (n, stop);
@@ -3456,7 +3469,8 @@ where
     /// `pending_snapshot` is cleared ONLY when the point is actually surfaced (a
     /// sealable boundary), so an RNG boundary defers it to the next clean one.
     pub fn take_snapshot_point(&mut self) -> bool {
-        if self.can_snapshot()
+        if !self.sdk_snapshot_reentry_required
+            && self.can_snapshot()
             && let Some(sdk) = self.sdk.as_mut()
             && sdk.pending_snapshot
         {
