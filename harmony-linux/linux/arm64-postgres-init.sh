@@ -31,15 +31,19 @@ echo "DK38: container: unshare(mount,uts,ipc,net,pid) + chroot static postgres r
 status_file=/run/arm64-postgres.status
 if ! ( $BB unshare --mount --uts --ipc --net --pid -f --propagation private \
     "$BB" sh /arm64-postgres-container-setup.sh; \
-    $BB printf '%s\n' "$?" >"$status_file" ) 2>&1 | /bin/mmio-console; then
+    $BB echo "$?" >"$status_file" ) 2>&1 | /bin/mmio-console; then
     $BB echo "M3_POSTGRES_FAIL: synchronous oracle transport failed" | /bin/mmio-console
     exec $BB reboot -f
 fi
 payload_status=$($BB cat "$status_file")
-if ! $BB test "$payload_status" -eq 0; then
-    $BB echo "M3_POSTGRES_FAIL: container payload exited nonzero" | /bin/mmio-console
-    exec $BB reboot -f
-fi
+case "$payload_status" in
+    0) ;;
+    *)
+        $BB echo "M3_POSTGRES_FAIL: container payload exited nonzero" \
+            | /bin/mmio-console
+        exec $BB reboot -f
+        ;;
+esac
 
 if $BB dmesg | $BB grep -Eiq 'rcu[^:]*stall|soft lockup|watchdog: BUG'; then
     $BB echo "M3_KERNEL_HEALTH_FAIL" | /bin/mmio-console
@@ -48,6 +52,9 @@ if $BB dmesg | $BB grep -Eiq 'rcu[^:]*stall|soft lockup|watchdog: BUG'; then
     exec $BB reboot -f
 fi
 
-$BB printf '%s\n%s\n' "M3_DMESG_OK" "ARM64_PG_M3_READY" | /bin/mmio-console
+{
+    $BB echo "M3_DMESG_OK"
+    $BB echo "ARM64_PG_M3_READY"
+} | /bin/mmio-console
 $BB sync
 exec $BB halt -f
