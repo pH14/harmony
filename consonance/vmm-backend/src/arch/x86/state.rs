@@ -234,6 +234,21 @@ pub struct VcpuEvents {
     pub triple_fault_pending: u8,
 }
 
+/// `RFLAGS.RF` (resume flag).
+const RFLAGS_RF: u64 = 1 << 16;
+
+/// Canonicalize exit-mechanics residue in the general registers, in place.
+///
+/// At an exit taken mid-instruction (an MMIO access the host emulates), VMX
+/// saves `RFLAGS` with `RF` set — the fault-restart semantics of SDM vol. 3
+/// §18.3.1 — while SVM reports it clear. The instruction is completed by the
+/// emulator either way, and `RF` self-clears at the next instruction boundary,
+/// so the bit carries no guest-visible state at a serviced exit. Cleared so
+/// equal guest state hashes equally across vendors.
+pub fn canonicalize_regs(regs: &mut VcpuRegs) {
+    regs.rflags &= !RFLAGS_RF;
+}
+
 /// Canonicalize the architecturally-ignored fields of unusable segments, in
 /// place.
 ///
@@ -414,6 +429,40 @@ mod tests {
         canonicalize_xsave(&mut b);
         assert_eq!(a, b);
         assert!(a[LEGACY_TAIL].iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn rf_exit_residue_collapses_across_vendors() {
+        // The measured cross-vendor pair at an MMIO exit (run 33127863719):
+        // VMX reports RF set in the exit-time RFLAGS, SVM reports it clear.
+        let mut intel = VcpuRegs {
+            rflags: 0x10282,
+            ..VcpuRegs::default()
+        };
+        let mut amd = VcpuRegs {
+            rflags: 0x282,
+            ..VcpuRegs::default()
+        };
+        canonicalize_regs(&mut intel);
+        canonicalize_regs(&mut amd);
+        assert_eq!(intel, amd);
+        assert_eq!(intel.rflags, 0x282);
+    }
+
+    #[test]
+    fn regs_other_than_rf_are_untouched() {
+        let mut regs = VcpuRegs {
+            rax: 0x1234,
+            rsp: 0xffff_ffff_8260_3e98,
+            rip: 0xffff_ffff_8125_6a62,
+            rflags: 0x10ac6,
+            ..VcpuRegs::default()
+        };
+        canonicalize_regs(&mut regs);
+        assert_eq!(regs.rax, 0x1234);
+        assert_eq!(regs.rsp, 0xffff_ffff_8260_3e98);
+        assert_eq!(regs.rip, 0xffff_ffff_8125_6a62);
+        assert_eq!(regs.rflags, 0xac6);
     }
 
     #[test]

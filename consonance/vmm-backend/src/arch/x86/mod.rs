@@ -12,7 +12,7 @@ mod state;
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 pub use state::{
     DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
-    canonicalize_sregs, canonicalize_xsave,
+    canonicalize_regs, canonicalize_sregs, canonicalize_xsave,
 };
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
