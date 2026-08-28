@@ -1,11 +1,8 @@
 # Dissonance from scratch — a fuzzing-vocabulary design sketch
 
-This document is an exploration note, not a ruling. It describes a
-from-scratch redesign of the dissonance search loop. It deliberately uses
-standard fuzzing vocabulary instead of harmony's own names (for example *run*
-where the glossary says *rollout*, *corpus* where the code says `Archive`).
-Nothing here retires a `docs/GLOSSARY.md` ruling; if any of this is adopted,
-it goes through the normal glossary process.
+**Status: governing design for the standalone `dissonance` prototype.**
+It uses LibAFL's vocabulary directly and has no translation layer to the old
+dissonance stack.
 
 The implementation plan that goes with this document is `docs/LIBAFL-PLAN.md`.
 The code lives in `dissonance/`.
@@ -27,9 +24,10 @@ That is six orders of magnitude, so an LLM must never sit on the critical
 path of a run. Two facts make the combination work anyway:
 
 1. **The target cannot tell the LLM is slow.** The system under test is
-   deterministic and can be paused and resumed at any point. LLM slowness
-   costs wall-clock time only, and wall-clock time can be bought back with
-   parallel calls to cheap models.
+   deterministic and can be paused and resumed at any point. Run the search
+   for a fixed number of executions, label newly retained testcases, then
+   resume. LLM slowness costs wall-clock time only and never changes how many
+   target executions an experiment receives.
 2. **One LLM output steers many runs.** The LLM never picks a single action.
    It produces things that are reused across thousands of runs: labels on
    corpus entries, priorities, and — most importantly — code.
@@ -50,18 +48,18 @@ and writes code that makes the same judgment mechanically from then on.
 3. **Scheduler.** Picks which corpus entry to extend next and how much
    effort to spend on it. Favors entries whose recent extensions produced
    novelty. Purely mechanical.
-4. **Triage.** A pool of cheap LLMs running *behind* the search. As new
-   entries appear, a triage model reads each one's logs and evidence and
-   attaches labels: a priority hint, tags, a one-line summary, hypotheses.
-   The fuzzing loop never waits for triage.
+4. **Triage.** Between fixed execution batches, a cheap LLM reads newly
+   retained testcases and attaches labels: a priority hint, tags, a one-line
+   summary, hypotheses. The next batch reads those labels; no LLM call occurs
+   inside the fuzzing loop.
 5. **Instrumentor.** A bigger LLM, invoked occasionally. It reads the
    fuzzer's stats and the labeled corpus — the same things a human fuzzing
    operator would read — and emits **code**: new novelty detectors and new
    mutators (details below). Its output installs between runs, never during
    one.
 
-One sentence of glue: the fast loop looks wherever the coverage map is
-detailed, and the LLMs' only power is to change where the map is detailed.
+One sentence of glue: models write labels and generated detector or mutator
+files between execution batches; the ordinary fuzzing loop consumes them.
 
 ```
         FAST LOOP (machine speed) ──────────────────────────────┐
@@ -74,13 +72,13 @@ detailed, and the LLMs' only power is to change where the map is detailed.
         └───────────────────────▲───────────────────────┬───────┘
                                 │                       │ new entries
               generated detectors                       ▼
-              and mutators,     │                 Triage — cheap LLMs,
-              priority caps     │                 label entries, stream
+              and mutators      │                 Triage — cheap LLMs,
+                                │                 label new testcases
                                 │                       │ labels + stats
                                 └── Instrumentor ◄──────┘
                                     (LLM, occasional)
 
-        SLOW LOOP (LLM speed, async — fast loop never waits)
+        SLOW LOOP (LLM speed, between fixed execution batches)
 ```
 
 ## A worked example: the locked door
@@ -120,19 +118,19 @@ Three kinds of output, all of them files, none of them live decisions:
   function: observations in, feature keys out. Each detector adds a new map
   for the novelty check. Detectors change **what the search can see**.
 - **Generated mutators** (instrumentor). Code implementing one pure
-  function: input sequence in, mutated sequence out. These install
-  *semantic macros* — coherent multi-action patterns like "partition the
-  leader while a write is in flight" or "jump-arc of length N" — that plain
+  function: input sequence and seeded random value in, mutated sequence out.
+  These produce coherent multi-action patterns like "partition the leader
+  while a write is in flight" or "jump-arc of length N" that plain
   single-action mutation would only compose by luck. Mutators change
   **what the search can do**.
 
 Rules that keep this safe:
 
-- **Scope by lineage.** A generated detector can be restricted to runs that
-  descend from a named corpus entry. A bad detector then wastes effort in
-  one subtree instead of steering the whole campaign into a ditch.
 - **Add, never modify.** Generated detectors add new maps; the base map is
   never edited. Regions of the search stay comparable.
+- **Validate before install.** Generated code must compile, be deterministic
+  and bounded on recorded inputs, and win a short fixed-budget comparison
+  before it participates in the search. Rejected code is still recorded.
 - **Mechanical retirement.** A generated detector that stops producing
   novelties, or a generated mutator whose offspring stop producing
   novelties, is dropped automatically. No LLM is involved in retirement.
@@ -154,7 +152,7 @@ Guidelines, learned from fuzzing and property-based testing:
   frames, raw syscalls) and mutations are valid but meaningless. Too high
   (canned scenarios like "do a failover") and the search can only shuffle
   stories someone already wrote. Use the interface's primitive verbs plus
-  primitive faults; let mutation and macros build the structure.
+  primitive faults; let mutators build the structure.
 - **Every action must be total.** After mutation changes the start of a
   sequence, the rest must still mean something. Reference stable structural
   names (node ids, links, "the next N packets on a→b"), never ephemeral
@@ -169,20 +167,8 @@ Guidelines, learned from fuzzing and property-based testing:
 
 ## Vocabulary
 
-| this design          | replaces (current harmony)        | where the term is from |
-|----------------------|-----------------------------------|------------------------|
-| run                  | rollout                           | fuzzing (execs/sec)    |
-| corpus / corpus entry| `Archive` / `Entry`               | AFL                    |
-| coverage/feature map | cells (`IdentityCells`)           | AFL / MAP-Elites       |
-| novelty check        | admission                         | greybox fuzzing        |
-| scheduler / energy   | bandit / selection weights        | AFL / AFLFast          |
-| triage               | assess loop (Resolution, partly)  | fuzzing (crash triage) |
-| instrumentation      | codify loop (Resolution, partly)  | IJON, laf-intel        |
-| snapshot             | MomentRef                         | snapshot fuzzing       |
-| campaign             | campaign                          | already standard       |
-
-The old rollout/step/campaign/Resolution ladder collapses to **run →
-campaign**; the loops in between need no nouns ("between runs" covers it).
+Use the LibAFL terms listed in `dissonance/CLAUDE.md` directly. There is no
+old-to-new translation table and no additional architectural vocabulary.
 
 ## How to test it without LLMs
 
@@ -190,12 +176,12 @@ LLMs never act directly; they emit data and code through two narrow seams
 (evidence → labels, stats + labels → generated code). Consequences:
 
 - The fast loop tests as an ordinary fuzzer: determinism properties, novelty
-  checks, scheduler behavior, scoping, retirement.
+  checks, scheduler behavior, and retirement.
 - The seams test with scripted stand-ins: a regex triager, a hand-written
   detector. What is being verified is the plumbing, not the model.
 - **Replay is the master property.** Record every label and every generated
   file as it arrives. A campaign is then a pure function of (seed, recorded
-  artifacts) and replays end-to-end with no LLM present. That is both the
+  files) and replays end-to-end with no LLM present. That is both the
   integration test and the reproduction story.
 - Model quality is measured separately, as A/B campaigns on benchmark
   targets with known deep states (time-to-discovery versus a null triager).
@@ -216,11 +202,10 @@ be validated on targets that need no fault injection at all:
 Fault injection arrives later as one more input vocabulary, not as an
 architectural event.
 
-## Open questions
+## Model boundary
 
-- Whether interactive LLM trajectory seeding (an LLM plays once, slowly, at
-  the macro-action level; the recorded sequence joins the corpus; mutation
-  riffs on it) earns its plumbing over having the LLM write the sequence
-  blind. Severable either way — a seeded trajectory is just a corpus entry.
-- Relationship to the existing `dissonance/` crates if this design is
-  adopted: port ideas, or converge vocabularies.
+- Interactive LLM trajectory seeding (an LLM plays once, slowly; the
+  recorded sequence joins the corpus) — **ruled out, 2026-08-10**. The
+  search discovers from scratch; models contribute labels and generated
+  rules only, never inputs. The worked example's discipline is the
+  boundary: the LLM never chooses a button.

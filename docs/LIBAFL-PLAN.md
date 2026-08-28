@@ -1,10 +1,9 @@
 # LibAFL integration plan
 
-This is an exploration plan, a companion to `docs/DISSONANCE-FROM-SCRATCH.md`.
-Read that document first — it explains the design this plan implements. This
-document verifies that LibAFL actually provides what the design needs, then
-lays out the build in phases. The code lives in `dissonance/`; read
-`dissonance/CLAUDE.md` before working there.
+**Status: implementation plan, companion to `docs/DISSONANCE-FROM-SCRATCH.md`.**
+Phases 0–4b are complete in the prototype; current work is defined in
+`docs/MODEL-IN-THE-LOOP-PLAN.md`. Read the design first, then
+`dissonance/CLAUDE.md` before working in `dissonance/`.
 
 Every API claim below was checked against the **libafl 0.15.4** source (the
 crates.io release), not against docs or memory. File references are to that
@@ -40,22 +39,21 @@ behind the `Executor` trait).
 ### Where the code lives
 
 `dissonance/` is a standalone Cargo workspace, deliberately outside the
-harmony root workspace (the same pattern as `dissonance/differential-lineage`,
-itself a separate workspace root nested below it).
+harmony root workspace.
 `libafl` is pinned at 0.15.4 until phase 5. No dependencies on harmony
-crates (`consonance/*`, `differential-lineage`) before phase 5. The directory's
+crates (`consonance/*`, `dissonance/*`) before phase 5. The directory's
 `CLAUDE.md` tells agents working there to read only this plan and the design
 sketch, and not to read the old `dissonance/` crates — the rebuild must not
 inherit the old decomposition by accident.
 
-Modules inside the `fuzzer` crate, as they land: `input` (per-target input
+Modules inside the `searcher` crate, as they land: `input` (per-target input
 types and mutators), `executor` (per-target executors), `feedback` (the
-lineage-scoping wrapper and the generated-code facades), `triage` (label
-schema and score), `harness` (the generate → build → restart loop).
+generated-code facades), `triage` (label schema and score), `harness` (the
+generate → build → restart loop).
 
 ### The fuzzer process
 
-A standard LibAFL fuzzer assembled from stock parts, plus four small custom
+A standard LibAFL fuzzer assembled from stock parts, plus three small custom
 pieces:
 
 1. **An input type per target.** For example `Vec<ButtonChord>` (a button
@@ -68,11 +66,7 @@ pieces:
    input prefix", so before running an input the executor can resume from
    the longest cached prefix instead of replaying from the start. This is
    purely a speedup inside `run_target`; the fuzzing loop never sees it.
-3. **`ScopedFeedback<F>`.** A wrapper that gates any feedback `F` on
-   lineage: it only fires if the current run's parent chain passes through a
-   listed `CorpusId`. This is how a generated detector gets restricted to
-   one subtree. Roughly fifty lines against public API.
-4. **`TriageScore`.** A `TestcaseScore` implementation that reads triage
+3. **`TriageScore`.** A `TestcaseScore` implementation that reads triage
    labels out of testcase metadata (Boost / Neutral / Suppress becomes a
    multiplier) and combines that with the stock power-schedule factor.
    Plugs into `WeightedScheduler` unchanged.
@@ -115,7 +109,7 @@ pub trait GeneratedDetector {
 ```
 
 Hand-written scaffolding (not generated) adapts any `GeneratedDetector` into
-an `Observer` + map-feedback pair, optionally wrapped in `ScopedFeedback`.
+an `Observer` + map-feedback pair.
 Keeping the generated surface to one pure function is what makes generation
 reliable and review easy: a generated detector can be unit-tested against
 recorded `RunObservations` fixtures with no fuzzer running.
@@ -125,36 +119,37 @@ into the crate, runs `cargo build`, restarts the fuzzer, and the fuzzer
 resumes from the on-disk corpus. This is how fuzzing already works when you
 re-instrument a target: rebuild, then resume from the queue directory. No
 hot-swapping, no WASM, no scripting layer in v1. A restart costs seconds.
-Revisit only if instrumentor cadence ever outpaces rebuild time.
+Revisit only if rebuild time becomes a measured problem.
 
 **Retirement is mechanical.** Each generated detector feeds its own map. A
-detector whose map produces no novelties for N minutes is dropped at the
-next rebuild. No LLM is involved in that decision.
+detector whose map produces no novelties for a fixed number of relevant
+executions is dropped at the next rebuild. No LLM and no wall clock is
+involved in that decision.
 
-### Generated code: mutators (semantic macros)
+### Generated code: mutators
 
-The same channel can install a `Mutator`: a pure `input → input` function
-that splices a coherent, parameterized pattern into a sequence — "partition
-the leader while a write is in flight", "jump-arc of length N". This is
-where triage hypotheses land when the gap is in the *action* space rather
-than the observation space: multi-action patterns that single-action
+The same channel can install a `Mutator`: a pure `input + seed → input`
+function that splices a coherent, parameterized pattern into a sequence —
+"partition the leader while a write is in flight", "jump-arc of length N".
+This is where triage hypotheses land when the gap is in the *action* space
+rather than the observation space: multi-action patterns that single-action
 mutation would only compose by luck.
 
 Everything mirrors detectors: same install-by-rebuild, unit-testable against
 fixture inputs (plus a property test that the output stays valid), and
 mechanical retirement — tag each testcase with the mutator that produced it
-(testcase metadata again), and drop a macro whose offspring stop producing
-novelties.
+(testcase metadata again), and drop a generated mutator whose offspring stop
+producing novelties.
 
 Sequencing: detectors come first (phase 3) because they are easier to
-validate; macros join in phase 4, where the A/B measures their payoff.
-Macros that keep earning their place accumulate into a per-target library of
-legible, reviewable moves that carries across campaigns.
+validate; generated mutators join in phase 4, where the A/B measures their
+payoff.
 
 ### The triage process
 
-A separate process — any agent harness — that walks the corpus directory,
-reads testcases and their evidence, and writes labels:
+At fixed execution counts, the harness stops the current batch, walks the
+corpus directory, sends newly retained testcases and their evidence to any
+agent harness, and writes labels before resuming:
 
 ```rust
 struct TriageLabels {
@@ -170,23 +165,25 @@ struct TriageLabels {
 Only `interest` and `duplicate_of` are consumed by machines; the free-text
 fields exist to be read by the instrumentor and by humans.
 
-**Single-writer rule.** The fuzzer owns the `.metadata` sidecar files;
-triage never writes them. Triage writes its labels to separate
-`<testcase>.labels.json` files, and a small custom stage in the fuzzer
-(`LoadLabelsStage`, a periodic scan by file modification time) merges
-changed label files into testcase metadata. This avoids racing LibAFL's own
-persistence. About a hundred lines; the one piece of glue LibAFL doesn't
-ship.
+The fuzzer owns the `.metadata` sidecar files. Triage writes separate
+`<testcase>.labels.json` files while the fuzzer is stopped; the harness loads
+them into testcase metadata before the next fixed execution batch. There is
+no concurrent writer, file-watching stage, modification-time scan, or label
+arrival race. Record the execution count at which each label is first loaded;
+replay loads it at the same count.
+
+The completed phase 2 fixture keeps its deterministic import stage for
+regression coverage; do not refactor it. New target paths use the
+fixed-boundary harness above.
 
 ### The instrumentor process
 
 An agent with file tools pointed at the fuzzer's output directory. It reads
 what a human fuzzing operator reads: `fuzzer_stats` and `plot_data` (stock
 `AflStatsStage`), plus the corpus directory with its metadata and label
-files. Its outputs are exactly two, described above: generated code
-(detectors and macros) and label edits (energy caps expressed as `Suppress`
-labels on subtree roots). If the corpus outgrows comfortable browsing, the
-fix is a better stats file or a query script — operator tooling.
+files. Its output is generated code: a detector or mutator. Triage alone
+writes labels. If the corpus outgrows comfortable browsing, the fix is a
+better stats file or a query script — operator tooling.
 
 ### Determinism and testing
 
@@ -196,19 +193,18 @@ fix is a better stats file or a query script — operator tooling.
   test is the guard.
 - Unit tests, no LLM anywhere: mutator properties, executor determinism
   (same input → identical observations, with the snapshot cache on or off),
-  `ScopedFeedback` scoping, `LoadLabelsStage` merging, generated-code
-  fixtures.
+  label loading at fixed execution counts, generated-code fixtures.
 - Integration test: record every label file and generated file during a
   campaign, in order. Replaying the campaign from (seed, recorded files)
   must reproduce the corpus. This is the no-LLM replay property from the
   design sketch, made concrete.
 - Model quality is measured in A/B campaigns (see phases), never in CI.
 
-## 3. Phases
+## 3. Prototype phases
 
-Each phase adds exactly one new kind of risk, and each has an exit
-criterion. No phase before 5 depends on fault injection, consonance, or any
-harmony crate.
+Phases 0–4b are completed evidence, not current instructions. Do not rerun or
+refactor them unless the current SMB plan requires a regression test. Phase 5
+remains a separate future decision.
 
 **Phase 0 — vanilla spike (days).** A stock byte-input fuzzer against a toy
 target with a planted crash, built from LibAFL as-shipped, nothing custom.
@@ -232,7 +228,7 @@ around as a deterministic CI fixture. Exit: labels measurably shift
 time-to-target; a campaign replayed from recorded labels reproduces itself.
 
 **Phase 3 — generated detectors (1–2 weeks).** The generate → build →
-restart → resume loop, `ScopedFeedback`, per-detector novelty accounting,
+restart → resume loop, per-detector novelty accounting,
 mechanical retirement. Validate with hand-written detectors first (zero
 model variance), then a real model. The target gets a deliberate blind
 spot: a state distinction the base map cannot see, so the baseline search
@@ -243,23 +239,16 @@ the blind spot; the baseline doesn't.
 into a small adventure game we write ourselves: rooms, keys, locked doors,
 an inventory, hazards — a few hundred lines, fully in-process. Because we
 control the game, we control the blind spots and can compute exact
-progress metrics. Generated macros join generated detectors here. The full
-experiment runs on this target: {null, scripted, cheap-LLM triage} ×
-{base, generated detectors, detectors + macros}. Exit: metric curves per
+progress metrics. Generated mutators join generated detectors here. The full
+experiment runs on this target: {null, scripted, cheap-LLM triage} × {base,
+generated detectors, detectors + generated mutators}. Exit: metric curves per
 configuration. This phase carries the science; phase 4b is the showpiece.
 
-**Phase 4b — NES demo (optional, 1 week, cuttable without losing the
-science).** The same experiment on a real game, for demonstration value.
-We do not write an emulator: `tetanes-core` (0.15.0, verified against
-source) is a headless NES core with `load_rom`, per-frame stepping
-(`clock_frame`), joypad input, RAM access, and in-memory save states
-(`save_state`/`load_state`) — its `ControlDeck` documents a deterministic
-batch mode explicitly. The executor wrapper is a few hundred lines, and
-save states make the snapshot prefix cache nearly free. Use an
-open-licensed homebrew ROM, not a commercial one: no licensing problem,
-and published source means the RAM layout is documented, which makes
-detectors and the progress metric easier to write. If this phase fights
-us, cut it and let phase 4a's curves stand.
+**Phase 4b — NES demo (completed).** The deterministic SMB executor uses
+`tetanes-core` for per-frame stepping, joypad input, RAM access, and in-memory
+save states. Its ROM is supplied externally through `HARMONY_SMB_ROM`; no ROM
+is copied into or committed to the repository. Current NES work is specified
+only in `docs/MODEL-IN-THE-LOOP-PLAN.md`.
 
 **Phase 5 — the real executor (later, a separate decision).** Consonance
 slots in behind the same one-method `Executor` trait; fault schedules become
@@ -273,13 +262,12 @@ one deliberate moment to consider a libafl version upgrade.
   hard to read. Phase 0 exists to absorb this. Mitigation: copy a
   maintained example fuzzer's type assembly and modify it; don't compose
   from scratch.
-- **Metadata races.** Handled by the single-writer rule. Residual risk is
-  `LoadLabelsStage` scan cost on large corpora; bounded by scanning file
-  modification times.
-- **Restart cadence.** Rebuild-and-restart per installed artifact is fine
-  at instrumentor cadence (minutes). It would not be fine at triage
-  cadence — which is why triage flows through label files and never needs a
-  restart.
+- **Label volume.** Label only newly retained testcases at fixed execution
+  boundaries, within the predeclared model-call budget. A failed call records
+  neutral labels and does not delay later target-execution batches.
+- **Restart cadence.** Rebuild-and-restart per installed file is fine for
+  occasional instrumentor calls. Labels need no rebuild; the harness loads
+  their files before the next execution batch.
 - **Hidden nondeterminism in stock stages.** Calibration and any
   time-based scheduling factors may read the wall clock. The prototype
   excludes time-derived feedbacks; the phase 1 determinism test is the

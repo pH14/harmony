@@ -4,9 +4,10 @@
 disallowed-methods = [
   { path = "std::time::Instant::now",    reason = "wall-clock leaks nondeterminism; use vtime" },
   { path = "std::time::SystemTime::now", reason = "wall-clock leaks nondeterminism" },
-  { path = "rand::thread_rng",           reason = "unseeded RNG (rand 0.8); thread a seed explicitly" },
-  { path = "rand::rng",                  reason = "unseeded RNG (rand 0.9); thread a seed explicitly" },
-  { path = "rand::random",               reason = "unseeded RNG" },
+  # allow-invalid: rand is absent from some workspaces sharing this config.
+  { path = "rand::thread_rng",           reason = "unseeded RNG (rand 0.8); thread a seed explicitly", allow-invalid = true },
+  { path = "rand::rng",                  reason = "unseeded RNG (rand 0.9); thread a seed explicitly", allow-invalid = true },
+  { path = "rand::random",               reason = "unseeded RNG", allow-invalid = true },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap",  reason = "iteration order can reach a hash/byte; use BTreeMap or sort" },

@@ -1,9 +1,8 @@
-# Standalone workspace root, deliberately outside the harmony root workspace
-# (as is differential-lineage/ below this directory, which is not a member
-# here). See CLAUDE.md in this directory before working here.
+# Standalone workspace root, deliberately outside the harmony root workspace.
+# See CLAUDE.md in this directory before working here.
 [workspace]
 resolver = "2"
-members = ["fuzzer"]
+members = ["machine", "searcher"]
 
 [workspace.package]
 edition = "2024"
