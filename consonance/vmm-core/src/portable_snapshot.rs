@@ -553,8 +553,10 @@ impl<'a> SliceReader<'a> {
 mod tests {
     use super::*;
 
-    fn fixture() -> (Vec<u8>, Vec<u8>, SdkSnapshot, NetSnapshot, FaultPolicy) {
-        let memory = (0..=255).cycle().take(8192).collect();
+    fn fixture_with_memory_len(
+        memory_len: usize,
+    ) -> (Vec<u8>, Vec<u8>, SdkSnapshot, NetSnapshot, FaultPolicy) {
+        let memory = (0..=255).cycle().take(memory_len).collect();
         let vm_state = b"strict-vm-state".to_vec();
         let sdk = SdkSnapshot {
             stream: [0x5a; 16],
@@ -569,8 +571,12 @@ mod tests {
         (memory, vm_state, sdk, net, FaultPolicy::none())
     }
 
-    fn encoded() -> Vec<u8> {
-        let (memory, vm_state, sdk, net, policy) = fixture();
+    fn fixture() -> (Vec<u8>, Vec<u8>, SdkSnapshot, NetSnapshot, FaultPolicy) {
+        fixture_with_memory_len(8192)
+    }
+
+    fn encoded_with_memory_len(memory_len: usize) -> Vec<u8> {
+        let (memory, vm_state, sdk, net, policy) = fixture_with_memory_len(memory_len);
         let mut bytes = Vec::new();
         PortableSnapshotRef {
             memory: &memory,
@@ -588,6 +594,10 @@ mod tests {
         .write_to(&mut bytes)
         .unwrap();
         bytes
+    }
+
+    fn encoded() -> Vec<u8> {
+        encoded_with_memory_len(8192)
     }
 
     #[test]
@@ -656,15 +666,21 @@ mod tests {
 
     #[test]
     fn hostile_lengths_and_all_truncations_are_total() {
-        let bytes = encoded();
+        // Re-decoding every prefix re-hashes the prefix. Keep the full 8-KiB
+        // artifact natively, but avoid quadratic interpreted SHA-256 over
+        // thousands of semantically identical bulk-memory prefixes under
+        // Miri. The smaller artifact retains every section and the loop still
+        // exercises every one of its truncation points.
+        let memory_len = if cfg!(miri) { 128 } else { 8192 };
+        let bytes = encoded_with_memory_len(memory_len);
         for end in 0..bytes.len() {
-            assert!(PortableSnapshot::read_from(&bytes[..end], 8192).is_err());
+            assert!(PortableSnapshot::read_from(&bytes[..end], memory_len).is_err());
         }
         let mut oversized = bytes;
         // vm_state length begins after magic/version/flags/memory length.
         oversized[20..28].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
-            PortableSnapshot::read_from(oversized.as_slice(), 8192),
+            PortableSnapshot::read_from(oversized.as_slice(), memory_len),
             Err(PortableSnapshotError::Length {
                 section: "vm_state",
                 ..
