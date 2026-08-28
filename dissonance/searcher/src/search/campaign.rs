@@ -2141,12 +2141,22 @@ where
     let mut core = CoordinatorCore::new(game, header.action_limit, header.archive_entry_limit);
     core.archive.selector_policy = replay_selector.clone();
     let mut counters = CampaignCounters::new(header.workers);
-    let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
+    let mut bootstrap_target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
     })?;
-    let frames_before = game.frames_clocked(&target);
-    counters.tree_import = bootstrap_core(game, &mut core, &mut target, &replay_origin)?;
-    counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    let frames_before = game.frames_clocked(&bootstrap_target);
+    counters.tree_import = bootstrap_core(game, &mut core, &mut bootstrap_target, &replay_origin)?;
+    counters.bootstrap_frames = game
+        .frames_clocked(&bootstrap_target)
+        .saturating_sub(frames_before);
+    // Match the live lifecycle: bootstrap uses a disposable target and jobs
+    // start on fresh worker targets. Emulator state outside the serialized
+    // snapshot must therefore have the same history in live execution and
+    // replay.
+    drop(bootstrap_target);
+    let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
+        format!("failed to build the replay worker target: {error}").into()
+    })?;
 
     for line in record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
