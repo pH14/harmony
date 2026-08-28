@@ -394,7 +394,79 @@ not orphaned implementation.
 
 ## N3 — fast
 
-Not started.
+### Pre-optimization measurement and correctness findings
+
+**BLOCKED before optimization.** No performance implementation change has
+landed. The exact pre-optimization runner at `a9c83d93` was profiled on the M1
+Max with the attested kernel (`91b4f578…a72f`) and reproducibly built initramfs
+(`c3939c77…66ab`). A 30-second `sample(1)` profile collected 22,611 main-thread
+samples:
+
+| Cost | Samples | Share of main-thread samples |
+| --- | ---: | ---: |
+| `sha2::sha256::compress256`, reached from `Vmm::step` checkpoint `state_hash` | 22,380 | 98.98% |
+| `state_hash` memory copy (`_platform_memmove`) | 183 | 0.81% |
+| HVF trap/run | 11 | 0.05% |
+
+Thus the measured top cost is the 512 MiB full-state SHA-256 at every 256th
+portable event; rendering, stdout, watchdog traffic, and HVF execution are not
+material suspects. This profile is recorded before any optimization, as N3
+requires.
+
+The original fixture could not produce an admissible baseline because its
+structured oracle was written through asynchronous `/dev/kmsg`; rows 4–8,
+19–20, and terminal markers could be absent even though PostgreSQL's aggregate
+proved all rows committed. [Issue #206](https://github.com/pH14/harmony/issues/206)
+records that defect. Commits `77d37a0e`, `ddcd0865`, and `a9c83d93` make the
+oracle transport synchronous and keep the init within the image's explicit
+BusyBox applet surface. These are pre-baseline correctness repairs, not
+performance optimizations. The rebuilt fixture passed the LL/SC, raw
+host-register, and timer-program instruction scans for every shipped ELF.
+
+The final repaired run reached `ARM64_PG_M3_READY`, passed the 20-row SQL,
+kernel-health, delivery-placement, watchdog, and gap-bound oracles, and supplied
+the following provisional phase timings. They are not accepted as the N3
+baseline because the independent comparators failed:
+
+| Phase | Wall ns | Host loop exits |
+| --- | ---: | ---: |
+| boot to PostgreSQL start | 119,573,586,292 | 20,084 |
+| PostgreSQL startup | 52,102,331,917 | 10,080 |
+| ready to workload | 13,797,858,250 | 2,836 |
+| workload | 30,598,263,250 | 5,771 |
+| PostgreSQL shutdown | 9,213,251,250 | 1,650 |
+| kernel health | 4,582,470,833 | 857 |
+| total | 229,867,761,792 | 41,278 |
+
+The blocking mismatch is now exact:
+
+```text
+raw HVF exits / host loop iterations: 41,278
+portable normalized events:           38,295
+substrate-private difference:           2,983
+
+trace gaps:    count=30,959 max=1,000,000 V-ns
+pvclock gaps:  count=33,796 max=1,000,000 V-ns
+```
+
+ARM normalization intentionally records HVF's userspace-GIC MMIO/sysreg exits
+as raw-only because stock KVM consumes the same operations in its in-kernel GIC.
+The M3 runner nevertheless compares all host loop iterations with only portable
+events, and samples the unchanged pvclock page again on each raw-only exit. The
+result is a category mismatch in both independent comparators, exposed rather
+than caused by the synchronous transport.
+
+Changing those comparator semantics was not accepted without explicit
+authorization because an incautious filter could weaken the anti-vacuity gate.
+Per the plan's stop rule, N3 does not claim a baseline, no optimization begins,
+and N4–N6 remain unstarted. An authorized repair must preserve independence:
+it must account for every raw-only exit explicitly and must fail if a portable
+normalized event is accidentally discarded (including a legitimate zero-time
+event), with a planted negative before this milestone can resume.
+
+**N3 overall: BLOCKED.** The runner's independent counters do not measure the
+same event domain as the frozen portable trace. Redefining or filtering the
+gate without the explicit safeguards above would be a hollow pass.
 
 ## N4 — the guest is part of Consonance
 
