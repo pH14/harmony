@@ -389,7 +389,7 @@ the flag, so pinned images restore without observable effect.
  
 --- a/arch/x86/kernel/harmony_pvclock.c
 +++ b/arch/x86/kernel/harmony_pvclock.c
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,367 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * harmony_pvclock — clocksource + sched_clock over the harmony deterministic
