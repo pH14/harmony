@@ -12,8 +12,9 @@ charter, this charter wins.
 The program has one concrete target: from a cold Super Mario Bros. gameplay
 genesis, with no previously discovered corpus or route and no game knowledge beyond
 the declared mechanical observations, find and replay a complete end-to-end run in
-less than 45 minutes on `msr1`. This is an engineering target and a research
-benchmark, not permission to specialize the searcher for Mario.
+less than 45 minutes on `msr1` under the active evaluator's frozen hardware
+allocation. This is an engineering target and a research benchmark, not permission
+to specialize the searcher for Mario.
 
 Here **autoresearch** means an agent improving the mechanical search implementation
 between fixed experiments. It does not mean an LLM participating in a campaign.
@@ -21,6 +22,82 @@ Model triage, generated detectors, generated mutators, trajectory seeding, and t
 previous model-in-the-loop outer design are outside this program. They remain frozen
 unless a later charter reintroduces one through the same evaluator after the
 mechanical core is fast, bounded, generic, and understood.
+
+### Current benchmark allocation: evaluator-v2-msr1-big
+
+The first batch now runs as `evaluator-v2-msr1-big`. Preserve `evaluator-v1`
+and all E00 through E00R6 artifacts as immutable `INVALID` history; do not
+reinterpret or overwrite them. Restart E00 from a fresh artifact root:
+
+- local: `target/autoresearch/evaluator-v2-msr1-big-batch-1`;
+- msr1: `/root/harmony-autoresearch/evaluator-v2-msr1-big-batch-1`.
+
+This evaluator reserves msr1's eight Cortex-A720 CPUs `0,1,6-11` for
+Dissonance. Its canonical promotion grid and affinity sets are W1 `0`, W4
+`0,1,10,11`, and W8 `0,1,6-11`; evaluator-v2 has no W2 promotion point. Run
+the controller in an auditable systemd cgroup with `AllowedCPUs=0,1,6-11`,
+and run every measured child in an auditable child cgroup whose `AllowedCPUs`
+equals its declared set. The controller and child effective affinities read
+from `/proc` must equal, not merely be subsets of, their declared sets. The W4
+set is the four highest-capacity cores; W8 is the complete big-core partition.
+
+Consonance owns the four Cortex-A520 CPUs `2-5`. Consonance `cargo`, `rustc`,
+tests, image builds, and KVM runs are permitted concurrently only when their
+systemd cgroup has `AllowedCPUs=2-5` and their observed effective affinity is
+exactly `2-5`. The controller scans external workload processes in user
+sessions and non-evaluator build, test, benchmark, and transient-service
+cgroups. E00 freezes and hashes the discovery implementation and the fixed
+boot-service exclusions before any measurement; kernel threads and fixed boot
+services are recorded but are not classified as external workloads. Preflight
+and the live monitor reject an external workload process when its effective
+allowed CPU set intersects the Dissonance reservation; a non-overlapping
+process is not rejected merely because its executable is named `cargo` or
+`rustc`. Record every discovered process's PID, command, cgroup, effective
+affinity, classification, and decision so the result is auditable.
+
+Before readiness, the controller must prove this gate with planted controls.
+An external workload confined to a set containing CPU 0 must be detected and
+must invalidate its sacrificial sample. A real `cargo` process from the frozen
+Consonance source, confined to `2-5`, must be detected and recorded but must
+not invalidate its sacrificial sample. A measured child whose cgroup
+`AllowedCPUs` is correct but whose `/proc` effective affinity is narrower than
+the declared set must be rejected. Preserve PID, argv, cgroup properties,
+effective affinity, monitor decision, and controller terminal evidence for
+all three controls. Efficacy may not begin unless all three behave as
+specified.
+
+CPU affinity alone is not evidence of benchmark isolation because L3, memory
+bandwidth, storage, power, and thermals remain shared. Before its first sample,
+E00 freezes the representative Consonance compile/test load's exact source
+commit, lockfile hash, command, environment, target directory, and wall or
+completion bound. It also freezes an immutable initial target/cache-state
+archive and hash. Before every loaded arm, restore that archive into a fresh
+target directory, verify its hash, and perform the same frozen warm-up before
+measurement, so all three repetitions start from the same build state. For
+each canonical W1/W4/W8 cell, run three otherwise-idle and three loaded samples
+with the same paired seeds in the fixed alternating order idle, loaded, idle,
+loaded, idle, loaded. Report each arm and the pooled cell distribution.
+Concurrent operation is allowed only if every arm and pooled cell meets E00's
+`1/60` CV ceiling and the absolute loaded-versus-idle median shift does not
+exceed the protected-metric tolerance computed from the maximum relative MAD
+across all concurrency-gate distributions. Otherwise the evaluator freezes
+exclusive timing. This decision is frozen for E00-E04 and cannot be relaxed
+after challenger results are visible.
+
+The reservation primitive is `/run/lock/harmony-msr1-benchmark.lock`. Every
+Consonance compute job holds a shared `flock` for its complete lifetime and an
+exclusive `/run/lock/harmony-msr1-consonance-compute.lock` to serialize
+Consonance compute jobs. While the concurrency decision is being measured,
+each idle arm holds the benchmark lock's exclusive side across preflight and
+measurement; each loaded arm holds the shared side, and exactly one frozen
+Consonance load holds another shared acquisition for the arm's complete
+lifetime. If shared timing passes, only one Consonance job matching the frozen
+source, command, environment, initial target/cache state, and bound may overlap
+a timed Dissonance sample; any other Consonance job or additional shared holder
+invalidates that sample. After the decision, every timed Dissonance sample
+holds the shared side if concurrent timing passed or the exclusive side if it
+failed. Record requested mode, request time, acquisition time, release time,
+and the identities of all observed lock holders in every sample manifest.
 
 ## 1. What is being optimized
 
@@ -80,14 +157,14 @@ Measured on named hardware, release builds, fixed affinity, and repeated runs:
 - bytes copied, hashed, encoded, and written per job;
 - resident memory and checkpoint bytes as the archive matures;
 - active entries versus historical entries;
-- throughput at 1, 2, 4, 8, and 12 workers;
+- throughput at 1, 4, and 8 workers;
 - worker idle fraction and coordinator saturation;
 - heterogeneous-core scaling efficiency.
 
 For a set of cores `C`, heterogeneous ideal throughput is the sum of each selected
 core's isolated one-worker throughput. Scaling efficiency is concurrent throughput
 divided by that sum. This avoids pretending `msr1`'s big and little cores are equal.
-The initial acceptance floor is 70% at 12 workers; the program target is at least
+The initial acceptance floor is 70% at 8 workers; the program target is at least
 85% unless measurement identifies an unavoidable shared bottleneck.
 
 ### 2.3 Architecture and simplicity
@@ -252,8 +329,8 @@ enabled but detailed timing is disabled.
 
 ### B1 — pipeline scaling
 
-Use an immutable origin and deterministic job set to measure 1, 2, 4, 8, and 12
-workers. Record per-core isolated throughput first, then concurrent throughput,
+Use an immutable origin and deterministic job set to measure 1, 4, and 8 workers.
+Record per-core isolated throughput first, then concurrent throughput,
 coordinator utilization, worker idle fraction, memory bandwidth counters when
 available, and job-size distribution. Run at empty and mature archive states.
 
@@ -273,7 +350,7 @@ receives in a full campaign. It does not receive a route, obstacle locations,
 hand-picked inputs, level-specific mutators, or a statement of why the level is hard.
 Fixtures are development accelerators and never count toward the cold full-game claim.
 
-The evaluator-v1 suite is:
+`evaluator-v2-msr1-big` inherits the evaluator-v1 visible workload suite unchanged:
 
 - **2-2:** the first water level;
 - **7-2:** the later water level, paired with 2-2 to test transfer within one movement
@@ -339,6 +416,12 @@ The 30K and 100K boundaries are evaluator-v1 budgets, chosen because prior failu
 were visibly jammed by about 30K and the existing campaign work used 100K as its
 confirmation scale. E00 and E07 may recalibrate them once, before the first
 challenger; no agent may move them after results arrive.
+
+`evaluator-v2-msr1-big` inherits the 30K and 100K execution budgets unchanged.
+Its new hardware allocation, W1/W4/W8 worker grid, partition-aware isolation
+monitor, and shared-resource noise gate are fixed by the current benchmark
+allocation above. Any further change to those definitions requires another
+evaluator version and another E00 certification.
 
 E00 also freezes the systems minimum detectable effect as the greater of 5% and three
 times the baseline relative median absolute deviation. Protected-metric tolerance is
@@ -475,13 +558,19 @@ Work:
 
 - build the release binaries from a clean worktree;
 - record compiler, kernel, topology, governor, affinity, ROM hash, and commit;
-- run exact replay on a short 1-, 4-, and 12-worker campaign;
+- run exact replay on a short 1-, 4-, and 8-worker campaign;
 - alternate three baseline samples at each worker count;
 - run once from genesis and once from the largest available mature checkpoint;
 - record throughput, progress, archive size, snapshot bytes, RSS, and per-worker jobs.
+- run the idle-versus-pinned-Consonance-load noise gate defined by
+  `evaluator-v2-msr1-big`, then freeze whether timed samples may share msr1.
 
 Exit: all replays are exact; coefficients of variation are low enough to distinguish a
-5% systems change; otherwise the batch stops and measurement noise is diagnosed.
+5% systems change; all controller/child cgroup and effective-affinity checks pass; all
+three planted partition controls behave as specified; and the concurrency gate
+completes and freezes its lock mode with complete lock evidence. E01 may not begin
+until every condition passes. Otherwise the batch stops and measurement noise is
+diagnosed.
 
 ### E01 — decompose the NES and campaign hot path
 
@@ -530,12 +619,15 @@ snapshot-byte mutation. A faster digest that weakens evidence is invalid.
 ### E04 — recover heterogeneous core scaling
 
 **Hypothesis:** after the dominant E02/E03 cost is removed, one coordinator can keep
-the selected `msr1` cores at or above 70% heterogeneous scaling efficiency.
+the selected msr1 big-core partition at or above 70% heterogeneous scaling
+efficiency.
 
 Run B1 with affinity sets chosen from measured isolated-core throughput, not CPU
-numbers guessed from topology. Report big-only, little-only, and mixed sets where the
-machine permits them. Inspect queue depth and worker idle time before proposing
-additional coordinators or sharded archives.
+numbers guessed from topology. The promotion comparator uses the frozen W1/W4/W8
+big-core sets. Little-only and mixed-core measurements may be retained as diagnostic
+artifacts, but they run outside the timed promotion comparator and may not borrow
+Consonance's CPUs during a Consonance job. Inspect queue depth and worker idle time
+before proposing additional coordinators or sharded archives.
 
 If one coordinator remains the bottleneck, the next hypothesis must preserve one
 deterministic admission order—for example, bounded batches with deterministic merge.
@@ -590,11 +682,12 @@ active footprint before full-game work resumes.
 **Hypothesis:** seven level-entry challenges expose distinct failure modes early enough
 that 30K-execution screens predict which ideas deserve 100K and full-game runs.
 
-Instantiate B2's fixed evaluator-v1 levels: 2-2, 7-2, 8-1, 4-2, 4-3, 7-4, and 8-4,
-plus the 1-1 canary. The 2-2/7-2 pair measures transfer within water movement; 8-1
-stresses long-horizon progress and time pressure; 7-4 and 8-4 stress late-game
-composition; 4-2 and 4-3 remain intentionally unclassified. The evaluator records
-these rationales; the searcher sees none of them.
+Instantiate B2's fixed visible levels, inherited unchanged by
+`evaluator-v2-msr1-big`: 2-2, 7-2, 8-1, 4-2, 4-3, 7-4, and 8-4, plus the 1-1
+canary. The 2-2/7-2 pair measures transfer within water movement; 8-1 stresses
+long-horizon progress and time pressure; 7-4 and 8-4 stress late-game composition;
+4-2 and 4-3 remain intentionally unclassified. The evaluator records these
+rationales; the searcher sees none of them.
 
 For each fixture, certify deterministic construction, replay, terminal detection, and
 baseline distributions. Measure whether the 30K ranking predicts the 100K ranking for
