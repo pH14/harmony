@@ -89,6 +89,14 @@ These hold for every milestone.
 - **Status file.** The executor maintains
   `docs/VTIME-CONSOLIDATION-STATUS.md` in the same decision/evidence format
   as `docs/VM-EXIT-COUNT-VTIME-STATUS.md`.
+- **This plan is the source of truth, not conversation memory.** Re-read
+  this plan and the status file at the start of every milestone, and again
+  whenever earlier context has been summarized away. If working memory and
+  this plan disagree, the plan wins.
+- **Smallest change that passes.** Every milestone is satisfied by the
+  least code and the least new structure that meets its clauses. Extra
+  abstraction, extra configurability, and extra features are defects here,
+  not diligence; §4 is binding and is re-read alongside this plan.
 
 ## 3. Milestones
 
