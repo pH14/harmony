@@ -658,6 +658,20 @@ listed above. **N3 overall: PASS.**
 
 Not started.
 
+### msr1 allocation-rule adoption boundary
+
+Signed documentation commit `ecff7f14` introduced the binding msr1 allocation
+rule after N3 had closed and its exact-tree evidence was committed. No
+Consonance CPU- or I/O-intensive msr1 command has been launched since that
+rule took effect. Consequently there is not yet a systemd unit or scope,
+requested or observed CPU set, or shared-lock state to record, and no
+post-adoption command has been invalidated or rerun. The N3 CPU0-pinned KVM
+runs and unrestricted Linux public-API command completed before adoption and
+are not represented as satisfying the new rule. Every later msr1 command will
+record its unit or scope, requested `AllowedCPUs=2-5`, observed
+`Cpus_allowed_list`, Cargo job cap where applicable, and shared
+`/run/lock/harmony-msr1-benchmark.lock` state here.
+
 ## N5 — reproducible guest builds
 
 Not started.
