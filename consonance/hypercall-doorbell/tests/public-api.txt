@@ -1,0 +1,29 @@
+pub mod hypercall_doorbell
+pub enum hypercall_doorbell::TransportError
+pub hypercall_doorbell::TransportError::BadResponseLength
+pub hypercall_doorbell::TransportError::HostRejected
+pub hypercall_doorbell::TransportError::RequestTooLarge
+impl core::fmt::Display for hypercall_doorbell::TransportError
+pub fn hypercall_doorbell::TransportError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct hypercall_doorbell::RealIoDoorbell
+impl hypercall_doorbell::RealIoDoorbell
+pub const fn hypercall_doorbell::RealIoDoorbell::new() -> Self
+impl hypercall_doorbell::IoDoorbell for hypercall_doorbell::RealIoDoorbell
+pub unsafe fn hypercall_doorbell::RealIoDoorbell::ring(&mut self, u16, u32)
+pub struct hypercall_doorbell::VmcallTransport<D: hypercall_doorbell::IoDoorbell>
+impl hypercall_doorbell::VmcallTransport<hypercall_doorbell::RealIoDoorbell>
+pub unsafe fn hypercall_doorbell::VmcallTransport<hypercall_doorbell::RealIoDoorbell>::from_gpas(u64, u64) -> Self
+pub unsafe fn hypercall_doorbell::VmcallTransport<hypercall_doorbell::RealIoDoorbell>::new() -> Self
+impl<D: hypercall_doorbell::IoDoorbell> hypercall_doorbell::VmcallTransport<D>
+pub unsafe fn hypercall_doorbell::VmcallTransport<D>::with_doorbell(u64, u64, D) -> Self
+impl<D: hypercall_doorbell::IoDoorbell> hypercall_proto::guest::Transport for hypercall_doorbell::VmcallTransport<D>
+pub type hypercall_doorbell::VmcallTransport<D>::Error = hypercall_doorbell::TransportError
+pub fn hypercall_doorbell::VmcallTransport<D>::exchange(&mut self, &[u8], &mut [u8]) -> core::result::Result<usize, Self::Error>
+pub const hypercall_doorbell::DOORBELL_PORT: u16
+pub const hypercall_doorbell::PAGE_SIZE: usize
+pub const hypercall_doorbell::REQ_GPA: u64
+pub const hypercall_doorbell::RESP_GPA: u64
+pub trait hypercall_doorbell::IoDoorbell
+pub unsafe fn hypercall_doorbell::IoDoorbell::ring(&mut self, u16, u32)
+impl hypercall_doorbell::IoDoorbell for hypercall_doorbell::RealIoDoorbell
+pub unsafe fn hypercall_doorbell::RealIoDoorbell::ring(&mut self, u16, u32)

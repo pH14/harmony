@@ -1,7 +1,7 @@
 # Code-quality tooling — backlog & rationale
 
 Notes on tightening code quality beyond the current gates. **Status today:** every crate
-runs `build`/`test`/`clippy -D warnings`/`fmt` (`tasks/00-CONVENTIONS.md`), `proptest` is
+runs `build`/`test`/`clippy -D warnings`/`fmt` (`AGENTS.md` §Build & gates), `proptest` is
 adopted in all four crates (≥256 cases), clippy is `all = deny`, and `vtime` additionally
 denies float arithmetic. This doc is the plan for the next layer.
 
@@ -227,14 +227,14 @@ below, not the measured number itself (leaves room for ordinary cross-run noise 
 inviting the floor to silently drift back down). Reproduce on the box (a Mac-local run
 understates anything `cfg(target_os = "linux")`, since it doesn't even compile there).
 
-### Adjustment: 94.5% → 93.5% (2026-07-16, `hm-42y`, ruled by Paul)
+### Adjustment: 94.5% → 93.5% (`hm-42y`)
 
 The first *honest* run after the `hm-ph7` CI-toolchain repair measured the workspace at
 **93.66%** — under the 94.5 floor. Cause: real under-tested code merged while CI was
 fail-before-measuring (film replay bin 9.5%, `core_replay` 55.6%, telemetry bin 23.5%,
 `benchcampaign` 82.6%, `bringup` 70.2%; the stale `work_perf.rs` exclusion was separately
 repaired in beb14c6). Escalated as `hm-42y` (test-up the drivers vs exclude bins vs floor
-change); **Paul ruled 2026-07-16: accept the dip** ("coverage floor — don't care, if it
+change); **ruled: accept the dip** ("coverage floor — don't care, if it
 dips slightly that's fine"). Floor set to **93.5** — a hair below the measured 93.66,
 same no-round-number discipline as above. Testing up the drivers stays organic follow-up
 work, not gated. The ratchet doctrine is unchanged: floor moves up as coverage improves.
@@ -243,12 +243,14 @@ work, not gated. The ratchet doctrine is unchanged: floor moves up as coverage i
 
 ## Public-API snapshots (2026-06-17)
 
-Each of the four crates (`hypercall-proto`, `snapshot-store`, `unison`, `vtime`) carries a
-committed snapshot of its public surface at `tests/public-api.txt` and a guard test at
-`tests/public_api.rs`. The test shells out to `cargo public-api` on a **pinned nightly**,
-regenerates the surface, and asserts it byte-matches the committed snapshot — so any drift in a
-frozen contract is a failing test and a reviewable diff. The CI `public-api` job (gating, no
-`continue-on-error`) runs these tests on every PR.
+Every workspace crate carries a committed snapshot of its public surface at
+`tests/public-api.txt` and a guard test at `tests/public_api.rs` (the last two —
+`telemetry` and `hypercall-doorbell` — landed with the testing-ladder rework). The test shells
+out to `cargo public-api` on a **pinned nightly**, regenerates the surface, and asserts it
+byte-matches the committed snapshot — so any drift in a frozen contract is a failing test and a
+reviewable diff. The CI `public-api` job (gating, no `continue-on-error`) runs these tests on
+every PR; it enumerates crates explicitly with `-p`, so **a new crate's snapshot test is inert
+until it is added to that list**.
 
 - **Pinned nightly:** `nightly-2026-06-16`. `cargo public-api` needs rustdoc-JSON, which is
   nightly-only; pinning keeps the output reproducible. The same constant lives in each
@@ -256,9 +258,17 @@ frozen contract is a failing test and a reviewable diff. The CI `public-api` job
   three in sync when bumping. Install with `rustup toolchain install nightly-2026-06-16`.
 - **Surface flags:** generated with `-sss` (omit blanket, auto-trait, and auto-derived impls)
   so the snapshot is the genuine hand-written API, not toolchain-version-dependent auto-impl
-  noise. Default features only (the host-side build vmm-core integrates against).
+  noise, and with `--all-features` so an item gated behind a non-default feature cannot drift
+  unnoticed.
 - **Refresh after an intentional, reviewed API change:**
   `UPDATE_PUBLIC_API=1 cargo test -p <crate> --test public_api`, then review the diff.
+- **The Linux-frozen crates** (`vmm-backend`, `vmm-core` — their surfaces include
+  `#[cfg(target_os = "linux")]` items) freeze the *Linux* surface, so their in-tree guard test
+  skips loudly on macOS rather than diffing a subset. To regenerate one from a Mac, cross-target
+  the generator instead of waiting for a Linux host:
+  `cargo +nightly-2026-06-16 public-api -p <crate> --all-features --target x86_64-unknown-linux-gnu -sss --color never > <crate>/tests/public-api.txt`.
+  Confirm it reproduces the committed baseline byte-for-byte *before* applying your change, so a
+  toolchain difference cannot masquerade as an API diff.
 - **No new crate dependencies:** the guard invokes the installed `cargo-public-api` *binary*
   (Convention rule-5 tool exemption) rather than adding the `public-api`/`rustdoc-json` library
   crates. On a box lacking the nightly or the tool, the test **skips loudly** (keeps a plain

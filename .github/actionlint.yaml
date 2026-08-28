@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# actionlint configuration.
+#
+# The hardware lane (.github/workflows/box.yml) keys its jobs on self-hosted
+# runner labels actionlint cannot know about. Declaring them here is what lets
+# `actionlint` check those workflows instead of drowning them in
+# unknown-label errors — and it doubles as the authoritative list of labels a
+# box must register with (docs/TESTING.md, "the runner-label scheme").
+#
+# The first labels are CAPABILITIES; the last is the CHIP BASELINE IDENTITY.
+self-hosted-runner:
+  labels:
+    - kvm          # the runner exposes a usable /dev/kvm
+    - x86_64       # architecture
+    - det-cfl-v1   # chip baseline: the x86 determinism box (docs/CPU-MSR-CONTRACT.md §2)
+    - msr1         # chip baseline: the arm64 box

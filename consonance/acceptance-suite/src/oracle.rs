@@ -177,11 +177,12 @@ pub fn check_determinism<F: SubjectFactory>(
 /// O2 pins the **guest-observable conformance output** — the bytes the guest
 /// deliberately emits — exactly as O3 does (`docs/DETERMINISM-CORPUS.md`), not the
 /// full `state_hash` (which also folds latent, seed-derived state that is brittle to
-/// pin as a golden). For a machine that does not override
-/// [`Subject::observable_digest`] it equals `state_hash` (the trait default), so the
-/// toy goldens are unaffected; for the VMM corpus bridge it is the report-stream
-/// digest, which is what the committed `consonance/acceptance-suite/golden/*.digest` O2 goldens carry — so
-/// the generic runner and the box `box_corpus` gate compare the **same** quantity.
+/// pin as a golden). Every [`Subject`](unison::Subject) states its own observable
+/// output — the accessor has no default, precisely so a machine cannot silently
+/// fall back to `state_hash` — and for the VMM corpus bridge it is the
+/// report-stream digest, which is what the committed
+/// `consonance/acceptance-suite/golden/*.digest` O2 goldens carry. So the generic
+/// runner and the box `box_corpus` gate compare the **same** quantity.
 pub fn check_conformance<F: SubjectFactory>(
     f: &F,
     seed: u64,

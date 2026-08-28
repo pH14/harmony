@@ -1,9 +1,9 @@
 # The architecture boundary — ISA seam design
 
-Status: **design ruling (2026-07-03); vendor programs ruled 2026-07-12/13** (`docs/ARM-ALTRA.md`,
-`docs/AMD-EPYC.md` — the reserved engine/vendor split names activate with the ARM window);
-**pre-build ruled 2026-07-13** (§Pre-build ruling below — building no longer waits for spike
-GO; trust still does). **§Sequencing steps 1–4 LANDED 2026-07-14** (`tasks/108`, `hm-b5n`):
+A design ruling. The **vendor programs are ruled** (`docs/ARM-ALTRA.md`, `docs/AMD-EPYC.md` —
+the reserved engine/vendor split names activate with the ARM window), and **pre-build is ruled**
+(§Pre-build ruling below — building no longer waits for spike GO; trust still does).
+**§Sequencing steps 1–4 have landed** (`tasks/108`, `hm-b5n`):
 the C-list neutralizations, the x86 value-type extraction, the keystone (`Arch` trait +
 generic `Backend` + the engine/vendor module split in `vmm-core`, x86 the sole vendor), and
 `vm-state`'s arch-tagged records (`VM_STATE_VERSION` 2). The seam is now
@@ -308,7 +308,7 @@ freeze are **void** until the repaired apparatus completes re-verification:
   new trait shape. **This is a retained measured conclusion, not a current freeze authorization;
   §D and the `Arch`/`CpuBackend` trait remain designed-but-unfrozen pending re-verification.**
 
-## Pre-build ruling (Paul, 2026-07-13) — build-first; the spike gates trust, not construction
+## Pre-build ruling — build-first; the spike gates trust, not construction
 
 With two vendor boxes incoming on unknown arrival dates (Altra `hm-7pb`, Epyc `hm-9wt`), the
 integrator reversed the "no ARM-side building before the spike GOes" cost hedge: **everything

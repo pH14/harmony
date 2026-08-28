@@ -1,11 +1,10 @@
 # LAYERS — the capability-layering ruling
 
-> **Status: RULED (Paul, 2026-07-06). R-L1/R-L2/R-L3 AMENDED 2026-07-12** after the Dissonance
-> observation-contract review (see the amendment notes). Companion to `docs/GLOSSARY.md`
-> (the naming authority) and `docs/ARCH-BOUNDARY.md` (the ISA seam); **amends
-> `tasks/43-harmony-linux-tier.md`** (the payload carve-out and the SDK rulings below postdate
-> its surface list). Like the glossary: binding on new code when ratified; physical moves ride
-> their natural work (task 43's window, issue #74's rename window) — no big-bang.
+**R-L1/R-L2/R-L3 are amended** by the Dissonance observation-contract review (see the amendment
+notes). Companion to `docs/GLOSSARY.md` (the naming authority) and `docs/ARCH-BOUNDARY.md` (the
+ISA seam); **amends `tasks/43-harmony-linux-tier.md`** (the payload carve-out and the SDK rulings
+below postdate its surface list). Like the glossary: binding on new code when ratified; physical
+moves ride their natural work (task 43's window, issue #74's rename window) — no big-bang.
 
 ## The claim
 
@@ -96,7 +95,7 @@ cell. It belongs to Differential archive occupancy, not to a source schema or ad
 > **Amendment note.** The original R-L3 (same day, earlier) ruled a custom top-level
 > `harmony-sdk` as the app-facing interface, over an interface-owned wire and per-guest-world
 > backends ("the SDK triplet"). A same-day review of the Antithesis SDKs' licensing and
-> internals (Paul, 2026-07-06) superseded the interface half: their licensing permits direct
+> internals superseded the interface half: their licensing permits direct
 > adoption, and their internal architecture practically invites a compatible backend. The
 > 2026-07-12 observation-contract review narrows the earlier sufficiency claim: their surface is a
 > strong external base, but numeric properties are not automatically persistent state and

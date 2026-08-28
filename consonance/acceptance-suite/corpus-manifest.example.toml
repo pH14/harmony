@@ -12,6 +12,13 @@
 #                "seed_sensitivity:rng"   (O3, RNG-consuming payload)
 #                "seed_sensitivity:pure"  (O3, seed-pure payload)
 #   golden   = path to the committed digest; required iff "conformance" is listed.
+#   hosts    = which hosts can execute this cell:
+#                "portable" | "det-cfl-v1" | "msr1"   (default: ["portable"])
+#   virt     = "l1" (guest on bare metal) | "l2" (nested)   (default: "l1")
+#
+# A row IS one cell of the acceptance matrix (docs/TESTING.md, rung 5):
+# (workload) x (oracle set) x (host) x (virt level). `acceptance-suite run
+# --host <id>` selects which cells execute.
 
 [[item]]
 name = "rdtsc-monotonic"

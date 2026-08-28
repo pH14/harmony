@@ -8,13 +8,10 @@
 #
 #   fmt -> clippy (-D warnings) -> nextest
 #
-# Miri is deliberately NOT here. It was moved out of the per-change path into
-# .github/workflows/nightly.yml, for the reason quality.yml records: under PR
-# concurrency it was OOM/timeout-flaky, and it is 10-100x slower than the gates
-# around it. Running it in a hook whose whole purpose is fast feedback
-# contradicts both that ruling and this hook's own charter — a push that takes
-# an hour is not early signal. The unsafe-implies-Miri review-bar rule still
-# applies; the nightly workflow is where it is enforced.
+# Miri is deliberately NOT here: it runs only in CI (the nightly.yml miri
+# jobs) — interpreting the unsafe crates costs ~10 minutes locally, which
+# defeats a fast-feedback hook. The unsafe⇒Miri review-bar rule (AGENTS.md)
+# still applies to PRs whose diff touches `unsafe`.
 #
 # Skip in a pinch with `git push --no-verify`.
 set -euo pipefail

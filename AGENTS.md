@@ -51,7 +51,7 @@ generic.
    aliasing. Run `cargo +nightly miri test -p <crate>` as part of the review and treat a Miri
    error as blocking; a crate that adds `unsafe` without a Miri-exercisable test path (the
    privileged/asm bits behind a seam so the unsafe logic runs under the interpreter) is itself
-   a finding. The quality.yml `miri` job records the toolchain pin and `MIRIFLAGS`; new
+   a finding. The nightly.yml `miri` jobs record the toolchain pin and `MIRIFLAGS`; new
    `unsafe` crates are added to that job's `-p` list.
 6. **Enforcement implementability** — when the design says it "traps" or "pins" something,
    check the named mechanism actually exists on the assumed backend (e.g. stock Linux/KVM

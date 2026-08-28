@@ -88,7 +88,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::CorpusKind;
+    use crate::manifest::{CorpusKind, HostId, VirtLevel};
     use unison::Subject;
     use unison::toy::{ToyFactory, asm, generate_program};
 
@@ -134,6 +134,8 @@ mod tests {
                 },
             ],
             golden: Some("golden-ref".to_string()),
+            hosts: vec![HostId::Portable],
+            virt: VirtLevel::L1,
         };
         let report = run_item(&item, &pure_factory(), &cfg(), |r| {
             (r == "golden-ref").then(|| golden.clone())
@@ -159,6 +161,8 @@ mod tests {
             source: "0".to_string(),
             oracles: vec![OracleKind::Conformance],
             golden: Some("missing".to_string()),
+            hosts: vec![HostId::Portable],
+            virt: VirtLevel::L1,
         };
         let report = run_item(&item, &pure_factory(), &cfg(), |_| None).unwrap();
         assert!(!report.passed());
@@ -176,6 +180,8 @@ mod tests {
             source: "3".to_string(),
             oracles: vec![OracleKind::Determinism],
             golden: None,
+            hosts: vec![HostId::Portable],
+            virt: VirtLevel::L1,
         };
         let report = run_item(&item, &f, &cfg(), |_| None).unwrap();
         assert!(report.passed());
@@ -191,6 +197,8 @@ mod tests {
             source: "0".to_string(),
             oracles: vec![],
             golden: None,
+            hosts: vec![HostId::Portable],
+            virt: VirtLevel::L1,
         };
         let report = run_item(&item, &pure_factory(), &cfg(), |_| None).unwrap();
         assert!(report.results.is_empty());

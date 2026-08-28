@@ -2,7 +2,9 @@
 //! Gate 4 — manifest round-trip (property) + deterministic field order, and
 //! Gate 6 — `load_manifest` never panics on garbage input.
 
-use acceptance_suite::{CorpusItem, CorpusKind, OracleKind, load_manifest, to_manifest, validate};
+use acceptance_suite::{
+    CorpusItem, CorpusKind, HostId, OracleKind, VirtLevel, load_manifest, to_manifest, validate,
+};
 use proptest::prelude::*;
 
 /// Printable, control-char-free strings (paths / names): rich enough to be
@@ -18,6 +20,18 @@ fn kind() -> impl Strategy<Value = CorpusKind> {
         Just(CorpusKind::Workload),
         Just(CorpusKind::FuzzSeed),
     ]
+}
+
+fn host() -> impl Strategy<Value = HostId> {
+    prop_oneof![
+        Just(HostId::Portable),
+        Just(HostId::DetCflV1),
+        Just(HostId::Msr1),
+    ]
+}
+
+fn virt() -> impl Strategy<Value = VirtLevel> {
+    prop_oneof![Just(VirtLevel::L1), Just(VirtLevel::L2)]
 }
 
 fn oracle() -> impl Strategy<Value = OracleKind> {
@@ -40,14 +54,20 @@ fn item() -> impl Strategy<Value = CorpusItem> {
         text(),
         prop::collection::vec(oracle(), 0..5),
         prop::option::of(text()),
+        prop::collection::vec(host(), 0..4),
+        virt(),
     )
-        .prop_map(|(name, kind, source, oracles, golden)| CorpusItem {
-            name,
-            kind,
-            source,
-            oracles,
-            golden,
-        })
+        .prop_map(
+            |(name, kind, source, oracles, golden, hosts, virt)| CorpusItem {
+                name,
+                kind,
+                source,
+                oracles,
+                golden,
+                hosts,
+                virt,
+            },
+        )
 }
 
 proptest! {
@@ -77,6 +97,8 @@ fn field_order_is_fixed_and_readable() {
         source: "consonance/acceptance-suite/payloads/tsc.bin".to_string(),
         oracles: vec![OracleKind::Determinism, OracleKind::Conformance],
         golden: Some("consonance/acceptance-suite/golden/tsc.digest".to_string()),
+        hosts: vec![HostId::Portable, HostId::DetCflV1],
+        virt: VirtLevel::L1,
     }];
     let text = to_manifest(&items);
     // name before kind before source before oracles before golden.
@@ -85,6 +107,11 @@ fn field_order_is_fixed_and_readable() {
     assert!(pos("kind") < pos("source"));
     assert!(pos("source") < pos("oracles"));
     assert!(pos("oracles") < pos("golden"));
+    assert!(pos("golden") < pos("hosts"));
+    assert!(pos("hosts") < pos("virt"));
+    assert!(text.contains("\"portable\""));
+    assert!(text.contains("\"det-cfl-v1\""));
+    assert!(text.contains("virt = \"l1\""));
     assert!(text.contains("\"determinism\""));
     assert!(text.contains("\"conformance\""));
 }
@@ -97,6 +124,8 @@ fn validate_rejects_conformance_without_golden() {
         source: "s".to_string(),
         oracles: vec![OracleKind::Determinism, OracleKind::Conformance],
         golden: None,
+        hosts: vec![HostId::Portable],
+        virt: VirtLevel::L1,
     }];
     let err = validate(&bad).unwrap_err();
     assert!(err.to_string().contains("golden"));

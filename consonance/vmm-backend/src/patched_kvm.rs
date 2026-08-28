@@ -96,9 +96,9 @@ impl Backend for PatchedKvmBackend {
         unsafe { self.inner.map_memory(gpa, host) }
     }
 
-    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+    fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
         // Explicit forward (the trait default would shadow the inner dirty log).
-        self.inner.harvest_dirty_gfns()
+        self.inner.drain_dirty_pages()
     }
 
     fn run(&mut self) -> Result<Exit<X86>> {

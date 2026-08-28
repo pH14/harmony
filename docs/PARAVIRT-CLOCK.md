@@ -1,10 +1,9 @@
 # The paravirt work-derived clock — design spec
 
-Status: **design spec (2026-07-12); ratified-to-build x86-first 2026-07-13** (the pre-build
-ruling, `docs/ARCH-BOUNDARY.md` §Pre-build ruling — implementation bead `hm-rk5`, sequenced
-behind the `hm-b5n` seam keystone; ABI details freeze through that implementation PR's review;
-the ARM closure story is validated on silicon at stage AA-5). Spec bead `hm-8h8`. This
-document rules the layout, update discipline, guest-kernel integration, per-vendor closure
+A design spec, **ratified to build x86-first** (the pre-build ruling,
+`docs/ARCH-BOUNDARY.md` §Pre-build ruling — implementation bead `hm-rk5`, sequenced behind the
+`hm-b5n` seam keystone; ABI details freeze through that implementation PR's review; the ARM
+closure story is validated on silicon at stage AA-5). Spec bead `hm-8h8`. This document rules the layout, update discipline, guest-kernel integration, per-vendor closure
 story, migration path, validation plan, and kill conditions for routing guest time reads
 through a **work-derived paravirtual clock page** instead of trapping counter reads.
 
@@ -62,7 +61,7 @@ One 4 KiB page of guest RAM at a **guest-registered GPA**: the guest publishes t
 **once** via the §3.1 transport, the vmm validates it (page-aligned, wholly inside guest RAM,
 clear of the transport's frame pages) and pins it for the machine's life — **re-registration
 is a guest fault, rejected**; the stamping target never moves. *(RULED at the task-110 review
-(foreman, 2026-07-14, flagged for Paul's veto, same window as the §2 stamping ruling): this
+(flagged for integrator veto, same window as the §2 stamping ruling): this
 section originally said "a fixed, contract-reserved GPA", contradicting §3.1's
 publish-and-validate transport; ABI v1 is the guest-registered one-shot GPA — the kvmclock
 precedent of an address-carrying registration, and what makes the guest's page placement a
@@ -176,7 +175,7 @@ existing `consonance/vtime` seams:
    at a non-intercept exit republishes identical bytes (a no-op), and the published value
    stream advances exactly at the deterministic boundaries. This is the natural,
    zero-added-cost refresh: the exit was going to happen anyway. *(Amended at the task-110
-   implementation review — the foreman's 2026-07-14 stamping ruling, flagged for Paul's veto:
+   implementation review — the stamping ruling, flagged for integrator veto:
    the original text read "the current work count from `CpuBackend::work()`", but a live
    counter read at a non-intercept boundary carries non-deterministic exit-path skid (the
    task-27 O1 evidence), and the page is hashed guest RAM — the literal reading contradicted
@@ -403,7 +402,7 @@ out of contract; Reproducers are secret-bearing artifacts (test workloads only).
 > the harness is out of contract. Async-event scheduling is closed by the delivery contract, not this
 > row.
 
-Ruled 2026-07-20 (Fable-consulted, Paul-adopted). Build: the seed-pure CRNG + reachability gate
+Ruled and adopted. Build: the seed-pure CRNG + reachability gate
 (`hm-kz9v`); the schedule half is tracked in the delivery lane (`hm-sp8v`), not here. AA-5(c)
 accordingly claims the clock mechanism + entropy input-closure, **not** full-RAM identity — see
 `docs/ARM-ALTRA.md` §AA-5.

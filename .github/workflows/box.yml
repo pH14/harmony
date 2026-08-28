@@ -1,0 +1,100 @@
+name: box
+
+# The HARDWARE lane (docs/TESTING.md, "the runner-label scheme for hardware
+# lanes"). Everything in `quality.yml` is a CONTENT check that a hosted runner
+# can answer; the gates here need bare metal — a real /dev/kvm, the patched KVM
+# modules, hardware performance counters, and quiet pinned cores.
+#
+# Every job here must have a REGISTERED runner. A job whose label set matches
+# no registered runner does not skip — GitHub leaves it queued (for about a
+# day), and with `cancel-in-progress: false` on the repo-wide concurrency
+# group below, that phantom job wedges the whole hardware lane behind it.
+# That is why the x86 lane (`det-cfl-v1`, the retired determinism box) was
+# REMOVED with its machine in 2026-08 rather than left as a drop-in: this
+# commit's parent has the full job and `scripts/box-gates.sh`, its packaged
+# suite, when a successor box exists.
+#
+# `workflow_dispatch` only — **no schedule**. The box is a shared, leased
+# resource: a cron-triggered run would take a core out from under whoever is
+# using it, and a determinism gate contending with another workload is a gate
+# whose result means nothing (that is what the pinned cores are for). A human
+# starts a run when a window is free.
+#
+# ## The label scheme
+#
+# The first three labels are CAPABILITIES (self-hosted, has KVM, this
+# architecture); the fourth is the CHIP BASELINE IDENTITY. A gate that depends
+# on a specific chip names that chip; a gate that merely needs KVM does not.
+# This is what stops a determinism gate from scheduling onto the wrong silicon
+# and reporting a green that means nothing.
+#
+#   [self-hosted, kvm, arm64,  msr1]         the arm64 box (live)
+#
+# Adding a box means registering a runner with the matching labels, adding a
+# job here, and adding its `HostId` variant in
+# consonance/acceptance-suite/src/manifest.rs — the acceptance matrix's host
+# axis and these labels name the same hosts.
+
+on:
+  workflow_dispatch:
+
+# One hardware run at a time, repo-wide. Two concurrent runs would contend for
+# the same pinned cores and the same KVM modules — and the module revert of one
+# would land under the other's live guest. `cancel-in-progress: false`: a
+# half-finished run must be allowed to reach its revert step.
+concurrency:
+  group: box-hardware
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The arm64 box: the CPU-qualification lane (docs/TESTING.md, rung 1).
+  #
+  # The qualification suite does not exist yet — it is specified in TESTING.md
+  # and built in a later PR. Until then this lane runs the portable arm64 checks
+  # on real arm64 silicon (which the x86 CI can only cross-CHECK, never run) and
+  # states plainly what is still missing. It reports what it DID, and names what
+  # it did not: an unbuilt suite must never read as a passing one.
+  arm64-cpu-qualification:
+    name: arm64 CPU qualification (msr1)
+    runs-on: [self-hosted, kvm, arm64, msr1]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder — the CPU-qualification suite is not built yet
+        run: |
+          echo "CPU qualification (docs/TESTING.md, rung 1) is SPECIFIED, NOT BUILT."
+          echo "This lane exists so the day the suite lands it has a runner and a home."
+          echo
+          echo "What rung 1 must answer on this chip, once built:"
+          echo "  * classify every advertised instruction/feature as"
+          echo "    deterministically-pure / must-trap / forbidden"
+          echo "  * per-chip exactness: does a retired-branch deadline land where"
+          echo "    the machinery says it lands, with this chip's real skid"
+          echo "  * per-chip save/restore fixpoint over the full vCPU state"
+          echo "  * FIRST QUESTION for this box: is FEAT_ECV present? The"
+          echo "    paravirtualized-clock design (docs/PARAVIRT-CLOCK.md) exists"
+          echo "    to survive its absence, so this is an output, not an"
+          echo "    assumption."
+          echo
+          echo "Chip identification, recorded now so the first qualification run has a baseline:"
+          uname -srm
+          (grep -m1 -E 'CPU implementer|CPU part|Features' /proc/cpuinfo || true)
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # The portable suite, run on real arm64 silicon. quality.yml cross-CHECKS
+      # the workspace for aarch64 but cannot execute a single test there; this
+      # is the first place the arch-neutral engine actually runs on the ISA it
+      # claims to be neutral about.
+      - name: Portable suite on native arm64
+        run: cargo nextest run --all-features
+      - name: Clippy on native arm64
+        run: cargo clippy --all-features --all-targets -- -D warnings
