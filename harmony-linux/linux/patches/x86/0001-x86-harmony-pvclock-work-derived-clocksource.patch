@@ -48,9 +48,11 @@ reads in its reviewed allowlist.
 Under harmony_pvclock the FPU save paths also pin MXCSR_MASK: FXSAVE and
 the XSAVE variants store the host CPU's mask into every save image they
 write (uninterceptably), so fxsave()/os_xsave() overwrite the field with
-the frozen contract's architectural value and fpu__init_system_mxcsr pins
-mxcsr_feature_mask to match — saved FPU state and its kernel copies carry
-no host identity on any vendor.
+the frozen contract's architectural value, the signal-frame writers
+(xsave_to_user_sigframe()/fxsave_to_user_sigframe()) rewrite the field in
+the user-stack image after the save, and fpu__init_system_mxcsr pins
+mxcsr_feature_mask to match — saved FPU state, signal frames, and kernel
+copies carry no host identity on any vendor.
 
 Under harmony_pvclock the kernel also clears the vendor-undefined AF flag
 wherever RFLAGS becomes data: native_save_fl() pins the word
@@ -83,6 +85,136 @@ the flag, so pinned images restore without observable effect.
  
  config KVM_GUEST
  	bool "KVM Guest support (including kvmclock)"
+--- a/arch/x86/entry/syscall_64.c
++++ b/arch/x86/entry/syscall_64.c
+@@ -8,6 +8,7 @@
+ #include <linux/entry-common.h>
+ #include <linux/nospec.h>
+ #include <asm/syscall.h>
++#include <asm/harmony_pvclock.h>
+ 
+ #define __SYSCALL(nr, sym) extern long __x64_##sym(const struct pt_regs *);
+ #define __SYSCALL_NORETURN(nr, sym) extern long __noreturn __x64_##sym(const struct pt_regs *);
+@@ -86,6 +87,11 @@
+ /* Returns true to return using SYSRET, or false to use IRET */
+ __visible noinstr bool do_syscall_64(struct pt_regs *regs, int nr)
+ {
++	/* SYSCALL copied user RFLAGS through R11 into pt_regs; pin the
++	 * vendor-undefined AF bit before the word sits in guest memory.
++	 * SYSRET then returns with the pinned image in R11.
++	 */
++	regs->flags = harmony_pin_flags(regs->flags);
+ 	add_random_kstack_offset();
+ 	nr = syscall_enter_from_user_mode(regs, nr);
+ 
+--- a/arch/x86/include/asm/harmony_pvclock.h
++++ b/arch/x86/include/asm/harmony_pvclock.h
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _ASM_X86_HARMONY_PVCLOCK_H
++#define _ASM_X86_HARMONY_PVCLOCK_H
++
++#include <linux/types.h>
++#include <asm/processor-flags.h>
++
++/*
++ * The frozen CPU contract's pinned MXCSR_MASK (the architectural default,
++ * no vendor bits). FXSAVE and the XSAVE variants store the host's real mask
++ * into every save image they write, so harmony save paths overwrite the
++ * field with this value to keep saved FPU state host-neutral; the restore
++ * instructions ignore the field.
++ */
++#define HARMONY_MXCSR_MASK_PINNED 0x0000ffff
++
++/*
++ * The harmony determinism guest's time-ownership interface, consumed by the
++ * boot TSC paths (tsc.c) and the entropy-timing accessor (timex.h). Both
++ * calls answer for kernels booted WITHOUT the harmony_pvclock parameter too,
++ * so ordinary kernels built with CONFIG_HARMONY_PVCLOCK behave exactly as
++ * before.
++ */
++#ifdef CONFIG_HARMONY_PVCLOCK
++bool harmony_pvclock_requested(void);
++u64 harmony_pvclock_entropy_cycles(void);
++#else
++static inline bool harmony_pvclock_requested(void)
++{
++	return false;
++}
++static inline u64 harmony_pvclock_entropy_cycles(void)
++{
++	return 0;
++}
++#endif
++
++/*
++ * AF after shifts and multiplies is architecturally undefined and the two
++ * x86 vendors produce different values. Every flags word the kernel stores
++ * -- exception and interrupt frames (pt_regs), the syscall R11 image,
++ * local_irq_save() -- would otherwise carry that vendor-specific bit into
++ * guest memory. No 64-bit-mode instruction reads AF, so the deterministic
++ * guest clears it wherever flags become data. The gate is a plain
++ * __ro_after_init bool (no call) so noinstr entry paths can use it.
++ */
++#ifdef CONFIG_HARMONY_PVCLOCK
++extern bool harmony_pvclock_flags_pinned;
++static __always_inline unsigned long harmony_pin_flags(unsigned long flags)
++{
++	if (harmony_pvclock_flags_pinned)
++		flags &= ~(unsigned long)X86_EFLAGS_AF;
++	return flags;
++}
++#else
++static __always_inline unsigned long harmony_pin_flags(unsigned long flags)
++{
++	return flags;
++}
++#endif
++
++#endif /* _ASM_X86_HARMONY_PVCLOCK_H */
+--- a/arch/x86/include/asm/irqflags.h
++++ b/arch/x86/include/asm/irqflags.h
+@@ -7,6 +7,7 @@
+ #ifndef __ASSEMBLER__
+ 
+ #include <asm/nospec-branch.h>
++#include <asm/harmony_pvclock.h>
+ 
+ /*
+  * Interrupt control:
+@@ -29,7 +30,7 @@
+ 		     : /* no input */
+ 		     : "memory");
+ 
+-	return flags;
++	return harmony_pin_flags(flags);
+ }
+ 
+ static __always_inline void native_irq_disable(void)
+--- a/arch/x86/include/asm/timex.h
++++ b/arch/x86/include/asm/timex.h
+@@ -2,11 +2,21 @@
+ #ifndef _ASM_X86_TIMEX_H
+ #define _ASM_X86_TIMEX_H
+ 
++#include <asm/harmony_pvclock.h>
+ #include <asm/processor.h>
+ #include <asm/tsc.h>
+ 
+ static inline unsigned long random_get_entropy(void)
+ {
++	/*
++	 * Harmony determinism guest: entropy timing must come from the
++	 * materialized clock page (zero until the page is live), never a raw
++	 * counter — stock hosts cannot intercept rdtsc, so its value here
++	 * would be the one nondeterministic input on an otherwise
++	 * deterministic machine.
++	 */
++	if (harmony_pvclock_requested())
++		return harmony_pvclock_entropy_cycles();
+ 	if (!IS_ENABLED(CONFIG_X86_TSC) &&
+ 	    !cpu_feature_enabled(X86_FEATURE_TSC))
+ 		return random_get_entropy_fallback();
 --- a/arch/x86/kernel/Makefile
 +++ b/arch/x86/kernel/Makefile
 @@ -139,6 +139,7 @@
@@ -93,7 +225,169 @@ the flag, so pinned images restore without observable effect.
  obj-$(CONFIG_PARAVIRT)		+= paravirt.o
  obj-$(CONFIG_PARAVIRT_SPINLOCKS)+= paravirt-spinlocks.o
  obj-$(CONFIG_PARAVIRT_CLOCK)	+= pvclock.o
---- /dev/null
+--- a/arch/x86/kernel/fpu/init.c
++++ b/arch/x86/kernel/fpu/init.c
+@@ -3,6 +3,7 @@
+  * x86 FPU boot time init code:
+  */
+ #include <asm/fpu/api.h>
++#include <asm/harmony_pvclock.h>
+ #include <asm/tlbflush.h>
+ #include <asm/setup.h>
+ 
+@@ -113,6 +114,14 @@
+ 		mask = fxregs.mxcsr_mask;
+ 
+ 		/*
++		 * The probe buffer itself is hashed guest memory until the
++		 * kernel frees init data, so its hardware-written mask must be
++		 * host-neutral too.
++		 */
++		if (harmony_pvclock_requested())
++			fxregs.mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
++
++		/*
+ 		 * If zero then use the default features mask,
+ 		 * which has all features set, except the
+ 		 * denormals-are-zero feature bit:
+@@ -120,6 +129,13 @@
+ 		if (mask == 0)
+ 			mask = 0x0000ffbf;
+ 	}
++	/*
++	 * The mask is a host CPU constant, so it must not shape guest state
++	 * under harmony_pvclock: pin it so vendor-specific bits (AMD's
++	 * misaligned-SSE bit 17) read as unsupported everywhere.
++	 */
++	if (harmony_pvclock_requested())
++		mask = HARMONY_MXCSR_MASK_PINNED;
+ 	mxcsr_feature_mask &= mask;
+ }
+ 
+--- a/arch/x86/kernel/fpu/legacy.h
++++ b/arch/x86/kernel/fpu/legacy.h
+@@ -2,7 +2,9 @@
+ #ifndef __X86_KERNEL_FPU_LEGACY_H
+ #define __X86_KERNEL_FPU_LEGACY_H
+ 
++#include <linux/uaccess.h>
+ #include <asm/fpu/types.h>
++#include <asm/harmony_pvclock.h>
+ 
+ extern unsigned int mxcsr_feature_mask;
+ 
+@@ -54,11 +56,18 @@
+ 
+ static inline int fxsave_to_user_sigframe(struct fxregs_state __user *fx)
+ {
++	int err;
++
+ 	if (IS_ENABLED(CONFIG_X86_32))
+-		return user_insn(fxsave %[fx], [fx] "=m" (*fx), "m" (*fx));
++		err = user_insn(fxsave %[fx], [fx] "=m" (*fx), "m" (*fx));
+ 	else
+-		return user_insn(fxsaveq %[fx], [fx] "=m" (*fx), "m" (*fx));
++		err = user_insn(fxsaveq %[fx], [fx] "=m" (*fx), "m" (*fx));
+ 
++	/* See HARMONY_MXCSR_MASK_PINNED: keep the sigframe host-neutral. */
++	if (!err && harmony_pvclock_requested())
++		err = __put_user(HARMONY_MXCSR_MASK_PINNED, &fx->mxcsr_mask);
++
++	return err;
+ }
+ 
+ static inline void fxrstor(struct fxregs_state *fx)
+@@ -106,6 +115,10 @@
+ 		asm volatile( "fxsave %[fx]" : [fx] "=m" (*fx));
+ 	else
+ 		asm volatile("fxsaveq %[fx]" : [fx] "=m" (*fx));
++
++	/* See HARMONY_MXCSR_MASK_PINNED: keep the image host-neutral. */
++	if (harmony_pvclock_requested())
++		fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
+ }
+ 
+ #endif
+--- a/arch/x86/kernel/fpu/xstate.h
++++ b/arch/x86/kernel/fpu/xstate.h
+@@ -6,6 +6,8 @@
+ #include <asm/fpu/xstate.h>
+ #include <asm/fpu/xcr.h>
+ #include <asm/msr.h>
++#include <asm/harmony_pvclock.h>
++#include <linux/string.h>
+ 
+ #ifdef CONFIG_X86_64
+ DECLARE_PER_CPU(u64, xfd_state);
+@@ -208,6 +210,45 @@
+ #endif
+ 
+ /*
++ * Keep every save buffer host-neutral (see HARMONY_MXCSR_MASK_PINNED): pin
++ * the hardware-written MXCSR_MASK, and collapse the two encodings of x87/SSE
++ * init state to one. Whether an XSAVE variant records an in-init component as
++ * present-with-init-values or as absent is a microarchitecture choice, so the
++ * same guest state would otherwise leave different bytes in every save buffer
++ * on different hosts. The restore instructions read none of the rewritten
++ * bytes: an absent component's area is ignored, and a cleared bit restores
++ * the same init values the area now holds.
++ */
++static inline void harmony_canonicalize_xsave(struct xregs_state *xs)
++{
++	struct fxregs_state *fx = &xs->i387;
++
++	fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
++
++	if (!(xs->header.xfeatures & XFEATURE_MASK_FP)) {
++		fx->cwd = 0x37f;
++		fx->swd = 0;
++		fx->twd = 0;
++		fx->fop = 0;
++		fx->rip = 0;
++		fx->rdp = 0;
++		memset(fx->st_space, 0, sizeof(fx->st_space));
++	} else if (fx->cwd == 0x37f && !fx->swd && !fx->twd && !fx->fop &&
++		   !fx->rip && !fx->rdp &&
++		   !memchr_inv(fx->st_space, 0, sizeof(fx->st_space))) {
++		xs->header.xfeatures &= ~XFEATURE_MASK_FP;
++	}
++
++	if (!(xs->header.xfeatures & XFEATURE_MASK_SSE)) {
++		fx->mxcsr = MXCSR_DEFAULT;
++		memset(fx->xmm_space, 0, sizeof(fx->xmm_space));
++	} else if (fx->mxcsr == MXCSR_DEFAULT &&
++		   !memchr_inv(fx->xmm_space, 0, sizeof(fx->xmm_space))) {
++		xs->header.xfeatures &= ~XFEATURE_MASK_SSE;
++	}
++}
++
++/*
+  * Save processor xstate to xsave area.
+  *
+  * Uses either XSAVE or XSAVEOPT or XSAVES depending on the CPU features
+@@ -227,6 +268,9 @@
+ 
+ 	/* We should never fault when copying to a kernel buffer: */
+ 	WARN_ON_FPU(err);
++
++	if (harmony_pvclock_requested())
++		harmony_canonicalize_xsave(&fpstate->regs.xsave);
+ }
+ 
+ /*
+@@ -320,6 +364,11 @@
+ 	if (!err)
+ 		err = update_pkru_in_sigframe(buf, pkru);
+ 
++	/* See HARMONY_MXCSR_MASK_PINNED: keep the sigframe host-neutral. */
++	if (!err && harmony_pvclock_requested())
++		err = __put_user(HARMONY_MXCSR_MASK_PINNED,
++				 &buf->i387.mxcsr_mask);
++
+ 	return err;
+ }
+ 
+--- a/arch/x86/kernel/harmony_pvclock.c
 +++ b/arch/x86/kernel/harmony_pvclock.c
 @@ -0,0 +1,368 @@
 +// SPDX-License-Identifier: GPL-2.0
@@ -464,95 +758,6 @@ the flag, so pinned images restore without observable effect.
 +	return 0;
 +}
 +early_initcall(harmony_pvclock_init);
---- /dev/null
-+++ b/arch/x86/include/asm/harmony_pvclock.h
-@@ -0,0 +1,62 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+#ifndef _ASM_X86_HARMONY_PVCLOCK_H
-+#define _ASM_X86_HARMONY_PVCLOCK_H
-+
-+#include <linux/types.h>
-+#include <asm/processor-flags.h>
-+
-+/*
-+ * The frozen CPU contract's pinned MXCSR_MASK (the architectural default,
-+ * no vendor bits). FXSAVE and the XSAVE variants store the host's real mask
-+ * into every save image they write, so harmony save paths overwrite the
-+ * field with this value to keep saved FPU state host-neutral; the restore
-+ * instructions ignore the field.
-+ */
-+#define HARMONY_MXCSR_MASK_PINNED 0x0000ffff
-+
-+/*
-+ * The harmony determinism guest's time-ownership interface, consumed by the
-+ * boot TSC paths (tsc.c) and the entropy-timing accessor (timex.h). Both
-+ * calls answer for kernels booted WITHOUT the harmony_pvclock parameter too,
-+ * so ordinary kernels built with CONFIG_HARMONY_PVCLOCK behave exactly as
-+ * before.
-+ */
-+#ifdef CONFIG_HARMONY_PVCLOCK
-+bool harmony_pvclock_requested(void);
-+u64 harmony_pvclock_entropy_cycles(void);
-+#else
-+static inline bool harmony_pvclock_requested(void)
-+{
-+	return false;
-+}
-+static inline u64 harmony_pvclock_entropy_cycles(void)
-+{
-+	return 0;
-+}
-+#endif
-+
-+/*
-+ * AF after shifts and multiplies is architecturally undefined and the two
-+ * x86 vendors produce different values. Every flags word the kernel stores
-+ * -- exception and interrupt frames (pt_regs), the syscall R11 image,
-+ * local_irq_save() -- would otherwise carry that vendor-specific bit into
-+ * guest memory. No 64-bit-mode instruction reads AF, so the deterministic
-+ * guest clears it wherever flags become data. The gate is a plain
-+ * __ro_after_init bool (no call) so noinstr entry paths can use it.
-+ */
-+#ifdef CONFIG_HARMONY_PVCLOCK
-+extern bool harmony_pvclock_flags_pinned;
-+static __always_inline unsigned long harmony_pin_flags(unsigned long flags)
-+{
-+	if (harmony_pvclock_flags_pinned)
-+		flags &= ~(unsigned long)X86_EFLAGS_AF;
-+	return flags;
-+}
-+#else
-+static __always_inline unsigned long harmony_pin_flags(unsigned long flags)
-+{
-+	return flags;
-+}
-+#endif
-+
-+#endif /* _ASM_X86_HARMONY_PVCLOCK_H */
---- a/arch/x86/include/asm/timex.h
-+++ b/arch/x86/include/asm/timex.h
-@@ -2,11 +2,21 @@
- #ifndef _ASM_X86_TIMEX_H
- #define _ASM_X86_TIMEX_H
- 
-+#include <asm/harmony_pvclock.h>
- #include <asm/processor.h>
- #include <asm/tsc.h>
- 
- static inline unsigned long random_get_entropy(void)
- {
-+	/*
-+	 * Harmony determinism guest: entropy timing must come from the
-+	 * materialized clock page (zero until the page is live), never a raw
-+	 * counter — stock hosts cannot intercept rdtsc, so its value here
-+	 * would be the one nondeterministic input on an otherwise
-+	 * deterministic machine.
-+	 */
-+	if (harmony_pvclock_requested())
-+		return harmony_pvclock_entropy_cycles();
- 	if (!IS_ENABLED(CONFIG_X86_TSC) &&
- 	    !cpu_feature_enabled(X86_FEATURE_TSC))
- 		return random_get_entropy_fallback();
 --- a/arch/x86/kernel/tsc.c
 +++ b/arch/x86/kernel/tsc.c
 @@ -17,6 +17,7 @@
@@ -642,175 +847,6 @@ the flag, so pinned images restore without observable effect.
  	jent_testing_init();
  
  	tfm = crypto_alloc_shash(JENT_CONDITIONING_HASH, 0, 0);
---- a/arch/x86/kernel/fpu/init.c
-+++ b/arch/x86/kernel/fpu/init.c
-@@ -3,6 +3,7 @@
-  * x86 FPU boot time init code:
-  */
- #include <asm/fpu/api.h>
-+#include <asm/harmony_pvclock.h>
- #include <asm/tlbflush.h>
- #include <asm/setup.h>
- 
-@@ -113,6 +114,14 @@
- 		mask = fxregs.mxcsr_mask;
- 
- 		/*
-+		 * The probe buffer itself is hashed guest memory until the
-+		 * kernel frees init data, so its hardware-written mask must be
-+		 * host-neutral too.
-+		 */
-+		if (harmony_pvclock_requested())
-+			fxregs.mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
-+
-+		/*
- 		 * If zero then use the default features mask,
- 		 * which has all features set, except the
- 		 * denormals-are-zero feature bit:
-@@ -120,6 +129,13 @@
- 		if (mask == 0)
- 			mask = 0x0000ffbf;
- 	}
-+	/*
-+	 * The mask is a host CPU constant, so it must not shape guest state
-+	 * under harmony_pvclock: pin it so vendor-specific bits (AMD's
-+	 * misaligned-SSE bit 17) read as unsupported everywhere.
-+	 */
-+	if (harmony_pvclock_requested())
-+		mask = HARMONY_MXCSR_MASK_PINNED;
- 	mxcsr_feature_mask &= mask;
- }
- 
---- a/arch/x86/kernel/fpu/legacy.h
-+++ b/arch/x86/kernel/fpu/legacy.h
-@@ -3,6 +3,7 @@
- #define __X86_KERNEL_FPU_LEGACY_H
- 
- #include <asm/fpu/types.h>
-+#include <asm/harmony_pvclock.h>
- 
- extern unsigned int mxcsr_feature_mask;
- 
-@@ -106,6 +107,10 @@
- 		asm volatile( "fxsave %[fx]" : [fx] "=m" (*fx));
- 	else
- 		asm volatile("fxsaveq %[fx]" : [fx] "=m" (*fx));
-+
-+	/* See HARMONY_MXCSR_MASK_PINNED: keep the image host-neutral. */
-+	if (harmony_pvclock_requested())
-+		fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
- }
- 
- #endif
---- a/arch/x86/kernel/fpu/xstate.h
-+++ b/arch/x86/kernel/fpu/xstate.h
-@@ -6,6 +6,8 @@
- #include <asm/fpu/xstate.h>
- #include <asm/fpu/xcr.h>
- #include <asm/msr.h>
-+#include <asm/harmony_pvclock.h>
-+#include <linux/string.h>
- 
- #ifdef CONFIG_X86_64
- DECLARE_PER_CPU(u64, xfd_state);
-@@ -206,7 +208,46 @@
- 	return -EPERM;
- }
- #endif
-+
-+/*
-+ * Keep every save buffer host-neutral (see HARMONY_MXCSR_MASK_PINNED): pin
-+ * the hardware-written MXCSR_MASK, and collapse the two encodings of x87/SSE
-+ * init state to one. Whether an XSAVE variant records an in-init component as
-+ * present-with-init-values or as absent is a microarchitecture choice, so the
-+ * same guest state would otherwise leave different bytes in every save buffer
-+ * on different hosts. The restore instructions read none of the rewritten
-+ * bytes: an absent component's area is ignored, and a cleared bit restores
-+ * the same init values the area now holds.
-+ */
-+static inline void harmony_canonicalize_xsave(struct xregs_state *xs)
-+{
-+	struct fxregs_state *fx = &xs->i387;
-+
-+	fx->mxcsr_mask = HARMONY_MXCSR_MASK_PINNED;
-+
-+	if (!(xs->header.xfeatures & XFEATURE_MASK_FP)) {
-+		fx->cwd = 0x37f;
-+		fx->swd = 0;
-+		fx->twd = 0;
-+		fx->fop = 0;
-+		fx->rip = 0;
-+		fx->rdp = 0;
-+		memset(fx->st_space, 0, sizeof(fx->st_space));
-+	} else if (fx->cwd == 0x37f && !fx->swd && !fx->twd && !fx->fop &&
-+		   !fx->rip && !fx->rdp &&
-+		   !memchr_inv(fx->st_space, 0, sizeof(fx->st_space))) {
-+		xs->header.xfeatures &= ~XFEATURE_MASK_FP;
-+	}
- 
-+	if (!(xs->header.xfeatures & XFEATURE_MASK_SSE)) {
-+		fx->mxcsr = MXCSR_DEFAULT;
-+		memset(fx->xmm_space, 0, sizeof(fx->xmm_space));
-+	} else if (fx->mxcsr == MXCSR_DEFAULT &&
-+		   !memchr_inv(fx->xmm_space, 0, sizeof(fx->xmm_space))) {
-+		xs->header.xfeatures &= ~XFEATURE_MASK_SSE;
-+	}
-+}
-+
- /*
-  * Save processor xstate to xsave area.
-  *
-@@ -227,6 +268,9 @@
- 
- 	/* We should never fault when copying to a kernel buffer: */
- 	WARN_ON_FPU(err);
-+
-+	if (harmony_pvclock_requested())
-+		harmony_canonicalize_xsave(&fpstate->regs.xsave);
- }
- 
- /*
---- a/arch/x86/include/asm/irqflags.h
-+++ b/arch/x86/include/asm/irqflags.h
-@@ -7,6 +7,7 @@
- #ifndef __ASSEMBLER__
- 
- #include <asm/nospec-branch.h>
-+#include <asm/harmony_pvclock.h>
- 
- /*
-  * Interrupt control:
-@@ -29,7 +30,7 @@
- 		     : /* no input */
- 		     : "memory");
- 
--	return flags;
-+	return harmony_pin_flags(flags);
- }
- 
- static __always_inline void native_irq_disable(void)
---- a/arch/x86/entry/syscall_64.c
-+++ b/arch/x86/entry/syscall_64.c
-@@ -8,6 +8,7 @@
- #include <linux/entry-common.h>
- #include <linux/nospec.h>
- #include <asm/syscall.h>
-+#include <asm/harmony_pvclock.h>
- 
- #define __SYSCALL(nr, sym) extern long __x64_##sym(const struct pt_regs *);
- #define __SYSCALL_NORETURN(nr, sym) extern long __noreturn __x64_##sym(const struct pt_regs *);
-@@ -86,6 +87,11 @@
- /* Returns true to return using SYSRET, or false to use IRET */
- __visible noinstr bool do_syscall_64(struct pt_regs *regs, int nr)
- {
-+	/* SYSCALL copied user RFLAGS through R11 into pt_regs; pin the
-+	 * vendor-undefined AF bit before the word sits in guest memory.
-+	 * SYSRET then returns with the pinned image in R11.
-+	 */
-+	regs->flags = harmony_pin_flags(regs->flags);
- 	add_random_kstack_offset();
- 	nr = syscall_enter_from_user_mode(regs, nr);
- 
 --- a/kernel/entry/common.c
 +++ b/kernel/entry/common.c
 @@ -8,6 +8,10 @@
