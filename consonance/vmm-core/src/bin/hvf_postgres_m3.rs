@@ -83,6 +83,123 @@ fn record_pvclock_boundary(
     Some(portable)
 }
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
+fn audit_checkpoint_hashes(
+    events: &[vmm_core::virtual_time::NormalizedEvent],
+) -> Result<u64, String> {
+    let mut checkpoints = 0u64;
+    for (position, event) in events.iter().enumerate() {
+        let expected = u64::try_from(position).unwrap_or(u64::MAX);
+        if event.event_index != expected {
+            return Err(format!(
+                "checkpoint audit event ordinal mismatch at position {position}: got {}",
+                event.event_index
+            ));
+        }
+        let due = event.event_index.saturating_add(1).is_multiple_of(256);
+        match (due, event.state_hash.is_some()) {
+            (true, true) => checkpoints += 1,
+            (true, false) => {
+                return Err(format!(
+                    "missing deferred checkpoint hash at event {}",
+                    event.event_index
+                ));
+            }
+            (false, true) => {
+                return Err(format!(
+                    "unexpected deferred checkpoint hash at event {}",
+                    event.event_index
+                ));
+            }
+            (false, false) => {}
+        }
+    }
+    Ok(checkpoints)
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
+struct CheckpointPool {
+    tasks: Option<std::sync::mpsc::SyncSender<(u64, Vec<u8>)>>,
+    results: std::sync::mpsc::Receiver<(u64, [u8; 32])>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+    submitted: usize,
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
+impl CheckpointPool {
+    fn new(worker_count: usize) -> Result<Self, String> {
+        if worker_count == 0 {
+            return Err("checkpoint worker count must be nonzero".to_string());
+        }
+        let (task_tx, task_rx) = std::sync::mpsc::sync_channel(worker_count);
+        let task_rx = std::sync::Arc::new(std::sync::Mutex::new(task_rx));
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let mut workers = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let task_rx = std::sync::Arc::clone(&task_rx);
+            let result_tx = result_tx.clone();
+            workers.push(std::thread::spawn(move || {
+                loop {
+                    let task = {
+                        let receiver = match task_rx.lock() {
+                            Ok(receiver) => receiver,
+                            Err(_) => return,
+                        };
+                        receiver.recv()
+                    };
+                    let Ok((event_index, blob)) = task else {
+                        return;
+                    };
+                    use sha2::Digest as _;
+                    let hash: [u8; 32] = sha2::Sha256::digest(blob).into();
+                    if result_tx.send((event_index, hash)).is_err() {
+                        return;
+                    }
+                }
+            }));
+        }
+        drop(result_tx);
+        Ok(Self {
+            tasks: Some(task_tx),
+            results: result_rx,
+            workers,
+            submitted: 0,
+        })
+    }
+
+    fn submit(&mut self, event_index: u64, blob: Vec<u8>) -> Result<(), String> {
+        self.tasks
+            .as_ref()
+            .ok_or_else(|| "checkpoint pool already finished".to_string())?
+            .send((event_index, blob))
+            .map_err(|_| "checkpoint worker queue disconnected".to_string())?;
+        self.submitted += 1;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<(u64, [u8; 32])>, String> {
+        drop(self.tasks.take());
+        for worker in self.workers.drain(..) {
+            worker
+                .join()
+                .map_err(|_| "checkpoint worker panicked".to_string())?;
+        }
+        let mut results: Vec<_> = self.results.into_iter().collect();
+        if results.len() != self.submitted {
+            return Err(format!(
+                "checkpoint workers returned {} of {} hashes",
+                results.len(),
+                self.submitted
+            ));
+        }
+        results.sort_unstable_by_key(|(event_index, _)| *event_index);
+        if results.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err("checkpoint workers returned a duplicate event".to_string());
+        }
+        Ok(results)
+    }
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 fn arm64_gic_diagnostic(blob: &[u8]) -> Result<String, &'static str> {
     struct Cursor<'a> {
@@ -186,6 +303,7 @@ fn main() -> std::process::ExitCode {
     const POSTGRES_STOPPED: &[u8] = b"PGC38: postgres stopped";
     const DEFAULT_RAM: usize = 512 * 1024 * 1024;
     const DEFAULT_MAX_EVENTS: u64 = 5_000_000;
+    const CHECKPOINT_WORKERS: usize = 8;
     const ENTRY_WATCHDOG: Duration = Duration::from_secs(5);
 
     enum WatchdogCommand {
@@ -282,6 +400,17 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    if let Err(error) = vmm.defer_virtual_time_checkpoint_hashes() {
+        eprintln!("cannot enable deferred checkpoint hashing: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
+    let mut checkpoint_pool = match CheckpointPool::new(CHECKPOINT_WORKERS) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("cannot create checkpoint workers: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
 
     let exit_handle = vmm.hvf_exit_handle();
     let (watchdog_tx, watchdog_rx) = mpsc::channel();
@@ -353,6 +482,18 @@ fn main() -> std::process::ExitCode {
             run_error = Some(format!(
                 "liveness watchdog fired at event {event} after {ENTRY_WATCHDOG:?}"
             ));
+            break;
+        }
+
+        let checkpoint_event = vmm
+            .virtual_time_trace()
+            .and_then(|trace| trace.raw_log().last())
+            .and_then(|raw| raw.portable_event_index)
+            .filter(|event_index| event_index.saturating_add(1).is_multiple_of(256));
+        if let Some(event_index) = checkpoint_event
+            && let Err(error) = checkpoint_pool.submit(event_index, vmm.state_blob())
+        {
+            run_error = Some(error);
             break;
         }
 
@@ -476,9 +617,40 @@ fn main() -> std::process::ExitCode {
             "event budget reached before terminal: {max_events}"
         ));
     }
-    let elapsed = start.elapsed();
     let _ = watchdog_tx.send(WatchdogCommand::Stop);
     let _ = watchdog.join();
+    let mut checkpoint_hash_count = 0u64;
+    match checkpoint_pool.finish() {
+        Ok(checkpoints) => {
+            checkpoint_hash_count = u64::try_from(checkpoints.len()).unwrap_or(u64::MAX);
+            for (event_index, hash) in checkpoints {
+                if let Err(error) = vmm.checkpoint_virtual_time_trace_at(event_index, hash) {
+                    if run_error.is_none() {
+                        run_error = Some(format!(
+                            "cannot install deferred checkpoint at event {event_index}: {error}"
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+        Err(error) if run_error.is_none() => run_error = Some(error),
+        Err(_) => {}
+    }
+    if run_error.is_none()
+        && let Some(trace) = vmm.virtual_time_trace()
+    {
+        match audit_checkpoint_hashes(&trace.normalized_log().events) {
+            Ok(audited) if audited == checkpoint_hash_count => {}
+            Ok(audited) => {
+                run_error = Some(format!(
+                    "checkpoint worker/audit mismatch: workers {checkpoint_hash_count}, trace {audited}"
+                ));
+            }
+            Err(error) => run_error = Some(error),
+        }
+    }
+    let elapsed = start.elapsed();
 
     if let Some(error) = run_error {
         let vcpu = vmm.inspect_vcpu();
@@ -721,10 +893,10 @@ fn main() -> std::process::ExitCode {
     let total_performance = match PhasePerformance::between(
         "total",
         run_start,
-        terminal_mark.unwrap_or(PerformanceMark {
+        PerformanceMark {
             exits: total_exits,
             wall_ns: total_wall_ns,
-        }),
+        },
     ) {
         Ok(phase) => Some(phase),
         Err(error) => {
@@ -783,6 +955,10 @@ fn main() -> std::process::ExitCode {
         writeln!(report, "terminal_event {terminal_event}")?;
         writeln!(report, "terminal_source ARM64_PG_M3_READY")?;
         writeln!(report, "watchdog per_entry_ms=5000 status=PASS")?;
+        writeln!(
+            report,
+            "checkpoint_hashes count={checkpoint_hash_count} workers={CHECKPOINT_WORKERS} status=PASS"
+        )?;
         writeln!(
             report,
             "acceptance rows={} status={}",
@@ -955,9 +1131,9 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{audit_exit_accounting, record_pvclock_boundary};
+    use super::{audit_checkpoint_hashes, audit_exit_accounting, record_pvclock_boundary};
     use vmm_backend::ExitReason;
-    use vmm_core::virtual_time::RawEvent;
+    use vmm_core::virtual_time::{NormalizedEvent, RawEvent};
 
     fn raw(event_index: u64, portable_event_index: Option<u64>) -> RawEvent {
         RawEvent {
@@ -997,5 +1173,38 @@ mod tests {
         assert_eq!(record_pvclock_boundary(&events[1], 7, &mut values), None);
         assert_eq!(record_pvclock_boundary(&events[2], 7, &mut values), Some(1));
         assert_eq!(values, [7, 7]);
+    }
+
+    fn normalized(event_index: u64, state_hash: Option<[u8; 32]>) -> NormalizedEvent {
+        NormalizedEvent {
+            event_index,
+            vns_after: 0,
+            class: vmm_core::virtual_time::NormalizedEventClass::TimeRead,
+            payload_digest: [0; 32],
+            state_hash,
+            interrupts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn checkpoint_audit_requires_every_exact_boundary() {
+        let mut events: Vec<_> = (0..512).map(|index| normalized(index, None)).collect();
+        events[255].state_hash = Some([1; 32]);
+        events[511].state_hash = Some([2; 32]);
+        assert_eq!(audit_checkpoint_hashes(&events).unwrap(), 2);
+    }
+
+    #[test]
+    fn planted_missing_checkpoint_fails_audit() {
+        let events: Vec<_> = (0..256).map(|index| normalized(index, None)).collect();
+        assert!(audit_checkpoint_hashes(&events).is_err());
+    }
+
+    #[test]
+    fn planted_stray_checkpoint_fails_audit() {
+        let mut events: Vec<_> = (0..256).map(|index| normalized(index, None)).collect();
+        events[254].state_hash = Some([1; 32]);
+        events[255].state_hash = Some([2; 32]);
+        assert!(audit_checkpoint_hashes(&events).is_err());
     }
 }

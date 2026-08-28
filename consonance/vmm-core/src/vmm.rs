@@ -717,6 +717,11 @@ where
     /// while the device state and assigned clock that produced it remain part
     /// of both.
     pub(crate) virtual_time_trace: Option<LiveVirtualTimeTrace>,
+    /// Host-only performance mode: checkpoint events retain their exact state
+    /// but leave the hash slot empty for the caller to fill from an owned
+    /// [`Vmm::state_blob`] on a worker. Default-off preserves synchronous trace
+    /// semantics for every existing composition.
+    pub(crate) deferred_virtual_time_checkpoints: bool,
     /// Set when the most-recently-serviced exit staged an **RNG** completion
     /// (RDRAND/RDSEED) whose seeded draw advanced the entropy stream but whose
     /// register-write/RIP-advance is only staged for the next `KVM_RUN` (not in
@@ -845,6 +850,7 @@ where
             saved_state: None,
             vtime: None,
             virtual_time_trace: None,
+            deferred_virtual_time_checkpoints: false,
             rng_completion_staged: false,
             completion_staged: false,
             sdk_snapshot_reentry_required: false,
@@ -874,6 +880,66 @@ where
     /// Production normalized trace, present only for assigned-at-exit V-time.
     pub fn virtual_time_trace(&self) -> Option<&LiveVirtualTimeTrace> {
         self.virtual_time_trace.as_ref()
+    }
+
+    /// Defer sparse virtual-time checkpoint hashing so a host runner can hash
+    /// owned [`state_blob`](Self::state_blob) captures in parallel and install
+    /// the byte-identical results with
+    /// [`checkpoint_virtual_time_trace_at`](Self::checkpoint_virtual_time_trace_at).
+    ///
+    /// This is host-side evidence plumbing only: it changes neither guest state
+    /// nor the normalized event sequence. It must be enabled before the first
+    /// event, and every due checkpoint must be installed before the trace is
+    /// accepted or encoded.
+    ///
+    /// # Errors
+    /// Returns [`VmmError::ContractViolation`] when virtual time is not wired or
+    /// the trace already contains an event.
+    pub fn defer_virtual_time_checkpoint_hashes(&mut self) -> Result<(), VmmError> {
+        let trace = self.virtual_time_trace.as_ref().ok_or_else(|| {
+            VmmError::ContractViolation(
+                "deferred checkpoint hashing without virtual_time trace".to_string(),
+            )
+        })?;
+        if !trace.raw_log().is_empty() || !trace.normalized_log().events.is_empty() {
+            return Err(VmmError::ContractViolation(
+                "deferred checkpoint hashing enabled after the trace started".to_string(),
+            ));
+        }
+        self.deferred_virtual_time_checkpoints = true;
+        Ok(())
+    }
+
+    /// Install one deferred sparse checkpoint hash at its exact portable event.
+    ///
+    /// # Errors
+    /// Returns [`VmmError::ContractViolation`] unless deferred mode is enabled,
+    /// the event is a due 256-event checkpoint, the event exists, and its hash
+    /// slot is still empty.
+    pub fn checkpoint_virtual_time_trace_at(
+        &mut self,
+        event_index: u64,
+        state_hash: [u8; 32],
+    ) -> Result<(), VmmError> {
+        if !self.deferred_virtual_time_checkpoints {
+            return Err(VmmError::ContractViolation(
+                "deferred checkpoint installed while synchronous hashing is active".to_string(),
+            ));
+        }
+        if !event_index.saturating_add(1).is_multiple_of(256) {
+            return Err(VmmError::ContractViolation(format!(
+                "deferred checkpoint event {event_index} is not a 256-event boundary"
+            )));
+        }
+        self.virtual_time_trace
+            .as_mut()
+            .ok_or_else(|| {
+                VmmError::ContractViolation(
+                    "deferred checkpoint installed without virtual_time trace".to_string(),
+                )
+            })?
+            .checkpoint_at(event_index, state_hash)
+            .map_err(|message| VmmError::ContractViolation(message.to_string()))
     }
 
     /// Attach the current full-state hash to the trace's final event.
@@ -1780,7 +1846,8 @@ where
                 .current_event_index()
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
             let checkpoint = (event_index + 1).is_multiple_of(256);
-            let state_hash = checkpoint.then(|| self.state_hash());
+            let state_hash =
+                (checkpoint && !self.deferred_virtual_time_checkpoints).then(|| self.state_hash());
             let vns_after = self
                 .vtime
                 .as_ref()
@@ -4146,6 +4213,58 @@ mod tests {
         let mut vmm = Vmm::new(configured_mock(exits), GuestRam::new(0x1000).unwrap());
         vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
         vmm
+    }
+
+    #[test]
+    fn deferred_checkpoint_hash_is_byte_identical_and_cannot_overwrite() {
+        let exits = || {
+            (0..256)
+                .map(|_| Exit::Arch(X86Exit::Rdtsc))
+                .collect::<Vec<_>>()
+        };
+        let mut synchronous = vtime_vmm(exits(), 7);
+        let mut deferred = vtime_vmm(exits(), 7);
+        deferred.defer_virtual_time_checkpoint_hashes().unwrap();
+
+        for _ in 0..256 {
+            assert_eq!(synchronous.step().unwrap(), Step::Continued);
+            assert_eq!(deferred.step().unwrap(), Step::Continued);
+        }
+
+        let expected = synchronous
+            .virtual_time_trace()
+            .unwrap()
+            .normalized_log()
+            .events[255]
+            .state_hash
+            .unwrap();
+        assert_eq!(deferred.state_hash(), expected);
+        assert_eq!(
+            deferred
+                .virtual_time_trace()
+                .unwrap()
+                .normalized_log()
+                .events[255]
+                .state_hash,
+            None
+        );
+        deferred
+            .checkpoint_virtual_time_trace_at(255, expected)
+            .unwrap();
+        assert_eq!(
+            synchronous.virtual_time_trace().unwrap().normalized_log(),
+            deferred.virtual_time_trace().unwrap().normalized_log()
+        );
+        assert!(
+            deferred
+                .checkpoint_virtual_time_trace_at(255, expected)
+                .is_err()
+        );
+        assert!(
+            deferred
+                .checkpoint_virtual_time_trace_at(254, expected)
+                .is_err()
+        );
     }
 
     // ---- task 95 M2.1: the dirty drain (backend log ∪ host-side writes) ----

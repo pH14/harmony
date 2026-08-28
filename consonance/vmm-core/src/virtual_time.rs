@@ -564,6 +564,28 @@ impl LiveVirtualTimeTrace {
         last.state_hash = Some(state_hash);
         Ok(())
     }
+
+    pub(crate) fn checkpoint_at(
+        &mut self,
+        event_index: u64,
+        state_hash: [u8; 32],
+    ) -> Result<(), &'static str> {
+        let index = usize::try_from(event_index)
+            .map_err(|_| "deferred virtual_time checkpoint index does not fit usize")?;
+        let event = self
+            .normalized
+            .events
+            .get_mut(index)
+            .ok_or("deferred virtual_time checkpoint event does not exist")?;
+        if event.event_index != event_index {
+            return Err("deferred virtual_time checkpoint ordinal mismatch");
+        }
+        if event.state_hash.is_some() {
+            return Err("deferred virtual_time checkpoint would overwrite an existing hash");
+        }
+        event.state_hash = Some(state_hash);
+        Ok(())
+    }
 }
 
 /// State supplied to the full-state checkpoint callback.
