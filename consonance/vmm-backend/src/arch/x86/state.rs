@@ -240,8 +240,8 @@ const RFLAGS_RF: u64 = 1 << 16;
 /// Canonicalize exit-mechanics residue in the general registers, in place.
 ///
 /// At an exit taken mid-instruction (an MMIO access the host emulates), VMX
-/// saves `RFLAGS` with `RF` set — the fault-restart semantics of SDM vol. 3
-/// §18.3.1 — while SVM reports it clear. The instruction is completed by the
+/// saves `RFLAGS` with `RF` set — the fault-restart semantics of SDM vol. 3,
+/// "Saving RFLAGS" — while SVM reports it clear. The instruction is completed by the
 /// emulator either way, and `RF` self-clears at the next instruction boundary,
 /// so the bit carries no guest-visible state at a serviced exit. Cleared so
 /// equal guest state hashes equally across vendors.
