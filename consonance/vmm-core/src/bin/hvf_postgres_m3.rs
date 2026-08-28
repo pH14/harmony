@@ -117,6 +117,41 @@ fn audit_checkpoint_hashes(
     Ok(checkpoints)
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+fn checkpoint_digest(blob: &[u8]) -> Result<[u8; 32], String> {
+    unsafe extern "C" {
+        fn CC_SHA256(data: *const std::ffi::c_void, len: u32, digest: *mut u8) -> *mut u8;
+    }
+
+    let len = u32::try_from(blob.len())
+        .map_err(|_| "checkpoint state exceeds CommonCrypto's one-shot limit".to_string())?;
+    let mut digest = [0u8; 32];
+    // SAFETY: `blob` is a live immutable slice for the duration of the call,
+    // `len` was checked against CommonCrypto's `CC_LONG`, and `digest` points
+    // to the documented 32-byte output buffer. CommonCrypto does not retain
+    // either pointer.
+    let result = unsafe {
+        CC_SHA256(
+            blob.as_ptr().cast::<std::ffi::c_void>(),
+            len,
+            digest.as_mut_ptr(),
+        )
+    };
+    if result != digest.as_mut_ptr() {
+        return Err("CommonCrypto SHA-256 rejected checkpoint state".to_string());
+    }
+    Ok(digest)
+}
+
+#[cfg(all(
+    test,
+    not(all(target_os = "macos", target_arch = "aarch64", not(miri)))
+))]
+fn checkpoint_digest(blob: &[u8]) -> Result<[u8; 32], String> {
+    use sha2::Digest as _;
+    Ok(sha2::Sha256::digest(blob).into())
+}
+
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
 struct CheckpointPool {
     tasks: Option<std::sync::mpsc::SyncSender<(u64, Vec<u8>)>>,
@@ -131,7 +166,7 @@ impl CheckpointPool {
         if worker_count == 0 {
             return Err("checkpoint worker count must be nonzero".to_string());
         }
-        let (task_tx, task_rx) = std::sync::mpsc::sync_channel(worker_count);
+        let (task_tx, task_rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(worker_count);
         let task_rx = std::sync::Arc::new(std::sync::Mutex::new(task_rx));
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let mut workers = Vec::with_capacity(worker_count);
@@ -150,8 +185,9 @@ impl CheckpointPool {
                     let Ok((event_index, blob)) = task else {
                         return;
                     };
-                    use sha2::Digest as _;
-                    let hash: [u8; 32] = sha2::Sha256::digest(blob).into();
+                    let Ok(hash) = checkpoint_digest(&blob) else {
+                        return;
+                    };
                     if result_tx.send((event_index, hash)).is_err() {
                         return;
                     }
@@ -1195,6 +1231,23 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_pool_returns_every_hash_in_event_order() {
+        use sha2::Digest as _;
+
+        let inputs = [(511, b"second".to_vec()), (255, b"first".to_vec())];
+        let mut pool = super::CheckpointPool::new(2).unwrap();
+        for (event, input) in &inputs {
+            pool.submit(*event, input.clone()).unwrap();
+        }
+        let actual = pool.finish().unwrap();
+        let expected = vec![
+            (255, sha2::Sha256::digest(b"first").into()),
+            (511, sha2::Sha256::digest(b"second").into()),
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn planted_missing_checkpoint_fails_audit() {
         let events: Vec<_> = (0..256).map(|index| normalized(index, None)).collect();
         assert!(audit_checkpoint_hashes(&events).is_err());
@@ -1206,5 +1259,19 @@ mod tests {
         events[254].state_hash = Some([1; 32]);
         events[255].state_hash = Some([2; 32]);
         assert!(audit_checkpoint_hashes(&events).is_err());
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+    #[test]
+    fn accelerated_checkpoint_digest_matches_sha2_at_padding_boundaries() {
+        use sha2::Digest as _;
+
+        for len in [0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 1_048_579] {
+            let input: Vec<u8> = (0..len)
+                .map(|index| (index as u8).wrapping_mul(29).wrapping_add(7))
+                .collect();
+            let expected: [u8; 32] = sha2::Sha256::digest(&input).into();
+            assert_eq!(super::checkpoint_digest(&input).unwrap(), expected);
+        }
     }
 }

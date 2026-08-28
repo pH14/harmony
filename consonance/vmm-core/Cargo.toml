@@ -92,12 +92,6 @@ vm-state = { path = "../vm-state", version = "0.1.0" }
 control-proto = { path = "../control-proto", version = "0.1.0" }
 environment = { path = "../environment", version = "0.1.0" }
 
-[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-# The N3 Apple-Silicon performance gate hashes sparse 512-MiB state captures.
-# sha2's assembly backend is byte-identical and host-only; restricting it to the
-# measured target keeps Linux Miri on the portable implementation.
-sha2 = { version = "0.10", features = ["asm"] }
-
 # Linux-only host support. Caret default, pin nothing.
 [target.'cfg(target_os = "linux")'.dependencies]
 
