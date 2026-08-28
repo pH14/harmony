@@ -1,10 +1,9 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
 # Standalone workspace root, deliberately outside the harmony root workspace
 # (as is differential-lineage/ below this directory, which is not a member
 # here). See CLAUDE.md in this directory before working here.
 [workspace]
 resolver = "2"
-members = ["fuzzer", "machine", "searcher"]
+members = ["fuzzer"]
 
 [workspace.package]
 edition = "2024"

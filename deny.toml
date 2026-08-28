@@ -44,8 +44,8 @@ multiple-versions = "warn"
 # Our own first-party crates are AGPL-3.0-or-later (task 91). Every *dependency*
 # must be AGPL-compatible-as-inbound — i.e. its terms may be combined into an
 # AGPLv3 work. The permissive licenses below (MIT / Apache-2.0 / BSD / Unicode /
-# NCSA / Zlib / BSL-1.0) and the file-scoped MPL-2.0 all satisfy that
-# (GPLv3/AGPLv3-compatible per the FSF license list);
+# NCSA) and the file-scoped MPL-2.0 all satisfy that (GPLv3/AGPLv3-compatible
+# per the FSF license list);
 # any GPL-incompatible or unknown-licensed dependency falls through to `deny` and
 # is a blocking finding. `AGPL-3.0-or-later` itself is allowed so this crate's own
 # packages pass the check. MPL-2.0 is the sole other copyleft license admitted;
@@ -63,10 +63,6 @@ allow = [
   "Unicode-3.0",
   "BSD-2-Clause",
   "BSD-3-Clause",
-  # Transitive build/runtime dependencies of the imported LibAFL workspace.
-  # Both are permissive and GPL/AGPL-compatible.
-  "Zlib",
-  "BSL-1.0",
   # option-ext through tetanes-core -> dirs. MPL-2.0 permits distribution of
   # the larger combined work under GPLv3/AGPLv3 while retaining MPL terms on
   # option-ext's own files.
