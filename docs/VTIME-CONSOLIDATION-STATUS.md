@@ -263,14 +263,14 @@ work is still part of N6.
 | [#180](https://github.com/pH14/harmony/issues/180) | `Closed as not planned by N2: exit-count virtual time supersedes the AMD rr-parity PMU work-clock program.` |
 | [#196](https://github.com/pH14/harmony/issues/196) | `Closed as not planned by N2: exit-count virtual time removed the single-step fallback and exact-landing path.` |
 
-### Portable verification completed on the N2 tree
+### Exact-tree repository and surface verification
 
 ```text
 cargo build --workspace --all-features
 PASS
 
 cargo nextest run --workspace --all-features --no-fail-fast
-1159 passed, 25 skipped
+1161 passed, 25 skipped
 
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 PASS (the standing three invalid-path notices from clippy.toml remain parser
@@ -289,14 +289,93 @@ cargo test --manifest-path dissonance/Cargo.toml -p machine \
 
 The first nextest invocation ran inside a filesystem-only sandbox and its
 seven telemetry listener tests received `Operation not permitted`. The exact
-complete command rerun with localhost-socket permission passed all 1,159
+complete command rerun with localhost-socket permission passed all 1,161
 tests, matching N0's already-recorded execution-environment distinction.
 
 The removed public items (`Backend::run_until`, deadline exit/counters,
 branch-ratio state, the exact-stop control error, and ARM's raw branch event)
 and the renamed pvclock flag are reflected in the regenerated public-API
-snapshots. The control-proto and vtime regenerators pass locally; the Linux
-surface snapshots are re-run on msr1 before this milestone can close.
+snapshots. Every portable guard and the SDK guard pass locally. On msr1,
+`cargo-public-api 0.52.0` regenerated and checked all 14 crate snapshots,
+including the Linux-only `vmm-backend` and `vmm-core` surfaces, at exact commit
+`60d70599db3f84871033d55c1bbb45cbc1cd17ca`.
+
+Two CI-only repairs were required before accepting those surfaces. The x86
+guest patch series had malformed hunk counts that `git apply --check` correctly
+rejected; commit `b8e37f9f` repairs only the hunk metadata. Regeneration then
+exposed the intended portable and Linux API removals, committed at `1939ffee`
+and `60d70599`. The RDTSC audit also caught ten shifted
+`.altinstr_replacement` offsets after the guest rebuild; `14bf4a63` rebases the
+ten allowlist entries one-for-one rather than relaxing the check. GitHub's
+secret scan for the final tree passed as run `33183121360`.
+
+### Unsafe-crate verification
+
+Pinned Miri (`nightly-2026-06-16`,
+`MIRIFLAGS=-Zmiri-permissive-provenance`; snapshot-store additionally uses
+`-Zmiri-disable-isolation`) completed with zero failures for
+`hypercall-doorbell`, `vm-state`, `vmm-backend --all-features`,
+`snapshot-store --lib`, `play-agent`, `tetanes-agent`, and `vmm-core`.
+`vmm-backend` passed 48 unit/integration tests, including all 16 run-loop tests.
+`vmm-core` passed 356 unit tests (99 intentional host-only ignores) and every
+applicable integration suite: 21 ARM skeleton, 18 event-loop, loader,
+protocol, snapshot, and all 12 virtual-time tests.
+
+The long `vmm-core` run was made at implementation commit `696d70a5`; the only
+later changes are test-fixture repairs, guest patch metadata/allowlist offsets,
+and generated API snapshots. `git diff 696d70a5..60d70599 --
+consonance/vmm-core/src consonance/vmm-backend/src` is empty. Thus this is not
+described as a byte-for-byte final-SHA Miri invocation: it is a complete Miri
+run of the exact final unsafe implementation, with the final fixture and
+generated-surface changes covered by the native exact-tree suite above.
+
+### N1 reference reruns on the N2 tree
+
+The ARM boot reference used the same attested Image and initramfs as N1. Ten
+signed-HVF boots and ten CPU-0-pinned msr1 KVM boots each produced 38,453
+portable events, 283 schedules, 136 deliveries, and 151 checkpoints. Every
+placement check passed. All twenty runs retained normalized digest
+`e2e7852e…829`, final state hash `1dc0c1da…b17`, and the complete
+5,954,217-byte log SHA-256 `4b4e7a27…7db`, byte-identical to N1 and across
+backends. The rebuilt HVF executable was signed with the committed
+`hvf.entitlements.plist`; attempting to run the unsigned rebuild correctly
+failed at VM creation and was not counted.
+
+The same one-job/two-session NES campaign passed on signed HVF and pinned KVM.
+Its complete session logs remained byte-identical across both machines and N1
+(SHA-256 `a801bfb0…d45` and `ffdd9dbd…eda`). The session metrics and end states
+also remained unchanged:
+
+| Session | Segments | Events | Schedules | Checkpoints | Session digest | State hash |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| 0 | 3 | 50,931 | 393 | 198 | `0c4936c4…478` | `741e95a2…4d8` |
+| 1 | 4 | 50,934 | 393 | 198 | `43105757…d21` | `de72c909…e58` |
+
+The independently produced archive, report, stream, and snapshot artifacts
+matched at `384d3029…6b2`, `b3032b4a…c46`, `584e0d3a…8b2`, and
+`ae8d699c…b783`. All placement checks passed. The exact final KVM campaign is
+recorded under `/root/harmony-n2-kvm-campaign-final-60d70599`; the signed-HVF
+rerun used the same final runtime implementation (subsequent commits affect
+only fixtures, allowlists, and generated snapshots).
+
+GitHub Actions run
+[`33183121337`](https://github.com/pH14/harmony/actions/runs/33183121337)
+ran exact final commit `60d70599` through the stock-KVM X-series workflow.
+The check, guest build, both X1 jobs, all six probes, all four X2 vendor-pool
+replicas, and all eight bounded Intel-hunt replicas passed. Each X2 replica
+completed ten equal boots with 35,310 events and `X2_DIVERGENCES=0`; the
+sampled pool transcript has digest `79cb885a…51f3`, zero component differences,
+zero RAM page differences, and every placement check green. This is a new
+exit-count log identity, so equality across the final N2 vendor pool—not the
+retired N1 branch-clock digest—is the oracle.
+
+The exact final planted negative also passed:
+
+```text
+cargo test -p vmm-core --test virtual_time \
+  comparator_rejects_one_vns_increment_at_the_exact_event -- --exact
+PASS: the comparator rejects the planted +1 V-ns at its exact event
+```
 
 Searches over the non-historical tree find no retired modules, symbols,
 feature flags, patch names, or file names. A case-insensitive filename search
@@ -306,17 +385,12 @@ record or the seven occurrences of frozen v1 log/event tokens in the encoder,
 dumpers, and byte-comparison oracle described above. The workflow display name
 and concurrency group are `x86-virtual-time`.
 
-### Verification still required before N2 can be marked PASS
-
-- pinned Miri matrix on this exact tree;
-- Linux public-API regeneration/check;
-- N1 boot and NES references on HVF and msr1 KVM, including direct byte
-  comparison; and
-- the X-series stock-KVM reference on both GitHub Actions vendor pools.
-
-**N2 overall: IN PROGRESS.** The implementation and portable gates are green;
-the milestone remains open until all exact-tree machine evidence above is
-recorded.
+**N2 overall: PASS.** Commit `60d70599` contains one exit-count virtual-time
+clock, no retired branch-count implementation or compatibility half-state,
+regenerated frozen surfaces, the recorded issue sweep, exact-tree repository
+gates, and all three machine references. The preserved v1 format literals and
+historical ledgers are the only search matches and are required frozen records,
+not orphaned implementation.
 
 ## N3 — fast
 
