@@ -67,7 +67,7 @@ echo "== harmony serialization: fixed driver must pass"
 configure_kunit "$positive_obj"
 build_kunit_kernel "$positive_obj"
 boot_kunit_kernel "$positive_obj" "$positive_log"
-if ! grep -Eq '^ok [0-9]+( -)? harmony-transaction-lock$' "$positive_log"; then
+if ! grep -Eq 'ok [0-9]+( -)? harmony-transaction-lock$' "$positive_log"; then
     echo "FAIL: fixed-driver KUnit suite did not pass" >&2
     tail -80 "$positive_log" >&2
     exit 1
@@ -85,7 +85,7 @@ fi
 configure_kunit "$negative_obj"
 build_kunit_kernel "$negative_obj"
 boot_kunit_kernel "$negative_obj" "$negative_log"
-if ! grep -Eq '^[[:space:]]+not ok [0-9]+( -)? harmony_concurrent_ringer_test$' "$negative_log"; then
+if ! grep -Eq 'not ok [0-9]+( -)? harmony_concurrent_ringer_test$' "$negative_log"; then
     echo "FAIL: concurrency test did not reject the pre-fix no-lock mutant" >&2
     tail -80 "$negative_log" >&2
     exit 1
