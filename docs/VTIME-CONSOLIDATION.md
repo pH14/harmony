@@ -77,8 +77,33 @@ These hold for every milestone.
   passes only if these reproduce byte-identical normalized logs and
   `state_hash` sequences on the machines the milestone names.
 - **Machines.** "All three machines" means: HVF on the M1 Max, KVM on msr1
-  (pinned, as in M4/M5), and stock KVM on a GitHub Actions x86 runner (both
-  vendor pools, as in X2).
+  (pinned to the Consonance allocation described below), and stock KVM on a
+  GitHub Actions x86 runner (both vendor pools, as in X2).
+- **msr1 core allocation.** Dissonance owns msr1 CPUs `0,1,6-11` for its
+  benchmark evaluator. Every Consonance-initiated CPU-intensive command on
+  msr1 — including `cargo`, `rustc`, tests, guest-image builds, and KVM
+  reference runs — must execute in an auditable systemd cgroup with
+  `AllowedCPUs=2-5` and effective affinity restricted to CPUs `2-5` or a
+  subset. Cargo parallelism is at most four jobs. Invoking those commands
+  from an unrestricted SSH session is a plan violation even when Dissonance
+  appears idle, because a later child can overlap a timed sample.
+- **Dissonance timing takes priority on msr1.** Core isolation does not
+  isolate the shared L3, memory bandwidth, storage, power, or thermals. The
+  Dissonance evaluator therefore runs an idle-versus-Consonance-load noise
+  gate before allowing concurrent timed samples. If that gate cannot still
+  distinguish a 5% systems change, Consonance keeps its CPU restriction but
+  defers all CPU- or I/O-intensive msr1 work while the Dissonance benchmark
+  reservation is held. Every such Consonance command holds a shared `flock`
+  on `/run/lock/harmony-msr1-benchmark.lock` for its complete lifetime. When
+  E00 freezes exclusive timing, the Dissonance controller holds the
+  exclusive side of that lock across preflight and the timed sample, so a
+  Consonance job waits rather than contaminates the sample. Do not work
+  around or weaken that reservation.
+- **Record msr1 isolation evidence.** Each milestone that uses msr1 records
+  the systemd unit or scope, requested CPU set, observed
+  `Cpus_allowed_list`, and whether a Dissonance reservation was active in
+  `docs/VTIME-CONSOLIDATION-STATUS.md`. An unexpected affinity or overlap
+  invalidates that run; rerun it under the required allocation.
 - **Repository checks** (`AGENTS.md`) stay green at every milestone close:
   build, nextest, clippy `-D warnings`, fmt, deny, all `--all-features`;
   Miri for unsafe crates. These are the locally run commands, and they are
