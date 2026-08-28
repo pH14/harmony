@@ -454,7 +454,9 @@ as raw-only because stock KVM consumes the same operations in its in-kernel GIC.
 The M3 runner nevertheless compares all host loop iterations with only portable
 events, and samples the unchanged pvclock page again on each raw-only exit. The
 result is a category mismatch in both independent comparators, exposed rather
-than caused by the synchronous transport.
+than caused by the synchronous transport. [Issue #207](https://github.com/pH14/harmony/issues/207)
+records the exact counts and the six invariants plus two planted negatives an
+authorized repair must satisfy.
 
 Changing those comparator semantics was not accepted without explicit
 authorization because an incautious filter could weaken the anti-vacuity gate.
