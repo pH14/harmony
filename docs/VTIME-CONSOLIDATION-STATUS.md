@@ -615,6 +615,25 @@ the final tree:
   (`/private/tmp/harmony-n3-hvf-campaign-7cbdf6df`) and pinned KVM
   (`/root/harmony-n3-kvm-campaign-7cbdf6df`), reproducing the two session and
   four portable-artifact hashes listed above.
+- `f56930ef`: the canonical aarch64-Linux public-API guard exposed one
+  generated-snapshot ordering defect in the otherwise exact final tree. The
+  correction moves `checkpoint_virtual_time_trace_at` to the generator's
+  canonical position and changes no executable behavior. Because it changes
+  the exact commit, the full reference evidence was rerun rather than
+  inherited. Ten signed-HVF boots
+  (`/private/tmp/harmony-n3-hvf-boot-f56930ef`) and ten CPU0-pinned KVM boots
+  (`/root/harmony-n3-kvm-boot-f56930ef`) again produced normalized-log
+  SHA-256 `4b4e7a27…7db`, 38,453 portable events, 283 schedules, 136
+  deliveries, 151 checkpoints, placement PASS, trace digest
+  `e2e7852e…9829`, and terminal state hash `1dc0c1da…8b17`. The HVF and
+  KVM NES campaigns (`/private/tmp/harmony-n3-hvf-campaign-f56930ef` and
+  `/root/harmony-n3-kvm-campaign-f56930ef`) reproduced session hashes
+  `a801bfb0…9d45` and `ffdd9dbd…6eda`, archive `384d3029…f6b2`, report
+  `b3032b4a…6c46`, stream `584e0d3a…78b2`, and snapshots
+  `ae8d699c…b783`. GitHub x86 run `33198943599` passed the portable check,
+  six probes, both X1 minimal guests, all eight vendor hunts, and all four
+  full ten-boot X2 jobs. The canonical Linux `vmm-core` and `vmm-backend`
+  public-API guards also passed on this commit.
 
 The exact final local code tree passes `cargo build --all-features`, all 1,171
 tests under `cargo nextest run --all-features`, all-target Clippy with warnings
@@ -622,11 +641,18 @@ denied (apart from the standing unreachable-entry parser notices emitted by
 `clippy.toml`), formatting, and `cargo deny check`. All instrumented tests also
 pass under `cargo llvm-cov`; its macOS aggregate is 87.15% because Linux-only
 paths are absent, so it is recorded as portability evidence rather than
-misrepresented as the repository's authoritative Linux 90% floor. Every
-non-Linux frozen public-API guard passes locally; the Linux surfaces are
-exercised by the exact-commit x86 workflow. N3 remains **IN PROGRESS** pending
-only the dispatched pinned-nightly Miri run `33196807345`; it is not presumed
-green in advance.
+misrepresented as the repository's authoritative Linux 90% floor. The
+canonical Linux public-API guards pass for both affected crates. Exact-commit
+pinned-nightly Miri run `33198957494` completed successfully: the dedicated
+`vmm-core` job passed, as did the companion chain for `hypercall-doorbell`,
+`vm-state`, `vmm-backend`, `snapshot-store`, `harmony-linux/play-agent`, and
+`harmony-linux/tetanes-agent`.
+
+The accepted baseline was committed and profiled before either optimization;
+the final 4,956,055,334 ns result is **46.335×** faster than the
+229,640,712,125 ns baseline, preserves every frozen boot and campaign byte on
+all three machines, and every optimization commit has its own reference rerun
+listed above. **N3 overall: PASS.**
 
 ## N4 — the guest is part of Consonance
 
