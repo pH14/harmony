@@ -2,49 +2,6 @@ pub mod vm_state
 pub enum vm_state::MpState
 pub vm_state::MpState::Halted
 pub vm_state::MpState::Runnable
-impl core::clone::Clone for vm_state::MpState
-pub fn vm_state::MpState::clone(&self) -> vm_state::MpState
-impl core::cmp::Eq for vm_state::MpState
-impl core::cmp::PartialEq for vm_state::MpState
-pub fn vm_state::MpState::eq(&self, &vm_state::MpState) -> bool
-impl core::default::Default for vm_state::MpState
-pub fn vm_state::MpState::default() -> vm_state::MpState
-impl core::fmt::Debug for vm_state::MpState
-pub fn vm_state::MpState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::MpState
-impl core::marker::StructuralPartialEq for vm_state::MpState
-impl core::marker::Freeze for vm_state::MpState
-impl core::marker::Send for vm_state::MpState
-impl core::marker::Sync for vm_state::MpState
-impl core::marker::Unpin for vm_state::MpState
-impl core::marker::UnsafeUnpin for vm_state::MpState
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::MpState
-impl core::panic::unwind_safe::UnwindSafe for vm_state::MpState
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::MpState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::MpState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::MpState where U: core::convert::From<T>
-pub fn vm_state::MpState::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::MpState where U: core::convert::Into<T>
-pub type vm_state::MpState::Error = core::convert::Infallible
-pub fn vm_state::MpState::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::MpState where U: core::convert::TryFrom<T>
-pub type vm_state::MpState::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::MpState::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::MpState where T: core::clone::Clone
-pub type vm_state::MpState::Owned = T
-pub fn vm_state::MpState::clone_into(&self, &mut T)
-pub fn vm_state::MpState::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::MpState where T: 'static + ?core::marker::Sized
-pub fn vm_state::MpState::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::MpState where T: ?core::marker::Sized
-pub fn vm_state::MpState::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::MpState where T: ?core::marker::Sized
-pub fn vm_state::MpState::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::MpState where T: core::clone::Clone
-pub unsafe fn vm_state::MpState::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::MpState
-pub fn vm_state::MpState::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::MpState where T: ?core::marker::Sized
 pub enum vm_state::VmStateError
 pub vm_state::VmStateError::BadMagic(u32)
 pub vm_state::VmStateError::DuplicateTag(u16)
@@ -56,51 +13,6 @@ pub vm_state::VmStateError::Truncated
 pub vm_state::VmStateError::UnknownTag(u16)
 pub vm_state::VmStateError::UnsupportedArch(u16)
 pub vm_state::VmStateError::UnsupportedVersion(u16)
-impl core::clone::Clone for vm_state::VmStateError
-pub fn vm_state::VmStateError::clone(&self) -> vm_state::VmStateError
-impl core::cmp::Eq for vm_state::VmStateError
-impl core::cmp::PartialEq for vm_state::VmStateError
-pub fn vm_state::VmStateError::eq(&self, &vm_state::VmStateError) -> bool
-impl core::error::Error for vm_state::VmStateError
-impl core::fmt::Debug for vm_state::VmStateError
-pub fn vm_state::VmStateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::fmt::Display for vm_state::VmStateError
-pub fn vm_state::VmStateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for vm_state::VmStateError
-impl core::marker::Freeze for vm_state::VmStateError
-impl core::marker::Send for vm_state::VmStateError
-impl core::marker::Sync for vm_state::VmStateError
-impl core::marker::Unpin for vm_state::VmStateError
-impl core::marker::UnsafeUnpin for vm_state::VmStateError
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::VmStateError
-impl core::panic::unwind_safe::UnwindSafe for vm_state::VmStateError
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::VmStateError where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::VmStateError where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::VmStateError where U: core::convert::From<T>
-pub fn vm_state::VmStateError::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::VmStateError where U: core::convert::Into<T>
-pub type vm_state::VmStateError::Error = core::convert::Infallible
-pub fn vm_state::VmStateError::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::VmStateError where U: core::convert::TryFrom<T>
-pub type vm_state::VmStateError::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::VmStateError::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::VmStateError where T: core::clone::Clone
-pub type vm_state::VmStateError::Owned = T
-pub fn vm_state::VmStateError::clone_into(&self, &mut T)
-pub fn vm_state::VmStateError::to_owned(&self) -> T
-impl<T> alloc::string::ToString for vm_state::VmStateError where T: core::fmt::Display + ?core::marker::Sized
-pub fn vm_state::VmStateError::to_string(&self) -> alloc::string::String
-impl<T> core::any::Any for vm_state::VmStateError where T: 'static + ?core::marker::Sized
-pub fn vm_state::VmStateError::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::VmStateError where T: ?core::marker::Sized
-pub fn vm_state::VmStateError::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::VmStateError where T: ?core::marker::Sized
-pub fn vm_state::VmStateError::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::VmStateError where T: core::clone::Clone
-pub unsafe fn vm_state::VmStateError::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::VmStateError
-pub fn vm_state::VmStateError::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::VmStateError where T: ?core::marker::Sized
 pub struct vm_state::Arm64Debug
 pub vm_state::Arm64Debug::breakpoint_control: [u64; 16]
 pub vm_state::Arm64Debug::breakpoint_value: [u64; 16]
@@ -109,95 +21,9 @@ pub vm_state::Arm64Debug::trap_debug_exceptions: bool
 pub vm_state::Arm64Debug::trap_debug_reg_accesses: bool
 pub vm_state::Arm64Debug::watchpoint_control: [u64; 16]
 pub vm_state::Arm64Debug::watchpoint_value: [u64; 16]
-impl core::clone::Clone for vm_state::Arm64Debug
-pub fn vm_state::Arm64Debug::clone(&self) -> vm_state::Arm64Debug
-impl core::cmp::Eq for vm_state::Arm64Debug
-impl core::cmp::PartialEq for vm_state::Arm64Debug
-pub fn vm_state::Arm64Debug::eq(&self, &vm_state::Arm64Debug) -> bool
-impl core::default::Default for vm_state::Arm64Debug
-pub fn vm_state::Arm64Debug::default() -> vm_state::Arm64Debug
-impl core::fmt::Debug for vm_state::Arm64Debug
-pub fn vm_state::Arm64Debug::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Arm64Debug
-impl core::marker::StructuralPartialEq for vm_state::Arm64Debug
-impl core::marker::Freeze for vm_state::Arm64Debug
-impl core::marker::Send for vm_state::Arm64Debug
-impl core::marker::Sync for vm_state::Arm64Debug
-impl core::marker::Unpin for vm_state::Arm64Debug
-impl core::marker::UnsafeUnpin for vm_state::Arm64Debug
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Arm64Debug
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Arm64Debug
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Arm64Debug where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Arm64Debug where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Arm64Debug where U: core::convert::From<T>
-pub fn vm_state::Arm64Debug::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Arm64Debug where U: core::convert::Into<T>
-pub type vm_state::Arm64Debug::Error = core::convert::Infallible
-pub fn vm_state::Arm64Debug::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Arm64Debug where U: core::convert::TryFrom<T>
-pub type vm_state::Arm64Debug::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Arm64Debug::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Arm64Debug where T: core::clone::Clone
-pub type vm_state::Arm64Debug::Owned = T
-pub fn vm_state::Arm64Debug::clone_into(&self, &mut T)
-pub fn vm_state::Arm64Debug::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Arm64Debug where T: 'static + ?core::marker::Sized
-pub fn vm_state::Arm64Debug::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Arm64Debug where T: ?core::marker::Sized
-pub fn vm_state::Arm64Debug::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Arm64Debug where T: ?core::marker::Sized
-pub fn vm_state::Arm64Debug::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Arm64Debug where T: core::clone::Clone
-pub unsafe fn vm_state::Arm64Debug::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Arm64Debug
-pub fn vm_state::Arm64Debug::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Arm64Debug where T: ?core::marker::Sized
 pub struct vm_state::Arm64Interrupts
 pub vm_state::Arm64Interrupts::fiq: bool
 pub vm_state::Arm64Interrupts::irq: bool
-impl core::clone::Clone for vm_state::Arm64Interrupts
-pub fn vm_state::Arm64Interrupts::clone(&self) -> vm_state::Arm64Interrupts
-impl core::cmp::Eq for vm_state::Arm64Interrupts
-impl core::cmp::PartialEq for vm_state::Arm64Interrupts
-pub fn vm_state::Arm64Interrupts::eq(&self, &vm_state::Arm64Interrupts) -> bool
-impl core::default::Default for vm_state::Arm64Interrupts
-pub fn vm_state::Arm64Interrupts::default() -> vm_state::Arm64Interrupts
-impl core::fmt::Debug for vm_state::Arm64Interrupts
-pub fn vm_state::Arm64Interrupts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Arm64Interrupts
-impl core::marker::StructuralPartialEq for vm_state::Arm64Interrupts
-impl core::marker::Freeze for vm_state::Arm64Interrupts
-impl core::marker::Send for vm_state::Arm64Interrupts
-impl core::marker::Sync for vm_state::Arm64Interrupts
-impl core::marker::Unpin for vm_state::Arm64Interrupts
-impl core::marker::UnsafeUnpin for vm_state::Arm64Interrupts
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Arm64Interrupts
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Arm64Interrupts
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Arm64Interrupts where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Arm64Interrupts where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Arm64Interrupts where U: core::convert::From<T>
-pub fn vm_state::Arm64Interrupts::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Arm64Interrupts where U: core::convert::Into<T>
-pub type vm_state::Arm64Interrupts::Error = core::convert::Infallible
-pub fn vm_state::Arm64Interrupts::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Arm64Interrupts where U: core::convert::TryFrom<T>
-pub type vm_state::Arm64Interrupts::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Arm64Interrupts::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Arm64Interrupts where T: core::clone::Clone
-pub type vm_state::Arm64Interrupts::Owned = T
-pub fn vm_state::Arm64Interrupts::clone_into(&self, &mut T)
-pub fn vm_state::Arm64Interrupts::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Arm64Interrupts where T: 'static + ?core::marker::Sized
-pub fn vm_state::Arm64Interrupts::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Arm64Interrupts where T: ?core::marker::Sized
-pub fn vm_state::Arm64Interrupts::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Arm64Interrupts where T: ?core::marker::Sized
-pub fn vm_state::Arm64Interrupts::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Arm64Interrupts where T: core::clone::Clone
-pub unsafe fn vm_state::Arm64Interrupts::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Arm64Interrupts
-pub fn vm_state::Arm64Interrupts::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Arm64Interrupts where T: ?core::marker::Sized
 pub struct vm_state::Arm64Regs
 pub vm_state::Arm64Regs::elr_el1: u64
 pub vm_state::Arm64Regs::pc: u64
@@ -206,96 +32,10 @@ pub vm_state::Arm64Regs::sp: u64
 pub vm_state::Arm64Regs::sp_el1: u64
 pub vm_state::Arm64Regs::spsr_el1: u64
 pub vm_state::Arm64Regs::x: [u64; 31]
-impl core::clone::Clone for vm_state::Arm64Regs
-pub fn vm_state::Arm64Regs::clone(&self) -> vm_state::Arm64Regs
-impl core::cmp::Eq for vm_state::Arm64Regs
-impl core::cmp::PartialEq for vm_state::Arm64Regs
-pub fn vm_state::Arm64Regs::eq(&self, &vm_state::Arm64Regs) -> bool
-impl core::default::Default for vm_state::Arm64Regs
-pub fn vm_state::Arm64Regs::default() -> vm_state::Arm64Regs
-impl core::fmt::Debug for vm_state::Arm64Regs
-pub fn vm_state::Arm64Regs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Arm64Regs
-impl core::marker::StructuralPartialEq for vm_state::Arm64Regs
-impl core::marker::Freeze for vm_state::Arm64Regs
-impl core::marker::Send for vm_state::Arm64Regs
-impl core::marker::Sync for vm_state::Arm64Regs
-impl core::marker::Unpin for vm_state::Arm64Regs
-impl core::marker::UnsafeUnpin for vm_state::Arm64Regs
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Arm64Regs
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Arm64Regs
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Arm64Regs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Arm64Regs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Arm64Regs where U: core::convert::From<T>
-pub fn vm_state::Arm64Regs::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Arm64Regs where U: core::convert::Into<T>
-pub type vm_state::Arm64Regs::Error = core::convert::Infallible
-pub fn vm_state::Arm64Regs::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Arm64Regs where U: core::convert::TryFrom<T>
-pub type vm_state::Arm64Regs::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Arm64Regs::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Arm64Regs where T: core::clone::Clone
-pub type vm_state::Arm64Regs::Owned = T
-pub fn vm_state::Arm64Regs::clone_into(&self, &mut T)
-pub fn vm_state::Arm64Regs::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Arm64Regs where T: 'static + ?core::marker::Sized
-pub fn vm_state::Arm64Regs::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Arm64Regs where T: ?core::marker::Sized
-pub fn vm_state::Arm64Regs::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Arm64Regs where T: ?core::marker::Sized
-pub fn vm_state::Arm64Regs::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Arm64Regs where T: core::clone::Clone
-pub unsafe fn vm_state::Arm64Regs::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Arm64Regs
-pub fn vm_state::Arm64Regs::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Arm64Regs where T: ?core::marker::Sized
 pub struct vm_state::Arm64SimdFp
 pub vm_state::Arm64SimdFp::fpcr: u64
 pub vm_state::Arm64SimdFp::fpsr: u64
 pub vm_state::Arm64SimdFp::q: [[u8; 16]; 32]
-impl core::clone::Clone for vm_state::Arm64SimdFp
-pub fn vm_state::Arm64SimdFp::clone(&self) -> vm_state::Arm64SimdFp
-impl core::cmp::Eq for vm_state::Arm64SimdFp
-impl core::cmp::PartialEq for vm_state::Arm64SimdFp
-pub fn vm_state::Arm64SimdFp::eq(&self, &vm_state::Arm64SimdFp) -> bool
-impl core::default::Default for vm_state::Arm64SimdFp
-pub fn vm_state::Arm64SimdFp::default() -> vm_state::Arm64SimdFp
-impl core::fmt::Debug for vm_state::Arm64SimdFp
-pub fn vm_state::Arm64SimdFp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Arm64SimdFp
-impl core::marker::StructuralPartialEq for vm_state::Arm64SimdFp
-impl core::marker::Freeze for vm_state::Arm64SimdFp
-impl core::marker::Send for vm_state::Arm64SimdFp
-impl core::marker::Sync for vm_state::Arm64SimdFp
-impl core::marker::Unpin for vm_state::Arm64SimdFp
-impl core::marker::UnsafeUnpin for vm_state::Arm64SimdFp
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Arm64SimdFp
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Arm64SimdFp
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Arm64SimdFp where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Arm64SimdFp where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Arm64SimdFp where U: core::convert::From<T>
-pub fn vm_state::Arm64SimdFp::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Arm64SimdFp where U: core::convert::Into<T>
-pub type vm_state::Arm64SimdFp::Error = core::convert::Infallible
-pub fn vm_state::Arm64SimdFp::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Arm64SimdFp where U: core::convert::TryFrom<T>
-pub type vm_state::Arm64SimdFp::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Arm64SimdFp::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Arm64SimdFp where T: core::clone::Clone
-pub type vm_state::Arm64SimdFp::Owned = T
-pub fn vm_state::Arm64SimdFp::clone_into(&self, &mut T)
-pub fn vm_state::Arm64SimdFp::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Arm64SimdFp where T: 'static + ?core::marker::Sized
-pub fn vm_state::Arm64SimdFp::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Arm64SimdFp where T: ?core::marker::Sized
-pub fn vm_state::Arm64SimdFp::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Arm64SimdFp where T: ?core::marker::Sized
-pub fn vm_state::Arm64SimdFp::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Arm64SimdFp where T: core::clone::Clone
-pub unsafe fn vm_state::Arm64SimdFp::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Arm64SimdFp
-pub fn vm_state::Arm64SimdFp::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Arm64SimdFp where T: ?core::marker::Sized
 pub struct vm_state::Arm64Sysregs
 pub vm_state::Arm64Sysregs::cntkctl_el1: u64
 pub vm_state::Arm64Sysregs::cpacr_el1: u64
@@ -309,49 +49,6 @@ pub vm_state::Arm64Sysregs::tpidr_el1: u64
 pub vm_state::Arm64Sysregs::ttbr0_el1: u64
 pub vm_state::Arm64Sysregs::ttbr1_el1: u64
 pub vm_state::Arm64Sysregs::vbar_el1: u64
-impl core::clone::Clone for vm_state::Arm64Sysregs
-pub fn vm_state::Arm64Sysregs::clone(&self) -> vm_state::Arm64Sysregs
-impl core::cmp::Eq for vm_state::Arm64Sysregs
-impl core::cmp::PartialEq for vm_state::Arm64Sysregs
-pub fn vm_state::Arm64Sysregs::eq(&self, &vm_state::Arm64Sysregs) -> bool
-impl core::default::Default for vm_state::Arm64Sysregs
-pub fn vm_state::Arm64Sysregs::default() -> vm_state::Arm64Sysregs
-impl core::fmt::Debug for vm_state::Arm64Sysregs
-pub fn vm_state::Arm64Sysregs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Arm64Sysregs
-impl core::marker::StructuralPartialEq for vm_state::Arm64Sysregs
-impl core::marker::Freeze for vm_state::Arm64Sysregs
-impl core::marker::Send for vm_state::Arm64Sysregs
-impl core::marker::Sync for vm_state::Arm64Sysregs
-impl core::marker::Unpin for vm_state::Arm64Sysregs
-impl core::marker::UnsafeUnpin for vm_state::Arm64Sysregs
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Arm64Sysregs
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Arm64Sysregs
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Arm64Sysregs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Arm64Sysregs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Arm64Sysregs where U: core::convert::From<T>
-pub fn vm_state::Arm64Sysregs::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Arm64Sysregs where U: core::convert::Into<T>
-pub type vm_state::Arm64Sysregs::Error = core::convert::Infallible
-pub fn vm_state::Arm64Sysregs::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Arm64Sysregs where U: core::convert::TryFrom<T>
-pub type vm_state::Arm64Sysregs::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Arm64Sysregs::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Arm64Sysregs where T: core::clone::Clone
-pub type vm_state::Arm64Sysregs::Owned = T
-pub fn vm_state::Arm64Sysregs::clone_into(&self, &mut T)
-pub fn vm_state::Arm64Sysregs::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Arm64Sysregs where T: 'static + ?core::marker::Sized
-pub fn vm_state::Arm64Sysregs::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Arm64Sysregs where T: ?core::marker::Sized
-pub fn vm_state::Arm64Sysregs::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Arm64Sysregs where T: ?core::marker::Sized
-pub fn vm_state::Arm64Sysregs::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Arm64Sysregs where T: core::clone::Clone
-pub unsafe fn vm_state::Arm64Sysregs::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Arm64Sysregs
-pub fn vm_state::Arm64Sysregs::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Arm64Sysregs where T: ?core::marker::Sized
 pub struct vm_state::Arm64VmState
 pub vm_state::Arm64VmState::contract_hash: [u8; 32]
 pub vm_state::Arm64VmState::debug: vm_state::Arm64Debug
@@ -368,16 +65,6 @@ pub vm_state::Arm64VmState::vtimer: vm_state::Arm64Vtimer
 impl vm_state::Arm64VmState
 pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<vm_state::Arm64VmState, vm_state::VmStateError>
 pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
-impl core::clone::Clone for vm_state::Arm64VmState
-pub fn vm_state::Arm64VmState::clone(&self) -> vm_state::Arm64VmState
-impl core::cmp::Eq for vm_state::Arm64VmState
-impl core::cmp::PartialEq for vm_state::Arm64VmState
-pub fn vm_state::Arm64VmState::eq(&self, &vm_state::Arm64VmState) -> bool
-impl core::default::Default for vm_state::Arm64VmState
-pub fn vm_state::Arm64VmState::default() -> vm_state::Arm64VmState
-impl core::fmt::Debug for vm_state::Arm64VmState
-pub fn vm_state::Arm64VmState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for vm_state::Arm64VmState
 impl vm_state::SnapshotRecords for vm_state::Arm64VmState
 pub const vm_state::Arm64VmState::ARCH_TAG: u16
 pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
@@ -385,219 +72,17 @@ pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec:
 pub fn vm_state::Arm64VmState::entropy_bytes(&self) -> &[u8]
 pub fn vm_state::Arm64VmState::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::Arm64VmState::vtime(&self) -> &vm_state::VtimeState
-impl core::marker::Freeze for vm_state::Arm64VmState
-impl core::marker::Send for vm_state::Arm64VmState
-impl core::marker::Sync for vm_state::Arm64VmState
-impl core::marker::Unpin for vm_state::Arm64VmState
-impl core::marker::UnsafeUnpin for vm_state::Arm64VmState
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Arm64VmState
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Arm64VmState
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Arm64VmState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Arm64VmState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Arm64VmState where U: core::convert::From<T>
-pub fn vm_state::Arm64VmState::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Arm64VmState where U: core::convert::Into<T>
-pub type vm_state::Arm64VmState::Error = core::convert::Infallible
-pub fn vm_state::Arm64VmState::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Arm64VmState where U: core::convert::TryFrom<T>
-pub type vm_state::Arm64VmState::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Arm64VmState::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Arm64VmState where T: core::clone::Clone
-pub type vm_state::Arm64VmState::Owned = T
-pub fn vm_state::Arm64VmState::clone_into(&self, &mut T)
-pub fn vm_state::Arm64VmState::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Arm64VmState where T: 'static + ?core::marker::Sized
-pub fn vm_state::Arm64VmState::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Arm64VmState where T: ?core::marker::Sized
-pub fn vm_state::Arm64VmState::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Arm64VmState where T: ?core::marker::Sized
-pub fn vm_state::Arm64VmState::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Arm64VmState where T: core::clone::Clone
-pub unsafe fn vm_state::Arm64VmState::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Arm64VmState
-pub fn vm_state::Arm64VmState::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Arm64VmState where T: ?core::marker::Sized
 pub struct vm_state::Arm64Vtimer
 pub vm_state::Arm64Vtimer::cntv_ctl_el0: u64
 pub vm_state::Arm64Vtimer::cntv_cval_el0: u64
 pub vm_state::Arm64Vtimer::masked: bool
 pub vm_state::Arm64Vtimer::offset: u64
-impl core::clone::Clone for vm_state::Arm64Vtimer
-pub fn vm_state::Arm64Vtimer::clone(&self) -> vm_state::Arm64Vtimer
-impl core::cmp::Eq for vm_state::Arm64Vtimer
-impl core::cmp::PartialEq for vm_state::Arm64Vtimer
-pub fn vm_state::Arm64Vtimer::eq(&self, &vm_state::Arm64Vtimer) -> bool
-impl core::default::Default for vm_state::Arm64Vtimer
-pub fn vm_state::Arm64Vtimer::default() -> vm_state::Arm64Vtimer
-impl core::fmt::Debug for vm_state::Arm64Vtimer
-pub fn vm_state::Arm64Vtimer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Arm64Vtimer
-impl core::marker::StructuralPartialEq for vm_state::Arm64Vtimer
-impl core::marker::Freeze for vm_state::Arm64Vtimer
-impl core::marker::Send for vm_state::Arm64Vtimer
-impl core::marker::Sync for vm_state::Arm64Vtimer
-impl core::marker::Unpin for vm_state::Arm64Vtimer
-impl core::marker::UnsafeUnpin for vm_state::Arm64Vtimer
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Arm64Vtimer
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Arm64Vtimer
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Arm64Vtimer where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Arm64Vtimer where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Arm64Vtimer where U: core::convert::From<T>
-pub fn vm_state::Arm64Vtimer::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Arm64Vtimer where U: core::convert::Into<T>
-pub type vm_state::Arm64Vtimer::Error = core::convert::Infallible
-pub fn vm_state::Arm64Vtimer::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Arm64Vtimer where U: core::convert::TryFrom<T>
-pub type vm_state::Arm64Vtimer::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Arm64Vtimer::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Arm64Vtimer where T: core::clone::Clone
-pub type vm_state::Arm64Vtimer::Owned = T
-pub fn vm_state::Arm64Vtimer::clone_into(&self, &mut T)
-pub fn vm_state::Arm64Vtimer::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Arm64Vtimer where T: 'static + ?core::marker::Sized
-pub fn vm_state::Arm64Vtimer::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Arm64Vtimer where T: ?core::marker::Sized
-pub fn vm_state::Arm64Vtimer::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Arm64Vtimer where T: ?core::marker::Sized
-pub fn vm_state::Arm64Vtimer::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Arm64Vtimer where T: core::clone::Clone
-pub unsafe fn vm_state::Arm64Vtimer::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Arm64Vtimer
-pub fn vm_state::Arm64Vtimer::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Arm64Vtimer where T: ?core::marker::Sized
 pub struct vm_state::DebugRegs
 pub vm_state::DebugRegs::db: [u64; 4]
 pub vm_state::DebugRegs::dr6: u64
 pub vm_state::DebugRegs::dr7: u64
-impl core::clone::Clone for vm_state::DebugRegs
-pub fn vm_state::DebugRegs::clone(&self) -> vm_state::DebugRegs
-impl core::cmp::Eq for vm_state::DebugRegs
-impl core::cmp::PartialEq for vm_state::DebugRegs
-pub fn vm_state::DebugRegs::eq(&self, &vm_state::DebugRegs) -> bool
-impl core::default::Default for vm_state::DebugRegs
-pub fn vm_state::DebugRegs::default() -> vm_state::DebugRegs
-impl core::fmt::Debug for vm_state::DebugRegs
-pub fn vm_state::DebugRegs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::DebugRegs
-impl core::marker::StructuralPartialEq for vm_state::DebugRegs
-impl core::marker::Freeze for vm_state::DebugRegs
-impl core::marker::Send for vm_state::DebugRegs
-impl core::marker::Sync for vm_state::DebugRegs
-impl core::marker::Unpin for vm_state::DebugRegs
-impl core::marker::UnsafeUnpin for vm_state::DebugRegs
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::DebugRegs
-impl core::panic::unwind_safe::UnwindSafe for vm_state::DebugRegs
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::DebugRegs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::DebugRegs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::DebugRegs where U: core::convert::From<T>
-pub fn vm_state::DebugRegs::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::DebugRegs where U: core::convert::Into<T>
-pub type vm_state::DebugRegs::Error = core::convert::Infallible
-pub fn vm_state::DebugRegs::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::DebugRegs where U: core::convert::TryFrom<T>
-pub type vm_state::DebugRegs::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::DebugRegs::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::DebugRegs where T: core::clone::Clone
-pub type vm_state::DebugRegs::Owned = T
-pub fn vm_state::DebugRegs::clone_into(&self, &mut T)
-pub fn vm_state::DebugRegs::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::DebugRegs where T: 'static + ?core::marker::Sized
-pub fn vm_state::DebugRegs::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::DebugRegs where T: ?core::marker::Sized
-pub fn vm_state::DebugRegs::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::DebugRegs where T: ?core::marker::Sized
-pub fn vm_state::DebugRegs::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::DebugRegs where T: core::clone::Clone
-pub unsafe fn vm_state::DebugRegs::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::DebugRegs
-pub fn vm_state::DebugRegs::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::DebugRegs where T: ?core::marker::Sized
 pub struct vm_state::DeviceBlob(pub alloc::vec::Vec<u8>)
-impl core::clone::Clone for vm_state::DeviceBlob
-pub fn vm_state::DeviceBlob::clone(&self) -> vm_state::DeviceBlob
-impl core::cmp::Eq for vm_state::DeviceBlob
-impl core::cmp::PartialEq for vm_state::DeviceBlob
-pub fn vm_state::DeviceBlob::eq(&self, &vm_state::DeviceBlob) -> bool
-impl core::default::Default for vm_state::DeviceBlob
-pub fn vm_state::DeviceBlob::default() -> vm_state::DeviceBlob
-impl core::fmt::Debug for vm_state::DeviceBlob
-pub fn vm_state::DeviceBlob::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for vm_state::DeviceBlob
-impl core::marker::Freeze for vm_state::DeviceBlob
-impl core::marker::Send for vm_state::DeviceBlob
-impl core::marker::Sync for vm_state::DeviceBlob
-impl core::marker::Unpin for vm_state::DeviceBlob
-impl core::marker::UnsafeUnpin for vm_state::DeviceBlob
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::DeviceBlob
-impl core::panic::unwind_safe::UnwindSafe for vm_state::DeviceBlob
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::DeviceBlob where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::DeviceBlob where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::DeviceBlob where U: core::convert::From<T>
-pub fn vm_state::DeviceBlob::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::DeviceBlob where U: core::convert::Into<T>
-pub type vm_state::DeviceBlob::Error = core::convert::Infallible
-pub fn vm_state::DeviceBlob::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::DeviceBlob where U: core::convert::TryFrom<T>
-pub type vm_state::DeviceBlob::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::DeviceBlob::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::DeviceBlob where T: core::clone::Clone
-pub type vm_state::DeviceBlob::Owned = T
-pub fn vm_state::DeviceBlob::clone_into(&self, &mut T)
-pub fn vm_state::DeviceBlob::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::DeviceBlob where T: 'static + ?core::marker::Sized
-pub fn vm_state::DeviceBlob::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::DeviceBlob where T: ?core::marker::Sized
-pub fn vm_state::DeviceBlob::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::DeviceBlob where T: ?core::marker::Sized
-pub fn vm_state::DeviceBlob::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::DeviceBlob where T: core::clone::Clone
-pub unsafe fn vm_state::DeviceBlob::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::DeviceBlob
-pub fn vm_state::DeviceBlob::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::DeviceBlob where T: ?core::marker::Sized
 pub struct vm_state::MsrBlock(pub alloc::collections::btree::map::BTreeMap<u32, u64>)
-impl core::clone::Clone for vm_state::MsrBlock
-pub fn vm_state::MsrBlock::clone(&self) -> vm_state::MsrBlock
-impl core::cmp::Eq for vm_state::MsrBlock
-impl core::cmp::PartialEq for vm_state::MsrBlock
-pub fn vm_state::MsrBlock::eq(&self, &vm_state::MsrBlock) -> bool
-impl core::default::Default for vm_state::MsrBlock
-pub fn vm_state::MsrBlock::default() -> vm_state::MsrBlock
-impl core::fmt::Debug for vm_state::MsrBlock
-pub fn vm_state::MsrBlock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for vm_state::MsrBlock
-impl core::marker::Freeze for vm_state::MsrBlock
-impl core::marker::Send for vm_state::MsrBlock
-impl core::marker::Sync for vm_state::MsrBlock
-impl core::marker::Unpin for vm_state::MsrBlock
-impl core::marker::UnsafeUnpin for vm_state::MsrBlock
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::MsrBlock
-impl core::panic::unwind_safe::UnwindSafe for vm_state::MsrBlock
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::MsrBlock where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::MsrBlock where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::MsrBlock where U: core::convert::From<T>
-pub fn vm_state::MsrBlock::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::MsrBlock where U: core::convert::Into<T>
-pub type vm_state::MsrBlock::Error = core::convert::Infallible
-pub fn vm_state::MsrBlock::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::MsrBlock where U: core::convert::TryFrom<T>
-pub type vm_state::MsrBlock::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::MsrBlock::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::MsrBlock where T: core::clone::Clone
-pub type vm_state::MsrBlock::Owned = T
-pub fn vm_state::MsrBlock::clone_into(&self, &mut T)
-pub fn vm_state::MsrBlock::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::MsrBlock where T: 'static + ?core::marker::Sized
-pub fn vm_state::MsrBlock::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::MsrBlock where T: ?core::marker::Sized
-pub fn vm_state::MsrBlock::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::MsrBlock where T: ?core::marker::Sized
-pub fn vm_state::MsrBlock::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::MsrBlock where T: core::clone::Clone
-pub unsafe fn vm_state::MsrBlock::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::MsrBlock
-pub fn vm_state::MsrBlock::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::MsrBlock where T: ?core::marker::Sized
 pub struct vm_state::Segment
 pub vm_state::Segment::base: u64
 pub vm_state::Segment::flags: u8
@@ -605,142 +90,14 @@ pub vm_state::Segment::limit: u32
 pub vm_state::Segment::present_dpl_s: u8
 pub vm_state::Segment::selector: u16
 pub vm_state::Segment::type_: u8
-impl core::clone::Clone for vm_state::Segment
-pub fn vm_state::Segment::clone(&self) -> vm_state::Segment
-impl core::cmp::Eq for vm_state::Segment
-impl core::cmp::PartialEq for vm_state::Segment
-pub fn vm_state::Segment::eq(&self, &vm_state::Segment) -> bool
-impl core::default::Default for vm_state::Segment
-pub fn vm_state::Segment::default() -> vm_state::Segment
-impl core::fmt::Debug for vm_state::Segment
-pub fn vm_state::Segment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Segment
-impl core::marker::StructuralPartialEq for vm_state::Segment
-impl core::marker::Freeze for vm_state::Segment
-impl core::marker::Send for vm_state::Segment
-impl core::marker::Sync for vm_state::Segment
-impl core::marker::Unpin for vm_state::Segment
-impl core::marker::UnsafeUnpin for vm_state::Segment
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Segment
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Segment
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Segment where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Segment where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Segment where U: core::convert::From<T>
-pub fn vm_state::Segment::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Segment where U: core::convert::Into<T>
-pub type vm_state::Segment::Error = core::convert::Infallible
-pub fn vm_state::Segment::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Segment where U: core::convert::TryFrom<T>
-pub type vm_state::Segment::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Segment::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Segment where T: core::clone::Clone
-pub type vm_state::Segment::Owned = T
-pub fn vm_state::Segment::clone_into(&self, &mut T)
-pub fn vm_state::Segment::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Segment where T: 'static + ?core::marker::Sized
-pub fn vm_state::Segment::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Segment where T: ?core::marker::Sized
-pub fn vm_state::Segment::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Segment where T: ?core::marker::Sized
-pub fn vm_state::Segment::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Segment where T: core::clone::Clone
-pub unsafe fn vm_state::Segment::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Segment
-pub fn vm_state::Segment::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Segment where T: ?core::marker::Sized
 pub struct vm_state::TimerEntry
 pub vm_state::TimerEntry::deadline_vns: u64
 pub vm_state::TimerEntry::period_vns: u64
 pub vm_state::TimerEntry::seq: u64
 pub vm_state::TimerEntry::token: u64
-impl core::clone::Clone for vm_state::TimerEntry
-pub fn vm_state::TimerEntry::clone(&self) -> vm_state::TimerEntry
-impl core::cmp::Eq for vm_state::TimerEntry
-impl core::cmp::PartialEq for vm_state::TimerEntry
-pub fn vm_state::TimerEntry::eq(&self, &vm_state::TimerEntry) -> bool
-impl core::default::Default for vm_state::TimerEntry
-pub fn vm_state::TimerEntry::default() -> vm_state::TimerEntry
-impl core::fmt::Debug for vm_state::TimerEntry
-pub fn vm_state::TimerEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::TimerEntry
-impl core::marker::StructuralPartialEq for vm_state::TimerEntry
-impl core::marker::Freeze for vm_state::TimerEntry
-impl core::marker::Send for vm_state::TimerEntry
-impl core::marker::Sync for vm_state::TimerEntry
-impl core::marker::Unpin for vm_state::TimerEntry
-impl core::marker::UnsafeUnpin for vm_state::TimerEntry
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::TimerEntry
-impl core::panic::unwind_safe::UnwindSafe for vm_state::TimerEntry
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::TimerEntry where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::TimerEntry where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::TimerEntry where U: core::convert::From<T>
-pub fn vm_state::TimerEntry::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::TimerEntry where U: core::convert::Into<T>
-pub type vm_state::TimerEntry::Error = core::convert::Infallible
-pub fn vm_state::TimerEntry::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::TimerEntry where U: core::convert::TryFrom<T>
-pub type vm_state::TimerEntry::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::TimerEntry::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::TimerEntry where T: core::clone::Clone
-pub type vm_state::TimerEntry::Owned = T
-pub fn vm_state::TimerEntry::clone_into(&self, &mut T)
-pub fn vm_state::TimerEntry::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::TimerEntry where T: 'static + ?core::marker::Sized
-pub fn vm_state::TimerEntry::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::TimerEntry where T: ?core::marker::Sized
-pub fn vm_state::TimerEntry::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::TimerEntry where T: ?core::marker::Sized
-pub fn vm_state::TimerEntry::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::TimerEntry where T: core::clone::Clone
-pub unsafe fn vm_state::TimerEntry::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::TimerEntry
-pub fn vm_state::TimerEntry::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::TimerEntry where T: ?core::marker::Sized
 pub struct vm_state::TimerQueueState
 pub vm_state::TimerQueueState::entries: alloc::vec::Vec<vm_state::TimerEntry>
 pub vm_state::TimerQueueState::next_seq: u64
-impl core::clone::Clone for vm_state::TimerQueueState
-pub fn vm_state::TimerQueueState::clone(&self) -> vm_state::TimerQueueState
-impl core::cmp::Eq for vm_state::TimerQueueState
-impl core::cmp::PartialEq for vm_state::TimerQueueState
-pub fn vm_state::TimerQueueState::eq(&self, &vm_state::TimerQueueState) -> bool
-impl core::default::Default for vm_state::TimerQueueState
-pub fn vm_state::TimerQueueState::default() -> vm_state::TimerQueueState
-impl core::fmt::Debug for vm_state::TimerQueueState
-pub fn vm_state::TimerQueueState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for vm_state::TimerQueueState
-impl core::marker::Freeze for vm_state::TimerQueueState
-impl core::marker::Send for vm_state::TimerQueueState
-impl core::marker::Sync for vm_state::TimerQueueState
-impl core::marker::Unpin for vm_state::TimerQueueState
-impl core::marker::UnsafeUnpin for vm_state::TimerQueueState
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::TimerQueueState
-impl core::panic::unwind_safe::UnwindSafe for vm_state::TimerQueueState
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::TimerQueueState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::TimerQueueState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::TimerQueueState where U: core::convert::From<T>
-pub fn vm_state::TimerQueueState::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::TimerQueueState where U: core::convert::Into<T>
-pub type vm_state::TimerQueueState::Error = core::convert::Infallible
-pub fn vm_state::TimerQueueState::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::TimerQueueState where U: core::convert::TryFrom<T>
-pub type vm_state::TimerQueueState::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::TimerQueueState::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::TimerQueueState where T: core::clone::Clone
-pub type vm_state::TimerQueueState::Owned = T
-pub fn vm_state::TimerQueueState::clone_into(&self, &mut T)
-pub fn vm_state::TimerQueueState::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::TimerQueueState where T: 'static + ?core::marker::Sized
-pub fn vm_state::TimerQueueState::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::TimerQueueState where T: ?core::marker::Sized
-pub fn vm_state::TimerQueueState::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::TimerQueueState where T: ?core::marker::Sized
-pub fn vm_state::TimerQueueState::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::TimerQueueState where T: core::clone::Clone
-pub unsafe fn vm_state::TimerQueueState::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::TimerQueueState
-pub fn vm_state::TimerQueueState::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::TimerQueueState where T: ?core::marker::Sized
 pub struct vm_state::VcpuEvents
 pub vm_state::VcpuEvents::exception_error_code: u32
 pub vm_state::VcpuEvents::exception_pending: bool
@@ -748,49 +105,6 @@ pub vm_state::VcpuEvents::exception_vector: u8
 pub vm_state::VcpuEvents::interrupt_shadow: u8
 pub vm_state::VcpuEvents::nmi_pending: bool
 pub vm_state::VcpuEvents::smi_pending: bool
-impl core::clone::Clone for vm_state::VcpuEvents
-pub fn vm_state::VcpuEvents::clone(&self) -> vm_state::VcpuEvents
-impl core::cmp::Eq for vm_state::VcpuEvents
-impl core::cmp::PartialEq for vm_state::VcpuEvents
-pub fn vm_state::VcpuEvents::eq(&self, &vm_state::VcpuEvents) -> bool
-impl core::default::Default for vm_state::VcpuEvents
-pub fn vm_state::VcpuEvents::default() -> vm_state::VcpuEvents
-impl core::fmt::Debug for vm_state::VcpuEvents
-pub fn vm_state::VcpuEvents::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::VcpuEvents
-impl core::marker::StructuralPartialEq for vm_state::VcpuEvents
-impl core::marker::Freeze for vm_state::VcpuEvents
-impl core::marker::Send for vm_state::VcpuEvents
-impl core::marker::Sync for vm_state::VcpuEvents
-impl core::marker::Unpin for vm_state::VcpuEvents
-impl core::marker::UnsafeUnpin for vm_state::VcpuEvents
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::VcpuEvents
-impl core::panic::unwind_safe::UnwindSafe for vm_state::VcpuEvents
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::VcpuEvents where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::VcpuEvents where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::VcpuEvents where U: core::convert::From<T>
-pub fn vm_state::VcpuEvents::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::VcpuEvents where U: core::convert::Into<T>
-pub type vm_state::VcpuEvents::Error = core::convert::Infallible
-pub fn vm_state::VcpuEvents::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::VcpuEvents where U: core::convert::TryFrom<T>
-pub type vm_state::VcpuEvents::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::VcpuEvents::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::VcpuEvents where T: core::clone::Clone
-pub type vm_state::VcpuEvents::Owned = T
-pub fn vm_state::VcpuEvents::clone_into(&self, &mut T)
-pub fn vm_state::VcpuEvents::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::VcpuEvents where T: 'static + ?core::marker::Sized
-pub fn vm_state::VcpuEvents::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::VcpuEvents where T: ?core::marker::Sized
-pub fn vm_state::VcpuEvents::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::VcpuEvents where T: ?core::marker::Sized
-pub fn vm_state::VcpuEvents::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::VcpuEvents where T: core::clone::Clone
-pub unsafe fn vm_state::VcpuEvents::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::VcpuEvents
-pub fn vm_state::VcpuEvents::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::VcpuEvents where T: ?core::marker::Sized
 pub struct vm_state::VcpuRegs
 pub vm_state::VcpuRegs::r10: u64
 pub vm_state::VcpuRegs::r11: u64
@@ -810,49 +124,6 @@ pub vm_state::VcpuRegs::rflags: u64
 pub vm_state::VcpuRegs::rip: u64
 pub vm_state::VcpuRegs::rsi: u64
 pub vm_state::VcpuRegs::rsp: u64
-impl core::clone::Clone for vm_state::VcpuRegs
-pub fn vm_state::VcpuRegs::clone(&self) -> vm_state::VcpuRegs
-impl core::cmp::Eq for vm_state::VcpuRegs
-impl core::cmp::PartialEq for vm_state::VcpuRegs
-pub fn vm_state::VcpuRegs::eq(&self, &vm_state::VcpuRegs) -> bool
-impl core::default::Default for vm_state::VcpuRegs
-pub fn vm_state::VcpuRegs::default() -> vm_state::VcpuRegs
-impl core::fmt::Debug for vm_state::VcpuRegs
-pub fn vm_state::VcpuRegs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::VcpuRegs
-impl core::marker::StructuralPartialEq for vm_state::VcpuRegs
-impl core::marker::Freeze for vm_state::VcpuRegs
-impl core::marker::Send for vm_state::VcpuRegs
-impl core::marker::Sync for vm_state::VcpuRegs
-impl core::marker::Unpin for vm_state::VcpuRegs
-impl core::marker::UnsafeUnpin for vm_state::VcpuRegs
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::VcpuRegs
-impl core::panic::unwind_safe::UnwindSafe for vm_state::VcpuRegs
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::VcpuRegs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::VcpuRegs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::VcpuRegs where U: core::convert::From<T>
-pub fn vm_state::VcpuRegs::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::VcpuRegs where U: core::convert::Into<T>
-pub type vm_state::VcpuRegs::Error = core::convert::Infallible
-pub fn vm_state::VcpuRegs::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::VcpuRegs where U: core::convert::TryFrom<T>
-pub type vm_state::VcpuRegs::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::VcpuRegs::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::VcpuRegs where T: core::clone::Clone
-pub type vm_state::VcpuRegs::Owned = T
-pub fn vm_state::VcpuRegs::clone_into(&self, &mut T)
-pub fn vm_state::VcpuRegs::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::VcpuRegs where T: 'static + ?core::marker::Sized
-pub fn vm_state::VcpuRegs::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::VcpuRegs where T: ?core::marker::Sized
-pub fn vm_state::VcpuRegs::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::VcpuRegs where T: ?core::marker::Sized
-pub fn vm_state::VcpuRegs::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::VcpuRegs where T: core::clone::Clone
-pub unsafe fn vm_state::VcpuRegs::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::VcpuRegs
-pub fn vm_state::VcpuRegs::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::VcpuRegs where T: ?core::marker::Sized
 pub struct vm_state::VcpuSregs
 pub vm_state::VcpuSregs::apic_base: u64
 pub vm_state::VcpuSregs::cr0: u64
@@ -873,49 +144,6 @@ pub vm_state::VcpuSregs::idt_limit: u16
 pub vm_state::VcpuSregs::ldt: vm_state::Segment
 pub vm_state::VcpuSregs::ss: vm_state::Segment
 pub vm_state::VcpuSregs::tr: vm_state::Segment
-impl core::clone::Clone for vm_state::VcpuSregs
-pub fn vm_state::VcpuSregs::clone(&self) -> vm_state::VcpuSregs
-impl core::cmp::Eq for vm_state::VcpuSregs
-impl core::cmp::PartialEq for vm_state::VcpuSregs
-pub fn vm_state::VcpuSregs::eq(&self, &vm_state::VcpuSregs) -> bool
-impl core::default::Default for vm_state::VcpuSregs
-pub fn vm_state::VcpuSregs::default() -> vm_state::VcpuSregs
-impl core::fmt::Debug for vm_state::VcpuSregs
-pub fn vm_state::VcpuSregs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::VcpuSregs
-impl core::marker::StructuralPartialEq for vm_state::VcpuSregs
-impl core::marker::Freeze for vm_state::VcpuSregs
-impl core::marker::Send for vm_state::VcpuSregs
-impl core::marker::Sync for vm_state::VcpuSregs
-impl core::marker::Unpin for vm_state::VcpuSregs
-impl core::marker::UnsafeUnpin for vm_state::VcpuSregs
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::VcpuSregs
-impl core::panic::unwind_safe::UnwindSafe for vm_state::VcpuSregs
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::VcpuSregs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::VcpuSregs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::VcpuSregs where U: core::convert::From<T>
-pub fn vm_state::VcpuSregs::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::VcpuSregs where U: core::convert::Into<T>
-pub type vm_state::VcpuSregs::Error = core::convert::Infallible
-pub fn vm_state::VcpuSregs::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::VcpuSregs where U: core::convert::TryFrom<T>
-pub type vm_state::VcpuSregs::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::VcpuSregs::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::VcpuSregs where T: core::clone::Clone
-pub type vm_state::VcpuSregs::Owned = T
-pub fn vm_state::VcpuSregs::clone_into(&self, &mut T)
-pub fn vm_state::VcpuSregs::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::VcpuSregs where T: 'static + ?core::marker::Sized
-pub fn vm_state::VcpuSregs::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::VcpuSregs where T: ?core::marker::Sized
-pub fn vm_state::VcpuSregs::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::VcpuSregs where T: ?core::marker::Sized
-pub fn vm_state::VcpuSregs::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::VcpuSregs where T: core::clone::Clone
-pub unsafe fn vm_state::VcpuSregs::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::VcpuSregs
-pub fn vm_state::VcpuSregs::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::VcpuSregs where T: ?core::marker::Sized
 pub struct vm_state::VmState
 pub vm_state::VmState::contract_hash: [u8; 32]
 pub vm_state::VmState::debugregs: vm_state::DebugRegs
@@ -934,16 +162,6 @@ impl vm_state::VmState
 pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<vm_state::VmState, vm_state::VmStateError>
 pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
 pub fn vm_state::VmState::peek_version(&[u8]) -> core::result::Result<u16, vm_state::VmStateError>
-impl core::clone::Clone for vm_state::VmState
-pub fn vm_state::VmState::clone(&self) -> vm_state::VmState
-impl core::cmp::Eq for vm_state::VmState
-impl core::cmp::PartialEq for vm_state::VmState
-pub fn vm_state::VmState::eq(&self, &vm_state::VmState) -> bool
-impl core::default::Default for vm_state::VmState
-pub fn vm_state::VmState::default() -> vm_state::VmState
-impl core::fmt::Debug for vm_state::VmState
-pub fn vm_state::VmState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for vm_state::VmState
 impl vm_state::SnapshotRecords for vm_state::VmState
 pub const vm_state::VmState::ARCH_TAG: u16
 pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<Self, vm_state::VmStateError>
@@ -951,173 +169,13 @@ pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<
 pub fn vm_state::VmState::entropy_bytes(&self) -> &[u8]
 pub fn vm_state::VmState::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::VmState::vtime(&self) -> &vm_state::VtimeState
-impl core::marker::Freeze for vm_state::VmState
-impl core::marker::Send for vm_state::VmState
-impl core::marker::Sync for vm_state::VmState
-impl core::marker::Unpin for vm_state::VmState
-impl core::marker::UnsafeUnpin for vm_state::VmState
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::VmState
-impl core::panic::unwind_safe::UnwindSafe for vm_state::VmState
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::VmState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::VmState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::VmState where U: core::convert::From<T>
-pub fn vm_state::VmState::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::VmState where U: core::convert::Into<T>
-pub type vm_state::VmState::Error = core::convert::Infallible
-pub fn vm_state::VmState::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::VmState where U: core::convert::TryFrom<T>
-pub type vm_state::VmState::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::VmState::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::VmState where T: core::clone::Clone
-pub type vm_state::VmState::Owned = T
-pub fn vm_state::VmState::clone_into(&self, &mut T)
-pub fn vm_state::VmState::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::VmState where T: 'static + ?core::marker::Sized
-pub fn vm_state::VmState::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::VmState where T: ?core::marker::Sized
-pub fn vm_state::VmState::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::VmState where T: ?core::marker::Sized
-pub fn vm_state::VmState::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::VmState where T: core::clone::Clone
-pub unsafe fn vm_state::VmState::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::VmState
-pub fn vm_state::VmState::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::VmState where T: ?core::marker::Sized
 pub struct vm_state::VtimeState
 pub vm_state::VtimeState::guest_base: u64
 pub vm_state::VtimeState::guest_hz: u64
 pub vm_state::VtimeState::snapshot_vns: u64
-impl core::clone::Clone for vm_state::VtimeState
-pub fn vm_state::VtimeState::clone(&self) -> vm_state::VtimeState
-impl core::cmp::Eq for vm_state::VtimeState
-impl core::cmp::PartialEq for vm_state::VtimeState
-pub fn vm_state::VtimeState::eq(&self, &vm_state::VtimeState) -> bool
-impl core::default::Default for vm_state::VtimeState
-pub fn vm_state::VtimeState::default() -> vm_state::VtimeState
-impl core::fmt::Debug for vm_state::VtimeState
-pub fn vm_state::VtimeState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::VtimeState
-impl core::marker::StructuralPartialEq for vm_state::VtimeState
-impl core::marker::Freeze for vm_state::VtimeState
-impl core::marker::Send for vm_state::VtimeState
-impl core::marker::Sync for vm_state::VtimeState
-impl core::marker::Unpin for vm_state::VtimeState
-impl core::marker::UnsafeUnpin for vm_state::VtimeState
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::VtimeState
-impl core::panic::unwind_safe::UnwindSafe for vm_state::VtimeState
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::VtimeState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::VtimeState where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::VtimeState where U: core::convert::From<T>
-pub fn vm_state::VtimeState::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::VtimeState where U: core::convert::Into<T>
-pub type vm_state::VtimeState::Error = core::convert::Infallible
-pub fn vm_state::VtimeState::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::VtimeState where U: core::convert::TryFrom<T>
-pub type vm_state::VtimeState::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::VtimeState::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::VtimeState where T: core::clone::Clone
-pub type vm_state::VtimeState::Owned = T
-pub fn vm_state::VtimeState::clone_into(&self, &mut T)
-pub fn vm_state::VtimeState::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::VtimeState where T: 'static + ?core::marker::Sized
-pub fn vm_state::VtimeState::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::VtimeState where T: ?core::marker::Sized
-pub fn vm_state::VtimeState::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::VtimeState where T: ?core::marker::Sized
-pub fn vm_state::VtimeState::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::VtimeState where T: core::clone::Clone
-pub unsafe fn vm_state::VtimeState::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::VtimeState
-pub fn vm_state::VtimeState::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::VtimeState where T: ?core::marker::Sized
 pub struct vm_state::Xcrs
 pub vm_state::Xcrs::xcr0: u64
-impl core::clone::Clone for vm_state::Xcrs
-pub fn vm_state::Xcrs::clone(&self) -> vm_state::Xcrs
-impl core::cmp::Eq for vm_state::Xcrs
-impl core::cmp::PartialEq for vm_state::Xcrs
-pub fn vm_state::Xcrs::eq(&self, &vm_state::Xcrs) -> bool
-impl core::default::Default for vm_state::Xcrs
-pub fn vm_state::Xcrs::default() -> vm_state::Xcrs
-impl core::fmt::Debug for vm_state::Xcrs
-pub fn vm_state::Xcrs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for vm_state::Xcrs
-impl core::marker::StructuralPartialEq for vm_state::Xcrs
-impl core::marker::Freeze for vm_state::Xcrs
-impl core::marker::Send for vm_state::Xcrs
-impl core::marker::Sync for vm_state::Xcrs
-impl core::marker::Unpin for vm_state::Xcrs
-impl core::marker::UnsafeUnpin for vm_state::Xcrs
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::Xcrs
-impl core::panic::unwind_safe::UnwindSafe for vm_state::Xcrs
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::Xcrs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::Xcrs where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::Xcrs where U: core::convert::From<T>
-pub fn vm_state::Xcrs::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::Xcrs where U: core::convert::Into<T>
-pub type vm_state::Xcrs::Error = core::convert::Infallible
-pub fn vm_state::Xcrs::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::Xcrs where U: core::convert::TryFrom<T>
-pub type vm_state::Xcrs::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::Xcrs::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::Xcrs where T: core::clone::Clone
-pub type vm_state::Xcrs::Owned = T
-pub fn vm_state::Xcrs::clone_into(&self, &mut T)
-pub fn vm_state::Xcrs::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::Xcrs where T: 'static + ?core::marker::Sized
-pub fn vm_state::Xcrs::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::Xcrs where T: ?core::marker::Sized
-pub fn vm_state::Xcrs::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::Xcrs where T: ?core::marker::Sized
-pub fn vm_state::Xcrs::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::Xcrs where T: core::clone::Clone
-pub unsafe fn vm_state::Xcrs::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::Xcrs
-pub fn vm_state::Xcrs::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::Xcrs where T: ?core::marker::Sized
 pub struct vm_state::XsaveImage(pub alloc::vec::Vec<u8>)
-impl core::clone::Clone for vm_state::XsaveImage
-pub fn vm_state::XsaveImage::clone(&self) -> vm_state::XsaveImage
-impl core::cmp::Eq for vm_state::XsaveImage
-impl core::cmp::PartialEq for vm_state::XsaveImage
-pub fn vm_state::XsaveImage::eq(&self, &vm_state::XsaveImage) -> bool
-impl core::default::Default for vm_state::XsaveImage
-pub fn vm_state::XsaveImage::default() -> vm_state::XsaveImage
-impl core::fmt::Debug for vm_state::XsaveImage
-pub fn vm_state::XsaveImage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for vm_state::XsaveImage
-impl core::marker::Freeze for vm_state::XsaveImage
-impl core::marker::Send for vm_state::XsaveImage
-impl core::marker::Sync for vm_state::XsaveImage
-impl core::marker::Unpin for vm_state::XsaveImage
-impl core::marker::UnsafeUnpin for vm_state::XsaveImage
-impl core::panic::unwind_safe::RefUnwindSafe for vm_state::XsaveImage
-impl core::panic::unwind_safe::UnwindSafe for vm_state::XsaveImage
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Initialized, zerocopy::pointer::invariant::Initialized> for vm_state::XsaveImage where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<ST, DT> zerocopy::pointer::invariant::CastableFrom<ST, zerocopy::pointer::invariant::Uninit, zerocopy::pointer::invariant::Uninit> for vm_state::XsaveImage where ST: ?core::marker::Sized, DT: ?core::marker::Sized
-impl<T, U> core::convert::Into<U> for vm_state::XsaveImage where U: core::convert::From<T>
-pub fn vm_state::XsaveImage::into(self) -> U
-impl<T, U> core::convert::TryFrom<U> for vm_state::XsaveImage where U: core::convert::Into<T>
-pub type vm_state::XsaveImage::Error = core::convert::Infallible
-pub fn vm_state::XsaveImage::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
-impl<T, U> core::convert::TryInto<U> for vm_state::XsaveImage where U: core::convert::TryFrom<T>
-pub type vm_state::XsaveImage::Error = <U as core::convert::TryFrom<T>>::Error
-pub fn vm_state::XsaveImage::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
-impl<T> alloc::borrow::ToOwned for vm_state::XsaveImage where T: core::clone::Clone
-pub type vm_state::XsaveImage::Owned = T
-pub fn vm_state::XsaveImage::clone_into(&self, &mut T)
-pub fn vm_state::XsaveImage::to_owned(&self) -> T
-impl<T> core::any::Any for vm_state::XsaveImage where T: 'static + ?core::marker::Sized
-pub fn vm_state::XsaveImage::type_id(&self) -> core::any::TypeId
-impl<T> core::borrow::Borrow<T> for vm_state::XsaveImage where T: ?core::marker::Sized
-pub fn vm_state::XsaveImage::borrow(&self) -> &T
-impl<T> core::borrow::BorrowMut<T> for vm_state::XsaveImage where T: ?core::marker::Sized
-pub fn vm_state::XsaveImage::borrow_mut(&mut self) -> &mut T
-impl<T> core::clone::CloneToUninit for vm_state::XsaveImage where T: core::clone::Clone
-pub unsafe fn vm_state::XsaveImage::clone_to_uninit(&self, *mut u8)
-impl<T> core::convert::From<T> for vm_state::XsaveImage
-pub fn vm_state::XsaveImage::from(T) -> T
-impl<T> zerocopy::pointer::invariant::Read<zerocopy::pointer::invariant::Exclusive, zerocopy::pointer::invariant::BecauseExclusive> for vm_state::XsaveImage where T: ?core::marker::Sized
 pub const vm_state::ARCH_AARCH64: u16
 pub const vm_state::ARCH_X86_64: u16
 pub const vm_state::VM_STATE_MAGIC: u32
