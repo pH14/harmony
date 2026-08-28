@@ -32,8 +32,8 @@
 //! ## `run_to` granularity (a deliberate, documented limitation)
 //!
 //! A C1 payload is a short bare-metal program that always runs to a terminal
-//! (`isa-debug-exit` / `HLT`); intra-run V-time work-targeting (stopping the vCPU
-//! at an arbitrary work count) needs the `run_to_deadline` deadline path, a later phase.
+//! (`isa-debug-exit` / `HLT`); exit-count virtual time has no instruction-level
+//! intra-run stop, so [`CorpusMachine::run_to`] cannot target an arbitrary point.
 //! So [`CorpusMachine::run_to`] runs the payload to terminal on its first call and
 //! then reports [`RunOutcome::Halted`] — the same shape as the M2 adapter
 //! (`tests/live_m1_m2.rs`). This is exactly what the determinism oracle needs: two

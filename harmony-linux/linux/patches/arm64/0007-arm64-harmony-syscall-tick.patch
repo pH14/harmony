@@ -22,7 +22,7 @@ repository's designated guest-kernel patch exception.
  #define HARMONY_CLOCKEVENT_DISARM	1U
  #define HARMONY_CLOCKEVENT_ACK		2U
 +#define HARMONY_VIRTUAL_TIME_TICK	0x20
- #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* host caps delta at 100M work */
+ #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* bounded deterministic handshake */
  #define HARMONY_PVCLOCK_ABI		1U
  #define HARMONY_FLAG_MATERIALIZED	(1U << 0)
 @@ -203,3 +204,14 @@ void harmony_arm_clockevent_ack(void)

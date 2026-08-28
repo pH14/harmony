@@ -221,7 +221,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_to_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_with_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -283,7 +283,7 @@ fn seal_with_retry<B: Backend<A = X86>>(
             Ok(Reply::Snapshot { id, .. }) => return (id, vt, t0.elapsed()),
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
-                match run_to_deadline(s, vt.saturating_add(step)) {
+                match run_with_deadline(s, vt.saturating_add(step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -327,12 +327,12 @@ fn capture_arm(
     let delta = env_u64("DR_DELTA_VNS", 5_000_000);
     let step = env_u64("DR_SNAP_STEP", 1_000_000);
 
-    let vt0 = match run_to_deadline(&mut s, run_vns) {
+    let vt0 = match run_with_deadline(&mut s, run_vns) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to the first seal point ended early: {other:?}"),
     };
     let (first, vt1, d1) = seal_with_retry(&mut s, vt0, step);
-    let vt1b = match run_to_deadline(&mut s, vt1.saturating_add(delta)) {
+    let vt1b = match run_with_deadline(&mut s, vt1.saturating_add(delta)) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run between seals ended early: {other:?}"),
     };
@@ -371,7 +371,7 @@ fn a0_dirty_logging_is_guest_inert() {
             expect_ok(&mut s, &Request::Hello(server_caps())),
             Reply::Hello(server_caps())
         );
-        let vt = match run_to_deadline(&mut s, deadline) {
+        let vt = match run_with_deadline(&mut s, deadline) {
             StopReason::Deadline { vtime } => vtime.0,
             other => panic!("a0 run ended before the deadline: {other:?}"),
         };
@@ -470,7 +470,7 @@ fn b_remap_and_memcpy_restores_agree() {
     let run_vns = env_u64("DR_RUN_VNS", 20_000_000);
     let delta = env_u64("DR_DELTA_VNS", 5_000_000);
     let step = env_u64("DR_SNAP_STEP", 1_000_000);
-    let vt0 = match run_to_deadline(&mut s, run_vns) {
+    let vt0 = match run_with_deadline(&mut s, run_vns) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to the seal point ended early: {other:?}"),
     };
@@ -498,7 +498,7 @@ fn b_remap_and_memcpy_restores_agree() {
             .vmm()
             .expect("live after branch")
             .ram_backing_is_snapshot();
-        let stop = run_to_deadline(s, vt1.saturating_add(delta));
+        let stop = run_with_deadline(s, vt1.saturating_add(delta));
         (mapping_backed, stop, hash_whole(s), branch_wall)
     };
 

@@ -918,7 +918,7 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
 
 /// VirtualTime WFI uses `IdlePlanner` to land exactly on the paravirtual
 /// clockevent deadline, raises the clockevent PPI at that same normalized event, and never
-/// asks the backend for an unsupported mid-stream `run_to_deadline` stop.
+/// asks the backend for an unsupported mid-stream `run_with_deadline` stop.
 #[test]
 fn arm64_virtual_time_wfi_jumps_to_the_clockevent_deadline() {
     use vmm_backend::Gpa;

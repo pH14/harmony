@@ -15,7 +15,7 @@
 # tick never fired → the Go scheduler never ran → the container reached "created"
 # but its init never execed the command (a deadlock). Task 47 made the V-time LAPIC
 # timer **preempt** a busy-spinning thread at the seed-deterministic V-time deadline
-# (`run_to_deadline` = exit-count advancement to the next VM-exit boundary), which
+# (`run_with_deadline` = exit-count advancement to the next VM-exit boundary), which
 # the VMM run-loop now drives automatically on the patched Linux boot. So the Go
 # runtime is preempted on time, the scheduler runs, the create→exec handshake
 # completes, and the **real `runc`** runs the container — deterministically, because

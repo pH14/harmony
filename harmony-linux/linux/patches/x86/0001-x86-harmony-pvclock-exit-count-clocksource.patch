@@ -10,8 +10,8 @@ the harmony vmm appends when it offers the page — one image serves as both the
 page-on and page-off measurement arm. Registration rides the hypercall
 doorbell (service 7 op 1), one-shot per the ABI ruling, bracketed by two
 deliberate rdtsc traps: an anchor-freshener before ringing, and the REQUIRED
-post-doorbell handshake rdtsc that the host stamps the page and arms its Δ
-refresh from (the OUT only records a pending registration — r8 handshake
+post-doorbell handshake rdtsc where the host lays the canonical first stamp
+(the OUT only records a pending registration — r8 handshake
 ruling).
 
 On assigned-at-exit (VM-exit-count V-time) stock hosts, rdtsc does not trap:
@@ -402,10 +402,10 @@ the flag, so pinned images restore without observable effect.
 + *
 + * Shaped like kvmclock with the interpolation DELETED: the page carries a
 + * finished V-time value (vns, nanoseconds) and a finished virtual counter
-+ * (guest_clock), both pure functions of work performed — the read path is a
++ * (guest_clock), both pure functions of serviced VM exits — the read path is a
 + * seqlock-guarded page load and NOTHING else. There is no rdtsc term here at
 + * all: between two host refreshes the clock is piecewise-constant by design
-+ * (the host bounds the staleness at its Δ refresh window), and any raw rdtsc
++ * (the host republishes at serviced exits), and any raw rdtsc
 + * anywhere else in the system still traps to the hypervisor and returns the
 + * same exit-count-derived value (the enforcement backstop).
 + *
@@ -635,9 +635,8 @@ the flag, so pinned images restore without observable effect.
 +	/*
 +	 * One raw rdtsc immediately before ringing — deliberately: on an
 +	 * rdtsc-intercepting host it traps as a V-time intercept, which
-+	 * refreshes the host's exit-boundary variability-free anchor to within a few branches of
-+	 * this point, keeping the anchor fresh across the doorbell OUT (the
-+	 * page stamp and Δ arm happen at the REQUIRED post-registration
++	 * refreshes the host's deterministic anchor immediately before the
++	 * doorbell OUT (the page stamp happens at the REQUIRED post-registration
 +	 * handshake rdtsc below; the OUT itself is a PIO, not an intercept).
 +	 * On an assigned-at-exit stock host rdtsc does not trap: this read
 +	 * executes natively, its value is discarded, and the OUT itself both
@@ -705,20 +704,20 @@ the flag, so pinned images restore without observable effect.
 +	 * The REGISTRATION HANDSHAKE (harmony PARAVIRT-CLOCK.md §3.1, the r8
 +	 * ruling). On an rdtsc-intercepting host the doorbell OUT above only
 +	 * records a *pending* registration; the host lays down the first
-+	 * (canonical) page stamp and arms its Δ forced refresh **only** at the
++	 * (canonical) page stamp **only** at the
 +	 * first V-time intercept after the OUT — the OUT is a PIO, not an
 +	 * intercept, so its counter read is exit-boundary variability-tainted and the pre-OUT anchor
 +	 * may be stale. This deliberate rdtsc IS that intercept: REQUIRED
-+	 * PROTOCOL, not a courtesy. Its trap is exit-boundary variability-free, so the host stamps +
-+	 * arms off a fresh, current anchor (never born overdue). It MUST precede
++	 * PROTOCOL, not a courtesy. Its trap gives the host a fresh deterministic
++	 * anchor. It MUST precede
 +	 * the ABI validation below: the validation reads the page's
 +	 * abi_version/flags, which the host writes no later than this handshake,
 +	 * so a guest that validated first could see an unstamped page and refuse
 +	 * it. A guest that omits the handshake is out of contract: its page stays
-+	 * unstamped and no refresh arms.
++	 * unstamped.
 +	 *
-+	 * On an assigned-at-exit stock host there is no rdtsc intercept and no Δ
-+	 * anchor: the OUT itself armed the registration and stamped the page (the
++	 * On an assigned-at-exit stock host there is no rdtsc intercept: the OUT
++	 * itself completed registration and stamped the page (the
 +	 * whole clock is a pure function of the exit stream, so there is no exit-boundary variability
 +	 * to avoid), and this read executes natively with its value discarded —
 +	 * the validation below then sees the already-stamped page. One flow

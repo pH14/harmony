@@ -171,7 +171,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_to_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_with_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -228,7 +228,7 @@ fn seal<B: Backend<A = X86>>(
                     attempts < 100_000,
                     "no snapshottable boundary within budget"
                 );
-                match run_to_deadline(s, vt.saturating_add(retry_step)) {
+                match run_with_deadline(s, vt.saturating_add(retry_step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -255,7 +255,7 @@ fn replay_to_late<B: Backend<A = X86>>(
         Reply::Unit,
         "replay(original snapshot)"
     );
-    match run_to_deadline(s, late) {
+    match run_with_deadline(s, late) {
         StopReason::Deadline { .. } => {}
         other => panic!("continuing the original to `late` stopped non-Deadline: {other:?}"),
     }
@@ -295,7 +295,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     // 1. Seal genesis, then run to a mid-workload point and seal the ORIGINAL
     //    snapshot `mid_snap` — the timeline the improvisation forks off (untainted).
     let retry_step = env_u64("EI_GENESIS_STEP", 1_000_000);
-    let vt0 = match run_to_deadline(&mut s, 0) {
+    let vt0 = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("vtime probe stopped non-Deadline: {other:?}"),
     };
@@ -314,7 +314,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
         Reply::Unit
     );
     let mid_target = genesis_vt + env_u64("EI_MID", 8_000_000);
-    let vt_mid = match run_to_deadline(&mut s, mid_target) {
+    let vt_mid = match run_with_deadline(&mut s, mid_target) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to mid stopped non-Deadline: {other:?}"),
     };
@@ -402,7 +402,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     //      snapshottable point FIRST — staying on the (still-tainted) timeline;
     //      running forward never clears taint. A Quiescent stop (the shell going
     //      idle after the command) is itself a sealable boundary, so tolerate it.
-    let mut vt_fork = match run_to_deadline(&mut s, 0) {
+    let mut vt_fork = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("post-exec position probe stopped non-Deadline: {other:?}"),
     };
@@ -417,7 +417,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
                     tries < 100_000,
                     "exec'd fork never reached a snapshottable boundary"
                 );
-                match run_to_deadline(&mut s, vt_fork.saturating_add(retry_step)) {
+                match run_with_deadline(&mut s, vt_fork.saturating_add(retry_step)) {
                     StopReason::Deadline { vtime } | StopReason::Quiescent { vtime } => {
                         vt_fork = vtime.0
                     }
@@ -511,7 +511,7 @@ fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
 
     // Seal genesis, run to a mid point, seal it, branch a fork.
     let retry_step = env_u64("EI_GENESIS_STEP", 1_000_000);
-    let vt0 = match run_to_deadline(&mut s, 0) {
+    let vt0 = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("vtime probe stopped non-Deadline: {other:?}"),
     };
@@ -528,7 +528,7 @@ fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
         Reply::Unit
     );
     let mid_target = genesis_vt + env_u64("EI_MID", 8_000_000);
-    let vt_mid = match run_to_deadline(&mut s, mid_target) {
+    let vt_mid = match run_with_deadline(&mut s, mid_target) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to mid stopped non-Deadline: {other:?}"),
     };

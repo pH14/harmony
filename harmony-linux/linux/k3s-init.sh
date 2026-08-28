@@ -11,7 +11,7 @@
 # kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
 # flannel are all Go/multi-goroutine services that busy-spin and depend on
 # preemption. The V-time LAPIC timer PREEMPTS a busy-spinning thread at the
-# seed-deterministic V-time deadline (run_to_deadline), the idle-HLT resume warps to the
+# seed-deterministic V-time deadline (run_with_deadline), the idle-HLT resume warps to the
 # next deadline (task 52), and the xAPIC MMIO is routed to the deterministic LAPIC
 # model (task 54). So the Go schedulers run, timers/watches/leases fire, and the
 # cluster converges — deterministically, because every preemption instant is a

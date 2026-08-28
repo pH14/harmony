@@ -308,7 +308,7 @@ install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
 # default /init for comparison). It `runc run`s the SAME /oci bundle generated above
 # — the config.json `runc spec` already wrote is runc-ready (allow-all devices,
 # terminal=false, runs /run-workload.sh). The unlock vs task 38: the Go runtime is
-# now preempted at the V-time LAPIC deadline (task 47 run_to_deadline), so runc's
+# now preempted at the V-time LAPIC deadline (task 47 run_with_deadline), so runc's
 # container-init no longer deadlocks. See runc-init.sh + tasks/48-runc-postgres.md.
 install -m 0755 "$LINUX_DIR/runc-init.sh" "$DKROOT/runc-init"
 

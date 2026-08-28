@@ -494,11 +494,10 @@ pub fn boot_linux_stock_virtual_time(
         super::contract_vclock_config(),
         seed,
     )?);
-    // Offer the task-110 clock page: under virtual_time wiring a pending
-    // registration arms at the doorbell exit itself and the page re-stamps at
-    // serviced-exit tails, so the descriptive Δ `run_to_deadline` bound never applies
-    // (the nonzero value remains part of snapshot identity). The guest opts in
-    // with the `harmony_pvclock` cmdline token.
+    // Offer the task-110 clock page: under virtual-time wiring a pending
+    // registration is completed by the required post-doorbell counter read and
+    // the page re-stamps at serviced-exit tails. The guest opts in with the
+    // `harmony_pvclock` cmdline token.
     vmm.enable_pvclock();
     Ok(vmm)
 }

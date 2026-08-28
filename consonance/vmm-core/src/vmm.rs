@@ -529,8 +529,8 @@ pub(crate) struct NetChannel {
 /// over the hypercall doorbell ([`hypercall_proto::ServiceId::Pvclock`]), after
 /// which the run loop re-stamps the page at every deterministic clock-advance
 /// boundary ([`Vmm::pvclock_refresh`]). A guest that never
-/// registers gets exactly today's behavior — no stamp is ever written and no
-/// deadline is ever armed — and an un-offered composition is byte-for-byte
+/// registers gets exactly today's behavior — no stamp is ever written — and
+/// an un-offered composition is byte-for-byte
 /// unchanged (the doorbell stays default-deny for it).
 ///
 /// **State identity**: the page *bytes* live in guest RAM (already inside
@@ -551,16 +551,16 @@ pub(crate) struct PvclockChannel {
     /// *pending* until the handshake completes ([`armed`](Self::armed)).
     gpa: Option<u64>,
     /// Whether the registration handshake has completed (the r8 ruling). The
-    /// doorbell `OUT` records the GPA (pending); the Δ deadline arms and the
-    /// **first stamp** happen only at the **handshake intercept** — the guest's
+    /// doorbell `OUT` records the GPA (pending); the **first stamp** happens
+    /// only at the **handshake intercept** — the guest's
     /// required post-doorbell V-time intercept (the reference kernel's RDTSC,
     /// now protocol, not courtesy), whose anchor is deterministic by construction.
-    /// Nothing arms in between: a doorbell `OUT` is a PIO, not a V-time
+    /// Nothing publishes in between: a doorbell `OUT` is a PIO, not a V-time
     /// intercept, so arming or stamping off it (or off the possibly-stale
     /// pre-`OUT` anchor) would risk publishing a non-fresh — and, in the
-    /// overdue-deadline case, host-noisy — clock. A guest that never performs
+    /// host-noisy — clock. A guest that never performs
     /// the handshake is **out of contract**: its page stays at the pre-
-    /// registration bytes (stale but deterministic) and no Δ refresh arms.
+    /// registration bytes (stale but deterministic).
     /// Restore sets this `true` directly — a restored VM's anchor is exactly 0,
     /// a synchronized boundary by construction, so it needs no handshake.
     armed: bool,
@@ -793,7 +793,7 @@ where
     /// The task-110 paravirt clock channel, offered per composition by
     /// [`Vmm::enable_pvclock`]. `None` (the default) keeps every existing path
     /// byte-for-byte unchanged — the doorbell stays default-deny for the
-    /// pvclock service, no page is ever stamped, no refresh deadline is armed.
+    /// pvclock service and no page is ever stamped.
     pub(crate) pvclock: Option<PvclockChannel>,
 }
 
@@ -1247,7 +1247,7 @@ where
 
     /// `true` iff [`effective_vns`](Vmm::effective_vns) is **exact** — the VM is at a
     /// V-time-intercept boundary (`RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED` / a TSC MSR / an
-    /// exact-count `run_to_deadline` `Deadline`, or fresh / just-restored), so
+    /// serviced-exit boundary, an idle warp, or fresh / just-restored), so
     /// `assigned_clock` *is* the current exit count. At any other point (a
     /// terminal `HLT`, a `Shutdown`/debug exit, a serial/MMIO exit) the guest may
     /// have VM exits since the last intercept, so `effective_vns` is only a
@@ -1468,8 +1468,8 @@ where
         // canonical stamp), `armed` is false — but the v4 device record carries the
         // GPA and NOT the pending-vs-armed bit, so `pvclock_commit_restore` would
         // bring a restored child up ARMED. That child would then perform a normal
-        // refresh (and already own a Δ deadline) where the source still owes the
-        // canonical handshake stamp — different page bytes, different future. This
+        // ordinary refresh where the source still owes the canonical handshake
+        // stamp — different page bytes, different future. This
         // is a property of the captured *state* the representable subset cannot
         // hold, so it fails closed here alongside `check_sealable_vcpu` rather than
         // in the boundary predicate. In normal operation a pending registration is
@@ -1907,8 +1907,8 @@ where
         // stays out (diagnostic, like the landing traces).
         if let Some(pv) = &self.pvclock {
             // Preserve the frozen N1 PVCK preimage. N2 removed the configurable
-            // force-exit refresh deadline. Production ARM/x86 compositions used
-            // the value 1; retaining those historical bytes keeps attested state
+            // retired branch-clock refresh configuration. Production ARM/x86
+            // compositions used the value 1; retaining those historical bytes keeps attested state
             // hashes stable without retaining the mechanism or configuration.
             let mut bytes = 1_u64.to_le_bytes().to_vec();
             match pv.gpa {
@@ -1919,8 +1919,8 @@ where
                 None => bytes.push(0),
             }
             // The registration CAPABILITY (V-time wired + a deterministic work
-            // counter), not just the offer (cross-model r6 P1). Two offered VMs
-            // with V-time wired but different `deterministic_clock` backends have
+            // clock), not just the offer (cross-model r6 P1). Two offered VMs
+            // with V-time wired but different deterministic backends have
             // different futures — the next registration succeeds on one and
             // answers `UnknownService` on the other — so they must hash
             // differently, exactly as `registrable` makes them restore-
@@ -1930,7 +1930,7 @@ where
             // The HANDSHAKE state (cross-model r11 P2): a *pending* registration
             // (`armed == false`, between the doorbell `OUT` and the handshake
             // intercept) and an *armed* one have DIFFERENT futures — the pending
-            // one's next synchronized step stamps the page and arms the Δ refresh,
+            // one's next synchronized step lays the canonical page stamp,
             // the armed one refreshes normally — so pending-vs-armed belongs in
             // state identity. (This bit is only ever observed mid-run: a snapshot
             // is taken only at a synchronized point, and a pending registration
@@ -2388,16 +2388,15 @@ where
     /// resumes stamping into the restored RAM's page (the same-state ⇒
     /// same-future half the direct `restore_snapshot` path owes its callers),
     /// and an unregistered record clears any stale-timeline registration
-    /// this VM held (the arrival-deadline stale-arm class). Infallible, per
+    /// this VM held. Infallible, per
     /// the restore commit phase's contract.
     pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&(Option<u64>, bool)>) {
         if let Some(pv) = self.pvclock.as_mut() {
             // A restored VM's anchor is exactly 0 (the virtual-time clock restarts and
             // `restore_vm_state` anchors there — a synchronized boundary by
             // construction), so a restored registration is **already armed**: it
-            // needs no live handshake, and `0 + Δ` is strictly ahead of the
-            // re-baselined counter (never overdue). Only a *registered* record
-            // arms; an unregistered one clears any stale-timeline registration.
+            // needs no live handshake. Only a *registered* record is armed; an
+            // unregistered one clears any stale-timeline registration.
             // Arming every carried GPA is faithful because `save_vm_state` refuses
             // to seal a PENDING (un-armed) registration (r13 P1): a sealed
             // `Some(gpa)` was therefore armed on the source, so the source owed no
@@ -2420,7 +2419,7 @@ where
     /// The diagnostic pvclock refresh log: `(vns, guest_clock)`
     /// per value-publishing stamp, **read back from the page bytes** (never
     /// the computed values — see [`PvclockChannel`]). Empty when nothing is
-    /// registered. The G2/G3 gates' evidence; capped at
+    /// registered. The G2 gate's evidence; capped at
     /// [`PREEMPTION_TRACE_CAP`], not hashed.
     pub fn pvclock_refreshes(&self) -> &[(u64, u64)] {
         self.pvclock
@@ -2551,11 +2550,11 @@ where
     /// `BadRequest` and touching nothing. The stamping target never moves.
     ///
     /// **The doorbell `OUT` only records a PENDING registration (the r8
-    /// handshake ruling).** It does **not** stamp the page and does **not** arm
-    /// the Δ refresh — a doorbell `OUT` is a plain PIO exit, not a V-time
+    /// handshake ruling).** It does **not** stamp the page — a doorbell `OUT`
+    /// is a plain PIO exit, not a V-time
     /// intercept, so the counter read there is host-noisy on the real backend
-    /// (task-27 O1) and the pre-`OUT` anchor may be stale. The first stamp and
-    /// the Δ arm happen only at the **handshake intercept**: the guest's required
+    /// (task-27 O1) and the pre-`OUT` anchor may be stale. The first stamp happens
+    /// only at the **handshake intercept**: the guest's required
     /// post-doorbell V-time intercept (the reference kernel's RDTSC, now
     /// protocol), whose anchor is deterministic and fresh. See
     /// [`pvclock_refresh`](Self::pvclock_refresh) for the handshake and
@@ -2571,8 +2570,8 @@ where
         if self.pvclock_validate_gpa(gpa).is_err() {
             return (Status::OutOfRange, None);
         }
-        // Record the GPA as PENDING. No stamp, no arm — those wait for the
-        // handshake intercept (r8). `armed` stays false.
+        // Record the GPA as PENDING. No stamp — publication waits for the
+        // handshake intercept (r8). `armed` stays false until then.
         let pv = self.pvclock.as_mut().expect("checked above");
         pv.gpa = Some(gpa);
         (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION))
@@ -2651,7 +2650,7 @@ where
         // M2.1 safety rule).
         self.mark_host_dirty(gpa, vtime::pvclock::PVCLOCK_PAGE_LEN as u64);
         // Log value publishes (not canonical seq-resets, which republish the
-        // same values) — the G2/G3 gates' per-refresh evidence.
+        // same values) — the G2 gate's per-refresh evidence.
         if kind == StampKind::Refresh {
             let pv = self.pvclock.as_mut().expect("checked above");
             if pv.refreshes.len() < EVENT_TRACE_CAP {
@@ -2674,11 +2673,11 @@ where
     ///
     /// **The handshake (r8 ruling, sharpened r17).** A registration recorded at
     /// the doorbell `OUT` is *pending* ([`PvclockChannel::armed`] `== false`) — no
-    /// stamp, no Δ arm. It becomes active at the **first RDTSC/RDTSCP counter read**
+    /// stamp. It becomes active at the **first RDTSC/RDTSCP counter read**
     /// after the `OUT` — the specific exit the §3.1 wire contract promises the guest
     /// performs — where `assigned_clock` is a fresh, deterministic anchor, so the
-    /// first stamp is canonical from it and the Δ deadline arms off it (never
-    /// overdue, never off a stale or PIO-exit-boundary variability anchor). Other synchronized boundaries
+    /// first stamp is canonical from it, never from a stale or PIO boundary.
+    /// Other synchronized boundaries
     /// do NOT complete the handshake: a TSC MSR read/write, an RDRAND/RDSEED draw, a
     /// deadline landing, or an idle-warp restore is `clock_boundary` too, but
     /// arming off one would publish the page on an exit the contract does not
@@ -2702,8 +2701,8 @@ where
             // only that read completes the handshake. Every other synchronized
             // boundary — a TSC MSR, an RDRAND/RDSEED draw, a deadline landing, an
             // idle-warp restore — is `clock_boundary` too, but must NOT stamp or
-            // arm the pending page (a page armed off an RDRAND draw or a deadline
-            // would publish the clock the contract says only the counter read may).
+            // publish the pending page (an RDRAND draw or timer boundary would
+            // publish the clock where the contract says only the counter read may).
             // The handshake: promote to armed and lay down the first (canonical)
             // stamp from this fresh, deterministic anchor.
             self.pvclock.as_mut().expect("checked above").armed = true;
@@ -3850,8 +3849,7 @@ where
         //     Two competing discrete events wake an idle guest, and V-time must land
         //     at whichever comes first (PR #51 round-4): the deliverable fabric timer
         //     **and** a staged host-fault arrival ([`set_idle_wake_vns`](Vmm::set_idle_wake_vns)).
-        //     Fold them the same way `run_to_deadline_deadline` folds arrival into the run:
-        //     jump to `min(timer, arrival)`, waking at the arrival to apply.
+        //     Jump to `min(timer, arrival)`, waking at the arrival to apply.
         //
         //     **The arrival wakes independent of the fabric (PR #51 round-6).** A host
         //     fault is a host-plane event, not a guest interrupt — so a V-time-wired
@@ -3875,7 +3873,7 @@ where
 
     /// Resume a *resumable idle* `HLT` by **jumping** V-time to the armed timer's
     /// deadline `deadline_vns` — reaching the next scheduled event without executing a
-    /// single instruction (the idle dual of the `run_to_deadline` execution path).
+    /// single instruction.
     ///
     /// **Exit-boundary variability-free + work-axis epoch rebase (task-52 review fixes).** Two intertwined
     /// determinism requirements drive this:
@@ -8563,7 +8561,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Task 110: the paravirt exit-count-derived clock page (docs/PARAVIRT-CLOCK.md).
-    // Portable halves of the G1/G2/G3 gates + the registration transport,
+    // Portable halves of the G1/G2 gates + the registration transport,
     // driven by the scripted MockBackend — no /dev/kvm, runs on every platform.
     // -----------------------------------------------------------------------
 
@@ -8749,21 +8747,6 @@ mod tests {
         assert_eq!(vmm.pvclock_registration(), None);
     }
 
-    /// The handshake contract (r8 ruling): a guest that performs the required
-    /// post-doorbell handshake (an RDTSC) and *then* busy-waits on the page is
-    /// forced out every Δ; a guest that registers and busy-waits **without**
-    /// handshaking is out of contract — it never arms and is never forced out
-    /// (its page stays at the pre-registration bytes, deterministic).
-    /// An OVERDUE deadline anchors to the deterministic target, never to the
-    /// landing's live count (cross-model r8 P1). On the real backend an overdue
-    /// `run_to_deadline` (the pvclock deadline armed off a stale anchor, born in the
-    /// guest's past) returns `reached =` a **live PMU count** carrying exit-path
-    /// exit-boundary variability; the mock instead rewrites `reached := deadline`, so the portable
-    /// suite could not see this. Drive `on_deadline` directly with a divergent
-    /// overdue `reached` (the exit-boundary variability a real backend would return) and confirm
-    /// `assigned_clock` — which feeds the next page stamp and the state hash
-    /// — comes from the deterministic `target`, so two same-seed runs whose exit-boundary variability
-    /// differs still land the identical anchor and identical page bytes.
     /// The pure-opt-in gate, host side: an offered-but-vtime-unwired VM and a
     /// backend without a deterministic virtual-time clock both answer
     /// `UnknownService` — the probing guest keeps its trap-backstopped paths.
@@ -8772,8 +8755,8 @@ mod tests {
     /// registers is **guest-observably identical** to an un-offered VM over
     /// the same script — identical RAM, serial, and observable digest; no
     /// stamp is ever written. The `state_blob`s differ by EXACTLY the `PVCK`
-    /// channel-configuration chunk (cross-model r1 P1: the offer + Δ govern
-    /// future execution, so they are state identity — the SDK fault-policy
+    /// channel-configuration chunk (cross-model r1 P1: the offer governs future
+    /// execution, so it is state identity — the SDK fault-policy
     /// precedent), and an un-offered blob carries no chunk at all (its bytes
     /// are unchanged from before the feature existed).
     #[test]

@@ -892,8 +892,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // `KVM_SET_VCPU_EVENTS` corrupts the resumed guest. All-zero at a quiescent
             // point, so M1/M2/corpus blobs are unchanged.
             events: records::canonical_events(&vcpu.events),
-            // The task-110 pvclock channel (v4): offer + Δ + the one-shot
-            // registration, so the direct restore path carries the stamping
+            // The task-110 pvclock channel (v4): offer + one-shot registration,
+            // so the direct restore path carries the stamping
             // obligation with the state it governs (same-state ⇒ same-future).
             pvclock: self.pvclock_snapshot().map(|s| (s.gpa, s.registrable)),
         };
@@ -1275,11 +1275,8 @@ fn encode_events(v: &mut Vec<u8>, raw: &vmm_backend::VcpuEvents) {
 }
 
 /// The frozen V-time clock config (CPU-MSR-CONTRACT: the guest TSC is **2.0 GHz**,
-/// leaf `0x15`). The work→nanosecond ratio is **1 ns per retired conditional
-/// branch** — an integer ratio (`ratio_den == 1`), which INTEGRATION.md §4
-/// requires for any snapshot-bearing config (a fractional ratio's sub-ns
-/// remainder cannot survive `snapshot_vns`). So `tsc(work) = 2 · work` ticks,
-/// strictly increasing whenever the guest retires a branch between two reads.
+/// leaf `0x15`). The current exit-count accumulator is measured directly in
+/// nanoseconds, so `tsc(vns) = 2 · vns` ticks with integer-only conversion.
 pub fn contract_vclock_config() -> VClockConfig {
     VClockConfig {
         guest_hz: 2_000_000_000,

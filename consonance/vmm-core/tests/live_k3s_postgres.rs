@@ -20,7 +20,7 @@
 //! **The unlock (tasks 47/52/54).** kubelet + containerd + apiserver + scheduler +
 //! controller-manager + kube-proxy + flannel are all Go/multi-goroutine services
 //! that busy-spin and depend on preemption. The V-time LAPIC timer **preempts** a
-//! busy-spinning thread at the seed-deterministic V-time deadline (`run_to_deadline`), the
+//! busy-spinning thread at the seed-deterministic V-time deadline (`run_with_deadline`), the
 //! idle-HLT resume warps to the next deadline (task 52), and the xAPIC MMIO is routed
 //! to the deterministic LAPIC model (task 54). So the Go schedulers run, the cluster
 //! converges, and the whole interleaving is a pure function of the seed.

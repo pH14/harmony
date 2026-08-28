@@ -161,7 +161,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_to_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_with_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -221,7 +221,7 @@ fn seeded_env(seed: u64) -> Reproducer {
 /// an exact `Moment`: the `run` deadline alone is *opportunistic* (task 58 reverted
 /// the hard instruction-level stop, so a bare deadline stops at the first boundary at-or-past
 /// it — it overshoots), whereas a staged `Moment ≤ deadline` makes the run
-/// `set_idle_wake_vns` → `run_to_deadline` to that exact exit count. XOR-0 leaves state
+/// `set_idle_wake_vns` → `run_with_deadline` to that exact exit count. XOR-0 leaves state
 /// untouched, so the materialized point observed after the landing is the true one.
 /// Both materializations of a `Moment` stage the identical marker, so the
 /// twice-from-genesis comparison stays byte-exact.
@@ -280,7 +280,7 @@ fn moment_address_materializes_identically_twice() {
     // 1. Seal the **genesis** snapshot, nudging past non-snapshottable boundaries
     //    (the task-58 retry: a NotQuiescent refusal ⇒ run a little further, retry).
     let retry_step = env_u64("MA_GENESIS_STEP", 1_000_000);
-    let mut vt = match run_to_deadline(&mut s, 0) {
+    let mut vt = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("vtime probe stopped non-Deadline: {other:?}"),
     };
@@ -295,7 +295,7 @@ fn moment_address_materializes_identically_twice() {
                     attempts < 100_000,
                     "no snapshottable boundary within budget"
                 );
-                match run_to_deadline(&mut s, vt.saturating_add(retry_step)) {
+                match run_with_deadline(&mut s, vt.saturating_add(retry_step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -335,7 +335,7 @@ fn moment_address_materializes_identically_twice() {
             );
             // Arm the exact-count arrival at `moment`, then advance to it.
             expect_ok(s, &arrival_marker(moment));
-            match run_to_deadline(s, moment) {
+            match run_with_deadline(s, moment) {
                 StopReason::Deadline { vtime } => assert_eq!(
                     vtime.0, moment,
                     "run(until = moment) must land exactly at the addressed Moment"
@@ -410,7 +410,7 @@ fn moment_address_materializes_identically_twice() {
             // continue to `late` the same way.
             expect_ok(s, &arrival_marker(mid));
             assert!(matches!(
-                run_to_deadline(s, mid),
+                run_with_deadline(s, mid),
                 StopReason::Deadline { .. }
             ));
             if inspect {
@@ -422,7 +422,7 @@ fn moment_address_materializes_identically_twice() {
             }
             expect_ok(s, &arrival_marker(late));
             assert!(matches!(
-                run_to_deadline(s, late),
+                run_with_deadline(s, late),
                 StopReason::Deadline { .. }
             ));
             hash_whole(s)

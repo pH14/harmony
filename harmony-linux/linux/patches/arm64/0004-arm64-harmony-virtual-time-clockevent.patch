@@ -1,15 +1,15 @@
-arm64: drive the guest clockevent from exact work
+arm64: drive the guest clockevent from exit-count virtual time
 
 The architected virtual timer expires CNTV_CVAL against KVM's live counter
-domain, not Harmony's materialized work clock. Replace that final AA-5(c)
+domain, not Harmony's materialized virtual-time clock. Replace that final AA-5(c)
 timer-domain leak with a guest/host protocol on the existing owned MMIO page:
-the guest writes an absolute work-clock tick deadline, userspace compares it
-only after publishing an exact-work page value, and userspace holds dedicated
+the guest writes an absolute guest-clock tick deadline, userspace compares it
+after publishing an exit-count page value, and userspace holds dedicated
 virtual-timer PPI 27 high until the interrupt handler ACKs it. ACK precedes the generic event
 handler, so level deassertion completes before the handler rearms. The virtual
 timer control stays disabled and this path never programs CNTV_CVAL/TVAL.
 
-Work time cannot advance while the sole vCPU sleeps in WFI. Select the generic
+Virtual time cannot advance while the sole vCPU sleeps in WFI. Select the generic
 idle-poll bootarg support; the owned harness separately requires `nohlt` in the
 DT command line.
 
@@ -44,7 +44,7 @@ repository's designated guest-kernel patch exception.
 +#define HARMONY_CLOCKEVENT_CONTROL	0x18
 +#define HARMONY_CLOCKEVENT_DISARM	1U
 +#define HARMONY_CLOCKEVENT_ACK		2U
- #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* host caps delta at 100M work */
+ #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* bounded deterministic handshake */
  #define HARMONY_PVCLOCK_ABI		1U
  #define HARMONY_FLAG_MATERIALIZED	(1U << 0)
 @@ -44,6 +49,8 @@ struct harmony_arm_pvclock_page {

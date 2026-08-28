@@ -220,8 +220,7 @@ pub fn boot_hvf(
         },
         0,
     )?);
-    // VirtualTime mode stamps at exits and never uses the descriptive Δ
-    // `run_to_deadline` path; the nonzero value remains part of snapshot identity.
+    // Virtual-time mode stamps the page at serviced exits.
     vmm.enable_pvclock();
     Ok(vmm)
 }

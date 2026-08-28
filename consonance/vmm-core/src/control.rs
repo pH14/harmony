@@ -1176,7 +1176,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // Task 61: capture the Net channel's flow-policy stream position + decision
         // log the same way (owned, so the borrow ends before touching self).
         let net_channel = vmm.net_snapshot();
-        // (Task 110: the pvclock channel — offer + Δ + registration — rides the
+        // (Task 110: the pvclock channel — offer + registration — rides the
         // sealed vm_state's device blob itself (v4), so there is no side
         // table to capture here; the restore path validates and commits it
         // with the blob.)
@@ -4143,11 +4143,8 @@ mod tests {
     // Task 59 — host-plane enforcement (apply a HostFault at a Moment).
     //
     // Portable proof over the scripted `MockBackend`: each staged `Moment`
-    // arrives via `run_to_deadline` (the mock rewrites a scripted `exit boundary`'s
-    // `reached` to the work count the VMM armed — `set_idle_wake_vns`'s
-    // `work_for_vns(moment)`, which under the 1 ns/branch contract clock is the
-    // Moment itself). One scripted `Deadline` per *distinct* Moment, then a
-    // terminal `Hlt`. The end-to-end record→replay-on-real-KVM closure is the
+    // arrives at a deterministic scripted exit boundary whose assigned V-time
+    // is the Moment itself. The end-to-end record→replay-on-real-KVM closure is the
     // box gate; here we prove the apply-at-Moment seam, its determinism, and
     // that the emitted recorded env re-applies to the identical hash.
     // -----------------------------------------------------------------------
@@ -5387,9 +5384,9 @@ mod tests {
     // space, plus the four corners the fresh cross-model pass found.
     // -----------------------------------------------------------------------
 
-    /// A mock-wrapping backend that makes arrival **exact without a scripted
-    /// `Deadline`**: `run_to_deadline(d)` always lands at `d` (a `Deadline`), and `run()`
-    /// (no arrival armed) is always a terminal `Hlt`. This lets a *random* verb
+    /// A mock-wrapping backend that makes each scripted exit boundary land at
+    /// the next armed arrival, while an unarmed `run()` is a terminal `Hlt`.
+    /// This lets a *random* verb
     /// sequence drive any number of arrivals + runs without pre-scripting exits.
     /// `deterministic_tsc` (forwarded from the inner mock) is `true`, so the server
     /// treats it as an armable host-plane backend.
@@ -5524,11 +5521,8 @@ mod tests {
     /// A **no-op** host fault (`CorruptMemory` with a zero XOR mask) — it changes no
     /// guest byte, but staging it at a `Moment` arms the exact-count arrival so a
     /// `run` lands there. On the portable mock this is the stand-in for the box's
-    /// timer-driven instruction-level stop (tasks 47/55): the mock's bare `run()` HLTs
-    /// immediately, so a plain deadline never advances V-time, but an armed arrival
-    /// drives `run_to_deadline` to the exact `Moment`. On the real backend the deadline
-    /// itself instruction-level stops, so no marker is needed (see the `live_moment_address` box
-    /// gate).
+    /// exit-boundary arrival: the mock's bare `run()` HLTs immediately, while an
+    /// armed arrival assigns the next scripted exit to the exact `Moment`.
     fn schedule_marker(at: u64) -> Request {
         Request::Perturb {
             fault: HostFault(
@@ -6098,10 +6092,10 @@ mod tests {
     // the idle jump (jump to min(timer, arrival)) rather than sail past the Moment.
     // -----------------------------------------------------------------------
 
-    /// A mock-wrapping backend whose guest is a **resumable idle**: `run`/`run_to_deadline`
-    /// always return a natural `Hlt` and the vCPU has `RFLAGS.IF` set, so every
+    /// A mock-wrapping backend whose guest is a **resumable idle**: `run` always
+    /// returns a natural `Hlt` and the vCPU has `RFLAGS.IF` set, so every
     /// arrival is reached through the idle-jump path (`on_hlt` → `idle_action` →
-    /// jump to `min(timer, arrival)`) instead of a `run_to_deadline` `Deadline`. No timer
+    /// jump to `min(timer, arrival)`). No timer
     /// is armed, so the staged host-fault arrival is the sole wake event; with
     /// `CorruptMemory`-only faults (no IRR raise) the run idles Moment-to-Moment and
     /// terminates cleanly once the schedule drains. `deterministic_tsc` is `true`.
@@ -6903,12 +6897,9 @@ mod tests {
     //
     // The snapshot reply binds (handle, synchronized seal Moment, included
     // SDK-event count, taint) atomically from one stopped server state (bead
-    // hm-bbx.6). The mock's scripted virtual-time clock is CONSTANT through a
-    // session, so every doorbell emission and every seal in these fixtures
-    // lands on the SAME stamped Moment — deliberately: the cut is the SDK
-    // capture vector's PREFIX LENGTH, and a Moment comparison could not
-    // reconstruct it (several events share one stamp; two different seals
-    // share one Moment and differ only in their counts).
+    // hm-bbx.6). Each setup-complete doorbell is followed by the clean guest
+    // re-entry boundary its completion protocol requires. The cuts therefore
+    // bind both the exact exit-count Moment and the SDK capture-vector prefix.
 
     /// The fixture server emits a serial byte, rings the `setup_complete`
     /// doorbell, rings it again, emits another serial byte, then goes idle.
@@ -6946,6 +6937,7 @@ mod tests {
             Exit::Arch(X86Exit::Rdtsc), // pre-stepped clock boundary
             serial(b'a'),               // console bytes — never in the SDK count
             ring.clone(),               // SDK event, position 0 → sealable stop #1
+            Exit::Arch(X86Exit::Rdtsc), // commits ring #1 before its deferred seal
             ring,                       // SDK event, position 1 → sealable stop #2
             serial(b'b'),               // console bytes after both seals
             Exit::Common(CommonExit::Idle),
@@ -7016,7 +7008,7 @@ mod tests {
             "expected the first deferred snapshot point, got {stop:?}"
         );
         let (snap1, at1, n1, t1) = snap_cut(&mut s);
-        assert_eq!(at1, 2001, "the seal Moment is the assigned V-time");
+        assert_eq!(at1, 2002, "the seal Moment is the assigned V-time");
         assert_eq!(n1, 1, "the event emitted before the seal is included");
         assert!(!t1);
 
@@ -7031,8 +7023,8 @@ mod tests {
         assert_ne!(snap1, snap2);
         assert_eq!(
             (at2, n2),
-            (2001, 2),
-            "same virtual-time boundary, strictly larger prefix"
+            (4002, 2),
+            "later exit-count boundary, strictly larger prefix"
         );
 
         // The capture has identical ids and payloads; its ordered position is
@@ -7040,7 +7032,7 @@ mod tests {
         let events = drain_sdk(&mut s);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].0, 2001);
-        assert_eq!(events[1].0, 2001);
+        assert_eq!(events[1].0, 2002);
         assert_eq!(events[0].1, events[1].1, "identical event ids");
         assert_eq!(events[0].2, events[1].2, "identical payloads");
 

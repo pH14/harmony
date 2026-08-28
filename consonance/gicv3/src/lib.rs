@@ -35,8 +35,8 @@
 //!   fixed `timer_hz`) and `CTL` (`ENABLE`/`IMASK`) programmed through
 //!   sysreg-shaped methods; [`Gicv3::advance_to`] latches the timer INTID
 //!   pending when the deadline passes, and [`Gicv3::next_timer_deadline`]
-//!   exposes the armed deadline in V-time ns for the run loop's `run_to_deadline`
-//!   seam. The tick→vns arithmetic is exact integer math (`u128`, ceilings),
+//!   exposes the armed deadline in V-time ns for the VMM's idle-warp and
+//!   exit-boundary scheduling seams. The tick→vns arithmetic is exact integer math (`u128`, ceilings),
 //!   mirroring `lapic`'s timer discipline.
 //!
 //! ## What is deliberately NOT modeled (skeleton honesty, `tasks/112` M2)

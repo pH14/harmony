@@ -26,9 +26,9 @@
 //! the container reached "created" but its init never execed the command (a deadlock,
 //! which is *why* task 38 fell back to `unshare`). Task 47 made the V-time LAPIC timer
 //! **preempt** a busy-spinning thread at the seed-deterministic V-time deadline
-//! (`run_to_deadline` = exit-count advancement to the next VM-exit boundary), and
+//! (`run_with_deadline` = exit-count advancement to the next VM-exit boundary), and
 //! the VMM run-loop drives it automatically on the patched Linux boot
-//! ([`Vmm::step`] → `idle event` → `Backend::run_to_deadline`). So the Go runtime
+//! ([`Vmm::step`] → `idle event` → `Backend::run_with_deadline`). So the Go runtime
 //! is preempted on time, the scheduler runs, the create→exec handshake completes, and
 //! the **real `runc`** runs the container — deterministically, because the preemption
 //! instant is a pure function of the seed.
@@ -69,7 +69,7 @@
 //!
 //! **Why patched, not stock.** As for task 37/38: the workload needs the live periodic
 //! V-time tick and the 8250 TX must drain to stream output — both ride the V-time LAPIC
-//! timer, which only advances (and only **preempts**, via `run_to_deadline`) on the patched
+//! timer, which only advances (and only **preempts**, via `run_with_deadline`) on the patched
 //! backend. On stock KVM the timer never calibrates and `runc` deadlocks (task 38), so
 //! all gates run patched.
 //!

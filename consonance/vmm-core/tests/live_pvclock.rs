@@ -2,12 +2,12 @@
 //! Box-only task-110 gates for the paravirt exit-count-derived clock
 //! (`docs/PARAVIRT-CLOCK.md` §6): **G1** same-seed bit-identical `state_hash`
 //! with the page on, **G2** page-stamp == RDTSC-trap-oracle function equality
-//! at refresh Moments, **G3** busy-wait-on-time liveness within Δ, and the
-//! **N-4-style perf measurement** (RDTSC-exit rate page-off vs page-on, boot
+//! at refresh Moments, and the **N-4-style perf measurement** (RDTSC-exit
+//! rate page-off vs page-on, boot
 //! wall ratio) that judges kill condition 3 — reported honestly either way,
 //! never asserted into a pass.
 //!
-//! Portable analogues of G1/G2/G3 (mock backend, including the
+//! Portable analogues of G1/G2 (mock backend, including the
 //! mandated deliberate-fault coverage) live in `src/vmm.rs`; this file is the
 //! real-KVM half.
 //!
@@ -23,13 +23,10 @@
 //!   against `harmony-linux/linux/MANIFEST.sha256` (regenerate + commit via
 //!   `harmony-linux/linux/run-tests.sh` after the first box build); override
 //!   deliberately with `BZIMAGE_SHA256=<hex>` (hm-xdp: never a bare path).
-//! - **Initramfs images**: minimal `initramfs.cpio.gz` (MANIFEST-pinned),
-//!   Postgres `initramfs-postgres.cpio.gz` (const-pinned, the task-78-proven
-//!   build), exec `initramfs-exec.cpio.gz` (`make -C harmony-linux/linux exec-image`;
-//!   supply `INITRAMFS_EXEC_SHA256=<hex>` — no committed pin yet).
-//! - **Knobs**: `PVCLOCK_DELTA_WORK` (Δ, default
-//!   [`vmm_core::vmm::PVCLOCK_DEFAULT_DELTA_WORK`]), `BOOT_CMDLINE` (base
-//!   cmdline; the page-on arm appends ` harmony_pvclock` itself),
+//! - **Initramfs images**: minimal `initramfs.cpio.gz` (MANIFEST-pinned) and
+//!   Postgres `initramfs-postgres.cpio.gz` (const-pinned, the task-78-proven build).
+//! - **Knobs**: `BOOT_CMDLINE` (base cmdline; the page-on arm appends
+//!   ` harmony_pvclock` itself),
 //!   `PV_G1_FIRST_VNS`/`PV_G1_STEP_VNS`/`PV_G1_SEALS` (the G1 seal schedule),
 //!   `PV_PERF_WINDOW_VNS` (the Postgres steady-state measurement window).
 //!
@@ -47,9 +44,8 @@ use control_proto::{
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, server_caps};
-use vmm_core::exec::ExecSession;
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
-use vmm_core::vmm::{PVCLOCK_DEFAULT_DELTA_WORK, TerminalReason, Vmm};
+use vmm_core::vmm::{TerminalReason, Vmm};
 
 type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 
@@ -183,37 +179,11 @@ fn pg_initramfs() -> Vec<u8> {
     bytes
 }
 
-/// The exec-capable initramfs (`INITRAMFS_EXEC_SHA256` required — no
-/// committed pin yet; the panic quotes the staged file's hash to review).
-fn exec_initramfs() -> Vec<u8> {
-    pinned_artifact("initramfs-exec.cpio.gz", "INITRAMFS_EXEC_SHA256")
-}
-
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
-}
-
-fn delta_work() -> u64 {
-    env_u64("PVCLOCK_DELTA_WORK", PVCLOCK_DEFAULT_DELTA_WORK)
-}
-
-/// The guest's periodic tick interval in counted work units: `CONFIG_HZ=100` ⇒
-/// 10 ms, and the contract clock counts ≈1 work unit per V-time ns (which is why
-/// [`PVCLOCK_DEFAULT_DELTA_WORK`] = 10_000_000 is documented as "≈ 10 ms").
-const GUEST_TICK_WORK: u64 = 10_000_000;
-
-/// **G3's Δ: deliberately BELOW the guest tick** (cross-model r4 P1). At the
-/// default Δ ≈ 10 ms the 100 Hz tick already forces a `Deadline` — and hence a
-/// page refresh — about every 10 ms, so `max_gap ≤ Δ` would hold with the
-/// forced-refresh deadline *deleted* and the gate would pass vacuously. A Δ of
-/// one tenth of a tick cannot be met by the tick: ten of every eleven refreshes
-/// must come from the Δ bound itself, and [`Vmm::pvclock_forced_landings`]
-/// counts them, so G3 now fails in both ways if the mechanism is removed.
-fn g3_delta_work() -> u64 {
-    env_u64("PV_G3_DELTA_WORK", GUEST_TICK_WORK / 10)
 }
 
 fn base_cmdline() -> String {
@@ -229,18 +199,6 @@ fn hex(d: &[u8; 32]) -> String {
 /// and offers the page host-side (`enable_pvclock`). One body, one knob — the
 /// A/B arms cannot drift apart in wiring.
 fn boot(kernel: &[u8], initramfs: &[u8], seed: u64, page_on: bool) -> DynVmm {
-    boot_with_delta(kernel, initramfs, seed, page_on, delta_work())
-}
-
-/// [`boot`] with an explicit Δ — G3 runs below the guest tick (see
-/// [`g3_delta_work`]); every other gate takes the documented default.
-fn boot_with_delta(
-    kernel: &[u8],
-    initramfs: &[u8],
-    seed: u64,
-    page_on: bool,
-    delta: u64,
-) -> DynVmm {
     let cmdline = if page_on {
         format!("{} harmony_pvclock", base_cmdline())
     } else {
@@ -256,7 +214,7 @@ fn boot_with_delta(
     )
     .expect("patched Linux boot — needs the LOADED patched KVM + perf + det-cfl-v1 host");
     if page_on {
-        vmm.enable_pvclock(delta);
+        vmm.enable_pvclock();
     }
     vmm
 }
@@ -361,7 +319,7 @@ fn g0_smoke_boot_registers_and_reads_sane_time() {
          lines above (doorbell/ABI mismatch?)"
     );
     // r13 P2: registration is NOT selection. If the page registers and stamps but
-    // Linux keeps timekeeping on the TSC, every other G0/G3/perf assertion can
+    // Linux keeps timekeeping on the TSC, every other G0/perf assertion can
     // still pass (they read the page directly or only report a ratio) while the
     // guest never actually uses the clock — the RDTSC exits the perf lever counts
     // on never leave the hot path. Require the kernel's clocksource-SWITCH line, so
@@ -385,7 +343,7 @@ fn g0_smoke_boot_registers_and_reads_sane_time() {
     assert!(
         refreshes
             .windows(2)
-            .all(|p| p[0].1 <= p[1].1 && p[0].2 <= p[1].2),
+            .all(|p| p[0].0 <= p[1].0 && p[0].1 <= p[1].1),
         "page-published time went backwards"
     );
     assert!(
@@ -432,7 +390,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_to_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_with_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -477,7 +435,7 @@ fn seal_with_retry<B: Backend<A = X86>>(
             Ok(Reply::Snapshot { id, .. }) => return (id, vt),
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
-                match run_to_deadline(s, vt.saturating_add(step)) {
+                match run_with_deadline(s, vt.saturating_add(step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -520,7 +478,7 @@ fn g1_arm(kernel: &[u8], initramfs: &[u8], seals: u64, v0: u64, dv: u64) -> (Vec
     for k in 0..seals {
         let target = v0 + k * dv;
         if vt < target {
-            match run_to_deadline(&mut s, target) {
+            match run_with_deadline(&mut s, target) {
                 StopReason::Deadline { vtime } => vt = vtime.0,
                 other => panic!("guest ended before the seal schedule: {other:?}"),
             }
@@ -660,207 +618,12 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
 }
 
 // ---------------------------------------------------------------------------
-// G3 — busy-wait-on-time liveness within Δ.
-// ---------------------------------------------------------------------------
-
-/// **G3.** A guest userspace busy-wait on the clock terminates: the shell
-/// spins on `date +%s` (clock_gettime → the pvclock clocksource → the page)
-/// until 2 virtual seconds elapse — pure compute, no timer sleep — which can
-/// only complete if the §2.4 staleness-bound forced refresh keeps advancing
-/// the page. Asserts completion, that no gap between consecutive refresh anchors
-/// exceeded Δ, AND that the refreshes are actually **attributable to the Δ
-/// deadline**.
-///
-/// **Non-vacuity** (cross-model r4 P1). This guest's 100 Hz tick forces a
-/// `Deadline` — and so a refresh — every ~10 ms all by itself, which is also the
-/// *default* Δ: at that Δ the gap assertion would hold with the forced-refresh
-/// deadline deleted, and the gate would prove nothing. Two changes close that:
-/// G3 runs at [`g3_delta_work`] (one tenth of a tick — a bound the tick cannot
-/// meet), and it asserts [`Vmm::pvclock_forced_landings`] — landings at which
-/// neither the timer nor an arrival was due — dominate the window. Delete
-/// `pvclock_refresh_deadline` and both assertions fail.
-#[test]
-#[ignore = "box-only (see g0); needs initramfs-exec.cpio.gz + INITRAMFS_EXEC_SHA256; run g0 first"]
-fn g3_busy_wait_on_page_time_terminates_within_delta() {
-    require_kvm();
-    require_host_baseline();
-    let kernel = pvclock_kernel();
-    let initramfs = exec_initramfs();
-    let delta = g3_delta_work();
-    assert!(
-        delta < GUEST_TICK_WORK,
-        "G3's Δ ({delta}) must be strictly below the guest tick ({GUEST_TICK_WORK}), else the \
-         periodic tick alone satisfies the gap bound and the gate is vacuous"
-    );
-
-    let mut vmm = boot_with_delta(&kernel, &initramfs, SEED, true, delta);
-    // Boot to the interactive shell (GUEST_READY on the console), checking
-    // the serial only periodically (a byte-scan per step would be O(n²)).
-    let obs = run_bounded(
-        &mut vmm,
-        50_000_000,
-        Duration::from_secs(600),
-        |vmm, step| !(step % 10_000 == 0 && find(vmm.serial(), b"GUEST_READY")),
-    );
-    assert!(
-        obs.step_error.is_none(),
-        "boot step error: {:?}",
-        obs.step_error
-    );
-    assert!(
-        find(vmm.serial(), b"GUEST_READY"),
-        "exec image did not reach its shell"
-    );
-    let gpa = vmm
-        .pvclock_registration()
-        .expect("guest never registered the clock page");
-
-    // The busy-wait: `pvclock-spin` mmaps the clock page and spins on it for 2
-    // virtual seconds, making NO syscalls and taking NO counter traps inside the
-    // loop (harmony-linux/linux/pvclock-spin.c).
-    //
-    // The obvious shell version — `while [ $(date +%s) -lt N ]` — is NOT a test
-    // of this mechanism (cross-model r5 P1). Every `date` is a syscall, and this
-    // kernel randomizes the kernel stack offset on syscall entry by reading the
-    // TSC: `do_syscall_64` carries an `rdtsc` (it is in the reviewed allowlist).
-    // That is a V-time intercept, so each syscall exits, advances the anchor and
-    // refreshes the page for free — the loop would terminate whether or not the Δ
-    // staleness bound did anything, and the constant intercepts can even keep the
-    // pvclock deadline from ever landing, zeroing the attribution count. The
-    // gate would be vacuous in both directions.
-    //
-    // The host already knows where the page is, so there is nothing to parse.
-    let spin = format!("/bin/pvclock-spin {gpa:#x} 2000000000");
-    let mut session = ExecSession::new(&spin, 1);
-    let input = session.input().to_vec();
-    vmm.inject_serial_input(&input);
-    // Capture the page's CURRENT publication as the window BASELINE before
-    // clearing (r20 P2). Clearing the log to isolate the spin window drops the
-    // baseline, so the FIRST logged spin refresh has no predecessor and a first
-    // refresh delayed past Δ would escape the max-gap check while later Δ-spaced
-    // ones pass. Prepending this baseline makes the first interval (baseline →
-    // first spin refresh) count. It is the most-recent publication = the page's
-    // live state; boot produced thousands, so it is always present.
-    let g3_baseline = vmm
-        .pvclock_refreshes()
-        .last()
-        .copied()
-        .expect("boot published at least one refresh before the spin");
-    // Re-arm the refresh log at the measured window's start (cross-model r1
-    // P1): a boot-saturated trace would record nothing during the spin and
-    // `max_gap` below would vacuously read 0.
-    vmm.pvclock_clear_refreshes();
-    let mut cursor = vmm.serial_output().len();
-    let obs = run_bounded(&mut vmm, 200_000_000, Duration::from_secs(900), |vmm, _| {
-        let out = vmm.serial_output();
-        if out.len() > cursor {
-            session.feed(&out[cursor..]);
-            cursor = out.len();
-        }
-        !session.is_done()
-    });
-    assert!(
-        obs.step_error.is_none(),
-        "spin step error: {:?}",
-        obs.step_error
-    );
-    let done = session.is_done();
-    let outcome = session.into_outcome();
-    assert!(
-        done && outcome.ok,
-        "the busy-wait on page time did NOT terminate (frozen page / Δ refresh not engaging?): \
-         status={:?} output tail={:?}",
-        outcome.status,
-        String::from_utf8_lossy(&outcome.output[outcome.output.len().saturating_sub(200)..])
-    );
-    // The spinner reports how it ended: PVSPIN_DONE means the page clock really
-    // advanced 2 virtual seconds under its own (syscall-free) reads. A
-    // PVSPIN_FAIL — bad ABI, /dev/mem, mmap — must never be mistaken for a pass,
-    // and the exit status alone would not tell them apart from a shell error.
-    assert!(
-        find(&outcome.output, b"PVSPIN_DONE"),
-        "pvclock-spin did not report PVSPIN_DONE — it never observed 2 virtual seconds pass by \
-         reading the page directly. Output tail: {:?}",
-        String::from_utf8_lossy(&outcome.output[outcome.output.len().saturating_sub(300)..])
-    );
-    // Staleness bound: no two consecutive refresh anchors in the spin window
-    // more than Δ apart (the §6 G3 assertion, on the work axis). The window
-    // is the cleared-at-spin-start log; a saturated or near-empty window is a
-    // measurement FAILURE, never a pass (cross-model r1 P1 — a full log
-    // proves only that ≥cap refreshes happened, not that any bound held, and
-    // an empty `windows(2)` would report a vacuous zero gap).
-    let window = vmm.pvclock_refreshes();
-    assert!(
-        window.len() >= 2,
-        "only {} refreshes recorded during a 2-virtual-second spin — no gap can be measured \
-         (expected ~2s/Δ refreshes); the G3 bound was NOT established",
-        window.len()
-    );
-    assert!(
-        window.len() < vmm_core::vmm::PVCLOCK_REFRESH_TRACE_CAP,
-        "the refresh log saturated during the spin window — gaps beyond the cap are unobserved, \
-         so the ≤Δ bound cannot be asserted; raise the cap or shorten the window"
-    );
-    // Prepend the pre-clear BASELINE so the FIRST interval of the spin (baseline →
-    // first logged refresh) counts against both the monotonicity and max-gap
-    // checks (r20 P2) — a first refresh delayed past Δ would otherwise escape.
-    let gapped: Vec<(u64, u64, u64)> = std::iter::once(g3_baseline)
-        .chain(window.iter().copied())
-        .collect();
-    // The published vns must be MONOTONE across the window, INCLUDING from the
-    // baseline (r15 P2 + r20 P2). The guest spinner now fails on a backward step,
-    // and asserting it host-side too means a backward page cannot slip past even
-    // here — the `max_gap` `saturating_sub` on the work anchor would otherwise
-    // clamp it to 0 and hide it.
-    assert!(
-        gapped.windows(2).all(|p| p[0].1 <= p[1].1),
-        "the pvclock page published a BACKWARD vns during the G3 spin window (baseline included) — \
-         a determinism/ABA bug the max-gap saturating_sub would mask"
-    );
-    let max_gap = gapped
-        .windows(2)
-        .map(|p| p[1].0.saturating_sub(p[0].0))
-        .max()
-        .expect("baseline + >= 2 window refreshes ⇒ >= 3 points");
-    // ATTRIBUTION (r4 P1): how many of those refreshes did the Δ deadline
-    // itself force — as opposed to the guest's periodic tick, which refreshes
-    // the page for free every ~10 ms and would otherwise carry this gate?
-    let forced = vmm.pvclock_forced_landings();
-    let refreshes = window.len() as u64;
-    eprintln!(
-        "[REPORT] G3: spin completed (status {:?}), {refreshes} refreshes in the window, \
-         {forced} of them forced by the Δ deadline (tick ≈ {GUEST_TICK_WORK} work, \
-         Δ = {delta}), max anchor gap {max_gap}. RESULT: {}",
-        outcome.status,
-        if max_gap <= delta && forced * 2 >= refreshes {
-            "PASS"
-        } else {
-            "FAIL"
-        }
-    );
-    assert!(
-        max_gap <= delta,
-        "a refresh gap of {max_gap} work units exceeded Δ = {delta}"
-    );
-    // At Δ = tick/10 the staleness bound must supply the large majority of the
-    // refreshes. A window the tick could have carried on its own is not evidence
-    // that the forced refresh works — it is the vacuity this assertion rules out.
-    assert!(
-        forced * 2 >= refreshes,
-        "only {forced} of {refreshes} refreshes were attributable to the Δ deadline (Δ = {delta}, \
-         tick ≈ {GUEST_TICK_WORK}) — the periodic tick, not the staleness bound, kept this page \
-         fresh, so G3 proves nothing about the forced refresh"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // N-4 perf — RDTSC exit rates + boot ratio, page-off vs page-on.
 // ---------------------------------------------------------------------------
 
 struct PerfArm {
     rdtsc_exits: u64,
     total_exits: u64,
-    deadline_exits: u64,
     vns: u64,
     wall: Duration,
     reached_ready: bool,
@@ -914,7 +677,6 @@ fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
     PerfArm {
         rdtsc_exits: counts.rdtsc + counts.rdtscp,
         total_exits: counts.total(),
-        deadline_exits: counts.deadline,
         vns,
         wall: obs.wall,
         reached_ready: find(vmm.serial(), b"GUEST_READY"),
@@ -950,14 +712,14 @@ fn n4_perf_rdtsc_exit_rate_page_off_vs_page_on() {
     let on_rate = rate(on.rdtsc_exits, on.vns);
     let reduction = off_rate / on_rate.max(f64::MIN_POSITIVE);
     eprintln!(
-        "[REPORT] perf page-OFF: rdtsc_exits={} ({:.0}/vsec) total_exits={} deadline_exits={} \
+        "[REPORT] perf page-OFF: rdtsc_exits={} ({:.0}/vsec) total_exits={} \
          vns={} wall={:?}",
-        off.rdtsc_exits, off_rate, off.total_exits, off.deadline_exits, off.vns, off.wall
+        off.rdtsc_exits, off_rate, off.total_exits, off.vns, off.wall
     );
     eprintln!(
-        "[REPORT] perf page-ON:  rdtsc_exits={} ({:.0}/vsec) total_exits={} deadline_exits={} \
+        "[REPORT] perf page-ON:  rdtsc_exits={} ({:.0}/vsec) total_exits={} \
          vns={} wall={:?}",
-        on.rdtsc_exits, on_rate, on.total_exits, on.deadline_exits, on.vns, on.wall
+        on.rdtsc_exits, on_rate, on.total_exits, on.vns, on.wall
     );
     eprintln!(
         "[REPORT] perf: rdtsc-exit-rate reduction = {reduction:.2}x (kill condition 3 threshold: \

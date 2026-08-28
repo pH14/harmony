@@ -22,7 +22,7 @@
 # kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
 # flannel are all Go/multi-goroutine services that busy-spin and depend on
 # preemption. Under the V-time VMM the LAPIC timer **preempts** a busy-spinning
-# thread at the seed-deterministic V-time deadline (run_to_deadline) and the idle-HLT
+# thread at the seed-deterministic V-time deadline (run_with_deadline) and the idle-HLT
 # resume warps to the next deadline (task 52), so the Go schedulers run and the
 # cluster converges — deterministically, because every preemption instant is a
 # pure function of the seed. k3s mints its certs/tokens/SA-keys/object-UIDs from
