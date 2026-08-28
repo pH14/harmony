@@ -575,12 +575,12 @@ consonance/harmony-linux/linux/patches/ per the repository's kernel-patch except
 +{
 +	struct harmony_lock_test *test = opaque;
 +	int maximum;
-+	int current;
++	int active;
 +
-+	current = atomic_inc_return(&test->in_flight);
++	active = atomic_inc_return(&test->in_flight);
 +	maximum = atomic_read(&test->maximum);
-+	while (current > maximum &&
-+	       atomic_cmpxchg(&test->maximum, maximum, current) != maximum)
++	while (active > maximum &&
++	       atomic_cmpxchg(&test->maximum, maximum, active) != maximum)
 +		maximum = atomic_read(&test->maximum);
 +	complete(&test->entered);
 +	wait_for_completion(&test->release);
