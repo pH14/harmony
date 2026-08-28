@@ -146,11 +146,65 @@ merge parents: a352b4c9 + b0c019f1
 unmerged paths: none
 dissonance/ and deny.toml diff against a352b4c9: empty
 cargo build --all-features: PASS
+cargo nextest run --all-features: 1327 passed, 25 skipped
+cargo clippy --all-features --all-targets -- -D warnings: PASS
+cargo fmt --all -- --check: PASS
+cargo deny check: advisories/bans/licenses/sources ok
+
+cargo test -p vmm-core --test prescriptive_vtime \
+  comparator_rejects_one_vns_increment_at_the_exact_event -- --exact
+PASS: planted +1 V-ns rejected at the exact event
 ```
 
-**N1 overall: IN PROGRESS.** The source merge is resolved and builds locally.
-The planted comparator negative, exact-tree repository gates, and all-three-
-machine reference reruns remain.
+The exact `df4d1b3b` merged tree reran the ARM boot reference with the M5
+fixtures (Image `47c6eac9…c96`, initramfs `6194ec4b…053`). Ten signed-HVF
+boots and ten CPU-0-pinned msr1 KVM boots each produced 38,453 portable events,
+283 schedules, 136 deliveries, and 151 checkpoints. Every placement check was
+green; all twenty runs had normalized digest `e2e7852e…829` and final state
+hash `1dc0c1da…b17`. Direct comparison of the complete 5,954,217-byte HVF and
+KVM logs passed; both have SHA-256 `4b4e7a27…7db`.
+
+The same tree reran the original M5 one-job/two-session NES campaign with seed
+`1592642082`, one worker, action limit 96, and the byte-attested game fixtures.
+HVF and CPU-0-pinned KVM agreed exactly:
+
+| Session | Segments | Events | Schedules | Checkpoints | Session digest | State hash |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| 0 | 3 | 50,931 | 393 | 198 | `0c4936c4…478` | `741e95a2…4d8` |
+| 1 | 4 | 50,934 | 393 | 198 | `43105757…d21` | `de72c909…e58` |
+
+Both complete session logs passed direct byte comparison (SHA-256
+`a801bfb0…d45` and `ffdd9dbd…eda`). The independently produced archive,
+report, stream, and snapshot checkpoint artifacts also matched at
+`384d3029…6b2`, `b3032b4a…c46`, `584e0d3a…8b2`, and `ae8d699c…b783`.
+Every server-side placement check passed. The first msr1 harness attempt looked
+for the wrong existing readiness label (`KVM_BOOT_READY`); its run itself was
+green, and the corrected ten-run harness required `KVM_ARM64_BOOT_READY`.
+
+GitHub Actions run
+[`33162001079`](https://github.com/pH14/harmony/actions/runs/33162001079)
+ran the exact merge on the X-series stock-KVM workflow. Its X2 pool contained
+AMD EPYC 9V74, AMD EPYC 7763, and Intel Xeon Platinum 8573C. Every replica
+passed ten boots with 35,314 events, `X2_DIVERGENCES=0`, zero component/RAM
+differences, digest `f0aa6256…f48`, and complete normalized-log SHA-256
+`d90abd9f…27a`. The workflow's check, probes, planted access negative, X1,
+guest build, X2, and bounded hunt jobs all passed.
+
+The exact merge also passed the pinned unsafe-crate Miri matrix with
+`nightly-2026-06-16` and `-Zmiri-permissive-provenance` (plus
+`-Zmiri-disable-isolation` for `snapshot-store`): `hypercall-doorbell`,
+`vm-state`, `vmm-backend --all-features`, `snapshot-store --lib`,
+`play-agent`, `tetanes-agent`, and `vmm-core` all completed with zero
+failures. The long `vmm-core` job passed 436 unit tests (103 ignored), then
+all applicable integration suites, including 22 arm64-skeleton tests, 19
+event-loop tests, the loader/protocol suites, and all 12
+`prescriptive_vtime` tests. Targets gated away on this host and explicitly
+ignored public-API/regeneration tests remained zero-test or ignored by design.
+
+**N1 overall: PASS.** Commit `df4d1b3b` is the single merged implementation
+tree. Its planted comparator negative, all-three-machine reference reruns,
+ordinary repository gates, and pinned unsafe-crate Miri matrix pass without
+weakening either architecture's evidence.
 
 ## N2 — one clock
 
