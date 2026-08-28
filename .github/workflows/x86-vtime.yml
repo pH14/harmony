@@ -1,0 +1,325 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: x86-vtime
+
+# The x86 VM-exit-count V-time bring-up lives on GitHub-hosted runners: standard
+# x86-64 Linux runners expose /dev/kvm (nested virtualization), and the hardware
+# alternates between Intel and AMD draws — the probe runs as replicas so one push
+# samples both vendors. Every result is uploaded as an artifact because the
+# runner is unreachable after the job ends.
+on:
+  push:
+    branches: [claude/x86-prescriptive-vtime]
+  # Manual dispatch re-rolls the runner hardware draw without a commit; the
+  # x2-intel-hunt job needs many draws because the pool serves Intel rarely.
+  workflow_dispatch:
+
+concurrency:
+  group: x86-vtime-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# The explicit `bash` shell runs with pipefail, so `cmd | tee` steps fail when
+# the command fails; the implicit default shell would report tee's exit status.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # X0: CPU identity, /dev/kvm, the KVM capability table, and one minimal
+  # real-mode guest through the public KvmBackend.
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build probe
+        run: cargo build -p vmm-backend --bin x86_kvm_probe
+      # Planted negative: with /dev/kvm unreadable the probe must fail closed
+      # with the kvm_open reason, never report PASS.
+      - name: Probe fails closed without /dev/kvm access
+        run: |
+          sudo chmod 600 /dev/kvm
+          rc=0
+          ./target/debug/x86_kvm_probe > probe-negative.txt || rc=$?
+          cat probe-negative.txt
+          [ "$rc" -eq 1 ]
+          grep -q "FAIL_REASON=kvm_open" probe-negative.txt
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Run probe
+        run: ./target/debug/x86_kvm_probe | tee probe-report.txt
+      - name: kvm_smoke (live stock-KVM tests; informational at X0)
+        if: always()
+        continue-on-error: true
+        run: cargo test -p vmm-backend --test kvm_smoke -- --ignored --test-threads=1 2>&1 | tee kvm-smoke.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-probe-replica-${{ matrix.replica }}
+          path: |
+            probe-report.txt
+            probe-negative.txt
+            kvm-smoke.txt
+          if-no-files-found: error
+
+  # X1: ten same-seed runs of the prescriptive run loop over the stock
+  # KvmBackend and a real-mode guest must produce one normalized log, with the
+  # comparator and placement-checker negatives standing against the same
+  # workload's log. Two replicas so most pushes also sample two hardware draws.
+  x1-minimal-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: X1 live oracles
+        run: |
+          grep -m1 "model name" /proc/cpuinfo | tee x1-report.txt
+          cargo test -p vmm-core --test x86_kvm_prescriptive -- --ignored --test-threads=1 --nocapture 2>&1 | tee -a x1-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-x1-replica-${{ matrix.replica }}
+          path: x1-report.txt
+          if-no-files-found: error
+
+  # X2 input: build the committed guest image (Linux 6.18.35 + busybox 1.38.0)
+  # on the runner. The kernel bake dominates wall-clock, so the finished
+  # bzImage + initramfs pair is cached on the build inputs; X2 jobs restore the
+  # same cache. The box-built MANIFEST hashes are recorded for reference only —
+  # the runner's toolchain differs, so a mismatch there is expected.
+  guest-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore image cache
+        id: image-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            harmony-linux/build/bzImage
+            harmony-linux/build/initramfs.cpio.gz
+          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/linux/rdrand-allowlist.txt', 'harmony-linux/linux/rdrand-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+      - name: Restore source cache
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: harmony-linux/dl
+          key: x86-guest-sources-${{ hashFiles('harmony-linux/linux/versions.lock') }}
+      # The x86 image consumes only the kernel and busybox tarballs
+      # (`lib-build.sh` extract_kernel/extract_busybox); the full `make fetch`
+      # pulls several hundred MB of other pinned payloads from mirrors that
+      # reset connections from cloud runners. Fetch exactly the two inputs,
+      # hash-verified against versions.lock, with curl retries; the build
+      # scripts re-verify every tarball before extraction.
+      - name: Build guest image
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flex bison bc libelf-dev libssl-dev
+          . harmony-linux/linux/versions.lock
+          mkdir -p harmony-linux/dl
+          fetch() {
+            file="harmony-linux/dl/$(basename "$1")"
+            if [ -f "$file" ] && echo "$2  $file" | sha256sum -c --status; then
+              echo "ok: $file (cached, hash verified)"
+              return
+            fi
+            curl -fSL --retry 8 --retry-delay 15 --retry-all-errors -o "$file" "$1"
+            echo "$2  $file" | sha256sum -c
+          }
+          fetch "$KERNEL_URL" "$KERNEL_SHA256"
+          fetch "$BUSYBOX_URL" "$BUSYBOX_SHA256"
+          cc --version | head -1
+          HARMONY_RDTSC_ALLOWLIST=$PWD/harmony-linux/linux/rdtsc-allowlist-gha.txt \
+          HARMONY_RDRAND_ALLOWLIST=$PWD/harmony-linux/linux/rdrand-allowlist-gha.txt \
+            make -C harmony-linux/linux image
+      - name: Record image identity
+        run: |
+          sha256sum harmony-linux/build/bzImage harmony-linux/build/initramfs.cpio.gz | tee guest-image-report.txt
+          echo "box-built reference hashes (MANIFEST.sha256):" | tee -a guest-image-report.txt
+          cat harmony-linux/linux/MANIFEST.sha256 | tee -a guest-image-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-guest-image
+          path: |
+            guest-image-report.txt
+            harmony-linux/build/bzImage
+            harmony-linux/build/initramfs.cpio.gz
+          if-no-files-found: error
+
+  # X2: Linux boots to /init under assigned-at-exit V-time on the stock
+  # backend. Both tiers gate: the smoke tier (one boot) and the determinism
+  # tier (10 same-seed boots, one normalized log). The localizer stays
+  # informational — it is a diagnostic for when the determinism tier fails.
+  # Release build: the trace checkpoints hash the full 256 MiB guest RAM, which
+  # an unoptimized sha2 makes wall-clock-prohibitive. Two replicas so most
+  # pushes sample two hardware draws.
+  x2-linux-prescriptive:
+    needs: guest-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Four replicas: the runner pool draws several CPU models (EPYC 7763,
+        # EPYC 9V74, Xeon Platinum 8573C observed) and the vendor mix per push
+        # matters while an Intel-only divergence is open.
+        replica: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore image cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            harmony-linux/build/bzImage
+            harmony-linux/build/initramfs.cpio.gz
+          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/linux/rdrand-allowlist.txt', 'harmony-linux/linux/rdrand-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+          fail-on-cache-miss: true
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # Each tier runs under coreutils `timeout`: the test's own wall watchdog
+      # cannot fire while a guest spins exit-free inside a blocking KVM_RUN
+      # ioctl, so an external bound keeps a hung boot from consuming the whole
+      # job budget — and the tee'd serial up to the hang still uploads.
+      - name: X2 smoke (one prescriptive stock boot)
+        run: |
+          grep -m1 "model name" /proc/cpuinfo | tee x2-report.txt
+          X2_LOG_DUMP=$PWD/x2-normalized-log.txt timeout -k 10 900 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
+            x2_prescriptive_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee -a x2-report.txt
+      - name: X2 determinism (10 same-seed boots, one normalized log)
+        run: |
+          X2_BOOTS=10 timeout -k 10 1500 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
+            x2_same_seed_boots_one_normalized_log -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee -a x2-report.txt
+      # The localizers are diagnostics: they must run when the determinism
+      # tier fails, which is exactly when their output matters.
+      - name: X2 first-checkpoint localizer (bounded boots until a divergent pair; informational)
+        if: always()
+        continue-on-error: true
+        run: |
+          timeout -k 10 1200 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
+            x2_component_diff_first_checkpoint -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee -a x2-report.txt
+      - name: X2 divergence localizer (per-component diff; informational)
+        if: always()
+        continue-on-error: true
+        run: |
+          timeout -k 10 1200 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
+            x2_component_diff_two_boots -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee -a x2-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-x2-replica-${{ matrix.replica }}
+          path: |
+            x2-report.txt
+            x2-normalized-log.txt
+          if-no-files-found: error
+
+  # Widen the vendor sample: the pool serves Intel rarely, and every closed
+  # cross-vendor divergence needed an Intel draw to observe. Each replica
+  # prints its CPU model and runs only the bounded first-checkpoint localizer
+  # (sub-second boots), so a wide matrix is cheap. Report-only: an AMD draw
+  # finding no divergent pair is the expected common case.
+  x2-intel-hunt:
+    needs: guest-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore image cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            harmony-linux/build/bzImage
+            harmony-linux/build/initramfs.cpio.gz
+          key: x86-guest-image-${{ hashFiles('harmony-linux/linux/versions.lock', 'harmony-linux/linux/config-fragment', 'harmony-linux/linux/kata/**', 'harmony-linux/linux/patches/x86/**', 'harmony-linux/linux/build-kernel.sh', 'harmony-linux/linux/build-initramfs.sh', 'harmony-linux/linux/init.sh', 'harmony-linux/linux/lib-build.sh', 'harmony-linux/linux/scan-counter-opcodes.sh', 'harmony-linux/linux/rdtsc-allowlist.txt', 'harmony-linux/linux/rdtsc-allowlist-gha.txt', 'harmony-linux/linux/rdrand-allowlist.txt', 'harmony-linux/linux/rdrand-allowlist-gha.txt', 'harmony-linux/scripts/fetch.sh', 'harmony-linux/scripts/lib.sh') }}
+          fail-on-cache-miss: true
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: First-checkpoint localizer (60 bounded draws)
+        run: |
+          grep -m1 "model name" /proc/cpuinfo | tee x2-hunt-report.txt
+          X2_CKPT_ATTEMPTS=60 timeout -k 10 1200 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
+            x2_component_diff_first_checkpoint -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee -a x2-hunt-report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-x2-hunt-replica-${{ matrix.replica }}
+          path: x2-hunt-report.txt
+          if-no-files-found: error
+
+  # Linux compile/lint/test truth for the crates the x86 work touches; the
+  # macOS development host cannot check cfg(linux) code.
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --check -p vmm-backend -p vmm-core
+      - name: clippy
+        run: cargo clippy -p vmm-backend -p vmm-core --all-features --all-targets -- -D warnings
+      - name: tests (portable)
+        run: cargo test -p vmm-backend --all-features

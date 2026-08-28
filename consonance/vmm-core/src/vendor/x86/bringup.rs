@@ -14,7 +14,7 @@
 //! `map_memory` pointer seam — unit-testable with a mock backend on every platform
 //! (and under Miri), independent of the box-only host gate.
 
-use vmm_backend::{Backend, Gpa, MpState, VcpuState, X86, X86Policy};
+use vmm_backend::{Backend, CpuidModel, Gpa, MpState, VcpuState, X86, X86Policy};
 
 use super::contract;
 use super::entry;
@@ -193,16 +193,26 @@ pub fn boot_linux<B: Backend<A = X86>>(
     cmdline: &str,
 ) -> Result<Vmm<B>, VmmError> {
     super::hostassert::enforce()?;
-    compose_linux(backend, kernel, initramfs, guest_ram_len, cmdline)
+    compose_linux(
+        backend,
+        kernel,
+        initramfs,
+        guest_ram_len,
+        cmdline,
+        contract::cpuid_model(),
+    )
 }
 
 /// Compose a ready [`Vmm`] for a Linux direct 64-bit boot, **without** the
 /// host-baseline gate (so the composition — including the `unsafe` `map_memory`
 /// seam and the loader — is unit-testable with a mock backend on every platform).
-/// Mirrors [`compose`]: install the contract policy, allocate RAM,
+/// Mirrors [`compose`]: install the given CPUID model with the contract MSR
+/// filter (the model varies by composition — [`contract::cpuid_model`] on the
+/// descriptive substrates, [`contract::cpuid_model_hw_rng_hidden`] on the stock
+/// prescriptive one), allocate RAM,
 /// [`linux_loader::load`] the kernel/initramfs/`boot_params`/page-tables/GDT, map
 /// the RAM, build + restore the long-mode entry state, and wire the userspace
-/// xAPIC. Order is load-bearing: policy **before** the first run; map **before**
+/// xAPIC. Order is required: policy **before** the first run; map **before**
 /// restore; `ram` moves into the `Vmm` so the mapped pointer stays valid.
 pub(crate) fn compose_linux<B: Backend<A = X86>>(
     mut backend: B,
@@ -210,10 +220,11 @@ pub(crate) fn compose_linux<B: Backend<A = X86>>(
     initramfs: &[u8],
     guest_ram_len: usize,
     cmdline: &str,
+    cpuid: CpuidModel,
 ) -> Result<Vmm<B>, VmmError> {
     // 1. Install policy through the trait, before the first run.
     backend.set_policy(&X86Policy {
-        cpuid: contract::cpuid_model(),
+        cpuid,
         msr_filter: contract::msr_filter_allow(),
     })?;
 
@@ -441,6 +452,56 @@ pub fn boot_linux_selected(
     let work = Box::new(super::work_perf::PerfWorkCounter::open()?);
     let wiring = crate::vmm::VtimeWiring::new(super::contract_vclock_config(), work, seed)?;
     vmm.wire_vtime(wiring);
+    Ok(vmm)
+}
+
+/// The Linux composition for **assigned-at-exit (prescriptive) V-time on the
+/// stock backend** (`docs/VM-EXIT-COUNT-VTIME.md`): the stock `KvmBackend` with
+/// [`VtimeWiring::new_prescriptive`](crate::vmm::VtimeWiring::new_prescriptive)
+/// wired, so V-time is a pure function of the serviced exit stream and the
+/// production [`LivePrescriptiveTrace`](crate::prescriptive::LivePrescriptiveTrace)
+/// records every normalized exit.
+///
+/// Composes via [`compose_linux`] **without** the §1.1 `det-cfl-v1` host gate:
+/// that baseline freezes one physical CPU for the *descriptive* determinism
+/// claim (native instruction behavior must match across the fleet), while this
+/// model's claim is defined over the exit stream plus the frozen CPUID/MSR
+/// contract and is exercised on heterogeneous commodity hosts — residual
+/// native-behavior divergence is exactly what its determinism gates measure.
+/// No hardware work counter is opened; the prescriptive wiring holds the work
+/// axis at zero. The installed CPUID model is
+/// [`contract::cpuid_model_hw_rng_hidden`]: stock KVM cannot trap
+/// RDRAND/RDSEED, so their feature bits are hidden instead of exposed-but-trapped.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn boot_linux_stock_prescriptive(
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    seed: u64,
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
+    let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::KvmBackend::new()?);
+    // The hardware-RNG CPUID bits are hidden: stock KVM cannot trap
+    // RDRAND/RDSEED, so exposed they would feed true entropy into the guest
+    // CRNG (see `contract::cpuid_model_hw_rng_hidden`).
+    let mut vmm = compose_linux(
+        backend,
+        kernel,
+        initramfs,
+        guest_ram_len,
+        cmdline,
+        contract::cpuid_model_hw_rng_hidden(),
+    )?;
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
+        super::contract_vclock_config(),
+        seed,
+    )?);
+    // Offer the task-110 clock page: under prescriptive wiring a pending
+    // registration arms at the doorbell exit itself and the page re-stamps at
+    // serviced-exit tails, so the descriptive Δ `run_until` bound never applies
+    // (the nonzero value remains part of snapshot identity). The guest opts in
+    // with the `harmony_pvclock` cmdline token.
+    vmm.enable_pvclock(1);
     Ok(vmm)
 }
 
@@ -884,8 +945,15 @@ mod tests {
         let kernel = synthetic_bzimage(0x10_0000, 0x400);
         let backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
         let ram = 0x20_0000usize; // 2 MiB (4 KiB-multiple, > pref_address + kernel)
-        let mut vmm =
-            compose_linux(backend, &kernel, &[], ram, "console=ttyS0").expect("compose_linux");
+        let mut vmm = compose_linux(
+            backend,
+            &kernel,
+            &[],
+            ram,
+            "console=ttyS0",
+            contract::cpuid_model(),
+        )
+        .expect("compose_linux");
 
         // The Linux path wires the userspace xAPIC.
         assert!(vmm.lapic_wired());

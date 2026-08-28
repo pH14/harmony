@@ -608,7 +608,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         match control {
             1 => {
                 if self.devices.clockevent.deadline.is_some() {
-                    self.trace_arm_clockevent_cancel()?;
+                    self.trace_clockevent_cancel()?;
                 }
                 self.devices.clockevent.deadline = None;
                 if self.devices.clockevent.line_asserted {
@@ -708,7 +708,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 "arm64 clockevent became due with no interrupt controller".to_string(),
             ));
         }
-        self.trace_arm_clockevent_delivery()?;
+        self.trace_clockevent_delivery()?;
         self.devices.clockevent.deadline = None;
         self.devices.clockevent.line_asserted = true;
         self.devices.clockevent.assertions = self.devices.clockevent.assertions.saturating_add(1);

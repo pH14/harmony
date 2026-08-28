@@ -314,7 +314,7 @@ fn decode_msrs(payload: &[u8]) -> Result<MsrBlock, VmStateError> {
     }
     let mut map = BTreeMap::new();
     let mut prev: Option<u32> = None;
-    for chunk in body.chunks_exact(12) {
+    for chunk in body.as_chunks::<12>().0 {
         let pair = read_fixed::<MsrPairWire>(chunk)?;
         let index = pair.index.get();
         // Strictly ascending indices: rejects a duplicate or out-of-order list
@@ -397,7 +397,7 @@ pub(crate) fn decode_timers(payload: &[u8]) -> Result<TimerQueueState, VmStateEr
         return Err(VmStateError::InvalidField);
     }
     let mut entries = Vec::with_capacity(count);
-    for chunk in body.chunks_exact(32) {
+    for chunk in body.as_chunks::<32>().0 {
         let w = read_fixed::<TimerEntryWire>(chunk)?;
         entries.push(TimerEntry {
             deadline_vns: w.deadline_vns.get(),

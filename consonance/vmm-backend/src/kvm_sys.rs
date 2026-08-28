@@ -39,6 +39,7 @@ use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
 use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Completion, X86Policy};
+use crate::arch::x86::{canonicalize_regs, canonicalize_sregs, canonicalize_xsave};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
@@ -742,14 +743,17 @@ impl KvmBackend {
 
     /// Read the host-sized XSAVE image: `KVM_GET_XSAVE2` (the
     /// `KVM_CAP_XSAVE2`-reported size) where available, else the fixed 4 KiB
-    /// `KVM_GET_XSAVE`. The returned bytes are `VcpuState.xsave` verbatim.
+    /// `KVM_GET_XSAVE`. The returned bytes are `VcpuState.xsave` after
+    /// [`canonicalize_xsave`] collapses the init-optimization encodings.
     fn save_xsave(&self) -> Result<Vec<u8>> {
-        match self.xsave2_size {
+        let mut bytes = match self.xsave2_size {
             // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_xsave2` allocates and
             // fills exactly `n` bytes (`n >= size_of::<kvm_xsave>()`). Miri-excluded.
-            Some(n) => unsafe { raw_get_xsave2(self.vcpu.as_raw_fd(), n) },
-            None => Ok(xsave_to_bytes(&self.vcpu.get_xsave().map_err(kvm_err)?)),
-        }
+            Some(n) => unsafe { raw_get_xsave2(self.vcpu.as_raw_fd(), n)? },
+            None => xsave_to_bytes(&self.vcpu.get_xsave().map_err(kvm_err)?),
+        };
+        canonicalize_xsave(&mut bytes);
+        Ok(bytes)
     }
 
     /// Read the guest's `IA32_TSC_AUX` (`0xC000_0103`) via `KVM_GET_MSRS`, for an
@@ -1545,9 +1549,13 @@ impl Backend for KvmBackend {
         let xsave = self.save_xsave()?;
         let msrs = self.save_msrs()?;
 
+        let mut sregs = from_kvm_sregs2(&sregs2);
+        canonicalize_sregs(&mut sregs);
+        let mut regs = from_kvm_regs(&regs);
+        canonicalize_regs(&mut regs);
         Ok(VcpuState {
-            regs: from_kvm_regs(&regs),
-            sregs: from_kvm_sregs2(&sregs2),
+            regs,
+            sregs,
             xcr0: xcr0_of(&xcrs),
             debugregs: from_kvm_debugregs(&dregs),
             events: from_kvm_events(&kevents),

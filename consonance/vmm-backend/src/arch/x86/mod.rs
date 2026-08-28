@@ -10,7 +10,10 @@ mod config;
 mod state;
 
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
-pub use state::{DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState};
+pub use state::{
+    DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
+    canonicalize_regs, canonicalize_sregs, canonicalize_xsave,
+};
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;

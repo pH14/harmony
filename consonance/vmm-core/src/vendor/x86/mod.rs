@@ -98,6 +98,16 @@ impl Vendor for X86 {
         vmm.dispatch_mmio(gpa, size, write)
     }
 
+    fn normalize_prescriptive_exit(
+        exit: &vmm_backend::Exit<Self>,
+    ) -> Option<(crate::prescriptive::NormalizedEventClass, Vec<u8>)> {
+        Some(dispatch::normalize_prescriptive_exit_x86(exit))
+    }
+
+    fn post_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
+        vmm.service_lapic_timer_due()
+    }
+
     fn service_pending_irqs<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
         vmm.service_pending_irqs()
     }

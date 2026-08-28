@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Hardware-RNG (rdrand/rdseed) per-site allowlist for the guest kernel — the
+# box-toolchain baseline. Every entry is a site the review confirmed sits
+# behind an X86_FEATURE_RDRAND / X86_FEATURE_RDSEED check: the frozen CPUID
+# (stock prescriptive composition) hides both features, so a checked site is
+# dead code in the image; an unchecked site would execute natively (SVM cannot
+# intercept the instruction) and feed true entropy no contract can replay.
+# Selected by build-kernel.sh via HARMONY_RDRAND_ALLOWLIST (default: this
+# file); the x86-vtime workflow selects the runner-toolchain baseline
+# rdrand-allowlist-gha.txt instead.
+#
+# No box capture exists yet (the marker below keeps box builds fail-closed);
+# capturing and reviewing it is part of the box re-baseline issue.
+# GATE-UNARMED

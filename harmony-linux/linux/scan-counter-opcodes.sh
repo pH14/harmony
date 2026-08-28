@@ -59,16 +59,26 @@
 # hit fails the build (no allowlist — a real counter read there is never
 # survivable-by-trap in the same way and must be reviewed by a human).
 #
-# Usage: scan-counter-opcodes.sh <vmlinux> [allowlist]
+# SECOND MNEMONIC CLASS — HARDWARE RNG (rdrand `0f c7 /6`, rdseed `0f c7 /7`),
+# same per-site machinery, SEPARATE allowlist, opposite justification regime:
+# a counter read is survivable-by-trap, but SVM cannot intercept RDRAND/RDSEED,
+# so an executed site feeds true entropy no contract can replay. The frozen
+# CPUID hides both features from the guest (stock prescriptive composition);
+# this scan is the audit that every site left in the image sits behind the
+# feature check that hiding turns off — the CPU-MSR-CONTRACT §2.4 x86
+# RDRAND/RDSEED disposition's enforcement.
+#
+# Usage: scan-counter-opcodes.sh <vmlinux> [allowlist] [rng-allowlist]
 #   <vmlinux> is the UNCOMPRESSED kernel ELF; the sibling boot artifacts are
 #   derived from its build tree (arch/x86/boot/{setup.elf,compressed/vmlinux}).
 #   The compressed bzImage itself is not directly scannable (no symbols) — it is
-#   covered through the ELF products it is built from. Defaults the allowlist to
-#   rdtsc-allowlist.txt next to this script.
+#   covered through the ELF products it is built from. Defaults the allowlists
+#   to rdtsc-allowlist.txt / rdrand-allowlist.txt next to this script.
 set -euo pipefail
 
-VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux> [allowlist]}
+VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux> [allowlist] [rng-allowlist]}
 ALLOWLIST=${2:-"$(dirname "$0")/rdtsc-allowlist.txt"}
+RNG_ALLOWLIST=${3:-"$(dirname "$0")/rdrand-allowlist.txt"}
 
 # The boot artifacts. `vmlinux` (the kernel proper) is scanned by symbol-
 # attributed objdump against the allowlist; `setup`/`decompressor` (16-bit /
@@ -91,7 +101,7 @@ RAW_ARTIFACTS=(
 # take NO operands, so the first non-prefix token IS the mnemonic — a symbol
 # named "...rdtsc..." in some other instruction's operand cannot false-match.
 sites() {
-    awk '
+    awk -v mnre="${3:-^(rdtsc|rdtscp)$}" '
         /^[0-9a-f]+ <[^>]+>:$/ {
             fstart = $1; sym = $2; gsub(/[<>:]/, "", sym); next
         }
@@ -108,7 +118,7 @@ sites() {
                     mn = t
                     break
                 }
-                if (mn == "rdtsc" || mn == "rdtscp") print sym, addr, fstart
+                if (mn ~ mnre) print sym, addr, fstart
             }
         }
     ' "$1" | while read -r sym addr fstart; do
@@ -119,9 +129,10 @@ sites() {
     done | sort
 }
 
-# all_sites: disassemble the kernel proper and emit its artifact-qualified site
-# list (setup/decompressor go through the raw-byte scan instead). FAILS if
-# vmlinux is missing — a gate that silently skips its target passes vacuously.
+# all_sites [mnemonic-regex]: disassemble the kernel proper and emit its
+# artifact-qualified site list for that mnemonic class (setup/decompressor go
+# through the raw-byte scan instead). FAILS if vmlinux is missing — a gate that
+# silently skips its target passes vacuously.
 all_sites() {
     if [ ! -f "$VMLINUX" ]; then
         echo "FAIL: kernel ELF '$VMLINUX' not found — scan the uncompressed vmlinux." >&2
@@ -130,7 +141,7 @@ all_sites() {
     local dis
     dis=$(mktemp)
     objdump -d "$VMLINUX" > "$dis"
-    sites "$dis" vmlinux
+    sites "$dis" vmlinux "${1:-}"
     rm -f "$dis"
 }
 
@@ -144,7 +155,7 @@ all_sites() {
 # raw_byte_scan_one <path> <tag>: scan one artifact's executable sections. 0 =
 # clean, 1 = a hit or a structural problem (missing/no-sections).
 raw_byte_scan_one() {
-    local path=$1 tag=$2 names s hex n31 n01f9 rc=0
+    local path=$1 tag=$2 names s hex n31 n01f9 nrng m reg rc=0
     if [ ! -f "$path" ]; then
         echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
         echo "  bzImage must be scanned (setup + decompressor + kernel); build first." >&2
@@ -181,6 +192,22 @@ raw_byte_scan_one() {
             echo "FAIL: raw counter-opcode bytes in $tag section $s — rdtsc(0f31)=$n31" >&2
             echo "  rdtscp(0f01f9)=$n01f9. These 16-bit/mode-mixed artifacts must carry NONE;" >&2
             echo "  a real counter read here is not trap-survivable — review by hand." >&2
+            rc=1
+        fi
+        # rdrand/rdseed are `0f c7` with modrm reg field 6/7 (`/1` is cmpxchg8b,
+        # a legitimate instruction), so decode the modrm byte of each candidate.
+        nrng=0
+        for m in $(grep -oE '0fc7[0-9a-f]{2}' <<<"$hex"); do
+            reg=$(( (0x${m:4:2} >> 3) & 7 ))
+            if [ "$reg" = 6 ] || [ "$reg" = 7 ]; then
+                nrng=$((nrng + 1))
+            fi
+        done
+        if [ "$nrng" != 0 ]; then
+            echo "FAIL: raw hardware-RNG opcode bytes in $tag section $s —" >&2
+            echo "  rdrand/rdseed(0fc7 /6|/7)=$nrng. These artifacts must carry NONE: the" >&2
+            echo "  frozen CPUID hides the feature but SVM cannot intercept the instruction," >&2
+            echo "  so an executed site is a true-entropy hole — review by hand." >&2
             rc=1
         fi
     done
@@ -225,11 +252,12 @@ scan() {
     scan_sites "$(sites "$1")" "$2"
 }
 
-# scan_sites <site-list> <allowlist-file>: the comparison itself, over an
-# already-collected site list (so the real scan can feed it every artifact at
-# once and the self-test can feed it a fixture).
+# scan_sites <site-list> <allowlist-file> [kind]: the comparison itself, over
+# an already-collected site list (so the real scan can feed it every artifact
+# at once and the self-test can feed it a fixture). `kind` picks the failure
+# guidance: `counter` (default, rdtsc/rdtscp) or `hwrng` (rdrand/rdseed).
 scan_sites() {
-    local found=$1 allow=$2
+    local found=$1 allow=$2 kind=${3:-counter}
     local allowed_entries bad=0
     allowed_entries=$(allowed "$allow") || return 2
     local unlisted stale
@@ -238,18 +266,28 @@ scan_sites() {
     stale=$(comm -13 <(printf '%s\n' "$found" | sed '/^$/d') \
         <(printf '%s\n' "$allowed_entries" | sed '/^$/d'))
     if [ -n "$unlisted" ]; then
-        echo "FAIL: raw counter read(s) (rdtsc/rdtscp) not matching the allowlist" >&2
-        echo "  (new function, or the instruction COUNT changed inside a reviewed one):" >&2
-        printf '%s\n' "$unlisted" | sed 's/^/  /' >&2
-        echo "  Review each: if it is a legitimate trap-backstopped path, record" >&2
-        echo "  'function count' in $ALLOWLIST with a justification comment; if it is" >&2
-        echo "  new timekeeping code, route it through the harmony pvclock page instead." >&2
+        if [ "$kind" = hwrng ]; then
+            echo "FAIL: hardware-RNG instruction site(s) (rdrand/rdseed) not matching the allowlist:" >&2
+            printf '%s\n' "$unlisted" | sed 's/^/  /' >&2
+            echo "  Review each: the frozen CPUID hides RDRAND/RDSEED from the guest, so a" >&2
+            echo "  site is allowlistable ONLY if it sits behind an X86_FEATURE_RDRAND /" >&2
+            echo "  X86_FEATURE_RDSEED check (dead code under the contract); record the" >&2
+            echo "  reviewed site in $allow. An unconditional site is a true-entropy hole" >&2
+            echo "  (SVM cannot intercept the instruction) and must be removed instead." >&2
+        else
+            echo "FAIL: raw counter read(s) (rdtsc/rdtscp) not matching the allowlist" >&2
+            echo "  (new function, or the instruction COUNT changed inside a reviewed one):" >&2
+            printf '%s\n' "$unlisted" | sed 's/^/  /' >&2
+            echo "  Review each: if it is a legitimate trap-backstopped path, record" >&2
+            echo "  'function count' in $allow with a justification comment; if it is" >&2
+            echo "  new timekeeping code, route it through the harmony pvclock page instead." >&2
+        fi
         bad=1
     fi
     if [ -n "$stale" ]; then
         echo "FAIL: stale allowlist entr(ies) — no matching site/count in the image:" >&2
         printf '%s\n' "$stale" | sed 's/^/  /' >&2
-        echo "  Update or remove them in $ALLOWLIST (exact accounting, both directions)." >&2
+        echo "  Update or remove them in $allow (exact accounting, both directions)." >&2
         bad=1
     fi
     return $bad
@@ -379,6 +417,42 @@ EOF
         exit 1
     fi
 
+    # HARDWARE-RNG CLASS: a reviewed rdrand site passes, a planted rdseed in a
+    # non-allowlisted function fails, and the two mnemonic classes stay
+    # separate — the counter scan must see NO rng site and vice versa.
+    cat > "$d/rng.dis" << 'EOF'
+ffffffff81000000 <x86_init_rdrand>:
+ffffffff81000000:	48 0f c7 f0          	rdrand %rax
+ffffffff81000004:	c3                   	ret
+EOF
+    printf 'vmlinux:x86_init_rdrand+0x0\n' > "$d/rng-allow.txt"
+    if ! scan_sites "$(sites "$d/rng.dis" vmlinux '^(rdrand|rdseed)$')" \
+        "$d/rng-allow.txt" hwrng >/dev/null 2>&1; then
+        echo "FAIL: self-test — the clean rng fixture must pass" >&2
+        exit 1
+    fi
+    cat > "$d/rng-planted.dis" << 'EOF'
+ffffffff81000000 <x86_init_rdrand>:
+ffffffff81000000:	48 0f c7 f0          	rdrand %rax
+ffffffff81000004:	c3                   	ret
+ffffffff81000010 <sneaky_seed>:
+ffffffff81000010:	0f c7 f8             	rdseed %eax
+ffffffff81000013:	c3                   	ret
+EOF
+    if scan_sites "$(sites "$d/rng-planted.dis" vmlinux '^(rdrand|rdseed)$')" \
+        "$d/rng-allow.txt" hwrng >/dev/null 2>&1; then
+        echo "FAIL: self-test — a planted rdseed in a non-allowlisted function was NOT caught" >&2
+        exit 1
+    fi
+    if [ -n "$(sites "$d/rng.dis" vmlinux)" ]; then
+        echo "FAIL: self-test — the counter scan matched an rng site (class separation broken)" >&2
+        exit 1
+    fi
+    if [ -n "$(sites "$d/clean.dis" vmlinux '^(rdrand|rdseed)$')" ]; then
+        echo "FAIL: self-test — the rng scan matched a counter site (class separation broken)" >&2
+        exit 1
+    fi
+
     # RAW-BYTE SCAN (r7 P2): the fail-closed scan must catch a counter opcode in
     # an executable section regardless of decode mode. Assemble a tiny ELF whose
     # AX `.text` carries a raw `0f 31` (rdtsc), and a clean one, and drive
@@ -410,10 +484,27 @@ EOF
                 echo "  section — the X-flag selection is not catching combined flags" >&2
                 exit 1
             fi
+            # rdrand (`0f c7 f0`, modrm reg 6) must be caught; cmpxchg8b
+            # (`0f c7 0f`, modrm reg 1) shares the opcode bytes and must pass.
+            printf '.section .text,"ax"\n.byte 0x0f,0xc7,0xf0\n.byte 0xc3\n' \
+                | as -o "$d/rng.elf" - 2>/dev/null && rng_ok=1
+            printf '.section .text,"ax"\n.byte 0x0f,0xc7,0x0f\n.byte 0xc3\n' \
+                | as -o "$d/cmpxchg.elf" - 2>/dev/null && cx_ok=1
+            if [ "${rng_ok:-0}" = 1 ] && [ "${cx_ok:-0}" = 1 ]; then
+                if raw_byte_scan_one "$d/rng.elf" rng >/dev/null 2>&1; then
+                    echo "FAIL: self-test — raw-byte scan MISSED a planted 0f c7 /6 (rdrand)" >&2
+                    exit 1
+                fi
+                if ! raw_byte_scan_one "$d/cmpxchg.elf" cmpxchg >/dev/null 2>&1; then
+                    echo "FAIL: self-test — raw-byte scan flagged cmpxchg8b (0f c7 /1) as an" >&2
+                    echo "  rng opcode — the modrm reg-field decode is wrong" >&2
+                    exit 1
+                fi
+            fi
             raw_selftest="raw-byte-scan, "
         fi
     fi
-    echo "ok: scan self-test (planted-new, planted-prefixed, planted-inside-allowlisted, removed+added-pair, stale-entry, bare-entry, artifact-qualification, ${raw_selftest:-}fixtures all caught)"
+    echo "ok: scan self-test (planted-new, planted-prefixed, planted-inside-allowlisted, removed+added-pair, stale-entry, bare-entry, artifact-qualification, rng-class, ${raw_selftest:-}fixtures all caught)"
 }
 
 self_test
@@ -431,9 +522,15 @@ command -v objdump >/dev/null 2>&1 || {
     echo "FAIL: allowlist $ALLOWLIST not found" >&2
     exit 1
 }
+[ -f "$RNG_ALLOWLIST" ] || {
+    echo "FAIL: rng allowlist $RNG_ALLOWLIST not found" >&2
+    exit 1
+}
 
-# (1) The kernel proper: symbol-attributed sites, artifact-qualified (r4 P2).
+# (1) The kernel proper: symbol-attributed sites, artifact-qualified (r4 P2),
+# one pass per mnemonic class against its own allowlist.
 FOUND=$(all_sites)
+RNG_FOUND=$(all_sites '^(rdrand|rdseed)$')
 
 if unarmed "$ALLOWLIST"; then
     echo "###############################################################################" >&2
@@ -445,8 +542,22 @@ if unarmed "$ALLOWLIST"; then
     printf '%s\n' "$FOUND" | sed 's/^/  /' >&2
     exit 1
 fi
+if unarmed "$RNG_ALLOWLIST"; then
+    echo "###############################################################################" >&2
+    echo "# FAIL: hardware-RNG gate UNARMED ('# GATE-UNARMED' marker present in" >&2
+    echo "# $RNG_ALLOWLIST) — a disarmed reachability gate never passes a build" >&2
+    echo "# (fail-closed). Captured baseline, paste-ready after entry-by-entry review" >&2
+    echo "# (each site must sit behind X86_FEATURE_RDRAND/RDSEED; commit it + REMOVE" >&2
+    echo "# the marker to arm the gate):" >&2
+    echo "###############################################################################" >&2
+    printf '%s\n' "$RNG_FOUND" | sed 's/^/  /' >&2
+    exit 1
+fi
 
 if ! scan_sites "$FOUND" "$ALLOWLIST"; then
+    exit 1
+fi
+if ! scan_sites "$RNG_FOUND" "$RNG_ALLOWLIST" hwrng; then
     exit 1
 fi
 
@@ -458,4 +569,5 @@ if ! raw_byte_scan; then
 fi
 
 N=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$ALLOWLIST" | wc -l | tr -d ' ')
-echo "ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the $N reviewed per-site allowlist entries (symbol+offset); setup + decompressor: raw executable-byte scan clean (${#RAW_ARTIFACTS[@]} artifacts, decode-independent)"
+NRNG=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$RNG_ALLOWLIST" | wc -l | tr -d ' ')
+echo "ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the $N reviewed per-site allowlist entries and every rdrand/rdseed site one of the $NRNG reviewed rng entries (symbol+offset); setup + decompressor: raw executable-byte scan clean (${#RAW_ARTIFACTS[@]} artifacts, decode-independent, counter + rng opcodes)"

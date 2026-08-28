@@ -121,7 +121,36 @@ evidence satisfy both the positive and anti-vacuity clauses.
 
 ## N1 — one branch
 
-Not started. N0 must pass first.
+### Integration decisions
+
+- **Merge the complete x86 history, not a squashed patch.** The merge parent is
+  `origin/claude/x86-prescriptive-vtime` at `b0c019f1`; its status ledger records
+  X3 met at `57b16ce0` and the later head only removes diagnostic workflow steps.
+- **The ARM dissonance tree and license policy win byte-for-byte.** The staged
+  merge has no diff from N0 commit `a352b4c9` under `dissonance/` or `deny.toml`;
+  the retained dissonance tree object is
+  `b9148e8732b1d4b58841890210ee6cbfdc7eed8c`.
+- **Preserve both historical ledgers.** Rename detection tried to combine the
+  x86 `PRESCRIPTIVE-VTIME-STATUS.md` with the ARM
+  `VM-EXIT-COUNT-VTIME-STATUS.md`; the resolution restores each under its own
+  historical name.
+- **Keep the M6 ARM delivery fabric with the shared trace name.** The arm64
+  conflict retains userspace-GIC level assertion and the ruled in-kernel-GIC
+  fallback, while adopting the x86 branch's architecture-neutral
+  `trace_clockevent_delivery` helper.
+
+### Integration evidence
+
+```text
+merge parents: a352b4c9 + b0c019f1
+unmerged paths: none
+dissonance/ and deny.toml diff against a352b4c9: empty
+cargo build --all-features: PASS
+```
+
+**N1 overall: IN PROGRESS.** The source merge is resolved and builds locally.
+The planted comparator negative, exact-tree repository gates, and all-three-
+machine reference reruns remain.
 
 ## N2 — one clock
 

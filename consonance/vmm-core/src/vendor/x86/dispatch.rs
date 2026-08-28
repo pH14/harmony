@@ -13,9 +13,10 @@
 //! arch exits.
 
 use hypercall_proto::Service;
-use vmm_backend::{Backend, Gpa, VcpuState, X86, X86Completion};
+use vmm_backend::{Backend, CommonExit, Exit, Gpa, VcpuState, X86, X86Completion, X86Exit};
 use vtime::VClockConfig;
 
+use crate::prescriptive::{DeviceClass, NormalizedEventClass};
 use crate::snapshot::SnapshotError;
 use crate::vendor::x86::contract::{self, MsrDisposition};
 use crate::vendor::x86::devices::{ISA_DEBUG_EXIT_PORT, LegacyPlatform, REPORT_PORT, Uart8250};
@@ -99,13 +100,170 @@ pub(crate) const DOORBELL_PORT: u16 = 0x0CA1;
 /// nothing will satisfy).
 pub(crate) const RFLAGS_IF: u64 = 1 << 9;
 
+/// The normalized event class of a port-I/O exit, by port. One classifier
+/// serves both prescriptive V-time advancement ([`Vmm::advance_prescriptive_for_port`])
+/// and log normalization ([`normalize_prescriptive_exit_x86`]), so the assigned
+/// duration and the recorded class cannot disagree.
+pub(crate) fn port_event_class(port: u16) -> NormalizedEventClass {
+    if port == ISA_DEBUG_EXIT_PORT {
+        NormalizedEventClass::Terminal
+    } else if port == DOORBELL_PORT {
+        NormalizedEventClass::Doorbell
+    } else if Uart8250::owns(port) {
+        NormalizedEventClass::DeviceMmio(DeviceClass::Serial)
+    } else if matches!(port, 0x0020 | 0x0021 | 0x00A0 | 0x00A1 | 0x04D0 | 0x04D1) {
+        // The 8259 PIC command/data ports and the ELCR pair.
+        NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
+    } else {
+        // The report channel, the accepted legacy ISA/PCI ports, and any
+        // unmodeled port (whose dispatch fails closed). Retain a stable class
+        // in the raw failure trace without pretending it was a modeled device.
+        NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
+    }
+}
+
+/// The normalized event class of an MSR access: the `emulate-vtime` TSC MSRs
+/// are time reads; every other surfaced index is architectural control.
+fn msr_event_class(index: u32) -> NormalizedEventClass {
+    if matches!(index, IA32_TSC | IA32_TSC_ADJUST) {
+        NormalizedEventClass::TimeRead
+    } else {
+        NormalizedEventClass::ArchitecturalControl
+    }
+}
+
+/// Convert an x86 backend exit to the substrate-independent M1 log shape.
+/// Payloads are fixed-order little-endian encodings of every field that can
+/// affect dispatch; no backend debug string or host address enters this log.
+/// Arch-exit payloads carry a leading discriminant byte (the `X86Exit` variant)
+/// so two variants sharing a class can never alias byte-for-byte.
+pub(crate) fn normalize_prescriptive_exit_x86(exit: &Exit<X86>) -> (NormalizedEventClass, Vec<u8>) {
+    match exit {
+        Exit::Common(CommonExit::Mmio { gpa, size, write }) => {
+            let mut payload = gpa.0.to_le_bytes().to_vec();
+            payload.push(*size);
+            match write {
+                Some(value) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&value.to_le_bytes());
+                }
+                None => payload.push(0),
+            }
+            let class = if (APIC_MMIO_BASE..APIC_MMIO_END).contains(&gpa.0) {
+                NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController)
+            } else {
+                // Dispatch will fail closed. Retain a stable class in the raw
+                // failure trace without pretending it was a modeled device.
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
+            };
+            (class, payload)
+        }
+        Exit::Common(CommonExit::Idle) => (NormalizedEventClass::Idle, Vec::new()),
+        Exit::Common(CommonExit::Shutdown) => (NormalizedEventClass::Terminal, Vec::new()),
+        Exit::Common(CommonExit::Hypercall(frame)) => {
+            let mut payload = Vec::new();
+            for arg in frame.args {
+                payload.extend_from_slice(&arg.to_le_bytes());
+            }
+            (NormalizedEventClass::Doorbell, payload)
+        }
+        Exit::Common(CommonExit::Deadline { reached }) => (
+            NormalizedEventClass::TimeRead,
+            reached.0.to_le_bytes().to_vec(),
+        ),
+        Exit::Arch(arch) => {
+            let mut payload = vec![match arch {
+                X86Exit::Io { .. } => 0u8,
+                X86Exit::Rdmsr { .. } => 1,
+                X86Exit::Wrmsr { .. } => 2,
+                X86Exit::Cpuid { .. } => 3,
+                X86Exit::Rdtsc => 4,
+                X86Exit::Rdtscp => 5,
+                X86Exit::Rdrand { .. } => 6,
+                X86Exit::Rdseed { .. } => 7,
+            }];
+            let class = match arch {
+                X86Exit::Io { port, size, write } => {
+                    payload.extend_from_slice(&port.to_le_bytes());
+                    payload.push(*size);
+                    match write {
+                        Some(value) => {
+                            payload.push(1);
+                            payload.extend_from_slice(&value.to_le_bytes());
+                        }
+                        None => payload.push(0),
+                    }
+                    port_event_class(*port)
+                }
+                X86Exit::Rdmsr { index } => {
+                    payload.extend_from_slice(&index.to_le_bytes());
+                    msr_event_class(*index)
+                }
+                X86Exit::Wrmsr { index, value } => {
+                    payload.extend_from_slice(&index.to_le_bytes());
+                    payload.extend_from_slice(&value.to_le_bytes());
+                    msr_event_class(*index)
+                }
+                X86Exit::Cpuid { leaf, subleaf } => {
+                    payload.extend_from_slice(&leaf.to_le_bytes());
+                    payload.extend_from_slice(&subleaf.to_le_bytes());
+                    NormalizedEventClass::ArchitecturalControl
+                }
+                X86Exit::Rdtsc | X86Exit::Rdtscp => NormalizedEventClass::TimeRead,
+                X86Exit::Rdrand { width } | X86Exit::Rdseed { width } => {
+                    payload.push(*width);
+                    NormalizedEventClass::ArchitecturalControl
+                }
+            };
+            (class, payload)
+        }
+    }
+}
+
 impl<B: Backend<A = X86>> Vmm<B> {
+    /// Assign this port-I/O exit's prescriptive duration by its normalized
+    /// class ([`port_event_class`]). Terminal and doorbell exits take no
+    /// assigned advancement (arm64 parity: the doorbell exchange and the
+    /// terminating debug-exit advance by zero). A no-op on descriptive wiring.
+    fn advance_prescriptive_for_port(&mut self, port: u16) -> Result<(), VmmError> {
+        if !self.prescriptive_vtime_enabled() {
+            return Ok(());
+        }
+        let vns = match port_event_class(port) {
+            NormalizedEventClass::DeviceMmio(DeviceClass::Serial) => contract::SERIAL_EXIT_VNS,
+            NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController) => {
+                contract::INTERRUPT_CONTROLLER_EXIT_VNS
+            }
+            NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual) => {
+                contract::PARAVIRTUAL_EXIT_VNS
+            }
+            _ => return Ok(()),
+        };
+        self.advance_prescriptive_vtime(vns)
+    }
+
+    /// Assign a surfaced MSR access's prescriptive duration: a trapped time
+    /// read for the `emulate-vtime` TSC MSRs, architectural control for every
+    /// other disposition. A no-op on descriptive wiring.
+    fn advance_prescriptive_for_msr(&mut self, disp: &MsrDisposition) -> Result<(), VmmError> {
+        if !self.prescriptive_vtime_enabled() {
+            return Ok(());
+        }
+        let vns = if matches!(disp, MsrDisposition::EmulateVtime) {
+            contract::TRAPPED_TIME_READ_VNS
+        } else {
+            contract::ARCH_CONTROL_EXIT_VNS
+        };
+        self.advance_prescriptive_vtime(vns)
+    }
+
     pub(crate) fn dispatch_out(
         &mut self,
         port: u16,
         size: u8,
         value: u32,
     ) -> Result<Step, VmmError> {
+        self.advance_prescriptive_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
             require_byte_io("OUT", port, size)?;
             return Ok(self.terminate(TerminalReason::DebugExit { code: value as u8 }));
@@ -155,6 +313,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
+        self.advance_prescriptive_for_port(port)?;
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;
             // `read_in` (not `read`): a byte read of the RBR consumes the next
@@ -200,16 +359,19 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 gpa.0
             )));
         }
+        if self.prescriptive_vtime_enabled() {
+            self.advance_prescriptive_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
+        }
         let now_vns = self.now_vns()?;
         let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
-        let lapic = self
-            .devices
-            .lapic
-            .as_mut()
-            .expect("in_apic_page implies wired");
         match write {
             None => {
                 // xAPIC register load (32-bit). `complete_read` masks to `size`.
+                let lapic = self
+                    .devices
+                    .lapic
+                    .as_mut()
+                    .expect("in_apic_page implies wired");
                 let value = lapic.mmio_read(offset, now_vns).map_err(|e| {
                     VmmError::ContractViolation(format!("xAPIC read {offset:#x}: {e}"))
                 })?;
@@ -217,13 +379,73 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 Ok(Step::Continued)
             }
             Some(v) => {
-                // xAPIC register store (32-bit); no completion.
-                lapic.mmio_write(offset, v as u32, now_vns).map_err(|e| {
-                    VmmError::ContractViolation(format!("xAPIC write {offset:#x}: {e}"))
-                })?;
+                // xAPIC register store (32-bit); no completion. A store may arm,
+                // re-arm, or disarm the LVT timer; mirror any deadline change
+                // into the independent prescriptive schedule (a no-op without a
+                // wired trace).
+                let (deadline_before, deadline_after, timer_id) = {
+                    let lapic = self
+                        .devices
+                        .lapic
+                        .as_mut()
+                        .expect("in_apic_page implies wired");
+                    let before = lapic.next_timer_deadline();
+                    lapic.mmio_write(offset, v as u32, now_vns).map_err(|e| {
+                        VmmError::ContractViolation(format!("xAPIC write {offset:#x}: {e}"))
+                    })?;
+                    (
+                        before,
+                        lapic.next_timer_deadline(),
+                        u32::from(lapic.timer_vector()),
+                    )
+                };
+                if deadline_after != deadline_before {
+                    match deadline_after {
+                        Some(deadline_vns) => {
+                            self.trace_clockevent_schedule_vns(deadline_vns, timer_id)?;
+                        }
+                        None => self.trace_clockevent_cancel()?,
+                    }
+                }
                 Ok(Step::Continued)
             }
         }
+    }
+
+    /// After the exit's V-time advance and pvclock publication, fire the LAPIC
+    /// timer if this exit crossed its deadline, recording the delivery — and,
+    /// for a periodic reload, the next deadline — in the independent
+    /// prescriptive schedule. The fire is recorded inside the crossing event
+    /// because the placement oracle requires each delivery at the first event
+    /// whose post-advance V-time covers the deadline
+    /// ([`crate::prescriptive::check_delivery_placement`]); the next entry's
+    /// [`Self::service_pending_irqs`] `advance_to` is then an idempotent no-op
+    /// for the same V-time and injects the fired vector as before. Prescriptive
+    /// compositions only: the descriptive path keeps firing at the next entry,
+    /// so its state and hashes are byte-for-byte unchanged.
+    pub(crate) fn service_lapic_timer_due(&mut self) -> Result<(), VmmError> {
+        if !self.prescriptive_vtime_enabled() || self.devices.lapic.is_none() {
+            return Ok(());
+        }
+        let now_vns = self.now_vns()?;
+        let (fired, next_deadline, timer_id) = {
+            let lapic = self.devices.lapic.as_mut().expect("is_some checked above");
+            let fired = lapic.advance_to(now_vns);
+            (
+                fired,
+                lapic.next_timer_deadline(),
+                u32::from(lapic.timer_vector()),
+            )
+        };
+        if fired {
+            self.trace_clockevent_delivery()?;
+            // A periodic timer reloaded inside `advance_to`; that reload is
+            // the next scheduled deadline.
+            if let Some(deadline_vns) = next_deadline {
+                self.trace_clockevent_schedule_vns(deadline_vns, timer_id)?;
+            }
+        }
+        Ok(())
     }
 
     /// Raise `vector` into the userspace-LAPIC IRR so the existing IRQ
@@ -341,6 +563,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
     pub(crate) fn dispatch_rdmsr(&mut self, index: u32) -> Result<Step, VmmError> {
         let disp = contract::rdmsr_disposition(index);
+        self.advance_prescriptive_for_msr(&disp)?;
         loud_msr(
             MsrDir::Read,
             index,
@@ -371,6 +594,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
     pub(crate) fn dispatch_wrmsr(&mut self, index: u32, value: u64) -> Result<Step, VmmError> {
         let disp = contract::wrmsr_disposition(index, value);
+        self.advance_prescriptive_for_msr(&disp)?;
         loud_msr(
             MsrDir::Write,
             index,
@@ -398,6 +622,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_cpuid(&mut self, leaf: u32, subleaf: u32) -> Result<Step, VmmError> {
+        if self.prescriptive_vtime_enabled() {
+            self.advance_prescriptive_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
+        }
         // Stock KVM answers CPUID in-kernel and never reaches here; a backend that
         // surfaces it gets the frozen model overlaid with the live dynamic cells.
         let state = self.backend.save()?;
@@ -429,7 +656,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                         .to_string(),
                 ));
             };
-            let work = vt.work.work()?;
+            let work = vt.intercept_work()?;
             // This is a V-time intercept (a synchronized point): record its
             // *deterministic* work so the `VTIM` hash anchors here, not to a
             // skid-laden live read at hash time (task-27 item 2).
@@ -465,7 +692,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             };
             match index {
                 IA32_TSC => {
-                    let work = vt.work.work()?;
+                    let work = vt.intercept_work()?;
                     vt.last_intercept_work = work;
                     vt.guest_clock(work)
                 }
@@ -473,7 +700,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     // A TSC_ADJUST access is a V-time MSR intercept too: sample its
                     // deterministic work so the hashed effective V-time stays current
                     // (the returned value — the adjust — does not depend on work).
-                    let work = vt.work.work()?;
+                    let work = vt.intercept_work()?;
                     vt.last_intercept_work = work;
                     vt.guest_clock_offset
                 }
@@ -508,7 +735,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             };
             match index {
                 IA32_TSC => {
-                    let work = vt.work.work()?;
+                    let work = vt.intercept_work()?;
                     vt.last_intercept_work = work;
                     // guest_clock(work) == value ⇔ adjust = value − VClock::guest_ticks(work).
                     vt.guest_clock_offset = value.wrapping_sub(vt.clock.guest_ticks(work));
@@ -516,7 +743,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 IA32_TSC_ADJUST => {
                     // V-time MSR intercept — sample work to keep the hashed effective
                     // V-time current (see the RDMSR side).
-                    let work = vt.work.work()?;
+                    let work = vt.intercept_work()?;
                     vt.last_intercept_work = work;
                     vt.guest_clock_offset = value;
                 }
@@ -557,7 +784,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             };
             // Record the synchronized work at this RNG intercept (the draw itself
             // retires no guest branches, so the order vs `draw_rng` is irrelevant).
-            let work = vt.work.work()?;
+            let work = vt.intercept_work()?;
             vt.last_intercept_work = work;
             vt.draw_rng(width)?
         };

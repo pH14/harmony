@@ -384,6 +384,18 @@ impl VtimeWiring {
         self.clock.vns(0)
     }
 
+    /// The work-axis value a V-time intercept anchors to: the live counter on
+    /// the descriptive path, or zero on the prescriptive path (the whole clock
+    /// lives in `vns_base`; see [`VtimeWiring::advance_prescriptive`]), so a
+    /// prescriptive composition never reads a hardware counter.
+    pub(crate) fn intercept_work(&self) -> Result<u64, crate::work::WorkError> {
+        if self.prescriptive {
+            Ok(0)
+        } else {
+            self.work.work()
+        }
+    }
+
     /// Build the wiring from a clock config, a work source, and an entropy seed.
     ///
     /// **Fails closed on a fractional work→ns ratio** (`ratio_den != 1`):
@@ -946,6 +958,13 @@ where
 
     /// The backend, for the vendor half's own dispatch (`pub(crate)`; the engine
     /// boundary, not a public accessor).
+    /// **Diagnostic only**: the live vCPU record set (a pure [`Backend::save`],
+    /// running no guest code), so a determinism localizer can print the exact
+    /// differing registers/MSRs that [`Vmm::state_components`] only digests.
+    pub fn vcpu_record(&self) -> Result<VcpuOf<B>, VmmError> {
+        Ok(self.backend.save()?)
+    }
+
     pub(crate) fn backend(&self) -> &B {
         &self.backend
     }
@@ -1033,6 +1052,19 @@ where
         interrupt_id: u32,
     ) -> Result<(), VmmError> {
         let deadline_vns = self.guest_clock_deadline_vns(deadline_ticks)?;
+        self.trace_clockevent_schedule_vns(deadline_vns, interrupt_id)
+    }
+
+    /// Record an absolute V-ns deadline in the independent production schedule.
+    /// The x86 LAPIC timer's deadlines are already V-ns, so no guest-clock
+    /// conversion applies (the arm64 clockevent converts ticks via
+    /// [`Self::trace_arm_clockevent_schedule`]). Scheduling implicitly cancels
+    /// any active schedule, so a re-arm is one call.
+    pub(crate) fn trace_clockevent_schedule_vns(
+        &mut self,
+        deadline_vns: u64,
+        interrupt_id: u32,
+    ) -> Result<(), VmmError> {
         let Some(trace) = self.prescriptive_trace.as_mut() else {
             return Ok(());
         };
@@ -1071,7 +1103,7 @@ where
     }
 
     /// Mark the active production clockevent schedule canceled at this exit.
-    pub(crate) fn trace_arm_clockevent_cancel(&mut self) -> Result<(), VmmError> {
+    pub(crate) fn trace_clockevent_cancel(&mut self) -> Result<(), VmmError> {
         let Some(trace) = self.prescriptive_trace.as_mut() else {
             return Ok(());
         };
@@ -1092,7 +1124,7 @@ where
     }
 
     /// Bind a delivered clockevent to the schedule active at this exit.
-    pub(crate) fn trace_arm_clockevent_delivery(&mut self) -> Result<(), VmmError> {
+    pub(crate) fn trace_clockevent_delivery(&mut self) -> Result<(), VmmError> {
         let Some(trace) = self.prescriptive_trace.as_mut() else {
             return Ok(());
         };
@@ -8711,6 +8743,84 @@ mod tests {
             .unwrap(),
         );
         v
+    }
+
+    /// A prescriptive-wired mock Vmm with the userspace xAPIC: the
+    /// assigned-at-exit engine plus the production trace, for the x86
+    /// schedule-oracle tests.
+    fn prescriptive_lapic_vmm(mock: MockBackend) -> Vmm<MockBackend> {
+        let mut v = Vmm::new(mock, GuestRam::new(0x1000).unwrap());
+        v.wire_vtime(VtimeWiring::new_prescriptive(contract_vclock_config(), 1).unwrap());
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        v
+    }
+
+    #[test]
+    fn prescriptive_lapic_timer_records_schedule_and_delivery() {
+        // Arm the one-shot timer (vector 0x40, TMICT=1 ⇒ an 84 vns period at
+        // the 24 MHz test clock, ÷2 reset divide), then cross the deadline
+        // with one more xAPIC read (each xAPIC access is a 1000 vns
+        // prescriptive exit). The fire must be recorded inside the crossing
+        // event — the placement oracle requires each delivery at the first
+        // event whose post-advance V-time covers the deadline.
+        let mut exits = arm_timer_exits(1);
+        exits.push(read_mmio(isr_gpa(0x40)));
+        exits.push(Exit::Common(CommonExit::Shutdown));
+        let mut v = prescriptive_lapic_vmm(configured_mock(exits));
+        v.run().expect("run");
+
+        let trace = v.prescriptive_trace().expect("prescriptive trace wired");
+        let schedule = trace.schedule();
+        assert_eq!(schedule.len(), 1, "the one-shot arm is one schedule record");
+        assert_eq!(schedule[0].interrupt_id, 0x40);
+        assert_eq!(schedule[0].canceled_at_event, None);
+        let log = trace.normalized_log();
+        crate::prescriptive::check_delivery_placement(schedule, log)
+            .expect("the delivery sits at the first event whose V-time covers the deadline");
+        let delivery_events: Vec<u64> = log
+            .events
+            .iter()
+            .filter(|e| !e.interrupts.is_empty())
+            .map(|e| e.event_index)
+            .collect();
+        assert_eq!(
+            delivery_events,
+            vec![3],
+            "fired inside the crossing (ISR-read) event"
+        );
+    }
+
+    #[test]
+    fn prescriptive_lapic_timer_disarm_cancels_the_schedule() {
+        // Arm far in the future, then write TMICT=0: the disarm must cancel
+        // the schedule record, and the placement oracle must accept the log
+        // with no delivery.
+        let mut exits = arm_timer_exits(1_000_000);
+        exits.push(Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_TMICT)),
+            size: 4,
+            write: Some(0),
+        }));
+        exits.push(Exit::Common(CommonExit::Shutdown));
+        let mut v = prescriptive_lapic_vmm(configured_mock(exits));
+        v.run().expect("run");
+
+        let trace = v.prescriptive_trace().expect("prescriptive trace wired");
+        let schedule = trace.schedule();
+        assert_eq!(schedule.len(), 1);
+        assert_eq!(
+            schedule[0].canceled_at_event,
+            Some(3),
+            "the TMICT=0 event canceled it"
+        );
+        crate::prescriptive::check_delivery_placement(schedule, trace.normalized_log())
+            .expect("a canceled deadline needs no delivery");
     }
 
     #[test]
