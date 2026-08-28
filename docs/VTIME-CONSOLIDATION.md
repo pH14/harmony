@@ -216,9 +216,14 @@ the same change.
 ### N3 — fast: ≥10× on the reference workload
 
 Make the M3 postgres scenario at least ten times faster in wall time, with
-byte-identical determinism output. Order of work: **measure first** — profile
-the run loop on the M1 Max and on a runner, and record the baseline phase
-table and the top costs in the status file before changing anything. (Likely
+byte-identical determinism output. All performance numbers in this milestone
+— the baseline, the improvement, the benchmark harness — are measured on the
+M1 Max only: GitHub Actions runners span several hardware generations, so
+their wall times are not comparable run to run. Runners still run the
+determinism re-checks; they are never the benchmark machine. Order of work:
+**measure first** — profile the run loop on the M1 Max and record the
+baseline phase table and the top costs in the status file before changing
+anything. (Likely
 suspects, to be confirmed or ruled out by the profile, not assumed:
 rendering and flushing the normalized text log on every event; synchronous
 I/O on the event path; per-exit serialization or hashing beyond the sparse
@@ -229,10 +234,10 @@ committed to the tree with its baseline number recorded in the status file,
 so future regressions are measurable — as a tool, not a required CI job.
 
 **Passes when** the M3 postgres scenario's wall time improves ≥10× against
-the recorded baseline on the M1 Max **and** on a GitHub Actions runner, with
-normalized logs and `state_hash` sequences byte-identical to the
-pre-optimization runs of the same tree, and the before/after profiles are in
-the status file.
+the recorded baseline on the M1 Max, with normalized logs and `state_hash`
+sequences byte-identical to the pre-optimization runs of the same tree (on
+all three machines, per the standing rules), and the before/after profiles
+are in the status file.
 **Does not count unless** the baseline profile was recorded before the first
 optimization landed, and every optimization commit's reference re-run is
 listed (a single end-of-milestone run does not establish which change
