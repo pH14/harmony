@@ -1420,9 +1420,9 @@ on this branch may contain, fetch, or require a NES ROM.
    | Time | `RDTSC`, `RDTSCP` | 1 + 2 | Stock KVM leaves both native, so the raw value is host-real; the closure is that no guest code consults it. Patch 0001 under `harmony_pvclock` leaves the raw TSC entirely (decisions 12, 16), and the exact-accounting scan enumerates every image site against the reviewed allowlist (decisions 10, 13). Layer 3 (`CR4.TSD`) is not engaged: the only userspace is the image's own static busybox `/init`. |
    | Machine measurement | `RDPMC` | 1 + 4 | The frozen model's leaf 0xA is version 0, so conforming code never issues it, and stock KVM intercepts it unconditionally on both vendors (VMX: `CPU_BASED_RDPMC_EXITING` is in KVM's required exec-control set; SVM: `INTERCEPT_RDPMC` at vcpu init), emulating against the empty vPMU. |
    | Entropy | `RDRAND`, `RDSEED` | 1 + 2, residual | The §2.4 named residual: SVM cannot intercept them, stock KVM never arms the VMX exiting controls, and there is no user-mode disable. Decision-15 CPUID hiding makes every feature-gated site dead code; the decision-20 scan proves every image site is feature-gated. The residual — an unaudited binary ignoring the pinned feature bits — does not exist on X-milestone workloads (the initramfs is the pinned static busybox) and falls to the cooperative posture in general. |
-   | Identity | `MXCSR_MASK` (the `FXSAVE`/`XSAVE` image byte) | pin at save | Uninterceptable and vendor-distinct; decision 22. |
+   | Identity | `MXCSR_MASK` (the `FXSAVE`/`XSAVE` image byte) | pin at save | Uninterceptable and vendor-distinct; decisions 22, 25, 26, 30. |
    | Exit mechanics | `RFLAGS.RF` in the exit-time registers | pin at save | Vendor-distinct exit-save semantics, unreadable by any guest data flow; decision 27. |
-   | Undefined flags | `AF` after shifts and multiplies, stored into guest memory by interrupt-frame pushes and `PUSHF` | residual | Vendor-distinct architecturally-undefined results; bounded, self-healing, out of reach of record-side canonicalization; decision 28. |
+   | Undefined flags | `AF` after shifts and multiplies, stored into guest memory by interrupt-frame pushes, `PUSHF`, and syscall `R11` | pin at store | Vendor-distinct architecturally-undefined results, unreadable by 64-bit-mode data flow; the guest kernel clears the bit at its three capture funnels; decisions 28–29. |
 
    The initramfs binaries (busybox, libvoidstar) are built from pinned
    sources in the image bake but are outside the opcode scan today; the
@@ -1562,9 +1562,39 @@ on this branch may contain, fetch, or require a NES ROM.
    which record-side canonicalization cannot reach, and clearing live
    `AF` at exits would leave the record unfaithful on restore (the next
    guest `PUSHF` after a resume would store a value the original run
-   did not). Disposition: residual, recorded in the §2.4 table; the X3
-   identity claim carries it as a named exception pending the
-   integrator's ruling.
+   did not). The integrator ruled to close it inside the guest instead —
+   decision 29.
+
+29. **The guest kernel clears the undefined flag at its capture
+   funnels.** In 64-bit mode no instruction and no `Jcc` consumes `AF`
+   (the BCD consumers are invalid opcodes), so the bit is live only
+   where `RFLAGS` becomes data, and the kernel funnels every such store
+   through three sites: `native_save_fl()` (the word `local_irq_save()`
+   keeps — the paravirt indirection above it is `PARAVIRT_XXL`/Xen-only),
+   `irqentry_enter()` (the frame image of every non-NMI idtentry), and
+   `do_syscall_64()` (the `R11`-derived `pt_regs` word). Patch 0001
+   masks `AF` out of all three behind a `__ro_after_init` flag set by
+   `harmony_pvclock_setup`, so the pinned value is what the guest
+   itself stored and replay reproduces it by running the same code.
+   Measured (run 33132135167: 7763 ×3 against an 8573C draw): all three
+   decision-28 windows byte-identical across vendors; the entire
+   remaining cross-vendor diff is one checkpoint hash (index 35071 of
+   137) plus the terminal `DIGEST` that inherits it.
+
+30. **The last divergent page is a signal frame; its mask field gets
+   the same pin as every other save image.** A byte dump of the one
+   page differing at the surviving checkpoint (run 33133566870: 7763
+   ×2, 9V74, against an 8370C draw; page `0x25ff000`, a runtime
+   allocation from the freed `rodata`/`data` gap) isolates the diff to
+   two bytes: an `FXSAVE`-format legacy area holding init `FCW`/`MXCSR`
+   whose `MXCSR_MASK` field reads `0x2ffff` on AMD against `0xffff` on
+   Intel. That is the decision-22 signature written by a new path:
+   signal delivery `XSAVE`s directly to the user stack
+   (`xsave_to_user_sigframe()`), which the decision-25 kernel-buffer
+   hook never sees. Patch 0001 rewrites the field in the user image
+   after the save — the mechanism `update_pkru_in_sigframe()` already
+   uses on the same frame — in both sigframe writers (`XSAVE` and
+   legacy `FXSAVE`).
 
 ## X0 — runner probe
 
@@ -1730,7 +1760,7 @@ X2 is PASS.
 - The save-boundary canonicalization chain in
   `consonance/vmm-backend/src/arch/x86/state.rs` — `canonicalize_xsave`,
   `canonicalize_sregs`, `canonicalize_regs` — and patch 0001's guest-side
-  pins (decisions 22–27).
+  pins (decisions 22–30).
 - The mid-boot measurement instrumentation in the x2 tier:
   `X2_DUMP_AT_STEPS` step-bounded state dumps, `X2_PAGE_HEX` page-byte
   rows, and the raw-`REGS` record (a dump bound of N captures the state
@@ -1738,34 +1768,28 @@ X2 is PASS.
 
 ### Measured result
 
-Run 33129219783 (decisions 22–27 live), one workflow run, four
-replicas, both vendors:
+Run 33137469001 (decisions 22–30 live, head 57b16ce0), one workflow
+run, four replicas, both vendors:
 
-| | AMD (EPYC 7763 ×3) | Intel (Xeon 6973P-C) |
+| | AMD (EPYC 7763, 9V74 ×2) | Intel (Xeon 8573C) |
 |---|---|---|
-| Exit stream | 35314 events, byte-identical to Intel's | 35314 events, byte-identical to AMD's |
-| Ten-boot gate | PASS, one digest `5fde4374…` | PASS, one digest `696dc9d8…` |
-| Terminal state records | byte-identical to Intel's | byte-identical to AMD's |
-| Normalized-log hash | `ad5e983e…` on all three replicas | `06020be8…` |
-| Mid-boot dump, window 1 (bound 14336) | byte-identical to Intel's | byte-identical to AMD's |
+| Complete normalized log | 35314 events, every checkpoint state hash, terminal records — one file, sha256 `b3374054…` | the same file, sha256 `b3374054…` |
+| Ten-boot gate | PASS, one digest `35a0014f…` | PASS, the same digest `35a0014f…` |
+| Mid-boot dump at the last-closed checkpoint (bound 35072, page `0x25ff000` bytes inline) | byte-identical to Intel's | byte-identical to AMD's |
 
-The two vendors' complete logs differ in 7 of 137 checkpoint state
-hashes (checkpoints 17151–17919 and 34559–35071) and in the closing
-digest line that folds them — all of it the decision-28 undefined-flag
-captures, nothing else. Within a vendor the artifact is one hash across
-distinct models and microarchitectures: 7763/9V74/9V45 on AMD and
-8573C/6973P-C on Intel produce byte-identical logs (runs 33127863719,
+Two more all-AMD runs at the same head (33135772486: 7763 ×4;
+33136829510: 7763 ×2, 9V74 ×2) produce the same log file — twelve
+replicas across three runs, eleven AMD over two models and one Intel,
+one byte sequence. The earlier per-vendor corpus extends the model
+coverage: 9V45 on AMD and 6973P-C on Intel produced logs identical
+within their vendor at every pre-pin head (runs 33127863719,
 33125818156, 33126959002).
 
 ### Passes-when status
 
 The criterion — byte-identical normalized logs and state hashes on an
 Intel draw and an AMD draw, each vendor internally identical across ten
-runs — holds for the exit stream, the terminal state, every mid-boot
-dump, and the per-vendor artifacts, and fails only at the 7 checkpoints
-that hash the decision-28 `AF` captures while they are live in guest
-RAM. That divergence survived investigation to a named silicon
-behavior, which is this goal's stop condition: the ruling on the
-criterion (carry the §2.4 residual as a named exception, or re-state
-the cross-vendor claim as stream + terminal identity with per-vendor
-byte identity) is the integrator's. X3 is OPEN pending that ruling.
+runs — is met: run 33137469001 holds one log hash, one ten-boot
+digest, and one mid-boot dump across both vendors, with nothing
+excepted. X3 is MET. The decision 19–30 chain closed every divergence
+at a named boundary; the §2.4 table carries the dispositions.
