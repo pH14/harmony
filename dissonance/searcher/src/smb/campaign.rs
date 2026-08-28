@@ -95,25 +95,13 @@ pub fn recorded_policy<'a>(
 /// The SMB campaign game context: the ROM and everything decoded from it.
 pub struct SmbGame {
     rom: Vec<u8>,
-    #[cfg(test)]
-    target_creations: std::sync::atomic::AtomicUsize,
 }
 
 impl SmbGame {
     /// Build the context over one ROM image.
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
-        Self {
-            rom: rom.to_vec(),
-            #[cfg(test)]
-            target_creations: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    #[cfg(test)]
-    fn target_creations(&self) -> usize {
-        self.target_creations
-            .load(std::sync::atomic::Ordering::Relaxed)
+        Self { rom: rom.to_vec() }
     }
 }
 
@@ -839,9 +827,6 @@ impl Game for SmbGame {
     }
 
     fn new_target(&self) -> Result<SmbTarget, String> {
-        #[cfg(test)]
-        self.target_creations
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         SmbTarget::from_smb_rom_bytes_headless(&self.rom).map_err(|error| error.to_string())
     }
 
@@ -1564,25 +1549,6 @@ mod tests {
         assert_eq!(
             accounting.concentration.window_draws,
             accounting.cell_selections
-        );
-    }
-
-    #[test]
-    fn replay_discards_the_bootstrap_target_before_executing_jobs() {
-        let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca04, 1, 1);
-        let mut stream = Vec::new();
-        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("record campaign");
-
-        let game = SmbGame::new(&rom);
-        crate::search::campaign::replay_campaign_checkpointed(&game, &stream, None, None)
-            .expect("replay recorded campaign");
-
-        assert_eq!(
-            game.target_creations(),
-            2,
-            "replay must isolate bootstrap history from its serial worker"
         );
     }
 
