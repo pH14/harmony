@@ -33,6 +33,36 @@ with the same evidence discipline as `docs/VM-EXIT-COUNT-VTIME.md` §3: every
 milestone states what passing means and what does not count, and every
 comparator used as evidence must be shown able to fail before it is trusted.
 
+### Where consonance runs
+
+The point of VM-exit-count V-time is that nothing in it reads the host: no
+performance counters, no host clocks, no vendor-specific measurement. So the
+question "where does consonance run?" reduces to "where can the guest enter
+and exit?" — any hardware-virtualization surface, at any depth. The matrix
+below is the go-everywhere goal made concrete. **Proven** means recorded
+evidence exists (the milestone in parentheses); **aim** means no evidence
+yet, and the entry is a claim to be earned, not asserted. N0 carries this
+matrix into `docs/DETERMINISM.md`, which then owns it; a cell moves from
+aim to proven only with the evidence cited in the cell.
+
+| Host                                                                | x86-64 Intel    | x86-64 AMD      | arm64                     |
+| ------------------------------------------------------------------- | --------------- | --------------- | ------------------------- |
+| Linux KVM, bare metal                                               | aim             | aim             | **proven** (M4–M5, msr1)  |
+| Linux KVM, inside a VM — nested virtualization: cloud VMs, GitHub Actions default runners | **proven** (X2) | **proven** (X2) | aim, where hosts offer it |
+| Linux KVM, inside a container with `/dev/kvm`                       | aim             | aim             | aim                       |
+| macOS HVF, bare metal — Apple silicon                               | —               | —               | **proven** (M0–M6, M1 Max) |
+| macOS HVF, inside a macOS VM — M3+ hosts, macOS 15 nested virtualization | —               | —               | aim                       |
+
+Within a column, sessions are portable across every row: the same seed and
+image produce the same bytes on any host of that ISA. That is proven for
+arm64 in both directions (M5, HVF↔KVM). Across the two x86 columns it is
+the X-series' in-flight claim — the vendor-agreement work (AF, RFLAGS.RF,
+MXCSR_MASK, XSAVE encodings) exists to make Intel and AMD one column in
+practice, with one divergence still being hunted. Requirements are
+deliberately small: one core, hardware virtualization at any nesting depth,
+no performance counters, no special kernel. Not planned: Windows hosts and
+Intel Macs.
+
 ## 2. Standing rules
 
 These hold for every milestone.
@@ -94,13 +124,17 @@ milestone is checked against. Contents:
    material. The instructions no layer can reach (unprivileged entropy
    instructions with no user-mode disable) are stated plainly for both
    architectures.
-4. **What is trusted, stated honestly.** What must be true of the hypervisor
+4. **The support matrix.** The "Where consonance runs" table from this
+   plan's §1 moves here and this copy becomes the one that is maintained:
+   every proven cell cites its evidence, every aim cell stays an aim until
+   evidence exists.
+5. **What is trusted, stated honestly.** What must be true of the hypervisor
    layer (HVF, stock KVM) and what must be true of the guest kernel; that
    the guest kernel's patches are essential to determinism, so the guest
    image is part of consonance, not an accessory (N4 acts on this). What is
    verified by comparing bytes (MANIFEST hashes) versus what is trusted by
    argument.
-5. **Decisions.** The open questions earlier documents deferred, decided
+6. **Decisions.** The open questions earlier documents deferred, decided
    here and recorded: what happens to each KVM patch (the patches that
    deliver interrupts retire with the branch-count machinery in N2; the
    patches that intercept instructions either stay as tripwires or are
