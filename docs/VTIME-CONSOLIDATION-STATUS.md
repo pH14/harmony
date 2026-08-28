@@ -234,6 +234,14 @@ weakening either architecture's evidence.
   the N2 plan itself, old decision links, and the KVM patch results ledger are
   the only intentional uses of the retired qualifier or machinery language.
   Git history is the archive for implementation material.
+- **Do not rewrite a frozen v1 log identity.** The N1 normalized fixtures begin
+  with versioned `consonance.*-prescriptive-log.v1` format/domain tokens. Those
+  literal tokens remain solely as historical wire-format records: changing
+  them would change both normalized bytes and their chained digests, directly
+  violating §2. No Rust/Python identifier, file, workflow, or current prose
+  uses the retired qualifier; new behavior and artifact names say virtual
+  time. A future format rename would require a new version and a separately
+  approved rebaseline, which this milestone forbids.
 
 ### Issue sweep
 
@@ -286,9 +294,11 @@ surface snapshots are re-run on msr1 before this milestone can close.
 
 Searches over the non-historical tree find no retired modules, symbols,
 feature flags, patch names, or file names. A case-insensitive filename search
-for the retired qualifier returns only `docs/PRESCRIPTIVE-VTIME-STATUS.md`;
-text matches outside the plan/status ledgers are links to that historical
-record.
+for the retired qualifier returns only `docs/PRESCRIPTIVE-VTIME-STATUS.md`.
+Text matches outside the plan/status ledgers are links to that historical
+record or the six occurrences of the frozen v1 log token in the encoder,
+dumpers, and byte-comparison oracle described above. The workflow display
+name and concurrency group are `x86-virtual-time`.
 
 ### Verification still required before N2 can be marked PASS
 

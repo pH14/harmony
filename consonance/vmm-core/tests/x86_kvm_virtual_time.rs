@@ -4,7 +4,7 @@
 //! durations, with timer delivery injected at exits through the guest IVT.
 //!
 //! `#[ignore]` so portable suites compile but do not run these; run explicitly
-//! on a Linux x86-64 host with `/dev/kvm` (the `x86-vtime` workflow's
+//! on a Linux x86-64 host with `/dev/kvm` (the `x86-virtual-time` workflow's
 //! GitHub-hosted runners, or any KVM machine):
 //!
 //! ```sh
@@ -111,7 +111,7 @@ fn new_backend_or_explain() -> KvmBackend {
     if !std::path::Path::new("/dev/kvm").exists() {
         panic!(
             "/dev/kvm missing — run on a Linux x86-64 KVM host \
-             (the x86-vtime workflow runner grants access first)"
+             (the x86-virtual-time workflow runner grants access first)"
         );
     }
     KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed ({e})"))

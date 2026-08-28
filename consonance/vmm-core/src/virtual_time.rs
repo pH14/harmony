@@ -322,7 +322,8 @@ impl LiveVirtualTimeTrace {
     /// domain-separated little-endian encoding.
     pub fn normalized_digest(&self) -> [u8; 32] {
         let mut h = Sha256::new();
-        h.update(b"consonance.live-virtual_time-log.v1\0");
+        // Frozen v1 log-domain identifier: changing it would invalidate N1 byte fixtures.
+        h.update(b"consonance.live-prescriptive-log.v1\0");
         h.update(
             u64::try_from(self.normalized.events.len())
                 .unwrap_or(u64::MAX)

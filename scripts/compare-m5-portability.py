@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 
-FORMAT = "consonance.session-virtual_time-log.v1"
-DOMAIN = b"consonance.session-virtual_time-log.v1\0"
+FORMAT = "consonance.session-prescriptive-log.v1"
+DOMAIN = b"consonance.session-prescriptive-log.v1\0"
 SEGMENT_RE = re.compile(
     r"^segment (?P<segment>\d+) start=(?P<start>\S+) "
     r"events=(?P<events>\d+) schedules=(?P<schedules>\d+)$"

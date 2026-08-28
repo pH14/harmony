@@ -18,7 +18,7 @@
 //!    runs — the measurement that tells us which exit class to close next.
 //!
 //! These need real KVM and the built guest image, so they are `#[ignore]`d;
-//! the x86-vtime workflow runs them on GitHub-hosted runners with the
+//! the x86-virtual-time workflow runs them on GitHub-hosted runners with the
 //! cache-restored image. No det-cfl-v1 host baseline is required: the
 //! virtual_time determinism claim is defined over the exit stream plus the
 //! frozen contract, not host homogeneity — heterogeneous runners are the point.

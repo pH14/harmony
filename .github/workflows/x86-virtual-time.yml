@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-name: x86-vtime
+name: x86-virtual-time
 
 # The x86 VM-exit-count V-time bring-up lives on GitHub-hosted runners: standard
 # x86-64 Linux runners expose /dev/kvm (nested virtualization), and the hardware
@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: x86-vtime-${{ github.ref }}
+  group: x86-virtual-time-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

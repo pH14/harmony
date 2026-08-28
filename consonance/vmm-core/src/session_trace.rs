@@ -128,7 +128,8 @@ impl SessionVirtualTimeTrace {
         self.write_body(&mut body)
             .expect("writing session trace to Vec cannot fail");
         let mut hasher = Sha256::new();
-        hasher.update(b"consonance.session-virtual_time-log.v1\0");
+        // Frozen v1 log-domain identifier: changing it would invalidate N1 byte fixtures.
+        hasher.update(b"consonance.session-prescriptive-log.v1\0");
         hasher.update(body);
         hasher.finalize().into()
     }
@@ -138,7 +139,7 @@ impl SessionVirtualTimeTrace {
     /// Raw backend diagnostics are deliberately absent: only portable events,
     /// checkpoint hashes, schedules, and restore boundaries enter this file.
     pub fn write_text(&self, mut out: impl Write) -> io::Result<()> {
-        writeln!(out, "format consonance.session-virtual_time-log.v1")?;
+        writeln!(out, "format consonance.session-prescriptive-log.v1")?;
         writeln!(out, "digest {}", hex(&self.digest()))?;
         self.write_body(&mut out)
     }

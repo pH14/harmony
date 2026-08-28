@@ -413,7 +413,7 @@ fn write_normalized_log(
     use std::io::Write;
 
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writeln!(out, "format consonance.live-virtual_time-log.v1")?;
+    writeln!(out, "format consonance.live-prescriptive-log.v1")?;
     writeln!(out, "digest {}", hex(&trace.normalized_digest()))?;
     writeln!(out, "events {}", trace.normalized_log().events.len())?;
     for event in &trace.normalized_log().events {
