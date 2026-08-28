@@ -16,7 +16,7 @@
 //!   structurally valid FDT QEMU accepts;
 //! - it does **not** exercise `Arm64KvmBackend` (QEMU is its *own* VMM, not our
 //!   backend — that path talks to `/dev/kvm` and is M4's, arrival-day) and it
-//!   says **nothing** about `BR_RETIRED` counts, PMIs, or skid — those require
+//!   says **nothing** about `BR_RETIRED` counts, PMIs, or exit-boundary variability — those require
 //!   independent native evidence.
 //!
 //! Evidence integrity (`docs/VM-EXIT-COUNT-VTIME.md`): every constituent RC is

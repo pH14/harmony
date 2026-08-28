@@ -5,7 +5,7 @@
 # as the rdtsc lists (offsets and inlining are toolchain-dependent).
 # Every entry is a site the review confirmed sits behind an
 # X86_FEATURE_RDRAND / X86_FEATURE_RDSEED check: the frozen CPUID (stock
-# prescriptive composition) hides both features, so a checked site is dead code
+# virtual_time composition) hides both features, so a checked site is dead code
 # in the image; an unchecked site would execute natively (SVM cannot intercept
 # the instruction) and feed true entropy no contract can replay.
 # Selected by the x86-vtime workflow via HARMONY_RDRAND_ALLOWLIST.

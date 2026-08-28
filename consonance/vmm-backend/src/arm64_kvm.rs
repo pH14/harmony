@@ -19,7 +19,7 @@
 //! are patched-only). On the **stock** backend `run` returns **only**
 //! `Mmio`/`Shutdown`; every other decode arm is patched-ABI
 //! (`// TODO(patched-abi)`, for the AA-3 backend) and the stock hardware never
-//! reaches it. Interrupt injection, `run_until`, and the trap-group *enforcement*
+//! reaches it. Interrupt injection and the trap-group *enforcement*
 //! of the policy are all `Unsupported`/AA-gated — the skeleton claims no
 //! determinism (`capabilities()` reports every field honestly `false`).
 
@@ -53,7 +53,7 @@ pub(crate) const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
 /// stock KVM/arm64 services guest `HVC`/PSCI in-kernel and never surfaces this.
 pub(crate) const KVM_EXIT_HYPERCALL: u32 = 3;
 
-/// A **patched-ABI** exit reason for a work-counter WFx / deterministic idle
+/// A **patched-ABI** exit reason for a deterministic WFx / idle
 /// (the arm64 mirror of the x86 `KVM_EXIT_HLT`→`Idle` path). Stock KVM/arm64
 /// blocks WFI **in-kernel** and never surfaces it, so this arm is unreachable on
 /// the stock backend. `// TODO(patched-abi)`: the concrete reason value is the
@@ -1149,15 +1149,6 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.enter_guest()
     }
 
-    fn run_until(&mut self, _deadline: crate::types::Moment) -> Result<Exit<Arm64>> {
-        // The deterministic force-exit + single-step landing is the arm64
-        // 0004/0005-analogue kernel patch (AA-3) plus the patched backend — a
-        // later bead, not this one. designed-not-frozen (AA-3): arm64's
-        // PMU-overflow-to-exit physics may pressure `run_until`'s late-only-stop
-        // contract before the trait may be declared frozen.
-        Err(BackendError::Unsupported { what: "run_until" })
-    }
-
     fn inject(&mut self, event: crate::arch::arm64::Arm64Injection) -> Result<()> {
         match event {
             crate::arch::arm64::Arm64Injection::Interrupt { intid } => {
@@ -2033,16 +2024,12 @@ mod tests {
     }
 
     #[test]
-    fn stock_vgic_is_honest_about_remaining_nondeterminism() {
+    fn stock_vgic_rejects_invalid_interrupts() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
         let mut b = Arm64KvmBackend::new(fake);
         b.set_policy(&Arm64Policy::default()).unwrap();
 
-        assert!(matches!(
-            b.run_until(crate::types::Moment(0)),
-            Err(BackendError::Unsupported { what: "run_until" })
-        ));
         b.inject(crate::arch::arm64::Arm64Injection::Interrupt {
             intid: GicIntId(30),
         })

@@ -12,7 +12,7 @@ named in INTEGRATION.md §7 — can carry host real time into the guest: the cou
 the six Hyper-V synthetic MSRs that re-export TSC/APIC frequency and TSC-emulation
 machinery. The governing rule is §7's TSC-plumbing clause: the host TSC must never reach
 the guest. Every readable value in this class is therefore either derived from
-`consonance/vtime` (`VClock::tsc(work) = tsc_base + floor(vns(work) · tsc_hz / 10⁹)`, with
+`consonance/vtime` (`VClock::guest_ticks() = tsc_base + floor(vns(work) · tsc_hz / 10⁹)`, with
 `tsc_base`/ratio captured in the `vm_state` blob per §4) or echoed from guest-written
 state held in `vm_state`; timer arming goes through the userspace `TimerQueue` (§7 "Timer
 devices": no in-kernel LAPIC hrtimer, which runs on host real time); and everything not
@@ -22,7 +22,7 @@ as a loud event rather than a passthrough.
 
 | MSR | Index | Read | Write | Rationale | Citation |
 |---|---|---|---|---|---|
-| MSR_IA32_TSC | 0x10 | emulate-vtime | emulate-vtime | Closes §7 "TSC plumbing": reads return VClock::tsc(work) computed from retired-branch work, never the host counter; a write deterministically rebases tsc_base in vm_state (new_base = value − floor(vns·tsc_hz/10⁹)) so readback is coherent and replayable. | linux-6.18.35 arch/x86/kvm/x86.c (msrs_to_save_base); arch/x86/include/asm/msr-index.h; Intel SDM Vol.4 Table 2-2; INTEGRATION.md §7 (TSC plumbing) + §4 (vm_state); consonance/vtime/src/clock.rs (VClock::tsc); kernel.org KVM x86 timekeeping doc |
+| MSR_IA32_TSC | 0x10 | emulate-vtime | emulate-vtime | Closes §7 "TSC plumbing": reads return VClock::guest_ticks() computed from accumulated VM-exit virtual time, never the host counter; a write deterministically rebases tsc_base in vm_state (new_base = value − floor(vns·tsc_hz/10⁹)) so readback is coherent and replayable. | linux-6.18.35 arch/x86/kvm/x86.c (msrs_to_save_base); arch/x86/include/asm/msr-index.h; Intel SDM Vol.4 Table 2-2; INTEGRATION.md §7 (TSC plumbing) + §4 (vm_state); consonance/vtime/src/clock.rs (VClock::tsc); kernel.org KVM x86 timekeeping doc |
 | MSR_TSC_AUX | 0xc0000103 | allow-stateful | allow-stateful | Closes §7 "TSC plumbing" (rr-paper current-core leak, arXiv:1610.02144): RDTSCP/RDPID aux must echo the guest-written value held in vm_state, never the host's per-core IA32_TSC_AUX; pure software state with no time content of its own. | linux-6.18.35 arch/x86/kvm/x86.c (msrs_to_save_base); arch/x86/include/asm/msr-index.h; Intel SDM Vol.4 Table 2-2 + RDTSCP/RDPID (felixcloutier.com/x86/rdpid); INTEGRATION.md §4 (vm_state MSR capture) |
 | HV_X64_MSR_TSC_FREQUENCY | 0x40000022 | deny-gp | deny-gp | Closes §7 "KVM paravirtual clock" generalized to all PV time enlightenments: the frozen CPUID model exposes no Hyper-V leaves (no HV_ACCESS_FREQUENCY_MSRS), so this synthetic frequency MSR architecturally does not exist and a host-derived tsc_hz must not leak through it. | linux-6.18.35 arch/x86/kvm/x86.c (emulated_msrs_all); Hyper-V TLFS (asm/hyperv-tlfs.h); INTEGRATION.md §7 (KVM paravirtual clock, CPUID stability) |
 | HV_X64_MSR_APIC_FREQUENCY | 0x40000023 | deny-gp | deny-gp | Closes §7 "KVM paravirtual clock" / "Timer devices": a host-derived APIC timer frequency would let the guest correlate V-time with real time; no Hyper-V leaves are enumerated, so the MSR does not exist — #GP. | linux-6.18.35 arch/x86/kvm/x86.c (emulated_msrs_all); Hyper-V TLFS (asm/hyperv-tlfs.h); INTEGRATION.md §7 (KVM paravirtual clock, Timer devices) |

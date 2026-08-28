@@ -1,6 +1,6 @@
-x86: harmony_pvclock — work-derived paravirt clocksource (task 110)
+x86: harmony_pvclock — exit-count-derived paravirt clocksource (task 110)
 
-Kernel side of the harmony deterministic hypervisor's paravirt work-derived
+Kernel side of the harmony deterministic hypervisor's paravirt exit-count-derived
 clock page (HARMONY_PVCLOCK_ABI 1; docs/PARAVIRT-CLOCK.md in the harmony repo
 is the layout authority): a kvmclock-shaped clocksource with the interpolation
 deleted (.read() = a seqlock page load returning materialized V-time),
@@ -70,12 +70,12 @@ the flag, so pinned images restore without observable effect.
  source "arch/x86/xen/Kconfig"
 +
 +config HARMONY_PVCLOCK
-+	bool "Harmony paravirt work-derived clock"
++	bool "Harmony paravirt exit-count clock"
 +	depends on X86_64 && PARAVIRT
 +	default n
 +	help
 +	  Clocksource and sched_clock backed by the harmony deterministic
-+	  hypervisor's materialized work-derived clock page (a seqlock page
++	  hypervisor's materialized exit-count-derived clock page (a seqlock page
 +	  the host re-stamps at every virtual-time advance; the read path is
 +	  a page load, never a raw counter read). Inert unless the
 +	  harmony_pvclock kernel parameter is present AND the host accepts
@@ -393,7 +393,7 @@ the flag, so pinned images restore without observable effect.
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * harmony_pvclock — clocksource + sched_clock over the harmony deterministic
-+ * hypervisor's materialized, work-derived clock page (HARMONY_PVCLOCK_ABI 1;
++ * hypervisor's materialized, exit-count-derived clock page (HARMONY_PVCLOCK_ABI 1;
 + * docs/PARAVIRT-CLOCK.md in the harmony repo is the layout authority).
 + *
 + * This file is Linux-kernel code and ships ONLY as part of the kernel diff
@@ -407,7 +407,7 @@ the flag, so pinned images restore without observable effect.
 + * all: between two host refreshes the clock is piecewise-constant by design
 + * (the host bounds the staleness at its Δ refresh window), and any raw rdtsc
 + * anywhere else in the system still traps to the hypervisor and returns the
-+ * same work-derived value (the enforcement backstop).
++ * same exit-count-derived value (the enforcement backstop).
 + *
 + * Everything is gated on the `harmony_pvclock` kernel parameter, which only
 + * the harmony vmm appends to the command line when it offers the page — this
@@ -444,13 +444,13 @@ the flag, so pinned images restore without observable effect.
 +
 +#define HARMONY_PVCLOCK_ABI		1u
 +#define HARMONY_FLAG_MATERIALIZED	(1u << 0)
-+#define HARMONY_FLAG_WORK_DERIVED	(1u << 1)
++#define HARMONY_FLAG_EXIT_COUNT_DERIVED	(1u << 1)
 +/* The exact ABI-v1 flags word every real stamp publishes; all other bits are
 + * reserved-zero. The reader requires this word exactly (not just a bit test),
 + * so a placeholder page — e.g. the ARM spike's static page that leaves
-+ * WORK_DERIVED clear — fails closed. */
++ * EXIT_COUNT_DERIVED clear — fails closed. */
 +#define HARMONY_FLAGS_V1 \
-+	(HARMONY_FLAG_MATERIALIZED | HARMONY_FLAG_WORK_DERIVED)
++	(HARMONY_FLAG_MATERIALIZED | HARMONY_FLAG_EXIT_COUNT_DERIVED)
 +
 +struct harmony_pvclock_page {
 +	u32 abi_version;
@@ -458,7 +458,7 @@ the flag, so pinned images restore without observable effect.
 +	u64 vns;		/* materialized V-time, nanoseconds */
 +	u64 guest_clock;	/* materialized virtual counter */
 +	u64 guest_clock_hz;	/* counter frequency, Hz */
-+	u32 flags;		/* bit 0 MATERIALIZED | bit 1 WORK_DERIVED; rest reserved 0 */
++	u32 flags;		/* bit 0 MATERIALIZED | bit 1 EXIT_COUNT_DERIVED; rest reserved 0 */
 +	u32 vcpu_index;		/* pinned 0 (single vCPU) */
 +	u8 reserved[PAGE_SIZE - 0x28];
 +} __packed;
@@ -635,7 +635,7 @@ the flag, so pinned images restore without observable effect.
 +	/*
 +	 * One raw rdtsc immediately before ringing — deliberately: on an
 +	 * rdtsc-intercepting host it traps as a V-time intercept, which
-+	 * refreshes the host's skid-free anchor to within a few branches of
++	 * refreshes the host's exit-boundary variability-free anchor to within a few branches of
 +	 * this point, keeping the anchor fresh across the doorbell OUT (the
 +	 * page stamp and Δ arm happen at the REQUIRED post-registration
 +	 * handshake rdtsc below; the OUT itself is a PIO, not an intercept).
@@ -707,9 +707,9 @@ the flag, so pinned images restore without observable effect.
 +	 * records a *pending* registration; the host lays down the first
 +	 * (canonical) page stamp and arms its Δ forced refresh **only** at the
 +	 * first V-time intercept after the OUT — the OUT is a PIO, not an
-+	 * intercept, so its counter read is skid-tainted and the pre-OUT anchor
++	 * intercept, so its counter read is exit-boundary variability-tainted and the pre-OUT anchor
 +	 * may be stale. This deliberate rdtsc IS that intercept: REQUIRED
-+	 * PROTOCOL, not a courtesy. Its trap is skid-free, so the host stamps +
++	 * PROTOCOL, not a courtesy. Its trap is exit-boundary variability-free, so the host stamps +
 +	 * arms off a fresh, current anchor (never born overdue). It MUST precede
 +	 * the ABI validation below: the validation reads the page's
 +	 * abi_version/flags, which the host writes no later than this handshake,
@@ -719,7 +719,7 @@ the flag, so pinned images restore without observable effect.
 +	 *
 +	 * On an assigned-at-exit stock host there is no rdtsc intercept and no Δ
 +	 * anchor: the OUT itself armed the registration and stamped the page (the
-+	 * whole clock is a pure function of the exit stream, so there is no skid
++	 * whole clock is a pure function of the exit stream, so there is no exit-boundary variability
 +	 * to avoid), and this read executes natively with its value discarded —
 +	 * the validation below then sees the already-stamped page. One flow
 +	 * serves both hosts. The §3.3 opcode-scan allowlist records both
@@ -747,12 +747,12 @@ the flag, so pinned images restore without observable effect.
 +	 * The page is live (the host stamped it at the handshake rdtsc above).
 +	 * Route the kernel's time paths through it and make the TSC unselectable
 +	 * for timekeeping — raw rdtsc still executes (and traps to the same
-+	 * work-derived value), but the kernel never keeps time by it again.
++	 * exit-count-derived value), but the kernel never keeps time by it again.
 +	 */
 +	mark_tsc_unstable("harmony-pvclock");
 +	paravirt_set_sched_clock(harmony_sched_clock);
 +	clocksource_register_hz(&harmony_clocksource, NSEC_PER_SEC);
-+	pr_info("work-derived clock page registered at %pa (abi %u, counter %llu Hz)\n",
++	pr_info("exit-count clock page registered at %pa (abi %u, counter %llu Hz)\n",
 +		&(phys_addr_t){ __pa(&harmony_page) }, abi,
 +		(unsigned long long)READ_ONCE(harmony_page.guest_clock_hz));
 +	return 0;

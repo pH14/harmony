@@ -1870,7 +1870,6 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "thiserror",
- "vtime",
 ]
 
 [[package]]
@@ -1882,7 +1881,6 @@ dependencies = [
  "gicv3",
  "hypercall-proto",
  "lapic",
- "libc",
  "memmap2",
  "sha2",
  "snapshot-store",

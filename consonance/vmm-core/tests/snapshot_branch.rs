@@ -22,12 +22,11 @@ use vmm_backend::{
 use vmm_core::snapshot::SnapshotEngine;
 use vmm_core::vendor::x86::contract_vclock_config;
 use vmm_core::vmm::{GuestRam, Step, Vmm, VtimeWiring};
-use vmm_core::work::ScriptedWork;
 
 const RAM: usize = 0x4000; // 16 KiB = 4 pages
 
 /// A configured, V-time-wired `Vmm<MockBackend>` over `RAM` bytes of guest memory.
-fn vmm(exits: Vec<Exit<X86>>, work_at: u64, seed: u64) -> Vmm<MockBackend> {
+fn vmm(exits: Vec<Exit<X86>>, _work_at: u64, seed: u64) -> Vmm<MockBackend> {
     let mut m = MockBackend::with_exits(exits);
     m.set_policy(&X86Policy {
         cpuid: vmm_backend::CpuidModel::default(),
@@ -35,14 +34,7 @@ fn vmm(exits: Vec<Exit<X86>>, work_at: u64, seed: u64) -> Vmm<MockBackend> {
     })
     .unwrap();
     let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
-    v.wire_vtime(
-        VtimeWiring::new(
-            contract_vclock_config(),
-            Box::new(ScriptedWork::at(work_at)),
-            seed,
-        )
-        .unwrap(),
-    );
+    v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
     v
 }
 
@@ -121,9 +113,7 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
         ..Default::default()
     });
     let mut a = Vmm::new(m, GuestRam::new(RAM).unwrap());
-    a.wire_vtime(
-        VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
-    );
+    a.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
     a.restore_guest_memory(&booted_image()).unwrap();
     assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → synchronized
 
@@ -184,9 +174,7 @@ fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
             ..Default::default()
         });
         let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
-        v.wire_vtime(
-            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
-        );
+        v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
         v.wire_snapshot_hashing();
         v.restore_guest_memory(&booted_image()).unwrap();
         v
@@ -275,9 +263,7 @@ fn vmst_chunk_masks_an_unusable_segments_type() {
         };
         m.set_state(st);
         let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
-        v.wire_vtime(
-            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
-        );
+        v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
         v.wire_snapshot_hashing(); // fold the VMST chunk into state_hash
         v.restore_guest_memory(&booted_image()).unwrap();
         v.step().unwrap(); // RDTSC → synchronized
@@ -306,9 +292,7 @@ fn vmst_chunk_masks_an_unusable_segments_type() {
         };
         m.set_state(st);
         let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
-        v.wire_vtime(
-            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
-        );
+        v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
         v.wire_snapshot_hashing();
         v.restore_guest_memory(&booted_image()).unwrap();
         v.step().unwrap();
@@ -379,9 +363,7 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
         ..Default::default()
     });
     let mut a = Vmm::new(m, GuestRam::new(RAM).unwrap());
-    a.wire_vtime(
-        VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
-    );
+    a.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
     a.wire_snapshot_hashing();
     a.restore_guest_memory(&booted_image()).unwrap();
     assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → synchronized

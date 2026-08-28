@@ -3,8 +3,7 @@
 //! vocabulary — the exit variants ([`X86Exit`]), the full register record set
 //! ([`VcpuState`] and its subrecords), the installed-policy tables
 //! ([`X86Policy`]: [`CpuidModel`] + [`MsrFilter`]), the injectable events
-//! ([`Injection`]), the capability flags ([`X86Caps`]), and the
-//! retired-conditional-branch work-counter event pin.
+//! ([`Injection`]), and the capability flags ([`X86Caps`]).
 
 mod config;
 mod state;
@@ -17,13 +16,6 @@ pub use state::{
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;
-
-/// `BR_INST_RETIRED.CONDITIONAL` (event `0xC4`, umask `0x01`), Coffee Lake-S
-/// (i9-9900K) — the exact `PERF_TYPE_RAW` event task 07 validated, identical to
-/// vmm-core's `work_perf`. The x86 work-counter event pin: each vendor supplies
-/// its own retired-branch-class raw event with its backend
-/// (`docs/ARCH-BOUNDARY.md` §A).
-pub(crate) const RAW_BR_COND: u64 = 0x1c4;
 
 /// The x86-64 vendor (a zero-sized type; `docs/ARCH-BOUNDARY.md` §A).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

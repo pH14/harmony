@@ -79,13 +79,13 @@ apply_kernel_patch() {
 }
 
 apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0002-arm64-harmony-pvclock-work-derived-clocksource.patch" \
+    "$LINUX_DIR/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch" \
     "harmony pvclock"
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0003-arm64-harmony-lse-only.patch" \
     "harmony LSE-only"
 apply_kernel_patch \
-    "$LINUX_DIR/patches/arm64/0004-arm64-harmony-work-clockevent.patch" \
+    "$LINUX_DIR/patches/arm64/0004-arm64-harmony-virtual-time-clockevent.patch" \
     "harmony work clockevent"
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0005-arm64-harmony-pvclock-from-dt.patch" \
@@ -95,7 +95,7 @@ apply_kernel_patch \
     "harmony LSE-only futex atomics"
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0007-arm64-harmony-syscall-tick.patch" \
-    "harmony prescriptive syscall tick"
+    "harmony virtual_time syscall tick"
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0008-arm64-harmony-fixed-counter-frequency.patch" \
     "harmony fixed counter frequency"
@@ -225,9 +225,9 @@ echo "ok: scanner rejected the planted live-counter probe"
 python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
     "$arm64_object_root/vmlinux" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
 
-# LL/SC changes the retired-branch clock when STXR fails spuriously and
-# livelocks under the exact-landing single-step path. The config removes the
-# known fallback bodies; this raw executable-word scan is the fail-closed
+# LL/SC permits implementation-dependent spurious STXR failures that can change
+# guest-visible control flow across hosts. The config removes the known fallback
+# bodies; this raw executable-word scan is the fail-closed
 # artifact proof. Its planted negative control prevents a vacuous green gate.
 echo "== arm64 kernel: zero-LL/SC executable-image gate"
 exclusive_scan=$GUEST_DIR/scripts/aa4-exclusive-scan.py

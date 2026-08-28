@@ -262,17 +262,14 @@ pub(crate) struct Arm64ClockeventState {
 /// The generic pvclock channel record paired with ARM's clockevent transport.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Arm64PvclockState {
-    /// Staleness cadence identity; prescriptive mode stores its configured
-    /// nonzero sentinel even though it never calls `run_until`.
-    pub delta_work: u64,
     /// Guest-selected page GPA, when registration has occurred.
     pub gpa: Option<u64>,
     /// Whether this composition can accept a registration.
     pub registrable: bool,
     /// `true` for assigned-at-exit V-time. This is snapshot identity, so a
-    /// descriptive target cannot silently adopt a prescriptive timeline (or
+    /// descriptive target cannot silently adopt a virtual_time timeline (or
     /// vice versa) merely because their numeric clock rates match.
-    pub prescriptive: bool,
+    pub virtual_time: bool,
     /// Deadline, external line, and diagnostic counters.
     pub clockevent: Arm64ClockeventState,
 }
@@ -433,7 +430,6 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
         v.extend_from_slice(&d.doorbell);
     }
     if let Some(pv) = d.pvclock {
-        v.extend_from_slice(&pv.delta_work.to_le_bytes());
         match pv.gpa {
             Some(gpa) => {
                 v.push(1);
@@ -442,7 +438,7 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
             None => v.push(0),
         }
         v.push(u8::from(pv.registrable));
-        v.push(u8::from(pv.prescriptive));
+        v.push(u8::from(pv.virtual_time));
         encode_clockevent_state(&mut v, pv.clockevent);
     }
     vm_state::DeviceBlob(v)
@@ -543,10 +539,6 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         Vec::new()
     };
     let pvclock = if has_pvclock {
-        let delta_work = c.u64()?;
-        if delta_work == 0 {
-            return Err(SnapshotError::DeviceBlob("zero pvclock delta"));
-        }
         let gpa = match c.take(1)?[0] {
             0 => None,
             1 => Some(c.u64()?),
@@ -562,7 +554,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
                 "registered pvclock page is marked non-registrable",
             ));
         }
-        let prescriptive = match c.take(1)?[0] {
+        let virtual_time = match c.take(1)?[0] {
             0 => false,
             1 => true,
             _ => return Err(SnapshotError::DeviceBlob("bad V-time mode flag")),
@@ -590,10 +582,9 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
             ));
         }
         Some(Arm64PvclockState {
-            delta_work,
             gpa,
             registrable,
-            prescriptive,
+            virtual_time,
             clockevent: Arm64ClockeventState {
                 deadline,
                 line_asserted,
@@ -663,10 +654,9 @@ mod tests {
     fn sample_with_pvclock() -> Arm64DeviceState {
         Arm64DeviceState {
             pvclock: Some(Arm64PvclockState {
-                delta_work: 1,
                 gpa: Some(0x4031_1000),
                 registrable: true,
-                prescriptive: true,
+                virtual_time: true,
                 clockevent: Arm64ClockeventState {
                     deadline: None,
                     line_asserted: true,

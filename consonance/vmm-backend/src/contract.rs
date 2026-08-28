@@ -17,7 +17,7 @@
 //! * **ordering** — operations happen in the contract's order, and an
 //!   out-of-order one fails closed instead of silently mis-servicing the guest.
 //! * **exactness** — quantities the engine treats as exact really are exact:
-//!   deadlines, dirty-page sets, repeated runs.
+//!   dirty-page sets and repeated runs.
 //! * **fixpoint** — round trips are round trips.
 //!
 //! "Capability honesty" is deliberately **not** a category. A
@@ -38,17 +38,13 @@
 //!
 //! ## Designed, not frozen
 //!
-//! The `Backend` trait is the ruled design, **not** a frozen surface — the ARM
-//! freeze decision is still open, and ARM's overflow-to-exit path may yet
-//! pressure `run_until`. This suite is the tripwire for that discussion: a
-//! freeze proposal is credible exactly to the degree that this exam passes
-//! unchanged against a second vendor's backend.
+//! The `Backend` trait is the ruled design, **not** a frozen surface. This suite
+//! is the tripwire for future cross-vendor changes.
 
 use crate::arch::x86::{X86, X86Completion, X86Exit, X86Policy};
 use crate::backend::Backend;
 use crate::error::BackendError;
 use crate::exit::{CommonExit, Exit};
-use crate::types::Moment;
 
 /// A guest situation the exam needs a backend to be in. A [`BackendFixture`]
 /// translates each into whatever its substrate needs — a scripted exit queue for
@@ -76,9 +72,6 @@ pub enum Scenario {
     /// The guest's first exit is `RDRAND` — only a backend advertising
     /// deterministic RNG can produce it.
     Rdrand,
-    /// The guest runs a branch-retiring loop and never exits on its own, so a
-    /// `run_until` deadline is what stops it.
-    BusyLoop,
 }
 
 /// What kind of completion a pending exit is waiting for. The ordering exam
@@ -183,13 +176,6 @@ pub trait BackendFixture {
     /// The policy the exam installs with `set_policy`.
     fn policy(&self) -> X86Policy;
 
-    /// Whether this backend implements `run_until` at all. A backend that
-    /// answers `false` is required to return
-    /// [`Unsupported`](BackendError::Unsupported) from every `run_until` — the
-    /// exactness exam checks exactly that, so "not implemented" is a claim under
-    /// test rather than a gap.
-    fn implements_run_until(&self) -> bool;
-
     /// Cause `backend` to dirty a known set of guest frames, and return those
     /// frames. `None` = this substrate cannot stage guest writes for the exam,
     /// which is recorded as a decline.
@@ -208,8 +194,6 @@ pub trait BackendFixture {
 pub enum DeclineReason {
     /// The fixture cannot put its guest in this situation.
     ScenarioUnavailable(Scenario),
-    /// The backend does not implement `run_until`.
-    NoRunUntil,
     /// The fixture cannot stage guest writes for the dirty-log exam.
     NoDirtyLog,
     /// The backend does not advertise the capability that selects this exam.
@@ -302,7 +286,7 @@ fn assert_exit_matches(kind: PendingKind, exit: &Exit<X86>) {
 ///
 /// Three obligations:
 ///
-/// 1. `run` (and `run_until`) before a successful `set_policy` is
+/// 1. `run` before a successful `set_policy` is
 ///    [`NotConfigured`](BackendError::NotConfigured). Running on host-derived
 ///    CPUID/MSR defaults would leak nondeterminism, so the backend refuses.
 /// 2. Resuming with an unserviced read-style exit is
@@ -327,14 +311,6 @@ pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
             assert!(
                 matches!(b.run(), Err(BackendError::NotConfigured)),
                 "run before set_policy must be NotConfigured"
-            );
-            assert!(
-                matches!(
-                    b.run_until(Moment(1)),
-                    Err(BackendError::NotConfigured | BackendError::Unsupported { .. })
-                ),
-                "run_until before set_policy must be NotConfigured (or Unsupported for a \
-                 backend that declines run_until outright)"
             );
             report.ran("ordering/not_configured");
         }
@@ -419,132 +395,6 @@ pub fn ordering_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport)
     }
 }
 
-// ---------------------------------------------------------------------------
-// exactness
-// ---------------------------------------------------------------------------
-
-/// **exactness** — `run_until` lands where it says it lands.
-///
-/// * late-only stop: a `Deadline` exit's `reached` is never before the requested
-///   deadline (the frozen [`CommonExit::Deadline`] invariant);
-/// * a guest exit before the deadline returns that exit instead, short of it;
-/// * zero-length and already-past deadlines still obey late-only stop;
-/// * monotonicity: `run_until(a)` then `run_until(b)` is equivalent to
-///   `run_until(b)` for `a < b`;
-/// * repeatability: the same start and the same deadline twice produce an
-///   identical exit and an identical `VcpuState`.
-///
-/// A backend that declines `run_until` must decline it *consistently*: the exam
-/// requires [`Unsupported`](BackendError::Unsupported) rather than accepting
-/// silence.
-pub fn deadline_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut ContractReport) {
-    if !fx.implements_run_until() {
-        // The decline is itself under test: it must be the documented error.
-        if let Some(mut b) = fx.spawn(Scenario::BusyLoop) {
-            b.set_policy(&fx.policy()).expect("set_policy");
-            assert!(
-                matches!(
-                    b.run_until(Moment(1)),
-                    Err(BackendError::Unsupported { .. })
-                ),
-                "a backend that does not implement run_until must answer Unsupported"
-            );
-            report.ran("exactness/run_until_declines_loudly");
-        }
-        report.decline("exactness/deadline", DeclineReason::NoRunUntil);
-        return;
-    }
-
-    if fx.spawn(Scenario::BusyLoop).is_none() {
-        report.decline(
-            "exactness/deadline",
-            DeclineReason::ScenarioUnavailable(Scenario::BusyLoop),
-        );
-        return;
-    }
-
-    // Late-only stop, at three deadline shapes: an ordinary one, a zero-length
-    // one, and one already behind the current position.
-    for deadline in [Moment(4096), Moment(0), Moment(1)] {
-        let mut b = fx.spawn(Scenario::BusyLoop).expect("busy loop");
-        b.set_policy(&fx.policy()).expect("set_policy");
-        match b.run_until(deadline).expect("run_until") {
-            Exit::Common(CommonExit::Deadline { reached }) => assert!(
-                reached.0 >= deadline.0,
-                "late-only stop: reached {reached:?} is before the requested {deadline:?}"
-            ),
-            other => panic!("busy loop must stop at the deadline, got {other:?}"),
-        }
-    }
-    report.ran("exactness/deadline_is_late_only");
-
-    // A guest exit before the deadline returns early.
-    if let Some(mut b) = fx.spawn(Scenario::Idle) {
-        b.set_policy(&fx.policy()).expect("set_policy");
-        let exit = b.run_until(Moment(u64::MAX / 2)).expect("run_until");
-        assert_eq!(
-            exit,
-            Exit::Common(CommonExit::Idle),
-            "a guest exit before the deadline must be returned instead of the deadline"
-        );
-        report.ran("exactness/guest_exit_preempts_the_deadline");
-    } else {
-        report.decline(
-            "exactness/guest_exit_preempts_the_deadline",
-            DeclineReason::ScenarioUnavailable(Scenario::Idle),
-        );
-    }
-
-    // Monotonicity: stepping through `a` on the way to `b` ends where going
-    // straight to `b` ends.
-    let (a, b_deadline) = (Moment(1024), Moment(4096));
-    let mut stepped = fx.spawn(Scenario::BusyLoop).expect("busy loop");
-    stepped.set_policy(&fx.policy()).expect("set_policy");
-    stepped.run_until(a).expect("run_until a");
-    let stepped_exit = stepped.run_until(b_deadline).expect("run_until b");
-    let stepped_state = stepped.save().expect("save");
-    drop(stepped);
-
-    let mut direct = fx.spawn(Scenario::BusyLoop).expect("busy loop");
-    direct.set_policy(&fx.policy()).expect("set_policy");
-    let direct_exit = direct.run_until(b_deadline).expect("run_until b");
-    let direct_state = direct.save().expect("save");
-    drop(direct);
-
-    assert_eq!(
-        stepped_exit, direct_exit,
-        "run_until(a) then run_until(b) must end at the same exit as run_until(b)"
-    );
-    assert_eq!(
-        stepped_state, direct_state,
-        "run_until(a) then run_until(b) must end in the same state as run_until(b)"
-    );
-    report.ran("exactness/deadline_monotonicity");
-
-    // Repeatability: same start, same deadline, twice.
-    let mut first = fx.spawn(Scenario::BusyLoop).expect("busy loop");
-    first.set_policy(&fx.policy()).expect("set_policy");
-    let first_exit = first.run_until(b_deadline).expect("run_until");
-    let first_state = first.save().expect("save");
-    drop(first);
-
-    let mut second = fx.spawn(Scenario::BusyLoop).expect("busy loop");
-    second.set_policy(&fx.policy()).expect("set_policy");
-    let second_exit = second.run_until(b_deadline).expect("run_until");
-    let second_state = second.save().expect("save");
-    drop(second);
-
-    assert_eq!(
-        first_exit, second_exit,
-        "the same start and deadline must produce an identical exit"
-    );
-    assert_eq!(
-        first_state, second_state,
-        "the same start and deadline must produce an identical state"
-    );
-    report.ran("exactness/deadline_is_repeatable");
-}
-
 /// **exactness** — the dirty-page log is sorted, deduplicated, drained on read,
 /// and may over-report but never under-report.
 ///
@@ -563,7 +413,7 @@ pub fn dirty_log_exactness_exam<F: BackendFixture>(fx: &mut F, report: &mut Cont
     };
     b.set_policy(&fx.policy()).expect("set_policy");
     let Some(expected) = fx.dirty_pages(&mut b) else {
-        // The decline is itself under test, exactly as it is for `run_until`: a
+        // The decline is itself under test: a
         // backend without dirty tracking must answer the documented
         // `Unsupported` so every caller takes the always-correct full-scan
         // path. Answering `Ok` with *any* set — even an empty one — would be a
@@ -806,7 +656,6 @@ pub fn interrupt_delivery_exam<F: BackendFixture>(fx: &mut F, report: &mut Contr
 pub fn run_all<F: BackendFixture>(fx: &mut F) -> ContractReport {
     let mut report = ContractReport::new(fx.name());
     ordering_exam(fx, &mut report);
-    deadline_exactness_exam(fx, &mut report);
     dirty_log_exactness_exam(fx, &mut report);
     capability_keyed_exactness_exam(fx, &mut report);
     fixpoint_exam(fx, &mut report);

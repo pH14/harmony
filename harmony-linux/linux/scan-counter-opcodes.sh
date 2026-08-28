@@ -11,7 +11,7 @@
 # removed one goes stale, AND a removed+ADDED pair in one function is caught too
 # (the offsets change even though the count would not — cross-model r10 P1).
 # Each is allowlistable ONLY because the retained RDTSC/RDTSCP trap completes it
-# with the same work-derived value the pvclock page carries (§4.1 — on x86 a raw
+# with the same exit-count-derived value the pvclock page carries (§4.1 — on x86 a raw
 # read is survivable-by-trap, never a determinism hole). Exact accounting in both
 # directions: an unlisted (or moved) site fails the build; a stale entry fails
 # too. (On ARM, where no trap exists, the transposed gate has an EMPTY allowlist
@@ -63,7 +63,7 @@
 # same per-site machinery, SEPARATE allowlist, opposite justification regime:
 # a counter read is survivable-by-trap, but SVM cannot intercept RDRAND/RDSEED,
 # so an executed site feeds true entropy no contract can replay. The frozen
-# CPUID hides both features from the guest (stock prescriptive composition);
+# CPUID hides both features from the guest (stock virtual_time composition);
 # this scan is the audit that every site left in the image sits behind the
 # feature check that hiding turns off — the CPU-MSR-CONTRACT §2.4 x86
 # RDRAND/RDSEED disposition's enforcement.

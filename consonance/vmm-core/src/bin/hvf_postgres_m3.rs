@@ -104,8 +104,8 @@ fn main() -> std::process::ExitCode {
         TICK_PERIOD_VNS, Throughput, WORKLOAD_ROWS, compare_exit_counts, compare_gap_oracles,
         parse_x86_diagnostic, validate_acceptance,
     };
-    use vmm_core::prescriptive::check_delivery_placement;
     use vmm_core::vendor::arm64::bringup;
+    use vmm_core::virtual_time::check_delivery_placement;
     use vmm_core::vmm::Step;
 
     const READY: &[u8] = b"ARM64_PG_M3_READY";
@@ -327,8 +327,8 @@ fn main() -> std::process::ExitCode {
                 run_error = Some(format!("guest pvclock functional oracle failed: {error}"));
                 break;
             }
-            let Some(trace) = vmm.prescriptive_trace() else {
-                run_error = Some("prescriptive trace absent from HVF composition".to_string());
+            let Some(trace) = vmm.virtual_time_trace() else {
+                run_error = Some("virtual_time trace absent from HVF composition".to_string());
                 break;
             };
             let Some(last) = trace.normalized_log().events.last() else {
@@ -361,7 +361,7 @@ fn main() -> std::process::ExitCode {
 
         if event > 0 && event % 10_000 == 0 {
             let pc = vmm.inspect_vcpu().core.pc;
-            if let Some(trace) = vmm.prescriptive_trace() {
+            if let Some(trace) = vmm.virtual_time_trace() {
                 let vns = trace
                     .normalized_log()
                     .events
@@ -403,14 +403,14 @@ fn main() -> std::process::ExitCode {
             .save_vm_state()
             .map_err(|save_error| format!("state unavailable: {save_error}"))
             .and_then(|snapshot| arm64_gic_diagnostic(&snapshot.devices.0).map_err(str::to_string));
-        let trace = vmm.prescriptive_trace();
+        let trace = vmm.virtual_time_trace();
         let failure_report = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&report_path)
             .and_then(|file| {
                 let mut report = std::io::BufWriter::new(file);
-                writeln!(report, "format consonance.prescriptive-m3-failure.v1")?;
+                writeln!(report, "format consonance.virtual_time-m3-failure.v1")?;
                 writeln!(report, "status FAIL")?;
                 writeln!(report, "payload postgres-container-task38-arm64-static-lse")?;
                 writeln!(report, "kernel_sha256 {}", hex(&image_sha))?;
@@ -523,12 +523,12 @@ fn main() -> std::process::ExitCode {
         eprintln!("M3 payload reached terminal without {READY:?}");
         return std::process::ExitCode::FAILURE;
     }
-    if let Err(error) = vmm.checkpoint_prescriptive_trace() {
-        eprintln!("cannot checkpoint production prescriptive trace: {error}");
+    if let Err(error) = vmm.checkpoint_virtual_time_trace() {
+        eprintln!("cannot checkpoint production virtual_time trace: {error}");
         return std::process::ExitCode::FAILURE;
     }
-    let Some(trace) = vmm.prescriptive_trace() else {
-        eprintln!("production prescriptive trace absent at terminal");
+    let Some(trace) = vmm.virtual_time_trace() else {
+        eprintln!("production virtual_time trace absent at terminal");
         return std::process::ExitCode::FAILURE;
     };
     let Some(trace_start) = pvclock_trace_start else {
@@ -678,7 +678,7 @@ fn main() -> std::process::ExitCode {
     let mut report = std::io::BufWriter::new(report_file);
     let status = if issues.is_empty() { "PASS" } else { "FAIL" };
     let report_result = (|| -> std::io::Result<()> {
-        writeln!(report, "format consonance.prescriptive-m3-report.v2")?;
+        writeln!(report, "format consonance.virtual_time-m3-report.v2")?;
         writeln!(report, "status {status}")?;
         writeln!(report, "payload postgres-container-task38-arm64-static-lse")?;
         writeln!(report, "kernel_sha256 {}", hex(&image_sha))?;

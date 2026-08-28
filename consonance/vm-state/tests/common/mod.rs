@@ -172,16 +172,13 @@ pub fn arb_xsave() -> impl Strategy<Value = XsaveImage> {
 }
 
 pub fn arb_vtime() -> impl Strategy<Value = VtimeState> {
-    (any::<u64>(), any::<u64>(), any::<u64>(), any::<u64>()).prop_map(
-        |(ratio_num, guest_hz, guest_base, snapshot_vns)| VtimeState {
-            ratio_num,
-            // Only integer-ratio configs are encodable (INTEGRATION.md §4).
-            ratio_den: 1,
+    (any::<u64>(), any::<u64>(), any::<u64>()).prop_map(|(guest_hz, guest_base, snapshot_vns)| {
+        VtimeState {
             guest_hz,
             guest_base,
             snapshot_vns,
-        },
-    )
+        }
+    })
 }
 
 pub fn arb_timers() -> impl Strategy<Value = TimerQueueState> {
@@ -347,8 +344,6 @@ pub fn fully_populated() -> VmState {
         msrs: MsrBlock(msrs),
         xsave: XsaveImage(vec![0x7f, 0x1f, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd]),
         vtime: VtimeState {
-            ratio_num: 2,
-            ratio_den: 1,
             guest_hz: 2_000_000_000,
             guest_base: 0,
             snapshot_vns: 0x0000_0000_075b_cd15, // 123_456_789

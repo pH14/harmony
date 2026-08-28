@@ -109,7 +109,7 @@ fetch_one "$K3S_AIRGAP_URL" "$K3S_AIRGAP_SHA256"
 # container; we --disable coredns/traefik/servicelb/metrics/local-path, so pause
 # is the only air-gap image the guest actually runs. Importing just it (a few
 # hundred KB) instead of the whole multi-hundred-MB tarball keeps the guest light
-# — boot V-time under the single-stepping VMM is the bottleneck. Needs `ctr`
+# — boot throughput under the VMM is the bottleneck. Needs `ctr`
 # (containerd), so it is box/Linux-only, like fetch_postgres_image above;
 # build-k3s-image.sh fails loudly if the tar is missing.
 fetch_k3s_pause_image() {

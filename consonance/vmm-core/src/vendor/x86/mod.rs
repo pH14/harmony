@@ -5,7 +5,7 @@
 //! ([`dispatch`]), the boot loaders and entry state ([`multiboot`],
 //! [`linux_loader`], [`entry`]), the interrupt fabric and platform device models
 //! ([`devices`] + the `lapic` crate), the host-homogeneity probe
-//! ([`hostassert`]), the retired-branch work counter (`work_perf`), and the
+//! ([`hostassert`]), and the
 //! `vm_state` record set ([`records`]).
 //!
 //! The engine ([`crate::vmm`]) reaches all of it through [`Vendor`] alone. x86
@@ -26,13 +26,6 @@ pub mod hostassert;
 pub mod linux_loader;
 pub mod multiboot;
 pub mod records;
-
-// The box-only `perf_event` work counter (the V-time work source): the x86
-// retired-conditional-branch event (`0x1c4`) behind the arch-neutral `WorkSource`
-// seam. Gated on the arch as well as the OS — the raw event number is Intel's, so
-// this is x86-64-only, not merely Linux-only.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub mod work_perf;
 
 use control_proto::RegsView;
 use vm_state::VmState;
@@ -84,8 +77,14 @@ impl Vendor for X86 {
             // RDRAND/RDSEED → the seeded stream. Computed above the trait; the
             // backend only surfaced + will complete the exit. Unwired (stock KVM /
             // M1/M2) is a loud contract violation, never a host-derived value.
-            X86Exit::Rdtsc | X86Exit::Rdtscp => vmm.complete_tsc(),
-            X86Exit::Rdrand { width } | X86Exit::Rdseed { width } => vmm.complete_rng(width),
+            X86Exit::Rdtsc | X86Exit::Rdtscp => {
+                vmm.advance_virtual_time_vtime(contract::TRAPPED_TIME_READ_VNS)?;
+                vmm.complete_tsc()
+            }
+            X86Exit::Rdrand { width } | X86Exit::Rdseed { width } => {
+                vmm.advance_virtual_time_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
+                vmm.complete_rng(width)
+            }
         }
     }
 
@@ -98,10 +97,10 @@ impl Vendor for X86 {
         vmm.dispatch_mmio(gpa, size, write)
     }
 
-    fn normalize_prescriptive_exit(
+    fn normalize_virtual_time_exit(
         exit: &vmm_backend::Exit<Self>,
-    ) -> Option<(crate::prescriptive::NormalizedEventClass, Vec<u8>)> {
-        Some(dispatch::normalize_prescriptive_exit_x86(exit))
+    ) -> Option<(crate::virtual_time::NormalizedEventClass, Vec<u8>)> {
+        Some(dispatch::normalize_virtual_time_exit_x86(exit))
     }
 
     fn post_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {

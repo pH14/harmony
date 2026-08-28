@@ -9,12 +9,8 @@ use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use vm_state::{MsrBlock, TimerEntry, TimerQueueState, VmState, VmStateError, VtimeState};
 
-/// An integer (encodable) V-time config; `VmState::default()` has `ratio_den == 0`.
-fn int_ratio() -> VtimeState {
-    VtimeState {
-        ratio_den: 1,
-        ..Default::default()
-    }
+fn vtime() -> VtimeState {
+    VtimeState::default()
 }
 
 #[test]
@@ -40,12 +36,12 @@ fn msr_insertion_order_is_irrelevant() {
 
     let a = VmState {
         msrs: MsrBlock(map_a),
-        vtime: int_ratio(),
+        vtime: vtime(),
         ..Default::default()
     };
     let b = VmState {
         msrs: MsrBlock(map_b),
-        vtime: int_ratio(),
+        vtime: vtime(),
         ..Default::default()
     };
 
@@ -61,7 +57,7 @@ fn msr_insertion_order_is_irrelevant() {
 fn with_timers(entries: Vec<TimerEntry>, next_seq: u64) -> VmState {
     VmState {
         timers: TimerQueueState { entries, next_seq },
-        vtime: int_ratio(),
+        vtime: vtime(),
         ..Default::default()
     }
 }

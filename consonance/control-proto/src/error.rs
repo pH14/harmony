@@ -170,39 +170,6 @@ pub enum ControlError {
         /// The effective V-time the run reached (already beyond `moment`).
         vtime: u64,
     },
-    /// A `run` **refused to arm** a staged `Moment` at the exact-count arrival
-    /// seam because that `Moment` is **not reachable** as an exact stop on this
-    /// determinism-complete backend: the nearest representable arrival lands at
-    /// `landing` (past `moment` — `moment` is off the guest's exact-count clock
-    /// grid), so arming would free-run the guest past a `Moment` it was told to
-    /// stop at. Unlike [`ScheduleUnsatisfiable`](Self::ScheduleUnsatisfiable) —
-    /// which fires **after** an overshoot has already happened, reporting the
-    /// reached V-time — this fires **before** any step: the guest has **not**
-    /// executed past `moment`, and `landing` is the **prospective (unreached)**
-    /// V-time the seam would have arrived at, never a reached count. The schedule
-    /// is unsatisfiable until a `branch`/`replay` rewinds (hm-zwhi; the
-    /// exact-arrival arm seam on a pvclock guest).
-    #[error(
-        "staged Moment {moment} is unreachable by exact arrival (nearest arrival at V-time \
-         {landing}); schedule unsatisfiable"
-    )]
-    ScheduleMomentUnreachable {
-        /// The staged `Moment` the exact-count seam could not stop AT.
-        moment: u64,
-        /// The **prospective** (unreached) V-time of the nearest representable
-        /// arrival — where the guest WOULD land if armed, never a reached count.
-        landing: u64,
-    },
-    /// A `perturb` arrived at a **non-V-time-synchronized point** — the VM's last
-    /// stop was a terminal (HLT / shutdown / debug) or another non-intercept exit,
-    /// so its effective V-time is only a *lower bound* on the true retired count,
-    /// not the exact position. Staging a fault against a lower-bound floor could
-    /// record it at a `Moment` the guest has already executed past — a reproducer
-    /// that does not reproduce. The client must first reach a synchronized point
-    /// (rewind via `branch`/`replay`, which restores onto a V-time intercept) before
-    /// staging (task 59; PR #51 round-7 — the exact-`effective_vns` family).
-    #[error("perturb at a non-synchronized point (effective V-time is a lower bound)")]
-    NotSynchronized,
     /// A `perturb` (or a `branch` env host fault) stages an `InjectInterrupt` with an
     /// **architecturally reserved vector** (`0..=15`), which the LAPIC cannot raise.
     /// A stage-time-decidable property of the request, rejected loudly here (like

@@ -33,7 +33,7 @@ make -C harmony-linux arm64-image
 
 They require Linux/aarch64 and publish `Image` plus `initramfs.cpio.gz` under
 `harmony-linux/build/arm64/`, so they cannot overwrite the established x86
-artifacts. The kernel build applies the pinned `patches/arm64/` work-derived-clock
+artifacts. The kernel build applies the pinned `patches/arm64/` virtual-time-clock
 and LSE-only patches and refuses publication unless the final `vmlinux` and vDSO
 contain zero live generic-counter reads and zero LL/SC reservation-monitor
 instructions. The initramfs contains one freestanding syscall-only `/init` (no

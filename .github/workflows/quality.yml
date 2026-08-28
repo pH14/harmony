@@ -12,8 +12,8 @@ name: quality
 # immune").
 #
 # What STAYS on the box (NOT in this workflow, and never was): the ~23
-# live_*/determinism/seal-rate/PMU gates that need a real /dev/kvm, the patched KVM
-# module, hardware perf counters, and quiet pinned cores. Those run out-of-band
+# live determinism gates that need a real /dev/kvm, the patched KVM module, and
+# quiet pinned cores. Those run out-of-band
 # through the box run-window tooling (now in the harmony-development repo).
 # Formalizing them as a dispatchable `runs-on: [self-hosted, kvm]` job is a documented
 # follow-up (see the migration PR description); until then the box's role is unchanged.
@@ -205,10 +205,7 @@ jobs:
       # `--ignore-filename-regex` drops the box-only `cfg(linux)` substrate paths
       # from the coverage denominator: the stock-KVM path
       # (`consonance/vmm-backend/src/kvm.rs`, `…/src/kvm/`, `…/src/kvm_sys.rs`), the
-      # task-21 determinism backend (`…/src/patched_kvm.rs`), the task-47 run_until
-      # PMU syscall orchestration (`…/src/pmu_sys.rs` — its PURE config `pmu.rs`
-      # stays covered), vmm-core's `perf_event` work counter
-      # (`consonance/vmm-core/src/vendor/x86/work_perf.rs`), and the live ARM
+      # task-21 determinism backend (`…/src/patched_kvm.rs`) and the live ARM
       # substrate entrypoints. The latter are the Hypervisor.framework FFI module
       # and its probe/oracle binaries plus the HVF/KVM boot and control-server
       # composition binaries; they require entitlements or `/dev/kvm` and built
@@ -220,7 +217,7 @@ jobs:
       # orchestration end-to-end never run here — counting those paths would only
       # drag the floor, and running live KVM/perf in this job is impossible on a
       # hosted runner (no /dev/kvm, no patched module). They are verified instead by
-      # those `#[ignore]` box tests and by Miri (which still *executes* `kvm.rs`'s
+      # those `#[ignore]` live tests and by Miri (which still *executes* `kvm.rs`'s
       # synthetic-`kvm_run` unit tests — incl. the KVM_EXIT_DETERMINISM decode — so a
       # logic regression still fails the suite, just not coverage-*counted*).
       # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds:
@@ -229,12 +226,12 @@ jobs:
       # reach it. The
       # coverage-gated set is the portable, platform-agnostic logic the splits
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
-      # (`mock`/`run_loop`), and vmm-core's `work::WorkSource`/`ScriptedWork` + V-time
+      # (`mock`/`run_loop`) and vmm-core's V-time
       # completion. See the crates' IMPLEMENTATION.md.
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/(vendor/x86/work_perf\.rs|bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs)|consonance/acceptance-suite/src/realvmm\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()

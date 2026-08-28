@@ -232,8 +232,7 @@ proptest! {
 
     /// A single-byte mutation of a valid blob never panics, and never silently
     /// decodes to a state that re-encodes to *different* bytes (decode only ever
-    /// accepts canonical blobs). Re-encoding may itself fail — a mutation can flip
-    /// `ratio_den` away from 1, which `encode` rejects — so that case is skipped.
+    /// accepts canonical blobs).
     #[test]
     fn mutated_valid_blob_never_panics(
         idx in any::<prop::sample::Index>(),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Run and compare the complete ten-boot M1 Max prescriptive-time oracle.
+# Run and compare the complete ten-boot M1 Max virtual_time-time oracle.
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then

@@ -5,7 +5,7 @@ name = "harmony-tetanes-agent"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-description = "Arm64 guest TetaNES payload for the prescriptive virtual-time M2 campaign"
+description = "Arm64 guest TetaNES payload for the virtual_time virtual-time M2 campaign"
 
 [workspace]
 

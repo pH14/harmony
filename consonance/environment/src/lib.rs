@@ -132,7 +132,7 @@ pub struct NodeId(pub u32);
 pub struct ConnId(pub u64);
 
 /// A **duration** on the deterministic V-time axis, in retired-conditional-
-/// branch counts. Mirrors the integration type. Fault delays
+/// virtual-time counts. Mirrors the integration type. Fault delays
 /// ([`Fault::NetLatency`], [`Fault::BlockLatency`], [`Fault::ProcPause`]) and
 /// the [`HostFault::SkewTime`] delta are `Span`s; points on the axis are
 /// [`Moment`]s.

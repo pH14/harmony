@@ -360,11 +360,11 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
 
 /// Boot the Postgres image on the patched backend at `seed`, run it to a terminal,
 /// and return (serial capture, `state_hash`, outcome). The [`Vmm`] — and with it
-/// the `perf_event` work counter that drives V-time — is **dropped before
+/// the exit-count clock that drives V-time — is **dropped before
 /// returning**. That matters for the deterministic-twice gate: keeping the first
 /// run's `Vmm` alive while a second boots in the same process leaves two pinned PMU
-/// counters open, which multiplex and perturb the branch count → a few-step V-time
-/// skid → a divergent printk timestamp. One counter at a time keeps it exact.
+/// counters open, which multiplex and perturb the exit count → a few-step V-time
+/// exit-boundary variability → a divergent printk timestamp. One counter at a time keeps it exact.
 fn boot_pg(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-postgres.cpio.gz");

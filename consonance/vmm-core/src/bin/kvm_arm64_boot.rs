@@ -7,8 +7,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
-fn placement_event(error: &vmm_core::prescriptive::PlacementViolation) -> Option<u64> {
-    use vmm_core::prescriptive::PlacementViolation;
+fn placement_event(error: &vmm_core::virtual_time::PlacementViolation) -> Option<u64> {
+    use vmm_core::virtual_time::PlacementViolation;
 
     match error {
         PlacementViolation::BadEventIndex { position, .. } => Some(*position),
@@ -114,7 +114,7 @@ fn main() -> std::process::ExitCode {
             }
         };
         let current_portable_event = vmm
-            .prescriptive_trace()
+            .virtual_time_trace()
             .and_then(|trace| trace.normalized_log().events.last())
             .map(|logged| logged.event_index);
         let portable_component_match = current_portable_event
@@ -150,10 +150,10 @@ fn main() -> std::process::ExitCode {
             emitted = serial.len();
         }
         if serial.windows(READY.len()).any(|window| window == READY) {
-            use vmm_core::prescriptive::{
+            use vmm_core::vendor::arm64::compare_gic_architecture;
+            use vmm_core::virtual_time::{
                 LogField, check_delivery_placement, compare_normalized_logs,
             };
-            use vmm_core::vendor::arm64::compare_gic_architecture;
 
             // M4's live save/restore oracle. Capture the typed architectural
             // GIC independently of the hash/codec, restore the exact VM-state
@@ -269,13 +269,13 @@ fn main() -> std::process::ExitCode {
                 planted_difference.index.unwrap_or_default(),
             );
 
-            if let Err(error) = vmm.checkpoint_prescriptive_trace() {
-                eprintln!("cannot checkpoint production prescriptive trace: {error}");
+            if let Err(error) = vmm.checkpoint_virtual_time_trace() {
+                eprintln!("cannot checkpoint production virtual_time trace: {error}");
                 return std::process::ExitCode::FAILURE;
             }
             let trace = vmm
-                .prescriptive_trace()
-                .expect("prescriptive KVM composition wires a production trace");
+                .virtual_time_trace()
+                .expect("virtual_time KVM composition wires a production trace");
             if let Some(path) = normalized_log_path.as_deref()
                 && let Err(error) = write_normalized_log(std::path::Path::new(path), trace)
             {
@@ -389,13 +389,13 @@ fn main() -> std::process::ExitCode {
     }
 
     if let Some(path) = normalized_log_path.as_deref() {
-        if let Err(error) = vmm.checkpoint_prescriptive_trace() {
-            eprintln!("cannot checkpoint bounded prescriptive trace: {error}");
+        if let Err(error) = vmm.checkpoint_virtual_time_trace() {
+            eprintln!("cannot checkpoint bounded virtual_time trace: {error}");
             return std::process::ExitCode::FAILURE;
         }
         let trace = vmm
-            .prescriptive_trace()
-            .expect("prescriptive KVM composition wires a production trace");
+            .virtual_time_trace()
+            .expect("virtual_time KVM composition wires a production trace");
         if let Err(error) = write_normalized_log(std::path::Path::new(path), trace) {
             eprintln!("cannot write bounded normalized log {path:?}: {error}");
             return std::process::ExitCode::FAILURE;
@@ -408,12 +408,12 @@ fn main() -> std::process::ExitCode {
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn write_normalized_log(
     path: &std::path::Path,
-    trace: &vmm_core::prescriptive::LivePrescriptiveTrace,
+    trace: &vmm_core::virtual_time::LiveVirtualTimeTrace,
 ) -> std::io::Result<()> {
     use std::io::Write;
 
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writeln!(out, "format consonance.live-prescriptive-log.v1")?;
+    writeln!(out, "format consonance.live-virtual_time-log.v1")?;
     writeln!(out, "digest {}", hex(&trace.normalized_digest()))?;
     writeln!(out, "events {}", trace.normalized_log().events.len())?;
     for event in &trace.normalized_log().events {

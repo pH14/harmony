@@ -8,7 +8,7 @@
 //! **inside** a vendor submodule is that architecture's own: the CPU contract
 //! and its installed policy, the exit dispatch and dispositions, the boot
 //! loaders and entry state, the interrupt fabric and platform device models, the
-//! host-homogeneity probe, the work-counter event, and the state records.
+//! host-homogeneity probe, the exit-count-clock event, and the state records.
 //!
 //! [`Vendor`] is how the engine reaches the vendor half without naming it: the
 //! engine's [`Vmm`] holds `<B::A as Vendor>::Devices` and dispatches arch exits
@@ -27,7 +27,7 @@
 use control_proto::RegsView;
 use vmm_backend::{Arch, Backend, Exit, Gpa};
 
-use crate::prescriptive::NormalizedEventClass;
+use crate::virtual_time::NormalizedEventClass;
 use crate::vmm::{Step, Vmm, VmmError};
 
 pub mod arm64;
@@ -127,11 +127,11 @@ pub trait Vendor: Arch + Sized {
         Ok(())
     }
 
-    /// Normalize one backend exit for the production prescriptive trace. A
-    /// descriptive-only vendor may return `None`; a prescriptive composition
+    /// Normalize one backend exit for the production virtual_time trace. A
+    /// descriptive-only vendor may return `None`; a virtual_time composition
     /// that returns `Some` records the complete payload before dispatch mutates
     /// device state.
-    fn normalize_prescriptive_exit(_exit: &Exit<Self>) -> Option<(NormalizedEventClass, Vec<u8>)> {
+    fn normalize_virtual_time_exit(_exit: &Exit<Self>) -> Option<(NormalizedEventClass, Vec<u8>)> {
         None
     }
 

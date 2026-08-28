@@ -92,20 +92,9 @@ exclude_globs = [
     "**/kvm.rs",
     "**/kvm/**",
     "**/kvm_sys.rs",
-    # task-21 box-only substrate, same rationale as the `kvm` path above: the
-    # `PatchedKvmBackend` syscall orchestration and vmm-core's `perf_event` work
-    # counter cannot run without the patched `/dev/kvm` + perf on bare-metal
-    # Intel, so the no-`--ignored` mutation oracle never runs them (unkillable
-    # "missed" mutants). Their logic lives in the gated pure modules
-    # (`kvm.rs`'s KVM_EXIT_DETERMINISM decode/complete; `work::WorkSource`).
+    # The patched backend syscall orchestration cannot run without its patched
+    # `/dev/kvm`, so the portable mutation oracle cannot exercise it.
     "**/patched_kvm.rs",
-    "**/work_perf.rs",
-    # task-47 box-only substrate, same rationale: `pmu_sys.rs` is the
-    # `PmuBranchCounter` syscall orchestration (perf_event/fcntl/mmap + the SIGIO
-    # overflow seam) for `run_until`; it cannot run without perf on the box. Its
-    # PURE config — the `PerfEventAttr` builder + bit constants — lives in `pmu.rs`,
-    # which is NOT excluded and is exact-value mutation-tested.
-    "**/pmu_sys.rs",
 ]
 
 # Structurally-unkillable mutants in `consonance/vmm-core`, by category. The
@@ -161,7 +150,7 @@ exclude_re = [
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
     #     be distinguished through a `Box<dyn Backend>`. Every *other* `Box<B>`
     #     forward IS killed by `tests/dyn_backend.rs` (config→NotConfigured,
-    #     completion→PendingCompletion, map_memory→Err, run/run_until/save/counts
+    #     completion→PendingCompletion, map_memory→Err, run/save/counts
     #     →observable return). Scoped to backend.rs's blanket impl.
     "consonance/vmm-backend/src/backend\\.rs.*inject",
     # (h) [retired] `pv_net::Switch::route_one` skip — `dissonance/pv-net` was
@@ -179,17 +168,7 @@ exclude_re = [
     #     asserts a dropped server stops accepting); only this one Drop-shadowed
     #     mutant is excluded. See consonance/telemetry/IMPLEMENTATION.md.
     "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
-    # (j) `Vmm::on_deadline`'s diagnostic-trace cap `self.preemption_landings.len() <
-    #     PREEMPTION_TRACE_CAP` → `<=` (task 47 round-13): provably equivalent. The two
-    #     differ ONLY at exactly `len == PREEMPTION_TRACE_CAP` (4096), where `<=` records ONE
-    #     extra landing (4097 total) before stopping — a harmless off-by-one on a trace that
-    #     is OBSERVABILITY ONLY (not hashed, not determinism-affecting; the seed-gate reads
-    #     the first few). Killing it would require a 4097-preemption unit test (impractical),
-    #     and the behavior is identical for every realistic run. The `<`→`==`/`>` siblings
-    #     (which would empty the trace) ARE killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
-    #     `preemption_landings() == &[reached]` assertion. Scoped to vmm.rs's on_deadline.
-    "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*on_deadline",
-    # (k) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
+    # (j) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
     #     PREEMPTION_TRACE_CAP` → `<=` (task 52): the idle-resume dual of (j), identical
     #     rationale. The two differ ONLY at `len == PREEMPTION_TRACE_CAP` (4096), where `<=`
     #     records ONE extra idle landing before stopping — a harmless off-by-one on the

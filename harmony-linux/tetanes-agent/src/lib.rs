@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Deterministic TetaNES guest-agent core for prescriptive V-time M2.
+//! Deterministic TetaNES guest-agent core for virtual_time V-time M2.
 //!
 //! One [`Agent::run_chord`] consumes one exact two-byte payload entry
 //! (`buttons`, `hold_frames`), clocks the same TetaNES configuration as the

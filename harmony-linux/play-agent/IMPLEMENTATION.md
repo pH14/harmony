@@ -24,7 +24,7 @@ permits conveying the combined work** — the compatibility rationale recorded
 beside the sha in `versions.lock` (`FCEUMM_LICENSE=`). Mesen (GPL-3, cleanly
 licensed) was the runner-up, rejected on throughput: it is the heaviest of
 the three and emulation cost multiplies into every branch under the
-single-stepping VMM; FCEUmm is the middle ground and SMB (mapper 0/NROM) is
+VMM; FCEUmm is the middle ground and SMB (mapper 0/NROM) is
 core-agnostic territory. Accuracy stays a soft concern — determinism comes
 from the VM below. The fetch discipline is unchanged (sha256-pinned tarball,
 built at image time, **never vendored, never copied from** — the bedrock

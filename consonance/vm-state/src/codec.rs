@@ -62,9 +62,6 @@ impl VmState {
     ///
     /// # Errors
     ///
-    /// - [`VmStateError::FractionalRatio`] if `vtime.ratio_den != 1` — such a
-    ///   config cannot be restored exactly (INTEGRATION.md §4), so the blob is
-    ///   refused rather than written.
     /// - [`VmStateError::InvalidField`] if `timers` violates a task-05
     ///   `TimerQueue` invariant: entries not strictly ascending/unique by
     ///   `(deadline_vns, seq)`, a duplicate `token`, or any `seq >= next_seq`
@@ -74,12 +71,6 @@ impl VmState {
     /// - [`VmStateError::InvalidField`] if a variable-length section would exceed
     ///   `u32::MAX` bytes (not reachable for any real machine state).
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
-        // Integer-ratio invariant: enforce at the codec boundary so an
-        // un-restorable-exactly timeline can never be written.
-        if self.vtime.ratio_den != 1 {
-            return Err(VmStateError::FractionalRatio);
-        }
-
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {

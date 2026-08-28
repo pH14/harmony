@@ -11,7 +11,7 @@ semantics. The controller is released, all 2 KiB of WRAM are copied into one
 locked guest page, and only then does the agent emit
 `frame_complete(cumulative_frames)`. Immediately after every lifecycle
 event, the agent performs one volatile read of the board pvclock frame's ABI
-register. That already-modeled MMIO access advances prescriptive V-time and gives
+register. That already-modeled MMIO access advances virtual_time V-time and gives
 the VMM a synchronized boundary at which it can surface the deferred yield before
 the agent fetches another payload.
 

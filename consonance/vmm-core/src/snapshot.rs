@@ -408,11 +408,10 @@ mod tests {
     fn vm_state_blob_seals_and_decodes() {
         // The engine seals the canonical vm_state bytes and hands them back to decode.
         let mut eng = SnapshotEngine::new(4 * PG);
-        let mut s = VmState {
+        let s = VmState {
             contract_hash: [7u8; 32],
             ..Default::default()
         };
-        s.vtime.ratio_den = 1; // encodable
         let bytes = s.encode().unwrap();
         let snap = eng.snapshot_base(&vec![0u8; 4 * PG], &bytes).unwrap();
         assert_eq!(eng.vm_state::<VmState>(snap).unwrap(), s);
@@ -480,7 +479,6 @@ mod tests {
         gic.raise(40).unwrap();
         let mut state = Arm64VmState::default();
         state.regs.x[0] = 0x1122_3344_5566_7788;
-        state.vtime.ratio_den = 1;
         state.devices = crate::vendor::arm64::records::encode_device_blob(
             &crate::vendor::arm64::records::Arm64DeviceState {
                 clock_offset: 0xdead_beef,

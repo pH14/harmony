@@ -71,7 +71,6 @@ pub trait ArchExit: Clone + fmt::Debug + PartialEq {
 /// The engine's neutral questions over a vendor's arch-named capability flags.
 pub trait ArchCaps: Copy + fmt::Debug + PartialEq {
     /// Deterministic guest clock: reads of the guest's clock resolve to V-time
-    /// (x86: `deterministic_tsc`), so the exact-count `run_until` seam is
-    /// trustworthy for preemption/arrival deadlines.
+    /// (x86: `deterministic_tsc`).
     fn deterministic_clock(&self) -> bool;
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Box-only task-110 gates for the paravirt work-derived clock
+//! Box-only task-110 gates for the paravirt exit-count-derived clock
 //! (`docs/PARAVIRT-CLOCK.md` §6): **G1** same-seed bit-identical `state_hash`
 //! with the page on, **G2** page-stamp == RDTSC-trap-oracle function equality
 //! at refresh Moments, **G3** busy-wait-on-time liveness within Δ, and the
@@ -7,7 +7,7 @@
 //! wall ratio) that judges kill condition 3 — reported honestly either way,
 //! never asserted into a pass.
 //!
-//! Portable analogues of G1/G2/G3 (mock backend + `ScriptedWork`, incl. the
+//! Portable analogues of G1/G2/G3 (mock backend, including the
 //! mandated deliberate-fault coverage) live in `src/vmm.rs`; this file is the
 //! real-KVM half.
 //!
@@ -314,38 +314,8 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// A wide backstop on the bounded drive to the next synchronized boundary in
-/// [`sample_at_sync`]: a live guest reaches a V-time intercept within a tick
-/// (≈10 ms) or Δ, so this only bounds a wedged guest.
-const SYNC_SAMPLE_CAP: u64 = 10_000_000;
-
-/// Sample the perf denominators — the exit counters AND V-time — at a
-/// SYNCHRONIZED boundary (cross-model r15 P2). At a marker stop the guest has
-/// usually just taken a serial PIO exit, where `effective_vns()` is only a
-/// last-intercept LOWER BOUND; and the two arms exit on different intercept
-/// mixes (page-off takes far more RDTSC intercepts than page-on), so that
-/// lower-bound gap is NOT common between them and biases the reported
-/// rate/reduction. Advancing to the next synchronized intercept — where
-/// `effective_vns` is exact and the counters and the clock agree — removes the
-/// bias. Samples in place if already synchronized (never steps past a boundary
-/// that already holds).
+/// Sample the exit counters and exact exit-count virtual time together.
 fn sample_at_sync(vmm: &mut DynVmm) -> (vmm_backend::ExitCounts, u64) {
-    if !vmm.is_synchronized() {
-        let _ = run_bounded(vmm, SYNC_SAMPLE_CAP, Duration::from_secs(120), |vmm, _| {
-            !vmm.is_synchronized()
-        });
-    }
-    // FAIL rather than sample a lower bound (cross-model r16 P2): if the drive
-    // could not reach a synchronized boundary (the guest terminated or wedged
-    // first), `effective_vns()` is a last-intercept LOWER BOUND, and returning it
-    // silently would re-introduce the very per-arm bias r15 removed. A vacuous
-    // "denominator" is worse than a loud gate failure.
-    assert!(
-        vmm.is_synchronized(),
-        "sample_at_sync could not reach a synchronized V-time boundary within {SYNC_SAMPLE_CAP} \
-         steps — the guest terminated or wedged before an intercept. Refusing to sample the \
-         last-intercept lower-bound V-time (it would bias the reported rate/reduction)."
-    );
     (vmm.exit_counts(), vmm.effective_vns().unwrap_or(0))
 }
 
@@ -462,7 +432,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_to_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -507,7 +477,7 @@ fn seal_with_retry<B: Backend<A = X86>>(
             Ok(Reply::Snapshot { id, .. }) => return (id, vt),
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
-                match run_until(s, vt.saturating_add(step)) {
+                match run_to_deadline(s, vt.saturating_add(step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -550,7 +520,7 @@ fn g1_arm(kernel: &[u8], initramfs: &[u8], seals: u64, v0: u64, dv: u64) -> (Vec
     for k in 0..seals {
         let target = v0 + k * dv;
         if vt < target {
-            match run_until(&mut s, target) {
+            match run_to_deadline(&mut s, target) {
                 StopReason::Deadline { vtime } => vt = vtime.0,
                 other => panic!("guest ended before the seal schedule: {other:?}"),
             }
@@ -616,7 +586,7 @@ fn g1_same_seed_state_hash_bit_identical_page_on() {
 /// **G2.** Function equality between the page and the trap: at **every**
 /// synchronized registered boundary (r18 — not a `step % N` sample) the page's
 /// stable frame publishes exactly the values the RDTSC-trap completion would
-/// return at the current skid-free anchor
+/// return at the current exit-boundary variability-free anchor
 /// (`Vmm::pvclock_check_oracle`, backed by the per-stamp read-back inside the
 /// refresh itself — a wrong-offset/wrong-endian/torn stamp fails the run, not
 /// just this gate). NOT whole-hash equality across page-on/page-off — §6
@@ -638,8 +608,8 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
         50_000_000,
         Duration::from_secs(600),
         |vmm, step| {
-            // Every synchronized boundary is a refresh Moment (the step-tail
-            // stamp just ran), so check EVERY one — not a `step % N` sample (r18
+            // Every serviced exit is an exact Moment, so check EVERY one — not
+            // a `step % N` sample (r18
             // P1). A sampled check passes a regression that leaves the page STALE
             // at an unsampled synchronized boundary (a refresh that should have
             // fired and didn't) and repairs it before the next sampled step; the
@@ -647,7 +617,7 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
             // read back at every one. `pvclock_check_oracle` is O(1) and
             // synchronized boundaries are the intercept steps (not every step), so
             // this stays cheap over a full boot.
-            if vmm.is_synchronized() && vmm.pvclock_registration().is_some() {
+            if vmm.pvclock_registration().is_some() {
                 vmm.pvclock_check_oracle()
                     .unwrap_or_else(|e| panic!("G2 diverged at step {step}: {e}"));
                 checked += 1;
@@ -660,7 +630,7 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
         vmm.pvclock_registration().is_some(),
         "guest never registered — G2 checked nothing (vacuous); see g0"
     );
-    assert!(checked > 0, "no synchronized boundary sampled — vacuous");
+    assert!(checked > 0, "no registered boundary sampled — vacuous");
     // Terminal check + the refresh log is monotonic on both published fields.
     vmm.pvclock_check_oracle()
         .expect("oracle equality at terminal");
@@ -898,17 +868,10 @@ struct PerfArm {
 
 fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
     let mut vmm = boot(kernel, initramfs, SEED, page_on);
-    // Sample the counters AND V-time at the LAST SYNCHRONIZED boundary of the
-    // run, not at the (unsynchronized) post-poweroff terminal (r15 P2): a
-    // whole-boot run ends at a terminal we cannot step past, so capture the last
-    // synchronized sample as it goes. Both denominators come from the same
-    // synchronized moment, so `effective_vns` is exact and the two arms compare
-    // like-for-like (page-off's extra RDTSC intercepts don't skew its V-time).
+    // Capture the last exact exit boundary observed during the run.
     let mut last_sync: Option<(vmm_backend::ExitCounts, u64)> = None;
     let obs = run_bounded(&mut vmm, 100_000_000, Duration::from_secs(900), |vmm, _| {
-        if vmm.is_synchronized() {
-            last_sync = Some((vmm.exit_counts(), vmm.effective_vns().unwrap_or(0)));
-        }
+        last_sync = Some((vmm.exit_counts(), vmm.effective_vns().unwrap_or(0)));
         true
     });
     assert!(obs.step_error.is_none(), "step error: {:?}", obs.step_error);
@@ -1125,7 +1088,7 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
     let (on_rdtsc, on_total, on_span) = arm(true);
     // Each arm's rate is its OWN workload-span delta (boot excluded, deltas from
     // the readiness baseline). The two spans differ slightly — the page changes
-    // the timekeeping instruction stream, hence the retired-branch V-time of the
+    // the timekeeping instruction stream, hence the VM-exit V-time of the
     // same logical SQL — so the fair comparison is the RATE (exits per vsec),
     // which normalizes for that.
     let per_vsec = |n: u64, span: u64| n as f64 / (span.max(1) as f64 / 1e9);

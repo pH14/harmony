@@ -10,9 +10,9 @@ use vmm_backend::{
     Backend, CommonExit, Exit, ExitReason, Gpa, HypercallFrame, Injection, MockBackend, VcpuState,
     X86, X86Exit, X86Policy,
 };
-use vmm_core::prescriptive::{
+use vmm_core::virtual_time::{
     ClassifiedExit, DeviceClass, LogField, NormalizedEventClass, PlacementViolation,
-    PrescriptiveCheckpoint, PrescriptiveError, PrescriptiveRunLoop, PrescriptiveTiming,
+    VirtualTimeCheckpoint, VirtualTimeError, VirtualTimeRunLoop, VirtualTimeTiming,
     check_delivery_placement, compare_normalized_logs,
 };
 use vmm_core::vmm::{GuestRam, Vmm, VtimeWiring};
@@ -20,16 +20,14 @@ use vtime::VClockConfig;
 
 fn clock_config() -> VClockConfig {
     VClockConfig {
-        ratio_num: 1,
-        ratio_den: 1,
         guest_hz: 1_000_000_000,
         guest_base: 0,
         vns_base: 0,
     }
 }
 
-fn timing() -> PrescriptiveTiming {
-    PrescriptiveTiming {
+fn timing() -> VirtualTimeTiming {
+    VirtualTimeTiming {
         interrupt_controller_mmio_vns: 5,
         serial_mmio_vns: 5,
         paravirtual_device_mmio_vns: 7,
@@ -55,16 +53,16 @@ fn mmio(marker: u64) -> Exit<X86> {
 fn configured_loop(
     exits: Vec<Exit<X86>>,
     checkpoint_every: u64,
-) -> PrescriptiveRunLoop<MockBackend> {
+) -> VirtualTimeRunLoop<MockBackend> {
     let mut backend = MockBackend::with_exits(exits);
     backend.set_policy(&X86Policy::default()).unwrap();
-    PrescriptiveRunLoop::new(backend, clock_config(), timing(), checkpoint_every).unwrap()
+    VirtualTimeRunLoop::new(backend, clock_config(), timing(), checkpoint_every).unwrap()
 }
 
 fn classify(
     backend: &mut MockBackend,
     exit: &Exit<X86>,
-) -> Result<ClassifiedExit, PrescriptiveError> {
+) -> Result<ClassifiedExit, VirtualTimeError> {
     match exit {
         Exit::Common(CommonExit::Hypercall(frame)) => {
             backend.complete_hypercall(0)?;
@@ -93,13 +91,13 @@ fn classify(
         }
         Exit::Common(CommonExit::Idle) => Ok(ClassifiedExit::idle(b"wfi".to_vec())),
         Exit::Common(CommonExit::Shutdown) => Ok(ClassifiedExit::terminal(b"shutdown".to_vec())),
-        other => Err(PrescriptiveError::Classification(format!(
+        other => Err(VirtualTimeError::Classification(format!(
             "unmodeled test exit: {other:?}"
         ))),
     }
 }
 
-fn checkpoint_hash(backend: &MockBackend, checkpoint: PrescriptiveCheckpoint) -> [u8; 32] {
+fn checkpoint_hash(backend: &MockBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"m0-test-full-state-v1\0");
     hasher.update(checkpoint.vns.to_le_bytes());
@@ -111,10 +109,10 @@ fn checkpoint_hash(backend: &MockBackend, checkpoint: PrescriptiveCheckpoint) ->
 
 fn deliver(
     backend: &mut MockBackend,
-    delivery: vmm_core::prescriptive::InterruptDelivery,
-) -> Result<(), PrescriptiveError> {
+    delivery: vmm_core::virtual_time::InterruptDelivery,
+) -> Result<(), VirtualTimeError> {
     let vector = u8::try_from(delivery.interrupt_id).map_err(|_| {
-        PrescriptiveError::Classification(format!(
+        VirtualTimeError::Classification(format!(
             "test interrupt {} does not fit x86 vector width",
             delivery.interrupt_id
         ))
@@ -123,14 +121,14 @@ fn deliver(
     Ok(())
 }
 
-fn drive_once(loop_: &mut PrescriptiveRunLoop<MockBackend>) -> NormalizedEventClass {
+fn drive_once(loop_: &mut VirtualTimeRunLoop<MockBackend>) -> NormalizedEventClass {
     loop_
         .run_backend_once(classify, deliver, checkpoint_hash)
         .unwrap()
         .class
 }
 
-fn run_to_terminal(loop_: &mut PrescriptiveRunLoop<MockBackend>) {
+fn run_to_terminal(loop_: &mut VirtualTimeRunLoop<MockBackend>) {
     loop {
         if drive_once(loop_) == NormalizedEventClass::Terminal {
             break;
@@ -459,9 +457,9 @@ fn has_chunk(blob: &[u8], wanted: &[u8; 4]) -> bool {
 fn state_vmm(vns: u64, seed: u64) -> Vmm<MockBackend> {
     let mut backend = MockBackend::new();
     backend.set_policy(&X86Policy::default()).unwrap();
-    let mut wiring = VtimeWiring::new_prescriptive(clock_config(), seed).unwrap();
-    wiring.advance_prescriptive(vns);
-    assert_eq!(wiring.prescriptive_vns(), vns);
+    let mut wiring = VtimeWiring::new_virtual_time(clock_config(), seed).unwrap();
+    wiring.advance_virtual_time(vns);
+    assert_eq!(wiring.virtual_time_vns(), vns);
     let mut vmm = Vmm::new(backend, GuestRam::new(4096).unwrap());
     vmm.wire_vtime(wiring);
     vmm

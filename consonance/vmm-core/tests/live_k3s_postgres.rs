@@ -20,7 +20,7 @@
 //! **The unlock (tasks 47/52/54).** kubelet + containerd + apiserver + scheduler +
 //! controller-manager + kube-proxy + flannel are all Go/multi-goroutine services
 //! that busy-spin and depend on preemption. The V-time LAPIC timer **preempts** a
-//! busy-spinning thread at the seed-deterministic V-time deadline (`run_until`), the
+//! busy-spinning thread at the seed-deterministic V-time deadline (`run_to_deadline`), the
 //! idle-HLT resume warps to the next deadline (task 52), and the xAPIC MMIO is routed
 //! to the deterministic LAPIC model (task 54). So the Go schedulers run, the cluster
 //! converges, and the whole interleaving is a pure function of the seed.
@@ -117,7 +117,7 @@ const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliabl
 /// bring-up is bounded by the wall budget + the external `timeout`).
 const MAX_STEPS: u64 = 2_000_000_000_000;
 /// Wall-clock budget inside the test. k3s is FAR heavier than bare runc (the whole
-/// Go control plane + agent, driven forward by V-time preemption single-stepping);
+/// Go control plane + agent, driven forward by V-time preemption exit-driven);
 /// this is a deliberate milestone gate, run with a matching (larger) external
 /// `timeout`. Overridable via `WALL_BUDGET_SECS`.
 const WALL_BUDGET_SECS_DEFAULT: u64 = 14_400;
@@ -520,7 +520,7 @@ fn open_recorder(tag: &str) -> Option<Recorder> {
 /// Boot the k3s image on the patched backend at `seed`, run it to a terminal, and
 /// return (serial capture, `state_hash`, outcome). `tag` names the per-boot
 /// telemetry recording (a viewer artifact; see [`open_recorder`]). As in
-/// `live_runc_postgres.rs` the [`Vmm`] — and its `perf_event` work counter — is
+/// `live_runc_postgres.rs` the [`Vmm`] — and its exit-count clock — is
 /// **dropped before returning**, so two same-seed runs in one process don't keep two
 /// pinned PMU counters open at once (which would multiplex and perturb the branch
 /// count). One counter at a time is exact.

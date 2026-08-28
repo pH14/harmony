@@ -26,9 +26,9 @@
 //! the container reached "created" but its init never execed the command (a deadlock,
 //! which is *why* task 38 fell back to `unshare`). Task 47 made the V-time LAPIC timer
 //! **preempt** a busy-spinning thread at the seed-deterministic V-time deadline
-//! (`run_until` = PMU overflow + single-step to the exact retired-branch count), and
+//! (`run_to_deadline` = exit-count advancement to the next VM-exit boundary), and
 //! the VMM run-loop drives it automatically on the patched Linux boot
-//! ([`Vmm::step`] → `preemption_deadline()` → `Backend::run_until`). So the Go runtime
+//! ([`Vmm::step`] → `idle event` → `Backend::run_to_deadline`). So the Go runtime
 //! is preempted on time, the scheduler runs, the create→exec handshake completes, and
 //! the **real `runc`** runs the container — deterministically, because the preemption
 //! instant is a pure function of the seed.
@@ -69,7 +69,7 @@
 //!
 //! **Why patched, not stock.** As for task 37/38: the workload needs the live periodic
 //! V-time tick and the 8250 TX must drain to stream output — both ride the V-time LAPIC
-//! timer, which only advances (and only **preempts**, via `run_until`) on the patched
+//! timer, which only advances (and only **preempts**, via `run_to_deadline`) on the patched
 //! backend. On stock KVM the timer never calibrates and `runc` deadlocks (task 38), so
 //! all gates run patched.
 //!
@@ -118,7 +118,7 @@ const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliabl
 /// bring-up + workload is bounded by the wall budget + the external `timeout`).
 const MAX_STEPS: u64 = 200_000_000_000;
 /// Wall-clock budget inside the test. The real `runc`/Go path (multi-goroutine
-/// container-init driven forward by V-time preemption single-stepping) is heavier
+/// container-init driven forward by V-time preemption exit-driven) is heavier
 /// than task 38's `unshare` shim; this is a deliberate milestone gate, run with a
 /// matching (larger) external `timeout`. Overridable via `WALL_BUDGET_SECS`.
 const WALL_BUDGET_SECS_DEFAULT: u64 = 3600;
@@ -412,10 +412,10 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
 
 /// Boot the Docker image with the **runc** init on the patched backend at `seed`, run
 /// it to a terminal, and return (serial capture, `state_hash`, outcome). As in
-/// `live_postgres_docker.rs` the [`Vmm`] — and with it the `perf_event` work counter
+/// `live_postgres_docker.rs` the [`Vmm`] — and with it the exit-count clock
 /// that drives V-time — is **dropped before returning**, so two same-seed runs in one
 /// process don't keep two pinned PMU counters open at once (which would multiplex and
-/// perturb the branch count → a divergent V-time). One counter at a time is exact.
+/// perturb the exit count → a divergent V-time). One counter at a time is exact.
 fn boot_runc(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-docker.cpio.gz");

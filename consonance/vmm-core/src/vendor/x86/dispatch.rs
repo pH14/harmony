@@ -16,11 +16,11 @@ use hypercall_proto::Service;
 use vmm_backend::{Backend, CommonExit, Exit, Gpa, VcpuState, X86, X86Completion, X86Exit};
 use vtime::VClockConfig;
 
-use crate::prescriptive::{DeviceClass, NormalizedEventClass};
 use crate::snapshot::SnapshotError;
 use crate::vendor::x86::contract::{self, MsrDisposition};
 use crate::vendor::x86::devices::{ISA_DEBUG_EXIT_PORT, LegacyPlatform, REPORT_PORT, Uart8250};
 use crate::vendor::x86::records::{self, DeviceState, LegacyState, UartState};
+use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, TerminalReason, Vmm, VmmError};
 
 /// The x86 per-VM device state ([`Vendor::Devices`]): the 8250 UART (always
@@ -101,8 +101,8 @@ pub(crate) const DOORBELL_PORT: u16 = 0x0CA1;
 pub(crate) const RFLAGS_IF: u64 = 1 << 9;
 
 /// The normalized event class of a port-I/O exit, by port. One classifier
-/// serves both prescriptive V-time advancement ([`Vmm::advance_prescriptive_for_port`])
-/// and log normalization ([`normalize_prescriptive_exit_x86`]), so the assigned
+/// serves both virtual_time V-time advancement ([`Vmm::advance_virtual_time_for_port`])
+/// and log normalization ([`normalize_virtual_time_exit_x86`]), so the assigned
 /// duration and the recorded class cannot disagree.
 pub(crate) fn port_event_class(port: u16) -> NormalizedEventClass {
     if port == ISA_DEBUG_EXIT_PORT {
@@ -137,7 +137,7 @@ fn msr_event_class(index: u32) -> NormalizedEventClass {
 /// affect dispatch; no backend debug string or host address enters this log.
 /// Arch-exit payloads carry a leading discriminant byte (the `X86Exit` variant)
 /// so two variants sharing a class can never alias byte-for-byte.
-pub(crate) fn normalize_prescriptive_exit_x86(exit: &Exit<X86>) -> (NormalizedEventClass, Vec<u8>) {
+pub(crate) fn normalize_virtual_time_exit_x86(exit: &Exit<X86>) -> (NormalizedEventClass, Vec<u8>) {
     match exit {
         Exit::Common(CommonExit::Mmio { gpa, size, write }) => {
             let mut payload = gpa.0.to_le_bytes().to_vec();
@@ -167,10 +167,6 @@ pub(crate) fn normalize_prescriptive_exit_x86(exit: &Exit<X86>) -> (NormalizedEv
             }
             (NormalizedEventClass::Doorbell, payload)
         }
-        Exit::Common(CommonExit::Deadline { reached }) => (
-            NormalizedEventClass::TimeRead,
-            reached.0.to_le_bytes().to_vec(),
-        ),
         Exit::Arch(arch) => {
             let mut payload = vec![match arch {
                 X86Exit::Io { .. } => 0u8,
@@ -221,12 +217,12 @@ pub(crate) fn normalize_prescriptive_exit_x86(exit: &Exit<X86>) -> (NormalizedEv
 }
 
 impl<B: Backend<A = X86>> Vmm<B> {
-    /// Assign this port-I/O exit's prescriptive duration by its normalized
+    /// Assign this port-I/O exit's virtual_time duration by its normalized
     /// class ([`port_event_class`]). Terminal and doorbell exits take no
     /// assigned advancement (arm64 parity: the doorbell exchange and the
     /// terminating debug-exit advance by zero). A no-op on descriptive wiring.
-    fn advance_prescriptive_for_port(&mut self, port: u16) -> Result<(), VmmError> {
-        if !self.prescriptive_vtime_enabled() {
+    fn advance_virtual_time_for_port(&mut self, port: u16) -> Result<(), VmmError> {
+        if !self.virtual_time_vtime_enabled() {
             return Ok(());
         }
         let vns = match port_event_class(port) {
@@ -239,14 +235,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
             }
             _ => return Ok(()),
         };
-        self.advance_prescriptive_vtime(vns)
+        self.advance_virtual_time_vtime(vns)
     }
 
-    /// Assign a surfaced MSR access's prescriptive duration: a trapped time
+    /// Assign a surfaced MSR access's virtual_time duration: a trapped time
     /// read for the `emulate-vtime` TSC MSRs, architectural control for every
     /// other disposition. A no-op on descriptive wiring.
-    fn advance_prescriptive_for_msr(&mut self, disp: &MsrDisposition) -> Result<(), VmmError> {
-        if !self.prescriptive_vtime_enabled() {
+    fn advance_virtual_time_for_msr(&mut self, disp: &MsrDisposition) -> Result<(), VmmError> {
+        if !self.virtual_time_vtime_enabled() {
             return Ok(());
         }
         let vns = if matches!(disp, MsrDisposition::EmulateVtime) {
@@ -254,7 +250,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         } else {
             contract::ARCH_CONTROL_EXIT_VNS
         };
-        self.advance_prescriptive_vtime(vns)
+        self.advance_virtual_time_vtime(vns)
     }
 
     pub(crate) fn dispatch_out(
@@ -263,7 +259,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         size: u8,
         value: u32,
     ) -> Result<Step, VmmError> {
-        self.advance_prescriptive_for_port(port)?;
+        self.advance_virtual_time_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
             require_byte_io("OUT", port, size)?;
             return Ok(self.terminate(TerminalReason::DebugExit { code: value as u8 }));
@@ -277,7 +273,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // The conformance report channel: a 32-bit `OUT REPORT_PORT, EAX`
             // appends `EAX` to the ordered report stream (corpus box-integration).
             // It is a write (no completion); the value is already deterministic
-            // (a V-time TSC / seeded-PRNG word / retired-count the guest computed),
+            // (a V-time TSC / seeded-PRNG word / exit-count the guest computed),
             // and the stream is ordered by execution, so it is a pure function of
             // the run. The 4-byte width is the ABI — a non-dword access is unmodeled
             // and fails closed (never a truncated/extended report value).
@@ -313,7 +309,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
-        self.advance_prescriptive_for_port(port)?;
+        self.advance_virtual_time_for_port(port)?;
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;
             // `read_in` (not `read`): a byte read of the RBR consumes the next
@@ -359,8 +355,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 gpa.0
             )));
         }
-        if self.prescriptive_vtime_enabled() {
-            self.advance_prescriptive_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
+        if self.virtual_time_vtime_enabled() {
+            self.advance_virtual_time_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
         }
         let now_vns = self.now_vns()?;
         let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
@@ -381,7 +377,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             Some(v) => {
                 // xAPIC register store (32-bit); no completion. A store may arm,
                 // re-arm, or disarm the LVT timer; mirror any deadline change
-                // into the independent prescriptive schedule (a no-op without a
+                // into the independent virtual_time schedule (a no-op without a
                 // wired trace).
                 let (deadline_before, deadline_after, timer_id) = {
                     let lapic = self
@@ -415,16 +411,16 @@ impl<B: Backend<A = X86>> Vmm<B> {
     /// After the exit's V-time advance and pvclock publication, fire the LAPIC
     /// timer if this exit crossed its deadline, recording the delivery — and,
     /// for a periodic reload, the next deadline — in the independent
-    /// prescriptive schedule. The fire is recorded inside the crossing event
+    /// virtual_time schedule. The fire is recorded inside the crossing event
     /// because the placement oracle requires each delivery at the first event
     /// whose post-advance V-time covers the deadline
-    /// ([`crate::prescriptive::check_delivery_placement`]); the next entry's
+    /// ([`crate::virtual_time::check_delivery_placement`]); the next entry's
     /// [`Self::service_pending_irqs`] `advance_to` is then an idempotent no-op
-    /// for the same V-time and injects the fired vector as before. Prescriptive
+    /// for the same V-time and injects the fired vector as before. VirtualTime
     /// compositions only: the descriptive path keeps firing at the next entry,
     /// so its state and hashes are byte-for-byte unchanged.
     pub(crate) fn service_lapic_timer_due(&mut self) -> Result<(), VmmError> {
-        if !self.prescriptive_vtime_enabled() || self.devices.lapic.is_none() {
+        if !self.virtual_time_vtime_enabled() || self.devices.lapic.is_none() {
             return Ok(());
         }
         let now_vns = self.now_vns()?;
@@ -563,13 +559,13 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
     pub(crate) fn dispatch_rdmsr(&mut self, index: u32) -> Result<Step, VmmError> {
         let disp = contract::rdmsr_disposition(index);
-        self.advance_prescriptive_for_msr(&disp)?;
+        self.advance_virtual_time_for_msr(&disp)?;
         loud_msr(
             MsrDir::Read,
             index,
             None,
             self.guest_rip(),
-            self.current_work(),
+            self.current_vns(),
             &disp,
         );
         match disp {
@@ -594,13 +590,13 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
     pub(crate) fn dispatch_wrmsr(&mut self, index: u32, value: u64) -> Result<Step, VmmError> {
         let disp = contract::wrmsr_disposition(index, value);
-        self.advance_prescriptive_for_msr(&disp)?;
+        self.advance_virtual_time_for_msr(&disp)?;
         loud_msr(
             MsrDir::Write,
             index,
             Some(value),
             self.guest_rip(),
-            self.current_work(),
+            self.current_vns(),
             &disp,
         );
         match disp {
@@ -622,8 +618,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_cpuid(&mut self, leaf: u32, subleaf: u32) -> Result<Step, VmmError> {
-        if self.prescriptive_vtime_enabled() {
-            self.advance_prescriptive_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
+        if self.virtual_time_vtime_enabled() {
+            self.advance_virtual_time_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
         }
         // Stock KVM answers CPUID in-kernel and never reaches here; a backend that
         // surfaces it gets the frozen model overlaid with the live dynamic cells.
@@ -656,17 +652,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
                         .to_string(),
                 ));
             };
-            let work = vt.intercept_work()?;
-            // This is a V-time intercept (a synchronized point): record its
-            // *deterministic* work so the `VTIM` hash anchors here, not to a
-            // skid-laden live read at hash time (task-27 item 2).
-            vt.last_intercept_work = work;
-            vt.guest_clock(work)
+            vt.guest_clock()
         };
         self.backend.complete_read(tsc)?;
-        // A V-time intercept: `last_intercept_work` is now the exact current work, so
+        // A V-time intercept: `assigned_clock` is now the exact current work, so
         // a snapshot here would be exact (see `save_vtime`).
-        self.vtime_synchronized = true;
         // This synchronized boundary is an RDTSC/RDTSCP COUNTER READ specifically —
         // the only exit the pvclock registration handshake may complete on (r17;
         // the §3.1/r8 wire contract promises the guest reads the counter after the
@@ -691,17 +681,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 )));
             };
             match index {
-                IA32_TSC => {
-                    let work = vt.intercept_work()?;
-                    vt.last_intercept_work = work;
-                    vt.guest_clock(work)
-                }
+                IA32_TSC => vt.guest_clock(),
                 IA32_TSC_ADJUST => {
                     // A TSC_ADJUST access is a V-time MSR intercept too: sample its
                     // deterministic work so the hashed effective V-time stays current
                     // (the returned value — the adjust — does not depend on work).
-                    let work = vt.intercept_work()?;
-                    vt.last_intercept_work = work;
                     vt.guest_clock_offset
                 }
                 other => {
@@ -713,8 +697,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             }
         };
         self.backend.complete_read(value)?;
-        // A V-time MSR intercept: `last_intercept_work` is the exact current work.
-        self.vtime_synchronized = true;
+        // A V-time MSR intercept: `assigned_clock` is the exact current work.
         Ok(Step::Continued)
     }
 
@@ -735,16 +718,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
             };
             match index {
                 IA32_TSC => {
-                    let work = vt.intercept_work()?;
-                    vt.last_intercept_work = work;
-                    // guest_clock(work) == value ⇔ adjust = value − VClock::guest_ticks(work).
-                    vt.guest_clock_offset = value.wrapping_sub(vt.clock.guest_ticks(work));
+                    vt.guest_clock_offset = value.wrapping_sub(vt.clock.guest_ticks());
                 }
                 IA32_TSC_ADJUST => {
                     // V-time MSR intercept — sample work to keep the hashed effective
                     // V-time current (see the RDMSR side).
-                    let work = vt.intercept_work()?;
-                    vt.last_intercept_work = work;
                     vt.guest_clock_offset = value;
                 }
                 other => {
@@ -756,8 +734,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             }
         }
         self.backend.complete_ok()?;
-        // A V-time MSR intercept: `last_intercept_work` is the exact current work.
-        self.vtime_synchronized = true;
+        // A V-time MSR intercept: `assigned_clock` is the exact current work.
         Ok(Step::Continued)
     }
 
@@ -771,7 +748,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     /// [`complete_tsc`](Self::complete_tsc) and the TSC-MSR paths. Without this, if an
     /// RNG exit were the last intercept before a checkpoint, the `VTIM` hash would use
     /// a stale (prior-intercept) work value, so two states that burned different
-    /// branch counts before the same seeded draw would collide — a false determinism
+    /// exit counts before the same seeded draw would collide — a false determinism
     /// MATCH that then diverges on the next TSC read.
     pub(crate) fn complete_rng(&mut self, width: u8) -> Result<Step, VmmError> {
         let value = {
@@ -782,19 +759,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
                         .to_string(),
                 ));
             };
-            // Record the synchronized work at this RNG intercept (the draw itself
-            // retires no guest branches, so the order vs `draw_rng` is irrelevant).
-            let work = vt.intercept_work()?;
-            vt.last_intercept_work = work;
             vt.draw_rng(width)?
         };
         self.backend.complete_read(value)?;
-        // A V-time intercept: the V-time is exact (`last_intercept_work` is current).
+        // A V-time intercept: the V-time is exact (`assigned_clock` is current).
         // Independently, the seeded draw advanced the stream but `complete_read` only
         // STAGES the reg-write/RIP-advance for the next `KVM_RUN`, so this is an unsafe
         // *entropy* snapshot boundary until the next `step` re-enters and commits it
         // (see `save_vtime`, which fails on the RNG flag even though V-time is exact).
-        self.vtime_synchronized = true;
         self.rng_completion_staged = true;
         Ok(Step::Continued)
     }
@@ -865,7 +837,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     /// blob taken under a different contract. The caller supplies `vcpu` (so the
     /// fallible `Backend::save` is resolved where the error can propagate —
     /// [`Vmm::save_vm_state`] — rather than swallowed). Infallible; the V-time block is
-    /// anchored to the deterministic `last_intercept_work`, exactly like
+    /// anchored to the deterministic `assigned_clock`, exactly like
     /// [`encode_vtime`], so it is byte-deterministic at any exit.
     pub(crate) fn build_vm_state(&self, vcpu: &VcpuState) -> vm_state::VmState {
         let mut s = vm_state::VmState::default();
@@ -873,13 +845,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
         let tsc_adjust = match &self.vtime {
             Some(vt) => {
                 s.vtime = vm_state::VtimeState {
-                    ratio_num: vt.cfg.ratio_num,
-                    // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so the
-                    // blob is encodable (a fractional ratio is rejected at encode).
-                    ratio_den: 1,
                     guest_hz: vt.cfg.guest_hz,
                     guest_base: vt.cfg.guest_base,
-                    snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),
+                    snapshot_vns: vt.clock.vns(),
                 };
                 // The entropy PRNG position rides the `hypercall` section
                 // (INTEGRATION.md §4: `Dispatcher::save_state()`, "notably the
@@ -890,7 +858,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
             }
             None => {
                 // Unwired (M1/M2): a sentinel encodable V-time block, no entropy.
-                s.vtime.ratio_den = 1;
                 0
             }
         };
@@ -928,9 +895,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // The task-110 pvclock channel (v4): offer + Δ + the one-shot
             // registration, so the direct restore path carries the stamping
             // obligation with the state it governs (same-state ⇒ same-future).
-            pvclock: self
-                .pvclock_snapshot()
-                .map(|s| (s.delta_work, s.gpa, s.registrable)),
+            pvclock: self.pvclock_snapshot().map(|s| (s.gpa, s.registrable)),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -1090,30 +1055,26 @@ fn require_dword_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
 /// effect and never perturbing guest-visible state (CPU-MSR-CONTRACT §1
 /// loud-event policy). §1 mandates the full context: access direction, the KVM
 /// exit reason, the MSR index, the WRMSR data (`n/a` on a read), the guest RIP at
-/// the faulting instruction, the current work counter / V-time, and the
-/// disposition applied. `work` is the retired-branch counter at this exit
-/// (task-21 P3): `Some(n)` on the determinism-complete path, `None` →
-/// `work=unwired` when V-time is not wired (stock KVM / M1/M2) — logged honestly
-/// rather than a fake `0` that would read as a real count.
+/// the faulting instruction, the current V-time, and the disposition applied.
 fn loud_msr(
     dir: MsrDir,
     index: u32,
     data: Option<u64>,
     rip: u64,
-    work: Option<u64>,
+    vns: Option<u64>,
     disp: &MsrDisposition,
 ) {
     let data = match data {
         Some(v) => format!("{v:#x}"),
         None => "n/a".to_string(),
     };
-    let work = match work {
+    let vns = match vns {
         Some(n) => n.to_string(),
         None => "unwired".to_string(),
     };
     eprintln!(
         "[vmm-core] msr-exit dir={} exit-reason={} index={index:#x} data={data} rip={rip:#x} \
-         work={work} disposition={disp:?}",
+         vns={vns} disposition={disp:?}",
         dir.dir(),
         dir.exit_reason(),
     );
@@ -1321,8 +1282,6 @@ fn encode_events(v: &mut Vec<u8>, raw: &vmm_backend::VcpuEvents) {
 /// strictly increasing whenever the guest retires a branch between two reads.
 pub fn contract_vclock_config() -> VClockConfig {
     VClockConfig {
-        ratio_num: 1,
-        ratio_den: 1,
         guest_hz: 2_000_000_000,
         guest_base: 0,
         vns_base: 0,

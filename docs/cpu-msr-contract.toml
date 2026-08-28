@@ -3333,7 +3333,7 @@ write = "deny-ignore-write"
 # digests (with the serial banner) into the O2 `observable_digest`. Distinct from
 # the 0x0CA1 hypercall doorbell (§1): a reported value can never be mistaken for a
 # doorbell ring. The reported values are already deterministic (a V-time TSC, a
-# seeded-PRNG word, a frozen CPUID/MSR value, a retired count), so the stream is a
+# seeded-PRNG word, a frozen CPUID/MSR value, an exit count), so the stream is a
 # pure function of the run. See docs/INTEGRATION.md "report channel".
 name = "REPORT_PORT"
 port = "0x0ca2"

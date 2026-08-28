@@ -91,12 +91,8 @@ vm-state = { path = "../vm-state", version = "0.1.0" }
 control-proto = { path = "../control-proto", version = "0.1.0" }
 environment = { path = "../environment", version = "0.1.0" }
 
-# Linux-only: the box `perf_event` work counter (`work_perf::PerfWorkCounter`,
-# rule-5 whitelist `libc`). A macOS `cargo build -p vmm-core` never compiles it
-# (the portable `WorkSource` trait + `ScriptedWork` pull none of this). Caret
-# default, pin nothing — matches vmm-backend's frontier-dep posture.
+# Linux-only host support. Caret default, pin nothing.
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 snapshot-store = { path = "../snapshot-store", version = "0.1.0", features = ["test-utils"] }

@@ -428,7 +428,7 @@ mod tests {
 
     /// Far fewer cases under Miri (10–100× slower interpreted), and no failure
     /// persistence there (its regression-file path resolution uses `getcwd`, which
-    /// Miri's fs isolation rejects) — mirrors `run_until`'s `cases` helper.
+    /// Miri's fs isolation rejects).
     fn cases(native: u32) -> ProptestConfig {
         let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
         if cfg!(miri) {

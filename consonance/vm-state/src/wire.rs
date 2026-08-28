@@ -320,12 +320,10 @@ fn byte_to_bool(b: u8) -> Option<bool> {
     }
 }
 
-/// The V-time block — `vtime::VClockConfig` plus `snapshot_vns`.
+/// The virtual-time block: guest-counter configuration plus current time.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct VtimeWire {
-    ratio_num: U64,
-    ratio_den: U64,
     guest_hz: U64,
     guest_base: U64,
     snapshot_vns: U64,
@@ -334,8 +332,6 @@ pub(crate) struct VtimeWire {
 impl From<&VtimeState> for VtimeWire {
     fn from(v: &VtimeState) -> Self {
         Self {
-            ratio_num: v.ratio_num.into(),
-            ratio_den: v.ratio_den.into(),
             guest_hz: v.guest_hz.into(),
             guest_base: v.guest_base.into(),
             snapshot_vns: v.snapshot_vns.into(),
@@ -346,8 +342,6 @@ impl From<&VtimeState> for VtimeWire {
 impl From<&VtimeWire> for VtimeState {
     fn from(w: &VtimeWire) -> Self {
         Self {
-            ratio_num: w.ratio_num.get(),
-            ratio_den: w.ratio_den.get(),
             guest_hz: w.guest_hz.get(),
             guest_base: w.guest_base.get(),
             snapshot_vns: w.snapshot_vns.get(),

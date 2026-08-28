@@ -33,7 +33,7 @@
 //!
 //! ## Gate honesty (why `#[ignore]`)
 //!
-//! Needs real + patched KVM (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), `perf_event`, the
+//! Needs real + patched KVM (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), the
 //! built Postgres image (`harmony-linux/build/bzImage` + `harmony-linux/build/initramfs-postgres.cpio.gz`,
 //! via `harmony-linux/linux/build-postgres-image.sh`), and the `det-cfl-v1` host — none in the
 //! default `cargo nextest` lane — so it is `#[ignore]`d (like `live_postgres.rs` /
@@ -517,7 +517,7 @@ struct ForkResult {
 /// Restore base snapshot `snap` into a **fresh** patched VM, optionally reseed the
 /// entropy stream (`Some(seed)` = a branch; `None` = the base continuation replayed
 /// verbatim), resume to terminal, and return its [`ForkResult`]. The prior live VM
-/// must already be dropped (single open work counter at a time).
+/// must already be dropped (single open exit-count clock at a time).
 fn run_fork(
     engine: &SnapshotEngine,
     snap: SnapshotId,

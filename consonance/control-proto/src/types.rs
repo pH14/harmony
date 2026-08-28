@@ -395,7 +395,7 @@ pub enum Reply {
 /// the current [`Moment`]/V-time the view is of.
 ///
 /// `Moment` and `vtime` are the two names of the single deterministic axis on the
-/// substrate (a retired-branch count == whole nanoseconds, ratio 1), so they
+/// substrate (a VM-exit count == whole nanoseconds, ratio 1), so they
 /// coincide there; both are carried so a reader need not know the ratio.
 ///
 /// [`VcpuState`]: the backend's full save/restore vCPU record — not this view.

@@ -3,17 +3,113 @@ pub mod telemetry::server
 pub enum telemetry::server::Mode
 pub telemetry::server::Mode::Live
 pub telemetry::server::Mode::Replay
+impl core::clone::Clone for telemetry::server::Mode
+pub fn telemetry::server::Mode::clone(&self) -> telemetry::server::Mode
+impl core::cmp::Eq for telemetry::server::Mode
+impl core::cmp::PartialEq for telemetry::server::Mode
+pub fn telemetry::server::Mode::eq(&self, &telemetry::server::Mode) -> bool
+impl core::fmt::Debug for telemetry::server::Mode
+pub fn telemetry::server::Mode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for telemetry::server::Mode
+impl core::marker::StructuralPartialEq for telemetry::server::Mode
+impl core::marker::Freeze for telemetry::server::Mode
+impl core::marker::Send for telemetry::server::Mode
+impl core::marker::Sync for telemetry::server::Mode
+impl core::marker::Unpin for telemetry::server::Mode
+impl core::marker::UnsafeUnpin for telemetry::server::Mode
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::server::Mode
+impl core::panic::unwind_safe::UnwindSafe for telemetry::server::Mode
+impl<T, U> core::convert::Into<U> for telemetry::server::Mode where U: core::convert::From<T>
+pub fn telemetry::server::Mode::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::server::Mode where U: core::convert::Into<T>
+pub type telemetry::server::Mode::Error = core::convert::Infallible
+pub fn telemetry::server::Mode::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::server::Mode where U: core::convert::TryFrom<T>
+pub type telemetry::server::Mode::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::server::Mode::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::server::Mode where T: core::clone::Clone
+pub type telemetry::server::Mode::Owned = T
+pub fn telemetry::server::Mode::clone_into(&self, &mut T)
+pub fn telemetry::server::Mode::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::server::Mode where T: 'static + ?core::marker::Sized
+pub fn telemetry::server::Mode::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::server::Mode where T: ?core::marker::Sized
+pub fn telemetry::server::Mode::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::server::Mode where T: ?core::marker::Sized
+pub fn telemetry::server::Mode::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::server::Mode where T: core::clone::Clone
+pub unsafe fn telemetry::server::Mode::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::server::Mode
+pub fn telemetry::server::Mode::from(T) -> T
 pub struct telemetry::server::RunningServer
 impl telemetry::server::RunningServer
 pub fn telemetry::server::RunningServer::local_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn telemetry::server::RunningServer::shutdown(self)
+impl core::fmt::Debug for telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for telemetry::server::RunningServer
 pub fn telemetry::server::RunningServer::drop(&mut self)
+impl core::marker::Freeze for telemetry::server::RunningServer
+impl core::marker::Send for telemetry::server::RunningServer
+impl core::marker::Sync for telemetry::server::RunningServer
+impl core::marker::Unpin for telemetry::server::RunningServer
+impl core::marker::UnsafeUnpin for telemetry::server::RunningServer
+impl !core::panic::unwind_safe::RefUnwindSafe for telemetry::server::RunningServer
+impl !core::panic::unwind_safe::UnwindSafe for telemetry::server::RunningServer
+impl<T, U> core::convert::Into<U> for telemetry::server::RunningServer where U: core::convert::From<T>
+pub fn telemetry::server::RunningServer::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::server::RunningServer where U: core::convert::Into<T>
+pub type telemetry::server::RunningServer::Error = core::convert::Infallible
+pub fn telemetry::server::RunningServer::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::server::RunningServer where U: core::convert::TryFrom<T>
+pub type telemetry::server::RunningServer::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::server::RunningServer::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for telemetry::server::RunningServer where T: 'static + ?core::marker::Sized
+pub fn telemetry::server::RunningServer::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::server::RunningServer where T: ?core::marker::Sized
+pub fn telemetry::server::RunningServer::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::server::RunningServer where T: ?core::marker::Sized
+pub fn telemetry::server::RunningServer::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::from(T) -> T
 pub struct telemetry::server::ServerOptions
 pub telemetry::server::ServerOptions::mode: telemetry::server::Mode
 pub telemetry::server::ServerOptions::recording: core::option::Option<std::path::PathBuf>
+impl core::clone::Clone for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::clone(&self) -> telemetry::server::ServerOptions
 impl core::default::Default for telemetry::server::ServerOptions
 pub fn telemetry::server::ServerOptions::default() -> Self
+impl core::fmt::Debug for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for telemetry::server::ServerOptions
+impl core::marker::Send for telemetry::server::ServerOptions
+impl core::marker::Sync for telemetry::server::ServerOptions
+impl core::marker::Unpin for telemetry::server::ServerOptions
+impl core::marker::UnsafeUnpin for telemetry::server::ServerOptions
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::server::ServerOptions
+impl core::panic::unwind_safe::UnwindSafe for telemetry::server::ServerOptions
+impl<T, U> core::convert::Into<U> for telemetry::server::ServerOptions where U: core::convert::From<T>
+pub fn telemetry::server::ServerOptions::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::server::ServerOptions where U: core::convert::Into<T>
+pub type telemetry::server::ServerOptions::Error = core::convert::Infallible
+pub fn telemetry::server::ServerOptions::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::server::ServerOptions where U: core::convert::TryFrom<T>
+pub type telemetry::server::ServerOptions::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::server::ServerOptions::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::server::ServerOptions where T: core::clone::Clone
+pub type telemetry::server::ServerOptions::Owned = T
+pub fn telemetry::server::ServerOptions::clone_into(&self, &mut T)
+pub fn telemetry::server::ServerOptions::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::server::ServerOptions where T: 'static + ?core::marker::Sized
+pub fn telemetry::server::ServerOptions::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::server::ServerOptions where T: ?core::marker::Sized
+pub fn telemetry::server::ServerOptions::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::server::ServerOptions where T: ?core::marker::Sized
+pub fn telemetry::server::ServerOptions::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::server::ServerOptions where T: core::clone::Clone
+pub unsafe fn telemetry::server::ServerOptions::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::from(T) -> T
 pub const telemetry::server::INDEX_HTML: &str
 pub fn telemetry::server::serve(core::net::socket_addr::SocketAddr, telemetry::LiveSink, telemetry::server::ServerOptions) -> std::io::error::Result<telemetry::server::RunningServer>
 #[non_exhaustive] pub enum telemetry::EventKind
@@ -56,21 +152,175 @@ pub telemetry::EventKind::Terminal
 pub telemetry::EventKind::Terminal::reason: alloc::string::String
 pub telemetry::EventKind::Tsc
 pub telemetry::EventKind::Tsc::value: u64
+impl core::clone::Clone for telemetry::EventKind
+pub fn telemetry::EventKind::clone(&self) -> telemetry::EventKind
+impl core::cmp::Eq for telemetry::EventKind
+impl core::cmp::PartialEq for telemetry::EventKind
+pub fn telemetry::EventKind::eq(&self, &telemetry::EventKind) -> bool
+impl core::fmt::Debug for telemetry::EventKind
+pub fn telemetry::EventKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for telemetry::EventKind
+impl serde_core::ser::Serialize for telemetry::EventKind
+pub fn telemetry::EventKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for telemetry::EventKind
+pub fn telemetry::EventKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for telemetry::EventKind
+impl core::marker::Send for telemetry::EventKind
+impl core::marker::Sync for telemetry::EventKind
+impl core::marker::Unpin for telemetry::EventKind
+impl core::marker::UnsafeUnpin for telemetry::EventKind
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::EventKind
+impl core::panic::unwind_safe::UnwindSafe for telemetry::EventKind
+impl<T, U> core::convert::Into<U> for telemetry::EventKind where U: core::convert::From<T>
+pub fn telemetry::EventKind::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::EventKind where U: core::convert::Into<T>
+pub type telemetry::EventKind::Error = core::convert::Infallible
+pub fn telemetry::EventKind::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::EventKind where U: core::convert::TryFrom<T>
+pub type telemetry::EventKind::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::EventKind::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::EventKind where T: core::clone::Clone
+pub type telemetry::EventKind::Owned = T
+pub fn telemetry::EventKind::clone_into(&self, &mut T)
+pub fn telemetry::EventKind::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::EventKind where T: 'static + ?core::marker::Sized
+pub fn telemetry::EventKind::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::EventKind where T: ?core::marker::Sized
+pub fn telemetry::EventKind::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::EventKind where T: ?core::marker::Sized
+pub fn telemetry::EventKind::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::EventKind where T: core::clone::Clone
+pub unsafe fn telemetry::EventKind::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::EventKind
+pub fn telemetry::EventKind::from(T) -> T
+impl<T> serde_core::de::DeserializeOwned for telemetry::EventKind where T: for<'de> serde_core::de::Deserialize<'de>
 pub enum telemetry::Mode
 pub telemetry::Mode::Live
 pub telemetry::Mode::Replay
+impl core::clone::Clone for telemetry::server::Mode
+pub fn telemetry::server::Mode::clone(&self) -> telemetry::server::Mode
+impl core::cmp::Eq for telemetry::server::Mode
+impl core::cmp::PartialEq for telemetry::server::Mode
+pub fn telemetry::server::Mode::eq(&self, &telemetry::server::Mode) -> bool
+impl core::fmt::Debug for telemetry::server::Mode
+pub fn telemetry::server::Mode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for telemetry::server::Mode
+impl core::marker::StructuralPartialEq for telemetry::server::Mode
+impl core::marker::Freeze for telemetry::server::Mode
+impl core::marker::Send for telemetry::server::Mode
+impl core::marker::Sync for telemetry::server::Mode
+impl core::marker::Unpin for telemetry::server::Mode
+impl core::marker::UnsafeUnpin for telemetry::server::Mode
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::server::Mode
+impl core::panic::unwind_safe::UnwindSafe for telemetry::server::Mode
+impl<T, U> core::convert::Into<U> for telemetry::server::Mode where U: core::convert::From<T>
+pub fn telemetry::server::Mode::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::server::Mode where U: core::convert::Into<T>
+pub type telemetry::server::Mode::Error = core::convert::Infallible
+pub fn telemetry::server::Mode::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::server::Mode where U: core::convert::TryFrom<T>
+pub type telemetry::server::Mode::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::server::Mode::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::server::Mode where T: core::clone::Clone
+pub type telemetry::server::Mode::Owned = T
+pub fn telemetry::server::Mode::clone_into(&self, &mut T)
+pub fn telemetry::server::Mode::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::server::Mode where T: 'static + ?core::marker::Sized
+pub fn telemetry::server::Mode::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::server::Mode where T: ?core::marker::Sized
+pub fn telemetry::server::Mode::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::server::Mode where T: ?core::marker::Sized
+pub fn telemetry::server::Mode::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::server::Mode where T: core::clone::Clone
+pub unsafe fn telemetry::server::Mode::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::server::Mode
+pub fn telemetry::server::Mode::from(T) -> T
 pub enum telemetry::WireError
 pub telemetry::WireError::Decode(serde_json::error::Error)
+impl core::convert::From<serde_json::error::Error> for telemetry::WireError
+pub fn telemetry::WireError::from(serde_json::error::Error) -> Self
+impl core::error::Error for telemetry::WireError
+pub fn telemetry::WireError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for telemetry::WireError
+pub fn telemetry::WireError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for telemetry::WireError
+pub fn telemetry::WireError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for telemetry::WireError
+impl core::marker::Send for telemetry::WireError
+impl core::marker::Sync for telemetry::WireError
+impl core::marker::Unpin for telemetry::WireError
+impl core::marker::UnsafeUnpin for telemetry::WireError
+impl !core::panic::unwind_safe::RefUnwindSafe for telemetry::WireError
+impl !core::panic::unwind_safe::UnwindSafe for telemetry::WireError
+impl<T, U> core::convert::Into<U> for telemetry::WireError where U: core::convert::From<T>
+pub fn telemetry::WireError::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::WireError where U: core::convert::Into<T>
+pub type telemetry::WireError::Error = core::convert::Infallible
+pub fn telemetry::WireError::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::WireError where U: core::convert::TryFrom<T>
+pub type telemetry::WireError::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::WireError::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::string::ToString for telemetry::WireError where T: core::fmt::Display + ?core::marker::Sized
+pub fn telemetry::WireError::to_string(&self) -> alloc::string::String
+impl<T> core::any::Any for telemetry::WireError where T: 'static + ?core::marker::Sized
+pub fn telemetry::WireError::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::WireError where T: ?core::marker::Sized
+pub fn telemetry::WireError::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::WireError where T: ?core::marker::Sized
+pub fn telemetry::WireError::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for telemetry::WireError
+pub fn telemetry::WireError::from(T) -> T
 pub struct telemetry::Event
+pub telemetry::Event::exit_count: u64
 pub telemetry::Event::kind: telemetry::EventKind
 pub telemetry::Event::seq: u64
 pub telemetry::Event::vns: u64
-pub telemetry::Event::work: u64
 impl telemetry::Event
 pub fn telemetry::Event::new(u64, u64, u64, telemetry::EventKind) -> telemetry::Event
+impl core::clone::Clone for telemetry::Event
+pub fn telemetry::Event::clone(&self) -> telemetry::Event
+impl core::cmp::Eq for telemetry::Event
+impl core::cmp::PartialEq for telemetry::Event
+pub fn telemetry::Event::eq(&self, &telemetry::Event) -> bool
+impl core::fmt::Debug for telemetry::Event
+pub fn telemetry::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for telemetry::Event
+impl serde_core::ser::Serialize for telemetry::Event
+pub fn telemetry::Event::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for telemetry::Event
+pub fn telemetry::Event::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for telemetry::Event
+impl core::marker::Send for telemetry::Event
+impl core::marker::Sync for telemetry::Event
+impl core::marker::Unpin for telemetry::Event
+impl core::marker::UnsafeUnpin for telemetry::Event
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::Event
+impl core::panic::unwind_safe::UnwindSafe for telemetry::Event
+impl<T, U> core::convert::Into<U> for telemetry::Event where U: core::convert::From<T>
+pub fn telemetry::Event::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::Event where U: core::convert::Into<T>
+pub type telemetry::Event::Error = core::convert::Infallible
+pub fn telemetry::Event::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::Event where U: core::convert::TryFrom<T>
+pub type telemetry::Event::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::Event::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::Event where T: core::clone::Clone
+pub type telemetry::Event::Owned = T
+pub fn telemetry::Event::clone_into(&self, &mut T)
+pub fn telemetry::Event::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::Event where T: 'static + ?core::marker::Sized
+pub fn telemetry::Event::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::Event where T: ?core::marker::Sized
+pub fn telemetry::Event::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::Event where T: ?core::marker::Sized
+pub fn telemetry::Event::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::Event where T: core::clone::Clone
+pub unsafe fn telemetry::Event::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::Event
+pub fn telemetry::Event::from(T) -> T
+impl<T> serde_core::de::DeserializeOwned for telemetry::Event where T: for<'de> serde_core::de::Deserialize<'de>
 pub struct telemetry::ExitCounts
 pub telemetry::ExitCounts::cpuid: u64
-pub telemetry::ExitCounts::deadline: u64
 pub telemetry::ExitCounts::hlt: u64
 pub telemetry::ExitCounts::hypercall: u64
 pub telemetry::ExitCounts::io: u64
@@ -84,6 +334,51 @@ pub telemetry::ExitCounts::shutdown: u64
 pub telemetry::ExitCounts::wrmsr: u64
 impl telemetry::ExitCounts
 pub fn telemetry::ExitCounts::total(&self) -> u64
+impl core::clone::Clone for telemetry::ExitCounts
+pub fn telemetry::ExitCounts::clone(&self) -> telemetry::ExitCounts
+impl core::cmp::Eq for telemetry::ExitCounts
+impl core::cmp::PartialEq for telemetry::ExitCounts
+pub fn telemetry::ExitCounts::eq(&self, &telemetry::ExitCounts) -> bool
+impl core::default::Default for telemetry::ExitCounts
+pub fn telemetry::ExitCounts::default() -> telemetry::ExitCounts
+impl core::fmt::Debug for telemetry::ExitCounts
+pub fn telemetry::ExitCounts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for telemetry::ExitCounts
+impl core::marker::StructuralPartialEq for telemetry::ExitCounts
+impl serde_core::ser::Serialize for telemetry::ExitCounts
+pub fn telemetry::ExitCounts::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for telemetry::ExitCounts
+pub fn telemetry::ExitCounts::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for telemetry::ExitCounts
+impl core::marker::Send for telemetry::ExitCounts
+impl core::marker::Sync for telemetry::ExitCounts
+impl core::marker::Unpin for telemetry::ExitCounts
+impl core::marker::UnsafeUnpin for telemetry::ExitCounts
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::ExitCounts
+impl core::panic::unwind_safe::UnwindSafe for telemetry::ExitCounts
+impl<T, U> core::convert::Into<U> for telemetry::ExitCounts where U: core::convert::From<T>
+pub fn telemetry::ExitCounts::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::ExitCounts where U: core::convert::Into<T>
+pub type telemetry::ExitCounts::Error = core::convert::Infallible
+pub fn telemetry::ExitCounts::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::ExitCounts where U: core::convert::TryFrom<T>
+pub type telemetry::ExitCounts::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::ExitCounts::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::ExitCounts where T: core::clone::Clone
+pub type telemetry::ExitCounts::Owned = T
+pub fn telemetry::ExitCounts::clone_into(&self, &mut T)
+pub fn telemetry::ExitCounts::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::ExitCounts where T: 'static + ?core::marker::Sized
+pub fn telemetry::ExitCounts::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::ExitCounts where T: ?core::marker::Sized
+pub fn telemetry::ExitCounts::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::ExitCounts where T: ?core::marker::Sized
+pub fn telemetry::ExitCounts::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::ExitCounts where T: core::clone::Clone
+pub unsafe fn telemetry::ExitCounts::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::ExitCounts
+pub fn telemetry::ExitCounts::from(T) -> T
+impl<T> serde_core::de::DeserializeOwned for telemetry::ExitCounts where T: for<'de> serde_core::de::Deserialize<'de>
 pub struct telemetry::LiveSink
 impl telemetry::LiveSink
 pub fn telemetry::LiveSink::capacity(&self) -> usize
@@ -93,8 +388,41 @@ pub fn telemetry::LiveSink::len(&self) -> usize
 pub fn telemetry::LiveSink::new(usize) -> telemetry::LiveSink
 pub fn telemetry::LiveSink::pending_dropped(&self) -> u64
 pub fn telemetry::LiveSink::with_default_capacity() -> telemetry::LiveSink
+impl core::clone::Clone for telemetry::LiveSink
+pub fn telemetry::LiveSink::clone(&self) -> telemetry::LiveSink
+impl core::fmt::Debug for telemetry::LiveSink
+pub fn telemetry::LiveSink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl telemetry::Observer for telemetry::LiveSink
 pub fn telemetry::LiveSink::emit(&mut self, &telemetry::Event)
+impl core::marker::Freeze for telemetry::LiveSink
+impl core::marker::Send for telemetry::LiveSink
+impl core::marker::Sync for telemetry::LiveSink
+impl core::marker::Unpin for telemetry::LiveSink
+impl core::marker::UnsafeUnpin for telemetry::LiveSink
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::LiveSink
+impl core::panic::unwind_safe::UnwindSafe for telemetry::LiveSink
+impl<T, U> core::convert::Into<U> for telemetry::LiveSink where U: core::convert::From<T>
+pub fn telemetry::LiveSink::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::LiveSink where U: core::convert::Into<T>
+pub type telemetry::LiveSink::Error = core::convert::Infallible
+pub fn telemetry::LiveSink::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::LiveSink where U: core::convert::TryFrom<T>
+pub type telemetry::LiveSink::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::LiveSink::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::LiveSink where T: core::clone::Clone
+pub type telemetry::LiveSink::Owned = T
+pub fn telemetry::LiveSink::clone_into(&self, &mut T)
+pub fn telemetry::LiveSink::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::LiveSink where T: 'static + ?core::marker::Sized
+pub fn telemetry::LiveSink::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::LiveSink where T: ?core::marker::Sized
+pub fn telemetry::LiveSink::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::LiveSink where T: ?core::marker::Sized
+pub fn telemetry::LiveSink::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::LiveSink where T: core::clone::Clone
+pub unsafe fn telemetry::LiveSink::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::LiveSink
+pub fn telemetry::LiveSink::from(T) -> T
 pub struct telemetry::NdjsonRecorder<W: std::io::Write>
 impl<W: std::io::Write> telemetry::NdjsonRecorder<W>
 pub fn telemetry::NdjsonRecorder<W>::error(&self) -> core::option::Option<&std::io::error::Error>
@@ -102,22 +430,141 @@ pub fn telemetry::NdjsonRecorder<W>::flush(&mut self) -> std::io::error::Result<
 pub fn telemetry::NdjsonRecorder<W>::into_inner(self) -> W
 pub fn telemetry::NdjsonRecorder<W>::new(W) -> telemetry::NdjsonRecorder<W>
 pub fn telemetry::NdjsonRecorder<W>::take_error(&mut self) -> core::option::Option<std::io::error::Error>
+impl<W: core::fmt::Debug + std::io::Write> core::fmt::Debug for telemetry::NdjsonRecorder<W>
+pub fn telemetry::NdjsonRecorder<W>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<W: std::io::Write> telemetry::Observer for telemetry::NdjsonRecorder<W>
 pub fn telemetry::NdjsonRecorder<W>::emit(&mut self, &telemetry::Event)
+impl<W> core::marker::Freeze for telemetry::NdjsonRecorder<W> where W: core::marker::Freeze
+impl<W> core::marker::Send for telemetry::NdjsonRecorder<W> where W: core::marker::Send
+impl<W> core::marker::Sync for telemetry::NdjsonRecorder<W> where W: core::marker::Sync
+impl<W> core::marker::Unpin for telemetry::NdjsonRecorder<W> where W: core::marker::Unpin
+impl<W> core::marker::UnsafeUnpin for telemetry::NdjsonRecorder<W> where W: core::marker::UnsafeUnpin
+impl<W> !core::panic::unwind_safe::RefUnwindSafe for telemetry::NdjsonRecorder<W>
+impl<W> !core::panic::unwind_safe::UnwindSafe for telemetry::NdjsonRecorder<W>
+impl<T, U> core::convert::Into<U> for telemetry::NdjsonRecorder<W> where U: core::convert::From<T>
+pub fn telemetry::NdjsonRecorder<W>::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::NdjsonRecorder<W> where U: core::convert::Into<T>
+pub type telemetry::NdjsonRecorder<W>::Error = core::convert::Infallible
+pub fn telemetry::NdjsonRecorder<W>::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::NdjsonRecorder<W> where U: core::convert::TryFrom<T>
+pub type telemetry::NdjsonRecorder<W>::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::NdjsonRecorder<W>::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for telemetry::NdjsonRecorder<W> where T: 'static + ?core::marker::Sized
+pub fn telemetry::NdjsonRecorder<W>::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::NdjsonRecorder<W> where T: ?core::marker::Sized
+pub fn telemetry::NdjsonRecorder<W>::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::NdjsonRecorder<W> where T: ?core::marker::Sized
+pub fn telemetry::NdjsonRecorder<W>::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for telemetry::NdjsonRecorder<W>
+pub fn telemetry::NdjsonRecorder<W>::from(T) -> T
 pub struct telemetry::NullObserver
+impl core::clone::Clone for telemetry::NullObserver
+pub fn telemetry::NullObserver::clone(&self) -> telemetry::NullObserver
+impl core::default::Default for telemetry::NullObserver
+pub fn telemetry::NullObserver::default() -> telemetry::NullObserver
+impl core::fmt::Debug for telemetry::NullObserver
+pub fn telemetry::NullObserver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for telemetry::NullObserver
 impl telemetry::Observer for telemetry::NullObserver
 pub fn telemetry::NullObserver::emit(&mut self, &telemetry::Event)
+impl core::marker::Freeze for telemetry::NullObserver
+impl core::marker::Send for telemetry::NullObserver
+impl core::marker::Sync for telemetry::NullObserver
+impl core::marker::Unpin for telemetry::NullObserver
+impl core::marker::UnsafeUnpin for telemetry::NullObserver
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::NullObserver
+impl core::panic::unwind_safe::UnwindSafe for telemetry::NullObserver
+impl<T, U> core::convert::Into<U> for telemetry::NullObserver where U: core::convert::From<T>
+pub fn telemetry::NullObserver::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::NullObserver where U: core::convert::Into<T>
+pub type telemetry::NullObserver::Error = core::convert::Infallible
+pub fn telemetry::NullObserver::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::NullObserver where U: core::convert::TryFrom<T>
+pub type telemetry::NullObserver::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::NullObserver::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::NullObserver where T: core::clone::Clone
+pub type telemetry::NullObserver::Owned = T
+pub fn telemetry::NullObserver::clone_into(&self, &mut T)
+pub fn telemetry::NullObserver::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::NullObserver where T: 'static + ?core::marker::Sized
+pub fn telemetry::NullObserver::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::NullObserver where T: ?core::marker::Sized
+pub fn telemetry::NullObserver::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::NullObserver where T: ?core::marker::Sized
+pub fn telemetry::NullObserver::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::NullObserver where T: core::clone::Clone
+pub unsafe fn telemetry::NullObserver::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::NullObserver
+pub fn telemetry::NullObserver::from(T) -> T
 pub struct telemetry::RunningServer
 impl telemetry::server::RunningServer
 pub fn telemetry::server::RunningServer::local_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn telemetry::server::RunningServer::shutdown(self)
+impl core::fmt::Debug for telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for telemetry::server::RunningServer
 pub fn telemetry::server::RunningServer::drop(&mut self)
+impl core::marker::Freeze for telemetry::server::RunningServer
+impl core::marker::Send for telemetry::server::RunningServer
+impl core::marker::Sync for telemetry::server::RunningServer
+impl core::marker::Unpin for telemetry::server::RunningServer
+impl core::marker::UnsafeUnpin for telemetry::server::RunningServer
+impl !core::panic::unwind_safe::RefUnwindSafe for telemetry::server::RunningServer
+impl !core::panic::unwind_safe::UnwindSafe for telemetry::server::RunningServer
+impl<T, U> core::convert::Into<U> for telemetry::server::RunningServer where U: core::convert::From<T>
+pub fn telemetry::server::RunningServer::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::server::RunningServer where U: core::convert::Into<T>
+pub type telemetry::server::RunningServer::Error = core::convert::Infallible
+pub fn telemetry::server::RunningServer::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::server::RunningServer where U: core::convert::TryFrom<T>
+pub type telemetry::server::RunningServer::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::server::RunningServer::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> core::any::Any for telemetry::server::RunningServer where T: 'static + ?core::marker::Sized
+pub fn telemetry::server::RunningServer::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::server::RunningServer where T: ?core::marker::Sized
+pub fn telemetry::server::RunningServer::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::server::RunningServer where T: ?core::marker::Sized
+pub fn telemetry::server::RunningServer::borrow_mut(&mut self) -> &mut T
+impl<T> core::convert::From<T> for telemetry::server::RunningServer
+pub fn telemetry::server::RunningServer::from(T) -> T
 pub struct telemetry::ServerOptions
 pub telemetry::ServerOptions::mode: telemetry::server::Mode
 pub telemetry::ServerOptions::recording: core::option::Option<std::path::PathBuf>
+impl core::clone::Clone for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::clone(&self) -> telemetry::server::ServerOptions
 impl core::default::Default for telemetry::server::ServerOptions
 pub fn telemetry::server::ServerOptions::default() -> Self
+impl core::fmt::Debug for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for telemetry::server::ServerOptions
+impl core::marker::Send for telemetry::server::ServerOptions
+impl core::marker::Sync for telemetry::server::ServerOptions
+impl core::marker::Unpin for telemetry::server::ServerOptions
+impl core::marker::UnsafeUnpin for telemetry::server::ServerOptions
+impl core::panic::unwind_safe::RefUnwindSafe for telemetry::server::ServerOptions
+impl core::panic::unwind_safe::UnwindSafe for telemetry::server::ServerOptions
+impl<T, U> core::convert::Into<U> for telemetry::server::ServerOptions where U: core::convert::From<T>
+pub fn telemetry::server::ServerOptions::into(self) -> U
+impl<T, U> core::convert::TryFrom<U> for telemetry::server::ServerOptions where U: core::convert::Into<T>
+pub type telemetry::server::ServerOptions::Error = core::convert::Infallible
+pub fn telemetry::server::ServerOptions::try_from(U) -> core::result::Result<T, <T as core::convert::TryFrom<U>>::Error>
+impl<T, U> core::convert::TryInto<U> for telemetry::server::ServerOptions where U: core::convert::TryFrom<T>
+pub type telemetry::server::ServerOptions::Error = <U as core::convert::TryFrom<T>>::Error
+pub fn telemetry::server::ServerOptions::try_into(self) -> core::result::Result<U, <U as core::convert::TryFrom<T>>::Error>
+impl<T> alloc::borrow::ToOwned for telemetry::server::ServerOptions where T: core::clone::Clone
+pub type telemetry::server::ServerOptions::Owned = T
+pub fn telemetry::server::ServerOptions::clone_into(&self, &mut T)
+pub fn telemetry::server::ServerOptions::to_owned(&self) -> T
+impl<T> core::any::Any for telemetry::server::ServerOptions where T: 'static + ?core::marker::Sized
+pub fn telemetry::server::ServerOptions::type_id(&self) -> core::any::TypeId
+impl<T> core::borrow::Borrow<T> for telemetry::server::ServerOptions where T: ?core::marker::Sized
+pub fn telemetry::server::ServerOptions::borrow(&self) -> &T
+impl<T> core::borrow::BorrowMut<T> for telemetry::server::ServerOptions where T: ?core::marker::Sized
+pub fn telemetry::server::ServerOptions::borrow_mut(&mut self) -> &mut T
+impl<T> core::clone::CloneToUninit for telemetry::server::ServerOptions where T: core::clone::Clone
+pub unsafe fn telemetry::server::ServerOptions::clone_to_uninit(&self, *mut u8)
+impl<T> core::convert::From<T> for telemetry::server::ServerOptions
+pub fn telemetry::server::ServerOptions::from(T) -> T
 pub const telemetry::DEFAULT_CAPACITY: usize
 pub trait telemetry::Observer
 pub fn telemetry::Observer::emit(&mut self, &telemetry::Event)

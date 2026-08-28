@@ -78,7 +78,7 @@ semantics may instead ride a `VMCALL` doorbell surfaced as `Exit::Hypercall(Hype
 alternative to the port-I/O doorbell, not a replacement; the wire frames and `Dispatcher` are
 identical either way. (The `VMCALL` variant, being its own single exit, is likewise atomic.)
 
-**Arm64 prescriptive variant (M2):** the unchanged request/response pages occupy
+**Arm64 variant (M2):** the unchanged request/response pages occupy
 the upper half of one fully retained 16-KiB control slot at `0xC000..0x10000`;
 the alignment pages are state, not hidden padding. The guest rings one 32-bit
 MMIO store at board GPA `0x0A00_0000`. The store carries the request length and
@@ -105,7 +105,7 @@ dedicated port**, distinct from the doorbell.
   access is unmodeled and fails closed. The guest's `report(u64)` is **two** writes — low dword then
   high — so the host reassembles a 64-bit value from that fixed (low, high) pair.
 - **Determinism-clean.** Every reported value is already deterministic (a V-time TSC, a seeded-PRNG
-  word, a frozen CPUID/MSR value, a retired count) and the stream is ordered by execution, so the
+  word, a frozen CPUID/MSR value, an exit count) and the stream is ordered by execution, so the
   stream is a **pure function of the run**. `vmm-core` digests it (with the serial banner) into the
   guest-observable `observable_digest` — the O2 conformance signal — **separately from**
   `state_hash` (the O1 full-state hash, which is byte-for-byte unchanged by this channel: a run
@@ -152,19 +152,19 @@ its module doc):
   replay reproduces it). Id **5** is the `Net` vertical, so the SDK control service is **6** — the
   numbering never moves (a released wire ABI).
 - **`Pvclock = 7` (task 110, `docs/PARAVIRT-CLOCK.md`).** The guest publishes the guest-physical
-  address of its 4 KiB paravirt work-derived clock page (one 8-byte little-endian page-aligned GPA);
+  address of its 4 KiB paravirt exit-count-derived clock page (one 8-byte little-endian page-aligned GPA);
   the host validates it (page-aligned, wholly inside guest RAM, clear of the doorbell frame pages and
   of any device-MMIO hole), **records it as pending**, and answers the 4-byte little-endian
   page-layout ABI version (`HARMONY_PVCLOCK_ABI = 1`). **Registration is a two-step handshake: the
   response does NOT stamp the page.** Because the doorbell `OUT` is a PIO, not a V-time intercept, the
   host lays down the first stamp and arms its staleness refresh only at the guest's **required**
-  post-response counter read (an `RDTSC`/`RDTSCP` — a skid-free intercept). A conforming guest must
+  post-response counter read (an `RDTSC`/`RDTSCP` exit). A conforming guest must
   perform that read before reading the page; reading immediately after the response observes stale
   bytes (ABI version zero). A guest that omits the handshake is out of contract (unstamped, never
-  refreshed). A host not composed with the clock page — or one without a deterministic work counter to
-  derive stamps from — answers `Status::UnknownService`, and the guest keeps its trap-backstopped time
+  refreshed). A host not composed with the virtual-time clock page answers
+  `Status::UnknownService`, and the guest keeps its trap-backstopped time
   paths (the page is pure opt-in on both sides).
-- **`Payload = 8` (prescriptive V-time M2).** A request contains one nonzero little-endian `u32`
+- **`Payload = 8` (virtual-time M2).** A request contains one nonzero little-endian `u32`
   expected length; a successful response contains exactly that many bytes and consumes exactly one
   entry from the branch's ordered payload tape. A wrong length is `BadRequest` and consumes nothing.
   An offered-but-empty tape returns `OutOfRange` and ends the control run as `Quiescent`, independent
@@ -202,7 +202,7 @@ same one-shot pvclock-registration semantics over a dedicated MMIO page:
 - Offset `0x010`, 8-byte little-endian **write only**: replace the pending clockevent deadline
   with this absolute value in the pvclock page's `guest_clock` tick domain. A write while PPI 20
   is asserted is a guest protocol fault. A deadline may arrive before page registration, but it
-  cannot be evaluated or delivered until an exact landing has published a valid page.
+  cannot be evaluated or delivered until a serviced exit has published a valid page.
 - Offset `0x018`, 4-byte little-endian **write only**: clockevent control. Value 1 (`DISARM`)
   clears the pending deadline and drives PPI 20 low if it is asserted. Value 2 (`ACK`) is valid
   only while PPI 20 is asserted; it drives the line low and consumes that assertion before the
@@ -210,18 +210,11 @@ same one-shot pvclock-registration semantics over a dedicated MMIO page:
 - Every other width, offset, or direction is a guest protocol fault. All arithmetic over the
   KVM-reported address and width is checked before a slice or narrowing conversion.
 
-The registration write is a natural `KVM_EXIT_MMIO`, so its live PMU count is skid-tainted and
-MUST NOT stamp the page or become a V-time anchor. Before first entry the host starts the usual
-exact-work cadence (`Δ`, `2Δ`, …) but has no page target. A valid write records the GPA as pending;
-the next arm-early + canonical-single-step landing stamps that GPA in canonical ABI form and
-activates later periodic refreshes. The guest waits on the still-zero page until that first exact
-publication appears. Thus registration-to-first-stamp latency is bounded by one cadence interval
-without importing a natural-exit count. Registration MMIO encountered during an exact single-step
-walk is serviced inline, but publication still waits for that walk's canonical landing.
-The current owned guest polls for at most `2^28` loop iterations, and its harness admits
-`1 <= Δ <= 100_000_000` retired branches; the strict host ceiling leaves ample deterministic
-instruction headroom inside the guest bound. A larger operator-supplied cadence is rejected before
-first entry rather than risking a guest panic before the first stamp.
+The registration write is a normal `KVM_EXIT_MMIO`. A valid write records the
+GPA as pending; the guest's required following architecture time read completes
+the handshake and stamps the page in canonical ABI form. Later serviced exits
+refresh it from the exit-count clock. The guest waits on the still-zero page
+until that canonical publication appears.
 
 Deadline and control writes are also natural MMIO exits and MUST NOT stamp time. Immediately
 after each exact page publication, the host compares the published `guest_clock` with the pending
@@ -248,22 +241,17 @@ inadmissible.
 
 ## 2. Run-loop ownership
 
-`vmm-core` owns the `KVM_RUN` loop. The vtime `InjectionPlanner` was specced as the driver
-(`stop_at` calls the backend); at integration, expect to **invert** this: the event loop
-handles all exit reasons (hypercall, MMIO, HLT, PMU overflow, single-step) and reuses the
-planner's arithmetic/state machine to decide when to arm the counter, when to switch to
-single-stepping, and when the injection point is reached. The planner's exactness property
-tests are the durable asset; its driver-shaped API is allowed to bend. Non-timer exits
-(hypercalls) occurring while armed are serviced inline and execution resumes toward the same
-armed target — they don't disturb the plan because servicing them performs no guest work.
+`vmm-core` owns the guest-entry loop. It handles every common exit exhaustively,
+delegates architecture exits to the selected vendor, and advances one virtual
+clock by the frozen duration of each serviced exit. Scheduled events become due
+at exit boundaries; an idle guest advances directly to its next modeled timer.
 
 ## 3. Idle-skip protocol
 
 On a `HLT` exit with interrupts enabled (work frozen, V-time would stall):
 
-1. If `TimerQueue::peek_next()` is `Some((deadline, _))`: `VClock::advance_idle(deadline −
-   vns(now))`, pop due timers, inject — zero single-steps needed (`stop_at` with
-   `target == now`).
+1. If `TimerQueue::peek_next()` is `Some((deadline, _))`, apply
+   `VClock::advance(deadline − now)`, pop due timers, and inject.
 2. If the queue is empty: nothing can ever wake the guest. That is a terminal state — report
    it upward (test ended / guest hung), never spin or invent time.
 
@@ -277,61 +265,40 @@ which vmm-core serializes and must contain at least:
 
 - vCPU: GPRs, segment/system registers, FPU/XSAVE area, relevant MSRs, LAPIC + PIC + PIT
   emulated state, pending/in-service interrupt state.
-- V-time: `VClock::snapshot_vns(work)` result and `tsc_base`/ratio config; on restore, the
-  hardware counter restarts at 0 and the value goes into `vns_base` (task 05 gate 6 proves
-  continuity). **Snapshot-bearing configs must use integer ratios (`ratio_den == 1`)** —
-  vmm-core rejects fractional ratios at config validation. Ruling (PR #5): `snapshot_vns`
-  is whole nanoseconds, so a fractional ratio's sub-ns remainder `(work·num) mod den` cannot
-  survive a snapshot; a restored clock would lag a never-snapshotted run by ≤ 1 ns per
-  snapshot generation and a timer's injection target could shift one counted event. Replay
-  determinism is unaffected either way (quantization is deterministic; restored-vs-restored
-  runs are bit-identical) — the constraint exists so restored timelines also match
-  unsnapshotted references exactly.
+- V-time: the accumulated virtual nanoseconds and guest-clock frequency/base
+  parameters. Restore rebuilds the accumulator at the saved value.
 - `TimerQueue` contents (deadlines are absolute V-time, so they survive restore unchanged).
 - `Dispatcher::save_state()` (task 01) — notably the entropy PRNG position. After a restore
   intended to *branch* (explore a different future), vmm-core reseeds/perturbs the entropy
   service explicitly; after a restore intended to *replay*, it restores the state verbatim.
   That choice is the explorer's, which is why it must be explicit state, not ambient.
-- Planner/injection bookkeeping: there must be **no armed-but-unfired plan** at snapshot
-  time — vmm-core only snapshots at quiescent points (after an exit is fully serviced,
-  nothing armed). Enforce with an assertion rather than trying to serialize plan state.
+- Any staged non-idempotent instruction completion must be committed before a snapshot.
 
 ## 5. Adapter map
 
 | Seam | Delegated side (frozen) | vmm-core side (later) |
 |---|---|---|
 | Hypercalls | `hypercall-proto::{Client, Transport}` (guest), `Dispatcher`/`Service` (host) | port-I/O **doorbell** handler implementing §1 (`Exit::Io` on `DOORBELL_PORT`, stock-KVM `KVM_EXIT_IO`); guest shim `consonance/hypercall-doorbell`. Patched-backend `VMCALL` variant via `Exit::Hypercall` (task 21) |
-| Time | `vtime::{VClock, TimerQueue, InjectionPlanner, CpuBackend}` | perf_event retired-branch counter (guest-only), PMI → exit; `KVM_GUESTDBG_SINGLESTEP`; §2 inversion |
+| Time | `vtime::{VClock, TimerQueue, IdlePlanner}` | normalized VM exits and deterministic idle jumps |
 | Memory/snapshots | `snapshot-store::{Store, builders, Mapping}` | KVM dirty-log harvest → `DeltaBuilder`; `materialize()` → memslot swap; `vm_state` blob per §4 |
 | Determinism testing | `unison::{Subject, SubjectFactory}` | adapter: `spawn(seed)` = restore base snapshot + seed services; `run_to` = planner stop; `state_hash` = canonical hash of materialized memory + `vm_state` |
 | Guests | task 04 Multiboot payload contract & Linux image | Multiboot loader (replicating QEMU `-kernel` entry state) and bzImage loader; PIT/PIC device emulation backed by `TimerQueue` |
 
 ## 6. Open questions (decide during vmm-core bring-up)
 
-- Exact perf_event config for guest-only retired-branch counting (`exclude_host`,
-  `exclude_hv`) and the measured skid bound → `PlannerConfig::skid_margin`.
-- Whether `KVM_RUN`-adjacent kernel work (fast memslot swap for restore, precise PMI
-  delivery) eventually needs a small kernel patch — defer until measured.
+- Whether guest-entry-adjacent kernel work needs a small optimization patch — defer until measured.
 - Whether the `interrupts` payload's PIT path is emulated pre- or post-V-time integration
   (a fixed-cadence fake is acceptable for first boot).
-- If sub-ns-per-branch virtual rates are ever needed: amend vtime to carry the sub-ns
-  remainder through snapshots (`VClockConfig` gains a `vns_rem < ratio_den` field,
-  `snapshot_vns` returns the pair, `work_for_vns` gains the rem term). Backward-compatible —
-  `rem = 0` reproduces integer-ratio behavior bit-exactly — plus one vm_state blob field;
-  cheap while snapshots remain ephemeral (snapshot-store has no cross-restart persistence).
+- If sub-nanosecond exit durations are ever needed, extend the assigned-duration
+  table and snapshot accumulator with an integer remainder. Floating point remains forbidden.
 
 ## 6b. The `Moment` axis (integrator ruling, 2026-07-02)
 
-`Moment` is on the **derived V-time axis** (effective virtual nanoseconds, `vns`) — the same
+`Moment` is on the **V-time axis** (virtual nanoseconds, `vns`) — the same
 axis as `run(deadline)`, snapshot addressing, and `state_hash` points — NOT a raw
-retired-instruction/work count. The whole enforcement plane (task 59's `ControlServer`
-schedule/floors, `arm_arrival`'s `work_for_vns(moment)` conversion, the `vns == Moment`
-recording invariant) and task 60's window minting are written against this reading; they only
-coincide with a work-count reading at clock ratio 1. `dissonance/environment/src/host.rs`'s
-doc comment ("a count of retired instructions") predates this ruling and is to be amended to
-"the deterministic V-time axis (`vns`); retired-instruction work counts are the *derivation*
-of this axis, not its unit" — a doc-only crate change carried by a worker PR. Task 71's
-`EnvCodec` re-keying is unaffected (plain integer arithmetic on the same axis).
+instruction count. The control schedule, floors, `vns == Moment` recording invariant,
+and window minting all use this axis. A scheduled moment is applied only when an exit
+boundary lands on it; crossing it fails loudly as `ScheduleUnsatisfiable`.
 
 ## 6c. Integrator rulings, 2026-07-03 (morning batch)
 
@@ -425,7 +392,7 @@ the exit stream on top.
 worker does not touch `vmm-core`.** `Vmm::step()` gains an `&mut dyn Observer` argument (default
 `NullObserver`). After each exit is **fully serviced**, at the existing quiescent point where
 `work` is already read for V-time, `vmm-core` builds the matching `telemetry::Event`
-(`seq += 1`; `work` = the retired-branch counter; `vns = vclock.vns(work)`) and calls
+(`seq += 1`; `work` = the VM-exit counter; `vns = vclock.vns(work)`) and calls
 `observer.emit(&ev)`. The `EventKind` mapping:
 
 | Source in `vmm-core` | `telemetry::EventKind` |
@@ -439,12 +406,12 @@ worker does not touch `vmm-core`.** `Vmm::step()` gains an `&mut dyn Observer` a
 | `Exit::Rdtsc` / `Exit::Rdtscp` (patched) | `Tsc { value }` |
 | `Exit::Rdrand` / `Exit::Rdseed` (patched) | `Rng { value }` |
 | `Exit::Cpuid` (patched) | `Cpuid { leaf, subleaf }` |
-| `InjectionPlanner` delivery | `Inject { vector }` |
+| modeled interrupt delivery | `Inject { vector }` |
 | periodic `state_hash()` checkpoint | `Checkpoint { state_hash: [u8; 32] }` |
 | periodic `ExitCounts` snapshot | `Counts(ExitCounts)` (telemetry's **local mirror** of vmm-backend's tally) |
 | run end | `Terminal { reason }` |
 
-The construction is **side-effect-free on the run**: it only *reads* `work`, the clock, and the
+The construction is **side-effect-free on the run**: it only reads the exit count, clock, and the
 device/exit state that already exist at the quiescent point. `ExitCounts` is mirrored as a local
 struct in `telemetry` (leaf crate, no sibling import per Convention rule 2); the seam maps
 vmm-backend's `ExitCounts` field-for-field into it.

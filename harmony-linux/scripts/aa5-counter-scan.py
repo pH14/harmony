@@ -5,7 +5,7 @@
 # ID_AA64MMFR0_EL1.ECV = 0x0), so the guest's CNTVCT_EL0 cannot be trapped in hardware — raw
 # counter access must be closed at the CONTRACT level. One layer of that closure is a build-time
 # / rescan-on-exec scan that rejects any image emitting an MRS of a generic-timer counter, so the
-# guest reads time ONLY via the work-derived clock page.
+# guest reads time ONLY via the exit-count-derived clock page.
 #
 #   aa5-counter-scan.py <aarch64-elf> [<elf> ...]
 #

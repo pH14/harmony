@@ -82,12 +82,12 @@ fn arm64_os_debug_lock_accepts_only_the_boot_unlock() {
             sysreg,
             write: Some(0),
         })]);
-        wire_prescriptive_clock(&mut accepted);
+        wire_virtual_time_clock(&mut accepted);
         assert_eq!(accepted.step().unwrap(), Step::Continued);
 
         for write in [Some(1), None] {
             let mut rejected = vmm(vec![Exit::Arch(Arm64Exit::Sysreg { sysreg, write })]);
-            wire_prescriptive_clock(&mut rejected);
+            wire_virtual_time_clock(&mut rejected);
             let err = rejected.step().unwrap_err();
             assert!(format!("{err}").contains("debug-lock"), "{err}");
         }
@@ -163,8 +163,7 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
 /// arch-tag gate fails closed).
 #[test]
 fn arm64_restore_rejects_a_foreign_blob() {
-    let mut x86 = VmState::default();
-    x86.vtime.ratio_den = 1;
+    let x86 = VmState::default();
     let eng = SnapshotEngine::new(RAM);
     let _ = eng; // (the rejection happens at decode, before any store round trip)
     assert_eq!(
@@ -191,7 +190,7 @@ fn arm64_restore_rejects_a_contract_mismatch() {
 /// unwired V-time sentinel — every `VtimeState` field at its unwired value AND
 /// no entropy/hypercall bytes. The prior check tested only `guest_hz`/
 /// `snapshot_vns`, so a blob with those zero but a nonzero
-/// `ratio_num`/`ratio_den`/`guest_base` or entropy bytes was accepted and its
+/// `guest_base` or entropy bytes was accepted and its
 /// live V-time/entropy state **silently discarded** — a fail-closed
 /// snapshot-contract violation.
 #[test]
@@ -201,23 +200,19 @@ fn arm64_unwired_restore_requires_the_full_vtime_sentinel() {
     vmm(vec![]).restore_vm_state(&base).unwrap();
     assert_eq!(
         (
-            base.vtime.ratio_num,
-            base.vtime.ratio_den,
             base.vtime.guest_hz,
             base.vtime.guest_base,
             base.vtime.snapshot_vns,
             base.hypercall.is_empty(),
         ),
-        (0, 1, 0, 0, 0, true),
+        (0, 0, 0, true),
         "the unwired save sentinel"
     );
 
     // Populate ONE field at a time — each must fail closed with the wiring
     // message (the old check let every field but guest_hz/snapshot_vns through).
     type Mutator = fn(&mut Arm64VmState);
-    let mutators: [(&str, Mutator); 6] = [
-        ("ratio_num", |s| s.vtime.ratio_num = 7),
-        ("ratio_den", |s| s.vtime.ratio_den = 2),
+    let mutators: [(&str, Mutator); 4] = [
         ("guest_hz", |s| s.vtime.guest_hz = 1_000),
         ("guest_base", |s| s.vtime.guest_base = 42),
         ("snapshot_vns", |s| s.vtime.snapshot_vns = 99),
@@ -405,64 +400,6 @@ fn arm64_gic_fabric_arbitrates_and_rides_the_snapshot() {
 /// M2 — the generic timer is a pure deadlines-out seam: an armed CVAL is a
 /// V-time deadline, and once the fabric's V-time passes it, the PPI latches
 /// pending and arbitration delivers it.
-#[test]
-fn arm64_generic_timer_feeds_the_deadline_seam() {
-    use gicv3::{CNTV_CTL_ENABLE, GicFrame};
-    use vmm_core::vendor::arm64::board;
-    use vmm_core::vmm::VtimeWiring;
-    use vmm_core::work::ScriptedWork;
-    use vtime::VClockConfig;
-
-    let mut gic = board::new_gic();
-    // Make the timer PPI deliverable, then arm CVAL = 125 ticks ⇒ 2000 vns.
-    gic.mmio_write(GicFrame::Dist, 0x0000, 0b10, 0).unwrap();
-    let sgi = 0x1_0000;
-    gic.mmio_write(GicFrame::Redist, sgi + 0x0080, 1 << 27, 0)
-        .unwrap();
-    gic.mmio_write(GicFrame::Redist, sgi + 0x0100, 1 << 27, 0)
-        .unwrap();
-    gic.set_pmr(0xFF);
-    gic.set_group1_enabled(true);
-    gic.write_cntv_cval(125);
-    gic.write_cntv_ctl(CNTV_CTL_ENABLE);
-    assert_eq!(gic.next_timer_deadline(), Some(2000));
-    assert!(gic.armed_timer_deliverable());
-
-    // A V-time-wired arm64 VM whose work counter sits past the deadline. The
-    // mock must NOT claim a deterministic clock here: `now_vns` then reads
-    // the live (scripted) counter, exactly like a stock backend.
-    let mut b = MockArm64Backend::with_capabilities(vmm_backend::Capabilities {
-        name: "mock-arm64-stockish",
-        deterministic_rng: true,
-        arch: vmm_backend::Arm64Caps {
-            in_kernel_gic: false,
-            deterministic_cntvct: false,
-            enforces_cntv_cval: false,
-        },
-    });
-    b.set_policy(&Arm64Policy::default()).unwrap();
-    let mut v = Vmm::new(b, GuestRam::new(RAM).unwrap());
-    v.wire_vtime(
-        VtimeWiring::new(
-            VClockConfig {
-                ratio_num: 1,
-                ratio_den: 1,
-                guest_hz: 62_500_000,
-                guest_base: 0,
-                vns_base: 0,
-            },
-            Box::new(ScriptedWork::at(2500)), // now_vns = 2500 ≥ 2000
-            7,
-        )
-        .unwrap(),
-    );
-    v.wire_gic(gic);
-
-    // The out-of-run-loop query advances the fabric to now_vns: the deadline
-    // has passed, the PPI latches pending, and arbitration delivers it.
-    assert!(v.has_pending_guest_interrupt().unwrap());
-}
-
 /// M3 — the board memory map routes device MMIO: the PL011 console frame is a
 /// modeled device (a store lands in the capture, read-back works), the
 /// reserved doorbell GPA is recognized (default-denied without an SDK, like
@@ -640,7 +577,7 @@ fn arm64_board_mmio_routes_pl011_doorbell_and_gic() {
 }
 
 #[test]
-fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
+fn arm64_virtual_time_pvclock_registration_is_exact_and_stamps_guest_ram() {
     use vmm_backend::Gpa;
     use vmm_core::vendor::arm64::board::{CNTFRQ_HZ, PVCLOCK};
     use vmm_core::vmm::VtimeWiring;
@@ -667,10 +604,8 @@ fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
         }),
     ]);
     v.wire_vtime(
-        VtimeWiring::new_prescriptive(
+        VtimeWiring::new_virtual_time(
             VClockConfig {
-                ratio_num: 1,
-                ratio_den: 1,
                 guest_hz: CNTFRQ_HZ,
                 guest_base: 0,
                 vns_base: 0,
@@ -679,7 +614,7 @@ fn arm64_prescriptive_pvclock_registration_is_exact_and_stamps_guest_ram() {
         )
         .unwrap(),
     );
-    v.enable_pvclock(1);
+    v.enable_pvclock();
 
     assert_eq!(v.step().unwrap(), Step::Continued);
     assert_eq!(v.pvclock_registration(), Some(page_gpa));
@@ -736,16 +671,14 @@ fn clockevent_gic() -> gicv3::Gicv3 {
 }
 
 /// Compose the exact assigned-at-exit clock used by the M1 board tests.
-fn wire_prescriptive_clock(v: &mut Vmm<MockArm64Backend>) {
+fn wire_virtual_time_clock(v: &mut Vmm<MockArm64Backend>) {
     use vmm_core::vendor::arm64::board::CNTFRQ_HZ;
     use vmm_core::vmm::VtimeWiring;
     use vtime::VClockConfig;
 
     v.wire_vtime(
-        VtimeWiring::new_prescriptive(
+        VtimeWiring::new_virtual_time(
             VClockConfig {
-                ratio_num: 1,
-                ratio_den: 1,
                 guest_hz: CNTFRQ_HZ,
                 guest_base: 0,
                 vns_base: 0,
@@ -754,7 +687,7 @@ fn wire_prescriptive_clock(v: &mut Vmm<MockArm64Backend>) {
         )
         .unwrap(),
     );
-    v.enable_pvclock(1);
+    v.enable_pvclock();
     v.wire_gic(clockevent_gic());
 }
 
@@ -809,7 +742,7 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
             write: Some(2), // a second ACK must fail
         }),
     ]);
-    wire_prescriptive_clock(&mut v);
+    wire_virtual_time_clock(&mut v);
 
     assert_eq!(v.step().unwrap(), Step::Continued);
     assert_eq!(v.step().unwrap(), Step::Continued);
@@ -825,30 +758,8 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     // retain both the GIC pending bit and the device's level/counters.
     let snapshot = v.save_vm_state().unwrap();
 
-    // Equal numeric clock rates are not enough: the snapshot carries the
-    // assigned-at-exit mode bit and a descriptive target must reject it.
-    let mut descriptive = vmm(vec![]);
-    descriptive.wire_vtime(
-        vmm_core::vmm::VtimeWiring::new(
-            vtime::VClockConfig {
-                ratio_num: 1,
-                ratio_den: 1,
-                guest_hz: vmm_core::vendor::arm64::board::CNTFRQ_HZ,
-                guest_base: 0,
-                vns_base: 0,
-            },
-            Box::new(vmm_core::work::ScriptedWork::new()),
-            7,
-        )
-        .unwrap(),
-    );
-    descriptive.enable_pvclock(1);
-    descriptive.wire_gic(clockevent_gic());
-    let err = descriptive.restore_vm_state(&snapshot).unwrap_err();
-    assert!(format!("{err}").contains("V-time mode mismatch"));
-
     let mut restored = vmm(vec![]);
-    wire_prescriptive_clock(&mut restored);
+    wire_virtual_time_clock(&mut restored);
     restored
         .restore_snapshot(v.guest_memory(), &snapshot)
         .unwrap();
@@ -904,7 +815,7 @@ fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
     backend.set_policy(&Arm64Policy::default()).unwrap();
     backend.set_state(state);
     let mut v = Vmm::new(backend, GuestRam::new(RAM).unwrap());
-    wire_prescriptive_clock(&mut v);
+    wire_virtual_time_clock(&mut v);
 
     assert_eq!(v.step().unwrap(), Step::Continued);
     assert_eq!(v.step().unwrap(), Step::Continued);
@@ -956,7 +867,7 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
             write: None,
         }),
     ]);
-    wire_prescriptive_clock(&mut disarm);
+    wire_virtual_time_clock(&mut disarm);
     for _ in 0..4 {
         assert_eq!(disarm.step().unwrap(), Step::Continued);
     }
@@ -975,7 +886,7 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
             size: 4,
             write: Some(control),
         })]);
-        wire_prescriptive_clock(&mut bad);
+        wire_virtual_time_clock(&mut bad);
         assert!(bad.step().is_err(), "control {control} must fail closed");
     }
 
@@ -998,21 +909,21 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
             write: Some(250),
         }),
     ]);
-    wire_prescriptive_clock(&mut asserted);
+    wire_virtual_time_clock(&mut asserted);
     assert_eq!(asserted.step().unwrap(), Step::Continued);
     assert_eq!(asserted.step().unwrap(), Step::Continued);
     let err = asserted.step().unwrap_err();
     assert!(format!("{err}").contains("deadline write while its PPI is asserted"));
 }
 
-/// Prescriptive WFI uses `IdlePlanner` to land exactly on the paravirtual
+/// VirtualTime WFI uses `IdlePlanner` to land exactly on the paravirtual
 /// clockevent deadline, raises the clockevent PPI at that same normalized event, and never
-/// asks the backend for an unsupported mid-stream `run_until` stop.
+/// asks the backend for an unsupported mid-stream `run_to_deadline` stop.
 #[test]
-fn arm64_prescriptive_wfi_jumps_to_the_clockevent_deadline() {
+fn arm64_virtual_time_wfi_jumps_to_the_clockevent_deadline() {
     use vmm_backend::Gpa;
-    use vmm_core::prescriptive::{NormalizedEventClass, check_delivery_placement};
     use vmm_core::vendor::arm64::board::{CNTFRQ_HZ, PVCLOCK, PVCLOCK_PPI};
+    use vmm_core::virtual_time::{NormalizedEventClass, check_delivery_placement};
 
     let page_gpa = 0x1000;
     let deadline_vns = 10_000;
@@ -1030,7 +941,7 @@ fn arm64_prescriptive_wfi_jumps_to_the_clockevent_deadline() {
         }),
         Exit::Common(CommonExit::Idle),
     ]);
-    wire_prescriptive_clock(&mut v);
+    wire_virtual_time_clock(&mut v);
 
     assert_eq!(v.step().unwrap(), Step::Continued);
     assert_eq!(v.step().unwrap(), Step::Continued);
@@ -1040,7 +951,7 @@ fn arm64_prescriptive_wfi_jumps_to_the_clockevent_deadline() {
     assert_eq!(v.idle_landings(), &[deadline_vns]);
     assert!(v.has_pending_guest_interrupt().unwrap());
 
-    let trace = v.prescriptive_trace().unwrap();
+    let trace = v.virtual_time_trace().unwrap();
     let idle = &trace.normalized_log().events[2];
     assert_eq!(idle.class, NormalizedEventClass::Idle);
     assert_eq!(idle.vns_after, deadline_vns);
@@ -1234,16 +1145,14 @@ fn arm64_devices_gic_vtime_and_entropy_are_hash_and_restore_complete() {
     restore(&gic_pending, &mut gic_target);
 
     let config = VClockConfig {
-        ratio_num: 1,
-        ratio_den: 1,
         guest_hz: CNTFRQ_HZ,
         guest_base: 0,
         vns_base: 0,
     };
     let timed = |vns: u64, seed: u64| {
         let mut vm = vmm(vec![]);
-        let mut wiring = VtimeWiring::new_prescriptive(config, seed).unwrap();
-        wiring.advance_prescriptive(vns);
+        let mut wiring = VtimeWiring::new_virtual_time(config, seed).unwrap();
+        wiring.advance_virtual_time(vns);
         vm.wire_vtime(wiring);
         vm
     };

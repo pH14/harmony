@@ -220,7 +220,7 @@ install -m 0755 "$LINUX_DIR/pg-container-run.sh" "$BUNDLE/rootfs/run-workload.sh
 # postgres user, uid 999), exactly like task 37 pre-baked its bare cluster — and
 # for the SAME reason, now load-bearing for the container path. Running the
 # official image's *entrypoint* would `initdb` at container START, which is both
-# crushingly slow under the single-stepping VMM AND re-execs through `gosu` (a Go
+# crushingly slow under the exit-driven VMM AND re-execs through `gosu` (a Go
 # program whose runtime busy-spins with no VM-exit → it FREEZES V-time, the same
 # failure mode as dockerd). Pre-baking lets us run the `postgres` binary directly
 # as PID 1 (no entrypoint, no gosu, no runtime initdb) — a cooperative C workload
@@ -308,7 +308,7 @@ install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
 # default /init for comparison). It `runc run`s the SAME /oci bundle generated above
 # — the config.json `runc spec` already wrote is runc-ready (allow-all devices,
 # terminal=false, runs /run-workload.sh). The unlock vs task 38: the Go runtime is
-# now preempted at the V-time LAPIC deadline (task 47 run_until), so runc's
+# now preempted at the V-time LAPIC deadline (task 47 run_to_deadline), so runc's
 # container-init no longer deadlocks. See runc-init.sh + tasks/48-runc-postgres.md.
 install -m 0755 "$LINUX_DIR/runc-init.sh" "$DKROOT/runc-init"
 

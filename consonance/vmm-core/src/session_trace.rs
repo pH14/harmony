@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Restore-aware accumulation of production prescriptive traces.
+//! Restore-aware accumulation of production virtual_time traces.
 //!
 //! A control session replaces its live [`crate::vmm::Vmm`] on every branch or
-//! replay. Each replacement starts a fresh [`crate::prescriptive::LivePrescriptiveTrace`]
+//! replay. Each replacement starts a fresh [`crate::virtual_time::LiveVirtualTimeTrace`]
 //! whose event and schedule indices begin at zero and whose V-time may rewind.
 //! This module preserves those traces as an ordered sequence of segments instead
 //! of flattening them into a structurally invalid single run.
@@ -11,8 +11,8 @@ use std::io::{self, Write};
 
 use sha2::{Digest, Sha256};
 
-use crate::prescriptive::{
-    LivePrescriptiveTrace, LogDivergence, NormalizedLog, PlacementViolation, ScheduledInterrupt,
+use crate::virtual_time::{
+    LiveVirtualTimeTrace, LogDivergence, NormalizedLog, PlacementViolation, ScheduledInterrupt,
     check_delivery_placement, compare_normalized_logs,
 };
 
@@ -55,7 +55,7 @@ pub struct SessionTraceSegment {
 }
 
 impl SessionTraceSegment {
-    pub(crate) fn capture(start: SessionTraceStart, trace: &LivePrescriptiveTrace) -> Self {
+    pub(crate) fn capture(start: SessionTraceStart, trace: &LiveVirtualTimeTrace) -> Self {
         Self {
             start,
             normalized: trace.normalized_log().clone(),
@@ -81,11 +81,11 @@ impl SessionTraceSegment {
 
 /// Complete restore-aware production trace for one control session.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SessionPrescriptiveTrace {
+pub struct SessionVirtualTimeTrace {
     segments: Vec<SessionTraceSegment>,
 }
 
-impl SessionPrescriptiveTrace {
+impl SessionVirtualTimeTrace {
     pub(crate) fn from_segments(segments: Vec<SessionTraceSegment>) -> Self {
         Self { segments }
     }
@@ -128,7 +128,7 @@ impl SessionPrescriptiveTrace {
         self.write_body(&mut body)
             .expect("writing session trace to Vec cannot fail");
         let mut hasher = Sha256::new();
-        hasher.update(b"consonance.session-prescriptive-log.v1\0");
+        hasher.update(b"consonance.session-virtual_time-log.v1\0");
         hasher.update(body);
         hasher.finalize().into()
     }
@@ -138,7 +138,7 @@ impl SessionPrescriptiveTrace {
     /// Raw backend diagnostics are deliberately absent: only portable events,
     /// checkpoint hashes, schedules, and restore boundaries enter this file.
     pub fn write_text(&self, mut out: impl Write) -> io::Result<()> {
-        writeln!(out, "format consonance.session-prescriptive-log.v1")?;
+        writeln!(out, "format consonance.session-virtual_time-log.v1")?;
         writeln!(out, "digest {}", hex(&self.digest()))?;
         self.write_body(&mut out)
     }
@@ -224,8 +224,8 @@ pub enum SessionTraceDivergence {
 
 /// Compare complete restore-aware traces and report their first divergence.
 pub fn compare_session_traces(
-    left: &SessionPrescriptiveTrace,
-    right: &SessionPrescriptiveTrace,
+    left: &SessionVirtualTimeTrace,
+    right: &SessionVirtualTimeTrace,
 ) -> Result<(), SessionTraceDivergence> {
     for (segment_index, (a, b)) in left.segments.iter().zip(&right.segments).enumerate() {
         if a.start != b.start {
@@ -365,17 +365,17 @@ pub fn compare_portable_continuation(
         let field = if a.event_index.checked_sub(event_base) != Some(relative)
             || b.event_index != relative
         {
-            Some(crate::prescriptive::LogField::EventIndex)
+            Some(crate::virtual_time::LogField::EventIndex)
         } else if a.class != b.class {
-            Some(crate::prescriptive::LogField::Class)
+            Some(crate::virtual_time::LogField::Class)
         } else if a.payload_digest != b.payload_digest {
-            Some(crate::prescriptive::LogField::PayloadDigest)
+            Some(crate::virtual_time::LogField::PayloadDigest)
         } else if a.vns_after != b.vns_after {
-            Some(crate::prescriptive::LogField::VnsAfter)
+            Some(crate::virtual_time::LogField::VnsAfter)
         } else if !interrupts_equal_rebased(&a.interrupts, &b.interrupts, schedule_base) {
-            Some(crate::prescriptive::LogField::Interrupts)
+            Some(crate::virtual_time::LogField::Interrupts)
         } else if a.state_hash != b.state_hash {
-            Some(crate::prescriptive::LogField::StateHash)
+            Some(crate::virtual_time::LogField::StateHash)
         } else {
             None
         };
@@ -395,7 +395,7 @@ pub fn compare_portable_continuation(
                     source_events.len().min(restored.normalized.events.len()),
                 )
                 .unwrap_or(u64::MAX),
-                field: crate::prescriptive::LogField::Length,
+                field: crate::virtual_time::LogField::Length,
             },
         });
     }
@@ -451,8 +451,8 @@ pub fn compare_portable_continuation(
 }
 
 fn interrupts_equal_rebased(
-    source: &[crate::prescriptive::InterruptDelivery],
-    restored: &[crate::prescriptive::InterruptDelivery],
+    source: &[crate::virtual_time::InterruptDelivery],
+    restored: &[crate::virtual_time::InterruptDelivery],
     schedule_base: u64,
 ) -> bool {
     source.len() == restored.len()
@@ -482,7 +482,7 @@ pub struct SessionPlacementViolation {
 
 /// Independently check every restore-delimited segment's delivery placement.
 pub fn check_session_delivery_placement(
-    trace: &SessionPrescriptiveTrace,
+    trace: &SessionVirtualTimeTrace,
 ) -> Result<(), SessionPlacementViolation> {
     for (segment_index, segment) in trace.segments.iter().enumerate() {
         check_delivery_placement(&segment.schedule, &segment.normalized).map_err(|violation| {
@@ -498,7 +498,7 @@ pub fn check_session_delivery_placement(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prescriptive::{InterruptDelivery, LogField, NormalizedEvent, NormalizedEventClass};
+    use crate::virtual_time::{InterruptDelivery, LogField, NormalizedEvent, NormalizedEventClass};
 
     fn segment(start: SessionTraceStart, vns: u64) -> SessionTraceSegment {
         SessionTraceSegment {
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn comparator_accepts_an_identical_restore_aware_sequence() {
-        let trace = SessionPrescriptiveTrace::from_segments(vec![
+        let trace = SessionVirtualTimeTrace::from_segments(vec![
             segment(SessionTraceStart::InitialBoot, 10),
             segment(SessionTraceStart::Replay { snapshot: 1 }, 4),
             segment(SessionTraceStart::Branch { snapshot: 2 }, 7),
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn comparator_rejects_a_planted_middle_segment_increment() {
-        let left = SessionPrescriptiveTrace::from_segments(vec![
+        let left = SessionVirtualTimeTrace::from_segments(vec![
             segment(SessionTraceStart::InitialBoot, 10),
             segment(SessionTraceStart::Replay { snapshot: 1 }, 4),
             segment(SessionTraceStart::Branch { snapshot: 2 }, 7),
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn segment_boundaries_permit_real_vtime_rewinds() {
-        let trace = SessionPrescriptiveTrace::from_segments(vec![
+        let trace = SessionVirtualTimeTrace::from_segments(vec![
             segment(SessionTraceStart::InitialBoot, 100),
             segment(SessionTraceStart::Replay { snapshot: 1 }, 10),
         ]);

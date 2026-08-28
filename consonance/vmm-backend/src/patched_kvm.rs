@@ -38,7 +38,7 @@ use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::kvm::patched_capabilities;
 use crate::kvm_sys::KvmBackend;
-use crate::types::{Gpa, Moment};
+use crate::types::Gpa;
 
 /// The patched-KVM determinism backend (R-Backend baseline). Wraps an inner
 /// [`KvmBackend`] built with `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` enabled.
@@ -74,13 +74,6 @@ impl PatchedKvmBackend {
     pub fn set_dirty_log_enabled(&mut self, enabled: bool) {
         self.inner.set_dirty_log_enabled(enabled);
     }
-
-    /// Cumulative overflow-ring record counts for the `run_until` branch counter
-    /// — forwarded to [`KvmBackend::pmu_overflow_stats`] (the per-record PMI
-    /// accounting instrument of the nested-x86 re-certification, bead hm-b5b).
-    pub fn pmu_overflow_stats(&self) -> Option<crate::pmu::PmuOverflowStats> {
-        self.inner.pmu_overflow_stats()
-    }
 }
 
 impl Backend for PatchedKvmBackend {
@@ -103,10 +96,6 @@ impl Backend for PatchedKvmBackend {
 
     fn run(&mut self) -> Result<Exit<X86>> {
         self.inner.run()
-    }
-
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit<X86>> {
-        self.inner.run_until(deadline)
     }
 
     fn inject(&mut self, event: Injection) -> Result<()> {

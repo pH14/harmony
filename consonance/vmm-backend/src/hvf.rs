@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Apple Silicon Hypervisor.framework backend for the M1 prescriptive V-time
+//! Apple Silicon Hypervisor.framework backend for the M1 virtual_time V-time
 //! bring-up path.
 //!
 //! This backend is deliberately honest and narrow. The measured macOS 26.4.1
@@ -18,7 +18,7 @@ use crate::arch::arm64::{
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts, HypercallFrame};
-use crate::types::{Gpa, Moment, MpState};
+use crate::types::{Gpa, MpState};
 
 const HV_PAGE_SIZE: usize = 16 * 1024;
 const HV_MEMORY_READ: u64 = 1;
@@ -649,10 +649,6 @@ impl Backend for HvfBackend {
         self.enter_guest()
     }
 
-    fn run_until(&mut self, _deadline: Moment) -> Result<Exit<Arm64>> {
-        Err(BackendError::Unsupported { what: "run_until" })
-    }
-
     fn inject(&mut self, event: Arm64Injection) -> Result<()> {
         match event {
             Arm64Injection::Interrupt { intid } => self.set_pending_irq(Some(intid)),
@@ -938,7 +934,7 @@ impl Backend for HvfBackend {
 
     fn capabilities(&self) -> Capabilities<Arm64Caps> {
         Capabilities {
-            name: "hvf-arm64-prescriptive",
+            name: "hvf-arm64-virtual_time",
             deterministic_rng: false,
             arch: Arm64Caps {
                 in_kernel_gic: false,

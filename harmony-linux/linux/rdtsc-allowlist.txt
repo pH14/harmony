@@ -21,7 +21,7 @@
 #
 # A site is
 # allowlistable ONLY because the retained RDTSC/RDTSCP trap completes it with
-# the same work-derived value the pvclock page carries (§4.1 — on x86 a raw
+# the same exit-count-derived value the pvclock page carries (§4.1 — on x86 a raw
 # read is survivable-by-trap, never a determinism hole). The armed scan fails
 # the kernel build on any drift, in either direction.
 #
@@ -42,7 +42,7 @@
 #   [iommu]  Intel DMAR/IOMMU busy-wait timeouts (IOMMU_WAIT_OP) — no IOMMU
 #            is exposed to the guest; unreachable in practice, trapped if not
 #   [rng]    random_get_entropy()/jitter-entropy timing — trapped, so timing
-#            "entropy" is itself work-derived and deterministic
+#            "entropy" is itself exit-count-derived and deterministic
 #   [time]   boot calibration / clocksource / sched_clock / delay paths —
 #            unselectable or backstopped once harmony_pvclock is active (the
 #            delay decision is recorded in docs/history/IMPLEMENTATION-task110.md)

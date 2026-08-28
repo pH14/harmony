@@ -479,10 +479,10 @@ impl Vendor for Arm64 {
         vmm.service_arm_clockevent_due()
     }
 
-    fn normalize_prescriptive_exit(
+    fn normalize_virtual_time_exit(
         exit: &vmm_backend::Exit<Self>,
-    ) -> Option<(crate::prescriptive::NormalizedEventClass, Vec<u8>)> {
-        dispatch::normalize_prescriptive_exit_arm64(exit)
+    ) -> Option<(crate::virtual_time::NormalizedEventClass, Vec<u8>)> {
+        dispatch::normalize_virtual_time_exit_arm64(exit)
     }
 
     fn service_pending_irqs<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {

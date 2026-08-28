@@ -17,7 +17,7 @@
 //!   mechanism, below the `Backend` trait); see `IMPLEMENTATION.md`.
 //!
 //! Box-only because it needs the loaded patched `/dev/kvm`
-//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), `perf_event`, and the `det-cfl-v1`
+//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
 //! host. `#[ignore]`d out of the default lane (like `live_determinism.rs`): default
 //! CI shows it **not-run**, never a vacuous green. Run on `ssh <det-box>`, CPU-pinned
 //! per `docs/BOX-PINNING.md`, patched modules loaded, reverted to stock after:

@@ -73,7 +73,7 @@ CONFIG_HZ_100=y
 # instead — the hypervisor will simply not expose one, and the boot gate
 # passes -machine hpet=off (alternative: the hpet=disable boot parameter).
 # CONFIG_X86_PM_TIMER is not set
-# The harmony paravirt work-derived clock (task 110, docs/PARAVIRT-CLOCK.md
+# The harmony paravirt exit-count-derived clock (task 110, docs/PARAVIRT-CLOCK.md
 # §3.1): a clocksource + sched_clock whose read path is a seqlock page load —
 # never a raw counter read. The source is added by patches/apply-guest-patches.py
 # before the config merge. Compiled in but RUNTIME-INERT without the

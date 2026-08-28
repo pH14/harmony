@@ -16,7 +16,6 @@ use vmm_core::{
     control::ControlServer,
     vendor::x86::contract_vclock_config,
     vmm::{GuestRam, Vmm, VtimeWiring},
-    work::ScriptedWork,
 };
 
 const RAM: usize = 0x1_0000;
@@ -31,8 +30,7 @@ fn configured_vmm() -> Vmm<MockBackend> {
         .expect("configure mock backend");
     let mut vmm = Vmm::new(backend, GuestRam::new(RAM).expect("guest RAM"));
     vmm.wire_vtime(
-        VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 0)
-            .expect("V-time wiring"),
+        VtimeWiring::new_virtual_time(contract_vclock_config(), 0).expect("V-time wiring"),
     );
     vmm.wire_snapshot_hashing();
     vmm

@@ -419,17 +419,10 @@ impl Arm64VmState {
     ///
     /// # Errors
     ///
-    /// - [`VmStateError::FractionalRatio`] if `vtime.ratio_den != 1` (an
-    ///   un-restorable-exactly timeline is refused, exactly as the x86 codec
-    ///   refuses it).
     /// - [`VmStateError::InvalidField`] for a timer queue violating the
     ///   canonical-order/unique-token/`seq < next_seq` invariants, or a
     ///   variable-length section exceeding `u32::MAX` bytes.
     pub fn encode(&self) -> Result<Vec<u8>, VmStateError> {
-        if self.vtime.ratio_den != 1 {
-            return Err(VmStateError::FractionalRatio);
-        }
-
         let mut out = Vec::new();
         out.extend_from_slice(
             HeaderWire {
@@ -580,16 +573,6 @@ impl Arm64VmState {
         }
 
         let vtime = vtime.ok_or(VmStateError::MissingSection(TAG_VTIME))?;
-        // Symmetric with `encode`: a fractional ratio (`ratio_den != 1`) is
-        // un-restorable-exactly, so `encode` refuses to write one — `decode`
-        // must refuse to accept one too. Asymmetric validation would let a
-        // foreign-produced blob smuggle an invalid timeline past restore (the
-        // engine's *unwired*-V-time restore branch checks `guest_hz`/
-        // `snapshot_vns` but not the ratio, so this is the fail-closed point).
-        if vtime.ratio_den != 1 {
-            return Err(VmStateError::FractionalRatio);
-        }
-
         Ok(Arm64VmState {
             regs: regs.ok_or(VmStateError::MissingSection(TAG_REGS))?,
             sysregs: sysregs.ok_or(VmStateError::MissingSection(TAG_SYSREGS))?,
@@ -659,7 +642,6 @@ mod tests {
         s.vtimer.offset = 0x8765_4321;
         s.interrupts.irq = true;
         s.mp_state = MpState::Runnable;
-        s.vtime.ratio_den = 1;
         s.vtime.snapshot_vns = 7;
         s.hypercall = vec![9, 9, 9];
         s.devices = DeviceBlob(vec![1, 2, 3, 4]);
@@ -694,8 +676,7 @@ mod tests {
     #[test]
     fn foreign_arch_tags_are_rejected_both_ways() {
         // An x86 blob must never decode as arm64 records…
-        let mut x86 = VmState::default();
-        x86.vtime.ratio_den = 1;
+        let x86 = VmState::default();
         let x86_bytes = x86.encode().unwrap();
         assert_eq!(
             Arm64VmState::decode(&x86_bytes),
@@ -706,42 +687,6 @@ mod tests {
         assert_eq!(
             VmState::decode(&arm),
             Err(VmStateError::UnsupportedArch(ARCH_AARCH64))
-        );
-    }
-
-    #[test]
-    fn fractional_ratio_is_refused_at_encode() {
-        let mut s = sample();
-        s.vtime.ratio_den = 2;
-        assert_eq!(s.encode(), Err(VmStateError::FractionalRatio));
-    }
-
-    /// Finding 5 (review r1): `decode` refuses a fractional ratio too —
-    /// symmetric with `encode`, so a foreign-produced blob cannot smuggle an
-    /// un-restorable-exactly timeline past restore (the engine's unwired-V-time
-    /// branch does not re-check the ratio).
-    #[test]
-    fn decode_rejects_a_fractional_ratio_symmetrically_with_encode() {
-        let mut s = sample();
-        s.vtime.ratio_num = 0xAABB_CCDD; // a distinctive marker to locate VTIME
-        let mut blob = s.encode().unwrap();
-        // Find the VTIME payload by its `ratio_num` LE bytes; `ratio_den` is the
-        // next u64. Flip it from 1 to 2 — a byte a foreign encoder could write.
-        let needle = 0xAABB_CCDDu64.to_le_bytes();
-        let pos = blob
-            .windows(8)
-            .position(|w| w == needle)
-            .expect("ratio_num present in the blob");
-        let ratio_den_off = pos + 8;
-        assert_eq!(
-            &blob[ratio_den_off..ratio_den_off + 8],
-            &1u64.to_le_bytes(),
-            "the encoded ratio_den was 1"
-        );
-        blob[ratio_den_off] = 2; // ratio_den = 2
-        assert_eq!(
-            Arm64VmState::decode(&blob),
-            Err(VmStateError::FractionalRatio)
         );
     }
 

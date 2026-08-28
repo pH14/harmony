@@ -33,7 +33,7 @@
 #
 # O2/Conformance (re-enabled by the corpus box-integration, task 28). Each
 # conformance payload reports its trap-dependent values (V-time TSC reads, seeded
-# RNG words, frozen CPUID/MSR values, retired counts) over the dedicated report
+# RNG words, frozen CPUID/MSR values, exit counts) over the dedicated report
 # channel (port 0x0CA2, docs/INTEGRATION.md §1.1); the box runs it on the patched
 # backend as a acceptance-suite `Machine` and digests the report stream + serial banner
 # into `observable_digest`. That digest is the committed 64-hex

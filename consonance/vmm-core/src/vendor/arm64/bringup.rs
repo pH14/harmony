@@ -212,19 +212,17 @@ pub fn boot_hvf(
         false,
     )?;
     vmm.wire_gic(super::board::new_gic());
-    vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
         vtime::VClockConfig {
-            ratio_num: 1,
-            ratio_den: 1,
             guest_hz: super::board::CNTFRQ_HZ,
             guest_base: 0,
             vns_base: 0,
         },
         0,
     )?);
-    // Prescriptive mode stamps at exits and never uses the descriptive Δ
-    // `run_until` path; the nonzero value remains part of snapshot identity.
-    vmm.enable_pvclock(1);
+    // VirtualTime mode stamps at exits and never uses the descriptive Δ
+    // `run_to_deadline` path; the nonzero value remains part of snapshot identity.
+    vmm.enable_pvclock();
     Ok(vmm)
 }
 
@@ -253,17 +251,15 @@ pub fn boot_hvf_control(
         true,
     )?;
     vmm.wire_gic(super::board::new_gic());
-    vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
         vtime::VClockConfig {
-            ratio_num: 1,
-            ratio_den: 1,
             guest_hz: super::board::CNTFRQ_HZ,
             guest_base: 0,
             vns_base: 0,
         },
         0,
     )?);
-    vmm.enable_pvclock(1);
+    vmm.enable_pvclock();
     Ok(vmm)
 }
 
@@ -331,17 +327,15 @@ fn boot_selected_inner(
         guest_ram_len,
         map_doorbell,
     )?;
-    vmm.wire_vtime(crate::vmm::VtimeWiring::new_prescriptive(
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
         vtime::VClockConfig {
-            ratio_num: 1,
-            ratio_den: 1,
             guest_hz: super::board::CNTFRQ_HZ,
             guest_base: 0,
             vns_base: 0,
         },
         0,
     )?);
-    vmm.enable_pvclock(1);
+    vmm.enable_pvclock();
     Ok(vmm)
 }
 

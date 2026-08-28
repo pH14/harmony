@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 use vmm_backend::{
     Backend, BackendError, Capabilities, CommonExit, Completion, CpuidModel, Exit, ExitReason, Gpa,
-    HypercallFrame, Injection, MockBackend, Moment, MsrFilter, VcpuState, X86, X86Caps,
-    X86Completion, X86Exit, X86Policy,
+    HypercallFrame, Injection, MockBackend, MsrFilter, VcpuState, X86, X86Caps, X86Completion,
+    X86Exit, X86Policy,
 };
 
 /// Proptest case count: full per the convention natively, cut to 16 under Miri
@@ -61,8 +61,7 @@ fn complete_correctly(m: &mut MockBackend, exit: &Exit<X86>) -> Result<(), Backe
         Exit::Arch(X86Exit::Io { write: Some(_), .. })
         | Exit::Common(CommonExit::Mmio { write: Some(_), .. })
         | Exit::Common(CommonExit::Idle)
-        | Exit::Common(CommonExit::Shutdown)
-        | Exit::Common(CommonExit::Deadline { .. }) => Ok(()),
+        | Exit::Common(CommonExit::Shutdown) => Ok(()),
     }
 }
 
@@ -294,120 +293,6 @@ fn counters_increment_per_reason_and_reset() {
 }
 
 #[test]
-fn run_until_folds_an_at_or_before_reached_up_to_the_deadline() {
-    // Required regression 1 (task 156, hm-j16h): a script entry with
-    // `reached < deadline` lands EXACTLY at the deadline. `run_until` folds the
-    // scripted `reached` with the requested deadline via max, so `reached < deadline`
-    // is unrepresentable — the frozen `CommonExit::Deadline` invariant
-    // (`reached >= deadline`) holds by construction. Here `reached: 0 < 4096`.
-    let mut m = configured();
-    m.extend_exits([Exit::Common(CommonExit::Deadline { reached: Moment(0) })]);
-    let e = m.run_until(Moment(4096)).unwrap();
-    assert_eq!(
-        e,
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(4096)
-        }),
-        "an at-or-before scripted reached (0) clamps up to exactly the deadline (4096)"
-    );
-    assert_eq!(m.exit_counts().deadline, 1);
-    assert!(!m.has_pending());
-}
-
-#[test]
-fn run_until_folds_a_late_reached_past_the_requested_deadline() {
-    // Required regression 2 (task 156, hm-j16h): a genuinely late script entry
-    // (`reached > deadline`) still lands LATE, at its scripted boundary — the guest
-    // free-ran to the next natural boundary, the box @3e7 overshoot the exact-count
-    // seam could not clamp. Lateness now rides on the script entry's `reached`
-    // itself; `run_until` folds via max, so `reached > deadline` passes through
-    // unchanged.
-    let mut m = configured();
-    m.extend_exits([Exit::Common(CommonExit::Deadline {
-        reached: Moment(5000),
-    })]);
-    let e = m.run_until(Moment(4096)).unwrap();
-    assert_eq!(
-        e,
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(5000)
-        }),
-        "the leg lands at the scripted boundary 5000, PAST the requested 4096"
-    );
-    assert_eq!(m.exit_counts().deadline, 1);
-    assert!(!m.has_pending());
-}
-
-#[test]
-fn each_run_until_leg_folds_its_own_scripted_reached_independently() {
-    // Lateness rides on the script entry, so successive legs fold independently —
-    // there is no shared queue to misalign (the F3 hazard the fold removes). A late
-    // entry lands late; an at-or-before entry clamps up to its own deadline.
-    // Determinism: explicit, ordered test inputs — no clock, no randomness.
-    let mut m = configured();
-    m.extend_exits([
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(11),
-        }),
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(22),
-        }),
-        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
-    ]);
-    assert_eq!(
-        m.run_until(Moment(1)).unwrap(),
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(11)
-        }),
-        "reached 11 > deadline 1 → lands late at 11"
-    );
-    assert_eq!(
-        m.run_until(Moment(2)).unwrap(),
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(22)
-        }),
-        "reached 22 > deadline 2 → lands late at 22"
-    );
-    assert_eq!(
-        m.run_until(Moment(3)).unwrap(),
-        Exit::Common(CommonExit::Deadline { reached: Moment(3) }),
-        "reached 0 < deadline 3 → clamps up to exactly 3"
-    );
-}
-
-#[test]
-fn run_passes_deadline_verbatim_while_run_until_folds() {
-    // The fold lives in `run_until` only. Plain `run` (no deadline) returns a
-    // scripted `Deadline` verbatim — no fold — so an arbitrary `reached` is
-    // preserved (this is why the arbitrary-reached proptest `counts_match_histogram`
-    // exercises `run`, not `run_until`). `run_until` instead folds the scripted
-    // `reached` with the requested deadline via max.
-    let mut m = configured();
-    m.extend_exits([
-        Exit::Common(CommonExit::Deadline { reached: Moment(7) }),
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(99),
-        }),
-    ]);
-    // `run` passes the scripted Deadline verbatim (reached:7 preserved — even though
-    // 7 could be below a hypothetical deadline; `run` never folds).
-    assert_eq!(
-        m.run().unwrap(),
-        Exit::Common(CommonExit::Deadline { reached: Moment(7) }),
-        "run passes the scripted Deadline verbatim, never folding"
-    );
-    // `run_until` folds the next entry: max(99, 4) = 99 (a genuinely late entry
-    // lands late).
-    assert_eq!(
-        m.run_until(Moment(4)).unwrap(),
-        Exit::Common(CommonExit::Deadline {
-            reached: Moment(99)
-        }),
-        "run_until folds reached 99 with deadline 4 → 99"
-    );
-}
-
-#[test]
 fn inject_records_events() {
     let mut m = configured();
     m.inject(Injection::Interrupt { vector: 0x20 }).unwrap();
@@ -578,7 +463,6 @@ fn arb_exit() -> impl Strategy<Value = Exit<X86>> {
         (2u8..=8).prop_map(|width| Exit::Arch(X86Exit::Rdseed { width })),
         Just(Exit::Common(CommonExit::Idle)),
         Just(Exit::Common(CommonExit::Shutdown)),
-        any::<u64>().prop_map(|v| Exit::Common(CommonExit::Deadline { reached: Moment(v) })),
     ]
 }
 
@@ -596,7 +480,7 @@ proptest! {
         let mut expected: BTreeMap<ExitReason, u64> = BTreeMap::new();
         for scripted in &script {
             let got = m.run().expect("run");
-            // run_until-only `Deadline.reached` is preserved verbatim by `run`.
+            // A scripted `Deadline.reached` is preserved verbatim by `run`.
             prop_assert_eq!(&got, scripted);
             complete_correctly(&mut m, &got).expect("complete");
             *expected.entry(got.reason()).or_default() += 1;

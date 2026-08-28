@@ -15,8 +15,8 @@ generic.
   to the seeded stream), unseeded RNG, `HashMap`/`HashSet` iteration order reaching
   output/hashes/encoded bytes, floating point in state-affecting code, host identity
   (CPU/microcode/topology), async host events (interrupts, PMU) leaking into guest-visible
-  state. The V-time clock is **retired branches** (count-based, frequency-independent) — not
-  wall time.
+  state. The V-time clock is **VM exit counts** (count-based,
+  frequency-independent) — not wall time.
 - **Library code must never panic on untrusted input.** Every length, index, or enum that
   arrives from the transport, the host, or a decoded frame is untrusted: unchecked slicing
   or arithmetic on it is a panic reachable from untrusted input, and a bug, even when the

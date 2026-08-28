@@ -210,7 +210,7 @@ pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
 }
 
 // ---------------------------------------------------------------------------
-// Prescriptive (assigned-at-exit) V-time durations.
+// VirtualTime (assigned-at-exit) V-time durations.
 // ---------------------------------------------------------------------------
 // The values are the arm64 row set (`vendor::arm64::contract`), carried over
 // unchanged pending an x86-specific ruling; only their assignment structure —
@@ -275,7 +275,7 @@ pub fn cpuid_model() -> CpuidModel {
 }
 
 /// [`cpuid_model`] with the hardware-RNG bits — CPUID.1:ECX[30] (`RDRAND`) and
-/// CPUID.7.0:EBX[18] (`RDSEED`) — cleared, for the stock-backend prescriptive
+/// CPUID.7.0:EBX[18] (`RDSEED`) — cleared, for the stock-backend virtual_time
 /// composition. §2 exposes both bits as exposed-but-trapped, a justification
 /// that requires the VMX RDRAND/RDSEED-exiting controls; stock KVM never
 /// surfaces that exit (§2's own caveat), so left exposed the instructions

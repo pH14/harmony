@@ -15,7 +15,6 @@ Cortex-A520/A720 cores and LSE.
 | Guest Linux image | 🐳 linux/amd64 container | ✅ native/cross | ✅ | ✅ native |
 | x86 KVM bring-up | ❌ | ❌ | ✅ needs VMX + `/dev/kvm` | ❌ wrong host ISA |
 | ARM64 KVM bring-up and vGIC migration | ❌ | ❌ no hardware | ❌ wrong host ISA | ✅ `/dev/kvm` |
-| PMU / perf_event precise-count work | ❌ | ❌ | ✅ needs PMU access | not used by exit-count mode |
 | Deterministic Linux integration | ❌ | ❌ | ✅ x86 | ✅ arm64 |
 
 Extra needs for the rows that run on a Mac: task 01 wants the

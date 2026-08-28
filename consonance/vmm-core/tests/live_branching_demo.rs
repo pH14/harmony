@@ -11,7 +11,7 @@
 //! 1. Boots the task-37 Postgres workload image on the patched backend and seals a
 //!    **quiescent snapshot point** (INTEGRATION.md §4) of the **live** machine (guest
 //!    memory → `snapshot-store`, the non-memory machine → the `vm_state` codec) into a
-//!    base snapshot `S`, then **drops the live VM** (freeing its `perf_event` work
+//!    base snapshot `S`, then **drops the live VM** (freeing its work
 //!    counter — exactly one counter is ever open at a time, per `live_postgres.rs`).
 //!
 //!    **Where `S` lands (a substrate constraint, measured — see `IMPLEMENTATION.md`).**

@@ -48,7 +48,7 @@ generic-counter read or LL/SC opcode survives into the published image.
 
 ### x86 (`patches/x86/`)
 
-- `0001-x86-harmony-pvclock-work-derived-clocksource.patch` — task 110
+- `0001-x86-harmony-pvclock-exit-count-clocksource.patch` — task 110
   (`docs/PARAVIRT-CLOCK.md`): `CONFIG_HARMONY_PVCLOCK`, the kvmclock-shaped
   clocksource with the interpolation deleted; sched_clock through the same
   seqlock page read; TSC marked unstable once the page is live; one-shot
@@ -60,7 +60,7 @@ generic-counter read or LL/SC opcode survives into the published image.
 
 ### arm64 (`patches/arm64/`)
 
-- `0002-arm64-harmony-pvclock-work-derived-clocksource.patch` — AA-5(c):
+- `0002-arm64-harmony-pvclock-exit-count-clocksource.patch` — AA-5(c):
   redirects the arm64 generic-counter accessors to the owned guest's reserved
   ABI-v1 page, publishes that guest-selected GPA through the one-shot ARM MMIO
   registration ABI, waits for the first exact-work stamp, disables the
@@ -74,7 +74,7 @@ generic-counter read or LL/SC opcode survives into the published image.
   and the early rendezvous with ordinary polling plus LSE. The arm64 build
   rejects any surviving LL/SC opcode in `vmlinux`, the vDSO, or the
   freestanding init before publication.
-- `0004-arm64-harmony-work-clockevent.patch` — AA-5(c): replaces the final
+- `0004-arm64-harmony-virtual-time-clockevent.patch` — AA-5(c): replaces the final
   live-domain `CNTV_CVAL` clockevent with absolute work-clock deadlines on the
   owned MMIO page and the level-triggered virtual-timer PPI 27. The guest ACKs before
   its generic event handler, the host deasserts on ACK, and the build selects

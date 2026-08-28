@@ -48,11 +48,6 @@ pub enum VmStateError {
     /// restore that machine state as the field's `Default` (zero).
     #[error("missing required section: {0}")]
     MissingSection(u16),
-    /// A snapshot-bearing [`VtimeState`](crate::VtimeState) had `ratio_den != 1`.
-    /// Refused at `encode` so an un-restorable-exactly timeline is never written
-    /// (INTEGRATION.md §4).
-    #[error("fractional vtime ratio (ratio_den != 1) cannot be snapshotted")]
-    FractionalRatio,
     /// A field held a value outside its valid range — e.g. a `MpState` byte that
     /// is neither 0 nor 1, a boolean event flag that is neither 0 nor 1, an MSR
     /// list whose indices are not strictly ascending, a timer queue whose

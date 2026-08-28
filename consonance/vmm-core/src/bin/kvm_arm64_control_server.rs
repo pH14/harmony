@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Unix-socket control server for the prescriptive Linux/aarch64 KVM workload.
+//! Unix-socket control server for the virtual_time Linux/aarch64 KVM workload.
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 fn main() -> std::process::ExitCode {
@@ -184,7 +184,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(2);
             }
         }
-        let Some(session_trace) = server.take_session_prescriptive_trace() else {
+        let Some(session_trace) = server.take_session_virtual_time_trace() else {
             eprintln!("KVM control session {session} ended without a session trace");
             return std::process::ExitCode::FAILURE;
         };
@@ -207,8 +207,8 @@ fn main() -> std::process::ExitCode {
             eprintln!("KVM control session {session} ended without a live VM");
             return std::process::ExitCode::FAILURE;
         };
-        let Some(trace) = vmm.prescriptive_trace() else {
-            eprintln!("KVM control session {session} ended without a prescriptive trace");
+        let Some(trace) = vmm.virtual_time_trace() else {
+            eprintln!("KVM control session {session} ended without a virtual_time trace");
             return std::process::ExitCode::FAILURE;
         };
         println!(
@@ -284,7 +284,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
             let session_trace_path =
-                directory.join(format!("kvm-session-{session}.prescriptive.log"));
+                directory.join(format!("kvm-session-{session}.virtual_time.log"));
             let trace_file = match std::fs::File::create(&session_trace_path) {
                 Ok(file) => file,
                 Err(error) => {
@@ -303,7 +303,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::FAILURE;
             }
             println!(
-                "KVM_CONTROL_DUMP session={session} ram={} vcpu={} prescriptive_log={}",
+                "KVM_CONTROL_DUMP session={session} ram={} vcpu={} virtual_time_log={}",
                 ram_path.display(),
                 vcpu_path.display(),
                 session_trace_path.display(),

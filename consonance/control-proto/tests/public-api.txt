@@ -14,7 +14,6 @@ pub control_proto::ControlError::BadEnvVersion(u16)
 pub control_proto::ControlError::MalformedAnswer
 pub control_proto::ControlError::MalformedEnvironment
 pub control_proto::ControlError::NotQuiescent
-pub control_proto::ControlError::NotSynchronized
 pub control_proto::ControlError::PerturbMomentTaken
 pub control_proto::ControlError::PerturbMomentTaken::at: u64
 pub control_proto::ControlError::PerturbOutOfRange
@@ -35,9 +34,6 @@ pub control_proto::ControlError::ReadTooLarge::cap: u32
 pub control_proto::ControlError::ReadTooLarge::len: u32
 pub control_proto::ControlError::ResolveWithoutDecision
 pub control_proto::ControlError::RestoreFailed
-pub control_proto::ControlError::ScheduleMomentUnreachable
-pub control_proto::ControlError::ScheduleMomentUnreachable::landing: u64
-pub control_proto::ControlError::ScheduleMomentUnreachable::moment: u64
 pub control_proto::ControlError::ScheduleUnsatisfiable
 pub control_proto::ControlError::ScheduleUnsatisfiable::moment: u64
 pub control_proto::ControlError::ScheduleUnsatisfiable::vtime: u64

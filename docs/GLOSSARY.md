@@ -275,7 +275,7 @@ prefix.
   without the distinction). `hash` is the *wire verb*, scoped by `HashScope`. Three names,
   three roles; do not unify.
 - **"V-time" survives as the mechanism's name.** The kill above retired `VTime` the
-  *type*, not the word: V-time names the work-derived clock itself; `Moment`/`Span` name
+  *type*, not the word: V-time names the exit-count-derived clock itself; `Moment`/`Span` name
   positions and durations **on** it. The `vtime` crate and its prose stand.
 - **The mirror-type pattern is deliberate.** Same-name local mirrors under conventions
   rule 2 (`telemetry::ExitCounts` mirrors `vmm_backend::ExitCounts`; `snapshot-state`'s

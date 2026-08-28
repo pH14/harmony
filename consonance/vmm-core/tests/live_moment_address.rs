@@ -17,8 +17,8 @@
 //!
 //! The **materialization procedure** is the client-side helper [`materialize`]:
 //! `branch(genesis, env)` then `run(until = moment)`, landing — via the
-//! deterministic exact-`Moment` force-exit machinery (tasks 47/55, the patched
-//! KVM) — with retired count == `moment` (a `StopReason::Deadline { vtime: moment }`).
+//! deterministic exact-`Moment` instruction-level stop machinery (tasks 47/55, the patched
+//! KVM) — with exit count == `moment` (a `StopReason::Deadline { vtime: moment }`).
 //! `env` is a genesis-complete `Seeded` reproducer, so the whole trajectory is
 //! recoverable from genesis.
 //!
@@ -161,7 +161,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_to_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -217,11 +217,11 @@ fn seeded_env(seed: u64) -> Reproducer {
 /// A **no-op** host fault (`CorruptMemory` with a zero XOR mask at gpa 0) — it
 /// changes no guest byte, but staging it at a `Moment` **arms the exact-count
 /// arrival** so the following `run` lands there precisely. This is how the
-/// deterministic force-exit machinery (tasks 47/55, the patched KVM) is invoked at
+/// deterministic instruction-level stop machinery (tasks 47/55, the patched KVM) is invoked at
 /// an exact `Moment`: the `run` deadline alone is *opportunistic* (task 58 reverted
-/// the hard force-exit, so a bare deadline stops at the first boundary at-or-past
+/// the hard instruction-level stop, so a bare deadline stops at the first boundary at-or-past
 /// it — it overshoots), whereas a staged `Moment ≤ deadline` makes the run
-/// `arm_arrival` → `run_until` to that exact retired count. XOR-0 leaves state
+/// `set_idle_wake_vns` → `run_to_deadline` to that exact exit count. XOR-0 leaves state
 /// untouched, so the materialized point observed after the landing is the true one.
 /// Both materializations of a `Moment` stage the identical marker, so the
 /// twice-from-genesis comparison stays byte-exact.
@@ -280,7 +280,7 @@ fn moment_address_materializes_identically_twice() {
     // 1. Seal the **genesis** snapshot, nudging past non-snapshottable boundaries
     //    (the task-58 retry: a NotQuiescent refusal ⇒ run a little further, retry).
     let retry_step = env_u64("MA_GENESIS_STEP", 1_000_000);
-    let mut vt = match run_until(&mut s, 0) {
+    let mut vt = match run_to_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("vtime probe stopped non-Deadline: {other:?}"),
     };
@@ -295,7 +295,7 @@ fn moment_address_materializes_identically_twice() {
                     attempts < 100_000,
                     "no snapshottable boundary within budget"
                 );
-                match run_until(&mut s, vt.saturating_add(retry_step)) {
+                match run_to_deadline(&mut s, vt.saturating_add(retry_step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -335,7 +335,7 @@ fn moment_address_materializes_identically_twice() {
             );
             // Arm the exact-count arrival at `moment`, then advance to it.
             expect_ok(s, &arrival_marker(moment));
-            match run_until(s, moment) {
+            match run_to_deadline(s, moment) {
                 StopReason::Deadline { vtime } => assert_eq!(
                     vtime.0, moment,
                     "run(until = moment) must land exactly at the addressed Moment"
@@ -345,7 +345,7 @@ fn moment_address_materializes_identically_twice() {
             let regs = regs(s);
             assert_eq!(
                 regs.moment.0, moment,
-                "regs reports the retired count == the addressed Moment"
+                "regs reports the exit count == the addressed Moment"
             );
             Observation {
                 regs,
@@ -409,7 +409,10 @@ fn moment_address_materializes_identically_twice() {
             // Advance to `mid` via an exact-count arrival, inspect (or not), then
             // continue to `late` the same way.
             expect_ok(s, &arrival_marker(mid));
-            assert!(matches!(run_until(s, mid), StopReason::Deadline { .. }));
+            assert!(matches!(
+                run_to_deadline(s, mid),
+                StopReason::Deadline { .. }
+            ));
             if inspect {
                 let _ = regs(s);
                 for &g in &probes {
@@ -418,7 +421,10 @@ fn moment_address_materializes_identically_twice() {
                 let _ = regs(s);
             }
             expect_ok(s, &arrival_marker(late));
-            assert!(matches!(run_until(s, late), StopReason::Deadline { .. }));
+            assert!(matches!(
+                run_to_deadline(s, late),
+                StopReason::Deadline { .. }
+            ));
             hash_whole(s)
         };
     let inspected = continue_to_late(&mut s, true);

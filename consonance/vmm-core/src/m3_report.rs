@@ -710,7 +710,7 @@ mod tests {
             parse_x86_diagnostic(
                 b"format consonance.m3-x86-diagnostic.v1\n\
                   payload postgres-container-task38\n\
-                  mode prescriptive-arm64\n\
+                  mode virtual_time-arm64\n\
                   rows 20\n\
                   wall_ns 123456\n",
             ),

@@ -34,7 +34,7 @@ contract. So each payload asserts in its serial banner **only what is true in
 every environment** (monotonic TSC, CPUID stability, advertised-RNG-works,
 fault-and-resume, allow-stateful round-trip, an IRQ lands) and emits the
 trap-dependent values (exact frozen CPUID, RDTSC = f(V-time), MSR default-deny,
-seeded RNG stream, retired-count sweep) through `common::report` for the box
+seeded RNG stream, exit-count sweep) through `common::report` for the box
 oracle. This is the spec's load-bearing "QEMU validates the banner only"
 requirement.
 
@@ -74,10 +74,10 @@ model (e.g. leaf-1 EAX `0x00050654` vs the contract's `0x000906ec`). Expected
 values are therefore derived from `docs/cpu-msr-contract.toml` exclusively.
 
 ### `irq-landing` uses a bounded poll, not HLT
-Retired-count-before-IRQ is well-defined for a deterministic spin; a bounded
+Exit-count-before-IRQ is well-defined for a deterministic spin; a bounded
 `pause` poll lets a never-firing timer fail cleanly instead of hanging, and is
 the primitive the box sweep measures. HLT-based idle-skip is exercised separately
-by `insn-hlt`. The deadline sweep brackets `skid_margin=128` (64/127/128/129/…).
+by `insn-hlt`. The deadline sweep covers boundaries around several representative values.
 
 ### `insn-mwait` can never hang
 MWAIT can block on real silicon. The frozen model hides MONITOR (so on the box

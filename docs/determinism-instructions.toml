@@ -26,7 +26,7 @@ operations = ["MRS CNTVCT_EL0", "MRS CNTVCTSS_EL0"]
 claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code reads the pvclock page, executable-image scans reject raw reads, and EL0 counter access is disabled."
-evidence = ["harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-work-derived-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
+evidence = ["harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
 verification = "tested-image-audit; traps-off negative and JIT probe untested"
 
 [[instruction]]
@@ -37,7 +37,7 @@ operations = ["MRS CNTPCT_EL0", "MRS CNTPCTSS_EL0"]
 claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code reads the pvclock page, executable-image scans reject raw reads, and EL0 physical-counter access is disabled."
-evidence = ["harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-work-derived-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
+evidence = ["harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
 verification = "tested-image-audit; traps-off negative and JIT probe untested"
 
 [[instruction]]

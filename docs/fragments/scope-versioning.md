@@ -101,7 +101,7 @@ configured before the first `KVM_RUN` and never changed while a vCPU runs:
 **Loud-event logging policy (normative).** Every userspace MSR exit is logged *before*
 any architectural effect is committed, with at minimum: access direction (RDMSR/WRMSR),
 MSR index (`kvm_run.msr.index`), the written data for WRMSR (`kvm_run.msr.data`), the
-guest RIP at the faulting instruction, the exit reason, the current work counter /
+guest RIP at the faulting instruction, the exit reason, the current virtual time /
 V-time, and the disposition applied. Logging is host-side output only and cannot perturb
 guest-visible state. Then, by disposition: `deny-gp` sets `kvm_run.msr.error = 1` so KVM
 injects #GP on re-entry (api.rst §5, `kvm_run.msr`); `deny-ignore-write` logs, leaves

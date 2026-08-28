@@ -37,7 +37,7 @@ DebugExit 1 on the event loop today); see
 | `insn-mwait` | MONITOR, MWAIT, PAUSE | PAUSE no-op; MONITOR/MWAIT execute or #UD-and-resume (never hang) | #UD disposition | pure |
 | `msr-allowed` | RDMSR/WRMSR allowed set | **every** allow-stateful MSR round-trips (write→read→restore) | (index, written) per allow-stateful MSR + allow-fixed reads vs contract values | pure |
 | `msr-denied` | RDMSR/WRMSR unknown | probes the default-deny surface without panicking | per-index #GP disposition (== default-deny) | pure |
-| `irq-landing` | LAPIC timer | each armed deadline delivers exactly one IRQ | armed deadlines (box pins retired-count, sweep ±1 of skid_margin=128) | pure |
+| `irq-landing` | LAPIC timer | each armed deadline delivers exactly one IRQ | representative exit-count deadlines | pure |
 | `irq-landing-rng` | LAPIC timer + RDRAND | each *seed-derived* deadline delivers exactly one IRQ | seed-derived deadlines (preemption instant is a pure function of the seed; task-47 gate-2 seed-dependence) | rng-consuming |
 | `pit-pic-stub` | PIT, PIC | PIC init + N deterministic PIT ticks; port 0x61 read | refresh bit + tick count (V-time cadence) | pure |
 

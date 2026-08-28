@@ -19,7 +19,6 @@ use hypercall_proto::{Service, Status};
 use vm_state::Arm64VmState;
 use vmm_backend::{Arm64, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
-use crate::prescriptive::{DeviceClass, NormalizedEventClass};
 use crate::snapshot::SnapshotError;
 use crate::vendor::InterruptReject;
 use crate::vendor::arm64::contract;
@@ -27,6 +26,7 @@ use crate::vendor::arm64::devices::Pl011;
 use crate::vendor::arm64::records::{
     self, Arm64ClockeventState, Arm64DeviceState, Arm64PvclockState,
 };
+use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, Vmm, VmmError};
 
 /// `PSTATE.I` (IRQ mask, bit 7): set ⇒ maskable interrupts are masked — the
@@ -77,7 +77,7 @@ fn is_gicd_irouter(addr: u64) -> bool {
 /// them, while stock KVM consumes the same architectural operations inside its
 /// in-kernel vGIC. Counting them would bind the portable clock and normalized
 /// log to the substrate's implementation boundary.
-pub(crate) fn normalize_prescriptive_exit_arm64(
+pub(crate) fn normalize_virtual_time_exit_arm64(
     exit: &Exit<Arm64>,
 ) -> Option<(NormalizedEventClass, Vec<u8>)> {
     use super::board::{DOORBELL, GICD, GICR, PL011, PVCLOCK};
@@ -125,10 +125,6 @@ pub(crate) fn normalize_prescriptive_exit_arm64(
             }
             Some((NormalizedEventClass::Doorbell, payload))
         }
-        Exit::Common(CommonExit::Deadline { reached }) => Some((
-            NormalizedEventClass::TimeRead,
-            reached.0.to_le_bytes().to_vec(),
-        )),
     }
 }
 
@@ -402,8 +398,8 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // bytes; mask explicitly so synthetic backends cannot smuggle high
         // bits that real HVF already truncates at the MMIO exit.
         if in_frame(addr, PL011) {
-            if self.prescriptive_vtime_enabled() {
-                self.advance_prescriptive_vtime(contract::SERIAL_EXIT_VNS)?;
+            if self.virtual_time_vtime_enabled() {
+                self.advance_virtual_time_vtime(contract::SERIAL_EXIT_VNS)?;
             }
             let offset = addr - PL011.0;
             let bits = u32::from(size) * 8;
@@ -458,13 +454,13 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     if write.is_some() { "write" } else { "read" }
                 )));
             }
-            if self.prescriptive_vtime_enabled() {
+            if self.virtual_time_vtime_enabled() {
                 let advance = if offset == 0x020 {
                     contract::EXECUTION_TICK_VNS
                 } else {
                     contract::PARAVIRTUAL_EXIT_VNS
                 };
-                self.advance_prescriptive_vtime(advance)?;
+                self.advance_virtual_time_vtime(advance)?;
             }
             return match (offset, write) {
                 (0x000, Some(gpa)) => {
@@ -675,7 +671,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 "arm64 clockevent deadline without V-time wiring".to_string(),
             ));
         };
-        let guest_clock = vt.guest_clock(vt.last_intercept_work);
+        let guest_clock = vt.guest_clock();
         if guest_clock < deadline {
             return Ok(());
         }
@@ -887,7 +883,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// (PL011 residuals, the report stream, the guest clock offset). The
     /// `contract_hash` is stamped so a restore can reject a blob taken under a
     /// different policy skeleton. Infallible and byte-deterministic — the
-    /// V-time block anchors to the deterministic `last_intercept_work`,
+    /// V-time block anchors to the deterministic `assigned_clock`,
     /// exactly like the x86 builder.
     pub(crate) fn build_vm_state_arm64(&self, vcpu: &Arm64VcpuState) -> Arm64VmState {
         let mut s = Arm64VmState::default();
@@ -895,20 +891,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         let clock_offset = match &self.vtime {
             Some(vt) => {
                 s.vtime = vm_state::VtimeState {
-                    ratio_num: vt.cfg.ratio_num,
-                    // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so
-                    // the blob is encodable.
-                    ratio_den: 1,
                     guest_hz: vt.cfg.guest_hz,
                     guest_base: vt.cfg.guest_base,
-                    snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),
+                    snapshot_vns: vt.clock.vns(),
                 };
                 s.hypercall = vt.entropy.save_state();
                 vt.guest_clock_offset
             }
             None => {
                 // Unwired: a sentinel encodable V-time block, no entropy.
-                s.vtime.ratio_den = 1;
                 0
             }
         };
@@ -929,10 +920,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 .map(|db| db.as_bytes().to_vec())
                 .unwrap_or_default(),
             pvclock: self.pvclock_snapshot().map(|pv| Arm64PvclockState {
-                delta_work: pv.delta_work,
                 gpa: pv.gpa,
                 registrable: pv.registrable,
-                prescriptive: self.prescriptive_vtime_enabled(),
+                virtual_time: self.virtual_time_vtime_enabled(),
                 clockevent: self.devices.clockevent,
             }),
         };
@@ -1062,15 +1052,13 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 ));
             }
         }
-        let pvclock_record = dev
-            .pvclock
-            .map(|pv| (pv.delta_work, pv.gpa, pv.registrable));
+        let pvclock_record = dev.pvclock.map(|pv| (pv.gpa, pv.registrable));
         self.pvclock_validate_restore(pvclock_record.as_ref())?;
         if let Some(pv) = dev.pvclock {
-            if pv.prescriptive != self.prescriptive_vtime_enabled() {
+            if pv.virtual_time != self.virtual_time_vtime_enabled() {
                 return Err(VmmError::ContractViolation(
                     "restore_vm_state: ARM V-time mode mismatch (snapshot and target disagree on \
-                     assigned-at-exit/prescriptive mode) — restore into a VM composed like the \
+                     assigned-at-exit/virtual_time mode) — restore into a VM composed like the \
                      snapshot source."
                         .to_string(),
                 ));
@@ -1125,9 +1113,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         {
             db.as_mut_bytes().copy_from_slice(&dev.doorbell);
         }
-        let pvclock_record = dev
-            .pvclock
-            .map(|pv| (pv.delta_work, pv.gpa, pv.registrable));
+        let pvclock_record = dev.pvclock.map(|pv| (pv.gpa, pv.registrable));
         self.devices.clockevent = dev
             .pvclock
             .map_or_else(Arm64ClockeventState::default, |pv| pv.clockevent);
@@ -1340,21 +1326,21 @@ mod tests {
                 size: 4,
                 write: None,
             });
-            assert_eq!(normalize_prescriptive_exit_arm64(&exit), None);
+            assert_eq!(normalize_virtual_time_exit_arm64(&exit), None);
         }
 
         let cpu_interface = Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
             sysreg: ICC_IAR1_EL1,
             write: None,
         });
-        assert_eq!(normalize_prescriptive_exit_arm64(&cpu_interface), None);
+        assert_eq!(normalize_virtual_time_exit_arm64(&cpu_interface), None);
 
         for sysreg in [OSDLR_EL1, OSLAR_EL1] {
             let debug_unlock = Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
                 sysreg,
                 write: Some(0),
             });
-            assert_eq!(normalize_prescriptive_exit_arm64(&debug_unlock), None);
+            assert_eq!(normalize_virtual_time_exit_arm64(&debug_unlock), None);
 
             // Planted negative: treating an HVF-only trap as a portable event
             // would consume an ordinal and diverge from stock KVM.
@@ -1362,7 +1348,7 @@ mod tests {
                 NormalizedEventClass::ArchitecturalControl,
                 sysreg.to_le_bytes().to_vec(),
             ));
-            assert_ne!(normalize_prescriptive_exit_arm64(&debug_unlock), leaked);
+            assert_ne!(normalize_virtual_time_exit_arm64(&debug_unlock), leaked);
         }
 
         let serial = Exit::Common(CommonExit::Mmio {
@@ -1370,6 +1356,6 @@ mod tests {
             size: 4,
             write: None,
         });
-        assert!(normalize_prescriptive_exit_arm64(&serial).is_some());
+        assert!(normalize_virtual_time_exit_arm64(&serial).is_some());
     }
 }

@@ -14,7 +14,7 @@ architected-timer discovery path publishes that address through the ARM one-shot
 registration MMIO ABI before registering any clocksource or delay reader,
 verifies the host's ABI response, and spins for the first exact-work publication
 before boot continues. Its reader requires ABI 1, the exact
-materialized|work-derived flags, vcpu 0, and a frequency equal to CNTFRQ_EL0;
+materialized|exit-count-derived flags, vcpu 0, and a frequency equal to CNTFRQ_EL0;
 malformed or placeholder bytes fail closed to zero rather than falling back to
 a live host counter. The post-build empty-allowlist opcode scan is the second
 half of this change: it rejects any raw CNTVCT/CNTPCT instruction that survives
@@ -31,13 +31,13 @@ Harmony repository's designated guest-kernel patch exception.
  	select TIMER_ACPI if ACPI
  
 +config HARMONY_ARM_PVCLOCK
-+	bool "Harmony work-derived arm64 clock page"
++	bool "Harmony exit-count-derived arm64 clock page"
 +	depends on ARM64 && ARM_ARCH_TIMER
 +	default n
 +	help
 +	  Replace the architected generic counter read used by the arm64
 +	  clocksource, sched_clock and delay paths with Harmony's ABI-v1
-+	  materialized work-derived page. The generic timer's driver/IRQ slot is
++	  materialized exit-count-derived page. The generic timer's driver/IRQ slot is
 +	  retained for the companion work-clockevent patch. EL0 generic-counter
 +	  access and the vDSO fast path are disabled; no live-counter fallback
 +	  exists because reachable Neoverse N1 hardware cannot trap CNTVCT.
@@ -62,7 +62,7 @@ Harmony repository's designated guest-kernel patch exception.
 @@ -0,0 +1,130 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
-+ * Harmony's materialized work-derived arm64 clock page.
++ * Harmony's materialized exit-count-derived arm64 clock page.
 + *
 + * The page is reserved from the guest allocator but deliberately retained in
 + * arm64's linear map: the counter accessor is used before general memremap()
@@ -92,9 +92,9 @@ Harmony repository's designated guest-kernel patch exception.
 +#define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* host caps delta at 100M work */
 +#define HARMONY_PVCLOCK_ABI		1U
 +#define HARMONY_FLAG_MATERIALIZED	(1U << 0)
-+#define HARMONY_FLAG_WORK_DERIVED	(1U << 1)
++#define HARMONY_FLAG_EXIT_COUNT_DERIVED	(1U << 1)
 +#define HARMONY_FLAGS_V1 \
-+	(HARMONY_FLAG_MATERIALIZED | HARMONY_FLAG_WORK_DERIVED)
++	(HARMONY_FLAG_MATERIALIZED | HARMONY_FLAG_EXIT_COUNT_DERIVED)
 +
 +struct harmony_arm_pvclock_page {
 +	__le32 abi_version;
@@ -128,7 +128,7 @@ Harmony repository's designated guest-kernel patch exception.
 +
 +/*
 + * Registration is deliberately not a stamping Moment: KVM's natural MMIO
-+ * exit carries skid. The host records the validated GPA and publishes only at
++ * exit carries exit-boundary variability. The host records the validated GPA and publishes only at
 + * the next exact forced landing. This bounded deterministic spin retires work
 + * until that canonical publication appears; it never consults wall time.
 + */

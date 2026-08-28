@@ -1,8 +1,8 @@
 arm64: add a dedicated LSE-only Harmony guest contract
 
 The deterministic ARM guest cannot contain reservation-monitor atomics:
-single-stepping clears the monitor and ordinary execution permits spurious
-store-exclusive failure, so either case changes the retired-branch clock.
+ordinary execution permits implementation-dependent spurious store-exclusive
+failure, which can change guest-visible control flow across hosts.
 
 Add an owned-guest config that emits the LSE implementation directly instead
 of retaining the runtime LL/SC alternative.  Replace cmpwait's monitor-based

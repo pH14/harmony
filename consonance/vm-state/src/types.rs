@@ -138,24 +138,15 @@ pub struct MsrBlock(pub BTreeMap<u32, u64>);
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct XsaveImage(pub Vec<u8>);
 
-/// Mirror of `vtime::VClockConfig` plus the captured `snapshot_vns`. Plain data;
-/// this crate does **not** depend on `vtime`.
-///
-/// Snapshot-bearing configs must use an integer ratio (`ratio_den == 1`) per
-/// INTEGRATION.md §4 — [`VmState::encode`](crate::VmState::encode) rejects a
-/// fractional ratio with [`VmStateError::FractionalRatio`](crate::VmStateError)
-/// so a non-restorable blob can never be written.
+/// Mirror of the guest-counter configuration plus the captured virtual time.
+/// Plain data; this crate does **not** depend on `vtime`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct VtimeState {
-    /// Numerator of the work→nanosecond ratio.
-    pub ratio_num: u64,
-    /// Denominator of the work→nanosecond ratio. Must be `1` to be encodable.
-    pub ratio_den: u64,
     /// Virtual TSC frequency in Hz.
     pub guest_hz: u64,
     /// TSC value corresponding to `vns == 0`.
     pub guest_base: u64,
-    /// The captured `VClock::snapshot_vns(work)` result (whole nanoseconds).
+    /// The captured virtual time in whole nanoseconds.
     pub snapshot_vns: u64,
 }
 

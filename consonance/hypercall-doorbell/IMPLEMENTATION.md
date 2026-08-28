@@ -32,7 +32,7 @@ isn't on that architecture):
 No `[question]` was raised for x86: port-I/O is the spec's recommended default and MMIO is not
 cleaner there.
 
-**Why MMIO on arm64 (prescriptive V-time M2).** AArch64 has no port-I/O instruction. The M1 Max
+**Why MMIO on arm64 (virtual_time V-time M2).** AArch64 has no port-I/O instruction. The M1 Max
 composition therefore exposes the same logical doorbell as the board's reserved 32-bit MMIO
 register. `MmioDoorbell` implements the existing `IoDoorbell` seam with exactly one volatile
 32-bit store of `req_len`; it accepts only the frozen `DOORBELL_PORT` identity so a caller cannot

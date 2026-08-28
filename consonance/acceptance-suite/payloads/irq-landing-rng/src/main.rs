@@ -12,10 +12,10 @@
 //! cannot exercise (its deadlines are fixed, so its preemption instants are
 //! seed-INVARIANT by construction). The box oracle (task 47 gate 2) asserts BOTH
 //! halves on this payload: deterministic-twice at one seed, AND differing
-//! preemption branch counts across seeds.
+//! preemption exit counts across seeds.
 //!
-//! Like `irq-landing`, the retired-count per deadline is a box fact (it needs the
-//! V-time work counter); in-guest the environment-independent shape is that arming
+//! Like `irq-landing`, the exit-count per deadline is a box fact (it needs the
+//! V-time exit-count clock); in-guest the environment-independent shape is that arming
 //! the xAPIC timer at each deadline produces exactly one delivered interrupt.
 //! Needs the patched determinism host (advertised RDRAND → the seeded contract
 //! stream); under stock QEMU the draws are host entropy and the reports are

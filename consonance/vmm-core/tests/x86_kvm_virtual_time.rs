@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! X1 live oracles: the prescriptive run loop drives the stock-KVM x86 backend
+//! X1 live oracles: the virtual_time run loop drives the stock-KVM x86 backend
 //! through a real-mode guest whose `OUT` stream carries the prescribed
 //! durations, with timer delivery injected at exits through the guest IVT.
 //!
@@ -8,7 +8,7 @@
 //! GitHub-hosted runners, or any KVM machine):
 //!
 //! ```sh
-//! cargo test -p vmm-core --test x86_kvm_prescriptive -- --ignored --test-threads=1
+//! cargo test -p vmm-core --test x86_kvm_virtual_time -- --ignored --test-threads=1
 //! ```
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -17,9 +17,9 @@ use vmm_backend::Gpa;
 use vmm_backend::{
     Backend, CpuidModel, Exit, Injection, KvmBackend, MsrFilter, MsrRange, X86, X86Exit, X86Policy,
 };
-use vmm_core::prescriptive::{
-    ClassifiedExit, LogField, NormalizedLog, PlacementViolation, PrescriptiveCheckpoint,
-    PrescriptiveError, PrescriptiveRunLoop, PrescriptiveTiming, ScheduledInterrupt,
+use vmm_core::virtual_time::{
+    ClassifiedExit, LogField, NormalizedLog, PlacementViolation, ScheduledInterrupt,
+    VirtualTimeCheckpoint, VirtualTimeError, VirtualTimeRunLoop, VirtualTimeTiming,
     check_delivery_placement, compare_normalized_logs,
 };
 use vtime::VClockConfig;
@@ -78,16 +78,14 @@ impl Drop for GuestMem {
 
 fn clock_config() -> VClockConfig {
     VClockConfig {
-        ratio_num: 1,
-        ratio_den: 1,
         guest_hz: 1_000_000_000,
         guest_base: 0,
         vns_base: 0,
     }
 }
 
-fn timing() -> PrescriptiveTiming {
-    PrescriptiveTiming {
+fn timing() -> VirtualTimeTiming {
+    VirtualTimeTiming {
         interrupt_controller_mmio_vns: 5,
         serial_mmio_vns: 5,
         paravirtual_device_mmio_vns: 7,
@@ -122,7 +120,7 @@ fn new_backend_or_explain() -> KvmBackend {
 fn classify(
     _backend: &mut KvmBackend,
     exit: &Exit<X86>,
-) -> Result<ClassifiedExit, PrescriptiveError> {
+) -> Result<ClassifiedExit, VirtualTimeError> {
     match exit {
         Exit::Arch(X86Exit::Io {
             port,
@@ -139,7 +137,7 @@ fn classify(
         }) if *port == u16::from(POWEROFF_PORT) => {
             Ok(ClassifiedExit::terminal(b"poweroff".to_vec()))
         }
-        other => Err(PrescriptiveError::Classification(format!(
+        other => Err(VirtualTimeError::Classification(format!(
             "unmodeled X1 exit: {other:?}"
         ))),
     }
@@ -147,10 +145,10 @@ fn classify(
 
 fn deliver(
     backend: &mut KvmBackend,
-    delivery: vmm_core::prescriptive::InterruptDelivery,
-) -> Result<(), PrescriptiveError> {
+    delivery: vmm_core::virtual_time::InterruptDelivery,
+) -> Result<(), VirtualTimeError> {
     let vector = u8::try_from(delivery.interrupt_id).map_err(|_| {
-        PrescriptiveError::Classification(format!(
+        VirtualTimeError::Classification(format!(
             "interrupt {} does not fit x86 vector width",
             delivery.interrupt_id
         ))
@@ -159,7 +157,7 @@ fn deliver(
     Ok(())
 }
 
-fn checkpoint_hash(backend: &KvmBackend, checkpoint: PrescriptiveCheckpoint) -> [u8; 32] {
+fn checkpoint_hash(backend: &KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"x1-live-state-v1\0");
     hasher.update(checkpoint.vns.to_le_bytes());
@@ -244,7 +242,7 @@ fn one_run() -> RunResult {
     backend.restore(&st).expect("restore setup state");
 
     let mut run_loop =
-        PrescriptiveRunLoop::new(backend, clock_config(), timing(), 2).expect("run loop");
+        VirtualTimeRunLoop::new(backend, clock_config(), timing(), 2).expect("run loop");
     for deadline in DEADLINES {
         run_loop
             .schedule_interrupt(deadline, TIMER_VECTOR)
@@ -254,7 +252,7 @@ fn one_run() -> RunResult {
         let event = run_loop
             .run_backend_once(classify, deliver, checkpoint_hash)
             .expect("run_backend_once");
-        if event.class == vmm_core::prescriptive::NormalizedEventClass::Terminal {
+        if event.class == vmm_core::virtual_time::NormalizedEventClass::Terminal {
             break;
         }
     }

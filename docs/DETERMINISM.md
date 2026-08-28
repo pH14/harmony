@@ -191,9 +191,8 @@ Reproducible source-to-image construction is **untested** until N5.
 
 ## 6. Decisions carried into consolidation
 
-1. **KVM patches 0004 and 0005 retire in N2.** Force-exit preemption and MTF
-   single-step exist only for retired-branch exact-arrival delivery. VM-exit-count
-   virtual time never stops the guest between exits
+1. **KVM patches 0004 and 0005 retired in N2.** Their between-exit delivery
+   mechanism is not part of the exit-count clock, which never stops the guest between exits
    ([delivery design](VM-EXIT-COUNT-VTIME.md#21-the-clock)).
 2. **KVM patches 0001–0003 remain optional tripwires.** Their instruction exits
    may audit protocol/audit/trap closure on a patched Linux host, but no support

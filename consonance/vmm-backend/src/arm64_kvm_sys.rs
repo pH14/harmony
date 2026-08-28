@@ -151,7 +151,7 @@ impl LiveKvm {
     }
 
     /// Move KVM's host-time-backed EL1 virtual-timer output away from PPI27,
-    /// which is exclusively owned by Harmony's work-derived clockevent. This
+    /// which is exclusively owned by Harmony's virtual-time clockevent. This
     /// attribute is write-once before the first `KVM_RUN`.
     fn quarantine_host_vtimer(&self) -> Result<()> {
         let irq = QUARANTINED_VTIMER_PPI;

@@ -14,7 +14,7 @@ repository's designated guest-kernel patch exception.
 +++ b/drivers/clocksource/harmony_arm_pvclock.c
 @@ -2,29 +2,30 @@
  /*
-  * Harmony's materialized work-derived arm64 clock page.
+  * Harmony's materialized exit-count-derived arm64 clock page.
   *
 - * The page is reserved from the guest allocator but deliberately retained in
 - * arm64's linear map: the counter accessor is used before general memremap()

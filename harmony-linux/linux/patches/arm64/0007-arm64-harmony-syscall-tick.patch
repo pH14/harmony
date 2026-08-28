@@ -1,6 +1,6 @@
-arm64: ring the prescriptive tick at execution-density boundaries
+arm64: ring the virtual_time tick at execution-density boundaries
 
-Prescriptive execution cannot stop an exit-free userspace stretch or idle-poll
+VirtualTime execution cannot stop an exit-free userspace stretch or idle-poll
 loop at a timer deadline. Give the cooperative M3 Linux guest a deterministic
 exit at every native syscall entry, context switch, and idle-poll iteration
 (all contract intervals are N=1): a write to the owned pvclock MMIO frame.
@@ -21,7 +21,7 @@ repository's designated guest-kernel patch exception.
  #define HARMONY_CLOCKEVENT_CONTROL	0x18
  #define HARMONY_CLOCKEVENT_DISARM	1U
  #define HARMONY_CLOCKEVENT_ACK		2U
-+#define HARMONY_PRESCRIPTIVE_TICK	0x20
++#define HARMONY_VIRTUAL_TIME_TICK	0x20
  #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* host caps delta at 100M work */
  #define HARMONY_PVCLOCK_ABI		1U
  #define HARMONY_FLAG_MATERIALIZED	(1U << 0)
@@ -31,14 +31,14 @@ repository's designated guest-kernel patch exception.
  }
 +
 +/*
-+ * N=1 is the prescriptive execution-tick contract. The MMIO write is the exit;
++ * N=1 is the virtual_time execution-tick contract. The MMIO write is the exit;
 + * userspace assigns it one complete 100 Hz tick before re-entering the guest.
 + */
-+void harmony_arm_prescriptive_tick(void)
++void harmony_arm_virtual_time_tick(void)
 +{
 +	if (!harmony_registers)
 +		return;
-+	writel(1, harmony_registers + HARMONY_PRESCRIPTIVE_TICK);
++	writel(1, harmony_registers + HARMONY_VIRTUAL_TIME_TICK);
 +}
 --- a/arch/arm64/include/asm/arch_timer.h
 +++ b/arch/arm64/include/asm/arch_timer.h
@@ -46,7 +46,7 @@ repository's designated guest-kernel patch exception.
  int harmony_arm_clockevent_set_next(unsigned long delta);
  void harmony_arm_clockevent_disarm(void);
  void harmony_arm_clockevent_ack(void);
-+void harmony_arm_prescriptive_tick(void);
++void harmony_arm_virtual_time_tick(void);
  
  static __always_inline u64 __arch_counter_get_cntpct_stable(void)
  {
@@ -66,7 +66,7 @@ repository's designated guest-kernel patch exception.
  	unsigned long flags = read_thread_flags();
 +
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
-+	harmony_arm_prescriptive_tick();
++	harmony_arm_virtual_time_tick();
 +#endif
 
 	regs->orig_x0 = regs->regs[0];
@@ -78,7 +78,7 @@ repository's designated guest-kernel patch exception.
  		update_sctlr_el1(next->thread.sctlr_user);
  
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
-+	harmony_arm_prescriptive_tick();
++	harmony_arm_virtual_time_tick();
 +#endif
 +
 	/* the actual thread switch */
@@ -102,7 +102,7 @@ repository's designated guest-kernel patch exception.
  	while (!tif_need_resched() &&
  	       (cpu_idle_force_poll || tick_check_broadcast_expired()))
 +#ifdef CONFIG_HARMONY_ARM_PVCLOCK
-+		harmony_arm_prescriptive_tick();
++		harmony_arm_virtual_time_tick();
 +#else
  		cpu_relax();
 +#endif

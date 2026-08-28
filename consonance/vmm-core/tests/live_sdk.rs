@@ -20,7 +20,7 @@
 //! keeps the catalog) is verified **portably** — a bare payload has no
 //! synchronized mid-run point to seal at (see the NOTE below gate B).
 //!
-//! Box-only: needs the LOADED patched `/dev/kvm`, `perf_event`, and the
+//! Box-only: needs the LOADED patched `/dev/kvm`, and the
 //! `det-cfl-v1` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
 //! Run CPU-pinned per `docs/BOX-PINNING.md`, reverting KVM to stock afterwards:
 //!   `cargo test -p vmm-core --release --test live_sdk -- --ignored --nocapture`
@@ -307,7 +307,7 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
 // survive snapshot/restore) is verified **portably**, not by a box gate: a bare
 // `sdk-demo` payload has no V-time intercept (no RDTSC/RDRAND), so it never
 // reaches a synchronized mid-run point to seal at. `setup_complete` rings at a
-// hypercall-doorbell OUT, which is PMU-skid-tainted (`save_vm_state` reports
+// hypercall-doorbell OUT, which is PMU-exit-boundary variability-tainted (`save_vm_state` reports
 // `NotQuiescent` there) — so the snapshot point is **deferred** to the next
 // synchronized boundary (round-4 P1), which a real RDTSC-heavy workload reaches
 // but this bare demo never does (so it simply never surfaces one). The fix is

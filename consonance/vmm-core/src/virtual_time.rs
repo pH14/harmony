@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Prescriptive V-time advancement, normalized logging, and delivery checking.
+//! VirtualTime V-time advancement, normalized logging, and delivery checking.
 //!
 //! In this mode the run loop assigns V-time at VM exits. The [`vtime::VClock`] is
 //! always queried at work zero; every increment is applied to its `vns_base`
@@ -32,7 +32,7 @@ pub const PLACEHOLDER_TRAPPED_TIME_READ_VNS: u64 = 1;
 /// Placeholder duration for a trapped architectural-control access.
 pub const PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS: u64 = 1;
 
-/// Device classes whose contract constants advance prescriptive V-time.
+/// Device classes whose contract constants advance virtual_time V-time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeviceClass {
     /// Interrupt-controller distributor, redistributor, or CPU-interface access.
@@ -43,12 +43,12 @@ pub enum DeviceClass {
     Paravirtual,
 }
 
-/// The per-exit constants used by prescriptive advancement.
+/// The per-exit constants used by virtual_time advancement.
 ///
 /// The default contains deliberately named placeholders.  A production
 /// composition must pass the normative values from its determinism contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PrescriptiveTiming {
+pub struct VirtualTimeTiming {
     /// V-ns assigned to interrupt-controller MMIO.
     pub interrupt_controller_mmio_vns: u64,
     /// V-ns assigned to serial MMIO.
@@ -61,7 +61,7 @@ pub struct PrescriptiveTiming {
     pub architectural_control_vns: u64,
 }
 
-impl Default for PrescriptiveTiming {
+impl Default for VirtualTimeTiming {
     fn default() -> Self {
         Self {
             interrupt_controller_mmio_vns: PLACEHOLDER_INTERRUPT_CONTROLLER_MMIO_VNS,
@@ -73,7 +73,7 @@ impl Default for PrescriptiveTiming {
     }
 }
 
-impl PrescriptiveTiming {
+impl VirtualTimeTiming {
     fn mmio_vns(self, class: DeviceClass) -> u64 {
         match class {
             DeviceClass::InterruptController => self.interrupt_controller_mmio_vns,
@@ -284,7 +284,7 @@ struct PendingLiveEvent {
     payload: Vec<u8>,
 }
 
-/// Full prescriptive trace captured by the production VMM run loop.
+/// Full virtual_time trace captured by the production VMM run loop.
 ///
 /// The trace is host-side evidence only: it is excluded from snapshots and
 /// state hashes. It retains every raw exit for local diagnosis, every
@@ -292,7 +292,7 @@ struct PendingLiveEvent {
 /// schedule (including cancellation events) for the independent placement
 /// checker.
 #[derive(Clone, Debug, Default)]
-pub struct LivePrescriptiveTrace {
+pub struct LiveVirtualTimeTrace {
     raw: Vec<RawEvent>,
     normalized: NormalizedLog,
     schedule: Vec<ScheduledInterrupt>,
@@ -302,7 +302,7 @@ pub struct LivePrescriptiveTrace {
     current_interrupts: Vec<InterruptDelivery>,
 }
 
-impl LivePrescriptiveTrace {
+impl LiveVirtualTimeTrace {
     /// Backend-local raw exits. Never compare this across substrates.
     pub fn raw_log(&self) -> &[RawEvent] {
         &self.raw
@@ -322,7 +322,7 @@ impl LivePrescriptiveTrace {
     /// domain-separated little-endian encoding.
     pub fn normalized_digest(&self) -> [u8; 32] {
         let mut h = Sha256::new();
-        h.update(b"consonance.live-prescriptive-log.v1\0");
+        h.update(b"consonance.live-virtual_time-log.v1\0");
         h.update(
             u64::try_from(self.normalized.events.len())
                 .unwrap_or(u64::MAX)
@@ -380,7 +380,7 @@ impl LivePrescriptiveTrace {
         payload: Vec<u8>,
     ) -> Result<(), &'static str> {
         if self.pending.is_some() {
-            return Err("prescriptive trace began a second event before finishing the first");
+            return Err("virtual_time trace began a second event before finishing the first");
         }
         let event_index = u64::try_from(self.raw.len()).unwrap_or(u64::MAX);
         self.pending = Some(PendingLiveEvent {
@@ -400,7 +400,7 @@ impl LivePrescriptiveTrace {
         self.pending
             .as_ref()
             .map(|_| u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX))
-            .ok_or("prescriptive trace operation outside an active event")
+            .ok_or("virtual_time trace operation outside an active event")
     }
 
     /// Retain a substrate-private exit in the raw diagnostic stream without
@@ -411,7 +411,7 @@ impl LivePrescriptiveTrace {
         backend_debug: String,
     ) -> Result<(), &'static str> {
         if self.pending.is_some() {
-            return Err("prescriptive trace recorded a raw-only exit during an active event");
+            return Err("virtual_time trace recorded a raw-only exit during an active event");
         }
         self.raw.push(RawEvent {
             event_index: u64::try_from(self.raw.len()).unwrap_or(u64::MAX),
@@ -432,7 +432,7 @@ impl LivePrescriptiveTrace {
         self.next_schedule_index = self
             .next_schedule_index
             .checked_add(1)
-            .ok_or("prescriptive clockevent schedule index exhausted")?;
+            .ok_or("virtual_time clockevent schedule index exhausted")?;
         self.schedule.push(ScheduledInterrupt {
             deadline_vns,
             schedule_index,
@@ -463,24 +463,24 @@ impl LivePrescriptiveTrace {
         let event = self.current_event_index()?;
         let active = self
             .active_clockevent_schedule
-            .ok_or("clockevent deferral has no active prescriptive schedule")?;
+            .ok_or("clockevent deferral has no active virtual_time schedule")?;
         let position = self
             .schedule
             .iter()
             .position(|scheduled| scheduled.schedule_index == active)
-            .ok_or("deferred prescriptive clockevent schedule record is missing")?;
+            .ok_or("deferred virtual_time clockevent schedule record is missing")?;
         let prior = self.schedule[position];
         if prior.canceled_at_event.is_some() {
-            return Err("active prescriptive clockevent schedule was already canceled");
+            return Err("active virtual_time clockevent schedule was already canceled");
         }
         let armed_for_event = event
             .checked_add(1)
-            .ok_or("prescriptive clockevent deferral event exhausted")?;
+            .ok_or("virtual_time clockevent deferral event exhausted")?;
         let schedule_index = self.next_schedule_index;
         self.next_schedule_index = self
             .next_schedule_index
             .checked_add(1)
-            .ok_or("prescriptive clockevent schedule index exhausted")?;
+            .ok_or("virtual_time clockevent schedule index exhausted")?;
         self.schedule[position].canceled_at_event = Some(event);
         self.schedule.push(ScheduledInterrupt {
             deadline_vns: prior.deadline_vns,
@@ -501,9 +501,9 @@ impl LivePrescriptiveTrace {
             .schedule
             .iter_mut()
             .find(|scheduled| scheduled.schedule_index == schedule_index)
-            .ok_or("active prescriptive clockevent schedule record is missing")?;
+            .ok_or("active virtual_time clockevent schedule record is missing")?;
         if scheduled.canceled_at_event.is_some() {
-            return Err("active prescriptive clockevent schedule was already canceled");
+            return Err("active virtual_time clockevent schedule was already canceled");
         }
         scheduled.canceled_at_event = Some(event);
         Ok(())
@@ -513,14 +513,14 @@ impl LivePrescriptiveTrace {
         let schedule_index = self
             .active_clockevent_schedule
             .take()
-            .ok_or("clockevent delivery has no active prescriptive schedule")?;
+            .ok_or("clockevent delivery has no active virtual_time schedule")?;
         let scheduled = self
             .schedule
             .iter()
             .find(|scheduled| scheduled.schedule_index == schedule_index)
-            .ok_or("delivered prescriptive clockevent schedule record is missing")?;
+            .ok_or("delivered virtual_time clockevent schedule record is missing")?;
         if scheduled.canceled_at_event.is_some() {
-            return Err("canceled prescriptive clockevent was delivered");
+            return Err("canceled virtual_time clockevent was delivered");
         }
         self.current_interrupts.push((*scheduled).into());
         Ok(())
@@ -534,7 +534,7 @@ impl LivePrescriptiveTrace {
         let pending = self
             .pending
             .take()
-            .ok_or("prescriptive trace finished with no active event")?;
+            .ok_or("virtual_time trace finished with no active event")?;
         self.raw.push(pending.raw);
         self.normalized.events.push(NormalizedEvent {
             event_index: u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX),
@@ -552,7 +552,7 @@ impl LivePrescriptiveTrace {
             .normalized
             .events
             .last_mut()
-            .ok_or("cannot checkpoint an empty prescriptive trace")?;
+            .ok_or("cannot checkpoint an empty virtual_time trace")?;
         last.state_hash = Some(state_hash);
         Ok(())
     }
@@ -560,7 +560,7 @@ impl LivePrescriptiveTrace {
 
 /// State supplied to the full-state checkpoint callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PrescriptiveCheckpoint {
+pub struct VirtualTimeCheckpoint {
     /// Post-advance V-time; the underlying clock is queried at work zero.
     pub vns: u64,
     /// Number of deadlines not yet delivered.
@@ -569,9 +569,9 @@ pub struct PrescriptiveCheckpoint {
     pub event_index: u64,
 }
 
-/// Failure from the prescriptive run loop.
+/// Failure from the virtual_time run loop.
 #[derive(Debug, thiserror::Error)]
-pub enum PrescriptiveError {
+pub enum VirtualTimeError {
     /// Backend operation failed.
     #[error(transparent)]
     Backend(#[from] vmm_backend::BackendError),
@@ -604,10 +604,10 @@ pub enum PrescriptiveError {
     Classification(String),
 }
 
-/// Run-loop state for prescriptive V-time.
-pub struct PrescriptiveRunLoop<B: Backend> {
+/// Run-loop state for virtual_time V-time.
+pub struct VirtualTimeRunLoop<B: Backend> {
     backend: B,
-    timing: PrescriptiveTiming,
+    timing: VirtualTimeTiming,
     clock: VClock,
     idle: IdlePlanner,
     timers: TimerQueue,
@@ -621,7 +621,7 @@ pub struct PrescriptiveRunLoop<B: Backend> {
     terminal: bool,
 }
 
-impl<B: Backend> PrescriptiveRunLoop<B> {
+impl<B: Backend> VirtualTimeRunLoop<B> {
     /// Construct a run loop over an already configured backend.
     ///
     /// `clock_config.vns_base` is the initial V-time.  Work remains zero for
@@ -629,11 +629,11 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
     pub fn new(
         backend: B,
         clock_config: VClockConfig,
-        timing: PrescriptiveTiming,
+        timing: VirtualTimeTiming,
         checkpoint_every: u64,
-    ) -> Result<Self, PrescriptiveError> {
+    ) -> Result<Self, VirtualTimeError> {
         if checkpoint_every == 0 {
-            return Err(PrescriptiveError::ZeroCheckpointInterval);
+            return Err(VirtualTimeError::ZeroCheckpointInterval);
         }
         Ok(Self {
             backend,
@@ -654,7 +654,7 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
 
     /// Current V-time.  This is always `VClock::vns(0)`.
     pub fn vns(&self) -> u64 {
-        self.clock.vns(0)
+        self.clock.vns()
     }
 
     /// Immutable access to the backend, primarily for reports and tests.
@@ -682,12 +682,12 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
         &mut self,
         deadline_vns: u64,
         interrupt_id: u32,
-    ) -> Result<ScheduledInterrupt, PrescriptiveError> {
+    ) -> Result<ScheduledInterrupt, VirtualTimeError> {
         let schedule_index = self.next_schedule_index;
         self.next_schedule_index =
             self.next_schedule_index
                 .checked_add(1)
-                .ok_or(PrescriptiveError::IndexExhausted {
+                .ok_or(VirtualTimeError::IndexExhausted {
                     counter: "schedule",
                 })?;
         let scheduled = ScheduledInterrupt {
@@ -718,15 +718,15 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
         classify: C,
         mut deliver: D,
         hash: H,
-    ) -> Result<&NormalizedEvent, PrescriptiveError>
+    ) -> Result<&NormalizedEvent, VirtualTimeError>
     where
-        C: FnOnce(&mut B, &vmm_backend::Exit<B::A>) -> Result<ClassifiedExit, PrescriptiveError>,
-        D: FnMut(&mut B, InterruptDelivery) -> Result<(), PrescriptiveError>,
-        H: FnOnce(&B, PrescriptiveCheckpoint) -> [u8; 32],
+        C: FnOnce(&mut B, &vmm_backend::Exit<B::A>) -> Result<ClassifiedExit, VirtualTimeError>,
+        D: FnMut(&mut B, InterruptDelivery) -> Result<(), VirtualTimeError>,
+        H: FnOnce(&B, VirtualTimeCheckpoint) -> [u8; 32],
         B::A: std::fmt::Debug,
     {
         if self.terminal {
-            return Err(PrescriptiveError::AlreadyTerminal);
+            return Err(VirtualTimeError::AlreadyTerminal);
         }
         let exit = self.backend.run()?;
         let reason = exit.reason();
@@ -742,16 +742,16 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
         classified: ClassifiedExit,
         deliver: &mut D,
         hash: H,
-    ) -> Result<&NormalizedEvent, PrescriptiveError>
+    ) -> Result<&NormalizedEvent, VirtualTimeError>
     where
-        D: FnMut(&mut B, InterruptDelivery) -> Result<(), PrescriptiveError>,
-        H: FnOnce(&B, PrescriptiveCheckpoint) -> [u8; 32],
+        D: FnMut(&mut B, InterruptDelivery) -> Result<(), VirtualTimeError>,
+        H: FnOnce(&B, VirtualTimeCheckpoint) -> [u8; 32],
     {
         let event_index = self.next_event_index;
         self.next_event_index = self
             .next_event_index
             .checked_add(1)
-            .ok_or(PrescriptiveError::IndexExhausted { counter: "event" })?;
+            .ok_or(VirtualTimeError::IndexExhausted { counter: "event" })?;
 
         let now = self.vns();
         let advance_vns = match classified.advance {
@@ -763,12 +763,12 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
                 let (deadline, _) = self
                     .timers
                     .peek_next()
-                    .ok_or(PrescriptiveError::IdleWithoutDeadline)?;
+                    .ok_or(VirtualTimeError::IdleWithoutDeadline)?;
                 self.idle.plan(now, deadline).advance_vns
             }
             AdvanceRule::None => 0,
         };
-        self.clock.advance_idle(advance_vns);
+        self.clock.advance(advance_vns);
         let vns_after = self.vns();
 
         let mut interrupts = Vec::new();
@@ -776,14 +776,14 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
             let scheduled = self
                 .pending
                 .remove(&token)
-                .ok_or(PrescriptiveError::UnknownTimerToken { token: token.0 })?;
+                .ok_or(VirtualTimeError::UnknownTimerToken { token: token.0 })?;
             let delivery = scheduled.into();
             deliver(&mut self.backend, delivery)?;
             interrupts.push(delivery);
         }
 
         let checkpoint_due = (event_index + 1).is_multiple_of(self.checkpoint_every);
-        let checkpoint = PrescriptiveCheckpoint {
+        let checkpoint = VirtualTimeCheckpoint {
             vns: vns_after,
             pending_interrupts: u64::try_from(self.pending.len()).unwrap_or(u64::MAX),
             event_index,
@@ -808,7 +808,7 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
         self.normalized
             .events
             .last()
-            .ok_or(PrescriptiveError::Classification(
+            .ok_or(VirtualTimeError::Classification(
                 "normalized event append produced no event".to_string(),
             ))
     }
@@ -816,7 +816,7 @@ impl<B: Backend> PrescriptiveRunLoop<B> {
 
 pub(crate) fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"consonance.prescriptive-event.v1\0");
+    hasher.update(b"consonance.virtual_time-event.v1\0");
     hasher.update([class.tag()]);
     hasher.update(
         u64::try_from(payload.len())
@@ -1023,7 +1023,7 @@ mod live_trace_tests {
 
     #[test]
     fn raw_only_exit_does_not_consume_a_portable_ordinal() {
-        let mut trace = LivePrescriptiveTrace::default();
+        let mut trace = LiveVirtualTimeTrace::default();
         trace
             .record_raw_only(ExitReason::Mmio, "private GIC MMIO".to_string())
             .unwrap();
@@ -1047,7 +1047,7 @@ mod live_trace_tests {
 
     #[test]
     fn replacement_and_disarm_are_recorded_as_cancellations() {
-        let mut trace = LivePrescriptiveTrace::default();
+        let mut trace = LiveVirtualTimeTrace::default();
         trace
             .begin(
                 ExitReason::Mmio,
@@ -1079,7 +1079,7 @@ mod live_trace_tests {
 
     #[test]
     fn live_delivery_is_bound_to_the_active_schedule() {
-        let mut trace = LivePrescriptiveTrace::default();
+        let mut trace = LiveVirtualTimeTrace::default();
         trace
             .begin(
                 ExitReason::Mmio,
@@ -1107,7 +1107,7 @@ mod live_trace_tests {
 
     #[test]
     fn masked_due_epochs_are_explicit_and_late_delivery_still_fails() {
-        let mut trace = LivePrescriptiveTrace::default();
+        let mut trace = LiveVirtualTimeTrace::default();
         trace
             .begin(
                 ExitReason::Mmio,

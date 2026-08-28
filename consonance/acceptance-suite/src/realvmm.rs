@@ -68,7 +68,7 @@ impl SubjectFactory for PayloadFactory {
             panic!(
                 "payload {:?} failed to boot on the patched backend ({e}) — this host is not a \
                  determinism substrate: it needs /dev/kvm, the LOADED patched KVM modules \
-                 (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS), and perf_event",
+                 (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS)",
                 self.name
             )
         })

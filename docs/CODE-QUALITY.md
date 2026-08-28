@@ -173,7 +173,7 @@ stable-toolchain; `udeps` is more thorough but nightly.
 A clever fit: instruction-count-based benchmarks (via cachegrind) give **stable,
 machine-independent** numbers — no wall-clock noise — which suits a determinism project and
 makes perf regressions diff-able in CI. This is also the natural home for the **throughput
-budget the plan currently lacks** (single-step cost per injection, snapshot-resolve cost per
+budget the plan currently lacks** (per-exit dispatch cost, snapshot-resolve cost per
 page): turn `snapshot-store/tests/bench.rs` into tracked iai benchmarks rather than ad-hoc
 timing. (`criterion` is the wall-clock alternative — use only for things iai can't model.)
 
@@ -218,8 +218,8 @@ measure* for several merges, letting `dissonance/campaign-runner`'s `record.rs`/
 added targeted gate-branch and CLI-dispatch tests to those four files (see
 `dissonance/campaign-runner/IMPLEMENTATION.md`'s "Coverage recovery" section for what was added),
 and split `main.rs`'s Linux-only `mod boxrun` (needs real `/dev/kvm` + patched KVM + a built
-guest image — uncoverable by this job, same reasoning as the `kvm.rs`/`patched_kvm.rs`/
-`pmu_sys.rs`/`work_perf.rs` exclusions above) into its own `src/boxrun.rs`, added to
+guest image — uncoverable by this job, same reasoning as the live-backend
+exclusions above) into its own `src/boxrun.rs`, added to
 `--ignore-filename-regex`. Measured workspace region total after: **94.76%**
 (`cargo llvm-cov nextest --all-features`, on the determinism box — Linux, so every
 `cfg(target_os = "linux")` line compiles and counts). Floor moved to **94.5%** — a hair
@@ -232,7 +232,7 @@ understates anything `cfg(target_os = "linux")`, since it doesn't even compile t
 The first *honest* run after the `hm-ph7` CI-toolchain repair measured the workspace at
 **93.66%** — under the 94.5 floor. Cause: real under-tested code merged while CI was
 fail-before-measuring (film replay bin 9.5%, `core_replay` 55.6%, telemetry bin 23.5%,
-`benchcampaign` 82.6%, `bringup` 70.2%; the stale `work_perf.rs` exclusion was separately
+`benchcampaign` 82.6%, `bringup` 70.2%; a stale exclusion was separately
 repaired in beb14c6). Escalated as `hm-42y` (test-up the drivers vs exclude bins vs floor
 change); **ruled: accept the dip** ("coverage floor — don't care, if it
 dips slightly that's fine"). Floor set to **93.5** — a hair below the measured 93.66,

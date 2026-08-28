@@ -810,7 +810,7 @@ re-run before any novel case, permanently.
 
 ---
 
-# IMPLEMENTATION — prescriptive V-time M2 ordered payload tape
+# IMPLEMENTATION — virtual_time V-time M2 ordered payload tape
 
 `EnvSpec::Recorded` now carries an optional ordered tape of opaque payload entries.
 This is deliberately separate from the sparse `Moment` override map: one guest

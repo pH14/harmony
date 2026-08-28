@@ -21,7 +21,7 @@
 // Freeze it and this program hangs; that is the gate.
 //
 // The page's physical address is the one the guest kernel published to the host
-// at registration, printed on the console ("work-derived clock page registered
+// at registration, printed on the console ("exit-count clock page registered
 // at 0x..."); the harness passes it in argv. /dev/mem is how this guest already
 // reaches the reserved hypercall doorbell pages (CONFIG_DEVMEM=y, STRICT_DEVMEM
 // off — the page is reserved kernel .bss, not anonymous RAM).

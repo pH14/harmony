@@ -12,13 +12,8 @@
 //! `NoPendingRead`/`BadCompletion` on a mismatched one. It records injections
 //! and completions so a test can assert what the VMM asked the backend to do.
 //!
-//! Unlike `KvmBackend`, the mock *implements* `run_until` and `inject`: a
-//! scripted `CommonExit::Deadline` is returned from `run_until` at
-//! `max(scripted reached, requested deadline)` — never *before* the deadline
-//! (the trait's late-only-stop contract), so an at-or-before scripted `reached`
-//! lands EXACTLY at the deadline while a genuinely-late one lands late at its
-//! scripted boundary. `inject` records the event (so vmm-core's injection
-//! planning is testable). Determinism: a `MockBackend` driven by the same
+//! `inject` records the event so vmm-core's delivery is testable. Determinism:
+//! a `MockBackend` driven by the same
 //! script + same completions produces the same counters and the same saved
 //! `VcpuState`.
 
@@ -30,7 +25,7 @@ use crate::arch::x86::{
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
-use crate::types::{Gpa, Moment};
+use crate::types::Gpa;
 
 /// The mock's capability type — the x86 vendor's arch flags.
 pub type MockCaps = Capabilities<crate::arch::x86::X86Caps>;
@@ -86,10 +81,9 @@ fn pending_for(exit: &Exit<X86>) -> Pending {
         Exit::Common(c) => match c {
             CommonExit::Mmio { write: None, .. } => Pending::Read,
             CommonExit::Hypercall(_) => Pending::Hypercall,
-            CommonExit::Mmio { write: Some(_), .. }
-            | CommonExit::Idle
-            | CommonExit::Shutdown
-            | CommonExit::Deadline { .. } => Pending::None,
+            CommonExit::Mmio { write: Some(_), .. } | CommonExit::Idle | CommonExit::Shutdown => {
+                Pending::None
+            }
         },
         Exit::Arch(e) => match e {
             X86Exit::Io { write: None, .. }
@@ -135,10 +129,10 @@ pub struct MockBackend {
     pending_irq: Option<u8>,
     /// Vectors the mock has "accepted" into the guest (drained by
     /// [`Backend::take_accepted_interrupt`]). The mock is always injectable, so a
-    /// pending vector is accepted at the next `run`/`run_until` — unless
+    /// pending vector is accepted at the next `run` — unless
     /// [`Self::defer_accept`] is set.
     accepted_irq: VecDeque<u8>,
-    /// When `true`, `run`/`run_until` do **not** accept the pending IRQ (it stays in
+    /// When `true`, `run` does **not** accept the pending IRQ (it stays in
     /// `pending_irq`) — modelling the live backend's interrupt-window wait, so a
     /// test can observe a vector held pending (in the LAPIC IRR, not in service)
     /// before acceptance.
@@ -193,14 +187,14 @@ impl MockBackend {
     }
 
     /// A fresh mock pre-loaded with a script of exits to return from successive
-    /// `run`/`run_until` calls.
+    /// `run` calls.
     pub fn with_exits(exits: impl IntoIterator<Item = Exit<X86>>) -> Self {
         let mut m = Self::new();
         m.extend_exits(exits);
         m
     }
 
-    /// Enqueue one exit to be returned by a future `run`/`run_until`.
+    /// Enqueue one exit to be returned by a future `run`.
     pub fn push_exit(&mut self, exit: Exit<X86>) -> &mut Self {
         self.script.push_back(exit);
         self
@@ -279,7 +273,7 @@ impl MockBackend {
         self
     }
 
-    /// When `true`, queued maskable IRQs are **not** accepted at `run`/`run_until`
+    /// When `true`, queued maskable IRQs are **not** accepted at `run`
     /// (they stay in the pending queue) — modelling the live backend's
     /// interrupt-window wait, so a test can observe a vector held pending before
     /// acceptance (the userspace-LAPIC IRR→ISR deferral).
@@ -288,7 +282,7 @@ impl MockBackend {
         self
     }
 
-    /// Fail-closed config + completion-discipline gate shared by `run`/`run_until`.
+    /// Fail-closed config + completion-discipline gate for `run`.
     fn ensure_runnable(&self) -> Result<()> {
         if !self.is_configured() {
             return Err(BackendError::NotConfigured);
@@ -390,32 +384,6 @@ impl Backend for MockBackend {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = self.next_scripted()?;
-        Ok(self.deliver(exit))
-    }
-
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit<X86>> {
-        self.ensure_runnable()?;
-        self.accept_pending_irqs();
-        let exit = match self.next_scripted()? {
-            Exit::Common(CommonExit::Deadline { reached }) => {
-                // Fold the script entry's `reached` with the requested deadline by
-                // taking the max. A live backend never stops *before* its deadline
-                // (`backend.rs` late-only-stop contract; the frozen
-                // `CommonExit::Deadline` invariant is `reached >= deadline`,
-                // `exit.rs`), so this makes `reached < deadline` UNREPRESENTABLE in
-                // the double by construction: an at-or-before scripted `reached`
-                // lands EXACTLY at the deadline, and a genuinely-late one
-                // (`reached > deadline`) lands late at its scripted boundary — the
-                // box @3e7 overshoot the exact-count seam could not clamp. The
-                // lateness is an explicit, deterministic test input encoded in the
-                // script entry itself (no clock, no randomness). Plain `run` never
-                // folds — it returns the scripted `Deadline` verbatim.
-                Exit::Common(CommonExit::Deadline {
-                    reached: reached.max(deadline),
-                })
-            }
-            other => other,
-        };
         Ok(self.deliver(exit))
     }
 

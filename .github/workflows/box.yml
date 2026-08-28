@@ -3,7 +3,7 @@ name: box
 # The HARDWARE lane (docs/TESTING.md, "the runner-label scheme for hardware
 # lanes"). Everything in `quality.yml` is a CONTENT check that a hosted runner
 # can answer; the gates here need bare metal — a real /dev/kvm, the patched KVM
-# modules, hardware performance counters, and quiet pinned cores.
+# modules and quiet pinned cores.
 #
 # Every job here must have a REGISTERED runner. A job whose label set matches
 # no registered runner does not skip — GitHub leaves it queued (for about a
@@ -71,8 +71,7 @@ jobs:
           echo "What rung 1 must answer on this chip, once built:"
           echo "  * classify every advertised instruction/feature as"
           echo "    deterministically-pure / must-trap / forbidden"
-          echo "  * per-chip exactness: does a retired-branch deadline land where"
-          echo "    the machinery says it lands, with this chip's real skid"
+          echo "  * exit normalization and virtual-time constants for this chip"
           echo "  * per-chip save/restore fixpoint over the full vCPU state"
           echo "  * FIRST QUESTION for this box: is FEAT_ECV present? The"
           echo "    paravirtualized-clock design (docs/PARAVIRT-CLOCK.md) exists"

@@ -5,9 +5,8 @@
 //! Regenerates this crate's public surface with `cargo public-api` on the
 //! pinned nightly toolchain and asserts it byte-matches the committed
 //! `tests/public-api.txt`. Any drift in the frozen public contract becomes a
-//! failing test and a reviewable diff. As of task 21 `vmm-core` has Linux-only
-//! public items (`work_perf::PerfWorkCounter`, `bringup::boot_selected` — the
-//! box-only `perf_event` work source + the composition root), so the frozen
+//! failing test and a reviewable diff. `vmm-core` has Linux-only public
+//! composition items (`bringup::boot_selected`), so the frozen
 //! surface is the **Linux** one (generated/checked on the Linux box); the test
 //! skips loudly on other platforms, where the surface is a strict subset.
 //!
@@ -29,15 +28,12 @@ const CRATE: &str = "vmm-core";
 #[test]
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]
 fn public_api_matches_snapshot() {
-    // As of task 21 vmm-core has Linux-only public items (`work_perf::PerfWorkCounter`,
-    // `bringup::boot_selected`, both `#[cfg(target_os = "linux")]`), so the frozen
+    // vmm-core has Linux-only public composition items, so the frozen
     // surface is the **Linux** one. On other platforms it is a strict subset — skip
     // loudly there (mirroring `vmm-backend`'s public-api test) rather than diffing a
     // subset against the Linux snapshot. The CI public-api job runs on the Linux box.
     if !cfg!(target_os = "linux") {
-        eprintln!(
-            "SKIP: {CRATE} public-api test — frozen on Linux (work_perf/boot_selected are Linux-only)"
-        );
+        eprintln!("SKIP: {CRATE} public-api test — frozen on Linux (boot_selected is Linux-only)");
         return;
     }
 

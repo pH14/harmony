@@ -13,7 +13,7 @@
 //! the ruling's *rejected* alternatives.)
 
 use crate::arch::{Arch, ArchExit};
-use crate::types::{Gpa, Moment};
+use crate::types::Gpa;
 
 /// Every way the guest can become observable to the VMM: a cross-arch
 /// [`Common`](Exit::Common) exit, or the vendor's own [`Arch`](Exit::Arch)
@@ -44,7 +44,7 @@ impl<A: Arch> Exit<A> {
     /// Whether servicing this exit stages a backend completion (a
     /// register-write and/or RIP-advance committed on the next entry): every
     /// read-style / MSR / CPUID / determinism exit calls a `complete_*`.
-    /// Write-style stores, `Idle`, `Shutdown`, `Deadline`, and the unmodeled
+    /// Write-style stores, `Idle`, `Shutdown`, and the unmodeled
     /// `Hypercall` resume with nothing pending. Drives the engine's
     /// restore-safety bookkeeping (`Vmm::completion_staged`).
     pub fn stages_completion(&self) -> bool {
@@ -81,13 +81,6 @@ pub enum CommonExit {
     /// `KVM_EXIT_SHUTDOWN` (an unrecoverable guest fault / guest shutdown).
     /// Terminal. No completion.
     Shutdown,
-    /// `run_until` reached the V-time deadline with no guest exit first. No
-    /// completion.
-    Deadline {
-        /// The V-time actually reached (≥ the requested deadline by the skid
-        /// margin task 07 bounds).
-        reached: Moment,
-    },
 }
 
 impl CommonExit {
@@ -98,7 +91,6 @@ impl CommonExit {
             CommonExit::Hypercall(_) => ExitReason::Hypercall,
             CommonExit::Idle => ExitReason::Idle,
             CommonExit::Shutdown => ExitReason::Shutdown,
-            CommonExit::Deadline { .. } => ExitReason::Deadline,
         }
     }
 
@@ -111,8 +103,7 @@ impl CommonExit {
             CommonExit::Mmio { write: Some(_), .. }
             | CommonExit::Hypercall(_)
             | CommonExit::Idle
-            | CommonExit::Shutdown
-            | CommonExit::Deadline { .. } => false,
+            | CommonExit::Shutdown => false,
         }
     }
 }
@@ -184,8 +175,6 @@ pub enum ExitReason {
     Idle,
     /// Shutdown / unrecoverable guest fault.
     Shutdown,
-    /// `run_until` deadline reached.
-    Deadline,
     /// A trapped arm64 system-register access (`Arm64Exit::Sysreg`;
     /// patched-ABI-only — stock KVM/arm64 never surfaces one). Appended, not
     /// inserted: the pre-arm64 roster prefix (and every existing report line)
@@ -223,8 +212,6 @@ pub struct ExitCounts {
     pub idle: u64,
     /// Shutdown exits.
     pub shutdown: u64,
-    /// `run_until` deadline exits.
-    pub deadline: u64,
     /// Trapped arm64 sysreg exits (patched-ABI-only).
     pub sysreg: u64,
 }
@@ -242,7 +229,7 @@ impl ExitCounts {
 
     /// `(reason, count)` pairs in a fixed, deterministic order (the field order
     /// above), for the report. Exactly one entry per [`ExitReason`].
-    pub fn entries(&self) -> [(ExitReason, u64); 14] {
+    pub fn entries(&self) -> [(ExitReason, u64); 13] {
         [
             (ExitReason::Io, self.io),
             (ExitReason::Mmio, self.mmio),
@@ -256,7 +243,6 @@ impl ExitCounts {
             (ExitReason::Rdseed, self.rdseed),
             (ExitReason::Idle, self.idle),
             (ExitReason::Shutdown, self.shutdown),
-            (ExitReason::Deadline, self.deadline),
             (ExitReason::Sysreg, self.sysreg),
         ]
     }
@@ -286,7 +272,6 @@ impl ExitCounts {
             ExitReason::Rdseed => &mut self.rdseed,
             ExitReason::Idle => &mut self.idle,
             ExitReason::Shutdown => &mut self.shutdown,
-            ExitReason::Deadline => &mut self.deadline,
             ExitReason::Sysreg => &mut self.sysreg,
         };
         *slot = slot.saturating_add(1);

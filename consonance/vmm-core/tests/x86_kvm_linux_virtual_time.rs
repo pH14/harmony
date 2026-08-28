@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Live X2 gates for **assigned-at-exit (prescriptive) V-time on the stock x86
+//! Live X2 gates for **assigned-at-exit (virtual_time) V-time on the stock x86
 //! backend** (`docs/VM-EXIT-COUNT-VTIME.md`, status in
-//! `docs/PRESCRIPTIVE-VTIME-STATUS.md`): boot the committed
+//! `docs/VIRTUAL_TIME-VTIME-STATUS.md`): boot the committed
 //! `harmony-linux` bzImage + initramfs through
-//! [`boot_linux_stock_prescriptive`] on real `/dev/kvm` and measure whether the
-//! production [`LivePrescriptiveTrace`](vmm_core::prescriptive) is identical
+//! [`boot_linux_stock_virtual_time`] on real `/dev/kvm` and measure whether the
+//! production [`LiveVirtualTimeTrace`](vmm_core::virtual_time) is identical
 //! across same-seed boots.
 //!
 //! Two tiers, cheapest-decisive-first:
 //!
-//! 1. [`x2_prescriptive_stock_boot_smoke`] — ONE boot. Proves the prescriptive
+//! 1. [`x2_virtual_time_stock_boot_smoke`] — ONE boot. Proves the virtual_time
 //!    composition can run Linux to userspace and a clean terminal at all, and
 //!    reports the trace size / wall cost that dictates the fleet shape.
 //! 2. [`x2_same_seed_boots_one_normalized_log`] — N same-seed boots (default
@@ -20,7 +20,7 @@
 //! These need real KVM and the built guest image, so they are `#[ignore]`d;
 //! the x86-vtime workflow runs them on GitHub-hosted runners with the
 //! cache-restored image. No det-cfl-v1 host baseline is required: the
-//! prescriptive determinism claim is defined over the exit stream plus the
+//! virtual_time determinism claim is defined over the exit stream plus the
 //! frozen contract, not host homogeneity — heterogeneous runners are the point.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -28,8 +28,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vmm_core::prescriptive::{NormalizedLog, check_delivery_placement, compare_normalized_logs};
-use vmm_core::vendor::x86::bringup::boot_linux_stock_prescriptive;
+use vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time;
+use vmm_core::virtual_time::{NormalizedLog, check_delivery_placement, compare_normalized_logs};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// 256 MiB of guest RAM — the same size the established live boot gates use.
@@ -39,7 +39,7 @@ const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
 /// The established live-boot kernel command line (`live_linux_boot.rs`) plus
 /// `harmony_pvclock`: printk on the modeled 8250, panic = immediate terminal,
 /// the timer/entropy neutralization params the determinism overlay expects,
-/// and the clock-page opt-in — on the prescriptive composition the guest's
+/// and the clock-page opt-in — on the virtual_time composition the guest's
 /// sched_clock, timekeeping, and entropy timing all route through the
 /// host-stamped page instead of the uninterceptable raw TSC.
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
@@ -50,7 +50,7 @@ const REACHED_USERSPACE: &[u8] = b"Run /init as init process";
 /// The guest driver's proof that the clock page registered (patch 0001); a
 /// boot that silently fell back to raw-TSC time must fail the gate, not pass
 /// nondeterministically.
-const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: work-derived clock page registered";
+const PVCLOCK_REGISTERED: &[u8] = b"harmony_pvclock: exit-count clock page registered";
 /// `harmony-linux/linux/init.sh`'s userspace readiness announcement.
 const GUEST_READY: &[u8] = b"GUEST_READY";
 /// Step budget per boot (`X2_MAX_STEPS` overrides).
@@ -184,8 +184,8 @@ fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
         }
     }
     let trace = vmm
-        .prescriptive_trace()
-        .expect("boot_linux_stock_prescriptive wires the prescriptive trace");
+        .virtual_time_trace()
+        .expect("boot_linux_stock_virtual_time wires the virtual_time trace");
     let placement_error = check_delivery_placement(trace.schedule(), trace.normalized_log())
         .err()
         .map(|e| e.to_string());
@@ -212,8 +212,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn boot_once(kernel: &[u8], initramfs: &[u8], stream: bool) -> BootRun {
-    let mut vmm = boot_linux_stock_prescriptive(kernel, initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
-        .expect("boot_linux_stock_prescriptive");
+    let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+        .expect("boot_linux_stock_virtual_time");
     run_boot(&mut vmm, stream)
 }
 
@@ -369,20 +369,20 @@ fn dump_normalized_log(path: &str, run: &BootRun, vmm: &StockVmm) {
     println!("X2_LOG_DUMP {path}");
 }
 
-/// **X2 tier 1 — the smoke measurement.** One prescriptive stock boot must run
+/// **X2 tier 1 — the smoke measurement.** One virtual_time stock boot must run
 /// Linux to userspace and a clean terminal, with the trace recording every
 /// exit. Reports the trace size and wall cost that size the tier-2 fleet.
 /// With `X2_LOG_DUMP` set, writes the [`dump_normalized_log`] artifact there.
 #[test]
 #[ignore = "live gate (real KVM + built guest image); run with -- --ignored --nocapture"]
-fn x2_prescriptive_stock_boot_smoke() {
+fn x2_virtual_time_stock_boot_smoke() {
     require_kvm();
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs.cpio.gz");
     eprintln!("[x2] cmdline: {CMDLINE}");
 
-    let mut vmm = boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
-        .expect("boot_linux_stock_prescriptive");
+    let mut vmm = boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+        .expect("boot_linux_stock_virtual_time");
     // With `X2_DUMP_AT_STEPS` set, stop the boot at that step count and dump
     // the full state record there: a mid-boot measurement point for a
     // divergence that has converged again by the terminal.
@@ -416,17 +416,17 @@ fn x2_prescriptive_stock_boot_smoke() {
     println!("X2_SMOKE_DIGEST={}", hex(&run.digest));
     assert!(
         run.step_error.is_none(),
-        "prescriptive stock boot tripped a contract violation: {:?}",
+        "virtual_time stock boot tripped a contract violation: {:?}",
         run.step_error
     );
     assert!(
         run.reason.is_some(),
-        "prescriptive stock boot hit the step/wall budget ({} steps) — a hang",
+        "virtual_time stock boot hit the step/wall budget ({} steps) — a hang",
         run.steps
     );
     assert!(
         run.reached_userspace,
-        "prescriptive stock boot never reached userspace (terminal {:?} after {} steps)",
+        "virtual_time stock boot never reached userspace (terminal {:?} after {} steps)",
         run.reason, run.steps
     );
     assert!(
@@ -441,7 +441,7 @@ fn x2_prescriptive_stock_boot_smoke() {
     );
 }
 
-/// **X2 tier 2 — the determinism criterion.** N same-seed prescriptive stock
+/// **X2 tier 2 — the determinism criterion.** N same-seed virtual_time stock
 /// boots must produce ONE normalized log (class, payload, assigned V-time,
 /// checkpoint state hashes). On divergence, the first divergent event and its
 /// window from both runs are printed — the per-site measurement the closure
@@ -526,13 +526,13 @@ fn x2_component_diff_two_boots() {
     let initramfs = require_artifact("initramfs.cpio.gz");
 
     let mut vmm_a =
-        boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
-            .expect("boot_linux_stock_prescriptive");
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_virtual_time");
     let run_a = run_boot(&mut vmm_a, true);
     report_run("boot A", &run_a);
     let mut vmm_b =
-        boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
-            .expect("boot_linux_stock_prescriptive");
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_virtual_time");
     let run_b = run_boot(&mut vmm_b, false);
     report_run("boot B", &run_b);
     for (tag, run) in [("A", &run_a), ("B", &run_b)] {
@@ -730,16 +730,16 @@ fn x2_component_diff_first_checkpoint() {
     let attempts = env_u64("X2_CKPT_ATTEMPTS", 12);
 
     let mut vmm_ref =
-        boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
-            .expect("boot_linux_stock_prescriptive");
+        boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+            .expect("boot_linux_stock_virtual_time");
     let run_ref = run_boot_bounded(&mut vmm_ref, false, stop_steps);
     report_run("ckpt reference", &run_ref);
     let ref_hash = first_checkpoint_hash(&run_ref);
 
     for attempt in 0..attempts {
         let mut vmm =
-            boot_linux_stock_prescriptive(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
-                .expect("boot_linux_stock_prescriptive");
+            boot_linux_stock_virtual_time(&kernel, &initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
+                .expect("boot_linux_stock_virtual_time");
         let run = run_boot_bounded(&mut vmm, false, stop_steps);
         let hash = first_checkpoint_hash(&run);
         if hash != ref_hash {

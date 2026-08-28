@@ -18,7 +18,7 @@
 //!   guest-memory image **identical** to the un-snapshotted reference run.
 //!
 //! Box-only because it needs the loaded patched `/dev/kvm`
-//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), `perf_event`, and the `det-cfl-v1`
+//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
 //! host. `#[ignore]`d out of the default lane (like `live_m1_m2.rs`): default CI
 //! shows it **not-run**, never a vacuous green. Run on `ssh <det-box>`, CPU-pinned
 //! per `docs/BOX-PINNING.md`, with the patched modules loaded:
@@ -31,7 +31,7 @@
 //! determinism cap absent (stock modules), or a non-baseline host — is a **loud
 //! panic (test FAILURE)**, never an early-return `Ok`. macOS builds an empty test
 //! binary; the determinism *logic* is covered there by the `MockBackend` +
-//! `ScriptedWork` unit tests in `src/vmm.rs`.
+//! mock-backend unit tests in `src/vmm.rs`.
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
@@ -241,7 +241,7 @@ fn p6_rdtsc_rng_are_deterministic_and_vtime_backed() {
     let d0 = t[1] - t[0];
     assert!(
         d0 > 0 && t[2] - t[1] == d0 && t[3] - t[2] == d0,
-        "deltas must be constant (one retired branch = {d0} ticks each), got {t:?}"
+        "deltas must be constant (one VM exit = {d0} ticks each), got {t:?}"
     );
     assert_eq!(d0, 2, "V-time formula: 1 branch = 1 ns = 2 ticks at 2 GHz");
 

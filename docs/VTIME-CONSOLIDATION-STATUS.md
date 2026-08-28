@@ -208,7 +208,99 @@ weakening either architecture's evidence.
 
 ## N2 — one clock
 
-Not started.
+### Deletion and narrowing decisions
+
+- **Delete the retired clock instead of adapting it.** `WorkSource`,
+  `ScriptedWork`, `PerfWorkCounter`, `InjectionPlanner`, its simulator, the
+  backend exact-stop path, PMU overflow plumbing, force-exit delivery, and MTF
+  stepping are removed. Their modules, feature flags, mutation exclusions,
+  contract exams, live tests, seal-rate reports, and configuration are removed
+  with them; no compatibility shim or deprecated copy remains.
+- **Virtual time is an assigned exit accumulator.** Each modeled VM-exit class
+  contributes its integer `vns` duration to `VClock`; idle jumps use the same
+  accumulator. Snapshots carry the assigned V-time, guest counter base/rate,
+  and entropy state. There is no branch ratio, live host counter read, or
+  backend re-arm on restore.
+- **Scheduled host events are exit-boundary events.** Normal execution calls
+  only `Backend::run`. A scheduled `Moment` is applied when an exit boundary
+  lands on it; crossing it fails loudly as `ScheduleUnsatisfiable`. The retired
+  prospective exact-stop error and its wire tag are removed; application
+  protocol version 9 remains reserved because version numbers are monotonic.
+- **Apply N0's patch decision literally.** KVM patches 0004 (force exit) and
+  0005 (MTF exact stepping) are deleted. Instruction-tripwire patches 0001–0003
+  remain for N6. The guest pvclock/clockevent patches survive with their
+  narrower exit-count-derived names and contracts.
+- **Keep historical evidence verbatim.** The two historical status ledgers,
+  the N2 plan itself, old decision links, and the KVM patch results ledger are
+  the only intentional uses of the retired qualifier or machinery language.
+  Git history is the archive for implementation material.
+
+### Issue sweep
+
+The following issues were closed as not planned with the required one-line N2
+rationale; issues #199–#201 remain open because their image-audit/intercept
+work is still part of N6.
+
+| Issue | Recorded closure rationale |
+| --- | --- |
+| [#170](https://github.com/pH14/harmony/issues/170) | `Closed as not planned by N2: exit-boundary virtual time removed the exact-arrival arming and pvclock re-anchor path.` |
+| [#174](https://github.com/pH14/harmony/issues/174) | `Closed as not planned by N2: exit-count virtual time removed the AMD force-exit productionization path.` |
+| [#179](https://github.com/pH14/harmony/issues/179) | `Closed as not planned by N2: exit-count virtual time removed the PMU work-clock and skid requalification program.` |
+| [#180](https://github.com/pH14/harmony/issues/180) | `Closed as not planned by N2: exit-count virtual time supersedes the AMD rr-parity PMU work-clock program.` |
+| [#196](https://github.com/pH14/harmony/issues/196) | `Closed as not planned by N2: exit-count virtual time removed the single-step fallback and exact-landing path.` |
+
+### Portable verification completed on the N2 tree
+
+```text
+cargo build --workspace --all-features
+PASS
+
+cargo nextest run --workspace --all-features --no-fail-fast
+1159 passed, 25 skipped
+
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+PASS (the standing three invalid-path notices from clippy.toml remain parser
+warnings, not crate diagnostics)
+
+cargo fmt --all -- --check
+PASS
+
+cargo deny check
+advisories ok, bans ok, licenses ok, sources ok
+
+cargo test --manifest-path dissonance/Cargo.toml -p machine \
+  --test control_loopback
+1 passed
+```
+
+The first nextest invocation ran inside a filesystem-only sandbox and its
+seven telemetry listener tests received `Operation not permitted`. The exact
+complete command rerun with localhost-socket permission passed all 1,159
+tests, matching N0's already-recorded execution-environment distinction.
+
+The removed public items (`Backend::run_until`, deadline exit/counters,
+branch-ratio state, the exact-stop control error, and ARM's raw branch event)
+and the renamed pvclock flag are reflected in the regenerated public-API
+snapshots. The control-proto and vtime regenerators pass locally; the Linux
+surface snapshots are re-run on msr1 before this milestone can close.
+
+Searches over the non-historical tree find no retired modules, symbols,
+feature flags, patch names, or file names. A case-insensitive filename search
+for the retired qualifier returns only `docs/PRESCRIPTIVE-VTIME-STATUS.md`;
+text matches outside the plan/status ledgers are links to that historical
+record.
+
+### Verification still required before N2 can be marked PASS
+
+- pinned Miri matrix on this exact tree;
+- Linux public-API regeneration/check;
+- N1 boot and NES references on HVF and msr1 KVM, including direct byte
+  comparison; and
+- the X-series stock-KVM reference on both GitHub Actions vendor pools.
+
+**N2 overall: IN PROGRESS.** The implementation and portable gates are green;
+the milestone remains open until all exact-tree machine evidence above is
+recorded.
 
 ## N3 — fast
 

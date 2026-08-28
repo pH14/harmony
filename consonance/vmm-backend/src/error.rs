@@ -14,11 +14,11 @@ pub type Result<T> = core::result::Result<T, BackendError>;
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
     /// A trait method this backend does not implement (e.g. bring-up
-    /// `KvmBackend::run_until`/`inject`, which are Phase 2). `what` names the
+    /// an optional backend operation such as interrupt injection). `what` names the
     /// method so the unison report can say what is missing.
     #[error("backend does not support: {what}")]
     Unsupported {
-        /// The unsupported operation (`"run_until"`, `"inject"`, …).
+        /// The unsupported operation (`"inject"`, …).
         what: &'static str,
     },
 
@@ -29,7 +29,7 @@ pub enum BackendError {
         cap: &'static str,
     },
 
-    /// `run`/`run_until` called before BOTH `set_cpuid` and `set_msr_filter`
+    /// `run` called before BOTH `set_cpuid` and `set_msr_filter`
     /// succeeded — running on host-derived CPUID/MSR defaults would leak
     /// nondeterminism, so the backend fails closed instead.
     #[error("backend not configured: set_cpuid + set_msr_filter required before run")]
@@ -40,7 +40,7 @@ pub enum BackendError {
     #[error("memory mapping error: {0}")]
     Memory(&'static str),
 
-    /// `run`/`run_until` called with an un-serviced read-style / `Wrmsr` /
+    /// `run` called with an un-serviced read-style / `Wrmsr` /
     /// `Hypercall` / `Cpuid` exit still pending. Fail closed: resuming such an
     /// exit without its completion would silently mis-service the guest.
     #[error("exit awaiting completion before resume")]

@@ -20,7 +20,7 @@
 //!
 //! Id **5** is the task-61 `Net` vertical (the first guest-plane fault path); the
 //! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
-//! task-110 paravirt work-derived clock registration ([`Pvclock`](ServiceId::Pvclock))
+//! task-110 paravirt virtual-time clock registration ([`Pvclock`](ServiceId::Pvclock))
 //! takes id **7**; the ordered cooperating-workload payload service takes id
 //! **8**. An
 //! unregistered service id or an opcode a service does not implement is a
@@ -121,7 +121,7 @@ pub enum ServiceId {
     /// round-trip a deterministic answer; the host resolves scheduling through
     /// its `Environment::decide` seam at the surfacing `Moment`.
     Sdk = 6,
-    /// Paravirt work-derived clock registration (task 110,
+    /// Paravirt virtual-time clock registration (task 110,
     /// `docs/PARAVIRT-CLOCK.md` §3.1): the guest publishes the guest-physical
     /// address of its 4 KiB clock page (op 1, `pvclock_register` — an 8-byte
     /// little-endian GPA). The host validates the GPA (page-aligned, inside
@@ -133,18 +133,18 @@ pub enum ServiceId {
     /// response.** The doorbell `OUT` is a plain PIO exit, not a V-time
     /// intercept, so the host lays down the first page stamp and arms its
     /// staleness refresh only at the guest's **required** post-response counter
-    /// read (an `RDTSC`/`RDTSCP` — a genuine skid-free intercept). A conforming
+    /// read (an `RDTSC`/`RDTSCP` — a genuine exit-boundary variability-free intercept). A conforming
     /// guest MUST execute that read before reading the page: reading the page
     /// immediately after the response would observe stale bytes (ABI version
     /// zero / no `MATERIALIZED` flag). A guest that omits the handshake is out of
     /// contract — its page is never stamped and never refreshed.
     ///
     /// A host not composed with the clock page — or one whose backend has no
-    /// deterministic work counter to derive the stamps from — answers
+    /// deterministic exit-count clock to derive the stamps from — answers
     /// [`Status::UnknownService`], and the guest keeps its trap-backstopped time
     /// paths (the page is pure opt-in on both sides).
     Pvclock = 7,
-    /// Ordered cooperating-workload input service (prescriptive V-time M2).
+    /// Ordered cooperating-workload input service (virtual_time V-time M2).
     /// Opcode 1 carries a 4-byte little-endian requested length and consumes
     /// exactly one entry from the branch's recorded payload tape. The response
     /// is that entry verbatim. Exhaustion is [`Status::OutOfRange`]; a length

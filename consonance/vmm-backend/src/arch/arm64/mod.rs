@@ -26,13 +26,6 @@ pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;
 
-/// `BR_RETIRED` (raw PMU event `0x21`, retired **taken** branches) — the arm64
-/// work-counter event (`docs/ARM-PORT.md` §2: a *different* event than x86's
-/// retired conditional branches `0x1c4`). The event *number* is a documented
-/// hardware fact; every count offset, density, and `skid_margin` derived from
-/// it is the spike's — `TODO(AA-1)`: measured constants pack.
-pub const RAW_BR_RETIRED: u64 = 0x21;
-
 /// The arm64 vendor (a zero-sized type; `docs/ARCH-BOUNDARY.md` §A/§D).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64;
@@ -201,7 +194,7 @@ pub struct Arm64Caps {
     /// snapshot. `false` means interrupt state is userspace-owned or absent.
     pub in_kernel_gic: bool,
     /// Guest reads of the virtual counter resolve to V-time — on arm64 via the
-    /// paravirt work-derived clock page (`docs/PARAVIRT-CLOCK.md` §4.2: no
+    /// paravirt virtual-time clock page (`docs/PARAVIRT-CLOCK.md` §4.2: no
     /// `CNTVCT` trap exists on reachable silicon, so closure is contract-level,
     /// never interception). `TODO(AA-5)`: validated on silicon; **honestly
     /// `false` for the stock backend.**

@@ -7,8 +7,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
-fn placement_event(error: &vmm_core::prescriptive::PlacementViolation) -> Option<u64> {
-    use vmm_core::prescriptive::PlacementViolation;
+fn placement_event(error: &vmm_core::virtual_time::PlacementViolation) -> Option<u64> {
+    use vmm_core::virtual_time::PlacementViolation;
 
     match error {
         PlacementViolation::BadEventIndex { position, .. } => Some(*position),
@@ -21,12 +21,12 @@ fn placement_event(error: &vmm_core::prescriptive::PlacementViolation) -> Option
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 fn write_normalized_log(
     path: &std::path::Path,
-    trace: &vmm_core::prescriptive::LivePrescriptiveTrace,
+    trace: &vmm_core::virtual_time::LiveVirtualTimeTrace,
 ) -> std::io::Result<()> {
     use std::io::Write;
 
     let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    writeln!(out, "format consonance.live-prescriptive-log.v1")?;
+    writeln!(out, "format consonance.live-virtual_time-log.v1")?;
     writeln!(out, "digest {}", hex(&trace.normalized_digest()))?;
     writeln!(out, "events {}", trace.normalized_log().events.len())?;
     for event in &trace.normalized_log().events {
@@ -217,7 +217,7 @@ fn main() -> std::process::ExitCode {
         };
         let _ = watchdog_tx.send(WatchdogCommand::Disarm);
         let current_portable_event = vmm
-            .prescriptive_trace()
+            .virtual_time_trace()
             .and_then(|trace| trace.normalized_log().events.last())
             .map(|logged| logged.event_index);
         let portable_component_match = current_portable_event
@@ -254,18 +254,18 @@ fn main() -> std::process::ExitCode {
             emitted = serial.len();
         }
         if serial.windows(READY.len()).any(|window| window == READY) {
-            use vmm_core::prescriptive::{
+            use vmm_core::virtual_time::{
                 LogField, check_delivery_placement, compare_normalized_logs,
             };
 
-            if let Err(error) = vmm.checkpoint_prescriptive_trace() {
-                eprintln!("cannot checkpoint production prescriptive trace: {error}");
+            if let Err(error) = vmm.checkpoint_virtual_time_trace() {
+                eprintln!("cannot checkpoint production virtual_time trace: {error}");
                 stop_watchdog(&watchdog_tx, watchdog);
                 return std::process::ExitCode::FAILURE;
             }
             let trace = vmm
-                .prescriptive_trace()
-                .expect("prescriptive HVF composition wires a production trace");
+                .virtual_time_trace()
+                .expect("virtual_time HVF composition wires a production trace");
             if let Some(path) = normalized_log_path.as_deref()
                 && let Err(error) = write_normalized_log(std::path::Path::new(path), trace)
             {
@@ -389,14 +389,14 @@ fn main() -> std::process::ExitCode {
     }
 
     if let Some(path) = normalized_log_path.as_deref() {
-        if let Err(error) = vmm.checkpoint_prescriptive_trace() {
-            eprintln!("cannot checkpoint bounded prescriptive trace: {error}");
+        if let Err(error) = vmm.checkpoint_virtual_time_trace() {
+            eprintln!("cannot checkpoint bounded virtual_time trace: {error}");
             stop_watchdog(&watchdog_tx, watchdog);
             return std::process::ExitCode::FAILURE;
         }
         let trace = vmm
-            .prescriptive_trace()
-            .expect("prescriptive HVF composition wires a production trace");
+            .virtual_time_trace()
+            .expect("virtual_time HVF composition wires a production trace");
         if let Err(error) = write_normalized_log(std::path::Path::new(path), trace) {
             eprintln!("cannot write bounded normalized log {path:?}: {error}");
             stop_watchdog(&watchdog_tx, watchdog);

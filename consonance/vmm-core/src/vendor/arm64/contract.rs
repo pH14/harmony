@@ -16,7 +16,7 @@
 use sha2::{Digest, Sha256};
 use vmm_backend::{Arm64Policy, IdRegModel, SysregTrapPolicy};
 
-use crate::prescriptive::PrescriptiveTiming;
+use crate::virtual_time::VirtualTimeTiming;
 
 /// Portable duration of interrupt-controller transactions.
 ///
@@ -45,10 +45,10 @@ pub const TRAPPED_TIME_READ_VNS: u64 = 1;
 /// OS debug lock at boot).
 pub const ARCH_CONTROL_EXIT_VNS: u64 = 1_000;
 
-/// The normative arm64 prescriptive timing row set. Production composition
-/// never uses `PrescriptiveTiming::default()`'s M0 placeholders.
-pub fn prescriptive_timing() -> PrescriptiveTiming {
-    PrescriptiveTiming {
+/// The normative arm64 virtual_time timing row set. Production composition
+/// never uses `VirtualTimeTiming::default()`'s M0 placeholders.
+pub fn virtual_time_timing() -> VirtualTimeTiming {
+    VirtualTimeTiming {
         interrupt_controller_mmio_vns: INTERRUPT_CONTROLLER_EXIT_VNS,
         serial_mmio_vns: SERIAL_EXIT_VNS,
         paravirtual_device_mmio_vns: PARAVIRTUAL_EXIT_VNS,
@@ -180,9 +180,9 @@ mod tests {
     }
 
     #[test]
-    fn production_prescriptive_timing_is_explicit_not_the_m0_default() {
-        let timing = prescriptive_timing();
-        assert_ne!(timing, PrescriptiveTiming::default());
+    fn production_virtual_time_timing_is_explicit_not_the_m0_default() {
+        let timing = virtual_time_timing();
+        assert_ne!(timing, VirtualTimeTiming::default());
         assert_eq!(timing.interrupt_controller_mmio_vns, 0);
         assert_eq!(timing.serial_mmio_vns, 2_000);
         assert_eq!(timing.paravirtual_device_mmio_vns, 1_000);

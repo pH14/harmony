@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Empirical probe for the Apple Silicon Hypervisor.framework surface used by
-//! the prescriptive V-time bring-up backend.
+//! the virtual_time V-time bring-up backend.
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
 mod arm64 {
@@ -711,7 +711,7 @@ mod arm64 {
     }
 
     pub fn run() -> Result<(), String> {
-        println!("HVF prescriptive V-time probe v1");
+        println!("HVF virtual_time V-time probe v1");
         println!("host: {}-{}", std::env::consts::OS, std::env::consts::ARCH);
         println!("sdk-assumption: macOS 26.4.1 SDK headers");
 
