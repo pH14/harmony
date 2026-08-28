@@ -817,7 +817,8 @@ impl<B: Backend> VirtualTimeRunLoop<B> {
 
 pub(crate) fn digest_payload(class: NormalizedEventClass, payload: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"consonance.virtual_time-event.v1\0");
+    // Frozen v1 event-domain identifier: N1 fixtures bind these digest bytes.
+    hasher.update(b"consonance.prescriptive-event.v1\0");
     hasher.update([class.tag()]);
     hasher.update(
         u64::try_from(payload.len())
@@ -1021,6 +1022,18 @@ pub fn check_delivery_placement(
 #[cfg(test)]
 mod live_trace_tests {
     use super::*;
+
+    #[test]
+    fn frozen_v1_empty_serial_payload_digest_is_stable() {
+        assert_eq!(
+            digest_payload(NormalizedEventClass::DeviceMmio(DeviceClass::Serial), &[],),
+            [
+                0x63, 0xa3, 0x23, 0x2e, 0xe8, 0xd6, 0x98, 0xd8, 0xfd, 0xd4, 0xd5, 0x38, 0x73, 0xef,
+                0x9a, 0xeb, 0x02, 0x0f, 0x90, 0x52, 0x1a, 0xa8, 0x53, 0xb4, 0x8f, 0xb4, 0x36, 0x93,
+                0xd9, 0xf0, 0x2d, 0x49,
+            ],
+        );
+    }
 
     #[test]
     fn raw_only_exit_does_not_consume_a_portable_ordinal() {

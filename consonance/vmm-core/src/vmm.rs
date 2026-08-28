@@ -1896,7 +1896,11 @@ where
         // have different futures and must hash differently. The refresh log
         // stays out (diagnostic, like the landing traces).
         if let Some(pv) = &self.pvclock {
-            let mut bytes = Vec::new();
+            // Preserve the frozen N1 PVCK preimage. N2 removed the configurable
+            // force-exit refresh deadline. Production ARM/x86 compositions used
+            // the value 1; retaining those historical bytes keeps attested state
+            // hashes stable without retaining the mechanism or configuration.
+            let mut bytes = 1_u64.to_le_bytes().to_vec();
             match pv.gpa {
                 Some(gpa) => {
                     bytes.push(1);
@@ -2053,7 +2057,7 @@ where
             // deterministic effective field `snapshot_vns(assigned_clock)`. Mirroring
             // the live read as a hashed component would falsely indict the
             // post-intercept exit-boundary variability the hash deliberately excludes.)
-            let mut cfg = Vec::new();
+            let mut cfg = 1_u64.to_le_bytes().to_vec();
             for x in [vt.cfg.guest_hz, vt.cfg.guest_base, vt.guest_clock_offset] {
                 cfg.extend_from_slice(&x.to_le_bytes());
             }
@@ -3994,6 +3998,12 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
 /// off an intercept) — same exit-boundary variability fact, different correct resolution.
 fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     let mut v = Vec::new();
+    // Preserve the frozen N1 VTIM preimage. These are the historical v1
+    // assigned-clock marker and integer conversion numerator; neither is live
+    // configuration after N2, but removing their bytes would rewrite every
+    // previously attested state hash.
+    v.push(1);
+    v.extend_from_slice(&1_u64.to_le_bytes());
     for x in [vt.cfg.guest_hz, vt.cfg.guest_base, vt.guest_clock_offset] {
         v.extend_from_slice(&x.to_le_bytes());
     }
@@ -6466,6 +6476,15 @@ mod tests {
         // Same seed + same cfg ⇒ same hash (deterministic; no false-different).
         let a2 = wired(1, contract_vclock_config());
         assert_eq!(a.state_hash(), a2.state_hash());
+    }
+
+    #[test]
+    fn vtime_hash_preimage_keeps_the_frozen_n1_prefix() {
+        let wiring =
+            VtimeWiring::new_virtual_time(contract_vclock_config(), 1).expect("valid wiring");
+        let encoded = encode_vtime(&wiring);
+        assert_eq!(encoded[0], 1, "historical assigned-clock marker");
+        assert_eq!(&encoded[1..9], &1_u64.to_le_bytes(), "historical ratio");
     }
 
     // -----------------------------------------------------------------------

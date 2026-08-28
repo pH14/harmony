@@ -295,9 +295,9 @@ surface snapshots are re-run on msr1 before this milestone can close.
 Searches over the non-historical tree find no retired modules, symbols,
 feature flags, patch names, or file names. A case-insensitive filename search
 for the retired qualifier returns only `docs/PRESCRIPTIVE-VTIME-STATUS.md`.
-Text matches outside the plan/status ledgers are links to that historical
-record or the six occurrences of the frozen v1 log token in the encoder,
-dumpers, and byte-comparison oracle described above. The workflow display
+  Text matches outside the plan/status ledgers are links to that historical
+  record or the seven occurrences of frozen v1 log/event tokens in the encoder,
+  dumpers, and byte-comparison oracle described above. The workflow display
 name and concurrency group are `x86-virtual-time`.
 
 ### Verification still required before N2 can be marked PASS
