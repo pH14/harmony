@@ -396,17 +396,17 @@ not orphaned implementation.
 
 ### Pre-optimization measurement and correctness findings
 
-**BLOCKED before optimization.** No performance implementation change has
-landed. The exact pre-optimization runner at `a9c83d93` was profiled on the M1
+**Baseline recorded before optimization.** No performance implementation change
+has landed. The exact pre-optimization runner at `9440f1f2` was profiled on the M1
 Max with the attested kernel (`91b4f578…a72f`) and reproducibly built initramfs
-(`c3939c77…66ab`). A 30-second `sample(1)` profile collected 22,611 main-thread
+(`c3939c77…66ab`). A 30-second `sample(1)` profile collected 22,558 main-thread
 samples:
 
 | Cost | Samples | Share of main-thread samples |
 | --- | ---: | ---: |
-| `sha2::sha256::compress256`, reached from `Vmm::step` checkpoint `state_hash` | 22,380 | 98.98% |
-| `state_hash` memory copy (`_platform_memmove`) | 183 | 0.81% |
-| HVF trap/run | 11 | 0.05% |
+| `sha2::sha256::compress256`, reached from `Vmm::step` checkpoint `state_hash` | 22,332 | 99.00% |
+| `state_hash` memory copy (`_platform_memmove`) | 180 | 0.80% |
+| HVF trap/run | 5 | 0.02% |
 
 Thus the measured top cost is the 512 MiB full-state SHA-256 at every 256th
 portable event; rendering, stdout, watchdog traffic, and HVF execution are not
@@ -458,17 +458,62 @@ than caused by the synchronous transport. [Issue #207](https://github.com/pH14/h
 records the exact counts and the six invariants plus two planted negatives an
 authorized repair must satisfy.
 
-Changing those comparator semantics was not accepted without explicit
-authorization because an incautious filter could weaken the anti-vacuity gate.
-Per the plan's stop rule, N3 does not claim a baseline, no optimization begins,
-and N4–N6 remain unstarted. An authorized repair must preserve independence:
-it must account for every raw-only exit explicitly and must fail if a portable
-normalized event is accidentally discarded (including a legitimate zero-time
-event), with a planted negative before this milestone can resume.
+### Comparator resolution and accepted baseline
 
-**N3 overall: BLOCKED.** The runner's independent counters do not measure the
-same event domain as the frozen portable trace. Redefining or filtering the
-gate without the explicit safeguards above would be a hollow pass.
+The integrator explicitly authorized issue #207's six-invariant repair.
+Commit `63980ca5` adds a structural disposition to every raw event: exactly one
+portable ordinal or `None` for a substrate-private exit. The M3 runner checks
+that raw ordinals are contiguous, portable ordinals are contiguous, the two
+dispositions partition every host-loop exit, and the portable count equals the
+normalized trace. Pvclock samples are retained at portable boundaries only;
+two equal samples are deliberately retained when a legitimate portable event
+advances zero time. Commit `9440f1f2` cfg-gates those host-runner helpers on
+non-macOS builds without changing behavior.
+
+The focused gate passes on macOS and Linux:
+
+```text
+positive partition: raw=3 portable=2 substrate-private=1 — PASS
+planted dropped portable event — REJECTED
+planted private-to-portable disposition — REJECTED
+zero-time portable event around a private exit — RETAINED
+LiveVirtualTimeTrace private then portable ordinals — PASS
+Linux frozen public API — PASS
+macOS and Linux vmm-core all-target Clippy -D warnings — PASS
+vmm-core library — 453 passed, 2 ignored
+```
+
+The exact `9440f1f2` run then produced a complete `status PASS` report. Report
+SHA-256 is `1a282d34…c0a5`; the 30-second profile SHA-256 is
+`7ecbd33e…b0fd`. All acceptance, watchdog, kernel-health, placement, gap, and
+independent-comparator oracles passed:
+
+```text
+raw/event-loop exits: 41,278 / 41,278
+portable events:      38,295
+substrate-private:     2,983
+trace/pvclock gaps:    30,959 / 30,959
+max gap:               1,000,000 V-ns (20,000,000 limit)
+trace digest:          84181418…c5ab8
+```
+
+This is the accepted pre-optimization phase table and ≥10× denominator:
+
+| Phase | Wall ns | Host loop exits |
+| --- | ---: | ---: |
+| boot to PostgreSQL start | 119,338,860,708 | 20,084 |
+| PostgreSQL startup | 52,292,723,750 | 10,080 |
+| ready to workload | 13,779,767,083 | 2,836 |
+| workload | 30,485,590,709 | 5,771 |
+| PostgreSQL shutdown | 9,181,723,708 | 1,650 |
+| kernel health | 4,562,046,167 | 857 |
+| **total** | **229,640,712,125** | **41,278** |
+
+No performance optimization predates this committed baseline and profile.
+N3 remains **IN PROGRESS** until a post-change run is at most
+22,964,071,212 ns, every optimization commit has its reference rerun listed,
+the three-machine normalized logs and state-hash sequences remain identical,
+and the benchmark harness is committed.
 
 ## N4 — the guest is part of Consonance
 
