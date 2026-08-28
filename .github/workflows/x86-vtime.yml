@@ -226,30 +226,9 @@ jobs:
       - name: X2 smoke (one prescriptive stock boot)
         run: |
           grep -m1 "model name" /proc/cpuinfo | tee x2-report.txt
-          # The 94 pages the first cross-vendor fingerprint pair flagged (run
-          # 33102326007); their bytes go into the dump so the next pair names
-          # exact offsets and values.
-          X2_PAGE_HEX=0x2400000,0x3490000,0x3491000,0x3492000,0x3493000,0x3494000,0x3495000,0x3496000,0x3497000,0x34e0000,0x34e1000,0x34e2000,0x34e3000,0x34e4000,0x34e5000,0x34e6000,0x34e7000,0x3530000,0x3531000,0x3532000,0x3533000,0x3534000,0x3535000,0x3536000,0x3537000,0x35d8000,0x35d9000,0x35da000,0x35db000,0x35dc000,0x35dd000,0x35de000,0x35df000,0x37e0000,0x37e1000,0x37e2000,0x37e3000,0x37e4000,0x37e5000,0x37e6000,0x37e7000,0x37e8000,0x37e9000,0x37ea000,0x37eb000,0x37ec000,0x37ed000,0x37ee000,0x37ef000,0x41b8000,0x41b9000,0x41ba000,0x41bb000,0x41bc000,0x41bd000,0x41be000,0x41bf000,0x42a0000,0x42a1000,0x42a2000,0x42a3000,0x42a4000,0x42a5000,0x42a6000,0x42a7000,0x4348000,0x4349000,0x434a000,0x434b000,0x434c000,0x434d000,0x434e000,0x434f000,0x4350000,0x4351000,0x4352000,0x4353000,0x4354000,0x4355000,0x4356000,0x4357000,0x4370000,0x4371000,0x4372000,0x4373000,0x4374000,0x4375000,0x4376000,0x4377000,0x4378000,0x4379000,0x437a000,0x437b000,0x437c000 \
           X2_LOG_DUMP=$PWD/x2-normalized-log.txt timeout -k 10 900 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
             x2_prescriptive_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee -a x2-report.txt
-      # The three dump bounds each sit exactly on the first divergent
-      # checkpoint of one transient cross-vendor window (run 33125818156:
-      # checkpoints 14335, 17151-17919, 34559-35071, each re-converged by the
-      # terminal); a bound of N dumps the state hashed at checkpoint N-1.
-      - name: X2 mid-boot state dumps (step-bounded)
-        run: |
-          # Checkpoint 35071 is the one cross-vendor divergent sample left
-          # on the AF-pinned kernel (run 33132135167); this dump captures the
-          # state it hashes. 0x25ff000 is the page its fingerprint flagged
-          # (run 33133566870) — a dynamically allocated page, so the bytes
-          # name the owner.
-          for bound in 35072; do
-            X2_PAGE_HEX=0x25ff000 \
-            X2_DUMP_AT_STEPS=$bound X2_LOG_DUMP=$PWD/x2-midboot-$bound.txt timeout -k 10 600 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
-              x2_prescriptive_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
-              2>&1 | tail -n 5 | tee -a x2-report.txt
-          done
       - name: X2 determinism (10 same-seed boots, one normalized log)
         run: |
           X2_BOOTS=10 timeout -k 10 1500 cargo test --release -p vmm-core --test x86_kvm_linux_prescriptive \
@@ -278,11 +257,10 @@ jobs:
           path: |
             x2-report.txt
             x2-normalized-log.txt
-            x2-midboot-*.txt
           if-no-files-found: error
 
-  # Hunt for an Intel hardware draw: the pool serves Intel rarely and the open
-  # first-checkpoint divergence has only been observed there. Each replica
+  # Widen the vendor sample: the pool serves Intel rarely, and every closed
+  # cross-vendor divergence needed an Intel draw to observe. Each replica
   # prints its CPU model and runs only the bounded first-checkpoint localizer
   # (sub-second boots), so a wide matrix is cheap. Report-only: an AMD draw
   # finding no divergent pair is the expected common case.
