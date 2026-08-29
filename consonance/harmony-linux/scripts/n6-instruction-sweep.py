@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -24,9 +25,12 @@ PREFIX = "N6_ROW "
 TRAP_ROWS = {
     "arm64-virtual-counter",
     "arm64-physical-counter",
+    "arm64-live-timer-programming",
     "arm64-pmu",
     "x86-tsc",
     "x86-pmu",
+    "x86-monitor-mwait",
+    "x86-waitpkg",
 }
 
 
@@ -90,6 +94,7 @@ def load_rows(path: Path) -> list[Row]:
         arch = raw.get("arch")
         claim = raw.get("claim")
         operations = raw.get("operations")
+        operation_expansions = raw.get("operation-expansions", [])
         if not isinstance(identifier, str) or not identifier:
             raise SweepError(f"row {index} has no non-empty id")
         if identifier in seen:
@@ -103,6 +108,25 @@ def load_rows(path: Path) -> list[Row]:
             isinstance(operation, str) and operation for operation in operations
         ):
             raise SweepError(f"{identifier}: operations must be non-empty strings")
+        if not isinstance(operation_expansions, list) or not all(
+            isinstance(operation, str) and operation for operation in operation_expansions
+        ):
+            raise SweepError(f"{identifier}: operation-expansions must be strings")
+        expanded_operations = list(operations)
+        for expansion in operation_expansions:
+            match = re.fullmatch(
+                r"(MRS|MSR) (PMEVCNTR|PMEVTYPER)\[0-30\]_EL0", expansion
+            )
+            if match:
+                direction, register = match.groups()
+                expanded_operations.extend(
+                    f"{direction} {register}{index}_EL0" for index in range(31)
+                )
+            elif re.fullmatch(r"MRS ID_AA64AFR[01]_EL1", expansion):
+                expanded_operations.append(expansion)
+            else:
+                raise SweepError(f"{identifier}: unsupported operation expansion {expansion!r}")
+        operations = expanded_operations
         if len(set(operations)) != len(operations):
             raise SweepError(f"{identifier}: duplicate operation")
         if claim == "mask-and-audit" and raw.get("channel") != "entropy":
