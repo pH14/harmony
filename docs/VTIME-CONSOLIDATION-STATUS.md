@@ -656,26 +656,31 @@ listed above. **N3 overall: PASS.**
 
 ## N4 — the guest is part of Consonance
 
-In progress at exact implementation commit `4b62de3f`. The final repository
+**PASS** at exact implementation commit `4b62de3f`; later tree changes through
+this status update are documentation-only. The final repository
 gates, fresh moved-tree artifacts, corrected-tree live references, x86
 guest/KUnit gate, both-vendor primary X2 references, and Miri evidence are
 complete. A reference rerun on ancestor
 `f2a24062` honestly exposed a guest-visible KVM MIDR leak; that run and its
-internally deterministic halves are diagnostic only. N4 remains open for the
-standing-rule issue bookkeeping; none of the evidence below is represented as
-an N4 pass before that closes.
+internally deterministic halves are diagnostic only. The standing-rule issue
+bookkeeping is complete as recorded below.
 
-### Remaining issue bookkeeping
+### Issue bookkeeping
 
-The read-only sweep after the final references found issues #172 and #211 still
-open; #208, #209, and #210 are closed. N4 cannot pass until #172 is closed with
-the fixed-driver positive/planted-negative evidence, #211 is closed with the
-portable terminal-whitespace repair and corrected KUnit run, and separate
-issues record the repaired x86 workflow cache-key defect and the repaired
-guest-visible ARM MIDR leak. Publication was attempted for each new finding,
-but the external-write guard required explicit user authorization for the
-commit/run/diagnostic payload and rejected the writes. Per that guard, no retry
-or workaround is made without that authorization.
+- [#172](https://github.com/pH14/harmony/issues/172) was closed completed with
+  the fixed-driver cold-build positive and planted no-lock negative evidence.
+- [#211](https://github.com/pH14/harmony/issues/211) was closed completed with
+  the portable terminal-whitespace repair, extra-suffix rejection control, and
+  corrected KUnit workflow evidence.
+- [#212](https://github.com/pH14/harmony/issues/212) records the vacuous prior
+  host-side MIDR probe, first cross-backend divergence, repair, live in-guest
+  `MRS MIDR_EL1`, Miri result, and final byte-equal reference.
+- [#213](https://github.com/pH14/harmony/issues/213) records the mismatched x86
+  hunt image-cache key, the failed-closed discovery run, one-line repair, and
+  final both-vendor green references.
+
+Issues #208, #209, and #210 were already closed with their successful repair
+evidence. Thus every bug found during N4 has a durable GitHub issue record.
 
 ### Layout and doorbell decisions
 
@@ -989,6 +994,27 @@ preserved it. Its byte-equality result is retained as technical evidence but is
 not used as the final ordered N4 reference; after the Miri wait finishes and the
 plan-only commit is pushed, the boot and campaign references are rerun through
 the canonical `consonance.slice` nested-flock form.
+
+### N4 result
+
+- **PASS:** the owned guest tree is at `consonance/harmony-linux/`; build
+  entrypoints, workflows, documents, and agent paths follow it without changing
+  the GPL/AGPL boundary.
+- **PASS:** all repository checks passed at the moved layout on macOS and Linux,
+  including the required unsafe-crate Miri coverage.
+- **PASS:** the N1 references passed again on M1 Max HVF, msr1 KVM, and GitHub
+  x86 KVM, including final ARM byte equality and primary AMD/Intel X2 runs.
+- **PASS:** every credited guest image was freshly built from the moved tree;
+  the four artifact hashes above were verified against fresh manifests on the
+  reference hosts rather than inherited from the old path.
+- **PASS:** the `/dev/harmony` concurrent-ringer positive passed on the fixed
+  driver and the same gate rejected a freshly built planted no-lock mutant.
+- **PASS:** issues #172 and #211 are closed with evidence and every additional
+  bug found during the milestone is filed as #208–#210, #212, or #213.
+
+**N4 overall: PASS.** The moved guest is part of Consonance, the serialization
+race is closed by one kernel-owned path with a non-vacuous negative, and the
+three-host rebuilt references and fresh manifests meet both clauses.
 
 ## N5 — reproducible guest builds
 
