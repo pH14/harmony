@@ -170,44 +170,8 @@ chmod 1777 "$container_root/tmp" "$container_root/dev/shm"
 
 # Functional device nodes for build-time initdb. Runtime replaces /dev with a
 # bind mount from the guest devtmpfs inside the container's mount namespace.
-# A path-backed Nix store evaluates/runs in a user namespace whose apparent
-# root cannot call mknod(2). In that case the outer, already-isolated build
-# payload owns a two-request helper; it validates the exact paths and device
-# numbers before creating them in the shared underlying filesystem.
-create_build_device() {
-    path=$1
-    major=$2
-    minor=$3
-    if [ -n "${HARMONY_MKNOD_REQUEST_FIFO:-}" ] \
-        || [ -n "${HARMONY_MKNOD_ACK_FIFO:-}" ]; then
-        [ -n "${HARMONY_MKNOD_REQUEST_FIFO:-}" ] \
-            && [ -n "${HARMONY_MKNOD_ACK_FIFO:-}" ] || {
-                echo "FAIL: both mknod helper FIFOs are required" >&2
-                exit 1
-            }
-        printf '%s %s %s\n' "$path" "$major" "$minor" \
-            >"$HARMONY_MKNOD_REQUEST_FIFO"
-        IFS= read -r ack <"$HARMONY_MKNOD_ACK_FIFO"
-        [ "$ack" = "OK $path" ] || {
-            echo "FAIL: mknod helper rejected $path: $ack" >&2
-            exit 1
-        }
-    else
-        mknod -m 0666 "$path" c "$major" "$minor"
-    fi
-    [ -c "$path" ] || {
-        echo "FAIL: build device is not a character node: $path" >&2
-        exit 1
-    }
-    actual=$(stat -c '%t:%T' "$path")
-    [ "$actual" = "$major:$minor" ] || {
-        echo "FAIL: build device number mismatch for $path: $actual" >&2
-        exit 1
-    }
-}
-
-create_build_device "$container_root/dev/null" 1 3
-create_build_device "$container_root/dev/urandom" 1 9
+mknod -m 0666 "$container_root/dev/null" c 1 3
+mknod -m 0666 "$container_root/dev/urandom" c 1 9
 install -d -o 65534 -g 65534 -m 0700 "$container_root$pgdata"
 echo "== arm64 postgres image: pre-baking PGDATA as uid 65534"
 chroot --userspec=65534:65534 "$container_root" \

@@ -1149,9 +1149,35 @@ capabilities but failed with `EPERM`. The candidate bridge then passed as
 `harmony-n5-helper-integration.service`: a client inside the Nix user namespace
 requested exactly `null` 1:3 and `urandom` 1:9 over FIFOs, the outer helper
 validated their temporary PostgreSQL-root paths and identities, created and
-verified both nodes, and the test removed them. The committed helper has no
-general device-node interface; any different path, name, number, pre-existing
-target, non-FIFO endpoint, or failed post-create verification stops the build.
+verified both nodes, and the test removed them. This proved the immediate
+`mknod` diagnosis, but the candidate helper was not retained as the solution.
+
+The next fresh-store run, `harmony-n5-nix-bffc15be-r3.service`, began at
+`2026-08-29T08:46:29Z` (invocation
+`279c595a87d44d00baf5e37596ed2d7a`) on exact commit `bffc15be`. Outer PID
+381751 and benchmark-lock PID 381753 held the canonical compute-W then
+benchmark-R pair; payload PID 381754 began afterward at
+`08:46:29.113900017Z`. Its cgroup was `consonance.slice`, and declared,
+effective, and observed CPUs were all exactly `2-5`; Cargo, make, and Nix were
+capped at four jobs. The bridge created and verified the two requested device
+nodes, proving that boundary, but the following `install -o 65534` failed with
+`EINVAL`: the path-store user namespace also cannot map the runtime PostgreSQL
+uid. The unit exited fail-closed at `10:00:31Z`, published no manifest, and is
+invalidated. Rather than grow a syscall-by-syscall privilege bridge, the final
+design populates the clean store first and executes its exact app from a
+read-only bind at `/nix/store` inside a mount-only namespace. This preserves the
+isolated closure while retaining the real root namespace required by `mknod`,
+`chown`, `chroot`, and uid 65534.
+
+The bounded launcher proof used the already-populated r3 store without starting
+another image build. `harmony-n5-resolve-app-probe.service` resolved the exact
+locked app as
+`/nix/store/4miazr16...-harmony-build-guest-images`; then
+`harmony-n5-mount-launcher-probe.service` entered a mount-only namespace, bound
+that store at `/nix/store`, and reached the app's own argument parser. Its
+intentional lone `--output` argument produced the expected usage exit 2, rather
+than a mount, loader, or store-path failure. Both probes used the canonical
+compute-W then benchmark-R ExecStart shape in `consonance.slice` on CPUs `2-5`.
 
 GitHub run `33239700060` is also invalidated: its locked x86 build produced the
 expected hashes, but the pre-existing serialization test could not find QEMU.
