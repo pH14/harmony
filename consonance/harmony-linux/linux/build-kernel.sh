@@ -49,7 +49,8 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 allnoconfig
     "$KOBJ/.config" \
     "$LINUX_DIR"/kata/common/*.conf \
     "$LINUX_DIR"/kata/x86_64/*.conf \
-    "$LINUX_DIR/config-fragment")
+    "$LINUX_DIR/config-fragment" \
+    ${N6_TRAPS_OFF:+"$LINUX_DIR/x86-n6-traps-off-config-fragment"})
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 olddefconfig
 
 # merge_config only warns when a fragment symbol cannot take effect; assert the ones
@@ -81,6 +82,11 @@ assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS SYSFS DEVTMPFS ACPI PCI \
     HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
     HARMONY_PVCLOCK HARMONY_DEVICE
+if [ -n "${N6_TRAPS_OFF:-}" ]; then
+    assert_off HARMONY_USER_COUNTER_TRAPS
+else
+    assert_y HARMONY_USER_COUNTER_TRAPS
+fi
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)
 # Determinism overlay: every symbol below is set ON by the Kata base and must be
@@ -130,5 +136,9 @@ bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" \
     "${HARMONY_RDRAND_ALLOWLIST:-$LINUX_DIR/rdrand-allowlist.txt}"
 
 # Publish ONLY after the scan passed.
-install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/bzImage"
-echo "ok: $ART_DIR/bzImage"
+kernel_output=bzImage
+if [ -n "${N6_TRAPS_OFF:-}" ]; then
+    kernel_output=bzImage-n6-traps-off
+fi
+install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/$kernel_output"
+echo "ok: $ART_DIR/$kernel_output"

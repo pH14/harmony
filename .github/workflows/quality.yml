@@ -74,6 +74,13 @@ jobs:
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
+      - name: N6 instruction-defense generators and planted negatives
+        run: |
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
+          cmp /tmp/n6-listing.tsv docs/determinism-instructions.generated.tsv
+          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
+          python3 consonance/vmm-backend/kvm-patches/n6-tripwire-audit.py
       # The ARCH-BOUNDARY seam gate (tasks/108). The whole point of the `Arch` trait
       # + engine/vendor split is that a NON-x86 vendor can be added additively — but
       # nothing else in CI would ever notice if that stopped being true, because this

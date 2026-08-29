@@ -25,7 +25,7 @@ fn main() -> std::process::ExitCode {
     use vmm_core::vendor::arm64::bringup;
     use vmm_core::vmm::Step;
 
-    const READY: &[u8] = b"HARMONY_AA5_READY";
+    const DEFAULT_READY: &[u8] = b"HARMONY_AA5_READY";
     const DEFAULT_RAM: usize = 128 * 1024 * 1024;
     const DEFAULT_MAX_EVENTS: u64 = 1_000_000;
 
@@ -57,6 +57,12 @@ fn main() -> std::process::ExitCode {
         eprintln!(
             "usage: kvm_arm64_boot <Image> <initramfs.cpio.gz> [max-events] [normalized-log]"
         );
+        return std::process::ExitCode::from(2);
+    }
+    let ready = std::env::var("HARMONY_READY_MARKER")
+        .map_or_else(|_| DEFAULT_READY.to_vec(), String::into_bytes);
+    if ready.is_empty() {
+        eprintln!("HARMONY_READY_MARKER must not be empty");
         return std::process::ExitCode::from(2);
     }
     let component_event = std::env::var("HARMONY_COMPONENT_EVENT")
@@ -149,7 +155,7 @@ fn main() -> std::process::ExitCode {
             }
             emitted = serial.len();
         }
-        if serial.windows(READY.len()).any(|window| window == READY) {
+        if serial.windows(ready.len()).any(|window| window == ready) {
             use vmm_core::vendor::arm64::compare_gic_architecture;
             use vmm_core::virtual_time::{
                 LogField, check_delivery_placement, compare_normalized_logs,

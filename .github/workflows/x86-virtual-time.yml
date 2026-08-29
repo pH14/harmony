@@ -133,7 +133,8 @@ jobs:
           mkdir -p nix-guest-output consonance/harmony-linux/build
           nix run .#guest-images -- \
             --output "$PWD/nix-guest-output" \
-            --serialization-gate
+            --serialization-gate \
+            --n6
           cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
           cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
           (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
@@ -146,6 +147,49 @@ jobs:
         with:
           name: x86-guest-image
           path: nix-guest-output
+          if-no-files-found: error
+
+  # N6: the table-generated hostile JIT sweep. The traps-off kernel must be
+  # rejected first; only then may two same-seed traps-on boots receive credit.
+  n6-instruction-sweep:
+    needs: guest-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Download locked N6 guest images
+        uses: actions/download-artifact@v4
+        with:
+          name: x86-guest-image
+          path: nix-guest-output
+      - name: Stage N6 guest images
+        run: |
+          mkdir -p consonance/harmony-linux/build
+          for name in bzImage bzImage-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
+            cp "nix-guest-output/x86_64/$name" consonance/harmony-linux/build/
+          done
+          (cd nix-guest-output && sha256sum -c guest-image-report.txt)
+      - name: Run static N6 positives and planted negatives
+        run: |
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
+          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
+          python3 consonance/vmm-backend/kvm-patches/n6-tripwire-audit.py
+      - name: Run traps-off negative, then two traps-on JIT sweeps
+        run: |
+          mkdir -p n6-report
+          N6_REPORT_DIR="$PWD/n6-report" timeout -k 10 1800 \
+            cargo test --release -p vmm-core --test n6_x86_instruction_sweep \
+              -- --ignored --test-threads=1 --nocapture 2>&1 | tee n6-report/test.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-n6-instruction-sweep
+          path: n6-report
           if-no-files-found: error
 
   # X2: Linux boots to /init under assigned-at-exit V-time on the stock

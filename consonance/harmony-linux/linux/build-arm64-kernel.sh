@@ -35,6 +35,12 @@ case "$arm64_profile" in
         arm64_output=Image-postgres
         arm64_extra_fragment=$LINUX_DIR/arm64-postgres-config-fragment
         ;;
+    n6-traps-off)
+        arm64_source_root=$BUILD_ROOT/arm64-n6-traps-off-src
+        arm64_object_root=$BUILD_ROOT/kernel-build-arm64-n6-traps-off
+        arm64_output=Image-n6-traps-off
+        arm64_extra_fragment=$LINUX_DIR/arm64-n6-traps-off-config-fragment
+        ;;
     *)
         echo "FAIL: unknown ARM64_KERNEL_PROFILE=$arm64_profile (want minimal, game, or postgres)" >&2
         exit 1
@@ -147,6 +153,11 @@ assert_y ARM64 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
     GENERIC_IDLE_POLL_SETUP \
     ARM64_USE_LSE_ATOMICS ARM64_LSE_ATOMICS HARMONY_ARM_LSE_ONLY \
     HZ_PERIODIC HZ_100 STRICT_KERNEL_RWX
+if [ "$arm64_profile" != n6-traps-off ]; then
+    assert_y HARMONY_ARM_USER_COUNTER_TRAPS
+else
+    assert_off HARMONY_ARM_USER_COUNTER_TRAPS
+fi
 assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
     NO_HZ_IDLE NO_HZ_FULL RANDOMIZE_BASE HW_RANDOM \
     TRANSPARENT_HUGEPAGE KSM SUSPEND HIBERNATION \
@@ -157,7 +168,7 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES HIGH_RES_TIMERS NO_HZ_COMMON \
     BPF_SYSCALL BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH \
     PERF_EVENTS HW_PERF_EVENTS
 case "$arm64_profile" in
-    minimal)
+    minimal|n6-traps-off)
         assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
         ;;
     game)

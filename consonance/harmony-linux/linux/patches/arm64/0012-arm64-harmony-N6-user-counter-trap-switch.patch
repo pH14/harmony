@@ -1,0 +1,53 @@
+arm64: make Harmony EL0 counter confinement independently testable
+
+N6 must prove the counter trap with the trap switched off before crediting the
+normal configuration. Split the EL0 CNTKCTL confinement from the clock-page
+option without changing the default Harmony guest: the new option defaults on
+and is the condition at both initial setup and context switch. A dedicated N6
+negative kernel can now retain the deterministic pvclock while disabling only
+EL0 counter confinement.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/clocksource/Kconfig
++++ b/drivers/clocksource/Kconfig
+@@ -338,6 +338,16 @@ config HARMONY_ARM_PVCLOCK
+ 
+ 	  This is a dedicated Harmony guest option. Say N for ordinary kernels.
+ 
++config HARMONY_ARM_USER_COUNTER_TRAPS
++	bool "Harmony deny EL0 generic-counter reads"
++	depends on HARMONY_ARM_PVCLOCK
++	default y
++	help
++	  Clear CNTKCTL_EL1's EL0 physical/virtual counter access bits on every
++	  context switch. This is a cooperative-guest confinement layer for raw
++	  CNTPCT/CNTVCT JIT code. Disable only for the N6 planted negative that
++	  proves the hostile probe detects a live counter.
++
+ config ARM_ARCH_TIMER_EVTSTREAM
+ 	bool "Enable ARM architected timer event stream generation by default"
+ 	default y if ARM_ARCH_TIMER
+--- a/drivers/clocksource/arm_arch_timer.c
++++ b/drivers/clocksource/arm_arch_timer.c
+@@ -794,7 +794,7 @@ static void arch_counter_set_user_access(void)
+ 			| ARCH_TIMER_VIRT_EVT_EN
+ 			| ARCH_TIMER_USR_PCT_ACCESS_EN);
+ 
+-	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK)) {
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_USER_COUNTER_TRAPS)) {
+ 		/*
+ 		 * N1 cannot trap EL0 CNTVCT at EL2. Deny it at EL1 and force
+ 		 * clock_gettime through the syscall/page-backed clocksource.
+--- a/arch/arm64/kernel/process.c
++++ b/arch/arm64/kernel/process.c
+@@ -662,7 +662,7 @@ static void update_cntkctl_el1(struct task_struct *next)
+ 	struct thread_info *ti = task_thread_info(next);
+ 
+-	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK) ||
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_USER_COUNTER_TRAPS) ||
+ 	    test_ti_thread_flag(ti, TIF_TSC_SIGSEGV) ||
+ 	    has_erratum_handler(read_cntvct_el0) ||
+ 	    (IS_ENABLED(CONFIG_ARM64_ERRATUM_1418040) &&

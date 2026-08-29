@@ -1,0 +1,59 @@
+x86: make Harmony ring-3 TSC confinement independently testable
+
+Stock KVM cannot surface RDTSC/RDTSCP to userspace. N6 therefore confines raw
+ring-3 reads with CR4.TSD and must first prove a traps-off kernel fails its JIT
+probe. Add a default-on Harmony config that applies PR_TSC_SIGSEGV at exec and
+prevents the process from undoing it. The dedicated N6 negative disables only
+this option; the pvclock and every other determinism pin remain enabled.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -845,7 +845,16 @@ config HARMONY_PVCLOCK
+ 	  harmony_pvclock kernel parameter is present AND the host accepts
+ 	  the page registration over the hypercall doorbell; when active the
+ 	  TSC is marked unstable so kernel timekeeping can never fall back
+ 	  to raw RDTSC. Say N unless building the harmony determinism guest.
++
++config HARMONY_USER_COUNTER_TRAPS
++	bool "Harmony deny ring-3 TSC reads"
++	depends on HARMONY_PVCLOCK
++	default y
++	help
++	  Set CR4.TSD for every newly executed userspace image and refuse a
++	  subsequent PR_TSC_ENABLE. Disable only for the N6 planted negative
++	  kernel that proves the hostile JIT probe detects a live TSC.
+ 
+ config KVM_GUEST
+ 	bool "KVM Guest support (including kvmclock)"
+--- a/arch/x86/kernel/process.c
++++ b/arch/x86/kernel/process.c
+@@ -331,9 +331,11 @@ int set_tsc_mode(unsigned int val)
+ {
+ 	if (val == PR_TSC_SIGSEGV)
+ 		disable_TSC();
+-	else if (val == PR_TSC_ENABLE)
++	else if (val == PR_TSC_ENABLE) {
++		if (IS_ENABLED(CONFIG_HARMONY_USER_COUNTER_TRAPS))
++			return -EPERM;
+ 		enable_TSC();
+-	else
++	} else
+ 		return -EINVAL;
+ 
+ 	return 0;
+--- a/arch/x86/kernel/process_64.c
++++ b/arch/x86/kernel/process_64.c
+@@ -531,6 +531,9 @@ start_thread_common(struct pt_regs *regs, unsigned long new_ip,
+ 	}
+ 
+ 	reset_thread_features();
++	if (IS_ENABLED(CONFIG_HARMONY_USER_COUNTER_TRAPS) &&
++	    WARN_ON_ONCE(set_tsc_mode(PR_TSC_SIGSEGV)))
++		return;
+ 
+ 	loadsegment(fs, 0);
+ 	loadsegment(es, _ds);

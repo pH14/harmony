@@ -8,7 +8,7 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: harmony-build-guest-images --output DIR [--rom FILE] [--minimal-only] [--mutate-cache-line] [--serialization-gate]" >&2
+    echo "usage: harmony-build-guest-images --output DIR [--rom FILE] [--minimal-only] [--mutate-cache-line] [--serialization-gate] [--n6]" >&2
     exit 2
 }
 
@@ -17,6 +17,7 @@ rom=
 minimal_only=0
 mutate_cache_line=0
 serialization_gate=0
+n6=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --output)
@@ -39,6 +40,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --serialization-gate)
             serialization_gate=1
+            shift
+            ;;
+        --n6)
+            n6=1
             shift
             ;;
         *) usage ;;
@@ -211,6 +216,13 @@ if [ "$host_arch" = aarch64 ]; then
 
     echo "== N5: build minimal ARM kernel and initramfs"
     (cd "$linux_dir" && ./build-arm64-kernel.sh && ./build-arm64-initramfs.sh)
+    if [ "$n6" -eq 1 ]; then
+        echo "== N6: build generated sweep and traps-off ARM kernel"
+        (cd "$linux_dir" && \
+            HARMONY_N6_CC="$build_root/musl-arm64-game-prefix/bin/musl-gcc" \
+                ./build-n6-instruction-images.sh && \
+            ARM64_KERNEL_PROFILE=n6-traps-off ./build-arm64-kernel.sh)
+    fi
 
     if [ "$minimal_only" -eq 0 ]; then
         echo "== N5: build NES kernel, initramfs, and payload"
@@ -243,9 +255,24 @@ if [ "$host_arch" = aarch64 ]; then
         }
         cp -p "$artifacts/arm64/$name" "$stage/arm64/$name"
     done
+    if [ "$n6" -eq 1 ]; then
+        for name in Image-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
+            [ -f "$artifacts/arm64/$name" ] || {
+                echo "FAIL: N6 lock build did not produce arm64/$name" >&2
+                exit 1
+            }
+            cp -p "$artifacts/arm64/$name" "$stage/arm64/$name"
+        done
+    fi
 else
     echo "== N5: build minimal x86 kernel and initramfs"
     (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh)
+    if [ "$n6" -eq 1 ]; then
+        echo "== N6: build generated sweep and traps-off x86 kernel"
+        (cd "$linux_dir" && \
+            ./build-n6-instruction-images.sh && \
+            N6_TRAPS_OFF=1 ./build-kernel.sh)
+    fi
     if [ "$serialization_gate" -eq 1 ]; then
         echo "== N5: run /dev/harmony serialization positive and planted negative"
         (cd "$linux_dir" && ./test-harmony-serialization.sh)
@@ -258,6 +285,15 @@ else
         }
         cp -p "$artifacts/$name" "$stage/x86_64/$name"
     done
+    if [ "$n6" -eq 1 ]; then
+        for name in bzImage-n6-traps-off initramfs-n6.cpio.gz initramfs-n6-traps-off.cpio.gz; do
+            [ -f "$artifacts/$name" ] || {
+                echo "FAIL: N6 lock build did not produce x86_64/$name" >&2
+                exit 1
+            }
+            cp -p "$artifacts/$name" "$stage/x86_64/$name"
+        done
+    fi
 fi
 
 # Compiler diagnostics and panic locations are part of the shipped byte stream.
