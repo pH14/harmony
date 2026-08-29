@@ -656,21 +656,339 @@ listed above. **N3 overall: PASS.**
 
 ## N4 — the guest is part of Consonance
 
-Not started.
+In progress at exact implementation commit `4b62de3f`. The final repository
+gates, fresh moved-tree artifacts, corrected-tree live references, x86
+guest/KUnit gate, both-vendor primary X2 references, and Miri evidence are
+complete. A reference rerun on ancestor
+`f2a24062` honestly exposed a guest-visible KVM MIDR leak; that run and its
+internally deterministic halves are diagnostic only. N4 remains open for the
+standing-rule issue bookkeeping; none of the evidence below is represented as
+an N4 pass before that closes.
 
-### msr1 allocation-rule adoption boundary
+### Remaining issue bookkeeping
 
-Signed documentation commit `ecff7f14` introduced the binding msr1 allocation
-rule after N3 had closed and its exact-tree evidence was committed. No
-Consonance CPU- or I/O-intensive msr1 command has been launched since that
-rule took effect. Consequently there is not yet a systemd unit or scope,
-requested or observed CPU set, or shared-lock state to record, and no
-post-adoption command has been invalidated or rerun. The N3 CPU0-pinned KVM
-runs and unrestricted Linux public-API command completed before adoption and
-are not represented as satisfying the new rule. Every later msr1 command will
-record its unit or scope, requested `AllowedCPUs=2-5`, observed
-`Cpus_allowed_list`, Cargo job cap where applicable, and shared
-`/run/lock/harmony-msr1-benchmark.lock` state here.
+The read-only sweep after the final references found issues #172 and #211 still
+open; #208, #209, and #210 are closed. N4 cannot pass until #172 is closed with
+the fixed-driver positive/planted-negative evidence, #211 is closed with the
+portable terminal-whitespace repair and corrected KUnit run, and separate
+issues record the repaired x86 workflow cache-key defect and the repaired
+guest-visible ARM MIDR leak. Publication was attempted for each new finding,
+but the external-write guard required explicit user authorization for the
+commit/run/diagnostic payload and rejected the writes. Per that guard, no retry
+or workaround is made without that authorization.
+
+### Layout and doorbell decisions
+
+- The final owned-guest path is `consonance/harmony-linux/`. Build entrypoints,
+  workflow paths, active documentation, standalone agent dependency paths, and
+  repository-root discovery all follow the move. The kernel patch workspace and
+  its GPL-2.0 boundary are unchanged; first-party userspace remains
+  AGPL-3.0-or-later.
+- Issue [#172](https://github.com/pH14/harmony/issues/172) is closed in the
+  design, not worked around in userspace. The x86 `/dev/harmony` driver now owns
+  the fixed request/response mappings and exposes a raw-frame ioctl. One global
+  kernel mutex covers staging, doorbell OUT, and response copyout. The play
+  agent implements `hypercall_proto::Transport` over that ioctl and no longer
+  maps or rings the shared pages directly.
+- `linux/test-harmony-serialization.sh` builds and boots a KUnit positive, then
+  removes the serialization helper from a fresh negative kernel and requires
+  the concurrent-ringer test to fail. Thus the test cannot pass merely because
+  both ringers happened not to overlap. The existing x86 guest-image workflow
+  runs this gate; no new required workflow was added.
+
+### Fresh moved-tree ARM artifacts
+
+All four artifacts were built after the move from the checked-out
+`consonance/harmony-linux/` sources. Both manifest checks reported every entry
+`OK`:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `Image` | `5b0b8fb8d13af2b1aa3ea3a312b3bafeaa690b9e2bd0935029942cf3995ff4d8` |
+| `initramfs.cpio.gz` | `6194ec4be99b08e68a61f9020fcedd7aae515b00fa63d38a44b9070a23fea053` |
+| `Image-game` | `8cd386f8fcc3a6010f47b39c0a6aae50dbacdde2d1e36529a6dc926c618ea116` |
+| `initramfs-game.cpio.gz` | `9d762ec68b6827021b18208ddfcef3bffca8141065ec61966e4bf36c45988ecf` |
+
+The embedded/host SMB ROM is independently pinned at
+`0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea`.
+Fresh minimal and game kernel builds passed their planted counter and LL/SC
+scanner negatives and every shipped-image scan. Fresh minimal and game
+initramfs builds likewise passed every executable scan. Issues
+[#208](https://github.com/pH14/harmony/issues/208) and
+[#209](https://github.com/pH14/harmony/issues/209), found by those fresh
+builds, were fixed in `3fa8f6f9` and `601c1a9f` and closed with the successful
+rerun evidence.
+
+### Exact-tree repository gates so far
+
+On the M1 Max at exact implementation commit `f2a24062`:
+
+```text
+cargo build --all-features
+PASS
+
+cargo nextest run --all-features
+1171 passed, 25 skipped
+
+cargo clippy --all-features --all-targets -- -D warnings
+PASS (standing three unreachable clippy.toml entries only)
+
+cargo fmt --all -- --check
+PASS
+
+cargo deny check
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+The first nextest invocation had the already-characterized filesystem-sandbox
+socket denial in two telemetry listener tests. The complete command rerun with
+localhost socket permission passed all 1,171 tests. The full five-command gate
+was rerun after the timestamp-regex and KVM identity repairs at `8312745e`; it
+passed with the same standing Clippy and dependency-policy notices shown above.
+
+The previously running exact-`d3e0eaee` nightly
+[`33216717204`](https://github.com/pH14/harmony/actions/runs/33216717204)
+was preserved to completion before the hardware-allocation plan edit was
+committed or any later msr1 unit was launched. Its general unsafe-crate Miri
+matrix passed in 25m31s, including `hypercall-doorbell`, `vm-state`,
+`vmm-backend`, `snapshot-store`, and both moved-tree agents. The separate
+`vmm-core` Miri job passed at `00:52:04Z` after 2h26m51s; its final
+`virtual_time` suite reported 12 passed and zero failed, including the planted
+one-V-ns, one-exit-late, and flipped-state-byte comparator negatives. Live-KVM
+tests and the public-API regenerator remained explicitly ignored for their
+documented host/tool requirements. The workflow concluded success.
+
+At final implementation commit `4b62de3f`, the complete local repository gate
+passed again: `cargo build --all-features`; `cargo nextest run --all-features`
+with 1,171 passed and 25 skipped; Clippy for all features and targets with only
+the standing three unreachable `clippy.toml` notices; formatting; and `cargo
+deny check` with advisories, bans, licenses, and sources all `ok`. The first
+nextest invocation was denied localhost sockets in the two telemetry-listener
+tests and stopped fail-fast after 408 passes; the full permitted rerun is the
+credited result. The first deny invocation likewise failed before checking
+because the sandbox made Cargo's advisory-database lock read-only; the permitted
+rerun is the credited result.
+
+### x86 serialization-gate finding
+
+Exact-tree x86 run
+[`33212855686`](https://github.com/pH14/harmony/actions/runs/33212855686)
+at `601c1a9f` passed the portable check, six KVM probes, and both X1 boots, but
+the fresh guest job correctly failed before KUnit boot. The new kernel test had
+declared a local named `current`, which x86 Linux expands to `get_current()`;
+the compiler rejected the resulting non-prototype/conflicting declaration and
+assignment. Issue [#210](https://github.com/pH14/harmony/issues/210) records the
+failure. Signed commit `d3e0eaee` renames only that local to `active`. Exact
+rerun `33215519428` then compiled and booted the fixed KUnit test successfully:
+`harmony_concurrent_ringer_test` and the `harmony-transaction-lock` suite both
+reported `ok`. The shell gate nevertheless rejected the pass because its regex
+required `ok` at column zero while the serial console prepended the kernel
+timestamp. Issue [#211](https://github.com/pH14/harmony/issues/211) records that
+false negative. Signed commit `f2a24062` retained the exact suite/test suffixes
+but admitted the timestamp prefix. Exact rerun
+[`33217271391`](https://github.com/pH14/harmony/actions/runs/33217271391)
+compiled and booted the fixed suite; the concurrent-ringer test and suite both
+reported `ok`, but the gate still rejected the serial line because QEMU kept a
+carriage return before newline. Commit `8312745e` admits that terminal `CR` in
+both the positive and planted-negative expressions, but used `\r` in a POSIX
+extended expression; `grep -E` interpreted it as the letter `r`. Exact run
+[`33219335412`](https://github.com/pH14/harmony/actions/runs/33219335412)
+therefore repeated the same false negative while the KUnit test and suite again
+reported `ok`. Commit `8e6de5e0` uses an anchored `[[:space:]]*` suffix, which
+admits CR and terminal whitespace but still rejects any non-whitespace suffix;
+local positive, planted-negative, and extra-suffix rejection controls passed.
+All four ancestor runs are failed honestly and are not counted. Exact corrected-
+tree run
+[`33220706514`](https://github.com/pH14/harmony/actions/runs/33220706514)
+rebuilt the guest from a cold image/source cache and passed the fixed-driver
+positive at `23:51:29Z`, rejected the pre-fix no-lock mutant at `00:00:22Z`,
+and printed `PASS: /dev/harmony serialization positive and negative controls`.
+The portable check, six X1 probes, two X1 live oracles, and all four primary X2
+same-seed boot/determinism replicas also passed.
+
+The workflow nevertheless concluded red because all eight auxiliary
+`x2-intel-hunt` replicas failed before installing tools or running a guest.
+Their image-cache `hashFiles(...)` list omits
+`linux/test-harmony-serialization.sh`, while both the producing `guest-image`
+job and primary X2 consumers include it; each hunt replica therefore requested
+key `x86-guest-image-8c8fb7…57a` instead of the produced
+`x86-guest-image-a84a82…b8a` and failed closed on the cache miss. This is a
+workflow-input bug exposed by the N4 serialization test, not a guest or
+determinism failure. The required GitHub issue creation was attempted, but the
+external-write guard requires explicit user authorization to publish the run,
+commit, and diagnostic details; no retry is made pending that authorization.
+Signed commit `4b62de3f` adds the omitted input and makes all three cache-key
+lists byte-identical. Exact rerun
+[`33224950144`](https://github.com/pH14/harmony/actions/runs/33224950144)
+then passed every job: the cold guest/KUnit positive and negative, portable
+check, six probes, two X1 oracles, four primary X2 jobs, and all eight repaired
+hunt jobs. Each primary X2 job completed ten same-seed boots with 35,310 events,
+digest `cd8a372f…b8721`, zero divergences, zero component diffs, and zero RAM
+diff pages. That draw sampled only AMD (EPYC 7763 and 9V74), so it is retained
+as the exact-tree AMD half rather than misrepresented as both-vendor evidence;
+manual exact-tree reroll `33225893480` also passed all four primary jobs with
+the same event/digest/zero-divergence result, but again sampled only AMD (EPYC
+7763, 9V74, and 9V45). It is retained as additional AMD coverage. Manual
+exact-tree reroll
+[`33226361588`](https://github.com/pH14/harmony/actions/runs/33226361588)
+then passed the whole workflow and supplied the missing primary Intel draw.
+Primary 2 ran on an Intel Xeon Platinum 8370C; primaries 1, 3, and 4 ran on AMD
+EPYC 9V74 and 7763 hosts. Each completed ten same-seed boots with 35,310
+events, digest `cd8a372f…b8721`, zero divergences, zero component differences,
+and zero RAM-diff pages. This exact `4b62de3f` pair of primary vendor pools is
+the credited x86 reference.
+
+### Cross-backend identity finding
+
+The exact `f2a24062` halves were each internally deterministic but not equal to
+one another:
+
+- ten msr1 KVM boots: 38,342 portable events, 283 schedules, 136 deliveries,
+  150 checkpoints, digest `88f14983…2c43`, final state hash
+  `3177e9…3983`, and full normalized-log SHA-256 `7e252014…e0f` on every run;
+- ten signed-HVF M1 Max boots: 38,453 portable events, 283 schedules, 136
+  deliveries, 151 checkpoints, digest `a4a34879…8b77`, final state hash
+  `8dea84…c29cd` on every run. The fresh minimal image and initramfs hashes
+  matched the manifest above, and the oracle reported zero watchdogs.
+
+The first event divergence is serial event 157. Linux printed
+`0x410fd811` on HVF but `0x410fd801` on KVM; the first checkpoint at event 255
+already differed (`6c8be503…32b0` versus `0df857b9…925c`). The prior live
+KVM identity gate was vacuous for this register: it accepted a
+`KVM_SET_ONE_REG`/`KVM_GET_ONE_REG` round trip of the boot-CPU reset value, but
+never executed `MRS MIDR_EL1` in the guest. Workload cores `2-5` could therefore
+expose a different physical MIDR.
+
+Signed commit `8312745e` enables
+`KVM_CAP_ARM_WRITABLE_IMP_ID_REGS` on the VM before vCPU creation and fails
+closed if the capability is absent or its enabling ioctl fails. The live
+identity probe now executes `MRS MIDR_EL1`, exports the value through an MMIO
+exit, and requires the frozen `0x410fd811` baseline before retaining the
+existing in-guest DCZID probe. Portable tests, native and aarch64-linux cross
+checks, and aarch64-linux Clippy pass; live msr1 proof and corrected-tree
+cross-backend equality were then proved by the final ordered reference below.
+
+The exact `8312745e` unsafe-crate gate for the changed crate also passed:
+`MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test
+-p vmm-backend --all-features` completed 48 unit, three contract, two dynamic,
+two exhaustive, 16 run-loop, and one vCPU-state test with zero failures (the
+host-only live binaries contain zero Miri tests and the public-API regenerator
+remains deliberately ignored).
+
+The final ordered `4b62de3f` boot reference closes the identity finding. After
+the complete ancestor Miri wait and separate plan-only commit, the live msr1
+probe executed `MRS MIDR_EL1` and observed `0x410fd811`, then ten canonical-
+protocol KVM boots and ten signed-HVF M1 Max boots independently produced
+38,453 portable events, 283 schedules, 136 deliveries, and 151 checkpoints.
+Every placement check passed; every run had digest `a4a34879…8b77`, final state
+hash `8dea84…c29cd`, and the same complete normalized-log SHA-256
+`da267950…0ad4`. Both hosts rechecked the fresh moved-tree minimal artifact
+hashes (`Image` `5b0b8f…f4d8`, initramfs `6194ec…053`), the KVM host rechecked
+both committed manifests, and the M1 oracle reported zero watchdogs. Two local
+preflight attempts before the signed run are non-evidence: the first named a
+missing ignored artifact path, and the next two unsigned executions failed at
+`hv_vm_create` with `HV_DENIED`; no guest ran in any of them. Applying the
+repository's established ad-hoc Hypervisor entitlement produced the successful
+ten-run reference and restored the exact signed binary hash
+`73096f53…747e956`.
+
+The final ordered `4b62de3f` one-job/two-session NES campaign also passed on
+signed HVF and canonical-protocol KVM. Session 0 matched at three segments,
+50,931 events, 393 schedules, 198 checkpoints, trace digest
+`7a6b14a1…ea512c`, normalized digest `5cbb8b13…f25c7`, and state hash
+`d5f7fcd3…caa2e`; session 1 matched at four segments, 50,934 events, 393
+schedules, 198 checkpoints, trace digest `310cfef0…24d99`, normalized digest
+`828a8802…77af`, and state hash `ce5a4e93…26ce9`. Both placements passed.
+The portable archive, report, snapshots, stream, RAM images, virtual-time logs,
+and searcher output were byte-identical across hosts; host/backend-specific
+vCPU encodings and wall-throughput/progress/server text were retained and not
+misrepresented as portable bytes.
+
+### msr1 isolation ledger
+
+Every listed unit requested `AllowedCPUs=2-5`, observed
+`Cpus_allowed_list: 2-5`, set `CARGO_BUILD_JOBS=4`, and held the shared
+`/run/lock/harmony-msr1-benchmark.lock` for its command lifetime. Units through
+the grandfathered `8312745e` boot used explicit nonblocking lock probes where
+shown. Canonical Dissonance-v4 units instead preserve and attest systemd's
+single nested-flock ExecStart, so their payload-start timestamp is the proof
+that both locks were held. No command used CPUs `0,1,6-11`.
+
+| Unit | Result and lock state |
+| --- | --- |
+| `harmony-n4-checkout-7e05556e` | exact source worktree created; shared lock acquired immediately |
+| `harmony-n4-audit-7e05556e` | allocation/cgroup audit passed; shared lock acquired immediately |
+| `harmony-n4-arm-input-7e05556e` | pinned Linux input fetched and SHA-256 verified; shared lock acquired immediately; curl retried one HTTP/2 transport failure |
+| `harmony-n4-input-audit-7e05556e` | input audit passed; shared lock acquired immediately |
+| `harmony-n4-arm-image-7e05556e` | **invalid**: malformed ARM patch exposed issue #208; wrapper also failed to propagate the earlier `make` error |
+| `harmony-n4-update-3fa8f6f9` | exact repair checkout; shared lock acquired immediately |
+| `harmony-n4-arm-image-3fa8f6f9` | fresh minimal kernel and all scanners passed; initramfs verifier then exposed issue #209, so the combined unit failed honestly |
+| `harmony-n4-arm-initramfs-601c1a9f` | **invalid before build**: preflight contained an incorrect expected full hash |
+| `harmony-n4-arm-initramfs-601c1a9f-r2` | fresh minimal initramfs and manifest passed |
+| `harmony-n4-game-audit-601c1a9f` | located ROM and prior harnesses; shared lock acquired immediately |
+| `harmony-n4-game-build-601c1a9f` | fresh game kernel and scanners passed; combined unit then stopped because the exact worktree lacked the pinned BusyBox tarball |
+| `harmony-n4-input-locate-601c1a9f` | located prior hash-pinned BusyBox/musl inputs under the shared lock |
+| `harmony-n4-game-initramfs-601c1a9f-r2` | fresh game initramfs, exact KVM binaries, and game manifest passed |
+| `harmony-n4-kvm-boot-601c1a9f` | **invalidated and stopped after two equal boots** when #210 advanced the exact tree |
+| `harmony-n4-kvm-boot-d3e0eaee` | **invalid before compute**: full-SHA/short-SHA preflight mismatch; its shared lock waited 11.539 seconds for a Dissonance reservation before running |
+| `harmony-n4-kvm-boot-d3e0eaee-r2` | **invalid while waiting**: read-only inspection found malformed nested shell quoting; stopped before lock acquisition or compute |
+| `harmony-n4-kvm-boot-d3e0eaee-r3` | preserved under the original shared-lock rule; waited from 22:22:53 to 22:28:47 UTC for Dissonance's exclusive reservation, then ran on requested/observed CPUs `2-5`; it held no Consonance-compute lock and overlapped Dissonance's loaded E00 arm, invalidating evaluator-v3 after one valid idle sample; it completed ten byte-equal ancestor-tree boots at 22:39:08 UTC but is not final N4 evidence |
+| `harmony-n4-kvm-boot-f2a24062-final` | **invalid before compute**: acquired compute exclusive at `22:40:13.466792951Z`, then benchmark shared at `22:40:13.472866130Z`; PID `4101674`, cgroup `/system.slice/harmony-n4-kvm-boot-f2a24062-final.service`, requested/observed `AllowedCPUs=2-5`, `EffectiveCPUs=2-5`, and `Cpus_allowed_list: 2-5`, with both lock probes blocking as required; systemd's restricted `PATH` then made `cargo` unavailable before any build or guest execution |
+| `harmony-n4-kvm-boot-f2a24062-final-r2` | exact `f2a24062` rerun with explicit tool path; acquired compute exclusive at `22:40:49.316839454Z`, then benchmark shared at `22:40:49.322903673Z`; PID `4101775`, argv `bash /root/harmony-n4-f2-final.sh`, cgroup `/system.slice/harmony-n4-kvm-boot-f2a24062-final-r2.service`, requested/observed `AllowedCPUs=2-5`, `EffectiveCPUs=2-5`, and `Cpus_allowed_list: 2-5`, Cargo jobs four, and both lock probes blocked as required; completed ten byte-equal KVM boots, but the cross-backend MIDR mismatch above invalidates them as final evidence |
+| `harmony-n4-transfer-f2a24062` | artifact transfer under the compute protocol: compute exclusive acquired `22:52:27.805372238Z`, then benchmark shared `22:52:27.811185700Z`; PID `4107285`, requested/observed CPUs and cgroup were exact and both lock probes blocked; transferred the hash-verified moved-tree artifacts and KVM normalized log for local comparison |
+| `harmony-n4-kvm-campaign-f2a24062` | diagnostic ancestor campaign: compute exclusive acquired `22:53:29.888838945Z`, then benchmark shared at `22:53:29.894714947Z`; PID `4107431`, argv `bash /root/harmony-n4-kvm-campaign-f2.sh`, cgroup `/system.slice/harmony-n4-kvm-campaign-f2a24062.service`, requested/observed `AllowedCPUs=2-5`, `EffectiveCPUs=2-5`, and `Cpus_allowed_list: 2-5`, Cargo jobs four, and both lock probes blocked; preserved and still running when `8312745e` advanced the tree, so it is diagnostic and non-creditable regardless of result; no later unit was launched while it held the compute lock |
+| `harmony-n4-kvm-boot-8312745e-final` | exact corrected-tree identity probe and ten-boot rerun; requested/acquired compute exclusive at `23:13:03.912796378Z`/`23:13:03.918600628Z`, then requested/acquired benchmark shared at `23:13:03.921704793Z`/`23:13:03.927283223Z`; PID `4123193`, argv `/bin/bash /root/harmony-n4-8312745e-final.sh`, cgroup `/system.slice/harmony-n4-kvm-boot-8312745e-final.service`, requested/observed `AllowedCPUs=2-5`, `EffectiveCPUs=2-5`, and `Cpus_allowed_list: 2-5`, Cargo jobs four, and both lock probes blocked as required; live guest `MRS MIDR_EL1` returned the frozen `0x410fd811`; ten KVM logs were byte-identical and matched all ten M1 Max logs at SHA-256 `da267950…0ad4`, digest `a4a34879…8b77`, 38,453 portable events, 283 schedules, 136 deliveries, 151 checkpoints, and final state hash `8dea84…c29cd`; both moved-tree manifests passed; completed successfully at `23:24:20Z` |
+| `harmony-n4-kvm-campaign-8312745e-final` | first Dissonance-v4 canonical waiter, queued at `23:21:12Z` while the preserved boot unit still held compute-exclusive; PID `4124733` argv was exactly `/usr/bin/flock --exclusive /run/lock/harmony-msr1-consonance-compute.lock /usr/bin/flock --shared /run/lock/harmony-msr1-benchmark.lock /bin/bash /root/harmony-n4-campaign-8312745e-payload.sh`; cgroup `/consonance.slice/harmony-n4-kvm-campaign-8312745e-final.service`, declared/observed `AllowedCPUs=2-5`, `EffectiveCPUs=2-5`, and `Cpus_allowed_list: 2-5`; journal contained no payload output while the outer flock waited, proving no build or guest started before both locks; payload began at `23:24:20.809809255Z` only after the preserved unit released compute, and re-attested the slice, exact CPU set, canonical ExecStart, and Cargo jobs four; completed successfully at `23:33:52Z` with two sessions and `N4_ONE_JOB_CAMPAIGN_OK backend=kvm`; archive, report, snapshots, stream, and both virtual-time-log hashes matched the signed-HVF run (`384d3029…4b6b2`, `a6cbcb3b…046c6`, `aec881c6…a2cd`, `243ecc51…571c`, `ff49389b…1879`, `0d2c54fe…d310`); backend-specific live progress, throughput, RAM/vCPU dumps, and server output differed and are retained rather than falsely normalized; this remains diagnostic rather than final ordered N4 evidence because it was launched before the complete ancestor Miri wait finished |
+| `harmony-n4-kvm-boot-4b62de3f-final` | final ordered exact-tree boot reference after the successful Miri wait and signed plan-only commit; outer waiter PID `4190784` started at `00:57:18Z` with exact argv `/usr/bin/flock --exclusive /run/lock/harmony-msr1-consonance-compute.lock /usr/bin/flock --shared /run/lock/harmony-msr1-benchmark.lock /bin/bash /root/harmony-n4-boot-4b62de3f-payload.sh`; cgroup `/consonance.slice/harmony-n4-kvm-boot-4b62de3f-final.service`, declared/observed `AllowedCPUs=2-5`, `EffectiveCPUs=2-5`, and `Cpus_allowed_list: 2-5`; payload PID `4190787` began at `00:57:18.703747567Z` only after both canonical locks; Cargo jobs four; live MIDR `0x410fd811` and DCZID `4`; ten logs byte-identical and equal to the final signed-HVF log at SHA-256 `da267950…0ad4`, digest `a4a34879…8b77`, state hash `8dea84…c29cd`, 38,453 events, 283 schedules, 136 deliveries, and 151 checkpoints; both moved-tree manifests passed; completed successfully at `01:07:47Z` |
+| `harmony-n4-kvm-campaign-4b62de3f-final` | final ordered exact-tree campaign; outer waiter PID `4190853` started at `00:57:29Z` with exact canonical compute-exclusive then benchmark-shared argv and no payload output while the boot held compute; cgroup `/consonance.slice/harmony-n4-kvm-campaign-4b62de3f-final.service`, declared/observed `AllowedCPUs=2-5`, `EffectiveCPUs=2-5`, and `Cpus_allowed_list: 2-5`; payload PID `6882` began at `01:07:47.681275543Z` only after the boot released compute and re-attested the exact slice, argv, CPU set, and Cargo jobs four; completed successfully at `01:17:03Z` with two sessions and `N4_ONE_JOB_CAMPAIGN_OK backend=kvm`; archive, report, snapshots, stream, both RAM images, both virtual-time logs, and searcher output matched the final signed-HVF run (`384d3029…4b6b2`, `a6cbcb3b…046c6`, `aec881c6…a2cd`, `243ecc51…571c`, `321d00c9…ba5`, `409e08a2…b6d`, `ff49389b…1879`, `0d2c54fe…d310`, `d4d03bed…1715`); both session trace digests, normalized digests, state hashes, and placements matched; backend-specific vCPU dumps, progress/throughput timing, and server text remain explicitly distinct |
+
+The first attempted download command failed locally during shell parsing and
+created no remote unit. The initial unrestricted SSH preflight only inspected
+installed tools and systemd support; it launched no build, test, guest, Cargo,
+or rustc process. All actual post-adoption compute and material I/O is accounted
+for above. The `-r3` unit was deliberately allowed to wait; the exclusive
+reservation was not bypassed.
+
+The first `8312745e` systemd launch attempt split a description containing
+spaces at the remote shell and failed with “executable exact not found”; it
+created no unit, acquired no lock, and launched no compute. The immediately
+corrected no-space description produced the recorded unit above.
+
+### Hardware-coordination correction
+
+The active Dissonance task reported that `harmony-n4-kvm-boot-d3e0eaee-r3`
+held only the shared benchmark lock and overlapped its loaded E00 arm. Per the
+correction, that already-running unit is preserved and not stopped. Every
+subsequent Consonance compute unit uses exact CPUs `2-5` and acquires, in
+order, `/run/lock/harmony-msr1-consonance-compute.lock` exclusive and then the
+benchmark lock shared. Compute-first prevents a queued Consonance unit from
+becoming another benchmark-lock holder before Dissonance's loaded arm. Its
+evidence must retain PID, argv, cgroup, `AllowedCPUs`, `EffectiveCPUs`,
+`Cpus_allowed_list`, and both lock identities and acquisition times. No later
+unit will reuse the single-lock invocation.
+
+Dissonance v4 subsequently froze the cross-task admission shape. The active
+`harmony-n4-kvm-boot-8312745e-final.service` remains valid and is preserved to
+drain naturally because it was already running with exact CPUs `2-5` and held
+compute-exclusive before benchmark-shared. Every later unit runs in
+`consonance.slice`, declares `AllowedCPUs=2-5`, and uses the single canonical
+ExecStart chain `/usr/bin/flock --exclusive
+/run/lock/harmony-msr1-consonance-compute.lock /usr/bin/flock --shared
+/run/lock/harmony-msr1-benchmark.lock <payload...>`. No shell acquires either
+lock and no payload starts before both locks. This one-PID waiting shape is the
+only form Dissonance v4 attests; `system.slice` or shell-wrapper waiters are not
+used again.
+
+Sequencing audit: `harmony-n4-kvm-boot-8312745e-final` was launched after the
+general unsafe-crates Miri job and the exact `f2a24062` x86 workflow completed,
+but while ancestor nightly run `33216717204` still had its separate `vmm-core`
+Miri job in progress. That violated the steer to finish the complete Miri/CI
+wait before starting another msr1 compute unit, even though the unit itself met
+the then-current hardware locks and the later Dissonance-v4 steer explicitly
+preserved it. Its byte-equality result is retained as technical evidence but is
+not used as the final ordered N4 reference; after the Miri wait finishes and the
+plan-only commit is pushed, the boot and campaign references are rerun through
+the canonical `consonance.slice` nested-flock form.
 
 ## N5 — reproducible guest builds
 
