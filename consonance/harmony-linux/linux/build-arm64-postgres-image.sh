@@ -50,16 +50,32 @@ echo "== arm64 postgres image: building LSE-only static musl ($MUSL_VERSION)"
 build_arm64_game_musl
 musl_cc=$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc
 
+# PostgreSQL embeds CC and CFLAGS in the server binary.  Keep those recorded
+# values independent of the randomized outer build directory while applying
+# the path maps privately in a compiler wrapper found through PATH.
+if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
+    real_musl_cc=$musl_cc
+    remap_bin=$BUILD_ROOT/remap-bin
+    mkdir -p "$remap_bin"
+    cat >"$remap_bin/musl-gcc" <<EOF
+#!/usr/bin/env bash
+exec "$real_musl_cc" \
+    -ffile-prefix-map="$HARMONY_BUILD_PATH_PREFIX=/build" \
+    -fdebug-prefix-map="$HARMONY_BUILD_PATH_PREFIX=/build" \
+    -fmacro-prefix-map="$HARMONY_BUILD_PATH_PREFIX=/build" \
+    "\$@"
+EOF
+    chmod 0755 "$remap_bin/musl-gcc"
+    export PATH=$remap_bin:$PATH
+    musl_cc=musl-gcc
+fi
+
 echo "== arm64 postgres image: configuring static PostgreSQL"
 mkdir -p "$pg_object"
-path_map_flags=
-if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
-    path_map_flags="-ffile-prefix-map=$HARMONY_BUILD_PATH_PREFIX=/build -fdebug-prefix-map=$HARMONY_BUILD_PATH_PREFIX=/build -fmacro-prefix-map=$HARMONY_BUILD_PATH_PREFIX=/build"
-fi
 (
     cd "$pg_object"
     CC="$musl_cc" \
-    CFLAGS="-O2 -march=armv8.1-a+lse -mno-outline-atomics $path_map_flags" \
+    CFLAGS='-O2 -march=armv8.1-a+lse -mno-outline-atomics' \
     LDFLAGS='-static' \
         "$pg_source/configure" \
         --prefix="$guest_prefix" \
