@@ -68,6 +68,11 @@ const GICD_CTLR_WRITE_MASK: u32 = GICD_CTLR_ENABLE_GRP1;
 
 /// `GICR_TYPER.Last` (bit 4) — this is the last (only) redistributor.
 const GICR_TYPER_LAST: u32 = 1 << 4;
+/// `GICR_CTLR.IR` — stock KVM's fixed way to advertise DirectLPI support.
+/// The equivalent `GICR_TYPER.DirectLPIS` bit stays clear: publishing the
+/// aggregate feature through the same register matters because raw register
+/// values can remain in guest RAM after discovery.
+const GICR_CTLR_IR: u32 = 1 << 2;
 const GICR_CTLR: u64 = 0x0000;
 const GICR_IIDR: u64 = 0x0004;
 const GICR_TYPER_LO: u64 = 0x0008;
@@ -341,11 +346,8 @@ impl Gicv3 {
         if offset < SGI_FRAME_BASE {
             // The RD frame.
             return match offset {
-                GICR_CTLR | GICR_IIDR => 0,
-                // Exact stock-KVM single-redistributor surface measured on
-                // msr1: Last=1 and DirectLPI=0. Advertising DirectLPI here
-                // left one backend-specific capability byte on Linux's early
-                // boot stack and broke full-RAM checkpoint equality with KVM.
+                GICR_CTLR => GICR_CTLR_IR,
+                GICR_IIDR => 0,
                 GICR_TYPER_LO => GICR_TYPER_LAST,
                 GICR_TYPER_HI => 0,
                 GICR_WAKER => 0, // awake: ProcessorSleep=0, ChildrenAsleep=0
@@ -929,13 +931,17 @@ mod tests {
             Err(GicError::InvalidState)
         ));
 
-        // KVM's one-redistributor topology publishes Last without DirectLPI.
-        // The planted old value must remain distinguishable: its extra bit was
-        // enough to change a sparse full-RAM checkpoint during Linux boot.
+        // KVM's one-redistributor topology publishes Last in TYPER and the
+        // aggregate DirectLPI feature through CTLR.IR. Planting DirectLPIS in
+        // TYPER preserves Linux's feature decision but changes a raw byte that
+        // remains checkpoint-visible on its early boot stack.
+        let ctlr = g.mmio_read(GicFrame::Redist, GICR_CTLR, 0).unwrap();
         let typer = g.mmio_read(GicFrame::Redist, GICR_TYPER_LO, 0).unwrap();
-        let planted_direct_lpi = GICR_TYPER_LAST | (1 << 3);
+        let planted_typer = GICR_TYPER_LAST | (1 << 3);
+        assert_eq!(ctlr, GICR_CTLR_IR);
         assert_eq!(typer, GICR_TYPER_LAST);
-        assert_ne!(typer, planted_direct_lpi);
+        assert_ne!(typer, planted_typer);
+        assert!(ctlr & GICR_CTLR_IR != 0 || typer & (1 << 3) != 0);
         assert_eq!(g.mmio_read(GicFrame::Redist, GICR_TYPER_HI, 0).unwrap(), 0);
     }
 
