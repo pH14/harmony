@@ -1103,6 +1103,14 @@ ba78ba8c0a1694a8fe278400b8ca56b9f73491c3cd9ad03e4f7df72c88ac4b0e  x86_64/bzImage
 This remains local pre-commit validation; the GitHub runner rebuild and X2 boot
 are the creditable x86 lane.
 
+At exact implementation commit `84faefed`, the signed M1 Max HVF reference
+booted the Nix ARM minimal image ten times. All normalized logs were
+byte-identical at SHA-256 `6d893601...a1bba`; each run reported 38,381 portable
+events, 283 schedules, 136 deliveries, 150 checkpoints, log digest
+`d23091c1...6e16`, and final state hash `e3ce731a...383a`. The image and
+initramfs were `314afa30...a9af` and `b2fbb802...b4ab7`, and the complete
+ten-artifact manifest reverified immediately after the boots.
+
 ## N6 — defenses tested by attacking them
 
 Not started.

@@ -124,6 +124,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
+      - name: Install serialization-test runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
       - name: Build guest image from lock
         run: |
           mkdir -p nix-guest-output consonance/harmony-linux/build
