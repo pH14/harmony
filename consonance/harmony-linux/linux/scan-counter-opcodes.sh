@@ -81,8 +81,9 @@ ALLOWLIST=${2:-"$(dirname "$0")/rdtsc-allowlist.txt"}
 RNG_ALLOWLIST=${3:-"$(dirname "$0")/rdrand-allowlist.txt"}
 
 # The boot artifacts. `vmlinux` (the kernel proper) is scanned by symbol-
-# attributed objdump against the allowlist; `setup`/`decompressor` (16-bit /
-# mode-mixed) by the raw executable-byte scan. KOBJ is vmlinux's build tree.
+# attributed objdump against the allowlist. Setup and the decompressor's mixed-
+# mode head use raw executable bytes; the decompressor's 64-bit `.text` uses
+# semantic disassembly. KOBJ is vmlinux's build tree.
 KOBJ=$(dirname "$VMLINUX")
 RAW_ARTIFACTS=(
     "setup=$KOBJ/arch/x86/boot/setup.elf"
@@ -130,9 +131,9 @@ sites() {
 }
 
 # all_sites [mnemonic-regex]: disassemble the kernel proper and emit its
-# artifact-qualified site list for that mnemonic class (setup/decompressor go
-# through the raw-byte scan instead). FAILS if vmlinux is missing — a gate that
-# silently skips its target passes vacuously.
+# artifact-qualified site list for that mnemonic class (boot artifacts use the
+# section-aware scan below). FAILS if vmlinux is missing — a gate that silently
+# skips its target passes vacuously.
 all_sites() {
     if [ ! -f "$VMLINUX" ]; then
         echo "FAIL: kernel ELF '$VMLINUX' not found — scan the uncompressed vmlinux." >&2
