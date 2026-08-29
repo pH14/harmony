@@ -67,6 +67,19 @@ const ESR_EC_SYSREG: u64 = 0x18;
 const ESR_EC_DATA_ABORT_LOWER: u64 = 0x24;
 const ESR_EC_DATA_ABORT_SAME: u64 = 0x25;
 
+const PSTATE_MODE_MASK: u64 = 0x1f;
+const PSTATE_MODE_EL0T: u64 = 0;
+const PSTATE_MODE_EL1T: u64 = 4;
+const PSTATE_MODE_EL1H: u64 = 5;
+const PSTATE_DAIF: u64 = 0x3c0;
+const PSTATE_SSBS: u64 = 1 << 12;
+const PSTATE_PAN: u64 = 1 << 22;
+const PSTATE_DIT: u64 = 1 << 24;
+const PSTATE_NZCV: u64 = 0xf << 28;
+const SCTLR_SPAN: u64 = 1 << 23;
+const SCTLR_DSSBS: u64 = 1 << 44;
+const ESR_IL: u64 = 1 << 25;
+
 const ICC_IAR1_EL1_CANONICAL: u32 = 0x0030_3018;
 
 // PSCI 0.2+ function IDs used by a uniprocessor Linux boot.
@@ -195,6 +208,54 @@ enum Pending {
         reg: u32,
     },
     SysregWrite,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct UndefinedException {
+    pc: u64,
+    pstate: u64,
+    elr_el1: u64,
+    spsr_el1: u64,
+    esr_el1: u64,
+}
+
+/// Model the AArch64 `TakeException` state transition for an undefined
+/// instruction delivered to EL1. HVF reports a sysreg trap after this backend
+/// has advanced PC, so ELR must point back at the faulting instruction.
+fn undefined_exception(
+    next_pc: u64,
+    old_pstate: u64,
+    sctlr_el1: u64,
+    vbar_el1: u64,
+) -> Result<UndefinedException> {
+    let fault_pc = next_pc.checked_sub(4).ok_or(BackendError::InvalidState)?;
+    let vector_offset = match old_pstate & PSTATE_MODE_MASK {
+        PSTATE_MODE_EL0T => 0x400,
+        PSTATE_MODE_EL1T => 0,
+        PSTATE_MODE_EL1H => 0x200,
+        _ => return Err(BackendError::InvalidState),
+    };
+    let pc = vbar_el1
+        .checked_add(vector_offset)
+        .ok_or(BackendError::InvalidState)?;
+
+    let mut pstate = old_pstate & (PSTATE_NZCV | PSTATE_DIT | PSTATE_PAN);
+    if sctlr_el1 & SCTLR_SPAN == 0 {
+        pstate |= PSTATE_PAN;
+    }
+    if sctlr_el1 & SCTLR_DSSBS != 0 {
+        pstate |= PSTATE_SSBS;
+    }
+    pstate |= PSTATE_DAIF | PSTATE_MODE_EL1H;
+
+    Ok(UndefinedException {
+        pc,
+        pstate,
+        elr_el1: fault_pc,
+        spsr_el1: old_pstate,
+        // EC=UNKNOWN is zero. AArch64 instructions are 32 bits, so IL=1.
+        esr_el1: ESR_IL,
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -706,6 +767,17 @@ impl Backend for HvfBackend {
     fn complete_fault(&mut self) -> Result<()> {
         match self.pending {
             Pending::SysregRead { .. } | Pending::SysregWrite => {
+                let exception = undefined_exception(
+                    self.reg(HV_REG_PC)?,
+                    self.reg(HV_REG_CPSR)?,
+                    self.sysreg(HV_SYS_REG_SCTLR_EL1)?,
+                    self.sysreg(HV_SYS_REG_VBAR_EL1)?,
+                )?;
+                self.set_sysreg(HV_SYS_REG_ELR_EL1, exception.elr_el1)?;
+                self.set_sysreg(HV_SYS_REG_SPSR_EL1, exception.spsr_el1)?;
+                self.set_sysreg(HV_SYS_REG_ESR_EL1, exception.esr_el1)?;
+                self.set_reg(HV_REG_CPSR, exception.pstate)?;
+                self.set_reg(HV_REG_PC, exception.pc)?;
                 self.pending = Pending::None;
                 Ok(())
             }
@@ -1039,5 +1111,42 @@ mod tests {
     #[test]
     fn untrusted_data_abort_without_isv_fails_closed() {
         assert!(decode_data_abort(raw_exit(0x9000_0007, 0)).is_err());
+    }
+
+    #[test]
+    fn undef_from_el0_enters_the_lower_aarch64_sync_vector() {
+        let old = PSTATE_NZCV | PSTATE_DIT | PSTATE_SSBS | PSTATE_MODE_EL0T;
+        let exception = undefined_exception(0x1004, old, SCTLR_DSSBS, 0x8000).unwrap();
+        assert_eq!(
+            exception,
+            UndefinedException {
+                pc: 0x8400,
+                pstate: PSTATE_NZCV
+                    | PSTATE_DIT
+                    | PSTATE_PAN
+                    | PSTATE_SSBS
+                    | PSTATE_DAIF
+                    | PSTATE_MODE_EL1H,
+                elr_el1: 0x1000,
+                spsr_el1: old,
+                esr_el1: ESR_IL,
+            }
+        );
+    }
+
+    #[test]
+    fn undef_vector_and_pstate_are_mode_and_sctlr_sensitive() {
+        let el1t = undefined_exception(0x2004, PSTATE_MODE_EL1T, SCTLR_SPAN, 0x8000).unwrap();
+        assert_eq!(el1t.pc, 0x8000);
+        assert_eq!(el1t.pstate & PSTATE_PAN, 0);
+
+        let el1h = undefined_exception(0x2004, PSTATE_MODE_EL1H, 0, 0x8000).unwrap();
+        assert_eq!(el1h.pc, 0x8200);
+        assert_ne!(el1h.pstate & PSTATE_PAN, 0);
+        assert_eq!(el1h.pstate & PSTATE_SSBS, 0);
+
+        assert!(undefined_exception(3, PSTATE_MODE_EL0T, 0, 0).is_err());
+        assert!(undefined_exception(4, 0x10, 0, 0).is_err());
+        assert!(undefined_exception(4, PSTATE_MODE_EL0T, 0, u64::MAX).is_err());
     }
 }

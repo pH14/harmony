@@ -51,6 +51,39 @@ const OSDLR_EL1: u32 = 0x0028_0406;
 // OSLAR_EL1 (S2_0_C1_C0_4), the companion OS lock access register.
 const OSLAR_EL1: u32 = 0x0028_0400;
 
+/// Whether a canonical HVF ISS names one of N6's frozen PMU registers.
+///
+/// The frozen machine exposes no PMU. HVF nevertheless surfaces EL0 PMU
+/// accesses to userspace, so every listed read/write is completed as UNDEF;
+/// stock KVM reaches the same guest-visible SIGILL result in-kernel. Keep this
+/// predicate exact: neighboring implementation registers remain default-deny.
+fn is_frozen_pmu_sysreg(sysreg: u32) -> bool {
+    let op0 = (sysreg >> 20) & 0x3;
+    let op2 = (sysreg >> 17) & 0x7;
+    let op1 = (sysreg >> 14) & 0x7;
+    let crn = (sysreg >> 10) & 0xf;
+    let crm = (sysreg >> 1) & 0xf;
+
+    if op0 != 3 || op1 != 3 {
+        return false;
+    }
+    matches!(
+        (crn, crm, op2),
+        // PMCR, PMCNTENSET/CLR, PMOVSCLR, PMSWINC, PMSELR.
+        (9, 12, 0..=5)
+            // PMCCNTR, PMXEVTYPER, PMXEVCNTR.
+            | (9, 13, 0..=2)
+            // PMUSERENR and PMOVSSET.
+            | (9, 14, 0 | 3)
+            // PMEVCNTR0..30.
+            | (14, 8..=10, 0..=7)
+            | (14, 11, 0..=6)
+            // PMEVTYPER0..30 plus PMCCFILTR at the final encoding.
+            | (14, 12..=14, 0..=7)
+            | (14, 15, 0..=7)
+    )
+}
+
 /// `true` iff `addr` lies inside the `(base, len)` device frame.
 fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
     addr >= frame.0 && addr < frame.0 + frame.1
@@ -202,6 +235,10 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         sysreg: u32,
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
+        if is_frozen_pmu_sysreg(sysreg) {
+            self.backend.complete_fault()?;
+            return Ok(Step::Continued);
+        }
         let ruled = matches!(
             sysreg,
             ICC_PMR_EL1
@@ -1317,6 +1354,67 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
 mod tests {
     use super::*;
     use crate::vendor::arm64::board::{GICD, GICR, PL011};
+    use crate::vmm::GuestRam;
+    use vmm_backend::{Arm64Exit, Arm64MockCompletion, Arm64Policy, MockArm64Backend};
+
+    fn mock_vmm(exits: Vec<Exit<Arm64>>) -> Vmm<MockArm64Backend> {
+        let mut backend = MockArm64Backend::with_exits(exits);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+    }
+
+    /// The N6 PMU listing is a deny surface: every trapped access becomes
+    /// guest-visible UNDEF, while an adjacent non-table encoding stays loud.
+    #[test]
+    fn frozen_pmu_surface_is_exactly_denied_as_undef() {
+        const fn sysreg(op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
+            (op0 << 20) | (op2 << 17) | (op1 << 14) | (crn << 10) | (crm << 1)
+        }
+
+        let mut frozen = vec![
+            sysreg(3, 3, 9, 12, 0),
+            sysreg(3, 3, 9, 12, 1),
+            sysreg(3, 3, 9, 12, 2),
+            sysreg(3, 3, 9, 12, 3),
+            sysreg(3, 3, 9, 12, 4),
+            sysreg(3, 3, 9, 12, 5),
+            sysreg(3, 3, 9, 13, 0),
+            sysreg(3, 3, 9, 13, 1),
+            sysreg(3, 3, 9, 13, 2),
+            sysreg(3, 3, 9, 14, 0),
+            sysreg(3, 3, 9, 14, 3),
+            sysreg(3, 3, 14, 15, 7),
+        ];
+        for index in 0..31 {
+            frozen.push(sysreg(3, 3, 14, 8 + index / 8, index % 8));
+            frozen.push(sysreg(3, 3, 14, 12 + index / 8, index % 8));
+        }
+        frozen.sort_unstable();
+        frozen.dedup();
+        assert_eq!(frozen.len(), 74);
+
+        for sysreg in frozen {
+            for write in [None, Some(0)] {
+                let mut denied = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg { sysreg, write })]);
+                assert_eq!(denied.step().unwrap(), Step::Continued);
+                assert_eq!(
+                    denied.backend().completions(),
+                    &[Arm64MockCompletion::Fault],
+                    "PMU sysreg {sysreg:#010x} write={write:?}"
+                );
+            }
+        }
+
+        // PMEVCNTR31 is outside the frozen 0..30 range. PMEVTYPER31's
+        // encoding is separately PMCCFILTR and is intentionally ruled above.
+        let adjacent = sysreg(3, 3, 14, 11, 7);
+        let mut unruled = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
+            sysreg: adjacent,
+            write: None,
+        })]);
+        let error = unruled.step().unwrap_err();
+        assert!(format!("{error}").contains("no ruled disposition"));
+    }
 
     #[test]
     fn substrate_private_gic_transactions_are_raw_only() {

@@ -4,14 +4,14 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #if defined(__x86_64__)
@@ -47,6 +47,14 @@ struct shared_result {
 };
 
 static int output_fd = 1;
+static sigjmp_buf operation_jmp;
+static volatile sig_atomic_t operation_signal;
+
+static void operation_fault(int signo)
+{
+	operation_signal = signo;
+	siglongjmp(operation_jmp, 1);
+}
 
 static void write_marker(const char *text)
 {
@@ -84,9 +92,10 @@ static void run_operation(const struct n6_operation *operation, char result[64])
 {
 	struct shared_result *shared;
 	unsigned char *jit;
+	struct sigaction action;
+	struct sigaction old_ill;
+	struct sigaction old_segv;
 	size_t length;
-	pid_t child;
-	int status;
 
 	if (operation->start == NULL || operation->end == NULL)
 		fail("execute-operation-has-no-code");
@@ -105,25 +114,25 @@ static void run_operation(const struct n6_operation *operation, char result[64])
 	if (mprotect(jit, PAGE_BYTES, PROT_READ | PROT_EXEC) != 0)
 		fail("mprotect-rx");
 
-	child = fork();
-	if (child < 0)
-		fail("fork");
-	if (child == 0) {
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = operation_fault;
+	if (sigemptyset(&action.sa_mask) != 0 ||
+	    sigaction(SIGILL, &action, &old_ill) != 0 ||
+	    sigaction(SIGSEGV, &action, &old_segv) != 0)
+		fail("sigaction-install");
+	operation_signal = 0;
+	if (sigsetjmp(operation_jmp, 1) == 0) {
 		uint64_t (*function)(void *) = (uint64_t (*)(void *))(void *)jit;
 		shared->value = function(shared->data);
-		_exit(0);
-	}
-	if (waitpid(child, &status, 0) != child)
-		fail("waitpid");
-	if (WIFSIGNALED(status)) {
-		(void)snprintf(result, 64, "signal:%d", WTERMSIG(status));
-	} else if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
 		(void)snprintf(result, 64, "value:%016llx:mem:%016llx",
 			       (unsigned long long)shared->value,
 			       (unsigned long long)fnv1a(shared->data, PAGE_BYTES));
 	} else {
-		(void)snprintf(result, 64, "exit:%d", WEXITSTATUS(status));
+		(void)snprintf(result, 64, "signal:%d", operation_signal);
 	}
+	if (sigaction(SIGSEGV, &old_segv, NULL) != 0 ||
+	    sigaction(SIGILL, &old_ill, NULL) != 0)
+		fail("sigaction-restore");
 	(void)munmap(jit, PAGE_BYTES);
 	(void)munmap(shared, sizeof(*shared));
 }
