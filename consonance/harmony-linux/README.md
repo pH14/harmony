@@ -37,6 +37,11 @@ nix run .#guest-images -- --output "$PWD/guest-output"
 nix run .#guest-images -- --output "$PWD/guest-output" --rom /path/to/smb.nes
 ```
 
+The x86 CI lane adds `--serialization-gate` so the positive KUnit boot and its
+deliberately unlocked negative run while the locked kernel source and object
+tree still exist. The option is x86-only and requires `qemu-system-x86_64` on
+the host.
+
 The ARM form requires root while assembling the owned PostgreSQL filesystem and
 admits the ROM only at the frozen SHA-256. The destination must be empty. The
 imperative entry points below remain useful developer gates, but their output is

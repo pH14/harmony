@@ -8,7 +8,7 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: harmony-build-guest-images --output DIR [--rom FILE] [--minimal-only] [--mutate-cache-line]" >&2
+    echo "usage: harmony-build-guest-images --output DIR [--rom FILE] [--minimal-only] [--mutate-cache-line] [--serialization-gate]" >&2
     exit 2
 }
 
@@ -16,6 +16,7 @@ output=
 rom=
 minimal_only=0
 mutate_cache_line=0
+serialization_gate=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --output)
@@ -36,6 +37,10 @@ while [ "$#" -gt 0 ]; do
             mutate_cache_line=1
             shift
             ;;
+        --serialization-gate)
+            serialization_gate=1
+            shift
+            ;;
         *) usage ;;
     esac
 done
@@ -48,6 +53,10 @@ done
 host_arch=$(uname -m)
 case "$host_arch" in
     aarch64)
+        [ "$serialization_gate" -eq 0 ] || {
+            echo "FAIL: --serialization-gate is x86_64-only" >&2
+            exit 1
+        }
         [ -n "$rom" ] || usage
         [ "$(id -u)" -eq 0 ] || {
             echo "FAIL: the PostgreSQL snapshot build requires root" >&2
@@ -223,6 +232,10 @@ if [ "$host_arch" = aarch64 ]; then
 else
     echo "== N5: build minimal x86 kernel and initramfs"
     (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh)
+    if [ "$serialization_gate" -eq 1 ]; then
+        echo "== N5: run /dev/harmony serialization positive and planted negative"
+        (cd "$linux_dir" && ./test-harmony-serialization.sh)
+    fi
     mkdir -p "$stage/x86_64"
     for name in bzImage initramfs.cpio.gz; do
         [ -f "$artifacts/$name" ] || {

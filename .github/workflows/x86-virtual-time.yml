@@ -131,11 +131,12 @@ jobs:
       - name: Build guest image from lock
         run: |
           mkdir -p nix-guest-output consonance/harmony-linux/build
-          nix run .#guest-images -- --output "$PWD/nix-guest-output"
+          nix run .#guest-images -- \
+            --output "$PWD/nix-guest-output" \
+            --serialization-gate
           cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
           cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
           (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
-          consonance/harmony-linux/linux/test-harmony-serialization.sh
       - name: Record image identity
         run: |
           cp nix-guest-output/MANIFEST.sha256 nix-guest-output/guest-image-report.txt
