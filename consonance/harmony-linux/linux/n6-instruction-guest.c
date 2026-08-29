@@ -50,6 +50,11 @@ static int output_fd = 1;
 static sigjmp_buf operation_jmp;
 static volatile sig_atomic_t operation_signal;
 
+struct operation_runner {
+	struct shared_result *shared;
+	unsigned char *jit;
+};
+
 static void operation_fault(int signo)
 {
 	operation_signal = signo;
@@ -88,13 +93,29 @@ static uint64_t fnv1a(const unsigned char *data, size_t length)
 	return hash;
 }
 
-static void run_operation(const struct n6_operation *operation, char result[64])
+static void setup_operation_runner(struct operation_runner *runner)
 {
-	struct shared_result *shared;
-	unsigned char *jit;
 	struct sigaction action;
-	struct sigaction old_ill;
-	struct sigaction old_segv;
+
+	runner->shared = mmap(NULL, sizeof(*runner->shared), PROT_READ | PROT_WRITE,
+			MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	runner->jit = mmap(NULL, PAGE_BYTES, PROT_READ | PROT_WRITE,
+			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (runner->shared == MAP_FAILED || runner->jit == MAP_FAILED)
+		fail("mmap");
+
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = operation_fault;
+	if (sigemptyset(&action.sa_mask) != 0 ||
+	    sigaction(SIGILL, &action, NULL) != 0 ||
+	    sigaction(SIGSEGV, &action, NULL) != 0 ||
+	    sigaction(SIGTRAP, &action, NULL) != 0)
+		fail("sigaction-install");
+}
+
+static void run_operation(struct operation_runner *runner,
+			  const struct n6_operation *operation, char result[64])
+{
 	size_t length;
 
 	if (operation->start == NULL || operation->end == NULL)
@@ -102,39 +123,26 @@ static void run_operation(const struct n6_operation *operation, char result[64])
 	length = (size_t)(operation->end - operation->start);
 	if (length == 0 || length > PAGE_BYTES)
 		fail("invalid-jit-length");
-	shared = mmap(NULL, sizeof(*shared), PROT_READ | PROT_WRITE,
-			MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	jit = mmap(NULL, PAGE_BYTES, PROT_READ | PROT_WRITE,
-		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (shared == MAP_FAILED || jit == MAP_FAILED)
-		fail("mmap");
-	memset(shared, 0, sizeof(*shared));
-	memcpy(jit, operation->start, length);
-	__builtin___clear_cache((char *)jit, (char *)jit + length);
-	if (mprotect(jit, PAGE_BYTES, PROT_READ | PROT_EXEC) != 0)
+	memset(runner->shared, 0, sizeof(*runner->shared));
+	if (mprotect(runner->jit, PAGE_BYTES, PROT_READ | PROT_WRITE) != 0)
+		fail("mprotect-rw");
+	memcpy(runner->jit, operation->start, length);
+	__builtin___clear_cache((char *)runner->jit,
+			      (char *)runner->jit + length);
+	if (mprotect(runner->jit, PAGE_BYTES, PROT_READ | PROT_EXEC) != 0)
 		fail("mprotect-rx");
-
-	memset(&action, 0, sizeof(action));
-	action.sa_handler = operation_fault;
-	if (sigemptyset(&action.sa_mask) != 0 ||
-	    sigaction(SIGILL, &action, &old_ill) != 0 ||
-	    sigaction(SIGSEGV, &action, &old_segv) != 0)
-		fail("sigaction-install");
 	operation_signal = 0;
 	if (sigsetjmp(operation_jmp, 1) == 0) {
-		uint64_t (*function)(void *) = (uint64_t (*)(void *))(void *)jit;
-		shared->value = function(shared->data);
+		uint64_t (*function)(void *) =
+			(uint64_t (*)(void *))(void *)runner->jit;
+		runner->shared->value = function(runner->shared->data);
 		(void)snprintf(result, 64, "value:%016llx:mem:%016llx",
-			       (unsigned long long)shared->value,
-			       (unsigned long long)fnv1a(shared->data, PAGE_BYTES));
+			       (unsigned long long)runner->shared->value,
+			       (unsigned long long)fnv1a(runner->shared->data,
+						 PAGE_BYTES));
 	} else {
 		(void)snprintf(result, 64, "signal:%d", operation_signal);
 	}
-	if (sigaction(SIGSEGV, &old_segv, NULL) != 0 ||
-	    sigaction(SIGILL, &old_ill, NULL) != 0)
-		fail("sigaction-restore");
-	(void)munmap(jit, PAGE_BYTES);
-	(void)munmap(shared, sizeof(*shared));
 }
 
 static int entropy_hidden(void)
@@ -173,11 +181,13 @@ int main(void)
 {
 	const int traps_on = trap_policy_on();
 	const int hidden = entropy_hidden();
+	struct operation_runner runner;
 	size_t row_index;
 	char line[32768];
 
 	if (N6_TABLE_ROW_COUNT == 0 || N6_TABLE_OPERATION_COUNT == 0)
 		fail("empty-generated-table");
+	setup_operation_runner(&runner);
 	write_marker("N6_GUEST_BEGIN arch=" N6_ARCH);
 	for (row_index = 0; row_index < N6_TABLE_ROW_COUNT; row_index++) {
 		const struct n6_row *row = &n6_rows[row_index];
@@ -202,7 +212,7 @@ int main(void)
 				const struct n6_operation *operation =
 					&n6_operations[row->first + operation_index];
 
-				run_operation(operation, result);
+				run_operation(&runner, operation, result);
 				used += (size_t)snprintf(line + used, sizeof(line) - used,
 					"%s\"%s\"", operation_index == 0 ? "" : ",", result);
 			}
