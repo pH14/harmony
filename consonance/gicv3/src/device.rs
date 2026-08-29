@@ -68,10 +68,6 @@ const GICD_CTLR_WRITE_MASK: u32 = GICD_CTLR_ENABLE_GRP1;
 
 /// `GICR_TYPER.Last` (bit 4) — this is the last (only) redistributor.
 const GICR_TYPER_LAST: u32 = 1 << 4;
-/// `GICR_TYPER.DirectLPI` — stock KVM's vGICv3 fixed redistributor surface.
-/// No ITS is composed, so Linux records the capability but cannot configure
-/// or deliver an LPI through this board.
-const GICR_TYPER_DIRECT_LPI: u32 = 1 << 3;
 const GICR_CTLR: u64 = 0x0000;
 const GICR_IIDR: u64 = 0x0004;
 const GICR_TYPER_LO: u64 = 0x0008;
@@ -346,7 +342,11 @@ impl Gicv3 {
             // The RD frame.
             return match offset {
                 GICR_CTLR | GICR_IIDR => 0,
-                GICR_TYPER_LO => GICR_TYPER_LAST | GICR_TYPER_DIRECT_LPI,
+                // Exact stock-KVM single-redistributor surface measured on
+                // msr1: Last=1 and DirectLPI=0. Advertising DirectLPI here
+                // left one backend-specific capability byte on Linux's early
+                // boot stack and broke full-RAM checkpoint equality with KVM.
+                GICR_TYPER_LO => GICR_TYPER_LAST,
                 GICR_TYPER_HI => 0,
                 GICR_WAKER => 0, // awake: ProcessorSleep=0, ChildrenAsleep=0
                 GICR_PIDR2 => GIC_PIDR2_ARCH_GICV3,
@@ -929,12 +929,13 @@ mod tests {
             Err(GicError::InvalidState)
         ));
 
-        // KVM's one-redistributor topology publishes Last + DirectLPI. The
-        // latter is inert without an ITS, which this board does not compose.
-        assert_eq!(
-            g.mmio_read(GicFrame::Redist, GICR_TYPER_LO, 0).unwrap(),
-            GICR_TYPER_LAST | GICR_TYPER_DIRECT_LPI
-        );
+        // KVM's one-redistributor topology publishes Last without DirectLPI.
+        // The planted old value must remain distinguishable: its extra bit was
+        // enough to change a sparse full-RAM checkpoint during Linux boot.
+        let typer = g.mmio_read(GicFrame::Redist, GICR_TYPER_LO, 0).unwrap();
+        let planted_direct_lpi = GICR_TYPER_LAST | (1 << 3);
+        assert_eq!(typer, GICR_TYPER_LAST);
+        assert_ne!(typer, planted_direct_lpi);
         assert_eq!(g.mmio_read(GicFrame::Redist, GICR_TYPER_HI, 0).unwrap(), 0);
     }
 
