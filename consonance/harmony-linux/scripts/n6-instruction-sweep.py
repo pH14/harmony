@@ -349,12 +349,12 @@ def parse_report(path: Path, arch: str, expected: dict[str, Row]) -> dict[str, d
             if "feature_hidden" in item or "audit_rejected" in item:
                 raise SweepError(f"{path}:{line_number}: execute row mixed claim shapes")
             if identifier in TRAP_ROWS:
-                if item.get("traps_on") is not True:
-                    raise SweepError(f"{path}:{line_number}: {identifier} traps are off")
                 if not all(result.startswith("signal:") for result in results):
                     raise SweepError(
                         f"{path}:{line_number}: {identifier} escaped the guest trap policy"
                     )
+                if item.get("traps_on") is not True:
+                    raise SweepError(f"{path}:{line_number}: {identifier} traps are off")
         else:
             if item.get("feature_hidden") is not True:
                 raise SweepError(f"{path}:{line_number}: {identifier} feature is visible")

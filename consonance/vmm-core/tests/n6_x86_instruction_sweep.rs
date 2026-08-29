@@ -94,7 +94,7 @@ fn traps_off_fails_before_two_traps_on_runs_are_credited() {
         String::from_utf8_lossy(&negative_verdict.stdout)
     );
     assert!(
-        String::from_utf8_lossy(&negative_verdict.stderr).contains("traps are off"),
+        String::from_utf8_lossy(&negative_verdict.stderr).contains("escaped the guest trap policy"),
         "negative failed for the wrong reason: {}",
         String::from_utf8_lossy(&negative_verdict.stderr)
     );
