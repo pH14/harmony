@@ -141,6 +141,7 @@ export LC_ALL=C
 export HARMONY_DOWNLOAD_DIR=$downloads
 export HARMONY_ARTIFACT_DIR=$artifacts
 export GUEST_BUILD_ROOT=$build_root
+export HARMONY_BUILD_PATH_PREFIX=$work
 if [ "$host_arch" = aarch64 ]; then
     export HARMONY_SMB_ROM=$rom
     export HARMONY_RUST_SOURCE_ROOT=$HARMONY_NIX_RUST_SOURCE_ROOT
@@ -245,6 +246,16 @@ else
         cp -p "$artifacts/$name" "$stage/x86_64/$name"
     done
 fi
+
+# Compiler diagnostics and panic locations are part of the shipped byte stream.
+# Reject an artifact if the randomized external workspace escaped the compiler
+# prefix maps, rather than silently blessing a host-specific manifest.
+while IFS= read -r -d '' artifact; do
+    if grep -aFq "$work" "$artifact"; then
+        echo "FAIL: artifact embeds randomized build path: ${artifact#"$stage/"}" >&2
+        exit 1
+    fi
+done < <(find "$stage" -mindepth 2 -type f -print0)
 
 (
     cd "$stage"

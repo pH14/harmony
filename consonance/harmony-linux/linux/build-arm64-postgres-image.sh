@@ -52,10 +52,14 @@ musl_cc=$ARM64_GAME_MUSL_PREFIX/bin/musl-gcc
 
 echo "== arm64 postgres image: configuring static PostgreSQL"
 mkdir -p "$pg_object"
+path_map_flags=
+if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
+    path_map_flags="-ffile-prefix-map=$HARMONY_BUILD_PATH_PREFIX=/build -fdebug-prefix-map=$HARMONY_BUILD_PATH_PREFIX=/build -fmacro-prefix-map=$HARMONY_BUILD_PATH_PREFIX=/build"
+fi
 (
     cd "$pg_object"
     CC="$musl_cc" \
-    CFLAGS='-O2 -march=armv8.1-a+lse -mno-outline-atomics' \
+    CFLAGS="-O2 -march=armv8.1-a+lse -mno-outline-atomics $path_map_flags" \
     LDFLAGS='-static' \
         "$pg_source/configure" \
         --prefix="$guest_prefix" \

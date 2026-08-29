@@ -76,6 +76,9 @@ gcc_crt=$(dirname "$(cc -print-file-name=crtbegin.o)")
 export RUSTC_BOOTSTRAP=1
 export RUSTFLAGS="-C target-cpu=generic -C target-feature=+lse,-outline-atomics -C panic=abort \
 -C link-arg=-Wl,--build-id=none -L native=$musl_prefix/lib -L native=$gcc_crt"
+if [ -n "${HARMONY_BUILD_PATH_PREFIX:-}" ]; then
+    export RUSTFLAGS="$RUSTFLAGS --remap-path-prefix=$HARMONY_BUILD_PATH_PREFIX=/build"
+fi
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$musl_prefix/bin/musl-gcc
 cargo build --locked --release --bin harmony-tetanes-agent \
     --target "$target" -Z build-std=std,panic_abort
