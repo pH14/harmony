@@ -114,6 +114,9 @@ apply_kernel_patch \
 apply_kernel_patch \
     "$LINUX_DIR/patches/arm64/0011-arm64-harmony-canonical-pstate.patch" \
     "harmony canonical PSTATE"
+apply_kernel_patch \
+    "$LINUX_DIR/patches/arm64/0012-arm64-harmony-N6-user-counter-trap-switch.patch" \
+    "harmony N6 user-counter trap switch"
 
 mkdir -p "$arm64_object_root" "$ARM64_ART_DIR"
 
