@@ -114,72 +114,33 @@ jobs:
           path: x1-report.txt
           if-no-files-found: error
 
-  # X2 input: build the committed guest image (Linux 6.18.35 + busybox 1.38.0)
-  # on the runner. The kernel bake dominates wall-clock, so the finished
-  # bzImage + initramfs pair is cached on the build inputs; X2 jobs restore the
-  # same cache. The box-built MANIFEST hashes are recorded for reference only —
-  # the runner's toolchain differs, so a mismatch there is expected.
+  # X2 input: build the committed guest image from the locked Nix graph in a
+  # clean runner store. The output is passed only through this workflow's
+  # immutable artifact, never a cross-run cache, so N5 can distinguish an
+  # actual rebuild from a restored image.
   guest-image:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Restore image cache
-        id: image-cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            consonance/harmony-linux/build/bzImage
-            consonance/harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('consonance/harmony-linux/linux/versions.lock', 'consonance/harmony-linux/linux/config-fragment', 'consonance/harmony-linux/linux/kata/**', 'consonance/harmony-linux/linux/patches/x86/**', 'consonance/harmony-linux/linux/build-kernel.sh', 'consonance/harmony-linux/linux/build-initramfs.sh', 'consonance/harmony-linux/linux/init.sh', 'consonance/harmony-linux/linux/lib-build.sh', 'consonance/harmony-linux/linux/test-harmony-serialization.sh', 'consonance/harmony-linux/linux/scan-counter-opcodes.sh', 'consonance/harmony-linux/linux/rdtsc-allowlist.txt', 'consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt', 'consonance/harmony-linux/linux/rdrand-allowlist.txt', 'consonance/harmony-linux/linux/rdrand-allowlist-gha.txt', 'consonance/harmony-linux/scripts/fetch.sh', 'consonance/harmony-linux/scripts/lib.sh') }}
-      - name: Restore source cache
-        if: steps.image-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
-        with:
-          path: consonance/harmony-linux/dl
-          key: x86-guest-sources-${{ hashFiles('consonance/harmony-linux/linux/versions.lock') }}
-      # The x86 image consumes only the kernel and busybox tarballs
-      # (`lib-build.sh` extract_kernel/extract_busybox); the full `make fetch`
-      # pulls several hundred MB of other pinned payloads from mirrors that
-      # reset connections from cloud runners. Fetch exactly the two inputs,
-      # hash-verified against versions.lock, with curl retries; the build
-      # scripts re-verify every tarball before extraction.
-      - name: Build guest image
-        if: steps.image-cache.outputs.cache-hit != 'true'
+      - uses: cachix/install-nix-action@v31
+      - name: Build guest image from lock
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flex bison bc libelf-dev libssl-dev qemu-system-x86
-          . consonance/harmony-linux/linux/versions.lock
-          mkdir -p consonance/harmony-linux/dl
-          fetch() {
-            file="consonance/harmony-linux/dl/$(basename "$1")"
-            if [ -f "$file" ] && echo "$2  $file" | sha256sum -c --status; then
-              echo "ok: $file (cached, hash verified)"
-              return
-            fi
-            curl -fSL --retry 8 --retry-delay 15 --retry-all-errors -o "$file" "$1"
-            echo "$2  $file" | sha256sum -c
-          }
-          fetch "$KERNEL_URL" "$KERNEL_SHA256"
-          fetch "$BUSYBOX_URL" "$BUSYBOX_SHA256"
-          cc --version | head -1
-          HARMONY_RDTSC_ALLOWLIST=$PWD/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt \
-          HARMONY_RDRAND_ALLOWLIST=$PWD/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt \
-            make -C consonance/harmony-linux/linux image
+          mkdir -p nix-guest-output consonance/harmony-linux/build
+          nix run .#guest-images -- --output "$PWD/nix-guest-output"
+          cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
+          cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
+          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
           consonance/harmony-linux/linux/test-harmony-serialization.sh
       - name: Record image identity
         run: |
-          sha256sum consonance/harmony-linux/build/bzImage consonance/harmony-linux/build/initramfs.cpio.gz | tee guest-image-report.txt
-          echo "box-built reference hashes (MANIFEST.sha256):" | tee -a guest-image-report.txt
-          cat consonance/harmony-linux/linux/MANIFEST.sha256 | tee -a guest-image-report.txt
+          cp nix-guest-output/MANIFEST.sha256 nix-guest-output/guest-image-report.txt
+          cat nix-guest-output/guest-image-report.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: x86-guest-image
-          path: |
-            guest-image-report.txt
-            consonance/harmony-linux/build/bzImage
-            consonance/harmony-linux/build/initramfs.cpio.gz
+          path: nix-guest-output
           if-no-files-found: error
 
   # X2: Linux boots to /init under assigned-at-exit V-time on the stock
@@ -202,14 +163,17 @@ jobs:
         replica: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
-      - name: Restore image cache
-        uses: actions/cache/restore@v4
+      - name: Download locked guest image
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            consonance/harmony-linux/build/bzImage
-            consonance/harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('consonance/harmony-linux/linux/versions.lock', 'consonance/harmony-linux/linux/config-fragment', 'consonance/harmony-linux/linux/kata/**', 'consonance/harmony-linux/linux/patches/x86/**', 'consonance/harmony-linux/linux/build-kernel.sh', 'consonance/harmony-linux/linux/build-initramfs.sh', 'consonance/harmony-linux/linux/init.sh', 'consonance/harmony-linux/linux/lib-build.sh', 'consonance/harmony-linux/linux/test-harmony-serialization.sh', 'consonance/harmony-linux/linux/scan-counter-opcodes.sh', 'consonance/harmony-linux/linux/rdtsc-allowlist.txt', 'consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt', 'consonance/harmony-linux/linux/rdrand-allowlist.txt', 'consonance/harmony-linux/linux/rdrand-allowlist-gha.txt', 'consonance/harmony-linux/scripts/fetch.sh', 'consonance/harmony-linux/scripts/lib.sh') }}
-          fail-on-cache-miss: true
+          name: x86-guest-image
+          path: nix-guest-output
+      - name: Stage locked guest image
+        run: |
+          mkdir -p consonance/harmony-linux/build
+          cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
+          cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
+          (cd nix-guest-output && sha256sum -c guest-image-report.txt)
       - name: Install stable toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
@@ -275,14 +239,17 @@ jobs:
         replica: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v4
-      - name: Restore image cache
-        uses: actions/cache/restore@v4
+      - name: Download locked guest image
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            consonance/harmony-linux/build/bzImage
-            consonance/harmony-linux/build/initramfs.cpio.gz
-          key: x86-guest-image-${{ hashFiles('consonance/harmony-linux/linux/versions.lock', 'consonance/harmony-linux/linux/config-fragment', 'consonance/harmony-linux/linux/kata/**', 'consonance/harmony-linux/linux/patches/x86/**', 'consonance/harmony-linux/linux/build-kernel.sh', 'consonance/harmony-linux/linux/build-initramfs.sh', 'consonance/harmony-linux/linux/init.sh', 'consonance/harmony-linux/linux/lib-build.sh', 'consonance/harmony-linux/linux/test-harmony-serialization.sh', 'consonance/harmony-linux/linux/scan-counter-opcodes.sh', 'consonance/harmony-linux/linux/rdtsc-allowlist.txt', 'consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt', 'consonance/harmony-linux/linux/rdrand-allowlist.txt', 'consonance/harmony-linux/linux/rdrand-allowlist-gha.txt', 'consonance/harmony-linux/scripts/fetch.sh', 'consonance/harmony-linux/scripts/lib.sh') }}
-          fail-on-cache-miss: true
+          name: x86-guest-image
+          path: nix-guest-output
+      - name: Stage locked guest image
+        run: |
+          mkdir -p consonance/harmony-linux/build
+          cp nix-guest-output/x86_64/bzImage consonance/harmony-linux/build/bzImage
+          cp nix-guest-output/x86_64/initramfs.cpio.gz consonance/harmony-linux/build/initramfs.cpio.gz
+          (cd nix-guest-output && sha256sum -c guest-image-report.txt)
       - name: Install stable toolchain
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy

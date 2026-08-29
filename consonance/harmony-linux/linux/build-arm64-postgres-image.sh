@@ -29,6 +29,7 @@ pgdata=/var/lib/postgresql/data
 workload_n=20
 
 extract_busybox
+prepare_busybox_build_source
 verify_and_extract \
     "$DL_DIR/$(basename "$PG_SOURCE_URL")" "$PG_SOURCE_SHA256" "$pg_pristine"
 
@@ -37,6 +38,13 @@ rm -rf "$pg_source" "$pg_object"
 cp -a "$pg_pristine" "$pg_source"
 patch -d "$pg_source" --batch -p1 \
     <"$LINUX_DIR/patches/postgresql/0001-static-bootstrap-without-plpgsql.patch"
+[ "$(grep -c '/bin/pwd' "$pg_source/configure")" -eq 2 ] || {
+    echo "FAIL: PostgreSQL configure /bin/pwd anchors changed" >&2
+    exit 1
+}
+sed 's#/bin/pwd#pwd#g' "$pg_source/configure" >"$pg_source/configure.tmp"
+mv "$pg_source/configure.tmp" "$pg_source/configure"
+chmod +x "$pg_source/configure"
 
 echo "== arm64 postgres image: building LSE-only static musl ($MUSL_VERSION)"
 build_arm64_game_musl
@@ -215,6 +223,12 @@ while read -r binary; do
     fi
 done < <(find "$postgres_root" \( -type f -perm -0100 -o -type f -name '*.so*' \) \
     | LC_ALL=C sort)
+
+# Publish the payloads as first-class N5 outputs as well as embedding them in
+# the initramfs. This makes the lock-built binary closure directly attestable.
+install -m 0755 "$stage_prefix/bin/postgres" "$ARM64_ART_DIR/postgres"
+install -m 0755 "$stage_prefix/bin/psql" "$ARM64_ART_DIR/psql"
+install -m 0755 "$stage_prefix/bin/pg_ctl" "$ARM64_ART_DIR/pg_ctl"
 
 echo "== arm64 postgres image: capturing the clean canonical guest snapshot"
 find "$postgres_root" -mindepth 1 -exec touch -hcd @0 {} +

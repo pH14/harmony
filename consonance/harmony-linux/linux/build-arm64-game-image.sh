@@ -13,6 +13,7 @@ cd "$(dirname "$0")"
 require_linux_aarch64
 require_tools cc make gzip cpio cargo python3 readelf patch
 extract_busybox
+prepare_busybox_build_source
 
 game_root=$BUILD_ROOT/arm64-game-root
 busybox_obj=$BUILD_ROOT/busybox-build-arm64-game
@@ -97,13 +98,22 @@ if [ "$("$busybox_obj/busybox" echo dispatcher-ok)" != dispatcher-ok ]; then
 fi
 
 echo "== arm64 game image: building TetaNES agent"
-if ! agent_output=$(HARMONY_MUSL_PREFIX="$ARM64_GAME_MUSL_PREFIX" \
-    bash "$GUEST_DIR/tetanes-agent/build.sh"); then
-    printf '%s\n' "$agent_output" >&2
-    exit 1
+if [ -n "${HARMONY_TETANES_AGENT:-}" ]; then
+    agent=$HARMONY_TETANES_AGENT
+    [ -x "$agent" ] || {
+        echo "FAIL: HARMONY_TETANES_AGENT is not executable: $agent" >&2
+        exit 1
+    }
+    echo "== arm64 game image: using Nix-built offline TetaNES agent"
+else
+    if ! agent_output=$(HARMONY_MUSL_PREFIX="$ARM64_GAME_MUSL_PREFIX" \
+        bash "$GUEST_DIR/tetanes-agent/build.sh"); then
+        printf '%s\n' "$agent_output" >&2
+        exit 1
+    fi
+    printf '%s\n' "$agent_output"
+    agent=$(printf '%s\n' "$agent_output" | tail -1)
 fi
-printf '%s\n' "$agent_output"
-agent=$(printf '%s\n' "$agent_output" | tail -1)
 [ -x "$agent" ] || { echo "FAIL: TetaNES agent missing: $agent" >&2; exit 1; }
 
 echo "== arm64 game image: assembling rootfs"
@@ -114,6 +124,7 @@ for applet in sh mount mknod chmod cat echo grep halt reboot; do
     ln -sf busybox "$game_root/bin/$applet"
 done
 install -m 0755 "$agent" "$game_root/opt/harmony/harmony-tetanes-agent"
+install -m 0755 "$agent" "$ARM64_ART_DIR/harmony-tetanes-agent"
 
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$game_root/etc/passwd"
 printf 'root:x:0:\n' >"$game_root/etc/group"

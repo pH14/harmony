@@ -13,6 +13,7 @@ cd "$(dirname "$0")"
 require_linux_amd64
 require_tools cc make gzip bzip2
 extract_busybox
+prepare_busybox_build_source
 extract_kernel # for usr/gen_init_cpio.c
 
 mkdir -p "$BBOBJ" "$ART_DIR"

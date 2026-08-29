@@ -1018,7 +1018,90 @@ three-host rebuilt references and fresh manifests meet both clauses.
 
 ## N5 — reproducible guest builds
 
-Not started.
+In progress.
+
+### Locked-build decisions and local validation
+
+- The repository-root `flake.nix` and `flake.lock` pin nixpkgs at
+  `d57af924f160a5084293c71c2043f058bd1cdb60`. The builder receives the
+  hash-checked Linux 6.18.35, BusyBox 1.38.0, musl 1.2.6, and PostgreSQL
+  17.10 sources as Nix store inputs. Cargo's application and Rust
+  standard-library registries are produced from their two lockfiles and
+  joined into one offline vendor directory.
+- The root flake snapshot is copied into a new temporary worktree for every
+  invocation. Downloads, build roots, and output staging are new; Cargo is
+  forced offline, Cargo and make parallelism are capped at four, and the SMB
+  ROM is admitted only at its frozen SHA-256. The build emits its sorted
+  per-artifact `MANIFEST.sha256` rather than accepting a copied manifest.
+- Rust's musl standard library is rebuilt with `+lse,-outline-atomics`. The
+  pinned GCC unwind archive references two outline-atomic ABI helpers, so the
+  Nix closure adds strong `CASAL`/`SWPAL`-only implementations. This keeps the
+  final NES agent static while preserving the existing zero-LL/SC gate.
+- A first isolated-store attempt reached the pinned LLVM/Clang closure that
+  had been selected only for `libunwind.a`, then the local Linux builder killed
+  Clang's final link for memory exhaustion (exit 137). The design now uses the
+  pinned musl GCC unwind archive and the two LSE helpers instead; no LLVM build
+  is part of the guest closure.
+- Fail-closed retries exposed and fixed the wrapped-versus-unwrapped Rust
+  source layout, the missing standard-library vendor lock, the vendor helper's
+  extra registry directory, and four planted-by-the-toolchain outline LL/SC
+  instructions. The last retry proved the agent audit clean before proceeding
+  to the kernel.
+
+The clean macOS-hosted Linux/aarch64 build then completed the full release set
+from a fresh external build root. The kernel counter and LL/SC planted
+negatives were rejected; kernel, vDSO, init, NES agent, and PostgreSQL payload
+audits were clean; and `sha256sum -c MANIFEST.sha256` accepted all ten outputs:
+
+```text
+314afa30412f3e9ee0022913bb3dbe9ff67971f8dd0a7fcd529a853054f2a9af  arm64/Image
+fb1bc7957d558d1261d587c0bfcde916087f0fe207be1117d6c9861806823c84  arm64/Image-game
+08cafe8a473b56f7ad9274641cb661770bb45e11245fb504254ea6a154a499b1  arm64/Image-postgres
+a72a6f0b9587f58beaa6bf3fbb5d7e2002f885fb8e11cf36da14499160eccb79  arm64/harmony-tetanes-agent
+a0dad8dba8693a07e8e90e50f3388d33bbd0257854b09001c4b6e6dc85d64cea  arm64/initramfs-game.cpio.gz
+a7ec0987ff422f4c587f2d2ef54df194ae6de937420902319e9cb519c868905b  arm64/initramfs-postgres.cpio.gz
+b2fbb8021eef6e5e8c0b11a6bb4227fc710fe54cfe9eb2d85d4a58a1e3cb4ab7  arm64/initramfs.cpio.gz
+5c2c28a0972c07a26235ceb1c08eb524be4e16da7f2594a5f43e35b4b5cbfe15  arm64/pg_ctl
+e9c2c4801727f4e784188f33b01efc08a3a820d684493fe86db1aeba389b756d  arm64/postgres
+a78b0657c6974881924fe76d966f8e2bcca16cd7eb61a6965825b45ee7092916  arm64/psql
+```
+
+The required one-byte negative used the builder's mutation switch to change
+the ARM cache-line patch from `return 64` to `return 65`. The clean mutant
+build changed `arm64/Image` from `314afa30...a9af` to
+`a8866a3b...8bbd`, while the independent minimal initramfs remained
+`b2fbb802...b4ab7`. Thus the comparison observes source changes and cannot pass
+by merely reusing or recopying the old image.
+
+The first native x86 attempt built the kernel but failed closed before
+publication because its provisional RNG allowlist was not in the flake source.
+The corrected GCC 15.2 retry then failed the exact TSC accounting: optimizer
+drift moved dozens of reviewed sites and outlined two functions. Arming a broad
+new exception list from compiler drift alone would weaken this control, so that
+candidate was rejected. The locked x86 closure instead pins GCC 13 and reuses
+the already reviewed Ubuntu/GCC-13 TSC and RNG baselines. Both failed runs are
+invalidated and retained as fail-closed gate evidence. A separate diagnostic
+using a macOS bind mount is also invalid: the host's case-insensitive filesystem
+collapsed Linux case-distinct netfilter sources. Corrected runs use a native
+Linux volume.
+
+The successful ARM build above remains pre-commit smoke evidence. N5 is not
+credited until exact-commit, distinct-host clean-store equality and all-three-
+machine N1 boots have passed.
+
+The final staged-source Linux/x86_64 run used locked GCC 13.4 and the existing
+reviewed GCC-13 opcode baselines. Exact accounting accepted all 115 TSC sites,
+all five RNG sites, and zero raw counter/RNG opcodes in setup or decompressor.
+BusyBox linked statically from the declared glibc archive output, the manifest
+verified, and the build emitted:
+
+```text
+ba78ba8c0a1694a8fe278400b8ca56b9f73491c3cd9ad03e4f7df72c88ac4b0e  x86_64/bzImage
+49aa012124f80e8fda3bcd5873ce24470e33ae961ed42fb0ee323f5e6abf2744  x86_64/initramfs.cpio.gz
+```
+
+This remains local pre-commit validation; the GitHub runner rebuild and X2 boot
+are the creditable x86 lane.
 
 ## N6 — defenses tested by attacking them
 

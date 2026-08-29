@@ -46,10 +46,10 @@ require_tools() {
 
 GUEST_DIR=$(cd .. && pwd)
 LINUX_DIR=$GUEST_DIR/linux
-DL_DIR=$GUEST_DIR/dl
+DL_DIR=${HARMONY_DOWNLOAD_DIR:-$GUEST_DIR/dl}
 # Final artifacts (bzImage, initramfs.cpio.gz) live on the repo side so they
 # survive the container session.
-ART_DIR=$GUEST_DIR/build
+ART_DIR=${HARMONY_ARTIFACT_DIR:-$GUEST_DIR/build}
 # AA-5(c) artifacts are isolated from the x86 image. In particular, an ARM
 # build must never overwrite the canonical bzImage/initramfs pair consumed by
 # the established x86 gates.
@@ -127,6 +127,32 @@ extract_kernel() {
 
 extract_busybox() {
     verify_and_extract "$DL_DIR/$(basename "$BUSYBOX_URL")" "$BUSYBOX_SHA256" "$BBSRC"
+}
+
+# BusyBox invokes `/bin/pwd` while computing its source/output roots. Pure Nix
+# builders deliberately have no ambient /bin, so make the hash-verified source
+# use the pinned `pwd` from PATH. The operation is idempotent because several
+# guest profiles can share one fresh extraction.
+prepare_busybox_build_source() {
+    local anchor_count
+    anchor_count=$(grep -c '/bin/pwd' "$BBSRC/Makefile" || true)
+    case "$anchor_count" in
+        1)
+            sed 's#/bin/pwd#pwd#' "$BBSRC/Makefile" >"$BBSRC/Makefile.tmp"
+            mv "$BBSRC/Makefile.tmp" "$BBSRC/Makefile"
+            ;;
+        0)
+            grep -Fqx "KBUILD_OUTPUT := \$(shell cd \$(KBUILD_OUTPUT) && pwd)" \
+                "$BBSRC/Makefile" || {
+                echo "FAIL: BusyBox pwd anchor changed" >&2
+                exit 1
+            }
+            ;;
+        *)
+            echo "FAIL: BusyBox has $anchor_count /bin/pwd anchors" >&2
+            exit 1
+            ;;
+    esac
 }
 
 extract_musl() {
