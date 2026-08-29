@@ -192,6 +192,21 @@ raw_byte_scan_one() {
             echo "FAIL: raw counter-opcode bytes in $tag section $s — rdtsc(0f31)=$n31" >&2
             echo "  rdtscp(0f01f9)=$n01f9. These 16-bit/mode-mixed artifacts must carry NONE;" >&2
             echo "  a real counter read here is not trap-survivable — review by hand." >&2
+            # Preserve enough evidence to localize a toolchain-dependent raw-byte
+            # hit without publishing the rejected boot artifact. Hex-string byte
+            # offsets are section-relative; the context deliberately includes
+            # bytes on both sides because an opcode may straddle instructions.
+            for opcode in 0f31 0f01f9; do
+                while IFS=: read -r hex_offset _; do
+                    [ -n "$hex_offset" ] || continue
+                    byte_offset=$((hex_offset / 2))
+                    context_start=$((byte_offset > 8 ? byte_offset - 8 : 0))
+                    echo "  $opcode section-byte-offset=$byte_offset context=${hex:$((context_start * 2)):40}" >&2
+                done < <(grep -boE "$opcode" <<<"$hex" || true)
+            done
+            echo "  decoded counter instructions in $tag section $s (empty means the raw bytes occur inside another instruction):" >&2
+            objdump -d -j "$s" "$path" 2>/dev/null \
+                | grep -Ei -C 2 '\<(rdtsc|rdtscp)\>' >&2 || true
             rc=1
         fi
         # rdrand/rdseed are `0f c7` with modrm reg field 6/7 (`/1` is cmpxchg8b,
