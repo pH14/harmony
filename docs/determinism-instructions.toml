@@ -112,7 +112,8 @@ verification = "tested-image-audit; noisy/quiet convergence and accumulating-ret
 id = "x86-cpuid"
 arch = "x86_64"
 channel = "implementation-identity"
-operations = ["CPUID"]
+operation-expansions = ["CPUID frozen contract domain"]
+operations = ["CPUID EAX=0x00000000 ECX=0x00000000"]
 claim = "execute"
 layers = ["protocol", "hypervisor-policy"]
 disposition = "Every leaf is answered from the frozen CPUID model with hardware RNG hidden in the stock VM-exit-count composition."

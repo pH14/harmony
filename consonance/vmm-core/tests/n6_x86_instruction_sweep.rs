@@ -112,7 +112,7 @@ fn traps_off_fails_before_two_traps_on_runs_are_credited() {
         String::from_utf8_lossy(&positive.stderr)
     );
     let stdout = String::from_utf8_lossy(&positive.stdout);
-    assert!(stdout.contains("table_rows=9 exercised_rows=9 operations=23 runs=2"));
+    assert!(stdout.contains("table_rows=9 exercised_rows=9 operations=166 runs=2"));
     eprintln!("{}", stdout.trim());
     eprintln!("N6_X86_REPORT_DIR={}", report_root.display());
 }

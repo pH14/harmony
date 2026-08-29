@@ -38,6 +38,39 @@ class SweepError(ValueError):
     """A fail-closed table or report violation."""
 
 
+def cpuid_contract_operations() -> list[str]:
+    """Enumerate the finite, reviewable CPUID domain frozen by the x86 contract."""
+    pairs = {(leaf, 0) for leaf in range(0x21)}
+    pairs.update((0x8000_0000 + offset, 0) for offset in range(9))
+
+    # For `*` subleaf rows, probe both the ordinary and far-boundary inputs.
+    wildcard_leaves = (
+        0x03, 0x05, 0x06, 0x08, 0x09, 0x0C, 0x0E, 0x0F,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x17, 0x18, 0x19,
+        0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+    )
+    pairs.update((leaf, 0xFFFF_FFFF) for leaf in wildcard_leaves)
+
+    # Explicit and bounded subleaf surfaces in cpu-msr-contract.toml.
+    pairs.update((0x04, subleaf) for subleaf in (1, 2, 3, 4, 0xFFFF_FFFF))
+    pairs.update((0x07, subleaf) for subleaf in (1, 0xFFFF_FFFF))
+    pairs.update((0x0B, subleaf) for subleaf in (1, 2, 0xFFFF_FFFF))
+    pairs.update((0x0D, subleaf) for subleaf in range(1, 64))
+
+    # The hypervisor and out-of-range rules are constant ranges. Probe their
+    # boundaries, both ECX boundaries, and two values outside max-basic-leaf.
+    pairs.update(
+        (leaf, subleaf)
+        for leaf in (0x4000_0000, 0x4FFF_FFFF)
+        for subleaf in (0, 0xFFFF_FFFF)
+    )
+    pairs.update(((0x0000_0021, 0), (0xFFFF_FFFF, 0)))
+    return [
+        f"CPUID EAX=0x{leaf:08x} ECX=0x{subleaf:08x}"
+        for leaf, subleaf in sorted(pairs)
+    ]
+
+
 @dataclass(frozen=True)
 class Row:
     """The fields whose exact shape the generated sweep accounts for."""
@@ -120,10 +153,12 @@ def load_rows(path: Path) -> list[Row]:
             if match:
                 direction, register = match.groups()
                 expanded_operations.extend(
-                    f"{direction} {register}{index}_EL0" for index in range(31)
+                    f"{direction} {register}{slot}_EL0" for slot in range(31)
                 )
             elif re.fullmatch(r"MRS ID_AA64AFR[01]_EL1", expansion):
                 expanded_operations.append(expansion)
+            elif expansion == "CPUID frozen contract domain":
+                expanded_operations.extend(cpuid_contract_operations()[1:])
             else:
                 raise SweepError(f"{identifier}: unsupported operation expansion {expansion!r}")
         operations = expanded_operations
@@ -197,8 +232,25 @@ def arm64_body(operation: str) -> list[str]:
 
 def x86_body(operation: str) -> list[str]:
     """Return one x86-64 JIT body for an exact table operation."""
+    cpuid = re.fullmatch(
+        r"CPUID EAX=0x([0-9a-f]{8}) ECX=0x([0-9a-f]{8})", operation
+    )
+    if cpuid:
+        leaf, subleaf = cpuid.groups()
+        return [
+            "pushq %rbx",
+            f"movl $0x{leaf}, %eax",
+            f"movl $0x{subleaf}, %ecx",
+            "cpuid",
+            "movl %eax, 0(%rdi)",
+            "movl %ebx, 4(%rdi)",
+            "movl %ecx, 8(%rdi)",
+            "movl %edx, 12(%rdi)",
+            "xorl %eax, %eax",
+            "popq %rbx",
+            "ret",
+        ]
     bodies = {
-        "CPUID": ["pushq %rbx", "xorl %eax, %eax", "cpuid", "shlq $32, %rdx", "orq %rdx, %rax", "popq %rbx", "ret"],
         "RDTSC": ["rdtsc", "shlq $32, %rdx", "orq %rdx, %rax", "ret"],
         "RDTSCP": ["rdtscp", "shlq $32, %rdx", "orq %rdx, %rax", "ret"],
         "RDPMC": ["xorl %ecx, %ecx", "rdpmc", "shlq $32, %rdx", "orq %rdx, %rax", "ret"],
