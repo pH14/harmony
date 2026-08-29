@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ RNDR = 0xD53B2400
 RNDRRS = 0xD53B2420
 
 
-def executable_sections(path: Path) -> tuple[int, list[tuple[str, bytes]]]:
+def executable_sections(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
     """Return every executable section after strict ELF bounds checks."""
     data = path.read_bytes()
     header_size = struct.calcsize(ELF_HEADER)
@@ -74,9 +75,9 @@ def executable_sections(path: Path) -> tuple[int, list[tuple[str, bytes]]]:
             raise ValueError("unterminated section name")
         return names[offset:end].decode("ascii", errors="strict")
 
-    found: list[tuple[str, bytes]] = []
+    found: list[tuple[str, int, bytes]] = []
     for index in range(section_count):
-        name_offset, kind, flags, _address, offset, size, *_rest = section(index)
+        name_offset, kind, flags, address, offset, size, *_rest = section(index)
         if flags & SHF_EXECINSTR == 0 or size == 0:
             continue
         name = name_at(name_offset)
@@ -84,7 +85,7 @@ def executable_sections(path: Path) -> tuple[int, list[tuple[str, bytes]]]:
             raise ValueError(f"executable NOBITS section {name}")
         if offset > len(data) or size > len(data) - offset:
             raise ValueError(f"executable section {name} outside file")
-        found.append((name, data[offset : offset + size]))
+        found.append((name, address, data[offset : offset + size]))
     if not found:
         raise ValueError("no executable sections")
     return machine, found
@@ -104,28 +105,69 @@ def arm64_hits(data: bytes) -> list[tuple[int, str]]:
     return hits
 
 
-def x86_hits(data: bytes) -> list[tuple[int, str]]:
-    """Find RDRAND/RDSEED encodings for any ModRM destination."""
-    hits: list[tuple[int, str]] = []
-    for offset in range(max(0, len(data) - 2)):
-        if data[offset : offset + 2] != b"\x0f\xc7":
+def x86_hits(path: Path, sections: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str]]:
+    """Find decoded RDRAND/RDSEED instructions at real x86 boundaries."""
+    bases = {name: address for name, address, _data in sections}
+    try:
+        output = subprocess.run(
+            ["objdump", "-d", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"objdump failed: {error}") from error
+
+    current: str | None = None
+    hits: list[tuple[str, int, str]] = []
+    parsed = 0
+    for line in output.splitlines():
+        if line.startswith("Disassembly of section ") and line.endswith(":"):
+            current = line.removeprefix("Disassembly of section ")[:-1]
             continue
-        reg = (data[offset + 2] >> 3) & 7
-        if reg == 6:
-            hits.append((offset, "RDRAND"))
-        elif reg == 7:
-            hits.append((offset, "RDSEED"))
+        if current not in bases or ":" not in line:
+            continue
+        address_text, remainder = line.split(":", 1)
+        try:
+            address = int(address_text.strip(), 16)
+        except ValueError:
+            continue
+        fields = remainder.split("\t")
+        if len(fields) < 2:
+            continue
+        mnemonic_fields = " ".join(fields[1:]).strip().split()
+        if not mnemonic_fields:
+            continue
+        parsed += 1
+        mnemonic = next(
+            (
+                base
+                for field in mnemonic_fields
+                for base in ("rdrand", "rdseed")
+                if field.lower() == base
+                or field.lower() in (f"{base}w", f"{base}l", f"{base}q")
+            ),
+            None,
+        )
+        if mnemonic is not None:
+            offset = address - bases[current]
+            if offset < 0:
+                raise ValueError(f"objdump address before section base for {current}")
+            hits.append((current, offset, mnemonic.upper()))
+    if parsed == 0:
+        raise ValueError("objdump parsed zero executable instructions")
     return hits
 
 
 def scan(path: Path) -> list[tuple[str, int, str]]:
     """Return entropy-opcode hits with section-relative offsets."""
     machine, sections = executable_sections(path)
-    decoder = arm64_hits if machine == EM_AARCH64 else x86_hits
+    if machine == EM_X86_64:
+        return x86_hits(path, sections)
     return [
         (section, offset, mnemonic)
-        for section, data in sections
-        for offset, mnemonic in decoder(data)
+        for section, _address, data in sections
+        for offset, mnemonic in arm64_hits(data)
     ]
 
 
@@ -134,9 +176,6 @@ def self_test() -> None:
     arm = RNDR.to_bytes(4, "little") + RNDRRS.to_bytes(4, "little") + b"\xc0\x03\x5f\xd6"
     if arm64_hits(arm) != [(0, "RNDR"), (4, "RNDRRS")]:
         raise ValueError("AArch64 entropy decoder self-test failed")
-    x86 = b"\x0f\xc7\xf0\x0f\xc7\xf8\x0f\xc7\xc8"
-    if x86_hits(x86) != [(0, "RDRAND"), (3, "RDSEED")]:
-        raise ValueError("x86 entropy decoder self-test failed")
 
 
 def main() -> int:

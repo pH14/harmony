@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 n6_cc=${HARMONY_N6_CC:-cc}
-require_tools "$n6_cc" cc gzip python3
+require_tools "$n6_cc" cc gzip objdump python3
 extract_kernel # usr/gen_init_cpio.c is the deterministic packer.
 
 repo_root=$(cd ../../.. && pwd)
@@ -38,6 +38,7 @@ case "$(uname -m)" in
         march=()
         negative_body='.byte 0x0f, 0xc7, 0xf0
 .byte 0x0f, 0xc7, 0xf8'
+        false_positive_body='.byte 0x48, 0x8d, 0x3d, 0x0f, 0xc7, 0xf8, 0x00'
         ;;
     *)
         echo "FAIL: N6 guest images require native Linux/aarch64 or Linux/x86_64" >&2
@@ -74,6 +75,21 @@ if ! grep -q '^N6_ENTROPY_REJECT .* hits=2$' "$n6_root/n6-entropy-negative.log";
 fi
 echo "ok: planted entropy opcodes rejected"
 
+if [ "$arch" = x86_64 ]; then
+    false_positive=$n6_root/n6-entropy-false-positive.S
+    cat >"$false_positive" <<EOF
+.text
+.global _start
+_start:
+$false_positive_body
+ret
+EOF
+    "$n6_cc" -nostdlib -static -Wl,-e,_start \
+        -o "$n6_root/n6-entropy-false-positive" "$false_positive"
+    python3 "$entropy_scan" "$n6_root/n6-entropy-false-positive"
+    echo "ok: entropy scanner ignored opcode-shaped LEA displacement"
+fi
+
 build_guest() {
     mode=$1
     binary=$2
@@ -81,8 +97,9 @@ build_guest() {
     if [ "$mode" = traps-off ]; then
         extra=(-DN6_TRAPS_OFF=1)
     fi
-    "$n6_cc" -Os -Wall -Wextra -Werror -static -fno-pie -no-pie \
-        -Wl,--build-id=none -Wl,-z,noexecstack "${march[@]}" \
+    "$n6_cc" -Os -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
+        -static -fno-pie -no-pie -Wl,--build-id=none -Wl,-z,noexecstack \
+        -Wl,--gc-sections "${march[@]}" \
         -I"$n6_root" -DN6_ARCH='"'"$arch"'"' -DN6_AUDIT_REJECTED=1 \
         "${extra[@]}" -o "$binary" \
         "$LINUX_DIR/n6-instruction-guest.c" "$n6_root/n6-generated.S"
