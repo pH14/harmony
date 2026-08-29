@@ -145,17 +145,21 @@ all_sites() {
     rm -f "$dis"
 }
 
-# raw_byte_scan: fail-closed raw executable-byte scan of the 16-bit / mode-mixed
-# boot artifacts (setup, decompressor) — decode-independent, so an rdtsc/rdtscp
-# that a single objdump mode would mis-length cannot hide. Extracts each
-# executable (X-flag) section and searches its raw bytes for `0f 31` (rdtsc) and
-# `0f 01 f9` (rdtscp). These artifacts carry ZERO counter reads, so ANY hit
-# fails the build. Runs on every build (r7 P2), not once. Returns 1 on any hit
-# or missing artifact.
+# raw_byte_scan: fail-closed opcode scan of the boot artifacts. Setup and the
+# decompressor's `.head.text` really are 16-bit / mode-mixed, so their scan is
+# raw and decode-independent: `0f 31`, `0f 01 f9`, or a hardware-RNG encoding
+# anywhere in an executable section fails. The decompressor's ordinary `.text`
+# is compiler-generated 64-bit code, however, and is disassembled in that
+# architectural mode. Treating a `0f31` pair inside a 64-bit instruction's
+# displacement as RDTSC makes the gate depend on unrelated link layout while
+# proving nothing about an executable instruction. Both paths still require
+# ZERO counter and hardware-RNG instructions. Runs on every build (r7 P2), not
+# once. Returns 1 on any hit, decode failure, or missing artifact.
 # raw_byte_scan_one <path> <tag>: scan one artifact's executable sections. 0 =
 # clean, 1 = a hit or a structural problem (missing/no-sections).
 raw_byte_scan_one() {
     local path=$1 tag=$2 names s hex n31 n01f9 nrng m reg rc=0
+    local dis counter_found rng_found
     if [ ! -f "$path" ]; then
         echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
         echo "  bzImage must be scanned (setup + decompressor + kernel); build first." >&2
@@ -185,6 +189,28 @@ raw_byte_scan_one() {
             echo "FAIL: could not extract bytes for $tag section $s (objcopy/od/tr failed) —" >&2
             echo "  refusing to green a scan that did not read the section (fail-closed)." >&2
             return 1
+        fi
+        if [ "$tag" = decompressor ] && [ "$s" = .text ]; then
+            dis=$(mktemp)
+            if ! objdump -d -j "$s" "$path" >"$dis" 2>/dev/null; then
+                echo "FAIL: could not disassemble 64-bit $tag section $s" >&2
+                rm -f "$dis"
+                return 1
+            fi
+            counter_found=$(sites "$dis" "$tag")
+            rng_found=$(sites "$dis" "$tag" '^(rdrand|rdseed)$')
+            rm -f "$dis"
+            if [ -n "$counter_found" ]; then
+                echo "FAIL: decoded counter instruction(s) in 64-bit $tag section $s:" >&2
+                printf '%s\n' "$counter_found" | sed 's/^/  /' >&2
+                rc=1
+            fi
+            if [ -n "$rng_found" ]; then
+                echo "FAIL: decoded hardware-RNG instruction(s) in 64-bit $tag section $s:" >&2
+                printf '%s\n' "$rng_found" | sed 's/^/  /' >&2
+                rc=1
+            fi
+            continue
         fi
         n31=$(grep -oE '0f31' <<<"$hex" | wc -l | tr -d ' ')
         n01f9=$(grep -oE '0f01f9' <<<"$hex" | wc -l | tr -d ' ')
@@ -493,6 +519,26 @@ EOF
                 echo "FAIL: self-test — raw-byte scan MISSED a planted 0f 31 in a .text section" >&2
                 exit 1
             fi
+            # The decompressor's compiler-generated `.text` is known 64-bit.
+            # A real decoded RDTSC must still fail there, while the same bytes
+            # inside a LEA displacement must pass. The mixed-mode tags retain
+            # the stricter raw rule and therefore reject that LEA fixture.
+            if raw_byte_scan_one "$d/dirty.elf" decompressor >/dev/null 2>&1; then
+                echo "FAIL: self-test — 64-bit decompressor scan MISSED a planted RDTSC" >&2
+                exit 1
+            fi
+            printf '.section .text,"ax"\n.global fixture\nfixture:\n.byte 0x48,0x8d,0x3d,0x0f,0x31,0,0\n.byte 0xc3\n' \
+                | as -o "$d/lea.elf" - 2>/dev/null && lea_ok=1
+            if [ "${lea_ok:-0}" = 1 ]; then
+                if ! raw_byte_scan_one "$d/lea.elf" decompressor >/dev/null 2>&1; then
+                    echo "FAIL: self-test — 64-bit LEA displacement was misread as RDTSC" >&2
+                    exit 1
+                fi
+                if raw_byte_scan_one "$d/lea.elf" setup >/dev/null 2>&1; then
+                    echo "FAIL: self-test — mixed-mode raw scan accepted a planted 0f 31 pair" >&2
+                    exit 1
+                fi
+            fi
             if [ "${wax_ok:-0}" = 1 ] \
                 && raw_byte_scan_one "$d/wax.elf" wax >/dev/null 2>&1; then
                 echo "FAIL: self-test — raw-byte scan MISSED a 0f 31 in a WAX (writable+exec)" >&2
@@ -576,13 +622,13 @@ if ! scan_sites "$RNG_FOUND" "$RNG_ALLOWLIST" hwrng; then
     exit 1
 fi
 
-# (2) The 16-bit / mode-mixed boot artifacts: fail-closed raw executable-byte
-# scan, every build (r7 P2). Decode-independent, so no counter opcode can hide
-# behind an objdump mode mis-length.
+# (2) Boot artifacts: fail-closed raw executable-byte scan for genuinely
+# mode-mixed sections and a decoded zero-instruction scan for the decompressor's
+# compiler-generated 64-bit `.text`, every build (r7 P2).
 if ! raw_byte_scan; then
     exit 1
 fi
 
 N=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$ALLOWLIST" | wc -l | tr -d ' ')
 NRNG=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$RNG_ALLOWLIST" | wc -l | tr -d ' ')
-echo "ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the $N reviewed per-site allowlist entries and every rdrand/rdseed site one of the $NRNG reviewed rng entries (symbol+offset); setup + decompressor: raw executable-byte scan clean (${#RAW_ARTIFACTS[@]} artifacts, decode-independent, counter + rng opcodes)"
+echo "ok: counter-opcode scan — kernel proper: every rdtsc/rdtscp site matches one of the $N reviewed per-site allowlist entries and every rdrand/rdseed site one of the $NRNG reviewed rng entries (symbol+offset); setup + decompressor: mixed-mode raw-byte and 64-bit decoded scans clean (${#RAW_ARTIFACTS[@]} artifacts, counter + rng opcodes)"
