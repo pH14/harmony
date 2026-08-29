@@ -1111,6 +1111,58 @@ events, 283 schedules, 136 deliveries, 150 checkpoints, log digest
 initramfs were `314afa30...a9af` and `b2fbb802...b4ab7`, and the complete
 ten-artifact manifest reverified immediately after the boots.
 
+The first exact-source msr1 build attempt was admitted as
+`harmony-n5-nix-84faefed.service` at `2026-08-29T06:59:24Z` (invocation
+`7fe3048f0aa34366be5e24126a1971f6`). Its outer PID 246434 had the canonical
+compute-W then benchmark-R nested-flock argv; the locks were held by PIDs
+246434 and 246436, the payload began only afterward as PID 246437, and the
+unit's cgroup, declared `AllowedCPUs`/`EffectiveCPUs`, and observed
+`Cpus_allowed_list` were all exactly `consonance.slice` and `2-5`.
+`CARGO_BUILD_JOBS`, make, and Nix jobs/cores were capped at four. The minimal
+kernel built and passed its planted counter negative, but the second kernel
+source extraction exhausted the 28 GiB `/tmp` tmpfs at
+`2026-08-29T07:20:59Z`; systemd recorded exit 2 at `07:21:09Z`. No full
+manifest was published and this run is invalidated, not counted.
+
+The clean retry uses new store, output, and temporary-tree paths rather than
+reusing the partial store. `harmony-n5-nix-84faefed-r2.service` was admitted at
+`2026-08-29T07:23:34Z` (invocation
+`05feb01be04248aea235606cfa6831df`). Its exact ExecStart is the canonical
+`flock --exclusive ...consonance-compute.lock` then
+`flock --shared ...benchmark.lock` followed by the payload; outer PID 285927
+held the compute WRITE lock, PID 285929 held the benchmark READ lock, and
+payload PID 285930 began at `07:23:34.401619513Z`. The unit and observed payload
+were in `consonance.slice` with declared/effective/observed CPUs exactly `2-5`,
+and all Cargo, make, and Nix parallelism remained at four. Its fresh extraction
+tree is on the root filesystem, which had 59 GiB free, rather than the
+constrained tmpfs. That change carried all three kernels through their planted
+counter/LL/SC negatives and completed the NES image, then the path-backed Nix
+store's user namespace denied the two `mknod(2)` calls needed by build-time
+PostgreSQL `initdb`. The unit exited fail-closed at
+`2026-08-29T08:35:23Z`; it published no manifest and is also invalidated.
+
+The namespace diagnosis itself used short canonical
+`consonance.slice`/CPUs-`2-5` units with compute-W then benchmark-R. A plain
+outer-namespace probe created and verified character device 1:3, while the
+same `/usr/bin/mknod` inside `nix --store /path shell` retained full apparent
+capabilities but failed with `EPERM`. The candidate bridge then passed as
+`harmony-n5-helper-integration.service`: a client inside the Nix user namespace
+requested exactly `null` 1:3 and `urandom` 1:9 over FIFOs, the outer helper
+validated their temporary PostgreSQL-root paths and identities, created and
+verified both nodes, and the test removed them. The committed helper has no
+general device-node interface; any different path, name, number, pre-existing
+target, non-FIFO endpoint, or failed post-create verification stops the build.
+
+GitHub run `33239700060` is also invalidated: its locked x86 build produced the
+expected hashes, but the pre-existing serialization test could not find QEMU.
+Run `33240072428` installed QEMU and again built the expected bytes, but exposed
+a real sequencing error: the locked builder had already removed its private
+kernel source/object workspace before the external serialization mutation gate
+ran. Commit `ee0be628` moves that positive and planted-negative KUnit gate
+inside the x86 locked builder, before artifact staging and cleanup; exact-head
+run `33240831482` is the creditable retry. Neither failed run is counted toward
+N5 or X2.
+
 ## N6 — defenses tested by attacking them
 
 Not started.

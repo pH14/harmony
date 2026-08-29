@@ -47,6 +47,13 @@ admits the ROM only at the frozen SHA-256. The destination must be empty. The
 imperative entry points below remain useful developer gates, but their output is
 not N5 release evidence.
 
+A path-backed clean Nix store runs in a user namespace that cannot create the
+two character devices needed by build-time `initdb`. On such a host, the outer
+locked build payload may run `nix/device-node-helper.sh` and pass its two FIFO
+paths to the builder. The helper accepts only the temporary PostgreSQL root's
+`null` (1:3) and `urandom` (1:9) requests and verifies both nodes; ordinary Nix
+and container builds continue to create and verify the same nodes directly.
+
 The AA-5(c) ARM spike has separate native Linux/aarch64 entry points (validated
 on the `msr1` build host):
 
