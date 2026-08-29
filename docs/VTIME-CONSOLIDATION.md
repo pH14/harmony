@@ -99,6 +99,29 @@ These hold for every milestone.
   exclusive side of that lock across preflight and the timed sample, so a
   Consonance job waits rather than contaminates the sample. Do not work
   around or weaken that reservation.
+- **Serialize Consonance compute on msr1.** Effective after N4's hardware-
+  coordination correction, every Consonance build, test, guest-image build,
+  KVM reference, or benchmark unit runs in `consonance.slice`, declares
+  `AllowedCPUs=2-5`, and starts with this canonical one-PID nested-lock shape:
+  `/usr/bin/flock --exclusive
+  /run/lock/harmony-msr1-consonance-compute.lock /usr/bin/flock --shared
+  /run/lock/harmony-msr1-benchmark.lock <payload...>`. The payload cannot start
+  until both locks are held; no shell wraps lock acquisition. Compute-first is
+  the global order: it prevents queued Consonance work from becoming an extra
+  benchmark-lock holder before Dissonance starts a loaded arm. The unit is
+  pinned exactly to CPUs `2-5`; a subset is no longer sufficient for these
+  compute units. Broad CPU declarations, `system.slice` waiters, shell-wrapper
+  waiters, benchmark-first, benchmark-only, and lockless units are invalid.
+  Record the unit, outer-waiter PID and complete ExecStart argv, cgroup,
+  requested `AllowedCPUs`, observed `EffectiveCPUs` and `Cpus_allowed_list`,
+  both lock identities and order, the waiter start time, and the payload-start
+  time that proves both nested locks had been acquired. The already-running
+  `harmony-n4-kvm-boot-8312745e-final.service` is preserved under the preceding
+  shell-held compute-first rule and drains naturally; every later unit uses the
+  canonical nested-flock form. The
+  already-running `harmony-n4-kvm-boot-d3e0eaee-r3.service` is preserved under
+  the preceding shared-lock rule, but its overlap with Dissonance's loaded E00
+  arm is recorded and no later unit may copy that single-lock protocol.
 - **Record msr1 isolation evidence.** Each milestone that uses msr1 records
   the systemd unit or scope, requested CPU set, observed
   `Cpus_allowed_list`, and whether a Dissonance reservation was active in
