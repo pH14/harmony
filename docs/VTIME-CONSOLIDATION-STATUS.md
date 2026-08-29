@@ -1018,7 +1018,7 @@ three-host rebuilt references and fresh manifests meet both clauses.
 
 ## N5 — reproducible guest builds
 
-In progress.
+Complete.
 
 ### Locked-build decisions and local validation
 
@@ -1188,6 +1188,230 @@ ran. Commit `ee0be628` moves that positive and planted-negative KUnit gate
 inside the x86 locked builder, before artifact staging and cleanup; exact-head
 run `33240831482` is the creditable retry. Neither failed run is counted toward
 N5 or X2.
+
+### Reproducibility repairs and exact final-tree evidence
+
+The first complete distinct-host comparison was intentionally not accepted.
+`harmony-n5-nix-966ce92a-r4.service` ran from `10:04:50Z` through
+`11:19:26Z` under the canonical compute-exclusive then benchmark-shared
+locks (outer PID 511772, payload PID 511775), in `consonance.slice` with
+declared, effective, and observed CPUs exactly `2-5` and parallelism four.
+It completed the full offline build and its own manifest verification, but a
+comparison with the macOS-hosted ARM build found four unequal artifacts:
+`harmony-tetanes-agent`, `initramfs-game.cpio.gz`, `postgres`, and
+`initramfs-postgres.cpio.gz`. The other six artifacts were byte-identical.
+Strings and compiler metadata localized the differences to randomized absolute
+build roots in Rust crate identities and PostgreSQL compiler metadata. This is
+useful fail-loud evidence, but r4 is invalidated and supplies no N5 credit.
+
+Commits `82048751` and `c59d229f` added compiler prefix maps and a stable
+PostgreSQL compiler wrapper. Two further msr1 runs were stopped rather than
+allowed to consume the reserved host after local independent builds had already
+proved their exact trees non-reproducible:
+
+- `harmony-n5-nix-82048751-r5.service` began at
+  `11:30:21.771581900Z`; outer PID 602573 and payload PID 602576 used the
+  canonical lock order in `consonance.slice`, with declared/effective/observed
+  CPUs `2-5` and four-way parallelism. Randomized Rust crate disambiguators
+  still changed the NES agent. The unit was stopped at `11:35:06Z`, failed
+  closed during the agent build/audit, and published no manifest.
+- `harmony-n5-nix-c59d229f-r6.service` began at
+  `11:50:41.883902762Z`; compute-W PID 612656 held inode `00:23:7`,
+  benchmark-R PID 612658 held `00:23:6`, and payload PID 612659 was in
+  `/consonance.slice/harmony-n5-nix-c59d229f-r6.service`. Its exact nested-flock
+  argv, declared/effective/observed CPUs `2-5`, and four-way parallelism were
+  captured. A local clean build showed that the remaining randomized source
+  root still changed Rust symbol hashes, so r6 was stopped at
+  `12:00:54.941229098Z` before publication; systemd completed the stop at
+  `12:01:09Z`. Both locks were then verified free. No r5/r6 byte is credited.
+
+The final repair at signed commit `74d5f9da` gives native ARM builds one
+fresh, fail-if-present `/build/harmony-nix-guest` workspace. This is required
+because rustc's crate identity reaches symbol hashes even after diagnostic
+prefix remapping. The game image now requests GNU cpio's reproducible inode
+assignment. PostgreSQL exposed a different source of nondeterminism: build-time
+`initdb` writes host-time/PID/random state into `pg_control`, `pgstat.stat`, and
+the first WAL segment. Baking a fixed authentication nonce or a predictable
+placeholder into the published image was rejected as unsafe. Instead, the
+published PGDATA is empty and the immutable guest runs ordinary `initdb` once
+per boot, obtaining its nonce from the guest's seeded entropy before starting
+the existing fixed workload. Thus no host-random database state and no
+predictable authentication nonce is shipped.
+
+Two independently created macOS-hosted Linux/aarch64 containers, each starting
+with its own fresh Nix store, separately populated the locked input/app closure
+and then executed the exact `74d5f9da` builder with `--offline`. Their complete
+ten-artifact manifests were byte-identical:
+
+```text
+314afa30412f3e9ee0022913bb3dbe9ff67971f8dd0a7fcd529a853054f2a9af  arm64/Image
+fb1bc7957d558d1261d587c0bfcde916087f0fe207be1117d6c9861806823c84  arm64/Image-game
+08cafe8a473b56f7ad9274641cb661770bb45e11245fb504254ea6a154a499b1  arm64/Image-postgres
+4b0a2bfdab4a65bbb91e377979ac736559b35a485450209b87248d6f989beacf  arm64/harmony-tetanes-agent
+f8f46f57cb635eab77c7cffdfccd4ed5cc46435c82a5b807543e53f81a47e28f  arm64/initramfs-game.cpio.gz
+54a0b54228c10bfc27089ff8f198b428f6e426a31f07036d90b5e9ffe467220c  arm64/initramfs-postgres.cpio.gz
+b2fbb8021eef6e5e8c0b11a6bb4227fc710fe54cfe9eb2d85d4a58a1e3cb4ab7  arm64/initramfs.cpio.gz
+5c2c28a0972c07a26235ceb1c08eb524be4e16da7f2594a5f43e35b4b5cbfe15  arm64/pg_ctl
+2f31d42ab080308c01f6426a02af90e3fcfe1087f334a61643bcad8197449341  arm64/postgres
+a78b0657c6974881924fe76d966f8e2bcca16cd7eb61a6965825b45ee7092916  arm64/psql
+```
+
+The signed-HVF PostgreSQL acceptance boot used that exact clean-store
+`Image-postgres` and `initramfs-postgres.cpio.gz`. Runtime `initdb` completed,
+PostgreSQL became ready, all 20 rows and the final count/sum `20/210` matched,
+shutdown was clean, guest and host kernel-health scans passed, the per-entry
+watchdog stayed green, and event 735,082 emitted `ARM64_PG_M3_READY`. The report
+passed with 735,083 host-loop exits, 711,942 portable events, 704,678 bounded
+gaps (maximum 1,000,000 V-ns), and no comparator disagreement.
+
+The exact clean-store minimal image was then booted ten times with the signed
+M1 Max HVF runner. All ten complete normalized logs were byte-identical at
+SHA-256 `6d893601...a1bba`; each contained 38,381 portable events, 283
+schedules, 136 deliveries, 150 checkpoints, digest `d23091c1...6e16`, and
+final state hash `e3ce731a...383a`.
+
+The final distinct-host msr1 build is
+`harmony-n5-nix-74d5f9da-r7.service` (invocation
+`ab3e8cba7ff24d81a1ed528e1415efb2`). Its canonical one-PID ExecStart began at
+`12:50:37Z`: compute-exclusive PID 630604 acquired inode `00:23:7`, then
+benchmark-shared PID 630606 acquired `00:23:6`, and payload PID 630607 began
+only after both were held, at `12:50:37.905791836Z`; both-lock attestation was
+recorded at `12:50:37.912827959Z`. The exact cgroup is
+`/consonance.slice/harmony-n5-nix-74d5f9da-r7.service`; slice, declared
+`AllowedCPUs`, `EffectiveCPUs`, and every observed `Cpus_allowed_list` are
+`2-5`; Cargo, make, Nix jobs, and Nix cores are four. It is currently running
+the exact `74d5f9da` offline build. It completed successfully at
+`14:05:22.771387863Z` (3 h 50 m CPU, 9.7 GiB peak), rechecked every manifest
+entry, and independently emitted the exact ten hashes printed above. This is
+the required distinct-host clean-store equality, not a copied-artifact check.
+
+GitHub Actions run `33252942226` completed successfully on the same exact
+`74d5f9da` tree. Its locked x86 build emitted `bzImage`
+`ba78ba8c...4b0e` and initramfs `49aa0121...744`; check, both X1 jobs, all six
+live probes, the guest build, all four X2 replicas, and all eight hunt replicas
+passed. The four X2 normalized logs were byte-identical at SHA-256
+`6606865d...4478`, with 35,234 events, digest `cf4732e...36f`, zero state or
+RAM-page differences, and green pvclock, ready, userspace, and placement
+oracles.
+
+### Exact-tree cross-backend checkpoint repair
+
+The first msr1 N1 retry correctly refused credit. Unit
+`harmony-n5-kvm-boot-74d5f9da-r8.service` (invocation
+`c385f13e043c44e8b67e7f6c7de1c422`) began at `14:06:53.570060586Z` with
+compute-W PID 712113, benchmark-R PID 712115, and payload PID 712116. Its
+canonical argv, `consonance.slice`, declared/effective/observed CPUs `2-5`, and
+Cargo jobs four were captured. The first boot reached readiness, but its log
+SHA `dce6bb3...31df` differed from HVF `6d89360...a1bba` at exactly checkpoint
+event 6,911: HVF state hash `7409db2...981c`, KVM
+`81927ea...43a4`. Counts, event payloads, delivery placement, and final state
+`e3ce731a...383a` otherwise agreed. The payload failed closed and r8 is
+invalidated.
+
+Canonical unit `harmony-n5-kvm-component-74d5f9da-r9.service` (invocation
+`39bb90b3bd40405287fa120ca1392147`) used compute-W PID 714226,
+benchmark-R PID 714228, and payload PID 714229; both locks were held at
+`14:14:30.020607737Z`, with the required cgroup/CPU/parallelism evidence. The
+paired component oracle localized event 6,911 to `RAM:2M..16M`; core registers,
+sysregs, SIMD, debug, vtimer, interrupts, MP state, serial/devices, GIC, V-time,
+and entropy all matched. r9 completed at `14:17:55.003194016Z`.
+
+Two more canonical diagnostics made the RAM evidence non-vacuous. r10
+(`e18a8bd4cca447af957cd3588a8e1667`) ran compute-W PID 715220,
+benchmark-R PID 715222, payload PID 715223 from
+`14:22:01.596871280Z` through `14:25:27.096079073Z`; its first boundary dump
+was later overwritten by the runner's intentional final dump and is not used.
+r11 (`43d0e8a25ff54e32ac2f4a4a1ce4b4d4`) stopped exactly after raw/portable
+event 6,911, with compute-W PID 715888, benchmark-R PID 715890, payload PID
+715891, both locks at `14:26:50.353084645Z`, and completion at
+`14:27:28.633776939Z`. Both units had exact `consonance.slice` and CPU `2-5`
+evidence. Comparing r11's 128 MiB KVM RAM image with the paired HVF image found
+exactly one byte: guest-RAM offset `0x243950`, HVF `0x18`, KVM `0x10`.
+
+A per-change watch then proved both guests wrote the byte at portable event
+6,870 and overwrote it before the next checkpoint: HVF wrote `0x18` and KVM
+`0x10`; every other watched transition aligned after accounting for HVF's
+raw-only GIC exits. r14 (`81f7568e687f45ad952377970dd598ff`) built and ran
+that diagnostic under compute-W PID 718163, benchmark-R PID 718164, payload
+PID 718165, both locks at `14:41:58.806051201Z`, exact cgroup/CPUs, and four
+Cargo jobs; it completed at `14:43:15.459559820Z`. The pinned Linux source
+identified the retained value as raw redistributor capability state:
+stock KVM advertises aggregate DirectLPI through `GICR_CTLR.IR` while the
+userspace GIC advertised it through `GICR_TYPER.DirectLPIS`. Linux therefore
+made and printed the same feature decision but retained different raw bytes on
+its early stack.
+
+The first proposed repair, signed commit `94531beb`, cleared DirectLPI instead
+of moving its representation. One signed-HVF boot immediately falsified it:
+the event count fell to 38,348 and the guest stopped printing DirectLPI.
+GitHub run `33257903612` was cancelled, and canonical r13 (compute-W PID
+717416, benchmark-R PID 717418, payload PID 717419, both locks at
+`14:36:38.182933619Z`) was stopped at `14:37:34Z` after its exact build and
+before a boot completed. r12, with otherwise valid canonical admission
+(compute-W 717193, benchmark-R 717195, payload 717196 at
+`14:35:22.401514217Z`), had already failed before compilation because its
+payload omitted Cargo's explicit path. r12/r13 are invalidated and credited
+for nothing.
+
+Corrective signed commit `d069e8f6` instead publishes `GICR_TYPER=0x10` and
+`GICR_CTLR.IR=1`, preserving DirectLPI through the exact stock-KVM register.
+Its positive unit/integration tests pass and the planted old `TYPER=0x18`
+representation is rejected. The first signed-HVF boot retained 38,381 events,
+all placement/count invariants, and produced log SHA-256
+`dce6bb3...31df`, byte-identical to the previously captured stock-KVM log,
+including checkpoint 6,911 (`81927ea...43a4`) and final state
+`e3ce731a...383a`.
+
+Final exact-tree evidence passed. Ten signed M1 Max HVF boots from `d069e8f6`
+and ten msr1 KVM boots all emitted the same complete normalized-log SHA-256
+`dce6bb384b9eceac442e09a6caa0bf01ba706b63b920915738a944f7908317df`.
+Every run had 38,381 portable events, 283 schedules, 136 deliveries, 150
+checkpoints, normalized digest
+`a8b908de4ef53a4f52e055dd72522d551c7b547b70608b89b0ac52b0b02394ce`,
+final state `e3ce731ade18f07e3706cec60df7f6220e345f560010e9d1beec13021d63383a`,
+and green placement/late-delivery negatives. The HVF raw count was 38,804;
+KVM's was 38,381, exactly the ruled raw-only boundary difference.
+
+On msr1,
+`harmony-n5-kvm-boot-d069e8f6-r15.service` (invocation
+`a3caf61fcee14db7b09f28bc47732ec5`) began under the canonical one-PID argv at
+`14:50:14Z`; compute-W PID 719321, benchmark-R PID 719323, and the payload are
+in `/consonance.slice/harmony-n5-kvm-boot-d069e8f6-r15.service`, with declared,
+effective, and observed CPUs exactly `2-5` and Cargo jobs four. Payload PID
+719324 began only after both locks. The unit completed successfully at
+`15:26:16.953058162Z`, after its own ten-way `cmp` and SHA checks, consuming
+41 min 11 s CPU with an 880.4 MiB peak; both locks then released.
+
+GitHub Actions run `33258549471` passed on exact final commit `d069e8f6`:
+check, both X1 jobs, all six live probes, the locked guest build, all four X2
+replicas, and all eight hunt replicas. The final x86 manifest retained
+`ba78ba8c...4b0e` and `49aa0121...744`. Each X2 replica ran ten 35,234-event
+boots plus its smoke/component/negative checks with digest
+`cf4732e6...636f`, checkpoint reference `21daf112...fecef`, ready/pvclock and
+placement green, and zero component disagreement.
+
+The exact final local tree also passed `cargo build --all-features`, all 1,171
+nextest tests, Clippy for all features/targets with warnings denied, formatting,
+and cargo-deny advisories/bans/licenses/sources. The first sandboxed nextest
+attempt saw two loopback-listener `EPERM` errors and stopped fail-fast after
+406 passes; the permission-correct rerun passed all 1,171. Likewise the first
+cargo-deny attempt could not lock the sandbox-read-only advisory database; its
+permission-correct rerun passed. Neither sandbox failure is counted as a code
+gate result.
+
+- **PASS:** distinct clean stores on a macOS-hosted Linux builder and native
+  msr1 produced byte-identical hashes for all ten ARM artifacts; the final
+  GitHub x86 build reproduced its two-artifact manifest.
+- **PASS:** the deliberate one-byte kernel patch changed the Image hash while
+  leaving the independent initramfs hash fixed, so the build comparison can
+  fail and is not a copied-manifest oracle.
+- **PASS:** final-tree N1 references passed on M1 Max HVF, msr1 KVM, and both
+  GitHub stock-KVM vendor pools with exact normalized logs, checkpoint state
+  sequences, and placement checks.
+
+**N5 overall: PASS.** The locked guest closure is reproducible from clean
+stores, the negative changes observable output, and the final host tree passes
+all three-machine references and repository gates.
 
 ## N6 — defenses tested by attacking them
 
