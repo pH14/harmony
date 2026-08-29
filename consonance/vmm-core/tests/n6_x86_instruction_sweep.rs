@@ -36,12 +36,15 @@ fn boot_to_report(kernel: &[u8], initramfs: &[u8]) -> Vec<u8> {
     let mut vmm = boot_linux_stock_virtual_time(kernel, initramfs, GUEST_RAM_LEN, CMDLINE, SEED)
         .expect("boot N6 Linux guest");
     for _step in 0..MAX_STEPS {
-        match vmm.step().expect("N6 guest step") {
-            Step::Continued => {}
-            other => panic!("N6 guest terminated before its report: {other:?}"),
-        }
+        let step = vmm.step().expect("N6 guest step");
         if contains(vmm.serial(), DONE) {
             return vmm.serial().to_vec();
+        }
+        if step != Step::Continued {
+            panic!(
+                "N6 guest terminated before its report: {step:?}; serial={}",
+                String::from_utf8_lossy(vmm.serial())
+            );
         }
     }
     panic!(
