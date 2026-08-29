@@ -80,7 +80,7 @@ fn traps_off_fails_before_two_traps_on_runs_are_credited() {
         || std::env::temp_dir().join(format!("harmony-n6-x86-{}", std::process::id())),
         PathBuf::from,
     );
-    std::fs::create_dir(&report_root).expect("create N6 report directory");
+    std::fs::create_dir_all(&report_root).expect("create N6 report directory");
 
     let negative = boot_to_report(
         &artifact("bzImage-n6-traps-off"),
