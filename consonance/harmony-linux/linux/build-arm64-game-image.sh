@@ -159,7 +159,7 @@ done < <(find "$game_root" \( -type f -perm -0100 -o -type f -name '*.so*' \) | 
 echo "== arm64 game image: packing reproducibly"
 find "$game_root" -mindepth 1 -exec touch -hcd @0 {} +
 (cd "$game_root" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --owner=0:0 --quiet) \
+    | cpio --null -o -H newc --owner=0:0 --reproducible --quiet) \
     | gzip -n -9 >"$ARM64_ART_DIR/initramfs-game.cpio.gz"
 if [ -n "${rom_sha:-}" ]; then
     printf '%s\n' "$rom_sha" >"$ARM64_ART_DIR/initramfs-game.rom.sha256"

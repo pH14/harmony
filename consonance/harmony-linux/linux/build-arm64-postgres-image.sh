@@ -188,33 +188,10 @@ printf '127.0.0.1 localhost\n::1 localhost\n' >"$container_root/etc/hosts"
 : >"$container_root/etc/resolv.conf"
 chmod 1777 "$container_root/tmp" "$container_root/dev/shm"
 
-# Functional device nodes for build-time initdb. Runtime replaces /dev with a
-# bind mount from the guest devtmpfs inside the container's mount namespace.
-mknod -m 0666 "$container_root/dev/null" c 1 3
-mknod -m 0666 "$container_root/dev/urandom" c 1 9
+# PGDATA is intentionally empty in the published image. Runtime initdb obtains
+# its authentication nonce from the deterministic guest's seeded entropy; no
+# predictable nonce or host-random control file is baked into the image.
 install -d -o 65534 -g 65534 -m 0700 "$container_root$pgdata"
-echo "== arm64 postgres image: pre-baking PGDATA as uid 65534"
-chroot --userspec=65534:65534 "$container_root" \
-    "$guest_prefix/bin/initdb" -D "$pgdata" --no-locale --encoding=UTF8 \
-    --auth-local=trust --auth-host=trust -U postgres -N
-cat >>"$container_root$pgdata/postgresql.conf" <<'EOF'
-
-# M3 deterministic static-container overlay.
-listen_addresses = ''
-unix_socket_directories = '/tmp'
-fsync = on
-jit = off
-log_timezone = 'UTC'
-timezone = 'UTC'
-log_line_prefix = '[pg %p] '
-log_statement = 'none'
-shared_buffers = 32MB
-max_connections = 16
-autovacuum = off
-max_wal_size = 64MB
-EOF
-chown 65534:65534 "$container_root$pgdata/postgresql.conf"
-rm "$stage_prefix/bin/initdb"
 
 {
     echo "CREATE TABLE ledger(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), i int, t timestamptz);"

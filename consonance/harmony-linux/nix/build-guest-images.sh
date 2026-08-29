@@ -88,7 +88,20 @@ fi
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/harmony-nix-guest.XXXXXXXX")
+if [ "$host_arch" = aarch64 ]; then
+    # rustc includes compilation identity in symbol hashes.  A randomized
+    # absolute source root changes those hashes even when diagnostics are
+    # remapped, so native ARM builds use one stable, freshly-created path.
+    # A stale or concurrent workspace fails closed instead of being reused.
+    work=/build/harmony-nix-guest
+    [ ! -e "$work" ] || {
+        echo "FAIL: stable ARM build workspace already exists: $work" >&2
+        exit 1
+    }
+    mkdir -p "$work"
+else
+    work=$(mktemp -d "${TMPDIR:-/tmp}/harmony-nix-guest.XXXXXXXX")
+fi
 cleanup() {
     if [ "${HARMONY_NIX_KEEP_WORK:-0}" -eq 1 ]; then
         echo "N5 diagnostic workspace preserved: $work" >&2
@@ -248,11 +261,11 @@ else
 fi
 
 # Compiler diagnostics and panic locations are part of the shipped byte stream.
-# Reject an artifact if the randomized external workspace escaped the compiler
-# prefix maps, rather than silently blessing a host-specific manifest.
+# Reject an artifact if the external workspace escaped the compiler prefix maps,
+# rather than silently blessing a host-specific manifest.
 while IFS= read -r -d '' artifact; do
     if grep -aFq "$work" "$artifact"; then
-        echo "FAIL: artifact embeds randomized build path: ${artifact#"$stage/"}" >&2
+        echo "FAIL: artifact embeds external build path: ${artifact#"$stage/"}" >&2
         exit 1
     fi
 done < <(find "$stage" -mindepth 2 -type f -print0)
