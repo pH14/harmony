@@ -10,7 +10,6 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
-#include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -42,9 +41,6 @@ struct n6_row {
 #include "n6-generated.h"
 
 #define PAGE_BYTES 4096
-#define PR_SET_TSC 26
-#define PR_TSC_SIGSEGV 2
-
 struct shared_result {
 	uint64_t value;
 	unsigned char data[PAGE_BYTES] __attribute__((aligned(64)));
@@ -158,13 +154,8 @@ static int trap_policy_on(void)
 {
 #ifdef N6_TRAPS_OFF
 	return 0;
-#elif defined(__x86_64__)
-	/* Linux confines this hostile, unaudited process with CR4.TSD. */
-	if (prctl(PR_SET_TSC, PR_TSC_SIGSEGV, 0, 0, 0) != 0)
-		fail("prctl-PR_SET_TSC");
-	return 1;
 #else
-	/* CONFIG_HARMONY_ARM_PVCLOCK globally clears CNTKCTL_EL1 EL0 access. */
+	/* The owned kernel must establish confinement before this process runs. */
 	return 1;
 #endif
 }
