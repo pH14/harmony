@@ -53,6 +53,7 @@ static volatile sig_atomic_t operation_signal;
 struct operation_runner {
 	struct shared_result *shared;
 	unsigned char *jit;
+	size_t jit_bytes;
 };
 
 static void operation_fault(int signo)
@@ -96,13 +97,35 @@ static uint64_t fnv1a(const unsigned char *data, size_t length)
 static void setup_operation_runner(struct operation_runner *runner)
 {
 	struct sigaction action;
+	size_t operation_index;
+
+	if ((size_t)N6_TABLE_OPERATION_COUNT > SIZE_MAX / PAGE_BYTES)
+		fail("jit-size-overflow");
+	runner->jit_bytes = (size_t)N6_TABLE_OPERATION_COUNT * PAGE_BYTES;
 
 	runner->shared = mmap(NULL, sizeof(*runner->shared), PROT_READ | PROT_WRITE,
 			MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	runner->jit = mmap(NULL, PAGE_BYTES, PROT_READ | PROT_WRITE,
+	runner->jit = mmap(NULL, runner->jit_bytes, PROT_READ | PROT_WRITE,
 			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (runner->shared == MAP_FAILED || runner->jit == MAP_FAILED)
 		fail("mmap");
+	for (operation_index = 0; operation_index < N6_TABLE_OPERATION_COUNT;
+	     operation_index++) {
+		const struct n6_operation *operation =
+			&n6_operations[operation_index];
+		unsigned char *page = runner->jit + operation_index * PAGE_BYTES;
+		size_t length;
+
+		if (operation->start == NULL || operation->end == NULL)
+			fail("execute-operation-has-no-code");
+		length = (size_t)(operation->end - operation->start);
+		if (length == 0 || length > PAGE_BYTES)
+			fail("invalid-jit-length");
+		memcpy(page, operation->start, length);
+		__builtin___clear_cache((char *)page, (char *)page + length);
+	}
+	if (mprotect(runner->jit, runner->jit_bytes, PROT_READ | PROT_EXEC) != 0)
+		fail("mprotect-rx");
 
 	memset(&action, 0, sizeof(action));
 	action.sa_handler = operation_fault;
@@ -114,27 +137,14 @@ static void setup_operation_runner(struct operation_runner *runner)
 }
 
 static void run_operation(struct operation_runner *runner,
-			  const struct n6_operation *operation, char result[64])
+			  size_t operation_index, char result[64])
 {
-	size_t length;
-
-	if (operation->start == NULL || operation->end == NULL)
-		fail("execute-operation-has-no-code");
-	length = (size_t)(operation->end - operation->start);
-	if (length == 0 || length > PAGE_BYTES)
-		fail("invalid-jit-length");
 	memset(runner->shared, 0, sizeof(*runner->shared));
-	if (mprotect(runner->jit, PAGE_BYTES, PROT_READ | PROT_WRITE) != 0)
-		fail("mprotect-rw");
-	memcpy(runner->jit, operation->start, length);
-	__builtin___clear_cache((char *)runner->jit,
-			      (char *)runner->jit + length);
-	if (mprotect(runner->jit, PAGE_BYTES, PROT_READ | PROT_EXEC) != 0)
-		fail("mprotect-rx");
 	operation_signal = 0;
 	if (sigsetjmp(operation_jmp, 1) == 0) {
 		uint64_t (*function)(void *) =
-			(uint64_t (*)(void *))(void *)runner->jit;
+			(uint64_t (*)(void *))(void *)(runner->jit +
+				operation_index * PAGE_BYTES);
 		runner->shared->value = function(runner->shared->data);
 		(void)snprintf(result, 64, "value:%016llx:mem:%016llx",
 			       (unsigned long long)runner->shared->value,
@@ -209,10 +219,8 @@ int main(void)
 			for (operation_index = 0; operation_index < row->count;
 			     operation_index++) {
 				char result[64];
-				const struct n6_operation *operation =
-					&n6_operations[row->first + operation_index];
-
-				run_operation(&runner, operation, result);
+				run_operation(&runner, row->first + operation_index,
+					      result);
 				used += (size_t)snprintf(line + used, sizeof(line) - used,
 					"%s\"%s\"", operation_index == 0 ? "" : ",", result);
 			}
