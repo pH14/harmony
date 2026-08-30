@@ -186,20 +186,19 @@ The repository's determinism contract applies without exception. In particular:
 - no experiment is rerun with a larger budget merely because an agent believes it
   might improve later.
 
-**Cross-host identity smoke test:** the controller replays one fixed
-micro-campaign on two hosts and compares stream hashes and every deterministic
-counter. It runs only when the stream serialization changes, the evaluator
-version changes, or a new host type joins the fleet — never per candidate, never
-per round, never above micro scale. A difference is filed as a determinism bug;
-a difference across architectures is recorded as a fleet boundary (ranked runs
-stay on the primary host) and chased only if it originates in searcher code
-rather than the emulator.
+**Cross-host identity smoke test:** relevant only when the fleet has more than
+one evaluation host and results must transfer between them: the controller
+replays one fixed micro-campaign on two hosts and compares stream hashes and
+every deterministic counter, once per serialization or fleet change, never per
+candidate and never above micro scale. On a single-host fleet no cross-host
+check of any kind runs.
 
 All ranked runs of a round execute on one primary evaluation host, so candidate
 comparisons never depend on cross-host behavior. The primary host is an operator
 designation recorded in the ledger, never in this charter; changing it requires
-only the smoke test and fresh baselines. Certification runs, screens, and
-confirmations run at 12 workers; single-worker runs are for diagnosis only.
+only fresh baselines there. Certification runs, screens, and confirmations run
+at 12 workers or the host's worker sweet spot recorded in the ledger;
+single-worker runs are for diagnosis only.
 
 An experiment is invalid, not merely unsuccessful, if it changes its evaluator
 after seeing its result, reads a withheld artifact, loses exact replay, or supplies
