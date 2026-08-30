@@ -116,6 +116,8 @@ static void setup_operation_runner(struct operation_runner *runner)
 		unsigned char *page = runner->jit + operation_index * PAGE_BYTES;
 		size_t length;
 
+		if (operation->start == NULL && operation->end == NULL)
+			continue;
 		if (operation->start == NULL || operation->end == NULL)
 			fail("execute-operation-has-no-code");
 		length = (size_t)(operation->end - operation->start);
@@ -139,6 +141,10 @@ static void setup_operation_runner(struct operation_runner *runner)
 static void run_operation(struct operation_runner *runner,
 			  size_t operation_index, char result[64])
 {
+	const struct n6_operation *operation = &n6_operations[operation_index];
+
+	if (operation->start == NULL || operation->end == NULL)
+		fail("execute-operation-has-no-code");
 	memset(runner->shared, 0, sizeof(*runner->shared));
 	operation_signal = 0;
 	if (sigsetjmp(operation_jmp, 1) == 0) {
