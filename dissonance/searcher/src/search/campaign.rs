@@ -31,8 +31,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, Input, ProgressPoint,
-    RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail, Input,
+    ProgressPoint, RetentionPolicy, SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
     retention_policy_from_identifier, retention_policy_identifier, selector_policy_identifier,
 };
 use crate::search::draw::{
@@ -548,6 +548,25 @@ fn default_mixture_weight() -> u8 {
     128
 }
 
+/// Dispatch-time resolution of a splice-strategy draw.
+///
+/// New streams record both a successful donor/leaf choice and a deterministic
+/// fall back to the alphabet. Older streams omit this field and replay by
+/// deriving the splice from their serial archive state.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum CampaignSpliceRecord {
+    /// No stored donor advanced beyond the selected parent at dispatch.
+    Unavailable,
+    /// Append the recorded donor's path to this recorded descendant.
+    Tail {
+        /// Dispatch-time selection-cell donor archive id.
+        donor_id: u64,
+        /// Dispatch-time deepest descendant archive id.
+        leaf_id: u64,
+    },
+}
+
 /// One admission decision for one candidate boundary, in candidate order.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
@@ -597,6 +616,10 @@ pub struct CampaignJobRecord {
     /// draw; zero for every other mixture and for older streams.
     #[serde(default)]
     pub splice_weight: u8,
+    /// Dispatch-time splice resolution. Absent for non-splice draws and
+    /// historical streams that predate explicit concurrent splice evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splice: Option<CampaignSpliceRecord>,
 
     /// Selector draw record.
     pub selector: SelectorDraw,
@@ -636,6 +659,10 @@ pub struct CampaignSkipRecord {
     /// draw; zero for every other mixture and for older streams.
     #[serde(default)]
     pub splice_weight: u8,
+    /// Dispatch-time splice resolution. Skips are synchronous, but recording
+    /// it keeps every new splice draw self-contained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub splice: Option<CampaignSpliceRecord>,
 
     /// Selector draw record.
     pub selector: SelectorDraw,
@@ -1581,8 +1608,39 @@ struct PendingJob {
     mutation_seed: u64,
     mixture_weight: u8,
     splice_weight: u8,
+    splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
     draw_table_before: Option<EmpiricalStepCheckpoint>,
+}
+
+fn replay_splice<G: Game>(
+    core: &mut CoordinatorCore<G>,
+    parent: usize,
+    max_actions: usize,
+    strategy: EnergyStrategy,
+    recorded: Option<CampaignSpliceRecord>,
+) -> Result<Option<Vec<G::Action>>, Box<dyn Error>> {
+    if strategy != EnergyStrategy::Splice {
+        if recorded.is_some() {
+            return Err("non-splice draw carries splice resolution evidence".into());
+        }
+        return Ok(None);
+    }
+    match recorded {
+        Some(CampaignSpliceRecord::Unavailable) => Ok(None),
+        Some(CampaignSpliceRecord::Tail { donor_id, leaf_id }) => {
+            Ok(Some(core.archive.recorded_splice_tail(
+                parent,
+                usize::try_from(donor_id)?,
+                usize::try_from(leaf_id)?,
+                SPLICE_ACTION_CAP,
+            )?))
+        }
+        None => Ok(core
+            .archive
+            .splice_tail_for_campaign(parent, max_actions, SPLICE_ACTION_CAP)
+            .map(|splice| splice.actions)),
+    }
 }
 
 /// One periodic observation of a live run.
@@ -1773,13 +1831,31 @@ where
                         _ => (default_mixture_weight(), 0),
                     };
                     let draw_table_before = game.draw_checkpoint(draw_state)?;
-                    let spliced = if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                        == EnergyStrategy::Splice
-                    {
-                        core.archive.splice_tail(parent_index, SPLICE_ACTION_CAP)
-                    } else {
-                        None
-                    };
+                    let (spliced, splice) =
+                        if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
+                            == EnergyStrategy::Splice
+                        {
+                            match core.archive.splice_tail_for_campaign(
+                                parent_index,
+                                max_actions,
+                                SPLICE_ACTION_CAP,
+                            ) {
+                                Some(CampaignSpliceTail {
+                                    donor_id,
+                                    leaf_id,
+                                    actions,
+                                }) => (
+                                    Some(actions),
+                                    Some(CampaignSpliceRecord::Tail {
+                                        donor_id: u64::try_from(donor_id)?,
+                                        leaf_id: u64::try_from(leaf_id)?,
+                                    }),
+                                ),
+                                None => (None, Some(CampaignSpliceRecord::Unavailable)),
+                            }
+                        } else {
+                            (None, None)
+                        };
                     let suffix = match spliced {
                         Some(tail) => tail,
                         None => game.expand_suffix(
@@ -1805,6 +1881,7 @@ where
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
+                            splice,
                             selector,
                             draw_table_before,
                             draw_table_after,
@@ -1830,6 +1907,7 @@ where
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
+                            splice,
                             selector,
                             draw_table_before,
                         },
@@ -1921,6 +1999,7 @@ where
                     decisions,
                     mixture_weight: pending_job.mixture_weight,
                     splice_weight: pending_job.splice_weight,
+                    splice: pending_job.splice,
                     selector: pending_job.selector,
                     draw_table_before: pending_job.draw_table_before,
                     draw_table_after,
@@ -2156,16 +2235,15 @@ where
                 if parent_index >= core.archive.entries.len() {
                     return Err("recorded skip names a parent the archive does not hold".into());
                 }
-                let spliced = if energy_strategy(
-                    skip.mutation_seed,
-                    skip.mixture_weight,
-                    skip.splice_weight,
-                )? == EnergyStrategy::Splice
-                {
-                    core.archive.splice_tail(parent_index, SPLICE_ACTION_CAP)
-                } else {
-                    None
-                };
+                let strategy =
+                    energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
+                let spliced = replay_splice(
+                    &mut core,
+                    parent_index,
+                    header.action_limit,
+                    strategy,
+                    skip.splice,
+                )?;
                 let suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
@@ -2210,14 +2288,15 @@ where
                 let snapshot = entry.snapshot.clone();
                 let parent_actions = entry.report.input.actions.len();
                 let parent_milestones = entry.report.milestones;
-                let spliced =
-                    if energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?
-                        == EnergyStrategy::Splice
-                    {
-                        core.archive.splice_tail(parent_index, SPLICE_ACTION_CAP)
-                    } else {
-                        None
-                    };
+                let strategy =
+                    energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
+                let spliced = replay_splice(
+                    &mut core,
+                    parent_index,
+                    header.action_limit,
+                    strategy,
+                    job.splice,
+                )?;
                 let suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
@@ -2400,6 +2479,7 @@ mod tests {
         let CampaignStreamRecord::Job(job) = record else {
             panic!("expected a job record");
         };
+        assert_eq!(job.splice, None, "historical jobs carry no splice evidence");
         assert_eq!(job.selector.path, SelectorPath::GroupWalk);
         assert_eq!(
             job.draw_table_before,
@@ -2423,5 +2503,29 @@ mod tests {
             counter_reset: false,
             concentration: None,
         };
+    }
+
+    #[test]
+    fn a_job_records_its_dispatch_time_splice_resolution() {
+        let line = r#"{"event":"job","sequence":1,"worker":0,"parent_id":3,"mutation_seed":9,
+"frames":12,"result_sha256":"ef","decisions":[],"mixture_weight":85,"splice_weight":85,
+"splice":{"outcome":"tail","donor_id":4,"leaf_id":9},
+"selector":{"path":"uniform","classes_skipped":0,"counter_reset":false}}"#
+            .replace('\n', "");
+        let record: CampaignStreamRecord = serde_json::from_str(&line).expect("record parses");
+        let CampaignStreamRecord::Job(job) = record else {
+            panic!("expected a job record");
+        };
+        assert_eq!(
+            job.splice,
+            Some(super::CampaignSpliceRecord::Tail {
+                donor_id: 4,
+                leaf_id: 9,
+            })
+        );
+        let written = serde_json::to_vec(&job).expect("job serializes");
+        let round_trip: CampaignJobRecord =
+            serde_json::from_slice(&written).expect("job round-trips");
+        assert_eq!(round_trip, job);
     }
 }

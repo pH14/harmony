@@ -612,6 +612,13 @@ pub struct ArchiveEntry<A: Ord, K, M, S> {
     pub snapshot: S,
 }
 
+/// One dispatch-time splice resolution and the exact tail it selected.
+pub(crate) struct CampaignSpliceTail<A> {
+    pub(crate) donor_id: usize,
+    pub(crate) leaf_id: usize,
+    pub(crate) actions: Vec<A>,
+}
+
 /// One candidate offered to retention.
 pub struct ArchiveCandidate<A: Ord, K, M> {
     /// Complete clean-reset input of the candidate.
@@ -1003,12 +1010,97 @@ where
         if leaf_key <= parent_key {
             return None;
         }
-        let prefix = self.entries[*donor].report.input.actions.len();
-        let tail = &self.entries[leaf].report.input.actions;
-        if prefix >= tail.len() {
+        self.recorded_splice_tail(parent, *donor, leaf, cap).ok()
+    }
+
+    /// Derive a campaign splice after ensuring the selection-cell index is
+    /// present under the recorded action limit. Live selection normally
+    /// builds this index first; serial replay must establish the same derived
+    /// state without repeating the random parent draw.
+    pub(crate) fn splice_tail_for_campaign(
+        &mut self,
+        parent: usize,
+        max_actions: usize,
+        cap: usize,
+    ) -> Option<CampaignSpliceTail<A>> {
+        if self.frontier_cap != Some(max_actions) {
+            self.rebuild_selector_index(max_actions);
+        }
+        let parent_key = self.entries[parent].report.key;
+        let class = Reverse(parent_key.group(Self::class_depth()));
+        let cell = parent_key.group(Self::cell_depth());
+        let members = self.classes.get(&class)?.get(&cell)?;
+        let donor_id = members
+            .iter()
+            .filter(|member| **member != parent)
+            .max_by_key(|member| self.deepest_leaf[**member])
+            .copied()?;
+        let (leaf_key, leaf_id) = self.deepest_leaf[donor_id];
+        if leaf_key <= parent_key {
             return None;
         }
-        Some(tail[prefix..tail.len().min(prefix + cap)].to_vec())
+        let actions = self
+            .recorded_splice_tail(parent, donor_id, leaf_id, cap)
+            .ok()?;
+        Some(CampaignSpliceTail {
+            donor_id,
+            leaf_id,
+            actions,
+        })
+    }
+
+    /// Rebuild a recorded dispatch-time splice from append-only archive ids.
+    pub(crate) fn recorded_splice_tail(
+        &self,
+        parent: usize,
+        donor: usize,
+        leaf: usize,
+        cap: usize,
+    ) -> Result<Vec<A>, &'static str> {
+        let parent_entry = self
+            .entries
+            .get(parent)
+            .ok_or("splice parent id is outside the archive")?;
+        let donor_entry = self
+            .entries
+            .get(donor)
+            .ok_or("splice donor id is outside the archive")?;
+        let leaf_entry = self
+            .entries
+            .get(leaf)
+            .ok_or("splice leaf id is outside the archive")?;
+        if donor == parent {
+            return Err("splice donor is the selected parent");
+        }
+        let parent_key = parent_entry.report.key;
+        let donor_key = donor_entry.report.key;
+        if parent_key.group(Self::class_depth()) != donor_key.group(Self::class_depth())
+            || parent_key.group(Self::cell_depth()) != donor_key.group(Self::cell_depth())
+        {
+            return Err("splice donor is outside the parent's selection cell");
+        }
+        let mut ancestor = Some(leaf);
+        for _ in 0..=self.entries.len() {
+            if ancestor == Some(donor) {
+                break;
+            }
+            ancestor = ancestor
+                .and_then(|id| self.entries.get(id))
+                .and_then(|entry| entry.report.parent_id)
+                .and_then(|id| usize::try_from(id).ok());
+        }
+        if ancestor != Some(donor) {
+            return Err("splice leaf is not a descendant of its donor");
+        }
+        if leaf_entry.report.key <= parent_key {
+            return Err("splice leaf does not advance past the parent");
+        }
+        let prefix = donor_entry.report.input.actions.len();
+        let tail = &leaf_entry.report.input.actions;
+        if prefix >= tail.len() {
+            return Err("splice leaf has no actions past its donor");
+        }
+        Ok(tail[prefix..tail.len().min(prefix + cap)].to_vec())
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -1619,12 +1711,32 @@ mod tests {
             None,
             "no tail before the selector index exists"
         );
-        let mut rand = RomuDuoJrRand::with_seed(7);
-        archive
-            .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
-            .expect("build the selector index");
-        assert_eq!(archive.splice_tail(arrival, 8), Some(vec![1, 2]));
+        let dispatched = archive
+            .splice_tail_for_campaign(arrival, MAX_SMB_COMPLETION_ACTIONS, 8)
+            .expect("dispatch-time splice");
+        assert_eq!((dispatched.donor_id, dispatched.leaf_id), (root, leaf));
+        assert_eq!(dispatched.actions, vec![1, 2]);
         assert_eq!(archive.splice_tail(arrival, 1), Some(vec![1]));
+        let later = insert(&mut archive, Some(leaf), [1, 2, 3, 8], vec![0, 1, 2, 3]);
+        assert_eq!(
+            archive
+                .splice_tail_for_campaign(arrival, MAX_SMB_COMPLETION_ACTIONS, 8)
+                .map(|splice| splice.actions),
+            Some(vec![1, 2, 3]),
+            "a later admission may advance the current donor frontier"
+        );
+        assert_eq!(
+            archive
+                .recorded_splice_tail(arrival, dispatched.donor_id, dispatched.leaf_id, 8)
+                .expect("recorded dispatch-time splice"),
+            vec![1, 2],
+            "recorded ids preserve the in-flight job's original suffix"
+        );
+        assert!(
+            archive
+                .recorded_splice_tail(arrival, dispatched.donor_id, later, 8)
+                .is_ok()
+        );
         assert_eq!(
             archive.splice_tail(leaf, 8),
             None,
