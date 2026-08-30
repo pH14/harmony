@@ -220,27 +220,27 @@ int main(void)
 				hidden ? "true" : "false",
 				N6_AUDIT_REJECTED ? "true" : "false");
 		} else {
-			used += (size_t)snprintf(line + used, sizeof(line) - used,
-				",\"results\":[");
 			for (operation_index = 0; operation_index < row->count;
 			     operation_index++) {
 				const struct n6_operation *operation =
 					&n6_operations[row->first + operation_index];
 				char result[64];
 				char progress[256];
+				int progress_bytes;
 				run_operation(&runner, row->first + operation_index,
 					      result);
-				(void)snprintf(progress, sizeof(progress),
+				progress_bytes = snprintf(progress, sizeof(progress),
 					"N6_OPERATION arch=%s row=%s operation=%zu/%zu "
 					"name=%s result=%s", N6_ARCH, row->identifier,
 					operation_index + 1, row->count, operation->name,
 					result);
+				if (progress_bytes < 0 ||
+				    (size_t)progress_bytes >= sizeof(progress))
+					fail("operation-report-overflow");
 				write_marker(progress);
-				used += (size_t)snprintf(line + used, sizeof(line) - used,
-					"%s\"%s\"", operation_index == 0 ? "" : ",", result);
 			}
 			used += (size_t)snprintf(line + used, sizeof(line) - used,
-				"],\"traps_on\":%s}", traps_on ? "true" : "false");
+				",\"traps_on\":%s}", traps_on ? "true" : "false");
 		}
 		if (used >= sizeof(line))
 			fail("report-line-overflow");

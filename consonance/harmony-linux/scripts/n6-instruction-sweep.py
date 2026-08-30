@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate and verify the N6 instruction-surface sweep.
 
-The frozen TOML row is the accounting unit.  A guest run emits one JSON object
-per row, prefixed by ``N6_ROW ``.  This verifier deliberately does not accept a
-third disposition: handled rows execute every listed operation; entropy rows
-prove both feature masking and executable-image rejection.
+The frozen TOML row is the accounting unit. A guest run emits one bounded
+``N6_OPERATION`` record per executed operation followed by one compact
+``N6_ROW`` JSON completion object. This verifier deliberately does not accept
+a third disposition: handled rows execute every listed operation; entropy
+rows prove both feature masking and executable-image rejection.
 """
 
 from __future__ import annotations
@@ -22,6 +23,10 @@ from pathlib import Path
 CLAIMS = {"execute", "mask-and-audit"}
 ARCHES = ("arm64", "x86_64")
 PREFIX = "N6_ROW "
+OPERATION_PREFIX = "N6_OPERATION "
+OPERATION_PATTERN = re.compile(
+    r"arch=(\S+) row=(\S+) operation=(\d+)/(\d+) name=(.*?) result=(\S+)$"
+)
 TRAP_ROWS = {
     "arm64-physical-counter",
     "arm64-live-timer-programming",
@@ -363,10 +368,60 @@ def guest_header(rows: list[Row], arch: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def parse_operation(
+    path: Path,
+    line_number: int,
+    line: str,
+    arch: str,
+    expected: dict[str, Row],
+    operation_results: dict[str, list[str]],
+) -> None:
+    """Validate and append one ordered, table-generated operation record."""
+    prefix_at = line.find(OPERATION_PREFIX)
+    if prefix_at < 0:
+        return
+    match = OPERATION_PATTERN.fullmatch(line[prefix_at + len(OPERATION_PREFIX) :])
+    if match is None:
+        raise SweepError(f"{path}:{line_number}: malformed operation record")
+    record_arch, identifier, ordinal_text, total_text, name, result = match.groups()
+    if record_arch != arch:
+        raise SweepError(
+            f"{path}:{line_number}: operation arch is {record_arch!r}, want {arch!r}"
+        )
+    row = expected.get(identifier)
+    if row is None:
+        raise SweepError(f"{path}:{line_number}: unexpected operation row {identifier!r}")
+    if row.claim != "execute":
+        raise SweepError(f"{path}:{line_number}: mask row emitted an operation")
+    ordinal = int(ordinal_text)
+    total = int(total_text)
+    results = operation_results.setdefault(identifier, [])
+    want_ordinal = len(results) + 1
+    if total != len(row.operations) or ordinal != want_ordinal:
+        raise SweepError(
+            f"{path}:{line_number}: {identifier} operation is {ordinal}/{total}, "
+            f"want {want_ordinal}/{len(row.operations)}"
+        )
+    if name != row.operations[ordinal - 1]:
+        raise SweepError(
+            f"{path}:{line_number}: {identifier} operation {ordinal} is {name!r}, "
+            f"want {row.operations[ordinal - 1]!r}"
+        )
+    if not result:
+        raise SweepError(f"{path}:{line_number}: empty execute result")
+    results.append(result)
+
+
 def parse_report(path: Path, arch: str, expected: dict[str, Row]) -> dict[str, dict]:
     """Read one guest report, rejecting skips, duplicates, and loose fields."""
     found: dict[str, dict] = {}
+    operation_results: dict[str, list[str]] = {}
     for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        if OPERATION_PREFIX in line:
+            parse_operation(
+                path, line_number, line, arch, expected, operation_results
+            )
+            continue
         prefix_at = line.find(PREFIX)
         if prefix_at < 0:
             continue
@@ -395,34 +450,39 @@ def parse_report(path: Path, arch: str, expected: dict[str, Row]) -> dict[str, d
                     f"want {value!r}"
                 )
         if row.claim == "execute":
-            results = item.get("results")
-            if not isinstance(results, list) or len(results) != len(row.operations):
+            results = operation_results.get(identifier, [])
+            if len(results) != len(row.operations):
                 raise SweepError(
                     f"{path}:{line_number}: {identifier} did not execute every operation"
                 )
-            if not all(isinstance(result, str) and result for result in results):
-                raise SweepError(f"{path}:{line_number}: empty/non-string execute result")
-            if "feature_hidden" in item or "audit_rejected" in item:
+            if set(item) != {"arch", "id", "claim", "operation_count", "traps_on"}:
                 raise SweepError(f"{path}:{line_number}: execute row mixed claim shapes")
             if identifier in TRAP_ROWS:
                 if not all(result.startswith("signal:") for result in results):
                     raise SweepError(
                         f"{path}:{line_number}: {identifier} escaped the guest trap policy"
                     )
-                if item.get("traps_on") is not True:
-                    raise SweepError(f"{path}:{line_number}: {identifier} traps are off")
+            if item.get("traps_on") is not True:
+                raise SweepError(f"{path}:{line_number}: {identifier} traps are off")
+            item["results"] = results
         else:
             if item.get("feature_hidden") is not True:
                 raise SweepError(f"{path}:{line_number}: {identifier} feature is visible")
             if item.get("audit_rejected") is not True:
                 raise SweepError(f"{path}:{line_number}: {identifier} opcode audit accepted")
-            if "results" in item:
+            if set(item) != {
+                "arch", "id", "claim", "operation_count", "feature_hidden",
+                "audit_rejected",
+            }:
                 raise SweepError(f"{path}:{line_number}: mask row mixed claim shapes")
         found[identifier] = item
 
     missing = sorted(set(expected) - set(found))
     if missing:
         raise SweepError(f"{path}: silently skipped rows: {', '.join(missing)}")
+    orphaned = sorted(set(operation_results) - set(found))
+    if orphaned:
+        raise SweepError(f"{path}: operations without completed rows: {', '.join(orphaned)}")
     return found
 
 
@@ -443,7 +503,17 @@ def verify(rows: list[Row], arch: str, first: Path, second: Path) -> str:
 
 def traps_off_witness(path: Path, arch: str, row: Row) -> tuple[str, ...]:
     """Read the one early row that proves a traps-off image exposes live state."""
+    expected = {row.identifier: row}
+    operation_results: dict[str, list[str]] = {}
     for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        if OPERATION_PREFIX in line:
+            prefix_at = line.find(OPERATION_PREFIX)
+            candidate = line[prefix_at + len(OPERATION_PREFIX) :]
+            if f"row={row.identifier} " in candidate:
+                parse_operation(
+                    path, line_number, line, arch, expected, operation_results
+                )
+            continue
         prefix_at = line.find(PREFIX)
         if prefix_at < 0:
             continue
@@ -466,13 +536,13 @@ def traps_off_witness(path: Path, arch: str, row: Row) -> tuple[str, ...]:
                     f"{path}:{line_number}: {row.identifier} {key} is "
                     f"{item.get(key)!r}, want {value!r}"
                 )
-        results = item.get("results")
-        if not isinstance(results, list) or len(results) != len(row.operations):
+        if set(item) != {"arch", "id", "claim", "operation_count", "traps_on"}:
+            raise SweepError(f"{path}:{line_number}: witness row mixed claim shapes")
+        results = operation_results.get(row.identifier, [])
+        if len(results) != len(row.operations):
             raise SweepError(
                 f"{path}:{line_number}: {row.identifier} did not execute every operation"
             )
-        if not all(isinstance(result, str) and result for result in results):
-            raise SweepError(f"{path}:{line_number}: empty/non-string execute result")
         if all(result.startswith("signal:") for result in results):
             raise SweepError(
                 f"{path}:{line_number}: {row.identifier} did not expose live state"
@@ -511,13 +581,21 @@ def synthetic_report(rows: list[Row], arch: str) -> str:
         }
         if row.claim == "execute":
             trapped = row.identifier in TRAP_ROWS
-            item["results"] = [
+            results = [
                 f"signal:{11 if arch == 'x86_64' else 4}"
                 if trapped
                 else f"synthetic-{index}"
                 for index in range(len(row.operations))
             ]
             item["traps_on"] = True
+            for ordinal, (operation, result) in enumerate(
+                zip(row.operations, results), start=1
+            ):
+                lines.append(
+                    f"{OPERATION_PREFIX}arch={arch} row={row.identifier} "
+                    f"operation={ordinal}/{len(row.operations)} name={operation} "
+                    f"result={result}"
+                )
         else:
             item["feature_hidden"] = True
             item["audit_rejected"] = True
@@ -537,6 +615,18 @@ def expect_failure(label: str, action) -> None:
 
 def self_test(rows: list[Row]) -> None:
     """Exercise the verifier's positive path and meaningful planted negatives."""
+    longest_result = "value:ffffffffffffffff:mem:ffffffffffffffff"
+    for row in rows:
+        for ordinal, operation in enumerate(row.operations, start=1):
+            record = (
+                f"{OPERATION_PREFIX}arch={row.arch} row={row.identifier} "
+                f"operation={ordinal}/{len(row.operations)} name={operation} "
+                f"result={longest_result}"
+            )
+            if len(record.encode("ascii")) >= 256:
+                raise SweepError(
+                    f"{row.identifier} operation {ordinal} exceeds guest record buffer"
+                )
     with tempfile.TemporaryDirectory(prefix="harmony-n6-") as directory:
         root = Path(directory)
         for arch in ARCHES:
@@ -558,13 +648,11 @@ def self_test(rows: list[Row]) -> None:
             execute_index = next(
                 index
                 for index, line in enumerate(lines)
-                if json.loads(line[len(PREFIX) :])["claim"] == "execute"
+                if line.startswith(OPERATION_PREFIX)
             )
             mismatched = root / f"{arch}-mismatch.log"
-            item = json.loads(lines[execute_index][len(PREFIX) :])
-            item["results"][0] = "planted-different-result"
-            lines[execute_index] = PREFIX + json.dumps(
-                item, sort_keys=True, separators=(",", ":")
+            lines[execute_index] = re.sub(
+                r"result=\S+$", "result=planted-different-result", lines[execute_index]
             )
             mismatched.write_text("\n".join(lines) + "\n")
             expect_failure(
@@ -572,18 +660,28 @@ def self_test(rows: list[Row]) -> None:
                 lambda a=arch, p=first, q=mismatched: verify(rows, a, p, q),
             )
 
+            trap_row = next(
+                row for row in rows if row.arch == arch and row.identifier in TRAP_ROWS
+            )
             trap_index = next(
                 index
                 for index, line in enumerate(good.splitlines())
-                if json.loads(line[len(PREFIX) :])["id"] in TRAP_ROWS
+                if line.startswith(PREFIX)
+                and json.loads(line[len(PREFIX) :])["id"] == trap_row.identifier
             )
             trap_lines = good.splitlines()
             item = json.loads(trap_lines[trap_index][len(PREFIX) :])
             item["traps_on"] = False
-            item["results"] = ["value:0000000000000001"] * item["operation_count"]
             trap_lines[trap_index] = PREFIX + json.dumps(
                 item, sort_keys=True, separators=(",", ":")
             )
+            for index, line in enumerate(trap_lines):
+                if line.startswith(
+                    f"{OPERATION_PREFIX}arch={arch} row={trap_row.identifier} "
+                ):
+                    trap_lines[index] = re.sub(
+                        r"result=\S+$", "result=value:0000000000000001", line
+                    )
             traps_off = root / f"{arch}-traps-off.log"
             traps_off.write_text("\n".join(trap_lines) + "\n")
             expect_failure(
@@ -592,25 +690,38 @@ def self_test(rows: list[Row]) -> None:
             )
 
             witness_identifier = TRAPS_OFF_WITNESS_ROWS[arch]
-            witness_index = next(
-                index
-                for index, line in enumerate(good.splitlines())
-                if json.loads(line[len(PREFIX) :])["id"] == witness_identifier
-            )
-            witness_item = json.loads(good.splitlines()[witness_index][len(PREFIX) :])
-            witness_item["traps_on"] = False
-            witness_item["results"] = [
-                f"value:{index + 1:016x}" for index in range(witness_item["operation_count"])
+            witness_item = {
+                "arch": arch,
+                "id": witness_identifier,
+                "claim": "execute",
+                "operation_count": len(
+                    next(row.operations for row in rows if row.identifier == witness_identifier)
+                ),
+                "traps_on": False,
+            }
+            witness_row = next(row for row in rows if row.identifier == witness_identifier)
+            witness_results = [
+                f"value:{index + 1:016x}" for index in range(len(witness_row.operations))
             ]
             witness_first = root / f"{arch}-traps-off-witness-first.log"
-            witness_first.write_text(
-                PREFIX + json.dumps(witness_item, sort_keys=True, separators=(",", ":")) + "\n"
+            witness_lines = [
+                f"{OPERATION_PREFIX}arch={arch} row={witness_identifier} "
+                f"operation={ordinal}/{len(witness_row.operations)} name={operation} "
+                f"result={result}"
+                for ordinal, (operation, result) in enumerate(
+                    zip(witness_row.operations, witness_results), start=1
+                )
+            ]
+            witness_lines.append(
+                PREFIX + json.dumps(witness_item, sort_keys=True, separators=(",", ":"))
             )
-            witness_item["results"][0] = "value:ffffffffffffffff"
+            witness_first.write_text("\n".join(witness_lines) + "\n")
+            witness_results[0] = "value:ffffffffffffffff"
+            witness_lines[0] = re.sub(
+                r"result=\S+$", f"result={witness_results[0]}", witness_lines[0]
+            )
             witness_second = root / f"{arch}-traps-off-witness-second.log"
-            witness_second.write_text(
-                PREFIX + json.dumps(witness_item, sort_keys=True, separators=(",", ":")) + "\n"
-            )
+            witness_second.write_text("\n".join(witness_lines) + "\n")
             print(verify_traps_off(rows, arch, witness_first, witness_second))
             expect_failure(
                 f"{arch}-traps-off-repeated",
@@ -620,7 +731,8 @@ def self_test(rows: list[Row]) -> None:
             mask_index = next(
                 index
                 for index, line in enumerate(good.splitlines())
-                if json.loads(line[len(PREFIX) :])["claim"] == "mask-and-audit"
+                if line.startswith(PREFIX)
+                and json.loads(line[len(PREFIX) :])["claim"] == "mask-and-audit"
             )
             mask_lines = good.splitlines()
             item = json.loads(mask_lines[mask_index][len(PREFIX) :])
