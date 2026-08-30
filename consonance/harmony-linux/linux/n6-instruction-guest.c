@@ -100,11 +100,13 @@ static uint64_t fnv1a(const unsigned char *data, size_t length)
 	return fnv1a_update(UINT64_C(1469598103934665603), data, length);
 }
 
+#if defined(__aarch64__)
 static uint64_t digest_text(uint64_t hash, const char *text)
 {
 	hash = fnv1a_update(hash, (const unsigned char *)text, strlen(text));
 	return fnv1a_update(hash, (const unsigned char *)"", 1);
 }
+#endif
 
 static void setup_operation_runner(struct operation_runner *runner)
 {
