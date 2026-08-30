@@ -224,9 +224,18 @@ int main(void)
 				",\"results\":[");
 			for (operation_index = 0; operation_index < row->count;
 			     operation_index++) {
+				const struct n6_operation *operation =
+					&n6_operations[row->first + operation_index];
 				char result[64];
+				char progress[256];
 				run_operation(&runner, row->first + operation_index,
 					      result);
+				(void)snprintf(progress, sizeof(progress),
+					"N6_OPERATION arch=%s row=%s operation=%zu/%zu "
+					"name=%s result=%s", N6_ARCH, row->identifier,
+					operation_index + 1, row->count, operation->name,
+					result);
+				write_marker(progress);
 				used += (size_t)snprintf(line + used, sizeof(line) - used,
 					"%s\"%s\"", operation_index == 0 ? "" : ",", result);
 			}
