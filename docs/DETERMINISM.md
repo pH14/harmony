@@ -73,8 +73,10 @@ sysreg probe, and the ten-run boot oracle are recorded under M1
 The x86 X2 ledger records the pvclock-only kernel, CPUID masking, and opcode
 accounting used on stock KVM
 ([x86 decisions 10–20](https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86)).
-The complete hostile JIT and traps-off proof is **untested**; §3 makes it N6
-work.
+N6 exercises the complete frozen hostile-JIT surface twice per architecture
+and proves that each architecture's traps-off image fails before either
+traps-on pair is credited
+([N6 evidence](VTIME-CONSOLIDATION-STATUS.md#n6--defenses-tested-by-attacking-them)).
 
 ### 2.2 Cross-host portability assumption
 
@@ -90,9 +92,10 @@ records one complete normalized log across Intel and AMD
 ([x86 decisions 19–30 and X3](https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#x3--cross-vendor-identity)).
 
 Those measurements establish the named workloads on the named machines; they do
-not prove every instruction encoding or future CPU. A complete generated
-instruction sweep and every support-matrix cell still marked expected are
-**untested**.
+not prove every possible instruction encoding or future CPU. N6 completes and
+executes the current frozen table (9/9 rows on each architecture; 192 arm64 and
+166 x86 operations). Future table extensions and every support-matrix cell
+still marked expected remain **untested**.
 
 ## 3. Frozen instruction defenses
 
@@ -108,11 +111,11 @@ for an unprivileged entropy operation that stock substrates cannot intercept.
 
 | Channel | Frozen rows | Defense | Current evidence |
 |---|---|---|---|
-| Time | `arm64-counter-frequency`, `arm64-virtual-counter`, `arm64-physical-counter`, `arm64-live-timer-programming` | pvclock protocol; complete owned-image opcode scan; EL0 counter access disabled | M1 scanner negatives and same-seed boot; JIT/traps-off proof **untested** |
-| Identity | `arm64-cache-identity`, `arm64-id-registers` | frozen backend ID/cache model; audit of unsafe revision reads | M5 HVF↔KVM equality; complete generated listing **untested** |
-| PMU | `arm64-pmu` | PMU absent from the frozen identity; EL0 disabled; substrate trap/policy | HVF `PMCCNTR_EL0` trap measured; exhaustive sweep **untested** |
-| Entropy | `arm64-entropy` | hide FEAT_RNG and reject `RNDR`/`RNDRRS` from admitted images | mask-and-audit proof **untested** |
-| Exclusive monitor | `arm64-exclusive-monitor` | owned kernel remains LSE-only; only side-effect-free EL0 retry loops are admitted under the cooperative posture | image audit proven; convergence and accumulating negative **untested** |
+| Time | `arm64-counter-frequency`, `arm64-virtual-counter`, `arm64-physical-counter`, `arm64-live-timer-programming` | pvclock protocol; complete owned-image opcode scan; EL0 counter access disabled | M1 scanner negatives and same-seed boot; N6 JIT sweep and ordered traps-off rejection passed |
+| Identity | `arm64-cache-identity`, `arm64-id-registers` | frozen backend ID/cache model; audit of unsafe revision reads | M5 HVF↔KVM equality; N6 complete generated listing and sweep passed |
+| PMU | `arm64-pmu` | PMU absent from the frozen identity; EL0 disabled; substrate trap/policy | HVF `PMCCNTR_EL0` trap measured; N6 exhaustive generated sweep passed |
+| Entropy | `arm64-entropy` | hide FEAT_RNG and reject `RNDR`/`RNDRRS` from admitted images | N6 feature-mask assertion, real-image audit, and planted-opcode negative passed |
+| Exclusive monitor | `arm64-exclusive-monitor` | owned kernel remains LSE-only; only side-effect-free EL0 retry loops are admitted under the cooperative posture | image audit, quiet/noisy convergence, and accumulating-retry negative passed |
 
 The ARM facts above cite the M1/M5 evidence in the corresponding TOML rows.
 HVF was measured not to trap `CNTVCT_EL0`, so no claim relies on it doing so;
@@ -120,20 +123,20 @@ the owned image and EL0 trap policy are essential
 ([M1 probe](VM-EXIT-COUNT-VTIME-STATUS.md#m1--the-m1-max-boots-deterministically)).
 The LL/SC relaxation stops at side-effect-free EL0 retry loops: retry-observing
 programs and every owned-kernel LL/SC site remain outside the admitted subset.
-The accumulating-retry divergence that bounds this ruling is **untested** until
-N6.
+N6's accumulating-retry negative diverges and defeats the planted weak
+comparator, bounding this ruling with executable evidence.
 
 ### 3.2 x86-64
 
 | Channel | Frozen rows | Defense | Current evidence |
 |---|---|---|---|
-| Identity | `x86-cpuid` | frozen CPUID model with the stock-mode RNG variant | X3 Intel↔AMD equality; exhaustive leaf sweep **untested** |
-| Time | `x86-tsc` | pvclock protocol and owned-image exact-accounting scan; `CR4.TSD` handling for unaudited ring 3 | X2 owned image proven; JIT/traps-off proof **untested** |
-| PMU | `x86-pmu` | no vPMU, `CR4.PCE=0`, stock-KVM intercept | X-series boot evidence; hostile probe **untested** |
-| Entropy | `x86-entropy` | hide RDRAND/RDSEED feature bits and reject/feature-gate every admitted opcode site | kernel scan proven; initramfs scan and hostile probe **untested** |
-| Wait/power | `x86-monitor-mwait`, `x86-waitpkg` | feature hiding plus deterministic fault/intercept policy | contract tests exist; consolidated-tree hostile probe **untested** |
-| Save encodings | `x86-xsave-image` | canonicalize XSAVE init encodings, `MXCSR_MASK`, and ignored tail bytes at guest/VMM save boundaries | X3 cross-vendor equality; exhaustive form sweep **untested** |
-| Exit/flag residue | `x86-exit-rflags-rf`, `x86-undefined-af` | clear unreadable exit-time RF at save; clear undefined AF at the three kernel capture funnels | X3 cross-vendor equality; dedicated generated probes **untested** |
+| Identity | `x86-cpuid` | frozen CPUID model with the stock-mode RNG variant | X3 Intel↔AMD equality; N6 exhaustive leaf/subleaf sweep passed |
+| Time | `x86-tsc` | pvclock protocol and owned-image exact-accounting scan; `CR4.TSD` handling for unaudited ring 3 | X2 owned image; N6 JIT sweep and ordered traps-off rejection passed |
+| PMU | `x86-pmu` | no vPMU, `CR4.PCE=0`, stock-KVM intercept | X-series boot evidence and N6 hostile probe passed |
+| Entropy | `x86-entropy` | hide RDRAND/RDSEED feature bits and reject/feature-gate every admitted opcode site | N6 feature-mask assertions, kernel/initramfs audits, and planted-opcode negatives passed |
+| Wait/power | `x86-monitor-mwait`, `x86-waitpkg` | feature hiding plus deterministic fault/intercept policy | contract tests and N6 consolidated-tree hostile probes passed |
+| Save encodings | `x86-xsave-image` | canonicalize XSAVE init encodings, `MXCSR_MASK`, and ignored tail bytes at guest/VMM save boundaries | X3 cross-vendor equality and N6 exhaustive form sweep passed |
+| Exit/flag residue | `x86-exit-rflags-rf`, `x86-undefined-af` | clear unreadable exit-time RF at save; clear undefined AF at the three kernel capture funnels | X3 cross-vendor equality and N6 dedicated generated probes passed |
 
 Stock KVM does not expose userspace exits for `RDTSC`, `RDRAND`, or `RDSEED`;
 the stock composition therefore depends on protocol, audit, guest confinement,
@@ -187,7 +190,10 @@ Manifest SHA-256 values prove that two runs consumed the same bytes; they do not
 prove the source was built reproducibly or that the bytes implement the
 argument. The ARM M5 evidence compares hashes and full logs
 ([M5](VM-EXIT-COUNT-VTIME-STATUS.md#m5--bidirectional-hvfkvm-determinism-and-snapshot-portability)).
-Reproducible source-to-image construction is **untested** until N5.
+N5 proves reproducible source-to-image construction with byte-identical locked
+builds on the M1 Max and msr1, a planted input-change negative, and fresh
+manifest verification
+([N5 evidence](VTIME-CONSOLIDATION-STATUS.md#n5--reproducible-guest-builds)).
 
 ## 6. Decisions carried into consolidation
 
@@ -198,13 +204,20 @@ Reproducible source-to-image construction is **untested** until N5.
    may audit protocol/audit/trap closure on a patched Linux host, but no support
    claim depends on them because the proven x86 runner uses stock KVM
    ([X0 stock capability evidence](https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#x0--runner-probe)).
-   Their observational inertness and live stray detection are **untested** until
-   N6.
+   N6's committed hash/mechanism audit proves the retained patches still carry
+   all 15 tripwire mechanisms and rejects a planted removed-ABI defect. N5's
+   stock-KVM references prove the supported composition remains inert without
+   the optional modules. Loading replacement KVM modules on the shared msr1
+   substrate is explicitly out of scope because it would invalidate concurrent
+   single-tenant evidence
+   ([N6 evidence](VTIME-CONSOLIDATION-STATUS.md#n6--defenses-tested-by-attacking-them)).
 3. **LL/SC relaxation is bounded, not global.** Side-effect-free EL0 retry loops
    may be admitted under the cooperative posture. The owned kernel remains
    LSE-only, and retry-observing programs are unsupported because retry count can
-   retain host scheduling residue. The empirical boundary is **untested** until
-   N6.
+   retain host scheduling residue. N6's quiet/noisy positive converges, while
+   its accumulating-retry negative diverges and defeats the planted weak
+   comparator
+   ([N6 evidence](VTIME-CONSOLIDATION-STATUS.md#n6--defenses-tested-by-attacking-them)).
 4. **New owned kernels, initramfs programs, payloads, dynamic loaders, and shared
    objects are audited at protocol plus executable-image layers.** A new
    unaudited userspace class additionally requires the architecture's kernel
@@ -216,18 +229,18 @@ Reproducible source-to-image construction is **untested** until N5.
 
 ## 7. Verification ledger for N6
 
-The following claims remain **untested** unless a cited earlier milestone
-already proves them:
+N6 passed the generated two-run instruction sweeps at exact table cardinality
+(arm64 9/9 rows and 192 operations; x86 9/9 rows and 166 operations), the
+ordered JIT traps-off negatives, complete arm64 generated sysreg listing, the
+LL/SC convergence and accumulating-retry controls, and the entropy
+mask-and-audit positives and planted negatives. The exact commands, report and
+artifact hashes, host isolation, failure history, and final-tree repository
+gates are recorded in the
+[N6 evidence ledger](VTIME-CONSOLIDATION-STATUS.md#n6--defenses-tested-by-attacking-them).
 
-- generated instruction sweeps whose exercised-row count exactly equals the
-  frozen table row count on both architectures;
-- JIT-emitted counter probes and traps-off negatives for arm64 and x86;
-- complete arm64 sysreg enumeration against a committed architectural listing;
-- the side-effect-free LL/SC convergence positive and accumulating-retry
-  divergence negative;
-- optional KVM tripwires being observationally inert when the guest is closed,
-  and live when a closure layer is deliberately disabled;
-- the arm64 `RNDR`/`RNDRRS` and x86 initramfs `RDRAND`/`RDSEED` opcode audits.
-
-N6 updates these markings from evidence; it does not erase an untested label by
-argument alone.
+The retained optional KVM patches passed their committed three-hash/15-mechanism
+tripwire audit and its planted ABI-deletion negative. N5's stock-KVM references
+prove the supported composition is inert without those optional modules.
+Loading replacement KVM modules on shared msr1 is out of scope because it would
+replace the substrate underneath other reserved hardware evidence; no support
+claim depends on a live patched-module run.

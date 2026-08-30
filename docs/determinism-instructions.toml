@@ -16,7 +16,7 @@ claim = "execute"
 layers = ["protocol", "image-audit"]
 disposition = "The owned kernel obtains the fixed frequency from the Harmony contract; executable-image scans reject a raw read."
 evidence = ["docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
-verification = "tested-image-audit; generated hostile probe untested"
+verification = "passed: image audit and N6 generated hostile probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-virtual-counter"
@@ -27,7 +27,7 @@ claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code reads the pvclock page, executable-image scans reject raw reads, and EL0 counter access is disabled."
 evidence = ["consonance/harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
-verification = "tested-image-audit; traps-off negative and JIT probe untested"
+verification = "passed: image audit, N6 JIT probe, and ordered traps-off negative (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-physical-counter"
@@ -38,7 +38,7 @@ claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code reads the pvclock page, executable-image scans reject raw reads, and EL0 physical-counter access is disabled."
 evidence = ["consonance/harmony-linux/linux/patches/arm64/0002-arm64-harmony-pvclock-exit-count-clocksource.patch", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
-verification = "tested-image-audit; traps-off negative and JIT probe untested"
+verification = "passed: image audit, N6 JIT probe, and generated trap result (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-live-timer-programming"
@@ -49,7 +49,7 @@ claim = "execute"
 layers = ["protocol", "image-audit"]
 disposition = "The owned kernel programs the deterministic Harmony clockevent; executable-image scans reject programming the host counter domains."
 evidence = ["consonance/harmony-linux/scripts/aa5-counter-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
-verification = "tested-image-audit; generated hostile probe untested"
+verification = "passed: image audit and N6 generated hostile probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-cache-identity"
@@ -60,7 +60,7 @@ claim = "execute"
 layers = ["protocol", "hypervisor-policy"]
 disposition = "The backend installs the frozen arm64 identity values."
 evidence = ["consonance/vmm-core/src/vendor/arm64/contract.rs", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M5--bidirectional-HVFKVM-determinism-and-snapshot-portability"]
-verification = "cross-host workload evidence exists; exhaustive generated read probe untested"
+verification = "passed: cross-host workload evidence and N6 exhaustive generated read probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-id-registers"
@@ -72,7 +72,7 @@ claim = "execute"
 layers = ["protocol", "hypervisor-policy", "image-audit"]
 disposition = "The backend installs the frozen identity model; implementation revision reads that are not safely virtualized are rejected from owned executable images."
 evidence = ["consonance/vmm-core/src/vendor/arm64/contract.rs", "consonance/harmony-linux/scripts/aa5-counter-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M5--bidirectional-HVFKVM-determinism-and-snapshot-portability"]
-verification = "cross-host workload evidence and selected image audit exist; complete generated listing and probe untested"
+verification = "passed: cross-host evidence, image audit, complete N6 listing, and generated probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-pmu"
@@ -84,7 +84,7 @@ claim = "execute"
 layers = ["protocol", "guest-kernel-trap", "hypervisor-policy"]
 disposition = "The frozen identity exposes no guest PMU; EL0 access is disabled and substrate policy must not expose host counters."
 evidence = ["docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
-verification = "HVF PMCCNTR trap measured; complete generated register sweep and traps-off negative untested"
+verification = "passed: measured HVF trap and complete N6 generated PMU sweep (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-entropy"
@@ -95,7 +95,7 @@ claim = "mask-and-audit"
 layers = ["protocol", "image-audit"]
 disposition = "The frozen identity hides FEAT_RNG and admitted images must reject the opcodes; a binary that ignores the feature bits is outside the cooperative contract."
 evidence = ["consonance/vmm-core/src/vendor/arm64/contract.rs"]
-verification = "untested: opcode audit and hostile feature-mask probe are N6 work"
+verification = "passed: N6 hidden-feature assertion, owned-image audit, and planted-opcode negative (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "arm64-exclusive-monitor"
@@ -106,7 +106,7 @@ claim = "execute"
 layers = ["protocol", "image-audit"]
 disposition = "Only side-effect-free EL0 retry loops are admitted by argument; the owned kernel and retry-observing loops remain prohibited, and the latter is a documented cooperative residual."
 evidence = ["consonance/harmony-linux/scripts/aa4-exclusive-scan.py", "docs/VM-EXIT-COUNT-VTIME-STATUS.md#M1--the-M1-Max-boots-deterministically"]
-verification = "tested-image-audit; noisy/quiet convergence and accumulating-retry negative untested"
+verification = "passed: image audit, quiet/noisy convergence, accumulating-retry divergence, and weak-comparator negative (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-cpuid"
@@ -118,7 +118,7 @@ claim = "execute"
 layers = ["protocol", "hypervisor-policy"]
 disposition = "Every leaf is answered from the frozen CPUID model with hardware RNG hidden in the stock VM-exit-count composition."
 evidence = ["https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86"]
-verification = "tested by X2/X3 cross-vendor boots; exhaustive generated leaf probe untested"
+verification = "passed: X2/X3 boots and N6 exhaustive generated leaf/subleaf probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-tsc"
@@ -129,7 +129,7 @@ claim = "execute"
 layers = ["protocol", "image-audit", "guest-kernel-trap"]
 disposition = "Owned code uses the pvclock page and the executable-image scan accounts for raw reads; unaudited ring-3 code requires CR4.TSD handling."
 evidence = ["https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86"]
-verification = "tested for the owned X2 image; CR4.TSD completion, JIT probe, and traps-off negative untested"
+verification = "passed: X2 image, kernel CR4.TSD policy, N6 JIT probe, and ordered traps-off negative (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-pmu"
@@ -140,7 +140,7 @@ claim = "execute"
 layers = ["protocol", "guest-kernel-trap", "hypervisor-policy"]
 disposition = "CPUID exposes no vPMU, CR4.PCE remains clear for ring 3, and stock KVM intercepts RDPMC."
 evidence = ["docs/CPU-MSR-CONTRACT.md#4-instruction-and-vmx-control-disposition", "https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86"]
-verification = "contract and X-series boot evidence exist; JIT probe and traps-off negative untested"
+verification = "passed: contract, X-series boots, and N6 generated hostile probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-entropy"
@@ -151,7 +151,7 @@ claim = "mask-and-audit"
 layers = ["protocol", "image-audit"]
 disposition = "The stock composition hides both CPUID bits and admitted images allow the opcodes only behind those feature checks; an unaudited binary that ignores CPUID is outside the cooperative contract."
 evidence = ["https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86"]
-verification = "tested for the X2 kernel image; initramfs audit and hostile mask probe untested"
+verification = "passed: kernel/initramfs audits, hidden-feature assertion, and planted-opcode negative (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-monitor-mwait"
@@ -162,7 +162,7 @@ claim = "execute"
 layers = ["protocol", "hypervisor-policy"]
 disposition = "CPUID hides MONITOR and the substrate intercept backstop produces a deterministic fault."
 evidence = ["docs/CPU-MSR-CONTRACT.md#4-instruction-and-vmx-control-disposition"]
-verification = "contract tests exist; generated in-guest probe untested"
+verification = "passed: contract tests and N6 generated in-guest probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-waitpkg"
@@ -173,7 +173,7 @@ claim = "execute"
 layers = ["protocol", "hypervisor-policy"]
 disposition = "CPUID hides WAITPKG and the substrate keeps user-wait execution disabled, producing a deterministic fault."
 evidence = ["docs/CPU-MSR-CONTRACT.md#4-instruction-and-vmx-control-disposition"]
-verification = "untested on the consolidated tree"
+verification = "passed: N6 generated consolidated-tree probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-xsave-image"
@@ -184,7 +184,7 @@ claim = "execute"
 layers = ["guest-kernel-pin", "hypervisor-save-canonicalization"]
 disposition = "MXCSR_MASK, init-state component encodings, and ignored legacy-tail bytes are canonicalized at their guest and VMM save boundaries."
 evidence = ["https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86"]
-verification = "tested by X3 cross-vendor boots; exhaustive instruction-form probe untested"
+verification = "passed: X3 cross-vendor boots and N6 exhaustive instruction-form probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-exit-rflags-rf"
@@ -195,7 +195,7 @@ claim = "execute"
 layers = ["hypervisor-save-canonicalization"]
 disposition = "The save boundary clears RF because VMX and SVM expose different unreadable mid-instruction residue."
 evidence = ["https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86"]
-verification = "tested by X3 cross-vendor boots; dedicated generated exit probe untested"
+verification = "passed: X3 cross-vendor boots and N6 dedicated generated exit probe (VTIME-CONSOLIDATION-STATUS N6)"
 
 [[instruction]]
 id = "x86-undefined-af"
@@ -206,4 +206,4 @@ claim = "execute"
 layers = ["guest-kernel-pin"]
 disposition = "The Harmony guest clears AF at the three 64-bit kernel capture funnels before architecturally undefined vendor residue reaches retained memory."
 evidence = ["https://github.com/pH14/harmony/blob/57b16ce0/docs/PRESCRIPTIVE-VTIME-STATUS.md#recorded-decisions-x86"]
-verification = "tested by X3 cross-vendor boots; dedicated generated capture probes untested"
+verification = "passed: X3 cross-vendor boots and N6 dedicated generated capture probes (VTIME-CONSOLIDATION-STATUS N6)"
