@@ -337,21 +337,32 @@ pass rejecting game constants above the observation adapter. A failure is
 be repaired once within a bounded worker budget; a second failure kills the
 candidate.
 
-### Stage 1 — 30K screen
+### Stage 1 — screen by successive halving
 
-Run paired seeds to 30,000 executions on every in-loop column's visible
-challenges. Kill when the challenger's worst column is dominated, it produces no
-unique win, or it fails to reach the baseline's first-quartile progress by the
-fixed boundary. Never watch a jammed run for hundreds of thousands of additional
-executions.
+Screening exists to kill cheaply, and its budget is the smallest that
+discriminates — measured by the evaluator's rank-prediction record, never
+assumed. The default funnel:
+
+1. **1a:** every candidate runs 5,000 executions on the three most
+   rank-discriminating challenges with one seed. The dominated half of the
+   field dies here.
+2. **1b:** survivors run 30,000 executions on the full visible suite with
+   paired seeds. Kill when the worst challenge is dominated, there is no unique
+   win, or the baseline's first-quartile progress boundary is missed.
+
+Never watch a jammed run for hundreds of thousands of additional executions.
+The per-candidate Stage-1a spend is frozen in the round record; when the round's
+total screen cost exceeds one working session on the primary host, the director
+cuts screen budget, challenge count, or seed count — recorded in the round
+record, never silently — and never compensates by running fewer candidates.
 
 ### Stage 2 — 100K confirmation
 
-Run only Stage-1 survivors to 100,000 executions with at least six paired seeds.
-Confirm only if the primary improvement repeats, no challenge regresses
-catastrophically, deterministic memory bytes stay within bound, exact replay
-passes, and the mechanism matches the prediction. Otherwise mark `INCONCLUSIVE` or
-`REJECT`.
+Run only the round's provisional winner (and any survivor within its noise
+band) to 100,000 executions with at least six paired seeds. Confirm only if the
+primary improvement repeats, no challenge regresses catastrophically,
+deterministic memory bytes stay within bound, exact replay passes, and the
+mechanism matches the prediction. Otherwise mark `INCONCLUSIVE` or `REJECT`.
 
 ### Stage 3 — chain and simplification
 
@@ -371,7 +382,10 @@ commit, metrics, and diagnosis remain recorded.
 ## 10. Rounds: concurrent candidates, serial integration
 
 The unit of concurrency is the candidate; the unit of integration is the round.
-Candidates never merge with each other — they compete, and the director integrates.
+Candidates never merge with each other — they compete, and the director
+integrates. The unit of scientific progress is the completed round: many small
+rounds beat few large ones, and a round's evaluation is sized to complete within
+one working session on the primary host.
 
 Each round:
 
