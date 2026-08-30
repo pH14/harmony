@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Generate and verify the N6 instruction-surface sweep.
 
-The frozen TOML row is the accounting unit. A guest run emits one bounded
+The frozen TOML row is the accounting unit. An x86 guest emits one bounded
 ``N6_OPERATION`` record per executed operation followed by one compact
-``N6_ROW`` JSON completion object. This verifier deliberately does not accept
-a third disposition: handled rows execute every listed operation; entropy
-rows prove both feature masking and executable-image rejection.
+``N6_ROW`` JSON completion object. The interrupt-less ARM guest emits one
+bounded final summary containing an ordered digest for every row. This
+verifier deliberately does not accept a third disposition: handled rows
+execute every listed operation; entropy rows prove both feature masking and
+executable-image rejection.
 """
 
 from __future__ import annotations
@@ -26,6 +28,16 @@ PREFIX = "N6_ROW "
 OPERATION_PREFIX = "N6_OPERATION "
 OPERATION_PATTERN = re.compile(
     r"arch=(\S+) row=(\S+) operation=(\d+)/(\d+) name=(.*?) result=(\S+)$"
+)
+ARM_SUMMARY_PREFIX = "N6_GUEST_OK arch=arm64 "
+ARM_SUMMARY_PATTERN = re.compile(
+    r"rows=(\d+)/(\d+) operations=(\d+) traps_on=(\d) "
+    r"signal_rows=(\d+)/(\d+) mask_rows=(\d+)/(\d+) "
+    r"digests=([0-9a-f,]+)$"
+)
+ARM_TRAPS_OFF_PREFIX = "N6_TRAPS_OFF arch=arm64 "
+ARM_TRAPS_OFF_PATTERN = re.compile(
+    r"row=(\S+) operations=(\d+) traps_on=0 exposed=(\d) digest=([0-9a-f]{16})$"
 )
 TRAP_ROWS = {
     "arm64-physical-counter",
@@ -213,8 +225,10 @@ def arm64_body(operation: str) -> list[str]:
         raw_mrs = {
             "cntpctss_el0": 0xD53BE0A0,
             "cntvctss_el0": 0xD53BE0C0,
+            "id_aa64pfr2_el1": 0xD5380440,
             "id_aa64zfr0_el1": 0xD5380480,
             "id_aa64smfr0_el1": 0xD53804A0,
+            "id_aa64fpfr0_el1": 0xD53804E0,
         }
         if register in raw_mrs:
             return [f".inst 0x{raw_mrs[register]:08x}", "ret"]
@@ -355,7 +369,8 @@ def guest_header(rows: list[Row], arch: str) -> str:
     lines.extend(["};", "", "static const struct n6_row n6_rows[] = {"])
     for row, first, count in row_ranges:
         lines.append(
-            f"    {{{c_string(row.identifier)}, {c_string(row.claim)}, {first}, {count}}},"
+            f"    {{{c_string(row.identifier)}, {c_string(row.claim)}, {first}, {count}, "
+            f"{1 if row.identifier in TRAP_ROWS else 0}}},"
         )
     lines.extend(
         [
@@ -410,6 +425,70 @@ def parse_operation(
     if not result:
         raise SweepError(f"{path}:{line_number}: empty execute result")
     results.append(result)
+
+
+def parse_arm_summary(path: Path, expected: dict[str, Row]) -> dict[str, dict]:
+    """Read the bounded ARM report and reconstruct one digest per frozen row."""
+    summaries: list[tuple[int, re.Match[str]]] = []
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        prefix_at = line.find(ARM_SUMMARY_PREFIX)
+        if prefix_at < 0:
+            continue
+        match = ARM_SUMMARY_PATTERN.fullmatch(
+            line[prefix_at + len(ARM_SUMMARY_PREFIX) :]
+        )
+        if match is None:
+            raise SweepError(f"{path}:{line_number}: malformed ARM summary")
+        summaries.append((line_number, match))
+    if len(summaries) != 1:
+        raise SweepError(f"{path}: expected exactly one ARM summary, found {len(summaries)}")
+
+    line_number, match = summaries[0]
+    (
+        table_rows_text,
+        exercised_rows_text,
+        operations_text,
+        traps_on_text,
+        signal_ok_text,
+        signal_total_text,
+        mask_ok_text,
+        mask_total_text,
+        digest_text,
+    ) = match.groups()
+    rows = list(expected.values())
+    operation_count = sum(len(row.operations) for row in rows)
+    signal_count = sum(row.identifier in TRAP_ROWS for row in rows)
+    mask_count = sum(row.claim == "mask-and-audit" for row in rows)
+    exact = {
+        "table rows": (int(table_rows_text), len(rows)),
+        "exercised rows": (int(exercised_rows_text), len(rows)),
+        "operations": (int(operations_text), operation_count),
+        "traps_on": (int(traps_on_text), 1),
+        "signal rows passed": (int(signal_ok_text), signal_count),
+        "signal rows total": (int(signal_total_text), signal_count),
+        "mask rows passed": (int(mask_ok_text), mask_count),
+        "mask rows total": (int(mask_total_text), mask_count),
+    }
+    for label, (got, want) in exact.items():
+        if got != want:
+            raise SweepError(
+                f"{path}:{line_number}: ARM summary {label} is {got}, want {want}"
+            )
+    digests = digest_text.split(",")
+    if len(digests) != len(rows) or not all(
+        re.fullmatch(r"[0-9a-f]{16}", digest) for digest in digests
+    ):
+        raise SweepError(f"{path}:{line_number}: ARM summary row digests are incomplete")
+    return {
+        row.identifier: {
+            "arch": "arm64",
+            "id": row.identifier,
+            "claim": row.claim,
+            "operation_count": len(row.operations),
+            "result_digest": digest,
+        }
+        for row, digest in zip(rows, digests)
+    }
 
 
 def parse_report(path: Path, arch: str, expected: dict[str, Row]) -> dict[str, dict]:
@@ -489,8 +568,12 @@ def parse_report(path: Path, arch: str, expected: dict[str, Row]) -> dict[str, d
 def verify(rows: list[Row], arch: str, first: Path, second: Path) -> str:
     """Verify two same-seed guest runs and return their count attestation."""
     expected = {row.identifier: row for row in rows if row.arch == arch}
-    first_rows = parse_report(first, arch, expected)
-    second_rows = parse_report(second, arch, expected)
+    if arch == "arm64":
+        first_rows = parse_arm_summary(first, expected)
+        second_rows = parse_arm_summary(second, expected)
+    else:
+        first_rows = parse_report(first, arch, expected)
+        second_rows = parse_report(second, arch, expected)
     for identifier in expected:
         if first_rows[identifier] != second_rows[identifier]:
             raise SweepError(f"same-seed mismatch in row {identifier}")
@@ -503,6 +586,37 @@ def verify(rows: list[Row], arch: str, first: Path, second: Path) -> str:
 
 def traps_off_witness(path: Path, arch: str, row: Row) -> tuple[str, ...]:
     """Read the one early row that proves a traps-off image exposes live state."""
+    if arch == "arm64":
+        witnesses: list[tuple[int, re.Match[str]]] = []
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            prefix_at = line.find(ARM_TRAPS_OFF_PREFIX)
+            if prefix_at < 0:
+                continue
+            match = ARM_TRAPS_OFF_PATTERN.fullmatch(
+                line[prefix_at + len(ARM_TRAPS_OFF_PREFIX) :]
+            )
+            if match is None:
+                raise SweepError(f"{path}:{line_number}: malformed ARM traps-off witness")
+            witnesses.append((line_number, match))
+        if len(witnesses) != 1:
+            raise SweepError(
+                f"{path}: expected exactly one ARM traps-off witness, found {len(witnesses)}"
+            )
+        line_number, match = witnesses[0]
+        identifier, operations_text, exposed_text, digest = match.groups()
+        if identifier != row.identifier:
+            raise SweepError(
+                f"{path}:{line_number}: traps-off row is {identifier!r}, "
+                f"want {row.identifier!r}"
+            )
+        if int(operations_text) != len(row.operations):
+            raise SweepError(
+                f"{path}:{line_number}: {identifier} did not execute every operation"
+            )
+        if exposed_text != "1":
+            raise SweepError(f"{path}:{line_number}: {identifier} did not expose live state")
+        return (digest,)
+
     expected = {row.identifier: row}
     operation_results: dict[str, list[str]] = {}
     for line_number, line in enumerate(path.read_text().splitlines(), start=1):
@@ -603,6 +717,21 @@ def synthetic_report(rows: list[Row], arch: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def synthetic_arm_summary(rows: list[Row]) -> str:
+    """Create a valid compact ARM report for verifier negative controls."""
+    arm_rows = [row for row in rows if row.arch == "arm64"]
+    operations = sum(len(row.operations) for row in arm_rows)
+    signal_rows = sum(row.identifier in TRAP_ROWS for row in arm_rows)
+    mask_rows = sum(row.claim == "mask-and-audit" for row in arm_rows)
+    digests = ",".join(f"{index + 1:016x}" for index in range(len(arm_rows)))
+    return (
+        f"{ARM_SUMMARY_PREFIX}rows={len(arm_rows)}/{len(arm_rows)} "
+        f"operations={operations} traps_on=1 "
+        f"signal_rows={signal_rows}/{signal_rows} "
+        f"mask_rows={mask_rows}/{mask_rows} digests={digests}\n"
+    )
+
+
 def expect_failure(label: str, action) -> None:
     """Require a planted negative to be rejected."""
     try:
@@ -630,6 +759,69 @@ def self_test(rows: list[Row]) -> None:
     with tempfile.TemporaryDirectory(prefix="harmony-n6-") as directory:
         root = Path(directory)
         for arch in ARCHES:
+            if arch == "arm64":
+                good = synthetic_arm_summary(rows)
+                first = root / "arm64-first.log"
+                second = root / "arm64-second.log"
+                first.write_text(good)
+                second.write_text(good)
+                print(verify(rows, arch, first, second))
+
+                missing = root / "arm64-missing.log"
+                missing.write_text("")
+                expect_failure(
+                    "arm64-missing-row",
+                    lambda: verify(rows, arch, missing, second),
+                )
+
+                digest_match = re.search(r"digests=([0-9a-f,]+)", good)
+                if digest_match is None:
+                    raise SweepError("synthetic ARM summary has no digests")
+                digests = digest_match.group(1).split(",")
+                digests[0] = "ffffffffffffffff"
+                mismatched = root / "arm64-mismatch.log"
+                mismatched.write_text(
+                    good.replace(digest_match.group(1), ",".join(digests))
+                )
+                expect_failure(
+                    "arm64-same-seed-mismatch",
+                    lambda: verify(rows, arch, first, mismatched),
+                )
+
+                traps_off = root / "arm64-traps-off.log"
+                traps_off.write_text(good.replace("traps_on=1", "traps_on=0"))
+                expect_failure(
+                    "arm64-traps-off",
+                    lambda: verify(rows, arch, traps_off, second),
+                )
+
+                witness_row = next(
+                    row for row in rows
+                    if row.identifier == TRAPS_OFF_WITNESS_ROWS[arch]
+                )
+                witness_prefix = (
+                    f"{ARM_TRAPS_OFF_PREFIX}row={witness_row.identifier} "
+                    f"operations={len(witness_row.operations)} traps_on=0 exposed=1 "
+                    "digest="
+                )
+                witness_first = root / "arm64-traps-off-witness-first.log"
+                witness_second = root / "arm64-traps-off-witness-second.log"
+                witness_first.write_text(witness_prefix + "0000000000000001\n")
+                witness_second.write_text(witness_prefix + "0000000000000002\n")
+                print(verify_traps_off(rows, arch, witness_first, witness_second))
+                expect_failure(
+                    "arm64-traps-off-repeated",
+                    lambda: verify_traps_off(rows, arch, witness_first, witness_first),
+                )
+
+                visible = root / "arm64-visible.log"
+                visible.write_text(good.replace("mask_rows=1/1", "mask_rows=0/1"))
+                expect_failure(
+                    "arm64-visible-entropy",
+                    lambda: verify(rows, arch, visible, second),
+                )
+                continue
+
             good = synthetic_report(rows, arch)
             first = root / f"{arch}-first.log"
             second = root / f"{arch}-second.log"

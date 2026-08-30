@@ -36,6 +36,7 @@ struct n6_row {
 	const char *claim;
 	size_t first;
 	size_t count;
+	int signal_only;
 };
 
 #include "n6-generated.h"
@@ -66,23 +67,11 @@ static void write_marker(const char *text)
 {
 	if (dprintf(output_fd, "%s\n", text) >= 0)
 		return;
-	if (output_fd != 1) {
-		(void)close(output_fd);
-		output_fd = 1;
-		(void)dprintf(output_fd, "%s\n", text);
-	} else {
+	if (output_fd == 1) {
 		output_fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
 		if (output_fd >= 0)
 			(void)dprintf(output_fd, "%s\n", text);
 	}
-}
-
-static void setup_output(void)
-{
-	int kernel_log = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
-
-	if (kernel_log >= 0)
-		output_fd = kernel_log;
 }
 
 static __attribute__((noreturn)) void fail(const char *reason)
@@ -94,9 +83,9 @@ static __attribute__((noreturn)) void fail(const char *reason)
 		pause();
 }
 
-static uint64_t fnv1a(const unsigned char *data, size_t length)
+static uint64_t fnv1a_update(uint64_t hash, const unsigned char *data,
+			     size_t length)
 {
-	uint64_t hash = UINT64_C(1469598103934665603);
 	size_t index;
 
 	for (index = 0; index < length; index++) {
@@ -104,6 +93,17 @@ static uint64_t fnv1a(const unsigned char *data, size_t length)
 		hash *= UINT64_C(1099511628211);
 	}
 	return hash;
+}
+
+static uint64_t fnv1a(const unsigned char *data, size_t length)
+{
+	return fnv1a_update(UINT64_C(1469598103934665603), data, length);
+}
+
+static uint64_t digest_text(uint64_t hash, const char *text)
+{
+	hash = fnv1a_update(hash, (const unsigned char *)text, strlen(text));
+	return fnv1a_update(hash, (const unsigned char *)"", 1);
 }
 
 static void setup_operation_runner(struct operation_runner *runner)
@@ -205,18 +205,129 @@ static int trap_policy_on(void)
 #endif
 }
 
+#if defined(__aarch64__)
+static __attribute__((noreturn)) void run_arm64_sweep(
+	struct operation_runner *runner, int traps_on, int hidden)
+{
+	uint64_t row_digests[N6_TABLE_ROW_COUNT];
+	size_t accounted_operations = 0;
+	size_t signal_rows = 0;
+	size_t signal_rows_ok = 0;
+	size_t mask_rows = 0;
+	size_t mask_rows_ok = 0;
+	size_t row_index;
+	char line[1024];
+
+	for (row_index = 0; row_index < N6_TABLE_ROW_COUNT; row_index++) {
+		const struct n6_row *row = &n6_rows[row_index];
+		uint64_t digest = UINT64_C(1469598103934665603);
+		size_t operation_index;
+
+		digest = digest_text(digest, row->identifier);
+		digest = digest_text(digest, row->claim);
+		if (strcmp(row->claim, "mask-and-audit") == 0) {
+			mask_rows++;
+			for (operation_index = 0; operation_index < row->count;
+			     operation_index++) {
+				const struct n6_operation *operation =
+					&n6_operations[row->first + operation_index];
+
+				digest = digest_text(digest, operation->name);
+			}
+			digest = digest_text(digest, hidden ? "hidden" : "visible");
+			digest = digest_text(digest,
+				N6_AUDIT_REJECTED ? "audit-rejected" : "audit-accepted");
+			accounted_operations += row->count;
+			if (hidden && N6_AUDIT_REJECTED)
+				mask_rows_ok++;
+		} else {
+			int all_signals = 1;
+
+#ifdef N6_TRAPS_OFF
+			int exposed = 0;
+#endif
+
+			for (operation_index = 0; operation_index < row->count;
+			     operation_index++) {
+				const struct n6_operation *operation =
+					&n6_operations[row->first + operation_index];
+				char result[64];
+
+				run_operation(runner, row->first + operation_index, result);
+				digest = digest_text(digest, operation->name);
+				digest = digest_text(digest, result);
+				accounted_operations++;
+				if (strncmp(result, "signal:", 7) != 0) {
+					all_signals = 0;
+#ifdef N6_TRAPS_OFF
+					exposed = 1;
+#endif
+				}
+			}
+			if (row->signal_only) {
+				signal_rows++;
+				if (all_signals)
+					signal_rows_ok++;
+			}
+#ifdef N6_TRAPS_OFF
+			if (strcmp(row->identifier, "arm64-virtual-counter") == 0) {
+				int bytes = snprintf(line, sizeof(line),
+					"N6_TRAPS_OFF arch=%s row=%s operations=%zu "
+					"traps_on=0 exposed=%d digest=%016llx",
+					N6_ARCH, row->identifier, row->count, exposed,
+					(unsigned long long)digest);
+
+				if (bytes < 0 || (size_t)bytes >= sizeof(line))
+					fail("traps-off-report-overflow");
+				write_marker(line);
+			}
+#endif
+		}
+		row_digests[row_index] = digest;
+	}
+
+	{
+		int bytes = snprintf(line, sizeof(line),
+			"N6_GUEST_OK arch=%s rows=%d/%zu operations=%zu traps_on=%d "
+			"signal_rows=%zu/%zu mask_rows=%zu/%zu digests=",
+			N6_ARCH, N6_TABLE_ROW_COUNT, row_index, accounted_operations,
+			traps_on, signal_rows_ok, signal_rows, mask_rows_ok, mask_rows);
+		size_t used;
+
+		if (bytes < 0 || (size_t)bytes >= sizeof(line))
+			fail("summary-report-overflow");
+		used = (size_t)bytes;
+		for (row_index = 0; row_index < N6_TABLE_ROW_COUNT; row_index++) {
+			bytes = snprintf(line + used, sizeof(line) - used, "%s%016llx",
+				row_index == 0 ? "" : ",",
+				(unsigned long long)row_digests[row_index]);
+			if (bytes < 0 || (size_t)bytes >= sizeof(line) - used)
+				fail("summary-report-overflow");
+			used += (size_t)bytes;
+		}
+	}
+	write_marker(line);
+	for (;;)
+		pause();
+}
+#endif
+
 int main(void)
 {
 	const int traps_on = trap_policy_on();
 	const int hidden = entropy_hidden();
 	struct operation_runner runner;
+#if !defined(__aarch64__)
 	size_t row_index;
 	char line[32768];
+#endif
 
 	if (N6_TABLE_ROW_COUNT == 0 || N6_TABLE_OPERATION_COUNT == 0)
 		fail("empty-generated-table");
-	setup_output();
 	setup_operation_runner(&runner);
+#if defined(__aarch64__)
+	run_arm64_sweep(&runner, traps_on, hidden);
+#else
 	write_marker("N6_GUEST_BEGIN arch=" N6_ARCH);
 	for (row_index = 0; row_index < N6_TABLE_ROW_COUNT; row_index++) {
 		const struct n6_row *row = &n6_rows[row_index];
@@ -263,6 +374,7 @@ int main(void)
 		"N6_GUEST_OK arch=%s table_rows=%d exercised_rows=%zu operations=%d",
 		N6_ARCH, N6_TABLE_ROW_COUNT, row_index, N6_TABLE_OPERATION_COUNT);
 	write_marker(line);
+#endif
 	for (;;)
 		pause();
 }
