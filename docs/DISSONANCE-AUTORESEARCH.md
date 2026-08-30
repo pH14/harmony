@@ -196,7 +196,9 @@ stay on the primary host) and chased only if it originates in searcher code
 rather than the emulator.
 
 All ranked runs of a round execute on one primary evaluation host, so candidate
-comparisons never depend on cross-host behavior. Certification runs, screens, and
+comparisons never depend on cross-host behavior. The primary host is an operator
+designation recorded in the ledger, never in this charter; changing it requires
+only the smoke test and fresh baselines. Certification runs, screens, and
 confirmations run at 12 workers; single-worker runs are for diagnosis only.
 
 An experiment is invalid, not merely unsuccessful, if it changes its evaluator
