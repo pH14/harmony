@@ -60,11 +60,11 @@ fn write_report(directory: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
-fn verify(first: &Path, second: &Path) -> std::process::Output {
+fn verify(command: &str, first: &Path, second: &Path) -> std::process::Output {
     Command::new("python3")
         .current_dir(root())
         .arg("consonance/harmony-linux/scripts/n6-instruction-sweep.py")
-        .arg("verify")
+        .arg(command)
         .arg("--arch")
         .arg("x86_64")
         .arg("--run")
@@ -85,21 +85,30 @@ fn traps_off_fails_before_two_traps_on_runs_are_credited() {
     );
     std::fs::create_dir_all(&report_root).expect("create N6 report directory");
 
-    let negative = boot_to_report(
+    let negative_first = boot_to_report(
         &artifact("bzImage-n6-traps-off"),
         &artifact("initramfs-n6-traps-off.cpio.gz"),
     );
-    let negative_path = write_report(&report_root, "traps-off.log", &negative);
-    let negative_verdict = verify(&negative_path, &negative_path);
-    assert!(
-        !negative_verdict.status.success(),
-        "traps-off planted negative passed: {}",
-        String::from_utf8_lossy(&negative_verdict.stdout)
+    let negative_second = boot_to_report(
+        &artifact("bzImage-n6-traps-off"),
+        &artifact("initramfs-n6-traps-off.cpio.gz"),
+    );
+    let negative_first_path = write_report(&report_root, "traps-off-1.log", &negative_first);
+    let negative_second_path = write_report(&report_root, "traps-off-2.log", &negative_second);
+    let negative_verdict = verify(
+        "verify-traps-off",
+        &negative_first_path,
+        &negative_second_path,
     );
     assert!(
-        String::from_utf8_lossy(&negative_verdict.stderr).contains("escaped the guest trap policy"),
-        "negative failed for the wrong reason: {}",
+        negative_verdict.status.success(),
+        "traps-off witness failed: {}",
         String::from_utf8_lossy(&negative_verdict.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&negative_verdict.stdout).contains("N6_TRAPS_OFF_REJECTED"),
+        "traps-off witness produced the wrong verdict: {}",
+        String::from_utf8_lossy(&negative_verdict.stdout)
     );
 
     let kernel = artifact("bzImage");
@@ -108,7 +117,7 @@ fn traps_off_fails_before_two_traps_on_runs_are_credited() {
     let second = boot_to_report(&kernel, &initramfs);
     let first_path = write_report(&report_root, "traps-on-1.log", &first);
     let second_path = write_report(&report_root, "traps-on-2.log", &second);
-    let positive = verify(&first_path, &second_path);
+    let positive = verify("verify", &first_path, &second_path);
     assert!(
         positive.status.success(),
         "traps-on sweep failed: {}",
