@@ -23,7 +23,6 @@ CLAIMS = {"execute", "mask-and-audit"}
 ARCHES = ("arm64", "x86_64")
 PREFIX = "N6_ROW "
 TRAP_ROWS = {
-    "arm64-virtual-counter",
     "arm64-physical-counter",
     "arm64-live-timer-programming",
     "arm64-pmu",
@@ -31,6 +30,11 @@ TRAP_ROWS = {
     "x86-pmu",
     "x86-monitor-mwait",
     "x86-waitpkg",
+}
+
+TRAPS_OFF_WITNESS_ROWS = {
+    "arm64": "arm64-virtual-counter",
+    "x86_64": "x86-tsc",
 }
 
 
@@ -437,6 +441,62 @@ def verify(rows: list[Row], arch: str, first: Path, second: Path) -> str:
     )
 
 
+def traps_off_witness(path: Path, arch: str, row: Row) -> tuple[str, ...]:
+    """Read the one early row that proves a traps-off image exposes live state."""
+    for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+        prefix_at = line.find(PREFIX)
+        if prefix_at < 0:
+            continue
+        try:
+            item = json.loads(line[prefix_at + len(PREFIX) :])
+        except json.JSONDecodeError as error:
+            raise SweepError(f"{path}:{line_number}: invalid JSON: {error}") from error
+        if not isinstance(item, dict) or item.get("id") != row.identifier:
+            continue
+        exact = {
+            "arch": arch,
+            "id": row.identifier,
+            "claim": "execute",
+            "operation_count": len(row.operations),
+            "traps_on": False,
+        }
+        for key, value in exact.items():
+            if item.get(key) != value:
+                raise SweepError(
+                    f"{path}:{line_number}: {row.identifier} {key} is "
+                    f"{item.get(key)!r}, want {value!r}"
+                )
+        results = item.get("results")
+        if not isinstance(results, list) or len(results) != len(row.operations):
+            raise SweepError(
+                f"{path}:{line_number}: {row.identifier} did not execute every operation"
+            )
+        if not all(isinstance(result, str) and result for result in results):
+            raise SweepError(f"{path}:{line_number}: empty/non-string execute result")
+        if all(result.startswith("signal:") for result in results):
+            raise SweepError(
+                f"{path}:{line_number}: {row.identifier} did not expose live state"
+            )
+        return tuple(results)
+    raise SweepError(f"{path}: missing traps-off witness row {row.identifier}")
+
+
+def verify_traps_off(rows: list[Row], arch: str, first: Path, second: Path) -> str:
+    """Require two independent traps-off runs to expose non-repeatable live state."""
+    identifier = TRAPS_OFF_WITNESS_ROWS[arch]
+    row = next(row for row in rows if row.arch == arch and row.identifier == identifier)
+    first_results = traps_off_witness(first, arch, row)
+    second_results = traps_off_witness(second, arch, row)
+    if first_results == second_results:
+        raise SweepError(
+            f"traps-off witness {identifier} repeated; live-state divergence not observed"
+        )
+    return (
+        f"N6_TRAPS_OFF_REJECTED arch={arch} row={identifier} "
+        f"operations={len(row.operations)} runs=2"
+    )
+
+
 def synthetic_report(rows: list[Row], arch: str) -> str:
     """Create a valid report solely for verifier negative-control tests."""
     lines: list[str] = []
@@ -457,8 +517,7 @@ def synthetic_report(rows: list[Row], arch: str) -> str:
                 else f"synthetic-{index}"
                 for index in range(len(row.operations))
             ]
-            if trapped:
-                item["traps_on"] = True
+            item["traps_on"] = True
         else:
             item["feature_hidden"] = True
             item["audit_rejected"] = True
@@ -532,6 +591,32 @@ def self_test(rows: list[Row]) -> None:
                 lambda a=arch, p=traps_off, q=second: verify(rows, a, p, q),
             )
 
+            witness_identifier = TRAPS_OFF_WITNESS_ROWS[arch]
+            witness_index = next(
+                index
+                for index, line in enumerate(good.splitlines())
+                if json.loads(line[len(PREFIX) :])["id"] == witness_identifier
+            )
+            witness_item = json.loads(good.splitlines()[witness_index][len(PREFIX) :])
+            witness_item["traps_on"] = False
+            witness_item["results"] = [
+                f"value:{index + 1:016x}" for index in range(witness_item["operation_count"])
+            ]
+            witness_first = root / f"{arch}-traps-off-witness-first.log"
+            witness_first.write_text(
+                PREFIX + json.dumps(witness_item, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+            witness_item["results"][0] = "value:ffffffffffffffff"
+            witness_second = root / f"{arch}-traps-off-witness-second.log"
+            witness_second.write_text(
+                PREFIX + json.dumps(witness_item, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+            print(verify_traps_off(rows, arch, witness_first, witness_second))
+            expect_failure(
+                f"{arch}-traps-off-repeated",
+                lambda a=arch, p=witness_first: verify_traps_off(rows, a, p, p),
+            )
+
             mask_index = next(
                 index
                 for index, line in enumerate(good.splitlines())
@@ -565,6 +650,9 @@ def main() -> int:
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("--arch", choices=ARCHES, required=True)
     verify_parser.add_argument("--run", type=Path, action="append", required=True)
+    traps_off_parser = subparsers.add_parser("verify-traps-off")
+    traps_off_parser.add_argument("--arch", choices=ARCHES, required=True)
+    traps_off_parser.add_argument("--run", type=Path, action="append", required=True)
     subparsers.add_parser("self-test")
     args = parser.parse_args()
 
@@ -580,6 +668,10 @@ def main() -> int:
             if len(args.run) != 2:
                 raise SweepError("verify requires exactly two --run reports")
             print(verify(rows, args.arch, args.run[0], args.run[1]))
+        elif args.command == "verify-traps-off":
+            if len(args.run) != 2:
+                raise SweepError("verify-traps-off requires exactly two --run reports")
+            print(verify_traps_off(rows, args.arch, args.run[0], args.run[1]))
         else:
             self_test(rows)
     except (OSError, SweepError) as error:
