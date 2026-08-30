@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Event-count-bounded live arm64 Linux boot on Hypervisor.framework.
 
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64", not(miri))))]
+fn contains_complete_ready_line(serial: &[u8], ready: &[u8]) -> bool {
+    serial.split_inclusive(|byte| *byte == b'\n').any(|line| {
+        line.ends_with(b"\n") && line.windows(ready.len()).any(|window| window == ready)
+    })
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -259,7 +266,7 @@ fn main() -> std::process::ExitCode {
             }
             emitted = serial.len();
         }
-        if serial.windows(ready.len()).any(|window| window == ready) {
+        if contains_complete_ready_line(serial, &ready) {
             use vmm_core::virtual_time::{
                 LogField, check_delivery_placement, compare_normalized_logs,
             };
@@ -418,4 +425,23 @@ fn main() -> std::process::ExitCode {
 fn main() -> std::process::ExitCode {
     eprintln!("hvf_boot requires an Apple Silicon macOS host outside Miri");
     std::process::ExitCode::from(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_complete_ready_line;
+
+    #[test]
+    fn ready_marker_requires_its_complete_serial_line() {
+        let ready = b"N6_GUEST_OK arch=arm64";
+
+        assert!(!contains_complete_ready_line(
+            b"boot\nN6_GUEST_OK arch=arm64 rows=9/9",
+            ready,
+        ));
+        assert!(contains_complete_ready_line(
+            b"boot\nN6_GUEST_OK arch=arm64 rows=9/9\n",
+            ready,
+        ));
+    }
 }
