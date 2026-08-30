@@ -4,11 +4,9 @@
 //!
 //! A campaign runs W workers on one machine against one shared archive. A job
 //! is a pure function of (parent snapshot, mutation seed); the coordinator
-//! serializes selection and admission, and records the complete
-//! admission-ordered job stream. The live schedule is not derivable from the
-//! campaign seed alone: the recorded stream is the campaign's identity, and
-//! replaying it serially must reproduce the final archive and report byte for
-//! byte.
+//! serializes selection and admission in deterministic reservation order, and
+//! records the complete admission-ordered job stream. Workers execute
+//! concurrently, but host completion order cannot reach campaign state.
 //!
 //! Everything game-specific arrives through [`Game`]: target construction and
 //! stepping, key and milestone decoding, alive/dead/won classification, the
@@ -19,7 +17,7 @@
 //! search layer reads.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
     io::Write,
@@ -56,10 +54,16 @@ pub type CampaignOutcome<G> = (
 /// A game's initial draw state and the header provenance recorded for it.
 pub type InitialDrawState<G> = (<G as Game>::DrawState, Option<<G as Game>::TableHeader>);
 
-/// Fixed statement of the campaign determinism trade, recorded in every report.
-pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
+/// Fixed statement of the deterministic worker schedule, recorded in new reports.
+pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "selection, reservation, and admission follow the \
+     deterministic worker ring; host completion order cannot reach campaign state; the same \
+     seed, configuration, origin, and game bytes produce the same recorded stream";
+
+const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
      alone; the recorded stream is this campaign's identity; two live runs at one seed may \
      differ, and each replays exactly";
+const CAMPAIGN_SCHEDULE_POLICY: &str = "reservation_order_v1";
+const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
 /// next drawn job anyway and lets admission deduplicate, so a saturated archive
@@ -504,6 +508,14 @@ pub struct CampaignStreamHeader<T> {
     pub campaign_seed: u64,
     /// Worker count W.
     pub workers: u32,
+    /// Deterministic reservation/admission policy. Absent from streams whose
+    /// admission order followed host completion order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_policy: Option<String>,
+    /// Deterministic progress-curve payload policy. Absent from streams whose
+    /// curve points predate mechanical progress watermarks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_policy: Option<String>,
     /// Operator-supplied host name.
     pub host: String,
     /// Origin kind: `genesis`, `snapshot_root`, or `archive`.
@@ -1011,6 +1023,7 @@ pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     pub(crate) archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
     pub(crate) evidence: G::Evidence,
     curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
+    record_progress: bool,
     deaths: u64,
     pub(crate) victories: u64,
     pub(crate) victory_input: Option<Input<G::Action>>,
@@ -1028,6 +1041,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             archive,
             evidence: G::Evidence::default(),
             curve: Vec::new(),
+            record_progress: true,
             deaths: 0,
             victories: 0,
             victory_input: None,
@@ -1319,7 +1333,9 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         self.curve.push(ProgressPoint {
             executions: self.sequence,
             milestones: self.aggregate_milestones(),
-            progress: G::aggregate_progress(&self.evidence),
+            progress: self
+                .record_progress
+                .then(|| G::aggregate_progress(&self.evidence)),
             active_entries: self.archive.active.iter().filter(|active| **active).count(),
             occupied_cells: self.archive.slots.len(),
             deaths: self.deaths,
@@ -1457,6 +1473,8 @@ fn stream_header<G: Game>(
         format: game.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         workers: config.workers,
+        schedule_policy: Some(CAMPAIGN_SCHEDULE_POLICY.to_owned()),
+        progress_policy: Some(CAMPAIGN_PROGRESS_POLICY.to_owned()),
         host: config.host.clone(),
         origin_kind: origin.kind.clone(),
         origin_path: origin.path.clone(),
@@ -1616,12 +1634,17 @@ fn build_report<G: Game>(
     let victory_input = core.victory_input.clone();
     let replacement_frames_displaced = core.archive.replacement_time_displaced();
     let archive = core.into_archive_report(game, header.campaign_seed);
+    let schedule_identity = if header.schedule_policy.as_deref() == Some(CAMPAIGN_SCHEDULE_POLICY) {
+        CAMPAIGN_SCHEDULE_IDENTITY
+    } else {
+        LEGACY_CAMPAIGN_SCHEDULE_IDENTITY
+    };
     let report = CampaignModeReport {
         mode: "campaign".to_owned(),
         campaign_seed: header.campaign_seed,
         workers: header.workers,
         host: header.host.clone(),
-        schedule_identity: CAMPAIGN_SCHEDULE_IDENTITY.to_owned(),
+        schedule_identity: schedule_identity.to_owned(),
         origin,
         execution_budget: header.execution_budget,
         executions_completed,
@@ -2021,6 +2044,7 @@ where
             };
 
             let mut in_flight = 0_usize;
+            let mut admission_order = VecDeque::with_capacity(workers);
             for worker in 0..config.workers {
                 match select(
                     &mut core,
@@ -2034,6 +2058,7 @@ where
                     Some((spec, pending_job)) => {
                         pending[worker as usize] = Some(pending_job);
                         pool.send(worker, spec)?;
+                        admission_order.push_back(worker);
                         in_flight += 1;
                     }
                     None => {
@@ -2043,7 +2068,10 @@ where
             }
 
             while in_flight > 0 {
-                let reply = pool.receive()?;
+                let expected_worker = admission_order
+                    .pop_front()
+                    .ok_or("campaign admission order ended with jobs still in flight")?;
+                let reply = pool.receive_for(expected_worker)?;
                 let worker_index = reply.worker as usize;
                 let (result, frames) = reply.outcome.map_err(|error| -> Box<dyn Error> {
                     format!("campaign worker {} failed: {error}", reply.worker).into()
@@ -2162,6 +2190,7 @@ where
                     Some((spec, pending_job)) => {
                         pending[worker_index] = Some(pending_job);
                         pool.send(reply.worker, spec)?;
+                        admission_order.push_back(reply.worker);
                         in_flight += 1;
                     }
                     None => {
@@ -2260,6 +2289,20 @@ where
     if header.format != game.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
+    if header
+        .schedule_policy
+        .as_deref()
+        .is_some_and(|policy| policy != CAMPAIGN_SCHEDULE_POLICY)
+    {
+        return Err("campaign stream schedule policy is not recognized".into());
+    }
+    if header
+        .progress_policy
+        .as_deref()
+        .is_some_and(|policy| policy != CAMPAIGN_PROGRESS_POLICY)
+    {
+        return Err("campaign stream progress policy is not recognized".into());
+    }
     if header.rom_sha256 != game.image_sha256() {
         return Err("campaign replay ROM does not match the recorded stream".into());
     }
@@ -2352,6 +2395,7 @@ where
     }
     game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
     let mut core = CoordinatorCore::new(game, header.action_limit, header.archive_entry_limit);
+    core.record_progress = header.progress_policy.is_some();
     core.archive.selector_policy = replay_selector.clone();
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {

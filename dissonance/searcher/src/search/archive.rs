@@ -427,7 +427,7 @@ pub struct ConcentrationAccounting {
 
 /// Deterministic progress sample from one archive campaign.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "M: Serialize + DeserializeOwned, P: Serialize + DeserializeOwned + Default")]
+#[serde(bound = "M: Serialize + DeserializeOwned, P: Serialize + DeserializeOwned")]
 pub struct ProgressPoint<M, P = ()> {
     /// Completed target executions.
     pub executions: u64,
@@ -437,8 +437,8 @@ pub struct ProgressPoint<M, P = ()> {
     ///
     /// The default keeps reports written before mechanical progress was added
     /// readable without assigning them target-specific meaning.
-    #[serde(default)]
-    pub progress: P,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<P>,
     /// Number of active retained archive entries.
     pub active_entries: usize,
     /// Number of occupied quality-diversity slots.

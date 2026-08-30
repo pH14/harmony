@@ -1596,6 +1596,68 @@ mod tests {
     }
 
     #[test]
+    fn twelve_worker_live_stream_is_reservation_ordered() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca21, 12, 24);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        let mut first_stream = Vec::new();
+        let first = run_smb_campaign(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut first_stream,
+        )
+        .expect("first 12-worker campaign");
+        let mut second_stream = Vec::new();
+        let second = run_smb_campaign(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut second_stream,
+        )
+        .expect("second 12-worker campaign");
+        assert_eq!(first_stream, second_stream);
+        assert_eq!(first, second);
+        assert!(
+            std::str::from_utf8(&first_stream)
+                .expect("stream utf-8")
+                .lines()
+                .next()
+                .expect("stream header")
+                .contains("\"schedule_policy\":\"reservation_order_v1\"")
+        );
+    }
+
+    #[test]
+    fn legacy_stream_omits_new_evaluator_payloads_on_replay() {
+        let rom = synthetic_nrom();
+        let config = genesis_config(0x5eed_ca22, 1, 4);
+        let mut stream = Vec::new();
+        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("new campaign");
+        let legacy = String::from_utf8(stream)
+            .expect("stream utf-8")
+            .replacen("\"schedule_policy\":\"reservation_order_v1\",", "", 1)
+            .replacen("\"progress_policy\":\"mechanical_watermark_v1\",", "", 1)
+            .replacen("\"terminal_policy\":\"game_victory\",", "", 1);
+        let replay = replay_smb_campaign(&rom, legacy.as_bytes(), None)
+            .expect("legacy evaluator stream replays");
+        assert!(
+            replay
+                .schedule_identity
+                .starts_with("the live schedule is not derivable")
+        );
+        assert!(
+            !replay
+                .game_policies
+                .contains_key(super::TERMINAL_POLICY_FIELD)
+        );
+        let curve = serde_json::to_string(&replay.archive.progress_curve)
+            .expect("serialize legacy progress curve");
+        assert!(!curve.contains("\"progress\""));
+    }
+
+    #[test]
     fn snapshot_root_rejects_malformed_checkpoint_shapes() {
         use sha2::{Digest, Sha256};
 
@@ -1984,6 +2046,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_down_ten", "frozen_nine_mask"),
+            ("reservation_order_v1", "completion_order_v1"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(
