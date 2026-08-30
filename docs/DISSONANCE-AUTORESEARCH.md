@@ -186,10 +186,18 @@ The repository's determinism contract applies without exception. In particular:
 - no experiment is rerun with a larger budget merely because an agent believes it
   might improve later.
 
-**Cross-host identity check:** each round, the controller replays one fixed
-micro-campaign for every candidate on two hosts of different types and compares
-stream hashes and every deterministic counter. Any difference halts the candidate,
-is filed as a determinism bug, and blocks the round's promotion until diagnosed.
+**Cross-host identity smoke test:** the controller replays one fixed
+micro-campaign on two hosts and compares stream hashes and every deterministic
+counter. It runs only when the stream serialization changes, the evaluator
+version changes, or a new host type joins the fleet — never per candidate, never
+per round, never above micro scale. A difference is filed as a determinism bug;
+a difference across architectures is recorded as a fleet boundary (ranked runs
+stay on the primary host) and chased only if it originates in searcher code
+rather than the emulator.
+
+All ranked runs of a round execute on one primary evaluation host, so candidate
+comparisons never depend on cross-host behavior. Certification runs, screens, and
+confirmations run at 12 workers; single-worker runs are for diagnosis only.
 
 An experiment is invalid, not merely unsuccessful, if it changes its evaluator
 after seeing its result, reads a withheld artifact, loses exact replay, or supplies
@@ -320,9 +328,9 @@ confirmation budgets; E00 may recalibrate them once, before the first challenger
 
 ### Stage 0 — static and deterministic checks
 
-Build, format, lint, targeted tests, exact replay of a fixed micro-campaign on two
-host types with identical counters, and the boundary audit: a diff scan plus
-reviewer pass rejecting game constants above the observation adapter. A failure is
+Build, format, lint, targeted tests, exact replay of a fixed micro-campaign on
+the primary evaluation host, and the boundary audit: a diff scan plus reviewer
+pass rejecting game constants above the observation adapter. A failure is
 `INVALID` or `CRASH`; it receives no efficacy run. A simple implementation typo may
 be repaired once within a bounded worker budget; a second failure kills the
 candidate.
@@ -463,72 +471,64 @@ and recalibrates the B4 job budget.
 
 ## 14. First batch under this charter
 
-Order is binding. E-numbers continue the existing ledger; E01–E04 are parked per
-section 13.
+The path to rounds is two steps: E00, then E07. Everything else — boundary
+ratchet, memory bound, energy diagnosis — is a round lens, dispatched as a
+candidate, never a prerequisite. Engineering work for a pending experiment
+proceeds concurrently with any running campaign; only recorded results wait for
+their prerequisites. E-numbers continue the existing ledger; E01–E04 are parked
+per section 13.
 
 ### E00 — certify deterministic evaluation
 
-**Hypothesis:** the current searcher head can serve as a champion: a fixed
-micro-campaign and one 30K challenge replay with identical streams and counters on
-two host types, from a clean build, with no host preparation beyond installing the
-toolchain.
+**Hypothesis:** the current searcher head can serve as a champion.
 
-Exit: exact replay everywhere, counter identity across hosts, and a recorded
-baseline row for every in-loop challenge at 30K and 100K. There is no noise-floor
-requirement; a cross-host counter difference is a determinism bug and stops the
-batch until fixed.
+Exit: the micro-campaign cross-host smoke test passes, and one 30K run at 12
+workers replays exactly on the primary evaluation host. There is no second-host
+30K leg and no noise-floor requirement.
 
 ### E07 — build the visible challenge suite
 
 Instantiate B2's fixtures (2-2, 7-2, 8-1, 4-2, 4-3, 7-4, 8-4, and the 1-1
-canary). Certify deterministic construction, replay, terminal detection, and
-baseline distributions. Measure whether the 30K ranking predicts the 100K ranking
-for existing policy variants. Rounds (section 10) begin when E07 passes.
+canary). A fixture is certified when its prefix replays once on the primary host
+and its 12-worker baseline screen is recorded. Rounds (section 10) begin when E07
+passes.
 
-### E05 — ratchet the target boundary and remove admission probing
+### E09 — selection rounds
 
-Classify every current `Game` method as machine operation, mechanical observation,
-or search policy; move any search-policy method that can be made generic without a
-new abstraction. Add a small non-SMB test target exercising the generic path and a
-dependency check preventing generic search modules from importing SMB. Remove the
-45-frame probe from live configuration and vocabulary. Exit: default campaign
-streams unchanged, replay exact, a second mechanical target uses the generic path,
-and the complexity score falls.
+Open selection rounds (section 10) immediately after E07, one lens per candidate.
+The round-1 hypothesis list is seeded from existing recorded diagnoses (splice
+pricing, chord-table recency, corridor variance, energy collapse); a fresh
+diagnosis pass is a candidate, never a prerequisite. Standing lenses available to
+every round alongside algorithmic challengers:
 
-### E06 — bound active archive memory
+- **boundary lens (E05):** classify `Game` methods as machine operation,
+  mechanical observation, or search policy; move policy methods generic; add a
+  non-SMB test target and a dependency check preventing generic modules from
+  importing SMB; remove the 45-frame probe. Promotes on unchanged default
+  streams, exact replay, and a falling complexity score.
+- **memory lens (E06):** byte census at 10K/30K/100K, then one lifetime change
+  at a time (release displaced snapshots, parent-plus-suffix input encoding,
+  minimal live checkpoints). Promotes on at least 30% lower mature
+  archive-plus-checkpoint bytes with no search-effectiveness regression.
+- **diagnosis lens (E08):** observation-only accounting for selections,
+  retentions, new slots, new cells, and cost improvements by generic archive
+  group. Exit is at most three falsifiable hypotheses for the next round; it
+  never adds a policy.
 
-Generate a byte census by category at 10K, 30K, and 100K executions, then make one
-minimal lifetime change at a time: release snapshots of displaced entries without
-active descendants; encode retained inputs by parent plus suffix; write live
-checkpoints from active restart state plus required lineage. Each step must replay
-the same stream to the same report. Promotion requires at least 30% lower mature
-archive-plus-checkpoint bytes with no search-effectiveness regression.
-
-### E08 — diagnose search energy, without adding a policy
-
-Add observation-only accounting for parent selections, retained descendants, new
-slots, new cells, transition endpoints, and cost improvements by generic archive
-group. Run the visible suite under the champion; locate where forward progress
-stops and why. Exit: at most three falsifiable search hypotheses. No new scheduler
-in E08.
-
-### E09 — first algorithmic challenger rounds
-
-Open selection rounds (section 10) on the E08 hypothesis list, one lens per
-candidate. The first predeclared challenger: a generic two-mode scheduler — one
-mode equalizing discovery across active observation cells, one mode improving best
-known transition costs on the discovered connectivity graph — competing against
-the current combined energy score. Promotion requires better worst-column progress
-AUC or more challenge completions, bounded memory bytes, and an equal or lower
-post-simplification concept count.
+The first predeclared algorithmic challenger: a generic two-mode scheduler — one
+mode equalizing discovery across active observation cells, one mode improving
+best known transition costs on the discovered connectivity graph — competing
+against the current combined energy score. Promotion requires better worst-column
+progress AUC or more challenge completions, bounded memory bytes, and an equal or
+lower post-simplification concept count.
 
 ### Batch stopping point
 
 After the second synthesis pass, the director produces a short evidence table, the
 champion commit, deleted mechanisms, the remaining bottleneck, and no more than
-three hypotheses for the next batch. No cold full-game campaign runs before E00,
-E06, and E07 pass. New-game adapter bring-up (section 4) may proceed in parallel
-with the whole batch.
+three hypotheses for the next batch. No cold full-game campaign runs before E00
+and E07 pass and mature archive bytes sit within a declared bound. New-game
+adapter bring-up (section 4) may proceed in parallel with the whole batch.
 
 ## 15. Research basis
 
