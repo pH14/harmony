@@ -66,11 +66,23 @@ static void write_marker(const char *text)
 {
 	if (dprintf(output_fd, "%s\n", text) >= 0)
 		return;
-	if (output_fd == 1) {
+	if (output_fd != 1) {
+		(void)close(output_fd);
+		output_fd = 1;
+		(void)dprintf(output_fd, "%s\n", text);
+	} else {
 		output_fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
 		if (output_fd >= 0)
 			(void)dprintf(output_fd, "%s\n", text);
 	}
+}
+
+static void setup_output(void)
+{
+	int kernel_log = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+
+	if (kernel_log >= 0)
+		output_fd = kernel_log;
 }
 
 static __attribute__((noreturn)) void fail(const char *reason)
@@ -203,6 +215,7 @@ int main(void)
 
 	if (N6_TABLE_ROW_COUNT == 0 || N6_TABLE_OPERATION_COUNT == 0)
 		fail("empty-generated-table");
+	setup_output();
 	setup_operation_runner(&runner);
 	write_marker("N6_GUEST_BEGIN arch=" N6_ARCH);
 	for (row_index = 0; row_index < N6_TABLE_ROW_COUNT; row_index++) {
