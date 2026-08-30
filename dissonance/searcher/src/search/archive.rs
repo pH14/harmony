@@ -320,6 +320,7 @@ pub struct SelectorAccounting {
     /// Parent selections drawn through the uniform path.
     pub uniform_selections: u64,
     /// Parent selections drawn through the cell path.
+    #[serde(default, alias = "tie_class_selections")]
     pub cell_selections: u64,
     /// Selections that produced at least one retained descendant.
     pub productive_selections: u64,
@@ -426,12 +427,18 @@ pub struct ConcentrationAccounting {
 
 /// Deterministic progress sample from one archive campaign.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(bound = "M: Serialize + DeserializeOwned")]
-pub struct ProgressPoint<M> {
+#[serde(bound = "M: Serialize + DeserializeOwned, P: Serialize + DeserializeOwned + Default")]
+pub struct ProgressPoint<M, P = ()> {
     /// Completed target executions.
     pub executions: u64,
     /// Strongest milestone state observed so far.
     pub milestones: M,
+    /// Strongest route-agnostic mechanical progress observed so far.
+    ///
+    /// The default keeps reports written before mechanical progress was added
+    /// readable without assigning them target-specific meaning.
+    #[serde(default)]
+    pub progress: P,
     /// Number of active retained archive entries.
     pub active_entries: usize,
     /// Number of occupied quality-diversity slots.
@@ -1608,8 +1615,8 @@ where
 mod tests {
     use super::{
         Archive, ArchiveCandidate, ArchiveKey, Input, RetireThresholds,
-        SELECTION_EXHAUSTION_THRESHOLD, SelectorDraw, SelectorPath, SelectorPolicy,
-        selector_policy_from_identifier,
+        SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
+        SelectorPolicy, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
     use crate::smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveKey};
@@ -1617,6 +1624,19 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     type TestArchive = Archive<u8, SmbArchiveKey, (), ()>;
+
+    #[test]
+    fn historical_tie_class_counter_loads_as_cell_selections() {
+        let accounting: SelectorAccounting = serde_json::from_str(
+            r#"{"uniform_selections":1,"tie_class_selections":2,
+                "productive_selections":3,"classes_skipped":4,"counter_resets":5,
+                "concentration":{"window_cap":128,"final_window_size":6,
+                "window_draws":7,"distinct_window_parents":8,
+                "draws_per_parent_milli":9}}"#,
+        )
+        .expect("historical selector accounting parses");
+        assert_eq!(accounting.cell_selections, 2);
+    }
 
     /// A key of exactly `DEPTHS` group depths over four components, for
     /// covering geometries no compiled game declares. Depth `d` erases the

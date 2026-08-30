@@ -80,6 +80,10 @@ const PROGRESS_INTERVAL_SECONDS: u64 = 60;
 /// identity only.
 pub const RESUME_IDENTIFIER: &str = "whole_tree";
 
+/// Identifier recorded when a challenge starts from one evaluator-supplied
+/// snapshot with an empty challenge-local input.
+pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
+
 /// The recorded identifier strings of one run's game-owned policies, keyed by
 /// the stream-header field each value is written to.
 ///
@@ -104,6 +108,8 @@ pub trait Game: Sync {
     type Key: ArchiveKey + Debug + Eq + Send + Sync;
     /// Milestone summary merged across executions.
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
+    /// Route-agnostic mechanical progress merged across executions.
+    type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     /// Restorable machine state.
     type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     /// Per-frame observation recorded inside a job result.
@@ -208,6 +214,7 @@ pub trait Game: Sync {
     #[allow(clippy::too_many_arguments)]
     fn execute_job(
         &self,
+        run: &Self::Run,
         target: &mut Self::Target,
         parent_snapshot: &Self::Snapshot,
         parent_actions: usize,
@@ -298,8 +305,20 @@ pub trait Game: Sync {
     fn merge_milestones(&self, into: &mut Self::Milestones, from: Self::Milestones);
     /// The strongest milestone summary the evidence has accumulated.
     fn aggregate_milestones(evidence: &Self::Evidence) -> Self::Milestones;
+    /// The strongest route-agnostic progress the evidence has accumulated.
+    fn aggregate_progress(evidence: &Self::Evidence) -> Self::Progress;
     /// Merge a resumed source archive's whole-run evidence.
     fn merge_origin_evidence(&self, evidence: &mut Self::Evidence, source: &Self::ArchiveReport);
+    /// Initialize game-owned evidence from an evaluator-supplied snapshot root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the restored target cannot be observed.
+    fn merge_snapshot_root_evidence(
+        &self,
+        evidence: &mut Self::Evidence,
+        target: &Self::Target,
+    ) -> Result<(), Box<dyn Error>>;
     /// Merge one imported entry's evidence.
     fn merge_import_evidence(
         &self,
@@ -347,7 +366,7 @@ pub struct ArchiveReportState<G: Game + ?Sized> {
     /// Insertion-ordered entry reports.
     pub entries: Vec<ArchiveEntryReport<G::Action, G::Key, G::Milestones>>,
     /// Fixed-interval deterministic progress curve.
-    pub progress_curve: Vec<ProgressPoint<G::Milestones>>,
+    pub progress_curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
     /// Candidates retained.
     pub retained: u64,
     /// Candidates rejected.
@@ -358,10 +377,16 @@ pub struct ArchiveReportState<G: Game + ?Sized> {
     pub selector: SelectorAccounting,
 }
 
-/// Where a campaign starts: clean genesis or a recorded source archive.
+/// Where a campaign starts: clean genesis, one evaluator snapshot, or a
+/// recorded source archive.
 pub enum CampaignOrigin<G: Game + ?Sized> {
     /// Start from gameplay genesis with a single empty input.
     Genesis,
+    /// Start from one restorable snapshot with an empty challenge-local input.
+    SnapshotRoot {
+        /// The one-entry snapshot checkpoint and its recorded logical identity.
+        checkpoint: CampaignCheckpoint<G::Snapshot>,
+    },
     /// Resume a recorded archive with its whole retained tree.
     Archive {
         /// Path string recorded verbatim in the stream header.
@@ -481,13 +506,13 @@ pub struct CampaignStreamHeader<T> {
     pub workers: u32,
     /// Operator-supplied host name.
     pub host: String,
-    /// Origin kind: `genesis` or `archive`.
+    /// Origin kind: `genesis`, `snapshot_root`, or `archive`.
     pub origin_kind: String,
     /// Source archive path for archive origins.
     pub origin_path: Option<String>,
     /// SHA-256 of the source archive file bytes for archive origins.
     pub origin_archive_sha256: Option<String>,
-    /// Snapshot checkpoint path when a whole-tree resume restored from one.
+    /// Snapshot checkpoint path when an origin restored from one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_checkpoint_path: Option<String>,
     /// SHA-256 of the snapshot checkpoint file bytes.
@@ -585,8 +610,8 @@ pub enum CampaignAdmissionDecision {
     Rejected,
     /// No fixed probe mask kept the candidate alive for the horizon.
     ProbeRefused,
-    /// The action reached the game's victory mode; the lineage ends here and
-    /// its input is the campaign's winning input.
+    /// The action reached the run's recorded success predicate; the lineage
+    /// ends here and its input is the campaign's winning input.
     Victory,
 }
 
@@ -777,9 +802,9 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub duplicates_skipped: u64,
     /// Candidates refused by the admission probe.
     pub probe_refused: u64,
-    /// Actions that reached the game's victory mode.
+    /// Actions that reached the run's recorded success predicate.
     pub victories: u64,
-    /// The first input that reached the victory mode, when one did.
+    /// The first input that reached the success predicate, when one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub victory_input: Option<Input<A>>,
     /// Cell collisions the time-in-group replacement rule decided.
@@ -985,7 +1010,7 @@ pub fn derive_worker_seed(campaign_seed: u64, worker_index: u32) -> Result<u64, 
 pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     pub(crate) archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
     pub(crate) evidence: G::Evidence,
-    curve: Vec<ProgressPoint<G::Milestones>>,
+    curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
     deaths: u64,
     pub(crate) victories: u64,
     pub(crate) victory_input: Option<Input<G::Action>>,
@@ -1034,6 +1059,37 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 genesis_snapshot,
             )?
             .ok_or("failed to retain campaign genesis")?;
+        Ok(())
+    }
+
+    /// Retain one evaluator-supplied snapshot as archive id zero with an empty
+    /// challenge-local input.
+    pub(crate) fn bootstrap_snapshot_root(
+        &mut self,
+        game: &G,
+        target: &mut G::Target,
+        checkpoint: &CampaignCheckpoint<G::Snapshot>,
+    ) -> Result<(), Box<dyn Error>> {
+        let snapshot = validate_snapshot_root_checkpoint(game, checkpoint)?;
+        game.restore(target, snapshot)?;
+        if game.is_terminal(target) {
+            return Err("snapshot-root checkpoint restores a terminal target".into());
+        }
+        game.merge_snapshot_root_evidence(&mut self.evidence, target)?;
+        let key = game.current_key(target)?;
+        let retained = self.archive.insert(
+            None,
+            0,
+            ArchiveCandidate {
+                input: Input::default(),
+                key,
+                milestones: G::Milestones::default(),
+            },
+            snapshot.clone(),
+        )?;
+        if retained != Some(0) || self.archive.entries.len() != 1 {
+            return Err("failed to retain snapshot-root checkpoint as archive id zero".into());
+        }
         Ok(())
     }
 
@@ -1263,6 +1319,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         self.curve.push(ProgressPoint {
             executions: self.sequence,
             milestones: self.aggregate_milestones(),
+            progress: G::aggregate_progress(&self.evidence),
             active_entries: self.archive.active.iter().filter(|active| **active).count(),
             occupied_cells: self.archive.slots.len(),
             deaths: self.deaths,
@@ -1358,6 +1415,13 @@ fn resolve_origin<G: Game>(
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
     let (kind, path, archive_sha256, checkpoint, resume_input) = match origin {
         CampaignOrigin::Genesis => ("genesis".to_owned(), None, None, None, Input::default()),
+        CampaignOrigin::SnapshotRoot { checkpoint } => (
+            "snapshot_root".to_owned(),
+            None,
+            None,
+            Some(checkpoint),
+            Input::default(),
+        ),
         CampaignOrigin::Archive {
             path,
             file_sha256,
@@ -1405,7 +1469,11 @@ fn stream_header<G: Game>(
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
-        resume_policy: RESUME_IDENTIFIER.to_owned(),
+        resume_policy: if origin.kind == "snapshot_root" {
+            SNAPSHOT_ROOT_RESUME_IDENTIFIER.to_owned()
+        } else {
+            RESUME_IDENTIFIER.to_owned()
+        },
         suffix_policy: suffix_shape_identifier(config.suffix).to_owned(),
         mixture_policy: draw_mixture_identifier(config.mixture),
         game_policies: game.policies(&config.run),
@@ -1686,7 +1754,42 @@ fn bootstrap_core<G: Game>(
             core.bootstrap(game, target)?;
             Ok(None)
         }
+        CampaignOrigin::SnapshotRoot { checkpoint } => {
+            core.bootstrap_snapshot_root(game, target, checkpoint)?;
+            Ok(None)
+        }
     }
+}
+
+fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
+    game: &G,
+    checkpoint: &'a CampaignCheckpoint<G::Snapshot>,
+) -> Result<&'a G::Snapshot, Box<dyn Error>> {
+    if checkpoint.path.is_empty() {
+        return Err("snapshot-root checkpoint logical path is empty".into());
+    }
+    if checkpoint.file_sha256.len() != 64
+        || !checkpoint
+            .file_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("snapshot-root checkpoint SHA-256 is malformed".into());
+    }
+    if checkpoint.snapshots.format != game.checkpoint_format() {
+        return Err("snapshot-root checkpoint format is not recognized".into());
+    }
+    let [entry] = checkpoint.snapshots.entries.as_slice() else {
+        return Err("snapshot-root checkpoint must contain exactly one entry".into());
+    };
+    if entry.id != 0 {
+        return Err("snapshot-root checkpoint entry id is not zero".into());
+    }
+    let actual_sha256 = format!("{:x}", Sha256::digest(checkpoint.snapshots.to_bytes()?));
+    if checkpoint.file_sha256 != actual_sha256 {
+        return Err("snapshot-root checkpoint bytes do not match their SHA-256".into());
+    }
+    Ok(&entry.snapshot)
 }
 
 /// Run a campaign, also returning every retained entry's snapshot so a later
@@ -1726,6 +1829,7 @@ where
     let origin_record = resolve_origin(game, origin)?;
     let draw_origin = match origin {
         CampaignOrigin::Genesis => None,
+        CampaignOrigin::SnapshotRoot { .. } => None,
         CampaignOrigin::Archive {
             file_sha256,
             report,
@@ -1781,6 +1885,7 @@ where
         |target, spec: JobSpec<G>| {
             let frames_before = game.frames_clocked(target);
             game.execute_job(
+                &config.run,
                 target,
                 &spec.snapshot,
                 spec.parent_actions,
@@ -2163,6 +2268,18 @@ where
             if origin_report.is_some() {
                 return Err("genesis campaign replay does not take a source archive".into());
             }
+            if origin_checkpoint.is_some() {
+                return Err("genesis campaign replay does not take a snapshot checkpoint".into());
+            }
+            Input::default()
+        }
+        "snapshot_root" => {
+            if origin_report.is_some() {
+                return Err("snapshot-root replay does not take a source archive".into());
+            }
+            if origin_checkpoint.is_none() {
+                return Err("snapshot-root replay requires its snapshot checkpoint".into());
+            }
             Input::default()
         }
         "archive" => {
@@ -2184,28 +2301,45 @@ where
         &header.parent_scheduler,
         G::Key::groups().saturating_sub(2),
     )?;
-    if header.resume_policy != RESUME_IDENTIFIER {
+    let expected_resume = if header.origin_kind == "snapshot_root" {
+        SNAPSHOT_ROOT_RESUME_IDENTIFIER
+    } else {
+        RESUME_IDENTIFIER
+    };
+    if header.resume_policy != expected_resume {
         return Err("campaign stream resume policy is not recognized".into());
     }
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
-    let replay_origin: CampaignOrigin<G> = match origin_report {
-        Some(report) => CampaignOrigin::Archive {
+    let replay_origin: CampaignOrigin<G> = match header.origin_kind.as_str() {
+        "genesis" => CampaignOrigin::Genesis,
+        "snapshot_root" => CampaignOrigin::SnapshotRoot {
+            checkpoint: origin_checkpoint
+                .cloned()
+                .ok_or("snapshot-root replay requires its snapshot checkpoint")?,
+        },
+        "archive" => CampaignOrigin::Archive {
             path: header.origin_path.clone().unwrap_or_default(),
             file_sha256: header.origin_archive_sha256.clone().unwrap_or_default(),
-            report: Box::new(report.clone()),
+            report: Box::new(
+                origin_report
+                    .ok_or("archive campaign replay requires the source archive")?
+                    .clone(),
+            ),
             checkpoint: origin_checkpoint.cloned(),
         },
-        None => CampaignOrigin::Genesis,
+        _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     if let Some(checkpoint) = origin_checkpoint
-        && header.origin_checkpoint_sha256.as_deref() != Some(checkpoint.file_sha256.as_str())
+        && (header.origin_checkpoint_sha256.as_deref() != Some(checkpoint.file_sha256.as_str())
+            || header.origin_checkpoint_path.as_deref() != Some(checkpoint.path.as_str()))
     {
         return Err("campaign replay checkpoint does not match the recorded stream".into());
     }
     let draw_origin = match &replay_origin {
         CampaignOrigin::Genesis => None,
+        CampaignOrigin::SnapshotRoot { .. } => None,
         CampaignOrigin::Archive {
             file_sha256,
             report,
@@ -2314,6 +2448,7 @@ where
                 };
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
+                    &replay_run,
                     &mut target,
                     &snapshot,
                     parent_actions,

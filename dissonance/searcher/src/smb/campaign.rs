@@ -43,6 +43,7 @@ use crate::{
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
         SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
+        smb_mechanical_state_from_wram,
     },
     target::Target,
 };
@@ -76,6 +77,9 @@ pub const DURATION_POLICY_FIELD: &str = "duration_policy";
 pub const CHORD_POLICY_FIELD: &str = "chord_policy";
 /// Header field naming the cell-replacement rule.
 pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
+/// Header field naming the run's success predicate. Absent from legacy streams,
+/// whose success predicate was unconditionally whole-game victory.
+pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 
 /// One recorded game policy of a campaign stream header.
 ///
@@ -112,6 +116,9 @@ pub struct SmbCampaignRun {
     pub chord: SmbCampaignChordPolicy,
     /// Controller vocabulary for this run.
     pub vocabulary: SmbButtonVocabulary,
+    /// Recorded terminal predicate. `None` denotes the legacy whole-game
+    /// victory policy and preserves byte-exact replay of old streams.
+    pub terminal: Option<SmbTerminalPredicate>,
 }
 
 /// Live state of the recorded chord-draw policy: the folded tables and, on
@@ -171,6 +178,8 @@ pub struct SmbCampaignConfig {
     pub chord: SmbCampaignChordPolicy,
     /// Controller vocabulary for this run, recorded in the header and report.
     pub vocabulary: SmbButtonVocabulary,
+    /// Success predicate for this run, recorded in the stream header.
+    pub terminal: SmbTerminalPredicate,
     /// Admission rule for this run, recorded in the header and report.
     pub retention: RetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
@@ -202,11 +211,78 @@ impl SmbCampaignConfig {
             run: SmbCampaignRun {
                 chord: self.chord,
                 vocabulary: self.vocabulary,
+                terminal: Some(self.terminal),
             },
             retention: self.retention,
             selector: self.selector.clone(),
             victory_input_path: self.victory_input_path.clone(),
             checkpoint_dir: self.checkpoint_dir.clone(),
+        }
+    }
+}
+
+/// Mechanically recorded success predicate for an SMB campaign.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SmbTerminalPredicate {
+    /// Stop only on ordinary whole-game victory.
+    #[default]
+    GameVictory,
+    /// Stop when execution leaves the named zero-based world/level pair, or
+    /// reaches ordinary whole-game victory.
+    LevelTransition {
+        /// Zero-based source world.
+        world: u8,
+        /// Zero-based source level.
+        level: u8,
+    },
+}
+
+impl SmbTerminalPredicate {
+    /// Stable stream-header identifier for this predicate.
+    #[must_use]
+    pub fn identifier(self) -> String {
+        match self {
+            Self::GameVictory => "game_victory".to_owned(),
+            Self::LevelTransition { world, level } => {
+                format!("level_transition:{world},{level}")
+            }
+        }
+    }
+
+    /// Parse one stable stream-header identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown predicate or malformed world/level.
+    pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
+        if identifier == "game_victory" {
+            return Ok(Self::GameVictory);
+        }
+        let fields = identifier
+            .strip_prefix("level_transition:")
+            .ok_or("SMB terminal predicate is not recognized")?;
+        let (world, level) = fields
+            .split_once(',')
+            .ok_or("level-transition predicate is missing world or level")?;
+        if level.contains(',') {
+            return Err("level-transition predicate has extra fields".into());
+        }
+        Ok(Self::LevelTransition {
+            world: world.parse()?,
+            level: level.parse()?,
+        })
+    }
+
+    fn reached(self, target: &SmbTarget) -> bool {
+        if target.is_victory() {
+            return true;
+        }
+        match self {
+            Self::GameVictory => false,
+            Self::LevelTransition { world, level } => {
+                let state = smb_mechanical_state_from_wram(&target.wram());
+                (state.world, state.level) != (world, level)
+            }
         }
     }
 }
@@ -547,6 +623,7 @@ where
 pub(crate) struct SmbJobPolicies {
     pub(crate) max_actions: usize,
     pub(crate) retention: RetentionPolicy,
+    pub(crate) terminal: SmbTerminalPredicate,
 }
 
 /// Execute one job: restore the parent snapshot and apply the suffix exactly as
@@ -565,7 +642,7 @@ pub(crate) fn execute_job(
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     for action in suffix {
-        if target.is_dead() || target.is_victory() || length >= policies.max_actions {
+        if target.is_dead() || policies.terminal.reached(target) || length >= policies.max_actions {
             break;
         }
         length = length.saturating_add(1);
@@ -573,9 +650,9 @@ pub(crate) fn execute_job(
         merge_action_milestones(&mut milestones, target)?;
         let observations = target.last_action_observations().to_vec();
         let dead = target.is_dead();
-        let victory = target.is_victory();
+        let victory = policies.terminal.reached(target);
         let failed = target.exit_kind() != ExitKind::Ok;
-        // A won game is terminal: nothing past it is searched, so no
+        // Recorded success is terminal: nothing past it is searched, so no
         // candidate is offered.
         let candidate = if dead || victory || failed {
             None
@@ -755,6 +832,7 @@ impl Game for SmbGame {
     type Action = ButtonChord;
     type Key = SmbArchiveKey;
     type Milestones = SmbMilestones;
+    type Progress = SmbProgressWatermark;
     type Snapshot = SmbSnapshot;
     type Observations = SmbObservations;
     type Evidence = SmbCampaignEvidence;
@@ -784,7 +862,7 @@ impl Game for SmbGame {
     }
 
     fn policies(&self, run: &SmbCampaignRun) -> GamePolicies {
-        [
+        let mut policies: GamePolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 button_vocabulary_identifier(run.vocabulary).to_owned(),
@@ -796,7 +874,11 @@ impl Game for SmbGame {
         ]
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value))
-        .collect()
+        .collect();
+        if let Some(terminal) = run.terminal {
+            policies.insert(TERMINAL_POLICY_FIELD.to_owned(), terminal.identifier());
+        }
+        policies
     }
 
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<SmbCampaignRun, Box<dyn Error>> {
@@ -814,6 +896,10 @@ impl Game for SmbGame {
         let run = SmbCampaignRun {
             chord: chord_policy_from_identifier(recorded(CHORD_POLICY_FIELD)?)?,
             vocabulary: button_vocabulary_from_identifier(recorded(CONTROLLER_VOCABULARY_FIELD)?)?,
+            terminal: policies
+                .get(TERMINAL_POLICY_FIELD)
+                .map(|identifier| SmbTerminalPredicate::from_identifier(identifier))
+                .transpose()?,
         };
         // A name SMB does not own would silently survive replay, so the
         // recorded set must be exactly the set this build writes.
@@ -878,6 +964,7 @@ impl Game for SmbGame {
 
     fn execute_job(
         &self,
+        run: &SmbCampaignRun,
         target: &mut SmbTarget,
         parent_snapshot: &SmbSnapshot,
         parent_actions: usize,
@@ -895,6 +982,7 @@ impl Game for SmbGame {
             SmbJobPolicies {
                 max_actions,
                 retention,
+                terminal: run.terminal.unwrap_or_default(),
             },
         )
     }
@@ -1000,8 +1088,26 @@ impl Game for SmbGame {
         evidence.aggregate
     }
 
+    fn aggregate_progress(evidence: &SmbCampaignEvidence) -> SmbProgressWatermark {
+        evidence.watermark
+    }
+
     fn merge_origin_evidence(&self, evidence: &mut SmbCampaignEvidence, source: &SmbArchiveReport) {
         evidence.watermark = evidence.watermark.max(source.progress_watermark);
+    }
+
+    fn merge_snapshot_root_evidence(
+        &self,
+        evidence: &mut SmbCampaignEvidence,
+        target: &SmbTarget,
+    ) -> Result<(), Box<dyn Error>> {
+        let state = smb_mechanical_state_from_wram(&target.wram());
+        evidence.watermark = evidence.watermark.max(SmbProgressWatermark {
+            world: state.world,
+            level: state.level,
+            progress: state.progress,
+        });
+        Ok(())
     }
 
     fn merge_import_evidence(
@@ -1169,11 +1275,12 @@ pub fn replay_smb_campaign_checkpointed(
 mod tests {
     use super::{
         DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
-        SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
-        SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbGame,
-        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SuffixShape,
-        chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
-        execute_job, replay_smb_campaign, run_smb_campaign, run_smb_campaign_with_progress,
+        SmbCampaignAdmissionDecision, SmbCampaignCheckpoint, SmbCampaignChordPolicy,
+        SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord,
+        SmbGame, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SmbTerminalPredicate,
+        SuffixShape, chord_policy_from_identifier, chord_policy_identifier, derive_suffix,
+        derive_worker_seed, execute_job, replay_smb_campaign, replay_smb_campaign_checkpointed,
+        run_smb_campaign, run_smb_campaign_checkpointed, run_smb_campaign_with_progress,
     };
     use crate::search::campaign::{CoordinatorCore, write_live_checkpoint};
     use crate::search::empirical_steps::EmpiricalStepHashRule;
@@ -1203,6 +1310,7 @@ mod tests {
     ) -> SmbCampaignConfig {
         SmbCampaignConfig {
             vocabulary: SmbButtonVocabulary::default(),
+            terminal: super::SmbTerminalPredicate::GameVictory,
             campaign_seed,
             workers,
             execution_budget,
@@ -1367,6 +1475,7 @@ mod tests {
         let policies = super::SmbJobPolicies {
             max_actions: 96,
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+            terminal: super::SmbTerminalPredicate::GameVictory,
         };
         let on_first = execute_job(
             &mut first,
@@ -1406,10 +1515,167 @@ mod tests {
             super::SmbJobPolicies {
                 max_actions: 96,
                 retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                terminal: super::SmbTerminalPredicate::GameVictory,
             },
         )
         .expect("execute job");
         assert!(result.actions.is_empty());
+    }
+
+    #[test]
+    fn terminal_predicate_is_mechanical_and_round_trips() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        target.reset();
+        let transition = SmbTerminalPredicate::LevelTransition { world: 0, level: 0 };
+        assert!(!transition.reached(&target));
+        target.poke_wram(0x075c, 1);
+        assert!(transition.reached(&target));
+        assert_eq!(
+            SmbTerminalPredicate::from_identifier(&transition.identifier())
+                .expect("terminal predicate round trip"),
+            transition
+        );
+        assert!(SmbTerminalPredicate::from_identifier("level_transition:0,0,1").is_err());
+        assert!(SmbTerminalPredicate::from_identifier("level_transition:256,0").is_err());
+        assert!(SmbTerminalPredicate::from_identifier("coordinates:0,0").is_err());
+    }
+
+    #[test]
+    fn snapshot_root_replays_and_binds_its_identity() {
+        use sha2::{Digest, Sha256};
+
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        target.reset();
+        let snapshot = target.snapshot().expect("snapshot root");
+        let snapshots = SmbSnapshotCheckpoint {
+            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+            entries: vec![SmbSnapshotCheckpointEntry { id: 0, snapshot }],
+        };
+        let checkpoint_bytes = snapshots.to_bytes().expect("encode root checkpoint");
+        let checkpoint = SmbCampaignCheckpoint {
+            path: "fixture-neutral-00".to_owned(),
+            file_sha256: format!("{:x}", Sha256::digest(&checkpoint_bytes)),
+            snapshots,
+        };
+        let config = SmbCampaignConfig {
+            terminal: SmbTerminalPredicate::LevelTransition { world: 0, level: 0 },
+            ..genesis_config(0x5eed_ca20, 2, 4)
+        };
+        let origin = SmbCampaignOrigin::SnapshotRoot {
+            checkpoint: checkpoint.clone(),
+        };
+        let mut stream = Vec::new();
+        let (live, live_checkpoint) =
+            run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, None)
+                .expect("snapshot-root campaign");
+        assert_eq!(live.origin.kind, "snapshot_root");
+        assert_eq!(live.origin.resume_actions, 0);
+        assert_eq!(live.resume_policy, "snapshot_root");
+        assert_eq!(live.archive.entries[0].id, 0);
+        assert!(live.archive.entries[0].input.actions.len() <= config.action_limit);
+        let (replay, replay_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&checkpoint))
+                .expect("replay snapshot-root campaign");
+        assert_eq!(live, replay);
+        assert_eq!(live_checkpoint, replay_checkpoint);
+        assert!(replay_smb_campaign_checkpointed(&rom, &stream, None, None).is_err());
+
+        let mut wrong_path = checkpoint.clone();
+        wrong_path.path.push_str("-wrong");
+        assert!(replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&wrong_path)).is_err());
+        let mut wrong_hash = checkpoint.clone();
+        let replacement = if wrong_hash.file_sha256.starts_with('0') {
+            "1"
+        } else {
+            "0"
+        };
+        wrong_hash.file_sha256.replace_range(..1, replacement);
+        assert!(replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&wrong_hash)).is_err());
+    }
+
+    #[test]
+    fn snapshot_root_rejects_malformed_checkpoint_shapes() {
+        use sha2::{Digest, Sha256};
+
+        let rom = synthetic_nrom();
+        let game = SmbGame::new(&rom);
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        target.reset();
+        let snapshot = target.snapshot().expect("snapshot root");
+        let valid_snapshots = SmbSnapshotCheckpoint {
+            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+            entries: vec![SmbSnapshotCheckpointEntry {
+                id: 0,
+                snapshot: snapshot.clone(),
+            }],
+        };
+        let valid = SmbCampaignCheckpoint {
+            path: "fixture-neutral-01".to_owned(),
+            file_sha256: format!(
+                "{:x}",
+                Sha256::digest(valid_snapshots.to_bytes().expect("encode valid root"))
+            ),
+            snapshots: valid_snapshots,
+        };
+        for malformed in [
+            SmbCampaignCheckpoint {
+                path: String::new(),
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                file_sha256: "0".repeat(63),
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                file_sha256: "0".repeat(64),
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: "wrong".to_owned(),
+                    entries: valid.snapshots.entries.clone(),
+                },
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                    entries: Vec::new(),
+                },
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                    entries: vec![SmbSnapshotCheckpointEntry {
+                        id: 1,
+                        snapshot: snapshot.clone(),
+                    }],
+                },
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                    entries: vec![
+                        SmbSnapshotCheckpointEntry {
+                            id: 0,
+                            snapshot: snapshot.clone(),
+                        },
+                        SmbSnapshotCheckpointEntry { id: 1, snapshot },
+                    ],
+                },
+                ..valid.clone()
+            },
+        ] {
+            let mut core = CoordinatorCore::new(&game, 96, 32_768);
+            assert!(
+                core.bootstrap_snapshot_root(&game, &mut target, &malformed)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ use searcher::{
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
         SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig,
-        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
+        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint, SmbTerminalPredicate,
         button_vocabulary_from_identifier, chord_policy_from_identifier,
         replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
@@ -92,6 +92,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         groups: vec![6, 12, 2],
     });
     let mut vocabulary = SmbButtonVocabulary::default();
+    let mut terminal = SmbTerminalPredicate::GameVictory;
     let mut suffix = SuffixShape::default();
     let mut mixture = DrawMixture::EnergySplice { scale: 6 };
     let mut checkpoint_path = None;
@@ -143,6 +144,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
             checkpoint_path = Some(PathBuf::from(
                 args.next().ok_or("missing --checkpoint value")?,
             ));
+        } else if flag == "--terminal" {
+            terminal = SmbTerminalPredicate::from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --terminal value")?
+                    .to_string_lossy(),
+            )?;
         } else {
             return Err("unexpected run argument".into());
         }
@@ -155,6 +163,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
     let config = SmbCampaignConfig {
         vocabulary,
+        terminal,
         campaign_seed,
         workers,
         execution_budget,
@@ -216,13 +225,34 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     }
     let rom = read_rom()?;
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
-    let origin_report = match origin_arg.to_string_lossy().as_ref() {
-        "genesis" => None,
-        path => Some(serde_json::from_slice::<SmbArchiveReport>(&fs::read(
-            path,
-        )?)?),
+    let origin_name = origin_arg.to_string_lossy();
+    let (origin_report, origin_checkpoint) = if origin_name == "genesis" {
+        if checkpoint_arg.is_some() {
+            return Err("genesis replay does not accept a snapshot checkpoint".into());
+        }
+        (None, None)
+    } else if let Some(logical_path) = origin_name.strip_prefix("snapshot-root:") {
+        if logical_path.is_empty() {
+            return Err("snapshot-root origin needs a nonempty logical checkpoint path".into());
+        }
+        let checkpoint_path = checkpoint_arg
+            .as_deref()
+            .ok_or("snapshot-root replay needs a checkpoint file")?;
+        (
+            None,
+            Some(load_checkpoint_as(
+                checkpoint_path,
+                logical_path.to_owned(),
+            )?),
+        )
+    } else {
+        (
+            Some(serde_json::from_slice::<SmbArchiveReport>(&fs::read(
+                origin_name.as_ref(),
+            )?)?),
+            checkpoint_arg.as_deref().map(load_checkpoint).transpose()?,
+        )
     };
-    let origin_checkpoint = checkpoint_arg.as_deref().map(load_checkpoint).transpose()?;
     let (report, checkpoint) = replay_smb_campaign_checkpointed(
         &rom,
         &stream_bytes,
@@ -270,9 +300,18 @@ fn load_origin(
 ) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
     if origin_arg == "genesis" {
         if checkpoint_path.is_some() {
-            return Err("a snapshot checkpoint needs a source archive origin".into());
+            return Err("genesis does not accept a snapshot checkpoint".into());
         }
         return Ok(SmbCampaignOrigin::Genesis);
+    }
+    if let Some(logical_path) = origin_arg.strip_prefix("snapshot-root:") {
+        if logical_path.is_empty() {
+            return Err("snapshot-root origin needs a nonempty logical checkpoint path".into());
+        }
+        let checkpoint_path = checkpoint_path.ok_or("snapshot-root origin needs --checkpoint")?;
+        return Ok(SmbCampaignOrigin::SnapshotRoot {
+            checkpoint: load_checkpoint_as(checkpoint_path, logical_path.to_owned())?,
+        });
     }
     let bytes = fs::read(origin_arg)?;
     let report: SmbArchiveReport = serde_json::from_slice(&bytes)?;
@@ -285,9 +324,16 @@ fn load_origin(
 }
 
 fn load_checkpoint(path: &std::path::Path) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    load_checkpoint_as(path, path.to_string_lossy().into_owned())
+}
+
+fn load_checkpoint_as(
+    path: &std::path::Path,
+    logical_path: String,
+) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
     let bytes = fs::read(path)?;
     Ok(SmbCampaignCheckpoint {
-        path: path.to_string_lossy().into_owned(),
+        path: logical_path,
         file_sha256: format!("{:x}", Sha256::digest(&bytes)),
         snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes, SNAPSHOT_CHECKPOINT_FORMAT)?,
     })

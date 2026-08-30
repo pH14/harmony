@@ -205,7 +205,8 @@ impl ArchiveKey for SmbArchiveKey {
 }
 
 /// The SMB progress-curve point instantiation.
-pub type SmbArchiveProgressPoint = crate::search::archive::ProgressPoint<SmbMilestones>;
+pub type SmbArchiveProgressPoint =
+    crate::search::archive::ProgressPoint<SmbMilestones, SmbProgressWatermark>;
 
 /// The SMB entry report instantiation.
 pub type SmbArchiveEntryReport = ArchiveEntryReport<ButtonChord, SmbArchiveKey, SmbMilestones>;
