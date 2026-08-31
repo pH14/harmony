@@ -17,7 +17,6 @@
 //! every snapshot by re-running inputs would price a whole-tree resume in
 //! re-emulation the export already paid for.
 
-pub mod control;
 pub mod nes;
 
 use std::fmt;

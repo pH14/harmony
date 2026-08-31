@@ -162,21 +162,16 @@ jobs:
       # gated here even though the guest-image repro that installs the .so is box-only.
       - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
         run: make -C consonance/harmony-linux test-libvoidstar
-      # dissonance/differential-lineage is a standalone workspace root, so the
-      # root gates above never see it — gate it explicitly or its test suite
-      # rots green. --locked: the committed Cargo.lock
-      # pins differential-dataflow/timely.
-      # (Benchmarks are NOT run here — REPORT.md documents the local command.)
-      - name: dissonance/differential-lineage gates (out-of-workspace manifest)
+      # dissonance/ is a standalone workspace root, so the root gates above never
+      # see it — gate it explicitly or its test suite rots green. --locked: the
+      # committed Cargo.lock pins the emulator and serialization stack. Release
+      # profile: the searcher's own gate set is release-only (dissonance/CLAUDE.md).
+      - name: dissonance gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path dissonance/differential-lineage/Cargo.toml --all -- --check
-          cargo clippy --locked --manifest-path dissonance/differential-lineage/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --locked --manifest-path dissonance/differential-lineage/Cargo.toml --all-features
-          # Release build: the benchmark (REPORT.md) is release-only, and cargo
-          # test above builds only the dev profile — a release-only codegen or
-          # link regression would otherwise escape CI (J6).
-          cargo build --locked --release --manifest-path dissonance/differential-lineage/Cargo.toml --all-targets
-          cargo deny --manifest-path dissonance/differential-lineage/Cargo.toml check --config deny.toml licenses
+          cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
+          cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
+          cargo deny --manifest-path dissonance/Cargo.toml check
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`

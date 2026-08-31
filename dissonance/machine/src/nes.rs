@@ -18,7 +18,6 @@ use std::{
     io::Cursor,
 };
 
-use environment::{EnvSpec, FaultPolicy};
 use serde::{Deserialize, Serialize};
 use tetanes_core::{
     control_deck::{Config, ControlDeck, HeadlessMode},
@@ -39,26 +38,21 @@ pub const ADDRESS_SPACE_SIZE: u64 = 64 * 1024;
 /// Longest controller hold accepted from an input.
 pub const MAX_HOLD_FRAMES: u8 = 120;
 
-/// Blob format version of a NES [`Reproducer`]. The bytes are the canonical
-/// consonance [`EnvSpec`] form so the in-process and guest builds consume the
-/// exact same artifact.
-pub const ENV_BLOB_VERSION: u16 = EnvSpec::BLOB_VERSION;
+/// Blob format version of a NES [`Reproducer`]: a flat sequence of
+/// `(buttons, hold_frames)` byte pairs in execution order.
+pub const ENV_BLOB_VERSION: u16 = 1;
 
 /// Mint the environment blob for one controller action suffix.
 #[must_use]
 pub fn reproducer(actions: &[ButtonChord]) -> Reproducer {
-    let payloads = actions
-        .iter()
-        .map(|action| vec![action.buttons, action.bounded_hold_frames()])
-        .collect();
-    let mut spec = EnvSpec::Seeded {
-        seed: 0,
-        policy: FaultPolicy::none(),
-    };
-    spec.set_payloads(Some(payloads));
+    let mut bytes = Vec::with_capacity(actions.len() * 2);
+    for action in actions {
+        bytes.push(action.buttons);
+        bytes.push(action.bounded_hold_frames());
+    }
     Reproducer {
         blob_version: ENV_BLOB_VERSION,
-        bytes: spec.encode(),
+        bytes,
     }
 }
 
@@ -66,41 +60,19 @@ pub fn reproducer(actions: &[ButtonChord]) -> Reproducer {
 ///
 /// # Errors
 ///
-/// Returns an error for another format version, malformed environment bytes,
-/// environment mechanics other than the ordered tape, or a non-chord entry.
+/// Returns an error for another format version or a truncated blob.
 pub fn actions_of(env: &Reproducer) -> Result<Vec<ButtonChord>, MachineError> {
     if env.blob_version != ENV_BLOB_VERSION {
         return Err(MachineError::BadEnvVersion);
     }
-    let spec = EnvSpec::decode(&env.bytes).map_err(|error| match error {
-        environment::EnvError::BadVersion(_) => MachineError::BadEnvVersion,
-        _ => MachineError::MalformedEnv,
-    })?;
-    let EnvSpec::Recorded {
-        policy,
-        overrides,
-        standing,
-        reseeds,
-        payloads: Some(payloads),
-        ..
-    } = spec
-    else {
-        return Err(MachineError::MalformedEnv);
-    };
-    if policy != FaultPolicy::none()
-        || !overrides.is_empty()
-        || !standing.is_empty()
-        || !reseeds.is_empty()
-    {
+    if !env.bytes.len().is_multiple_of(2) {
         return Err(MachineError::MalformedEnv);
     }
-    payloads
-        .into_iter()
-        .map(|entry| match entry.as_slice() {
-            [buttons, hold_frames] => Ok(ButtonChord::new(*buttons, *hold_frames)),
-            _ => Err(MachineError::MalformedEnv),
-        })
-        .collect()
+    Ok(env
+        .bytes
+        .chunks_exact(2)
+        .map(|pair| ButtonChord::new(pair[0], pair[1]))
+        .collect())
 }
 
 /// One total NES input action: an eight-button mask held for a bounded frame count.

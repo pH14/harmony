@@ -2403,3 +2403,33 @@ exercised 9/9 rows and 166 operations twice. The LL/SC accumulating negative
 diverges, the retained three-patch/15-mechanism tripwire audit fails when an
 exit ABI is removed, both frozen-table listings are complete, and the N0
 *untested* markings in `docs/DETERMINISM.md` now reflect the tested evidence.
+
+## Main reconciliation and Dissonance isolation (2026-08-31)
+
+The completed milestone tree was reconciled with current `main` at
+`d09d9d3878650cea7bf16edccdd3cb2a0ab8c445` by a normal merge. The complete
+`dissonance/` subtree was resolved from that `main` commit, not from the older
+virtual-time branch history. A path-limited tree comparison against `main`
+is empty: the pull request therefore carries zero Dissonance file changes.
+The shared `quality.yml` resolution retains both the current-main Dissonance
+workspace gate and the Consonance `harmony-linux` relocation.
+
+The reconciled tree passes `cargo build --all-features`, formatting, all-target
+all-feature Clippy with warnings denied, cargo-deny, and all 1,176 nextest tests
+(25 configured skips). The permission-denied sandbox attempts for the two
+loopback listener tests and the advisory-database lock were rerun with the
+required local access and passed. Pinned `nightly-2026-06-16` Miri with
+`-Zmiri-permissive-provenance` passes `vmm-backend`, including 48 unit, three
+contract, two dynamic, two exhaustive, 16 run-loop, and one vCPU-state test.
+The N6 self-test, generated-listing byte comparison, LL/SC boundary control,
+and three-patch/15-mechanism tripwire audit also pass unchanged after the
+merge.
+
+Two archived evidence launchers, `scripts/run-m6-concurrency.sh` and
+`consonance/harmony-linux/scripts/virtual-time-m2-oracle.sh`, name the retired
+current-main Dissonance binaries `m6-concurrency` and
+`smb-vtime-continuation`. They preserve the commands used for the recorded M2
+and M6 evidence, but are not final-tree repository gates. Reintroducing those
+obsolete Dissonance implementations would violate the isolation decision;
+future live reruns must use a separately versioned Dissonance checkout or a
+new Consonance-owned oracle rather than silently restoring stale search code.

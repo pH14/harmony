@@ -4,5 +4,4 @@
 
 pub mod archive;
 pub mod campaign;
-pub mod remote;
 pub mod target;

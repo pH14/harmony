@@ -8,7 +8,13 @@
 //! the key needs to complete itself (for Super Mario Bros, the visited-room
 //! list).
 
-use std::{cmp::Reverse, collections::BTreeMap, error::Error, fmt::Debug, num::NonZeroUsize};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt::Debug,
+    num::NonZeroUsize,
+};
 
 use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -140,6 +146,24 @@ pub enum SelectorPolicy {
     /// deterministic all-exhausted reset also clears the barren counters,
     /// so the search can never seal itself out.
     Retire(RetireThresholds),
+    /// The same walk with barren groups down-weighted instead of retired: a
+    /// group's draw weight halves every `scale` barren selections at its
+    /// depth and floors at 1/256 of a fresh group, so a hard frontier keeps
+    /// receiving draws instead of falling back to shallower classes. The
+    /// entry threshold still retires single entries hard.
+    Energy(RetireThresholds),
+    /// The energy walk with a second weight factor biasing each pooled group
+    /// draw toward the frontier: a group's weight also halves for each rank
+    /// it sits below the deepest (greatest) group value at its depth, with a
+    /// floor of 1 so shallow groups keep a live tail. Both factors multiply;
+    /// the entry threshold still retires single entries hard.
+    EnergyFrontier(RetireThresholds),
+    /// The frontier walk with a cost-weighted cell draw: within the recency
+    /// window, entries are ranked by frames spent in their group, and an
+    /// entry's weight halves per `CHEAPEST_RANK_SCALE` ranks above the
+    /// cheapest, flooring at 1. Cheap entries hold the most unspent budget
+    /// under any workload clock, so they take most of the cell's draws.
+    EnergyFrontierCheapest(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -148,14 +172,35 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
     match policy {
         SelectorPolicy::GroupUniform => SELECTOR_IDENTIFIER.to_owned(),
         SelectorPolicy::Retire(thresholds) => {
-            let values = std::iter::once(thresholds.entry)
-                .chain(thresholds.groups.iter().copied())
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{SELECTOR_IDENTIFIER}_retire:{values}")
+            format!(
+                "{SELECTOR_IDENTIFIER}_retire:{}",
+                threshold_values(thresholds)
+            )
+        }
+        SelectorPolicy::Energy(scales) => {
+            format!("{SELECTOR_IDENTIFIER}_energy:{}", threshold_values(scales))
+        }
+        SelectorPolicy::EnergyFrontier(scales) => {
+            format!(
+                "{SELECTOR_IDENTIFIER}_energy_frontier:{}",
+                threshold_values(scales)
+            )
+        }
+        SelectorPolicy::EnergyFrontierCheapest(scales) => {
+            format!(
+                "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:{}",
+                threshold_values(scales)
+            )
         }
     }
+}
+
+fn threshold_values(thresholds: &RetireThresholds) -> String {
+    std::iter::once(thresholds.entry)
+        .chain(thresholds.groups.iter().copied())
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The parent selector a recorded identifier names, under a key with
@@ -172,8 +217,25 @@ pub fn selector_policy_from_identifier(
     if identifier == SELECTOR_IDENTIFIER {
         return Ok(SelectorPolicy::GroupUniform);
     }
-    let prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
-    let Some(values) = identifier.strip_prefix(&prefix) else {
+    let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
+    let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
+    let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
+    let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
+    enum Parsed {
+        Retire,
+        Energy,
+        EnergyFrontier,
+        EnergyFrontierCheapest,
+    }
+    let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
+        (values, Parsed::Retire)
+    } else if let Some(values) = identifier.strip_prefix(&cheapest_prefix) {
+        (values, Parsed::EnergyFrontierCheapest)
+    } else if let Some(values) = identifier.strip_prefix(&frontier_prefix) {
+        (values, Parsed::EnergyFrontier)
+    } else if let Some(values) = identifier.strip_prefix(&energy_prefix) {
+        (values, Parsed::Energy)
+    } else {
         return Err(format!("parent selector {identifier} is not recognized").into());
     };
     let parsed = values
@@ -190,10 +252,16 @@ pub fn selector_policy_from_identifier(
     if parsed.contains(&0) {
         return Err("retiring selector thresholds must be nonzero".into());
     }
-    Ok(SelectorPolicy::Retire(RetireThresholds {
+    let thresholds = RetireThresholds {
         entry: parsed[0],
         groups: parsed[1..].to_vec(),
-    }))
+    };
+    Ok(match selector {
+        Parsed::Retire => SelectorPolicy::Retire(thresholds),
+        Parsed::Energy => SelectorPolicy::Energy(thresholds),
+        Parsed::EnergyFrontier => SelectorPolicy::EnergyFrontier(thresholds),
+        Parsed::EnergyFrontierCheapest => SelectorPolicy::EnergyFrontierCheapest(thresholds),
+    })
 }
 
 /// Selections since the last retained descendant at which a parent is exhausted.
@@ -202,6 +270,11 @@ pub(crate) const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
 /// A concentrated cell draw samples only this many of the cell's
 /// greatest-id members.
 const CONCENTRATION_WINDOW: usize = 128;
+
+/// Cost ranks per halving of a cell entry's draw weight under the cheapest
+/// concentration; a compiled property of its recorded identifier, like the
+/// window itself.
+const CHEAPEST_RANK_SCALE: usize = 16;
 
 /// Which selection path one recorded draw took.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -570,6 +643,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     productive: Vec<u64>,
     since_retained: Vec<u64>,
     in_window_ever: Vec<bool>,
+    /// Per entry: whether its retention slot was empty when it arrived.
+    opened_slot: Vec<bool>,
+    opened_cell: Vec<bool>,
+    cells_seen: BTreeSet<K::Group>,
     selector_accounting: SelectorAccounting,
     /// Time each retained entry spent inside its own coarsest group, in
     /// entry-id order, in the game's action-duration unit.
@@ -577,6 +654,10 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     replacement_time_displaced: u64,
     /// Per-entry lineage, aligned with `entries`.
     lineages: Vec<K::Lineage>,
+    /// Per entry: the greatest key in its subtree and the entry holding it,
+    /// maintained on insert so splice draws find a stored tail without a
+    /// scan.
+    deepest_leaf: Vec<(K, usize)>,
     /// Parent selector this archive selects under.
     pub selector_policy: SelectorPolicy,
     /// Pooled barren streak per group, one map per depth `1..groups() - 1`,
@@ -620,6 +701,9 @@ where
             productive: Vec::new(),
             since_retained: Vec::new(),
             in_window_ever: Vec::new(),
+            opened_slot: Vec::new(),
+            opened_cell: Vec::new(),
+            cells_seen: BTreeSet::new(),
             selector_accounting: SelectorAccounting {
                 concentration: ConcentrationAccounting {
                     window_cap: u64::try_from(CONCENTRATION_WINDOW).unwrap_or(u64::MAX),
@@ -630,6 +714,7 @@ where
             time_in_group: Vec::new(),
             replacement_time_displaced: 0,
             lineages: Vec::new(),
+            deepest_leaf: Vec::new(),
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
             action_time,
@@ -826,6 +911,7 @@ where
         // that reached the same slot in strictly less time. The entry id
         // breaks ties so the choice stays a total order over the slot.
         let slot = self.slots.entry(key.group(0)).or_default().clone();
+        let new_slot = slot.is_empty();
         let slot_full = slot.len() >= MAX_ENTRIES_PER_KEY;
         let replace = if slot_full {
             slot.iter()
@@ -869,11 +955,60 @@ where
         self.productive.push(0);
         self.since_retained.push(0);
         self.in_window_ever.push(false);
+        self.opened_slot.push(new_slot);
+        // A one-group key has no pooled cell depth; slot novelty stands in.
+        let new_cell = if K::groups() > 1 {
+            self.cells_seen.insert(key.group(1))
+        } else {
+            new_slot
+        };
+        self.opened_cell.push(new_cell);
+        self.deepest_leaf.push((key, id));
+        let mut ancestor = parent_id;
+        while let Some(current) = ancestor {
+            if self.deepest_leaf[current] >= (key, id) {
+                break;
+            }
+            self.deepest_leaf[current] = (key, id);
+            ancestor = self.entries[current]
+                .report
+                .parent_id
+                .and_then(|parent| usize::try_from(parent).ok());
+        }
         self.slots.entry(key.group(0)).or_default().push(id);
         self.input_ids.insert(input, id);
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
         Ok(Some(id))
+    }
+
+    /// The stored tail a splice draw would append to `parent`: the actions
+    /// past a cell-mate's own input on the path to the deepest descendant
+    /// key in the parent's selection cell, capped at `cap` actions. The
+    /// choice is a pure function of archive state, so replay re-derives it.
+    /// Returns nothing when no cell-mate's subtree reaches past the
+    /// parent's own key.
+    #[must_use]
+    pub fn splice_tail(&self, parent: usize, cap: usize) -> Option<Vec<A>> {
+        self.frontier_cap?;
+        let parent_key = self.entries[parent].report.key;
+        let class = Reverse(parent_key.group(Self::class_depth()));
+        let cell = parent_key.group(Self::cell_depth());
+        let members = self.classes.get(&class)?.get(&cell)?;
+        let donor = members
+            .iter()
+            .filter(|member| **member != parent)
+            .max_by_key(|member| self.deepest_leaf[**member])?;
+        let (leaf_key, leaf) = self.deepest_leaf[*donor];
+        if leaf_key <= parent_key {
+            return None;
+        }
+        let prefix = self.entries[*donor].report.input.actions.len();
+        let tail = &self.entries[leaf].report.input.actions;
+        if prefix >= tail.len() {
+            return None;
+        }
+        Some(tail[prefix..tail.len().min(prefix + cap)].to_vec())
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -968,22 +1103,20 @@ where
             for members in cell_map.values() {
                 // Every member of a cell shares its groups, so the pooled
                 // barren thresholds are checked once per cell; only the
-                // per-entry streak varies inside.
+                // per-entry streak varies inside. Liveness is counted here
+                // and only the finally chosen cell's live members are
+                // materialized, so a draw allocates one member list rather
+                // than one per cell.
                 let key = self.entries[members[0]].report.key;
                 let group_live = ignore_streaks || self.groups_unexhausted(key);
-                let live = if group_live {
-                    members
+                let live = group_live
+                    && members
                         .iter()
-                        .copied()
-                        .filter(|id| ignore_streaks || self.entry_unexhausted(*id))
-                        .collect::<Vec<usize>>()
-                } else {
-                    Vec::new()
-                };
+                        .any(|id| ignore_streaks || self.entry_unexhausted(*id));
                 let subclass = subclass_live.entry(key.group(skip_depth)).or_insert(false);
-                *subclass |= !live.is_empty();
-                if !live.is_empty() {
-                    cells.push((key, live));
+                *subclass |= live;
+                if live {
+                    cells.push((key, members));
                 }
             }
             *classes_skipped = classes_skipped.saturating_add(
@@ -1000,15 +1133,96 @@ where
                     .collect::<Vec<_>>();
                 groups.sort_unstable();
                 groups.dedup();
-                let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
-                let chosen = groups.swap_remove(rand.below(count));
+                let index = self.draw_group_index(rand, depth, &groups)?;
+                let chosen = groups.swap_remove(index);
                 cells.retain(|(key, _)| key.group(depth) == chosen);
             }
-            let count =
-                NonZeroUsize::new(cells.len()).ok_or("cell draw over an exhausted class")?;
-            return Ok(Some(cells.swap_remove(rand.below(count)).1));
+            if cells.is_empty() {
+                return Err("cell draw over an exhausted class".into());
+            }
+            // A one-group key collapses the cell onto the retention slot and
+            // has no pooled depth to weight, so its cell draw stays uniform.
+            let index = if Self::coarsest_depth() >= 1 {
+                let cell_groups = cells
+                    .iter()
+                    .map(|(key, _)| key.group(1))
+                    .collect::<Vec<_>>();
+                self.draw_group_index(rand, 1, &cell_groups)?
+            } else {
+                let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
+                rand.below(count)
+            };
+            let members = cells.swap_remove(index).1;
+            return Ok(Some(
+                members
+                    .iter()
+                    .copied()
+                    .filter(|id| ignore_streaks || self.entry_unexhausted(*id))
+                    .collect(),
+            ));
         }
         Ok(None)
+    }
+
+    /// Draw one index into `groups` at `depth`. Under the energy selector
+    /// each group's weight halves every `scale` barren selections and floors
+    /// at 1/256 of a fresh group; every other selector draws uniformly, so
+    /// their recorded rand streams keep their exact bytes.
+    fn draw_group_index(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        depth: usize,
+        groups: &[K::Group],
+    ) -> Result<usize, Box<dyn Error>> {
+        let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
+        let (scales, frontier) = match &self.selector_policy {
+            SelectorPolicy::Energy(scales) => (scales, false),
+            SelectorPolicy::EnergyFrontier(scales)
+            | SelectorPolicy::EnergyFrontierCheapest(scales) => (scales, true),
+            _ => return Ok(rand.below(count)),
+        };
+        // A key with no pooled depth at this position has no barren counter
+        // to weight by; its draw stays uniform.
+        let Some(scale) = scales.groups.get(depth - 1).copied() else {
+            return Ok(rand.below(count));
+        };
+        let weights = groups
+            .iter()
+            .map(|group| {
+                let barren = self
+                    .group_barren
+                    .get(depth - 1)
+                    .and_then(|map| map.get(group))
+                    .copied()
+                    .unwrap_or(0);
+                let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
+                let energy = 256_usize >> halvings;
+                if !frontier {
+                    return energy;
+                }
+                // Rank from the deepest distinct group value at this depth;
+                // the deepest group keeps its full energy weight.
+                let rank = {
+                    let mut deeper = groups
+                        .iter()
+                        .filter(|other| *other > group)
+                        .collect::<Vec<_>>();
+                    deeper.sort_unstable();
+                    deeper.dedup();
+                    deeper.len()
+                };
+                (energy >> rank.min(8)).max(1)
+            })
+            .collect::<Vec<_>>();
+        let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
+        let mut draw = rand.below(total);
+        for (index, weight) in weights.iter().enumerate() {
+            if draw < *weight {
+                return Ok(index);
+            }
+            draw -= weight;
+        }
+        Err("energy draw exceeded its weight total".into())
     }
 
     /// The per-entry half of the exhaustion rule.
@@ -1018,7 +1232,12 @@ where
         }
         match &self.selector_policy {
             SelectorPolicy::GroupUniform => true,
-            SelectorPolicy::Retire(thresholds) => self.since_retained[id] < thresholds.entry,
+            SelectorPolicy::Retire(thresholds)
+            | SelectorPolicy::Energy(thresholds)
+            | SelectorPolicy::EnergyFrontier(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapest(thresholds) => {
+                self.since_retained[id] < thresholds.entry
+            }
         }
     }
 
@@ -1026,7 +1245,10 @@ where
     /// of a selection cell.
     fn groups_unexhausted(&self, key: K) -> bool {
         match &self.selector_policy {
-            SelectorPolicy::GroupUniform => true,
+            SelectorPolicy::GroupUniform
+            | SelectorPolicy::Energy(_)
+            | SelectorPolicy::EnergyFrontier(_)
+            | SelectorPolicy::EnergyFrontierCheapest(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
                     .groups
@@ -1065,7 +1287,33 @@ where
                 entered_window = entered_window.saturating_add(1);
             }
         }
-        let id = window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)];
+        let id = if matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyFrontierCheapest(_)
+        ) {
+            let mut ranked = window
+                .iter()
+                .map(|id| (self.time_in_group[*id], *id))
+                .collect::<Vec<_>>();
+            ranked.sort_unstable();
+            let weights = (0..ranked.len())
+                .map(|rank| 256_usize >> (rank / CHEAPEST_RANK_SCALE).min(8))
+                .collect::<Vec<_>>();
+            let total =
+                NonZeroUsize::new(weights.iter().sum()).ok_or("cheapest weights sum to zero")?;
+            let mut draw = rand.below(total);
+            let mut chosen = ranked[0].1;
+            for (weight, (_, id)) in weights.iter().zip(&ranked) {
+                if draw < *weight {
+                    chosen = *id;
+                    break;
+                }
+                draw -= weight;
+            }
+            chosen
+        } else {
+            window[rand.below(NonZeroUsize::new(window.len()).ok_or("empty tie window")?)]
+        };
         Ok((
             id,
             ConcentrationDraw {
@@ -1073,6 +1321,20 @@ where
                 entered_window,
             },
         ))
+    }
+
+    /// Whether entry `id` was the first to occupy its retention slot.
+    #[must_use]
+    pub fn opened_new_slot(&self, id: usize) -> bool {
+        self.opened_slot.get(id).copied().unwrap_or(false)
+    }
+
+    /// Whether entry `id` was the first to occupy its selection cell. Cell
+    /// novelty pools out the fingerprint bits, so per-pose noise variants do
+    /// not count as discovery.
+    #[must_use]
+    pub fn opened_new_cell(&self, id: usize) -> bool {
+        self.opened_cell.get(id).copied().unwrap_or(false)
     }
 
     /// Account one recorded selection of `id`.
@@ -1092,7 +1354,13 @@ where
         }
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
-        if matches!(self.selector_policy, SelectorPolicy::Retire(_)) {
+        if matches!(
+            self.selector_policy,
+            SelectorPolicy::Retire(_)
+                | SelectorPolicy::Energy(_)
+                | SelectorPolicy::EnergyFrontier(_)
+                | SelectorPolicy::EnergyFrontierCheapest(_)
+        ) {
             let key = self.entries[id].report.key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 let counter = map.entry(key.group(offset + 1)).or_insert(0);
@@ -1135,13 +1403,29 @@ where
     }
 
     /// Account one selection's discovery outcome.
-    pub fn record_selection_outcome(&mut self, id: usize, retained_descendant: bool) {
+    pub fn record_selection_outcome(
+        &mut self,
+        id: usize,
+        retained_descendant: bool,
+        new_slot_descendant: bool,
+        new_cell_descendant: bool,
+    ) {
         if !retained_descendant {
             return;
         }
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
-        if matches!(self.selector_policy, SelectorPolicy::Retire(_)) {
+        // Retire clears its pooled counters on any retained child so
+        // historical streams replay unchanged; energy clears only when a
+        // child opened a new retention slot, because admission that keeps
+        // most results makes plain retention too common to signal anything.
+        let clears_groups = match self.selector_policy {
+            SelectorPolicy::Retire(_) => true,
+            SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
+            SelectorPolicy::EnergyFrontierCheapest(_) => new_cell_descendant,
+            SelectorPolicy::GroupUniform => false,
+        };
+        if clears_groups {
             let key = self.entries[id].report.key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 map.insert(key.group(offset + 1), 0);
@@ -1157,7 +1441,11 @@ where
     #[must_use]
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
-        if let SelectorPolicy::Retire(thresholds) = &self.selector_policy {
+        if let SelectorPolicy::Retire(thresholds)
+        | SelectorPolicy::Energy(thresholds)
+        | SelectorPolicy::EnergyFrontier(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapest(thresholds) = &self.selector_policy
+        {
             let entries_over_threshold = u64::try_from(
                 self.since_retained
                     .iter()
@@ -1298,6 +1586,52 @@ mod tests {
         archive
     }
 
+    /// A splice tail is the cell-mate's stored path to its deepest
+    /// descendant, capped, and absent when no cell-mate reaches deeper than
+    /// the parent.
+    #[test]
+    fn a_splice_tail_extends_past_the_parent_from_a_cell_mate() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, FlatKey<3>, (), ()>,
+                      parent: Option<usize>,
+                      components: [u16; 4],
+                      actions: Vec<u8>| {
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        input: Input { actions },
+                        key: FlatKey(components),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry")
+        };
+        let root = insert(&mut archive, None, [1, 2, 3, 4], vec![0]);
+        let middle = insert(&mut archive, Some(root), [1, 2, 3, 6], vec![0, 1]);
+        let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
+        let arrival = insert(&mut archive, None, [0, 2, 3, 4], vec![9]);
+        assert_eq!(
+            archive.splice_tail(arrival, 8),
+            None,
+            "no tail before the selector index exists"
+        );
+        let mut rand = RomuDuoJrRand::with_seed(7);
+        archive
+            .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+            .expect("build the selector index");
+        assert_eq!(archive.splice_tail(arrival, 8), Some(vec![1, 2]));
+        assert_eq!(archive.splice_tail(arrival, 1), Some(vec![1]));
+        assert_eq!(
+            archive.splice_tail(leaf, 8),
+            None,
+            "the deepest entry has no deeper cell-mate"
+        );
+    }
+
     /// Selection must run on every geometry the key contract allows, down to
     /// a single group depth where the walk class, the selection cell, and the
     /// retention slot are all depth 0.
@@ -1415,7 +1749,7 @@ mod tests {
                 .entry((key.progress, key.player_y_bucket))
                 .or_default() += 1;
             archive.record_selection(id, &draw);
-            archive.record_selection_outcome(id, true);
+            archive.record_selection_outcome(id, true, true, true);
         }
         assert!(cell_draws > 600);
         assert_eq!(per_cell.len(), 3, "cells drawn: {per_cell:?}");
@@ -1470,7 +1804,7 @@ mod tests {
         // the retired band; a retained descendant of entry 1 clears the
         // pooled counter and the band returns to selection.
         archive.record_selection(1, &barren_draw);
-        archive.record_selection_outcome(1, true);
+        archive.record_selection_outcome(1, true, true, true);
         let mut upper_band_seen = false;
         for _ in 0..64 {
             let (id, draw) = archive
@@ -1487,6 +1821,147 @@ mod tests {
         let accounting = archive.selector_report();
         let retirement = accounting.retirement.expect("retirement accounting");
         assert_eq!(retirement.groups_over_threshold[1], 0);
+    }
+
+    #[test]
+    fn an_energy_barren_band_fades_but_keeps_receiving_draws() {
+        // Same shape as the retirement test: two cells in one band plus one
+        // band below. Under the energy selector a deeply barren band must
+        // keep a small draw share instead of being skipped outright.
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
+        let mut archive = selector_archive(&keys);
+        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024, 1, 1_024],
+        });
+        let barren_draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        // Nine barren selections put the upper band at nine halvings' worth
+        // of barrenness, clamped to the 1/256 floor.
+        for _ in 0..9 {
+            archive.record_selection(0, &barren_draw);
+        }
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e32);
+        let mut upper = 0_u64;
+        let mut lower = 0_u64;
+        let mut walks = 0_u64;
+        for _ in 0..4_096 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("energy selection");
+            if draw.path != SelectorPath::GroupWalk {
+                continue;
+            }
+            assert_eq!(draw.classes_skipped, 0);
+            assert!(!draw.counter_reset);
+            walks += 1;
+            if id == 2 {
+                lower += 1;
+            } else {
+                upper += 1;
+            }
+        }
+        assert!(upper > 0, "a barren band must keep a floor share");
+        assert!(
+            upper * 20 < walks,
+            "a barren band at the floor must fade: {upper}/{walks}"
+        );
+        assert!(lower * 2 > walks, "the fresh band must dominate");
+    }
+
+    #[test]
+    fn the_cheapest_concentration_prefers_low_cost_cell_members() {
+        // Forty entries in one cell whose costs rise with their ids: the
+        // cost-weighted draw must concentrate on the cheapest ranks while
+        // the plain frontier window stays uniform.
+        let mut archive = TestArchive::new(|_| 1);
+        for index in 0..40_u8 {
+            let input = Input {
+                actions: vec![0; usize::from(index) + 1],
+            };
+            let key = SmbArchiveKey {
+                world: 1,
+                level: 0,
+                progress: 144,
+                player_y_bucket: 0,
+                player_engine_state: 0,
+                state_fingerprint: index,
+                room_x_bucket: 0,
+                room: [0; 3],
+            };
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input,
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert cell entry");
+        }
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024, 1_024, 1_024],
+        });
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e34);
+        let cell = (0..40_usize).collect::<Vec<_>>();
+        let mut cheapest_block = 0_u64;
+        for _ in 0..4_096 {
+            let (id, _) = archive
+                .draw_from_cell(&mut rand, cell.clone())
+                .expect("cheapest cell draw");
+            if id < 16 {
+                cheapest_block += 1;
+            }
+        }
+        // Sixteen full-weight ranks against halved and quartered tails must
+        // take well over the uniform 40% share.
+        assert!(
+            cheapest_block > 2_400,
+            "cheapest ranks drew {cheapest_block}/4096"
+        );
+    }
+
+    #[test]
+    fn the_frontier_selector_weights_the_deepest_band_over_a_fresh_shallow_one() {
+        // Two bands with zero barrenness everywhere: energy alone would draw
+        // them evenly, so the frontier factor must be what separates them.
+        let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 145), (1, 0, 124)];
+        let mut archive = selector_archive(&keys);
+        archive.selector_policy = SelectorPolicy::EnergyFrontier(RetireThresholds {
+            entry: 1_024,
+            groups: vec![1_024, 1_024, 1_024],
+        });
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e33);
+        let mut deep = 0_u64;
+        let mut shallow = 0_u64;
+        let mut walks = 0_u64;
+        for _ in 0..4_096 {
+            let (id, draw) = archive
+                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .expect("frontier selection");
+            if draw.path != SelectorPath::GroupWalk {
+                continue;
+            }
+            walks += 1;
+            if id == 2 {
+                shallow += 1;
+            } else {
+                deep += 1;
+            }
+        }
+        assert!(shallow > 0, "the shallow band must keep a floor share");
+        assert!(
+            deep > shallow * 3 / 2,
+            "the deepest band must dominate: {deep}/{shallow} of {walks}"
+        );
     }
 
     #[test]

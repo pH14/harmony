@@ -9,7 +9,7 @@
 
 use std::error::Error;
 
-use crate::target::{ExitKind, SnapshotRestoreCounters};
+use crate::target::ExitKind;
 use machine::{
     Machine, MachineError, SnapId, StopConditions, nes,
     nes::{NesMachine, RenderMode},
@@ -74,50 +74,11 @@ impl SmbSnapshot {
     }
 }
 
-/// Snapshot evidence the SMB archive needs to complete a candidate key.
-pub trait SmbSnapshotEvidence {
-    /// Complete WRAM captured at the snapshot boundary.
-    fn snapshot_wram(&self) -> &[u8];
-}
-
-impl SmbSnapshotEvidence for SmbSnapshot {
-    fn snapshot_wram(&self) -> &[u8] {
-        self.wram()
-    }
-}
-
-/// Target operations used by the SMB campaign independently of its machine
-/// transport.
-pub trait SmbCampaignTarget:
-    Target<Action = ButtonChord, Observations = SmbObservations> + Send
-{
-    /// Current complete WRAM.
-    fn campaign_wram(&self) -> [u8; WRAM_SIZE];
-    /// Events emitted by the most recently completed chord.
-    fn campaign_action_observations(&self) -> &[SmbObservations];
-    /// Whether the current state is dead.
-    fn campaign_is_dead(&self) -> bool;
-    /// Whether the current state is a victory.
-    fn campaign_is_victory(&self) -> bool;
-    /// Deterministic emulated-frame work counter.
-    fn campaign_frames_clocked(&self) -> u64;
-    /// Probe one fixed mask for a bounded horizon.
-    fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool;
-    /// Genesis and continuation restore counts for this target lifetime.
-    fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
-        SnapshotRestoreCounters::default()
-    }
-    /// Whether an independent cross-build comparison has diverged.
-    fn campaign_diverged(&self) -> bool {
-        false
-    }
-}
-
 /// Fixed boot walk from power-on to gameplay genesis, encoded as staged
 /// controller inputs: the title screen settles, Start is pressed once, and
 /// the pre-level sequence plays out. Target setup rather than model-visible
 /// search guidance.
-pub(crate) const BOOT_WALK: [ButtonChord; 4] = [
+const BOOT_WALK: [ButtonChord; 4] = [
     ButtonChord {
         buttons: 0,
         hold_frames: 120,
@@ -411,32 +372,6 @@ impl SmbTarget {
     }
 }
 
-impl SmbCampaignTarget for SmbTarget {
-    fn campaign_wram(&self) -> [u8; WRAM_SIZE] {
-        self.wram()
-    }
-
-    fn campaign_action_observations(&self) -> &[SmbObservations] {
-        self.last_action_observations()
-    }
-
-    fn campaign_is_dead(&self) -> bool {
-        self.is_dead()
-    }
-
-    fn campaign_is_victory(&self) -> bool {
-        self.is_victory()
-    }
-
-    fn campaign_frames_clocked(&self) -> u64 {
-        self.frames_clocked()
-    }
-
-    fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-        self.survives_probe(buttons, frames)
-    }
-}
-
 fn wram_array(machine: &NesMachine) -> Result<[u8; WRAM_SIZE], MachineError> {
     let bytes = machine.read(0, u32::try_from(WRAM_SIZE).unwrap_or(0))?;
     let mut wram = [0_u8; WRAM_SIZE];
@@ -618,7 +553,7 @@ const PLAYER_BELOW_PLAY_AREA_PAGE: u8 = 2;
 
 /// Whether Mario is dead: the kill state, or a fall below the play area,
 /// which the engine state does not report before the life counter drops.
-pub(crate) fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
+fn smb_player_is_dead(wram: &[u8; WRAM_SIZE]) -> bool {
     wram[PLAYER_ENGINE_STATE_OFFSET] == PLAYER_KILLED_STATE
         || wram[PLAYER_VERTICAL_PAGE_OFFSET] >= PLAYER_BELOW_PLAY_AREA_PAGE
 }
@@ -640,7 +575,7 @@ pub fn smb_is_victory(wram: &[u8; WRAM_SIZE]) -> bool {
         && wram[WORLD_NUMBER_OFFSET] == FINAL_WORLD_NUMBER
 }
 
-pub(crate) fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
+fn smb_fingerprint_from_wram(wram: &[u8; WRAM_SIZE]) -> u64 {
     let screen_page = u64::from(wram[SCREEN_PAGE_OFFSET]);
     let screen_x_bucket = u64::from(wram[SCREEN_X_OFFSET] / 16);
     let player_y_bucket = u64::from(wram[PLAYER_Y_OFFSET] / 32);

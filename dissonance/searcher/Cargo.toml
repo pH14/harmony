@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
-
 [package]
 name = "searcher"
 version = "0.1.0"
@@ -8,9 +6,8 @@ license.workspace = true
 
 [dependencies]
 machine = { path = "../machine", version = "=0.1.0" }
-hypercall-proto = { path = "../../consonance/hypercall-proto", version = "=0.1.0", features = ["host"] }
 # Pinned for reproducibility; upgrade deliberately.
-postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }
+postcard = { version = "=1.1.3", features = ["alloc"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"

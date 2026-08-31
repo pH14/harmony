@@ -4,41 +4,7 @@
 
 use std::{error::Error, fmt::Debug};
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-
-/// Deterministic snapshot-restore accounting exposed by machine-backed
-/// targets. Genesis and continuation restores stay separate because only the
-/// latter proves archived branch points were causally load-bearing.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SnapshotRestoreCounters {
-    /// Restores of the clean gameplay genesis.
-    pub genesis: u64,
-    /// Restores of continuation snapshots.
-    pub continuation: u64,
-}
-
-impl SnapshotRestoreCounters {
-    /// Whether both counters are zero.
-    #[must_use]
-    pub fn is_zero(&self) -> bool {
-        self.genesis == 0 && self.continuation == 0
-    }
-
-    /// Saturating per-job delta from an earlier reading.
-    #[must_use]
-    pub fn delta_since(self, earlier: Self) -> Self {
-        Self {
-            genesis: self.genesis.saturating_sub(earlier.genesis),
-            continuation: self.continuation.saturating_sub(earlier.continuation),
-        }
-    }
-
-    /// Saturating accumulation.
-    pub fn merge(&mut self, other: Self) {
-        self.genesis = self.genesis.saturating_add(other.genesis);
-        self.continuation = self.continuation.saturating_add(other.continuation);
-    }
-}
+use serde::{Serialize, de::DeserializeOwned};
 
 /// Outcome class of the actions applied since the last reset or restore.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

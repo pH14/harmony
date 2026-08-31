@@ -20,7 +20,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::target::{ExitKind, SnapshotRestoreCounters};
+use crate::target::ExitKind;
 
 use crate::{
     search::archive::RetentionPolicy,
@@ -29,21 +29,20 @@ use crate::{
         CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, Game,
         GamePolicies, SnapshotCheckpoint, replay_campaign_checkpointed, run_campaign_checkpointed,
     },
-    search::draw::{DrawMixture, SuffixShape, draw_suffix},
+    search::draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     search::empirical_steps::{
         EmpiricalStepCheckpoint, EmpiricalStepHashRule, EmpiricalStepParameters,
         EmpiricalStepTableRef, EmpiricalStepTables,
     },
     smb::archive::{
         DOWN_TEN_BUTTON_MASKS, KEY_POLICY_IDENTIFIER, REPLACEMENT_IDENTIFIER, SmbArchiveKey,
-        SmbArchiveReport, VIABILITY_PROBE_FRAMES, VIABILITY_PROBE_MASKS, archive_key, chord_time,
+        SmbArchiveReport, admission_is_viable, archive_key, chord_time, merge_action_milestones,
         merge_milestones, merge_progress_watermark, milestone_key, stamp_arrival_room,
         update_first_inputs,
     },
     smb::target::{
-        ButtonChord, SmbCampaignTarget, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes,
-        SmbMilestones, SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbSnapshotEvidence,
-        SmbTarget,
+        ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
+        SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
     },
     target::Target,
 };
@@ -61,10 +60,6 @@ pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-campaign-stream-v1";
 
 /// Format tag of the snapshot checkpoint file.
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-snapshot-checkpoint-v1";
-
-/// Format tag for checkpoints whose snapshots carry durable guest lineages
-/// and session-local control handles.
-pub const REMOTE_SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-remote-snapshot-checkpoint-v3";
 
 /// Identifier recorded for the hold distribution, see
 /// [`crate::smb::archive::sample_chord_from_masks`].
@@ -97,92 +92,16 @@ pub fn recorded_policy<'a>(
         .ok_or_else(|| format!("campaign stream is missing the {field} policy").into())
 }
 
-/// Construction seam for an SMB campaign target.
-pub trait SmbTargetBackend: Sync {
-    /// Target a worker drives.
-    type Target: SmbCampaignTarget;
-
-    /// Build one target over the attested ROM image.
-    fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String>;
-    /// Backend-specific snapshot checkpoint format.
-    fn checkpoint_format(&self) -> &'static str;
-}
-
-/// In-process TetaNES backend retained as the default campaign transport.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct InProcessSmbBackend;
-
-impl SmbTargetBackend for InProcessSmbBackend {
-    type Target = SmbTarget;
-
-    fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
-        SmbTarget::from_smb_rom_bytes_headless(rom).map_err(|error| error.to_string())
-    }
-
-    fn checkpoint_format(&self) -> &'static str {
-        SNAPSHOT_CHECKPOINT_FORMAT
-    }
-}
-
-/// One Unix control socket supplying the guest-backed campaign target.
-#[cfg(unix)]
-#[derive(Clone, Debug)]
-pub struct ControlSocketSmbBackend {
-    socket: std::path::PathBuf,
-}
-
-#[cfg(unix)]
-impl ControlSocketSmbBackend {
-    /// Bind target construction to `socket`.
-    #[must_use]
-    pub fn new(socket: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            socket: socket.into(),
-        }
-    }
-}
-
-#[cfg(unix)]
-impl SmbTargetBackend for ControlSocketSmbBackend {
-    type Target = crate::smb::remote::DifferentialSmbTarget<
-        machine::control::SocketMachine<std::os::unix::net::UnixStream>,
-    >;
-
-    fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
-        crate::smb::remote::DifferentialSmbTarget::connect(&self.socket, rom)
-            .map_err(|error| error.to_string())
-    }
-
-    fn checkpoint_format(&self) -> &'static str {
-        REMOTE_SNAPSHOT_CHECKPOINT_FORMAT
-    }
-}
-
-/// The SMB campaign game context: the ROM identity and target backend.
-pub struct SmbGame<B = InProcessSmbBackend> {
+/// The SMB campaign game context: the ROM and everything decoded from it.
+pub struct SmbGame {
     rom: Vec<u8>,
-    backend: B,
 }
 
-impl SmbGame<InProcessSmbBackend> {
+impl SmbGame {
     /// Build the context over one ROM image.
     #[must_use]
     pub fn new(rom: &[u8]) -> Self {
-        Self {
-            rom: rom.to_vec(),
-            backend: InProcessSmbBackend,
-        }
-    }
-}
-
-impl<B> SmbGame<B> {
-    /// Build a context over one ROM image and an explicit target backend.
-    #[must_use]
-    pub fn with_backend(rom: &[u8], backend: B) -> Self {
-        Self {
-            rom: rom.to_vec(),
-            backend,
-        }
+        Self { rom: rom.to_vec() }
     }
 }
 
@@ -221,20 +140,6 @@ pub type SmbCampaignCheckpoint = CampaignCheckpoint<SmbSnapshot>;
 pub type SmbSnapshotCheckpoint = SnapshotCheckpoint<SmbSnapshot>;
 /// One SMB archive entry's snapshot.
 pub type SmbSnapshotCheckpointEntry = crate::search::campaign::SnapshotCheckpointEntry<SmbSnapshot>;
-/// The Unix control-socket SMB game instantiation.
-#[cfg(unix)]
-pub type RemoteSmbGame = SmbGame<ControlSocketSmbBackend>;
-/// The Unix control-socket origin instantiation.
-#[cfg(unix)]
-pub type RemoteSmbCampaignOrigin = CampaignOrigin<RemoteSmbGame>;
-/// The Unix control-socket snapshot checkpoint instantiation.
-#[cfg(unix)]
-pub type RemoteSmbSnapshotCheckpoint =
-    SnapshotCheckpoint<crate::smb::remote::DifferentialSmbSnapshot>;
-/// The Unix control-socket resume checkpoint instantiation.
-#[cfg(unix)]
-pub type RemoteSmbCampaignCheckpoint =
-    CampaignCheckpoint<crate::smb::remote::DifferentialSmbSnapshot>;
 /// The SMB stream header instantiation.
 pub type SmbCampaignStreamHeader = CampaignStreamHeader<SmbChordTableHeader>;
 /// The SMB campaign report instantiation.
@@ -242,10 +147,8 @@ pub type SmbCampaignModeReport = CampaignModeReport<ButtonChord, SmbArchiveRepor
 /// The SMB sidecar progress record instantiation.
 pub type SmbCampaignProgressRecord = CampaignProgressRecord<SmbArchiveKey>;
 /// One executed SMB action inside a job result.
-#[cfg(test)]
 pub(crate) type SmbCampaignActionResult = CampaignActionResult<SmbGame>;
 /// Complete result of one executed SMB job.
-#[cfg(test)]
 pub(crate) type SmbCampaignJobResult = CampaignJobResult<SmbGame>;
 
 /// Fixed configuration for one live campaign run.
@@ -272,6 +175,10 @@ pub struct SmbCampaignConfig {
     pub retention: RetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
     pub selector: crate::search::archive::SelectorPolicy,
+    /// Suffix shape for this run, recorded in the header and report.
+    pub suffix: SuffixShape,
+    /// Draw mixture for this run, recorded in the header and report.
+    pub mixture: DrawMixture,
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<std::path::PathBuf>,
@@ -281,12 +188,10 @@ pub struct SmbCampaignConfig {
 }
 
 impl SmbCampaignConfig {
-    fn generic<G>(&self) -> GenericCampaignConfig<G>
-    where
-        G: Game<Run = SmbCampaignRun>,
-    {
+    fn generic(&self) -> GenericCampaignConfig<SmbGame> {
         GenericCampaignConfig {
-            suffix: SuffixShape::default(),
+            suffix: self.suffix,
+            mixture: self.mixture,
             campaign_seed: self.campaign_seed,
             workers: self.workers,
             execution_budget: self.execution_budget,
@@ -389,17 +294,17 @@ pub fn select_frontier_resume_input(source: &SmbArchiveReport) -> Result<SmbInpu
 pub fn derive_suffix(
     mutation_seed: u64,
     shape: SuffixShape,
+    mixture: DrawMixture,
+    mixture_weight: u8,
     chord_policy: SmbCampaignChordPolicy,
     vocabulary: SmbButtonVocabulary,
     chord_tables: Option<EmpiricalStepTableRef<'_, ButtonChord>>,
 ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-    let mixture = match chord_policy {
-        SmbCampaignChordPolicy::Uniform => DrawMixture::AlphabetOnly,
-        SmbCampaignChordPolicy::DerivedHalf(_) => DrawMixture::BiasedHalf,
-    };
+    let SmbCampaignChordPolicy::DerivedHalf(_) = chord_policy;
     draw_suffix(
         shape,
         mixture,
+        mixture_weight,
         mutation_seed,
         |rand| {
             let tables = chord_tables.ok_or("derived chord policy has no folded tables")?;
@@ -453,6 +358,24 @@ pub struct SmbChordTableDerivation {
     /// recordings keep verifying under the rule they were made with.
     #[serde(default)]
     pub hash_rule: EmpiricalStepHashRule,
+    /// What part of each retained input the fold consumes, bound to the
+    /// policy identifier for the same reason.
+    #[serde(default)]
+    pub fold: ChordFoldSource,
+}
+
+/// What part of one retained input a chord fold consumes.
+///
+/// Folding the full input duplicates the whole prefix on every keep, so the
+/// table and its fold cost grow with lineage depth; folding only the newly
+/// drawn suffix keeps both proportional to the new presses.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ChordFoldSource {
+    /// The complete clean-reset input.
+    #[default]
+    FullInput,
+    /// Only the actions past the retained entry's parent input.
+    SuffixOnly,
 }
 
 /// Header provenance for a derived chord-table policy.
@@ -467,26 +390,51 @@ pub struct SmbChordTableHeader {
 }
 
 /// Chord policy a campaign draws chords from, recorded in the stream header.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+///
+/// The feedback tables are the only draw source; retired policies survive
+/// only as stream identifiers for recordings made before their removal, and
+/// those streams no longer replay.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SmbCampaignChordPolicy {
-    /// Every chord drawn uniformly from the vocabulary.
-    #[default]
-    Uniform,
     /// Derive recent and all-history tables from the recorded source, mixing
     /// their registered empirical weights into the biased half of each draw.
     DerivedHalf(SmbChordTableDerivation),
+}
+
+impl Default for SmbCampaignChordPolicy {
+    /// The promoted level-neutral derivation with the registered
+    /// head-to-head fold parameters.
+    fn default() -> Self {
+        Self::DerivedHalf(SmbChordTableDerivation {
+            source_filter: SmbChordSource::All(SmbChordSourceAll {}),
+            parameters: EmpiricalStepParameters {
+                prefix_steps: 0,
+                recent_successes: 128,
+                recent_weight: 3,
+                all_history_weight: 1,
+                update_every_records: 64,
+                hash_every_records: 1024,
+            },
+            hash_rule: EmpiricalStepHashRule::IncrementalHistory,
+            fold: ChordFoldSource::SuffixOnly,
+        })
+    }
 }
 
 /// Header identifier for a chord policy.
 #[must_use]
 pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
     match policy {
-        SmbCampaignChordPolicy::Uniform => "chord_uniform".to_owned(),
         SmbCampaignChordPolicy::DerivedHalf(derivation) => {
             let parameters = derivation.parameters;
-            let prefix = match derivation.hash_rule {
-                EmpiricalStepHashRule::FullJson => "chord_draw_recorded_50",
-                EmpiricalStepHashRule::IncrementalHistory => "chord_draw_recorded_51",
+            let prefix = match (derivation.fold, derivation.hash_rule) {
+                (ChordFoldSource::SuffixOnly, _) => "chord_draw_recorded_52",
+                (ChordFoldSource::FullInput, EmpiricalStepHashRule::FullJson) => {
+                    "chord_draw_recorded_50"
+                }
+                (ChordFoldSource::FullInput, EmpiricalStepHashRule::IncrementalHistory) => {
+                    "chord_draw_recorded_51"
+                }
             };
             let source = match derivation.source_filter {
                 SmbChordSource::All(_) => "all".to_owned(),
@@ -518,17 +466,32 @@ pub fn chord_policy_identifier(policy: SmbCampaignChordPolicy) -> String {
 pub fn chord_policy_from_identifier(
     identifier: &str,
 ) -> Result<SmbCampaignChordPolicy, Box<dyn Error>> {
-    if identifier == "chord_uniform" {
-        return Ok(SmbCampaignChordPolicy::Uniform);
-    }
-    let (fields, hash_rule) = if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_50:")
-    {
-        (Some(rest), EmpiricalStepHashRule::FullJson)
-    } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_51:") {
-        (Some(rest), EmpiricalStepHashRule::IncrementalHistory)
-    } else {
-        (None, EmpiricalStepHashRule::FullJson)
-    };
+    let (fields, hash_rule, fold) =
+        if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_50:") {
+            (
+                Some(rest),
+                EmpiricalStepHashRule::FullJson,
+                ChordFoldSource::FullInput,
+            )
+        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_51:") {
+            (
+                Some(rest),
+                EmpiricalStepHashRule::IncrementalHistory,
+                ChordFoldSource::FullInput,
+            )
+        } else if let Some(rest) = identifier.strip_prefix("chord_draw_recorded_52:") {
+            (
+                Some(rest),
+                EmpiricalStepHashRule::IncrementalHistory,
+                ChordFoldSource::SuffixOnly,
+            )
+        } else {
+            (
+                None,
+                EmpiricalStepHashRule::FullJson,
+                ChordFoldSource::FullInput,
+            )
+        };
     if let Some(fields) = fields {
         let mut fields = fields.split(',').peekable();
         let source_filter = if fields.peek() == Some(&"all") {
@@ -558,6 +521,7 @@ pub fn chord_policy_from_identifier(
                 source_filter,
                 parameters,
                 hash_rule,
+                fold,
             },
         ));
     }
@@ -588,7 +552,6 @@ pub(crate) struct SmbJobPolicies {
 /// Execute one job: restore the parent snapshot and apply the suffix exactly as
 /// the campaign suffix loop does, collecting per-boundary candidates
 /// with worker-side probe verdicts.
-#[cfg(test)]
 pub(crate) fn execute_job(
     target: &mut SmbTarget,
     parent_snapshot: &SmbSnapshot,
@@ -597,54 +560,20 @@ pub(crate) fn execute_job(
     suffix: &[ButtonChord],
     policies: SmbJobPolicies,
 ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
-    execute_backend_job::<SmbGame>(
-        target,
-        parent_snapshot,
-        parent_actions,
-        parent_milestones,
-        suffix,
-        policies,
-    )
-}
-
-fn execute_backend_job<G>(
-    target: &mut G::Target,
-    parent_snapshot: &G::Snapshot,
-    parent_actions: usize,
-    parent_milestones: SmbMilestones,
-    suffix: &[ButtonChord],
-    policies: SmbJobPolicies,
-) -> Result<CampaignJobResult<G>, Box<dyn Error>>
-where
-    G: Game<
-            Action = ButtonChord,
-            Key = SmbArchiveKey,
-            Milestones = SmbMilestones,
-            Observations = SmbObservations,
-        >,
-    G::Target: SmbCampaignTarget<Snapshot = G::Snapshot>,
-    G::Snapshot: SmbSnapshotEvidence + Send + Sync,
-{
     target.restore(parent_snapshot)?;
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
     for action in suffix {
-        if target.campaign_is_dead()
-            || target.campaign_is_victory()
-            || length >= policies.max_actions
-        {
+        if target.is_dead() || target.is_victory() || length >= policies.max_actions {
             break;
         }
         length = length.saturating_add(1);
         target.apply(action);
-        if target.campaign_diverged() {
-            return Err("guest and in-process TetaNES diverged at a chord boundary".into());
-        }
-        merge_observation_milestones(&mut milestones, target.campaign_action_observations())?;
-        let observations = target.campaign_action_observations().to_vec();
-        let dead = target.campaign_is_dead();
-        let victory = target.campaign_is_victory();
+        merge_action_milestones(&mut milestones, target)?;
+        let observations = target.last_action_observations().to_vec();
+        let dead = target.is_dead();
+        let victory = target.is_victory();
         let failed = target.exit_kind() != ExitKind::Ok;
         // A won game is terminal: nothing past it is searched, so no
         // candidate is offered.
@@ -654,11 +583,9 @@ where
             let snapshot = target
                 .snapshot()
                 .ok_or("failed to snapshot campaign suffix")?;
-            let key = archive_key(&target.campaign_wram());
+            let key = archive_key(&target.wram());
             let viable = match policies.retention {
-                RetentionPolicy::ProbeAtAdmission45 => {
-                    admission_is_viable_backend(target, &snapshot)?
-                }
+                RetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
                 RetentionPolicy::AdmitAlive => true,
             };
             Some(CampaignCandidate {
@@ -683,44 +610,6 @@ where
     Ok(CampaignJobResult { actions })
 }
 
-fn merge_observation_milestones(
-    milestones: &mut SmbMilestones,
-    observations: &[SmbObservations],
-) -> Result<(), Box<dyn Error>> {
-    for observation in observations {
-        let wram: &[u8; 2_048] = observation
-            .wram
-            .as_slice()
-            .try_into()
-            .map_err(|_| "SMB observation WRAM is not exactly 2 KiB")?;
-        merge_milestones(
-            milestones,
-            crate::smb::target::smb_milestones_from_wram(wram),
-        );
-    }
-    Ok(())
-}
-
-fn admission_is_viable_backend<T>(
-    target: &mut T,
-    snapshot: &T::Snapshot,
-) -> Result<bool, Box<dyn Error>>
-where
-    T: SmbCampaignTarget,
-    T::Snapshot: SmbSnapshotEvidence + Send + Sync,
-{
-    let mut viable = false;
-    for mask in VIABILITY_PROBE_MASKS {
-        target.restore(snapshot)?;
-        if target.campaign_survives_probe(mask, VIABILITY_PROBE_FRAMES) {
-            viable = true;
-            break;
-        }
-    }
-    target.restore(snapshot)?;
-    Ok(viable)
-}
-
 type InitialChordTables = (
     Option<EmpiricalStepTables<ButtonChord>>,
     Option<SmbChordTableHeader>,
@@ -730,17 +619,33 @@ fn initial_chord_tables(
     policy: SmbCampaignChordPolicy,
     origin: Option<(&str, &SmbArchiveReport)>,
 ) -> Result<InitialChordTables, Box<dyn Error>> {
-    let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy else {
-        return Ok((None, None));
-    };
+    let SmbCampaignChordPolicy::DerivedHalf(derivation) = policy;
     let mut tables =
         EmpiricalStepTables::with_hash_rule(derivation.parameters, derivation.hash_rule)?;
     let source_sha256 = match origin {
         None => format!("{:x}", Sha256::digest([])),
         Some((file_sha256, report)) => {
+            let parent_len: BTreeMap<u64, usize> = match derivation.fold {
+                ChordFoldSource::FullInput => BTreeMap::new(),
+                ChordFoldSource::SuffixOnly => report
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.id, entry.input.actions.len()))
+                    .collect(),
+            };
             for entry in &report.entries {
                 if source_filter_matches(derivation.source_filter, entry) {
-                    tables.fold_retained(&entry.input.actions)?;
+                    let folded = match derivation.fold {
+                        ChordFoldSource::FullInput => entry.input.actions.as_slice(),
+                        ChordFoldSource::SuffixOnly => {
+                            let prefix = entry
+                                .parent_id
+                                .and_then(|parent| parent_len.get(&parent).copied())
+                                .unwrap_or(0);
+                            entry.input.actions.get(prefix..).unwrap_or(&[])
+                        }
+                    };
+                    tables.fold_retained(folded)?;
                 }
             }
             file_sha256.to_owned()
@@ -794,12 +699,7 @@ fn recorded_chord_tables<'a>(
     versions: &'a BTreeMap<u64, SmbChordTableVersion>,
     tables: Option<&'a EmpiricalStepTables<ButtonChord>>,
 ) -> Result<Option<EmpiricalStepTableRef<'a, ButtonChord>>, Box<dyn Error>> {
-    let SmbCampaignChordPolicy::DerivedHalf(_) = policy else {
-        if before.is_some() {
-            return Err("non-derived chord draw carries a table version".into());
-        }
-        return Ok(None);
-    };
+    let SmbCampaignChordPolicy::DerivedHalf(_) = policy;
     let before = before.ok_or("derived chord draw is missing its table version")?;
     let version = versions
         .get(&before.records)
@@ -850,16 +750,12 @@ fn remember_chord_version(
     Ok(())
 }
 
-impl<B> Game for SmbGame<B>
-where
-    B: SmbTargetBackend,
-    <B::Target as Target>::Snapshot: SmbSnapshotEvidence + Send + Sync,
-{
-    type Target = B::Target;
+impl Game for SmbGame {
+    type Target = SmbTarget;
     type Action = ButtonChord;
     type Key = SmbArchiveKey;
     type Milestones = SmbMilestones;
-    type Snapshot = <B::Target as Target>::Snapshot;
+    type Snapshot = SmbSnapshot;
     type Observations = SmbObservations;
     type Evidence = SmbCampaignEvidence;
     type ArchiveReport = SmbArchiveReport;
@@ -872,7 +768,7 @@ where
     }
 
     fn checkpoint_format(&self) -> &'static str {
-        self.backend.checkpoint_format()
+        SNAPSHOT_CHECKPOINT_FORMAT
     }
 
     fn image_sha256(&self) -> String {
@@ -930,75 +826,67 @@ where
         Ok(run)
     }
 
-    fn new_target(&self) -> Result<Self::Target, String> {
-        self.backend.new_target(&self.rom)
+    fn new_target(&self) -> Result<SmbTarget, String> {
+        SmbTarget::from_smb_rom_bytes_headless(&self.rom).map_err(|error| error.to_string())
     }
 
-    fn reset(&self, target: &mut Self::Target) {
+    fn reset(&self, target: &mut SmbTarget) {
         target.reset();
     }
 
     fn restore(
         &self,
-        target: &mut Self::Target,
-        snapshot: &Self::Snapshot,
+        target: &mut SmbTarget,
+        snapshot: &SmbSnapshot,
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &Self::Target) -> u64 {
-        target.campaign_frames_clocked()
-    }
-
-    fn snapshot_restore_counters(&self, target: &Self::Target) -> SnapshotRestoreCounters {
-        target.campaign_restore_counters()
+    fn frames_clocked(&self, target: &SmbTarget) -> u64 {
+        target.frames_clocked()
     }
 
     fn apply_action(
         &self,
-        target: &mut Self::Target,
+        target: &mut SmbTarget,
         action: &ButtonChord,
         milestones: &mut SmbMilestones,
     ) -> Result<(), Box<dyn Error>> {
         target.apply(action);
-        if target.campaign_diverged() {
-            return Err("guest and in-process TetaNES diverged at a chord boundary".into());
-        }
-        merge_observation_milestones(milestones, target.campaign_action_observations())
+        merge_action_milestones(milestones, target)
     }
 
-    fn is_terminal(&self, target: &Self::Target) -> bool {
-        target.campaign_is_dead() || target.exit_kind() != ExitKind::Ok
+    fn is_terminal(&self, target: &SmbTarget) -> bool {
+        target.is_dead() || target.exit_kind() != ExitKind::Ok
     }
 
-    fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
+    fn snapshot(&self, target: &mut SmbTarget) -> Result<SmbSnapshot, Box<dyn Error>> {
         target.snapshot().ok_or_else(|| "failed to snapshot".into())
     }
 
-    fn current_key(&self, target: &Self::Target) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        let wram = target.campaign_wram();
-        stamp_arrival_room(archive_key(&wram), &wram)
+    fn current_key(&self, target: &SmbTarget) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        stamp_arrival_room(archive_key(&target.wram()), &target.wram())
     }
 
     fn complete_candidate_key(
         &self,
         key: SmbArchiveKey,
-        snapshot: &Self::Snapshot,
+        snapshot: &SmbSnapshot,
     ) -> Result<SmbArchiveKey, Box<dyn Error>> {
-        stamp_arrival_room(key, snapshot.snapshot_wram())
+        stamp_arrival_room(key, snapshot.wram())
     }
 
     fn execute_job(
         &self,
-        target: &mut Self::Target,
-        parent_snapshot: &Self::Snapshot,
+        target: &mut SmbTarget,
+        parent_snapshot: &SmbSnapshot,
         parent_actions: usize,
         parent_milestones: SmbMilestones,
         suffix: &[ButtonChord],
         max_actions: usize,
         retention: RetentionPolicy,
-    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
-        execute_backend_job::<Self>(
+    ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
+        execute_job(
             target,
             parent_snapshot,
             parent_actions,
@@ -1038,11 +926,14 @@ where
         run: &SmbCampaignRun,
         state: &SmbDrawState,
         shape: SuffixShape,
+        mixture: MixtureDraw,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         derive_suffix(
             mutation_seed,
             shape,
+            mixture.mixture,
+            mixture.weight,
             run.chord,
             run.vocabulary,
             state.tables.as_ref().map(EmpiricalStepTables::view),
@@ -1054,29 +945,40 @@ where
         run: &SmbCampaignRun,
         state: &SmbDrawState,
         shape: SuffixShape,
+        mixture: MixtureDraw,
         before: Option<&EmpiricalStepCheckpoint>,
         mutation_seed: u64,
     ) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         let tables =
             recorded_chord_tables(run.chord, before, &state.versions, state.tables.as_ref())?;
-        derive_suffix(mutation_seed, shape, run.chord, run.vocabulary, tables)
+        derive_suffix(
+            mutation_seed,
+            shape,
+            mixture.mixture,
+            mixture.weight,
+            run.chord,
+            run.vocabulary,
+            tables,
+        )
     }
 
     fn finish_stream_record(
         &self,
         run: &SmbCampaignRun,
         state: &mut SmbDrawState,
-        retained_inputs: &[&[ButtonChord]],
+        retained: &[(usize, &[ButtonChord])],
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
-        let SmbCampaignChordPolicy::DerivedHalf(_) = run.chord else {
-            return Ok(None);
-        };
+        let SmbCampaignChordPolicy::DerivedHalf(derivation) = run.chord;
         let tables = state
             .tables
             .as_mut()
             .ok_or("derived chord policy has no folded tables")?;
-        for input in retained_inputs {
-            tables.fold_retained(input)?;
+        for (parent_actions, input) in retained {
+            let folded = match derivation.fold {
+                ChordFoldSource::FullInput => input,
+                ChordFoldSource::SuffixOnly => input.get(*parent_actions..).unwrap_or(&[]),
+            };
+            tables.fold_retained(folded)?;
         }
         Ok(tables.finish_record()?)
     }
@@ -1125,7 +1027,7 @@ where
     fn merge_action_evidence(
         &self,
         evidence: &mut SmbCampaignEvidence,
-        action: &CampaignActionResult<Self>,
+        action: &SmbCampaignActionResult,
         sequence: u64,
         input: &SmbInput,
     ) {
@@ -1232,32 +1134,6 @@ pub fn run_smb_campaign_checkpointed(
     run_campaign_checkpointed(&game, &config.generic(), origin, stream, progress)
 }
 
-/// Run one single-worker campaign through a cooperating guest control socket.
-///
-/// The coordinator and all search policies are the same generic implementation
-/// used by [`run_smb_campaign_checkpointed`]. One VMM control session is one
-/// mutable machine, so this entry point rejects more than one worker.
-///
-/// # Errors
-///
-/// Returns an error for a multi-worker configuration, connection/setup
-/// failure, campaign failure, or checkpoint write failure.
-#[cfg(unix)]
-pub fn run_remote_smb_campaign_checkpointed(
-    rom: &[u8],
-    socket: impl Into<std::path::PathBuf>,
-    config: &SmbCampaignConfig,
-    origin: &RemoteSmbCampaignOrigin,
-    stream: &mut dyn Write,
-    progress: Option<&mut dyn Write>,
-) -> Result<(SmbCampaignModeReport, RemoteSmbSnapshotCheckpoint), Box<dyn Error>> {
-    if config.workers != 1 {
-        return Err("one control socket requires exactly one campaign worker".into());
-    }
-    let game = SmbGame::with_backend(rom, ControlSocketSmbBackend::new(socket));
-    run_campaign_checkpointed(&game, &config.generic(), origin, stream, progress)
-}
-
 /// Replay a recorded campaign stream serially and rebuild its report.
 ///
 /// # Errors
@@ -1289,208 +1165,24 @@ pub fn replay_smb_campaign_checkpointed(
     replay_campaign_checkpointed(&game, stream_bytes, origin_report, origin_checkpoint)
 }
 
-/// Replay a recorded control-socket campaign through a fresh guest session.
-///
-/// Persisted remote snapshots carry no raw server handles; restores rebuild
-/// them from gameplay genesis and their recorded chord lineage.
-///
-/// # Errors
-///
-/// Returns an error for connection/setup failure, a malformed stream or
-/// checkpoint, or any replay divergence.
-#[cfg(unix)]
-pub fn replay_remote_smb_campaign_checkpointed(
-    rom: &[u8],
-    socket: impl Into<std::path::PathBuf>,
-    stream_bytes: &[u8],
-    origin_report: Option<&SmbArchiveReport>,
-    origin_checkpoint: Option<&RemoteSmbCampaignCheckpoint>,
-) -> Result<(SmbCampaignModeReport, RemoteSmbSnapshotCheckpoint), Box<dyn Error>> {
-    let game = SmbGame::with_backend(rom, ControlSocketSmbBackend::new(socket));
-    replay_campaign_checkpointed(&game, stream_bytes, origin_report, origin_checkpoint)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
+        DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
         SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbGame,
-        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SmbTargetBackend, SuffixShape,
+        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SuffixShape,
         chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
         execute_job, replay_smb_campaign, run_smb_campaign, run_smb_campaign_with_progress,
     };
-    use crate::search::campaign::{
-        CampaignOrigin, CoordinatorCore, replay_campaign_checkpointed, run_campaign_checkpointed,
-        write_live_checkpoint,
-    };
+    use crate::search::campaign::{CoordinatorCore, write_live_checkpoint};
     use crate::search::empirical_steps::EmpiricalStepHashRule;
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
         smb::archive::{SmbArchiveEntryReport, SmbArchiveKey, SmbArchiveReport},
-        smb::target::{
-            ButtonChord, SmbCampaignTarget, SmbInput, SmbMilestones, SmbObservations, SmbSnapshot,
-            SmbTarget, WRAM_SIZE,
-        },
-        target::{ExitKind, SnapshotRestoreCounters, Target},
+        smb::target::{ButtonChord, SmbInput, SmbMilestones, SmbTarget},
+        target::Target,
     };
-    use sha2::{Digest, Sha256};
-
-    #[derive(Debug)]
-    struct CountingTarget {
-        inner: SmbTarget,
-        restores: SnapshotRestoreCounters,
-        alter_next_action: bool,
-        diverge_after_action: bool,
-        diverged: bool,
-    }
-
-    impl Target for CountingTarget {
-        type Action = ButtonChord;
-        type Observations = SmbObservations;
-        type Snapshot = SmbSnapshot;
-
-        fn reset(&mut self) {
-            self.inner.reset();
-            self.restores.genesis = self.restores.genesis.saturating_add(1);
-        }
-
-        fn apply(&mut self, action: &Self::Action) {
-            if self.alter_next_action {
-                self.alter_next_action = false;
-                let mut altered = *action;
-                altered.buttons ^= 0x01;
-                self.inner.apply(&altered);
-            } else {
-                self.inner.apply(action);
-            }
-            if self.diverge_after_action {
-                self.diverged = true;
-            }
-        }
-
-        fn observe(&self) -> Self::Observations {
-            self.inner.observe()
-        }
-
-        fn fingerprint(&self) -> u64 {
-            self.inner.fingerprint()
-        }
-
-        fn exit_kind(&self) -> ExitKind {
-            self.inner.exit_kind()
-        }
-
-        fn snapshot(&mut self) -> Option<Self::Snapshot> {
-            self.inner.snapshot()
-        }
-
-        fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn std::error::Error>> {
-            self.inner.restore(snapshot)?;
-            self.restores.continuation = self.restores.continuation.saturating_add(1);
-            Ok(())
-        }
-    }
-
-    impl SmbCampaignTarget for CountingTarget {
-        fn campaign_wram(&self) -> [u8; WRAM_SIZE] {
-            self.inner.wram()
-        }
-
-        fn campaign_action_observations(&self) -> &[SmbObservations] {
-            self.inner.last_action_observations()
-        }
-
-        fn campaign_is_dead(&self) -> bool {
-            self.inner.is_dead()
-        }
-
-        fn campaign_is_victory(&self) -> bool {
-            self.inner.is_victory()
-        }
-
-        fn campaign_frames_clocked(&self) -> u64 {
-            self.inner.frames_clocked()
-        }
-
-        fn campaign_survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-            self.inner.survives_probe(buttons, frames)
-        }
-
-        fn campaign_restore_counters(&self) -> SnapshotRestoreCounters {
-            self.restores
-        }
-
-        fn campaign_diverged(&self) -> bool {
-            self.diverged
-        }
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    struct CountingBackend;
-
-    impl SmbTargetBackend for CountingBackend {
-        type Target = CountingTarget;
-
-        fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
-            Ok(CountingTarget {
-                inner: SmbTarget::from_smb_rom_bytes_headless(rom)
-                    .map_err(|error| error.to_string())?,
-                restores: SnapshotRestoreCounters::default(),
-                alter_next_action: false,
-                diverge_after_action: false,
-                diverged: false,
-            })
-        }
-
-        fn checkpoint_format(&self) -> &'static str {
-            SNAPSHOT_CHECKPOINT_FORMAT
-        }
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    struct AlterOneChordBackend;
-
-    impl SmbTargetBackend for AlterOneChordBackend {
-        type Target = CountingTarget;
-
-        fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
-            Ok(CountingTarget {
-                inner: SmbTarget::from_smb_rom_bytes_headless(rom)
-                    .map_err(|error| error.to_string())?,
-                restores: SnapshotRestoreCounters::default(),
-                alter_next_action: true,
-                diverge_after_action: false,
-                diverged: false,
-            })
-        }
-
-        fn checkpoint_format(&self) -> &'static str {
-            SNAPSHOT_CHECKPOINT_FORMAT
-        }
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    struct DivergingBackend;
-
-    impl SmbTargetBackend for DivergingBackend {
-        type Target = CountingTarget;
-
-        fn new_target(&self, rom: &[u8]) -> Result<Self::Target, String> {
-            Ok(CountingTarget {
-                inner: SmbTarget::from_smb_rom_bytes_headless(rom)
-                    .map_err(|error| error.to_string())?,
-                restores: SnapshotRestoreCounters::default(),
-                alter_next_action: false,
-                diverge_after_action: true,
-                diverged: false,
-            })
-        }
-
-        fn checkpoint_format(&self) -> &'static str {
-            SNAPSHOT_CHECKPOINT_FORMAT
-        }
-    }
 
     fn synthetic_nrom() -> Vec<u8> {
         let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
@@ -1501,21 +1193,6 @@ mod tests {
         for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
             prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
         }
-        rom
-    }
-
-    fn input_sensitive_nrom() -> Vec<u8> {
-        let mut rom = synthetic_nrom();
-        let prg = &mut rom[16..16 + (16 * 1024)];
-        // Strobe controller 1, read its A bit, and write that bit to SMB's
-        // screen-page byte. The archive progress term therefore changes for
-        // every A-bit alteration without encoding any game route knowledge in
-        // production code.
-        let program = [
-            0xa9, 0x01, 0x8d, 0x16, 0x40, 0xa9, 0x00, 0x8d, 0x16, 0x40, 0xad, 0x16, 0x40, 0x29,
-            0x01, 0x8d, 0x1a, 0x07, 0x4c, 0x00, 0x80,
-        ];
-        prg[..program.len()].copy_from_slice(&program);
         rom
     }
 
@@ -1533,103 +1210,14 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             archive_entry_limit: 32_768,
-            chord: SmbCampaignChordPolicy::Uniform,
+            chord: SmbCampaignChordPolicy::default(),
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
             selector: crate::search::archive::SelectorPolicy::GroupUniform,
+            suffix: SuffixShape::default(),
+            mixture: DrawMixture::BiasedHalf,
             victory_input_path: None,
             checkpoint_dir: None,
         }
-    }
-
-    #[test]
-    fn restore_accounting_is_recorded_replayed_and_tamper_evident() {
-        let rom = synthetic_nrom();
-        let game = SmbGame::with_backend(&rom, CountingBackend);
-        let mut config = genesis_config(0x5eed_ca20, 1, 2);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
-        let generic = config.generic::<SmbGame<CountingBackend>>();
-        let origin = CampaignOrigin::<SmbGame<CountingBackend>>::Genesis;
-        let mut stream = Vec::new();
-        let (live, _) = run_campaign_checkpointed(&game, &generic, &origin, &mut stream, None)
-            .expect("counted live campaign");
-        assert!(live.snapshot_restores.genesis > 0);
-        assert!(live.snapshot_restores.continuation >= live.executions_completed);
-
-        let (replayed, _) = replay_campaign_checkpointed(&game, &stream, None, None)
-            .expect("counted replay campaign");
-        assert_eq!(replayed, live);
-
-        let text = String::from_utf8(stream).expect("stream is utf-8");
-        let mut altered = String::new();
-        let mut changed = false;
-        for line in text.lines() {
-            let mut value: serde_json::Value = serde_json::from_str(line).expect("stream line");
-            if !changed && value.get("event").and_then(serde_json::Value::as_str) == Some("job") {
-                let continuation = value["snapshot_restores"]["continuation"]
-                    .as_u64()
-                    .expect("recorded continuation count");
-                value["snapshot_restores"]["continuation"] =
-                    serde_json::Value::from(continuation.saturating_add(1));
-                changed = true;
-            }
-            altered.push_str(&serde_json::to_string(&value).expect("serialize stream line"));
-            altered.push('\n');
-        }
-        assert!(changed);
-        let error = replay_campaign_checkpointed(&game, altered.as_bytes(), None, None)
-            .expect_err("altered restore accounting must fail");
-        assert!(error.to_string().contains("snapshot restores"));
-    }
-
-    #[test]
-    fn archive_hash_comparator_catches_one_altered_chord() {
-        let rom = input_sensitive_nrom();
-        let mut config = genesis_config(0x5eed_ca21, 1, 1);
-        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
-
-        let baseline_game = SmbGame::with_backend(&rom, CountingBackend);
-        let baseline_config = config.generic::<SmbGame<CountingBackend>>();
-        let mut baseline_stream = Vec::new();
-        let (baseline, _) = run_campaign_checkpointed(
-            &baseline_game,
-            &baseline_config,
-            &CampaignOrigin::Genesis,
-            &mut baseline_stream,
-            None,
-        )
-        .expect("baseline campaign");
-
-        let altered_game = SmbGame::with_backend(&rom, AlterOneChordBackend);
-        let altered_config = config.generic::<SmbGame<AlterOneChordBackend>>();
-        let mut altered_stream = Vec::new();
-        let (altered, _) = run_campaign_checkpointed(
-            &altered_game,
-            &altered_config,
-            &CampaignOrigin::Genesis,
-            &mut altered_stream,
-            None,
-        )
-        .expect("altered campaign");
-
-        let baseline_hash = Sha256::digest(serde_json::to_vec(&baseline.archive).unwrap());
-        let altered_hash = Sha256::digest(serde_json::to_vec(&altered.archive).unwrap());
-        assert_ne!(baseline_hash, altered_hash);
-    }
-
-    #[test]
-    fn campaign_aborts_when_cross_build_comparison_diverges() {
-        let rom = synthetic_nrom();
-        let game = SmbGame::with_backend(&rom, DivergingBackend);
-        let config = genesis_config(0x5eed_ca22, 1, 1).generic::<SmbGame<DivergingBackend>>();
-        let mut stream = Vec::new();
-        let error =
-            run_campaign_checkpointed(&game, &config, &CampaignOrigin::Genesis, &mut stream, None)
-                .expect_err("planted cross-build mismatch must abort the campaign");
-        assert!(
-            error
-                .to_string()
-                .contains("guest and in-process TetaNES diverged")
-        );
     }
 
     #[test]
@@ -1647,20 +1235,29 @@ mod tests {
     #[test]
     fn suffix_derivation_is_pure_and_bounded() {
         for seed in [0_u64, 0x5eed_ca01, u64::MAX] {
+            let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+                empty_table_parameters(),
+                &[],
+                &[],
+            );
             let first = derive_suffix(
                 seed,
                 SuffixShape::OneOrTwo,
-                SmbCampaignChordPolicy::Uniform,
+                DrawMixture::BiasedHalf,
+                128,
+                SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
-                None,
+                Some(empty),
             )
             .expect("derive suffix");
             let second = derive_suffix(
                 seed,
                 SuffixShape::OneOrTwo,
-                SmbCampaignChordPolicy::Uniform,
+                DrawMixture::BiasedHalf,
+                128,
+                SmbCampaignChordPolicy::default(),
                 SmbButtonVocabulary::default(),
-                None,
+                Some(empty),
             )
             .expect("derive suffix again");
             assert_eq!(first, second);
@@ -1672,6 +1269,11 @@ mod tests {
                         || (96..=120).contains(&chord.hold_frames))
             );
         }
+    }
+
+    fn empty_table_parameters() -> EmpiricalStepParameters {
+        let SmbCampaignChordPolicy::DerivedHalf(derivation) = SmbCampaignChordPolicy::default();
+        derivation.parameters
     }
 
     fn derived_policy() -> SmbCampaignChordPolicy {
@@ -1690,6 +1292,7 @@ mod tests {
                 hash_every_records: 2,
             },
             hash_rule: EmpiricalStepHashRule::default(),
+            fold: super::ChordFoldSource::default(),
         })
     }
 
@@ -1704,9 +1307,7 @@ mod tests {
         assert!(chord_policy_from_identifier("chord_draw_recorded_50").is_err());
         assert!(chord_policy_from_identifier("chord_draw_recorded_50:0").is_err());
 
-        let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy else {
-            panic!("derived policy expected");
-        };
+        let SmbCampaignChordPolicy::DerivedHalf(mut derivation) = policy;
         derivation.hash_rule = EmpiricalStepHashRule::IncrementalHistory;
         let incremental = SmbCampaignChordPolicy::DerivedHalf(derivation);
         let identifier = chord_policy_identifier(incremental);
@@ -1746,12 +1347,19 @@ mod tests {
         first.reset();
         first.apply(&ButtonChord::new(0x81, 12));
         let snapshot = first.snapshot().expect("snapshot prefix");
+        let empty = crate::search::empirical_steps::EmpiricalStepTableRef::from_parts(
+            empty_table_parameters(),
+            &[],
+            &[],
+        );
         let suffix = derive_suffix(
             0x5eed_ca02,
             SuffixShape::OneOrTwo,
-            SmbCampaignChordPolicy::Uniform,
+            DrawMixture::BiasedHalf,
+            128,
+            SmbCampaignChordPolicy::default(),
             SmbButtonVocabulary::default(),
-            None,
+            Some(empty),
         )
         .expect("derive suffix");
         // Disturb the first instance so the job must depend on the snapshot alone.
@@ -1912,7 +1520,7 @@ mod tests {
             "whole_tree",
             "nes_down_ten",
             "frozen_area_span",
-            "one_or_two",
+            "one_to_six",
             "stratified",
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");
@@ -2003,6 +1611,30 @@ mod tests {
     }
 
     #[test]
+    fn energy_selector_records_counters_and_replays_byte_identically() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca22, 4, 48);
+        config.selector = crate::search::archive::SelectorPolicy::Energy(
+            crate::search::archive::RetireThresholds {
+                entry: 2,
+                groups: vec![4, 8, 16],
+            },
+        );
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("energy campaign");
+        let text = String::from_utf8(stream.clone()).expect("stream is utf-8");
+        let header = text.lines().next().expect("header");
+        assert!(header.contains("room_cell_uniform_128_energy:2,4,8,16"));
+        assert!(live.archive.selector.retirement.is_some());
+        let replayed = replay_smb_campaign(&rom, &stream, None).expect("replay energy");
+        assert_eq!(
+            serde_json::to_vec_pretty(&live).expect("serialize live"),
+            serde_json::to_vec_pretty(&replayed).expect("serialize replayed")
+        );
+    }
+
+    #[test]
     fn retiring_selector_reports_survive_a_seed_sweep() {
         // The scale replays diverged only in end-state retirement counters,
         // so this sweeps seeds under reset-heavy thresholds until a live
@@ -2045,6 +1677,18 @@ mod tests {
         for policy in [
             SelectorPolicy::GroupUniform,
             SelectorPolicy::Retire(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12, 2],
+            }),
+            SelectorPolicy::Energy(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12, 2],
+            }),
+            SelectorPolicy::EnergyFrontier(RetireThresholds {
+                entry: 3,
+                groups: vec![6, 12, 2],
+            }),
+            SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
                 entry: 3,
                 groups: vec![6, 12, 2],
             }),
