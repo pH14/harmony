@@ -14,6 +14,7 @@ use std::{
     error::Error,
     fmt::Debug,
     num::NonZeroUsize,
+    sync::Arc,
 };
 
 use crate::search::rand::RomuDuoJrRand;
@@ -616,7 +617,7 @@ pub struct ArchiveEntry<A: Ord, K, M, S> {
     /// The serializable record.
     pub report: ArchiveEntryReport<A, K, M>,
     /// The retained machine snapshot.
-    pub snapshot: S,
+    pub snapshot: Arc<S>,
 }
 
 /// One dispatch-time splice resolution and the exact tail it selected.
@@ -1177,7 +1178,10 @@ where
             milestones,
             selector: None,
         };
-        self.entries.push(ArchiveEntry { report, snapshot });
+        self.entries.push(ArchiveEntry {
+            report,
+            snapshot: Arc::new(snapshot),
+        });
         self.active.push(true);
         self.lineages.push(lineage);
         self.time_in_group.push(candidate_time_in_group);
@@ -1210,31 +1214,6 @@ where
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
         Ok(Some(id))
-    }
-
-    /// The stored tail a splice draw would append to `parent`: the actions
-    /// past a cell-mate's own input on the path to the deepest descendant
-    /// key in the parent's selection cell, capped at `cap` actions. The
-    /// choice is a pure function of archive state, so replay re-derives it.
-    /// Returns nothing when no cell-mate's subtree reaches past the
-    /// parent's own key.
-    #[must_use]
-    pub fn splice_tail(&self, parent: usize, cap: usize) -> Option<Vec<A>> {
-        self.frontier_cap?;
-        let parent_key = self.entries[parent].report.key;
-        let class = Reverse(parent_key.group(Self::class_depth()));
-        let cell = parent_key.group(Self::cell_depth());
-        let members = self.classes.get(&class)?.get(&cell)?;
-        let donor = members
-            .ids
-            .iter()
-            .filter(|member| **member != parent)
-            .max_by_key(|member| self.deepest_leaf[**member])?;
-        let (leaf_key, leaf) = self.deepest_leaf[*donor];
-        if leaf_key <= parent_key {
-            return None;
-        }
-        self.recorded_splice_tail(parent, *donor, leaf, cap).ok()
     }
 
     /// Derive a campaign splice after ensuring the selection-cell index is
@@ -1305,14 +1284,21 @@ where
             return Err("splice donor is outside the parent's selection cell");
         }
         let mut ancestor = Some(leaf);
-        for _ in 0..=self.entries.len() {
-            if ancestor == Some(donor) {
+        let mut steps = 0_usize;
+        while let Some(id) = ancestor {
+            if id == donor {
                 break;
             }
-            ancestor = ancestor
-                .and_then(|id| self.entries.get(id))
+            if steps > self.entries.len() {
+                ancestor = None;
+                break;
+            }
+            ancestor = self
+                .entries
+                .get(id)
                 .and_then(|entry| entry.report.parent_id)
                 .and_then(|id| usize::try_from(id).ok());
+            steps = steps.saturating_add(1);
         }
         if ancestor != Some(donor) {
             return Err("splice leaf is not a descendant of its donor");
@@ -1931,7 +1917,10 @@ where
                 report
             };
             reports.push(report);
-            snapshots.push((snapshot_id, entry.snapshot));
+            snapshots.push((
+                snapshot_id,
+                Arc::try_unwrap(entry.snapshot).unwrap_or_else(|snapshot| (*snapshot).clone()),
+            ));
         }
         (reports, snapshots)
     }
@@ -2166,17 +2155,17 @@ mod tests {
         let middle = insert(&mut archive, Some(root), [1, 2, 3, 6], vec![0, 1]);
         let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
         let arrival = insert(&mut archive, None, [0, 2, 3, 4], vec![9]);
-        assert_eq!(
-            archive.splice_tail(arrival, 8),
-            None,
-            "no tail before the selector index exists"
-        );
         let dispatched = archive
             .splice_tail_for_campaign(arrival, MAX_SMB_COMPLETION_ACTIONS, 8)
             .expect("dispatch-time splice");
         assert_eq!((dispatched.donor_id, dispatched.leaf_id), (root, leaf));
         assert_eq!(dispatched.actions, vec![1, 2]);
-        assert_eq!(archive.splice_tail(arrival, 1), Some(vec![1]));
+        assert_eq!(
+            archive
+                .recorded_splice_tail(arrival, dispatched.donor_id, dispatched.leaf_id, 1)
+                .expect("capped recorded splice"),
+            vec![1]
+        );
         let later = insert(&mut archive, Some(leaf), [1, 2, 3, 8], vec![0, 1, 2, 3]);
         assert_eq!(
             archive
@@ -2197,9 +2186,10 @@ mod tests {
                 .recorded_splice_tail(arrival, dispatched.donor_id, later, 8)
                 .is_ok()
         );
-        assert_eq!(
-            archive.splice_tail(leaf, 8),
-            None,
+        assert!(
+            archive
+                .splice_tail_for_campaign(leaf, MAX_SMB_COMPLETION_ACTIONS, 8)
+                .is_none(),
             "the deepest entry has no deeper cell-mate"
         );
     }

@@ -136,6 +136,12 @@ impl SmbSnapshot {
     pub fn wram(&self) -> &[u8] {
         &self.observation.wram
     }
+
+    /// Number of persisted emulator-state bytes held by this snapshot.
+    #[must_use]
+    pub fn emulator_state_bytes_len(&self) -> usize {
+        self.emulator_state.0.len
+    }
 }
 
 /// Fixed boot walk from power-on to gameplay genesis, encoded as staged
@@ -298,6 +304,10 @@ impl SmbTarget {
         wram_array(&self.machine).unwrap_or([0; WRAM_SIZE])
     }
 
+    pub(crate) fn mechanical_state(&self) -> SmbMechanicalState {
+        self.observation.decoded
+    }
+
     fn read_dead(&self) -> bool {
         let engine_state = self.read_byte(PLAYER_ENGINE_STATE_OFFSET);
         let vertical_page = self.read_byte(PLAYER_VERTICAL_PAGE_OFFSET);
@@ -322,17 +332,25 @@ impl SmbTarget {
     #[cfg(test)]
     pub(crate) fn poke_wram(&mut self, addr: usize, byte: u8) {
         self.machine.poke_wram(addr, byte);
+        if let Ok(wram) = wram_array(&self.machine) {
+            self.observation.wram = wram.to_vec();
+            self.observation.decoded = smb_mechanical_state_from_wram(&wram);
+        }
     }
 
     /// Return whether the game is in its victory mode.
     ///
-    /// Read from work RAM rather than carried as state: the operating mode
-    /// stays at the victory value once reached, so a restored snapshot
-    /// answers correctly without the snapshot format carrying the flag.
+    /// The latest observation carries the exact work RAM from its boundary,
+    /// so restore answers without another emulator read or a snapshot-format
+    /// field.
     #[must_use]
     pub fn is_victory(&self) -> bool {
-        self.read_byte(OPERATING_MODE_OFFSET) == VICTORY_OPERATING_MODE
-            && self.read_byte(WORLD_NUMBER_OFFSET) == FINAL_WORLD_NUMBER
+        self.observation
+            .wram
+            .as_slice()
+            .try_into()
+            .ok()
+            .is_some_and(smb_is_victory)
     }
 
     /// Return the total frames this instance has emulated since construction.
@@ -511,10 +529,9 @@ impl Target for SmbTarget {
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
         let emulator_state = snapshot.emulator_state.materialize();
-        let imported = self.machine.import_snapshot(&emulator_state);
-        let restored = self.machine.replay(imported);
-        let _ = self.machine.drop_snapshot(imported);
-        restored.map_err(|error| error.to_string())?;
+        self.machine
+            .restore_bytes(&emulator_state)
+            .map_err(|error| error.to_string())?;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];

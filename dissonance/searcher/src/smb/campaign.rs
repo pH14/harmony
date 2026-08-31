@@ -110,6 +110,15 @@ pub struct SmbGame {
     loopback: bool,
 }
 
+fn quicknes_identity(core_sha256: &str) -> String {
+    format!(
+        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
+        machine::quicknes::QUICKNES_REVISION,
+        machine::quicknes::QUICKNES_BUILD,
+        machine::quicknes::QUICKNES_OPTIONS,
+    )
+}
+
 impl SmbGame {
     /// Build a context over the pinned QuickNES execution target.
     ///
@@ -117,36 +126,38 @@ impl SmbGame {
     /// stream policy. Cross-core streams and checkpoints are rejected.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
-        let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
-        );
         Self {
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
-            identity,
+            identity: quicknes_identity(core_sha256),
             #[cfg(test)]
             loopback: false,
         }
     }
 
+    /// Build a context from the external core named by `HARMONY_QUICKNES_CORE`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the environment variable or core bytes cannot be read.
+    pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let core_path = PathBuf::from(
+            std::env::var_os("HARMONY_QUICKNES_CORE")
+                .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
+        );
+        let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
+        Ok(Self::new(rom, &core_path, &core_sha256))
+    }
+
     #[cfg(test)]
     fn loopback_for_tests(rom: &[u8]) -> Self {
         let core_sha256 = "a".repeat(64);
-        let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
-        );
         Self {
             rom: rom.to_vec(),
             core_path: PathBuf::new(),
+            identity: quicknes_identity(&core_sha256),
             core_sha256,
-            identity,
             loopback: true,
         }
     }
@@ -328,17 +339,20 @@ impl SmbTerminalPredicate {
         })
     }
 
-    fn reached(self, target: &SmbTarget) -> bool {
-        if target.is_victory() {
-            return true;
+    fn reached(self, target: &SmbTarget) -> Result<bool, Box<dyn Error>> {
+        if target.exit_kind() != ExitKind::Ok {
+            return Err("SMB terminal predicate cannot inspect a failed emulator".into());
         }
-        match self {
+        if target.is_victory() {
+            return Ok(true);
+        }
+        Ok(match self {
             Self::GameVictory => false,
             Self::LevelTransition { world, level } => {
-                let state = smb_mechanical_state_from_wram(&target.wram());
+                let state = target.mechanical_state();
                 (state.world, state.level) != (world, level)
             }
-        }
+        })
     }
 }
 
@@ -696,8 +710,11 @@ pub(crate) fn execute_job(
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
+    if target.is_dead() || policies.terminal.reached(target)? {
+        return Ok(CampaignJobResult { actions });
+    }
     for action in suffix {
-        if target.is_dead() || policies.terminal.reached(target) || length >= policies.max_actions {
+        if length >= policies.max_actions {
             break;
         }
         length = length.saturating_add(1);
@@ -705,7 +722,7 @@ pub(crate) fn execute_job(
         merge_action_milestones(&mut milestones, target)?;
         let observations = target.last_action_observations().to_vec();
         let dead = target.is_dead();
-        let victory = policies.terminal.reached(target);
+        let victory = policies.terminal.reached(target)?;
         let failed = target.exit_kind() != ExitKind::Ok;
         // Recorded success is terminal: nothing past it is searched, so no
         // candidate is offered.
@@ -1012,6 +1029,17 @@ impl Game for SmbGame {
 
     fn is_terminal(&self, target: &SmbTarget) -> bool {
         target.is_dead() || target.exit_kind() != ExitKind::Ok
+    }
+
+    fn is_run_terminal(
+        &self,
+        run: &SmbCampaignRun,
+        target: &SmbTarget,
+    ) -> Result<bool, Box<dyn Error>> {
+        if self.is_terminal(target) {
+            return Ok(true);
+        }
+        run.terminal.unwrap_or_default().reached(target)
     }
 
     fn snapshot(&self, target: &mut SmbTarget) -> Result<SmbSnapshot, Box<dyn Error>> {
@@ -1342,10 +1370,10 @@ mod tests {
     use super::{
         DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignAdmissionDecision, SmbCampaignCheckpoint, SmbCampaignChordPolicy,
-        SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord,
-        SmbGame, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SmbTerminalPredicate,
-        SuffixShape, chord_policy_from_identifier, chord_policy_identifier, derive_suffix,
-        derive_worker_seed, execute_job,
+        SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignRun,
+        SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
+        SmbTerminalPredicate, SuffixShape, chord_policy_from_identifier, chord_policy_identifier,
+        derive_suffix, derive_worker_seed, execute_job,
     };
     use crate::search::campaign::{CoordinatorCore, write_live_checkpoint};
     use crate::search::empirical_steps::EmpiricalStepHashRule;
@@ -1650,9 +1678,9 @@ mod tests {
         let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         target.reset();
         let transition = SmbTerminalPredicate::LevelTransition { world: 0, level: 0 };
-        assert!(!transition.reached(&target));
+        assert!(!transition.reached(&target).expect("initial terminal state"));
         target.poke_wram(0x075c, 1);
-        assert!(transition.reached(&target));
+        assert!(transition.reached(&target).expect("changed terminal state"));
         assert_eq!(
             SmbTerminalPredicate::from_identifier(&transition.identifier())
                 .expect("terminal predicate round trip"),
@@ -1715,6 +1743,37 @@ mod tests {
         };
         wrong_hash.file_sha256.replace_range(..1, replacement);
         assert!(replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&wrong_hash)).is_err());
+    }
+
+    #[test]
+    fn snapshot_root_rejects_the_recorded_terminal_predicate() {
+        use sha2::{Digest, Sha256};
+
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
+        target.reset();
+        target.poke_wram(0x075c, 1);
+        let snapshot = target.snapshot().expect("snapshot terminal root");
+        let snapshots = SmbSnapshotCheckpoint {
+            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+            entries: vec![SmbSnapshotCheckpointEntry { id: 0, snapshot }],
+        };
+        let checkpoint = SmbCampaignCheckpoint {
+            path: "fixture-terminal-00".to_owned(),
+            file_sha256: format!(
+                "{:x}",
+                Sha256::digest(snapshots.to_bytes().expect("encode terminal root"))
+            ),
+            snapshots,
+        };
+        let config = SmbCampaignConfig {
+            terminal: SmbTerminalPredicate::LevelTransition { world: 0, level: 0 },
+            ..genesis_config(0x5eed_ca21, 1, 1)
+        };
+        let origin = SmbCampaignOrigin::SnapshotRoot { checkpoint };
+        assert!(
+            run_smb_campaign_checkpointed(&rom, &config, &origin, &mut Vec::new(), None).is_err()
+        );
     }
 
     #[test]
@@ -1865,8 +1924,13 @@ mod tests {
             },
         ] {
             let mut core = CoordinatorCore::new(&game, 96, 32_768);
+            let run = SmbCampaignRun {
+                chord: SmbCampaignChordPolicy::default(),
+                vocabulary: SmbButtonVocabulary::default(),
+                terminal: Some(SmbTerminalPredicate::default()),
+            };
             assert!(
-                core.bootstrap_snapshot_root(&game, &mut target, &malformed)
+                core.bootstrap_snapshot_root(&game, &run, &mut target, &malformed)
                     .is_err()
             );
         }
@@ -1951,7 +2015,7 @@ mod tests {
                 .iter()
                 .map(|entry| SmbSnapshotCheckpointEntry {
                     id: entry.report.id,
-                    snapshot: entry.snapshot.clone(),
+                    snapshot: entry.snapshot.as_ref().clone(),
                 })
                 .collect(),
         };
@@ -2363,6 +2427,19 @@ mod tests {
         .expect("replay with checkpoint");
         assert_eq!(replayed_with, restored_live);
         assert_eq!(replayed_checkpoint, restored_checkpoint);
+        let moved_checkpoint = SmbCampaignCheckpoint {
+            path: "moved/seed-snapshots.bin".to_owned(),
+            ..checkpoint.clone()
+        };
+        let (replayed_moved, moved_snapshots) = replay_smb_campaign_checkpointed(
+            &rom,
+            &restored_stream,
+            Some(&source),
+            Some(&moved_checkpoint),
+        )
+        .expect("replay with moved archive checkpoint");
+        assert_eq!(replayed_moved, restored_live);
+        assert_eq!(moved_snapshots, restored_checkpoint);
         let (replayed_without, _) =
             replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), None)
                 .expect("replay without checkpoint");

@@ -23,6 +23,7 @@ use std::{
     fmt::Debug,
     io::{BufWriter, Write},
     path::PathBuf,
+    sync::Arc,
     time::Duration,
 };
 
@@ -61,19 +62,14 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
      but host completion order cannot reach campaign state; the same seed, configuration, \
      origin, and game bytes produce the same recorded stream";
 
-const RESERVATION_ORDER_SCHEDULE_IDENTITY: &str = "selection, reservation, and admission follow \
-     the deterministic worker ring; host completion order cannot reach campaign state; the same \
-     seed, configuration, origin, and game bytes produce the same recorded stream";
-const COMPLETION_ORDER_SCHEDULE_IDENTITY: &str = "selection, reservation, and admission follow \
-     host completion order; the recorded stream is this campaign's identity; every recorded run \
-     replays exactly";
 const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
      alone; the recorded stream is this campaign's identity; two live runs at one seed may \
      differ, and each replays exactly";
 const CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
-const COMPLETION_ORDER_SCHEDULE_POLICY: &str = "completion_order_v1";
-const RESERVATION_ORDER_SCHEDULE_POLICY: &str = "reservation_order_v1";
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
+const ORIGIN_GENESIS: &str = "genesis";
+const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
+const ORIGIN_ARCHIVE: &str = "archive";
 
 /// Deterministic reservations kept ahead of admission per worker. The window
 /// hides individual long jobs while bounding result memory and wall-budget
@@ -207,6 +203,16 @@ pub trait Game: Sync {
     ) -> Result<(), Box<dyn Error>>;
     /// Whether the target is dead or failed, ending an imported walk.
     fn is_terminal(&self, target: &Self::Target) -> bool;
+    /// Whether the target satisfies any terminal condition recorded by this run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal state cannot be observed reliably.
+    fn is_run_terminal(
+        &self,
+        run: &Self::Run,
+        target: &Self::Target,
+    ) -> Result<bool, Box<dyn Error>>;
     /// Snapshot the target.
     ///
     /// # Errors
@@ -1103,12 +1109,13 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
     pub(crate) fn bootstrap_snapshot_root(
         &mut self,
         game: &G,
+        run: &G::Run,
         target: &mut G::Target,
         checkpoint: &CampaignCheckpoint<G::Snapshot>,
     ) -> Result<(), Box<dyn Error>> {
         let snapshot = validate_snapshot_root_checkpoint(game, checkpoint)?;
         game.restore(target, snapshot)?;
-        if game.is_terminal(target) {
+        if game.is_run_terminal(run, target)? {
             return Err("snapshot-root checkpoint restores a terminal target".into());
         }
         game.merge_snapshot_root_evidence(&mut self.evidence, target)?;
@@ -1457,9 +1464,15 @@ fn resolve_origin<G: Game>(
     origin: &CampaignOrigin<G>,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
     let (kind, path, archive_sha256, checkpoint, resume_input) = match origin {
-        CampaignOrigin::Genesis => ("genesis".to_owned(), None, None, None, Input::default()),
+        CampaignOrigin::Genesis => (
+            ORIGIN_GENESIS.to_owned(),
+            None,
+            None,
+            None,
+            Input::default(),
+        ),
         CampaignOrigin::SnapshotRoot { checkpoint } => (
-            "snapshot_root".to_owned(),
+            ORIGIN_SNAPSHOT_ROOT.to_owned(),
             None,
             None,
             Some(checkpoint),
@@ -1471,7 +1484,7 @@ fn resolve_origin<G: Game>(
             report,
             checkpoint,
         } => (
-            "archive".to_owned(),
+            ORIGIN_ARCHIVE.to_owned(),
             Some(path.clone()),
             Some(file_sha256.clone()),
             checkpoint.as_ref(),
@@ -1514,7 +1527,7 @@ fn stream_header<G: Game>(
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
-        resume_policy: if origin.kind == "snapshot_root" {
+        resume_policy: if origin.kind == ORIGIN_SNAPSHOT_ROOT {
             SNAPSHOT_ROOT_RESUME_IDENTIFIER.to_owned()
         } else {
             RESUME_IDENTIFIER.to_owned()
@@ -1623,7 +1636,7 @@ where
         .iter()
         .map(|entry| EntryRef {
             id: entry.report.id,
-            snapshot: &entry.snapshot,
+            snapshot: entry.snapshot.as_ref(),
         })
         .collect();
     let checkpoint = CheckpointRef {
@@ -1664,8 +1677,6 @@ fn build_report<G: Game>(
     };
     let schedule_identity = match header.schedule_policy.as_deref() {
         Some(CAMPAIGN_SCHEDULE_POLICY) => CAMPAIGN_SCHEDULE_IDENTITY,
-        Some(COMPLETION_ORDER_SCHEDULE_POLICY) => COMPLETION_ORDER_SCHEDULE_IDENTITY,
-        Some(RESERVATION_ORDER_SCHEDULE_POLICY) => RESERVATION_ORDER_SCHEDULE_IDENTITY,
         _ => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
     };
     let report = CampaignModeReport {
@@ -1746,7 +1757,7 @@ fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn E
 /// Job specification sent to a worker.
 struct JobSpec<G: Game + ?Sized> {
     reservation: usize,
-    snapshot: G::Snapshot,
+    snapshot: Arc<G::Snapshot>,
     parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
@@ -1770,7 +1781,6 @@ struct PendingJob {
 /// One finished window slot, held until every earlier reservation can be
 /// admitted in deterministic order.
 struct CompletedJob<G: Game + ?Sized> {
-    worker: u32,
     pending: PendingJob,
     result: CampaignJobResult<G>,
     frames: u64,
@@ -1833,6 +1843,7 @@ pub struct CampaignProgressRecord<K> {
 /// whole source tree.
 fn bootstrap_core<G: Game>(
     game: &G,
+    run: &G::Run,
     core: &mut CoordinatorCore<G>,
     target: &mut G::Target,
     origin: &CampaignOrigin<G>,
@@ -1851,7 +1862,7 @@ fn bootstrap_core<G: Game>(
             Ok(None)
         }
         CampaignOrigin::SnapshotRoot { checkpoint } => {
-            core.bootstrap_snapshot_root(game, target, checkpoint)?;
+            core.bootstrap_snapshot_root(game, run, target, checkpoint)?;
             Ok(None)
         }
     }
@@ -1944,7 +1955,8 @@ where
         format!("failed to build the bootstrap target: {error}").into()
     })?;
     let frames_before = game.frames_clocked(&bootstrap_target);
-    counters.tree_import = bootstrap_core(game, &mut core, &mut bootstrap_target, origin)?;
+    counters.tree_import =
+        bootstrap_core(game, &config.run, &mut core, &mut bootstrap_target, origin)?;
     counters.bootstrap_frames = game
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
@@ -2170,6 +2182,9 @@ where
             while !pending.is_empty() {
                 let reply = pool.receive()?;
                 let physical_worker = reply.worker;
+                let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
+                    format!("campaign worker {physical_worker} failed: {error}").into()
+                })?;
                 let physical_index = usize::try_from(physical_worker)?;
                 let queued = physical_queued
                     .get_mut(physical_index)
@@ -2177,10 +2192,7 @@ where
                 *queued = queued
                     .checked_sub(1)
                     .ok_or("campaign worker replied without queued work")?;
-                let (reservation, result, frames, result_sha256) =
-                    reply.outcome.map_err(|error| -> Box<dyn Error> {
-                        format!("campaign worker {physical_worker} failed: {error}").into()
-                    })?;
+                let (reservation, result, frames, result_sha256) = outcome;
                 let pending_job = pending
                     .remove(&reservation)
                     .ok_or("campaign worker replied for an unknown reservation")?;
@@ -2188,7 +2200,6 @@ where
                     .insert(
                         reservation,
                         CompletedJob {
-                            worker: pending_job.worker,
                             pending: pending_job,
                             result,
                             frames,
@@ -2213,8 +2224,8 @@ where
                 }
 
                 while let Some(completed_job) = completed.remove(&next_admission) {
-                    let worker_index = usize::try_from(completed_job.worker)?;
                     let pending_job = completed_job.pending;
+                    let worker_index = usize::try_from(pending_job.worker)?;
                     let result = completed_job.result;
                     let frames = completed_job.frames;
                     let result_sha256 = completed_job.result_sha256;
@@ -2264,7 +2275,7 @@ where
                         finish_record(game, &config.run, &mut draw_state, &core, &decisions)?;
                     writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
                         sequence,
-                        worker: completed_job.worker,
+                        worker: pending_job.worker,
                         parent_id: pending_job.parent_id,
                         mutation_seed: pending_job.mutation_seed,
                         frames,
@@ -2287,7 +2298,7 @@ where
                         write_live_checkpoint(game, &core, config.campaign_seed, directory)?;
                     }
                     if let Some(sink) = progress.as_deref_mut() {
-                        // Wall-clock gates the sidecar only. It selects nothing and
+                        // Wall-clock controls the sidecar only. It selects nothing and
                         // enters no recorded artifact, so its nondeterminism cannot
                         // reach the stream.
                         #[allow(clippy::disallowed_methods)]
@@ -2451,11 +2462,11 @@ where
     if header.format != game.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
-    if header.schedule_policy.as_deref().is_some_and(|policy| {
-        policy != CAMPAIGN_SCHEDULE_POLICY
-            && policy != COMPLETION_ORDER_SCHEDULE_POLICY
-            && policy != RESERVATION_ORDER_SCHEDULE_POLICY
-    }) {
+    if header
+        .schedule_policy
+        .as_deref()
+        .is_some_and(|policy| policy != CAMPAIGN_SCHEDULE_POLICY)
+    {
         return Err("campaign stream schedule policy is not recognized".into());
     }
     if header
@@ -2469,7 +2480,7 @@ where
         return Err("campaign replay ROM does not match the recorded stream".into());
     }
     let resume_input = match header.origin_kind.as_str() {
-        "genesis" => {
+        ORIGIN_GENESIS => {
             if origin_report.is_some() {
                 return Err("genesis campaign replay does not take a source archive".into());
             }
@@ -2478,7 +2489,7 @@ where
             }
             Input::default()
         }
-        "snapshot_root" => {
+        ORIGIN_SNAPSHOT_ROOT => {
             if origin_report.is_some() {
                 return Err("snapshot-root replay does not take a source archive".into());
             }
@@ -2487,7 +2498,7 @@ where
             }
             Input::default()
         }
-        "archive" => {
+        ORIGIN_ARCHIVE => {
             let source =
                 origin_report.ok_or("archive campaign replay requires the source archive")?;
             game.resume_input(source)?
@@ -2506,7 +2517,7 @@ where
         &header.parent_scheduler,
         G::Key::groups().saturating_sub(2),
     )?;
-    let expected_resume = if header.origin_kind == "snapshot_root" {
+    let expected_resume = if header.origin_kind == ORIGIN_SNAPSHOT_ROOT {
         SNAPSHOT_ROOT_RESUME_IDENTIFIER
     } else {
         RESUME_IDENTIFIER
@@ -2517,22 +2528,25 @@ where
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
-    if let Some(checkpoint) = origin_checkpoint
-        && (header.origin_checkpoint_sha256.as_deref() != Some(checkpoint.file_sha256.as_str())
-            || header.origin_checkpoint_path.as_deref() != Some(checkpoint.path.as_str()))
-    {
-        return Err("campaign replay checkpoint does not match the recorded stream".into());
+    if let Some(checkpoint) = origin_checkpoint {
+        let sha256_matches =
+            header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
+        let logical_path_matches = header.origin_kind != ORIGIN_SNAPSHOT_ROOT
+            || header.origin_checkpoint_path.as_deref() == Some(checkpoint.path.as_str());
+        if !sha256_matches || !logical_path_matches {
+            return Err("campaign replay checkpoint does not match the recorded stream".into());
+        }
     }
     // Replay already borrows the decoded origin from its caller. Do not clone
     // a mature archive and its multi-gigabyte checkpoint merely to satisfy the
     // live-run ownership shape: the clone survives the whole replay and can
     // double peak memory without changing any campaign state.
     let draw_origin = match header.origin_kind.as_str() {
-        "archive" => Some((
+        ORIGIN_ARCHIVE => Some((
             header.origin_archive_sha256.as_deref().unwrap_or_default(),
             origin_report.ok_or("archive campaign replay requires the source archive")?,
         )),
-        "genesis" | "snapshot_root" => None,
+        ORIGIN_GENESIS | ORIGIN_SNAPSHOT_ROOT => None,
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     let (mut draw_state, replay_draw_header) = game.initial_draw_state(&replay_run, draw_origin)?;
@@ -2549,19 +2563,20 @@ where
     })?;
     let frames_before = game.frames_clocked(&target);
     counters.tree_import = match header.origin_kind.as_str() {
-        "genesis" => {
+        ORIGIN_GENESIS => {
             core.bootstrap(game, &mut target)?;
             None
         }
-        "snapshot_root" => {
+        ORIGIN_SNAPSHOT_ROOT => {
             core.bootstrap_snapshot_root(
                 game,
+                &replay_run,
                 &mut target,
                 origin_checkpoint.ok_or("snapshot-root replay requires its snapshot checkpoint")?,
             )?;
             None
         }
-        "archive" => Some(core.import_tree(
+        ORIGIN_ARCHIVE => Some(core.import_tree(
             game,
             &mut target,
             origin_report.ok_or("archive campaign replay requires the source archive")?,
