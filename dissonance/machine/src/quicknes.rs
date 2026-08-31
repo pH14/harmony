@@ -19,7 +19,7 @@ use std::{
 use std::{
     ffi::CString,
     fs::{File, OpenOptions},
-    io,
+    io::{self, Read, Write},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -27,21 +27,70 @@ use std::{
 
 use crate::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
-    nes::{ADDRESS_SPACE_SIZE, ButtonChord, WRAM_SIZE, actions_of},
+    nes::{ButtonChord, WRAM_SIZE, actions_of},
 };
 #[cfg(not(miri))]
 use sha2::{Digest, Sha256};
 
 /// Exact QuickNES revision supported by this adapter.
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
-/// Stable identifier for every libretro option fixed by this adapter.
-pub const QUICKNES_OPTIONS: &str = "headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled";
+
+macro_rules! define_quicknes_options {
+    ($(($key:literal, $value:literal, $identity:literal)),+ $(,)?) => {
+        const QUICKNES_OPTION_TABLE: &[(&[u8], &[u8])] = &[
+            $(($key, $value)),+
+        ];
+
+        /// Stable identifier for every libretro option fixed by this adapter.
+        pub const QUICKNES_OPTIONS: &str = concat!(
+            "headless-hard-audio-video-off",
+            $(";", $identity),+
+        );
+    };
+}
+
+define_quicknes_options!(
+    (b"quicknes_aspect_ratio_par", b"PAR\0", "aspect=PAR"),
+    (
+        b"quicknes_use_overscan_h",
+        b"enabled\0",
+        "overscan_h=enabled"
+    ),
+    (
+        b"quicknes_use_overscan_v",
+        b"disabled\0",
+        "overscan_v=disabled"
+    ),
+    (b"quicknes_palette", b"default\0", "palette=default"),
+    (
+        b"quicknes_no_sprite_limit",
+        b"disabled\0",
+        "no_sprite_limit=disabled"
+    ),
+    (
+        b"quicknes_audio_samplerate",
+        b"48000\0",
+        "audio_samplerate=48000"
+    ),
+    (
+        b"quicknes_audio_nonlinear",
+        b"nonlinear\0",
+        "audio_nonlinear=nonlinear"
+    ),
+    (b"quicknes_audio_eq", b"default\0", "audio_eq=default"),
+    (b"quicknes_turbo_enable", b"none\0", "turbo=none"),
+    (b"quicknes_turbo_pulse_width", b"3\0", "turbo_pulse_width=3"),
+    (
+        b"quicknes_up_down_allowed",
+        b"disabled\0",
+        "up_down_allowed=disabled"
+    ),
+);
 /// Build flags used by the pinned core build script.
 pub const QUICKNES_BUILD: &str =
     "DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32";
 
 const STATE_MAGIC: &[u8; 8] = b"HQNESST2";
-const LEGACY_STATE_MAGIC: &[u8; 8] = b"HQNESST1";
 const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 8;
 const QUICKNES_FILE_MAGIC: &[u8; 8] = b"NESS\xff\xff\xff\xff";
 const QUICKNES_BLOCK_HEADER_LEN: usize = 8;
@@ -84,6 +133,15 @@ struct RetroVariable {
     value: *const c_char,
 }
 
+#[repr(C)]
+struct RetroSystemInfo {
+    library_name: *const c_char,
+    library_version: *const c_char,
+    valid_extensions: *const c_char,
+    need_fullpath: bool,
+    block_extract: bool,
+}
+
 type EnvironmentCallback = extern "C" fn(u32, *mut c_void) -> bool;
 type VideoCallback = extern "C" fn(*const c_void, u32, u32, usize);
 type AudioCallback = extern "C" fn(i16, i16);
@@ -101,6 +159,7 @@ struct CoreApi {
     set_input_state: unsafe extern "C" fn(InputStateCallback),
     init: unsafe extern "C" fn(),
     deinit: unsafe extern "C" fn(),
+    get_system_info: unsafe extern "C" fn(*mut RetroSystemInfo),
     load_game: unsafe extern "C" fn(*const RetroGameInfo) -> bool,
     unload_game: unsafe extern "C" fn(),
     run: unsafe extern "C" fn(),
@@ -109,6 +168,17 @@ struct CoreApi {
     unserialize: unsafe extern "C" fn(*const c_void, usize) -> bool,
     get_memory_data: unsafe extern "C" fn(u32) -> *mut c_void,
     get_memory_size: unsafe extern "C" fn(u32) -> usize,
+    #[cfg(any(test, feature = "test-loopback"))]
+    loopback_id: Option<u64>,
+}
+
+impl CoreApi {
+    fn activate(self) {
+        #[cfg(any(test, feature = "test-loopback"))]
+        if let Some(id) = self.loopback_id {
+            loopback::activate(id);
+        }
+    }
 }
 
 #[cfg(not(miri))]
@@ -118,10 +188,17 @@ struct Library {
 
 #[cfg(not(miri))]
 impl Library {
-    fn open_private(source: &Path) -> Result<Self, MachineError> {
-        let temporary = private_copy(source)?;
-        let path = CString::new(temporary.as_os_str().as_bytes())
-            .map_err(|_| MachineError::Backend("QuickNES core path contains NUL".to_owned()))?;
+    fn open_private(source: &Path) -> Result<(Self, String), MachineError> {
+        let (temporary, sha256) = private_copy(source)?;
+        let path = match CString::new(temporary.as_os_str().as_bytes()) {
+            Ok(path) => path,
+            Err(_) => {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(MachineError::Backend(
+                    "QuickNES core path contains NUL".to_owned(),
+                ));
+            }
+        };
         // SAFETY: `path` is a live NUL-terminated pathname. RTLD_LOCAL keeps
         // this private image's exported globals out of the process namespace.
         let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
@@ -139,9 +216,12 @@ impl Library {
                 "could not unlink private QuickNES core image: {error}"
             )));
         }
-        Ok(Self {
-            handle: handle as usize,
-        })
+        Ok((
+            Self {
+                handle: handle as usize,
+            },
+            sha256,
+        ))
     }
 
     fn symbol(&self, name: &'static [u8]) -> Result<*mut c_void, MachineError> {
@@ -187,7 +267,7 @@ fn dl_error() -> String {
 }
 
 #[cfg(not(miri))]
-fn private_copy(source: &Path) -> Result<PathBuf, MachineError> {
+fn private_copy(source: &Path) -> Result<(PathBuf, String), MachineError> {
     static NEXT_COPY: AtomicU64 = AtomicU64::new(0);
     let extension = source
         .extension()
@@ -202,16 +282,35 @@ fn private_copy(source: &Path) -> Result<PathBuf, MachineError> {
         ));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut destination) => {
-                let mut source_file = File::open(source).map_err(|error| {
-                    MachineError::Backend(format!("could not open QuickNES core: {error}"))
-                })?;
-                if let Err(error) = io::copy(&mut source_file, &mut destination) {
+                let mut source_file = match File::open(source) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(MachineError::Backend(format!(
+                            "could not open QuickNES core: {error}"
+                        )));
+                    }
+                };
+                let mut hasher = Sha256::new();
+                let mut buffer = [0_u8; 64 * 1024];
+                let copied = (|| -> io::Result<()> {
+                    loop {
+                        let length = source_file.read(&mut buffer)?;
+                        if length == 0 {
+                            break;
+                        }
+                        destination.write_all(&buffer[..length])?;
+                        hasher.update(&buffer[..length]);
+                    }
+                    destination.flush()
+                })();
+                if let Err(error) = copied {
                     let _ = std::fs::remove_file(&path);
                     return Err(MachineError::Backend(format!(
                         "could not copy QuickNES core: {error}"
                     )));
                 }
-                return Ok(path);
+                return Ok((path, format!("{:x}", hasher.finalize())));
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 last_error = Some(error);
@@ -266,6 +365,10 @@ fn load_api(library: &Library) -> Result<CoreApi, MachineError> {
         ),
         init: symbol!("retro_init", unsafe extern "C" fn()),
         deinit: symbol!("retro_deinit", unsafe extern "C" fn()),
+        get_system_info: symbol!(
+            "retro_get_system_info",
+            unsafe extern "C" fn(*mut RetroSystemInfo)
+        ),
         load_game: symbol!(
             "retro_load_game",
             unsafe extern "C" fn(*const RetroGameInfo) -> bool
@@ -286,10 +389,42 @@ fn load_api(library: &Library) -> Result<CoreApi, MachineError> {
             unsafe extern "C" fn(u32) -> *mut c_void
         ),
         get_memory_size: symbol!("retro_get_memory_size", unsafe extern "C" fn(u32) -> usize),
+        #[cfg(any(test, feature = "test-loopback"))]
+        loopback_id: None,
     })
 }
 
-/// Deterministic QuickNES-backed machine.
+fn validate_core_revision(api: CoreApi) -> Result<(), MachineError> {
+    api.activate();
+    let mut info = RetroSystemInfo {
+        library_name: std::ptr::null(),
+        library_version: std::ptr::null(),
+        valid_extensions: std::ptr::null(),
+        need_fullpath: false,
+        block_extract: false,
+    };
+    // SAFETY: `info` is writable for the synchronous libretro query, and the
+    // pinned ABI initializes the full structure.
+    unsafe { (api.get_system_info)(&raw mut info) };
+    if info.library_version.is_null() {
+        return Err(MachineError::Backend(
+            "QuickNES core supplied no library version".to_owned(),
+        ));
+    }
+    // SAFETY: libretro requires library_version to name a NUL-terminated
+    // string that remains live until the core is unloaded.
+    let actual = unsafe { CStr::from_ptr(info.library_version) };
+    if actual.to_bytes() != QUICKNES_REVISION.as_bytes() {
+        return Err(MachineError::Backend(format!(
+            "QuickNES core revision mismatch: expected {QUICKNES_REVISION}, found {}",
+            actual.to_string_lossy()
+        )));
+    }
+    Ok(())
+}
+
+/// Deterministic QuickNES-backed machine whose readable address window is the
+/// core's 2 KiB work RAM.
 pub struct QuickNesMachine {
     api: CoreApi,
     #[cfg(not(miri))]
@@ -302,7 +437,6 @@ pub struct QuickNesMachine {
     hold_remaining: u8,
     input: u8,
     vtime: u64,
-    loaded: bool,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -334,17 +468,12 @@ impl QuickNesMachine {
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
         let identity = validate_sha256(core_sha256)?;
-        let actual = std::fs::read(core_path)
-            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
-            .map_err(|error| {
-                MachineError::Backend(format!("could not hash QuickNES core: {error}"))
-            })?;
+        let (library, actual) = Library::open_private(core_path)?;
         if actual != core_sha256 {
             return Err(MachineError::Backend(
                 "QuickNES core SHA-256 does not match the supplied identity".to_owned(),
             ));
         }
-        let library = Library::open_private(core_path)?;
         let api = load_api(&library)?;
         let mut machine = Self::from_api(rom, identity, api)?;
         machine._library = Some(library);
@@ -352,6 +481,8 @@ impl QuickNesMachine {
     }
 
     fn from_api(rom: &[u8], core_sha256: [u8; 64], api: CoreApi) -> Result<Self, MachineError> {
+        api.activate();
+        validate_core_revision(api)?;
         // SAFETY: each callback has the exact libretro ABI and remains valid
         // for the process lifetime. The API belongs to this private image.
         unsafe {
@@ -409,7 +540,6 @@ impl QuickNesMachine {
             hold_remaining: 0,
             input: 0,
             vtime: 0,
-            loaded: true,
             _not_sync: PhantomData,
         })
     }
@@ -420,15 +550,10 @@ impl QuickNesMachine {
         Moment(self.vtime)
     }
 
-    /// Fixed serialized state size excluding the compatibility header.
-    #[must_use]
-    pub fn serialized_state_len(&self) -> usize {
-        self.state_len
-    }
-
     /// Copy the core's complete 2 KiB system RAM into a fixed buffer without
     /// allocating an intermediate vector.
     pub fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
+        self.api.activate();
         let mut wram = [0_u8; WRAM_SIZE];
         // SAFETY: construction validated a non-null system-RAM block of
         // exactly WRAM_SIZE. The private core has one owner, the destination
@@ -443,14 +568,6 @@ impl QuickNesMachine {
             std::ptr::copy_nonoverlapping(memory, wram.as_mut_ptr(), WRAM_SIZE);
         }
         Ok(wram)
-    }
-
-    /// Copy a held snapshot out for persistence.
-    pub fn export_snapshot(&self, snap: SnapId) -> Result<Vec<u8>, MachineError> {
-        self.snapshots
-            .get(&snap.0)
-            .cloned()
-            .ok_or(MachineError::UnknownSnapshot)
     }
 
     /// Move a held snapshot out of the machine without cloning its fixed
@@ -470,12 +587,23 @@ impl QuickNesMachine {
         SnapId(id)
     }
 
+    /// Restore persisted snapshot bytes without first copying them into the
+    /// machine's temporary handle table.
+    pub fn restore_bytes(&mut self, bytes: &[u8]) -> Result<(), MachineError> {
+        self.restore_core(bytes)?;
+        self.staged.clear();
+        self.hold_remaining = 0;
+        self.input = 0;
+        Ok(())
+    }
+
     /// Overwrite one system-RAM byte. Test support only.
     #[doc(hidden)]
     pub fn poke_wram(&mut self, addr: usize, byte: u8) {
         if addr >= WRAM_SIZE {
             return;
         }
+        self.api.activate();
         // SAFETY: construction validated a non-null WRAM block of WRAM_SIZE;
         // `addr` is checked within it and the private core has one owner.
         unsafe {
@@ -487,6 +615,7 @@ impl QuickNesMachine {
     }
 
     fn capture(&self) -> Result<Vec<u8>, MachineError> {
+        self.api.activate();
         let mut bytes = vec![0_u8; STATE_HEADER_LEN + self.state_len];
         bytes[..8].copy_from_slice(STATE_MAGIC);
         bytes[8..48].copy_from_slice(QUICKNES_REVISION.as_bytes());
@@ -510,12 +639,7 @@ impl QuickNesMachine {
     }
 
     fn restore_core(&self, bytes: &[u8]) -> Result<(), MachineError> {
-        if bytes.get(..8) == Some(LEGACY_STATE_MAGIC) {
-            return Err(MachineError::Backend(
-                "QuickNES snapshot v1 is incompatible because it contains noncanonical PPU padding; recapture it with snapshot v2"
-                    .to_owned(),
-            ));
-        }
+        self.api.activate();
         if bytes.len() < STATE_HEADER_LEN
             || &bytes[..8] != STATE_MAGIC
             || &bytes[8..48] != QUICKNES_REVISION.as_bytes()
@@ -566,6 +690,7 @@ impl QuickNesMachine {
     }
 
     fn run_frame(&mut self) {
+        self.api.activate();
         let bits = nes_to_libretro(self.input);
         INPUT_BITS.with(|input| input.set(bits));
         // SAFETY: construction initialized and loaded the private core; all
@@ -578,12 +703,11 @@ impl QuickNesMachine {
     /// Construct a deterministic in-process loopback core for downstream unit
     /// tests that exercise the real QuickNES adapter without a shared object.
     ///
-    /// This seam exists so the unsafe fixed-buffer and direct-RAM paths remain
+    /// This boundary exists so the unsafe fixed-buffer and direct-RAM paths remain
     /// Miri-exercisable. Production builds do not select it.
     #[doc(hidden)]
     #[cfg(any(test, feature = "test-loopback"))]
     pub fn loopback_for_tests(rom: &[u8]) -> Result<Self, MachineError> {
-        loopback::reset();
         let identity = validate_sha256(&"a".repeat(64))?;
         Self::from_api(rom, identity, loopback::api())
     }
@@ -655,14 +779,16 @@ fn validate_canonical_quicknes_state(state: &[u8]) -> Result<(), MachineError> {
 
 impl Drop for QuickNesMachine {
     fn drop(&mut self) {
-        if self.loaded {
-            // SAFETY: this machine exclusively owns one initialized, loaded
-            // core image, and Drop runs these operations exactly once.
-            unsafe {
-                (self.api.unload_game)();
-                (self.api.deinit)();
-            }
-            self.loaded = false;
+        self.api.activate();
+        // SAFETY: this machine exclusively owns one initialized, loaded core
+        // image, and Drop runs these operations exactly once.
+        unsafe {
+            (self.api.unload_game)();
+            (self.api.deinit)();
+        }
+        #[cfg(any(test, feature = "test-loopback"))]
+        if let Some(id) = self.api.loopback_id {
+            loopback::remove(id);
         }
     }
 }
@@ -730,10 +856,11 @@ impl Machine for QuickNesMachine {
     fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
         let end = addr
             .checked_add(u64::from(len))
-            .filter(|end| *end <= ADDRESS_SPACE_SIZE && *end <= WRAM_SIZE as u64)
+            .filter(|end| *end <= WRAM_SIZE as u64)
             .ok_or(MachineError::ReadOutOfBounds)?;
         let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
         let finish = usize::try_from(end).map_err(|_| MachineError::ReadOutOfBounds)?;
+        self.api.activate();
         // SAFETY: construction validated this core's system RAM pointer and
         // length; the checked range lies within WRAM_SIZE and is copied now.
         unsafe {
@@ -820,20 +947,9 @@ extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
 }
 
 fn option_value(key: &[u8]) -> Option<&'static [u8]> {
-    match key {
-        b"quicknes_aspect_ratio_par" => Some(b"PAR\0"),
-        b"quicknes_use_overscan_h" => Some(b"enabled\0"),
-        b"quicknes_use_overscan_v" => Some(b"disabled\0"),
-        b"quicknes_palette" => Some(b"default\0"),
-        b"quicknes_no_sprite_limit" => Some(b"disabled\0"),
-        b"quicknes_audio_samplerate" => Some(b"48000\0"),
-        b"quicknes_audio_nonlinear" => Some(b"nonlinear\0"),
-        b"quicknes_audio_eq" => Some(b"default\0"),
-        b"quicknes_turbo_enable" => Some(b"none\0"),
-        b"quicknes_turbo_pulse_width" => Some(b"3\0"),
-        b"quicknes_up_down_allowed" => Some(b"disabled\0"),
-        _ => None,
-    }
+    QUICKNES_OPTION_TABLE
+        .iter()
+        .find_map(|(fixed_key, value)| (*fixed_key == key).then_some(*value))
 }
 
 extern "C" fn video_callback(_: *const c_void, _: u32, _: u32, _: usize) {}
@@ -860,12 +976,16 @@ extern "C" fn input_state_callback(port: u32, device: u32, index: u32, id: u32) 
 
 #[cfg(any(test, feature = "test-loopback"))]
 mod loopback {
-    use std::{cell::UnsafeCell, ffi::c_void};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::BTreeMap,
+        ffi::c_void,
+    };
 
     use super::{
         AudioBatchCallback, AudioCallback, CoreApi, EnvironmentCallback, InputPollCallback,
         InputStateCallback, QUICKNES_BLOCK_HEADER_LEN, QUICKNES_FILE_MAGIC, QUICKNES_PPU_STATE_LEN,
-        RetroGameInfo, VideoCallback,
+        RetroGameInfo, RetroSystemInfo, VideoCallback,
     };
     use crate::nes::WRAM_SIZE;
 
@@ -882,25 +1002,35 @@ mod loopback {
     }
 
     thread_local! {
-        static STATE: UnsafeCell<State> = const {
-            UnsafeCell::new(State {
-                byte: 0,
-                wram: [0; WRAM_SIZE],
-            })
-        };
+        static ACTIVE: Cell<u64> = const { Cell::new(0) };
+        static NEXT_ID: Cell<u64> = const { Cell::new(1) };
+        static STATES: RefCell<BTreeMap<u64, Box<State>>> = const { RefCell::new(BTreeMap::new()) };
     }
 
-    pub(super) fn reset() {
-        STATE.with(|state| {
-            // SAFETY: one loopback core is active on a test thread at a time,
-            // and no reference escapes this closure.
-            unsafe {
-                *state.get() = State {
-                    byte: 0,
-                    wram: [0; WRAM_SIZE],
-                };
-            }
+    pub(super) fn activate(id: u64) {
+        ACTIVE.with(|active| active.set(id));
+    }
+
+    pub(super) fn remove(id: u64) {
+        STATES.with(|states| {
+            states.borrow_mut().remove(&id);
         });
+    }
+
+    fn with_state<T>(f: impl FnOnce(&State) -> T) -> Option<T> {
+        let id = ACTIVE.with(Cell::get);
+        STATES.with(|states| {
+            let states = states.borrow();
+            states.get(&id).map(|state| f(state))
+        })
+    }
+
+    fn with_state_mut<T>(f: impl FnOnce(&mut State) -> T) -> Option<T> {
+        let id = ACTIVE.with(Cell::get);
+        STATES.with(|states| {
+            let mut states = states.borrow_mut();
+            states.get_mut(&id).map(|state| f(state))
+        })
     }
 
     unsafe extern "C" fn set_environment(_: EnvironmentCallback) {}
@@ -911,14 +1041,30 @@ mod loopback {
     unsafe extern "C" fn set_input_state(_: InputStateCallback) {}
     unsafe extern "C" fn void() {}
     unsafe extern "C" fn load(_: *const RetroGameInfo) -> bool {
-        reset();
-        true
+        with_state_mut(|state| {
+            *state = State {
+                byte: 0,
+                wram: [0; WRAM_SIZE],
+            };
+        })
+        .is_some()
+    }
+    unsafe extern "C" fn system_info(info: *mut RetroSystemInfo) {
+        if !info.is_null() {
+            // SAFETY: the adapter supplies one writable RetroSystemInfo.
+            unsafe {
+                *info = RetroSystemInfo {
+                    library_name: c"QuickNES".as_ptr(),
+                    library_version: c"26bb785c9deddb66a17717b21bb4e328f03ade32".as_ptr(),
+                    valid_extensions: c"nes".as_ptr(),
+                    need_fullpath: false,
+                    block_extract: false,
+                };
+            }
+        }
     }
     unsafe extern "C" fn run() {
-        STATE.with(|state| {
-            // SAFETY: one loopback core is active on this test thread and no
-            // reference escapes the callback.
-            let state = unsafe { &mut *state.get() };
+        let _ = with_state_mut(|state| {
             state.byte = state.byte.wrapping_add(1);
             state.wram[0] = state.wram[0].wrapping_add(1);
         });
@@ -930,7 +1076,7 @@ mod loopback {
         if data.is_null() || size != FAKE_STATE_LEN {
             return false;
         }
-        STATE.with(|state| {
+        with_state(|state| {
             // SAFETY: the caller supplies FAKE_STATE_LEN writable bytes for
             // this synchronous call and the slice does not escape.
             let output =
@@ -940,8 +1086,6 @@ mod loopback {
             output[PPU_BLOCK_START..PPU_BLOCK_START + 4].copy_from_slice(b"PPUR");
             output[PPU_BLOCK_START + 4..PPU_PAYLOAD_START]
                 .copy_from_slice(&(QUICKNES_PPU_STATE_LEN as u32).to_le_bytes());
-            // SAFETY: the loopback state is exclusively read in this callback.
-            let state = unsafe { &*state.get() };
             output[PPU_PAYLOAD_START] = state.byte;
             // Reproduce the upstream padding defect so canonicalization is exercised.
             output[PPU_PAYLOAD_START + 49..PPU_PAYLOAD_START + 52]
@@ -951,38 +1095,49 @@ mod loopback {
                 .copy_from_slice(&(WRAM_SIZE as u32).to_le_bytes());
             output[WRAM_PAYLOAD_START..END_BLOCK_START].copy_from_slice(&state.wram);
             output[END_BLOCK_START..END_BLOCK_START + 4].copy_from_slice(b"gend");
-        });
-        true
+            true
+        })
+        .unwrap_or(false)
     }
     unsafe extern "C" fn unserialize(data: *const c_void, size: usize) -> bool {
         if data.is_null() || size != FAKE_STATE_LEN {
             return false;
         }
-        STATE.with(|state| {
+        with_state_mut(|state| {
             // SAFETY: the caller supplies FAKE_STATE_LEN readable bytes for
             // this synchronous call and the slice does not escape.
             let input = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), FAKE_STATE_LEN) };
-            // SAFETY: the loopback state is exclusively written in this callback.
-            let state = unsafe { &mut *state.get() };
             state.byte = input[PPU_PAYLOAD_START];
             state
                 .wram
                 .copy_from_slice(&input[WRAM_PAYLOAD_START..END_BLOCK_START]);
-        });
-        true
+            true
+        })
+        .unwrap_or(false)
     }
     unsafe extern "C" fn memory_data(_: u32) -> *mut c_void {
-        STATE.with(|state| {
-            // SAFETY: the pointer names the thread-local WRAM array and remains
-            // valid for the lifetime of the loopback core on this thread.
-            unsafe { (&raw mut (*state.get()).wram).cast::<c_void>() }
-        })
+        with_state_mut(|state| (&raw mut state.wram).cast::<c_void>())
+            .unwrap_or(std::ptr::null_mut())
     }
     unsafe extern "C" fn memory_size(_: u32) -> usize {
         WRAM_SIZE
     }
 
     pub(super) fn api() -> CoreApi {
+        let id = NEXT_ID.with(|next| {
+            let id = next.get();
+            next.set(id.wrapping_add(1));
+            id
+        });
+        STATES.with(|states| {
+            states.borrow_mut().insert(
+                id,
+                Box::new(State {
+                    byte: 0,
+                    wram: [0; WRAM_SIZE],
+                }),
+            );
+        });
         CoreApi {
             set_environment,
             set_video_refresh: set_video,
@@ -992,6 +1147,7 @@ mod loopback {
             set_input_state,
             init: void,
             deinit: void,
+            get_system_info: system_info,
             load_game: load,
             unload_game: void,
             run,
@@ -1000,6 +1156,7 @@ mod loopback {
             unserialize,
             get_memory_data: memory_data,
             get_memory_size: memory_size,
+            loopback_id: Some(id),
         }
     }
 }
@@ -1007,8 +1164,8 @@ mod loopback {
 #[cfg(test)]
 mod tests {
     use super::{
-        QUICKNES_REVISION, QuickNesMachine, STATE_HEADER_LEN, loopback, nes_to_libretro,
-        option_value, validate_sha256,
+        QUICKNES_OPTION_TABLE, QUICKNES_OPTIONS, QUICKNES_REVISION, QuickNesMachine,
+        STATE_HEADER_LEN, loopback, nes_to_libretro, option_value, validate_sha256,
     };
     use crate::{Machine, Moment, StopConditions, StopReason, nes};
 
@@ -1029,25 +1186,18 @@ mod tests {
 
     #[test]
     fn every_fixed_option_is_nul_terminated() {
-        for key in [
-            b"quicknes_aspect_ratio_par".as_slice(),
-            b"quicknes_use_overscan_h",
-            b"quicknes_use_overscan_v",
-            b"quicknes_palette",
-            b"quicknes_no_sprite_limit",
-            b"quicknes_audio_samplerate",
-            b"quicknes_audio_nonlinear",
-            b"quicknes_audio_eq",
-            b"quicknes_turbo_enable",
-            b"quicknes_turbo_pulse_width",
-            b"quicknes_up_down_allowed",
-        ] {
-            assert_eq!(option_value(key).and_then(|value| value.last()), Some(&0));
+        for (key, value) in QUICKNES_OPTION_TABLE {
+            assert_eq!(option_value(key), Some(*value));
+            assert_eq!(value.last(), Some(&0));
         }
+        assert_eq!(
+            QUICKNES_OPTIONS,
+            "headless-hard-audio-video-off;aspect=PAR;overscan_h=enabled;overscan_v=disabled;palette=default;no_sprite_limit=disabled;audio_samplerate=48000;audio_nonlinear=nonlinear;audio_eq=default;turbo=none;turbo_pulse_width=3;up_down_allowed=disabled"
+        );
     }
 
     #[test]
-    fn ffi_seam_runs_snapshots_ram_and_restore_fixpoint() {
+    fn ffi_boundary_runs_snapshots_ram_and_restore_fixpoint() {
         let mut machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
         let base = machine.snapshot().expect("snapshot");
         machine
@@ -1064,11 +1214,9 @@ mod tests {
         let fixed = machine.snapshot().expect("fixed snapshot");
         machine.replay(fixed).expect("fixed restore");
         let fixed_again = machine.snapshot().expect("fixed snapshot again");
-        assert_eq!(
-            machine.export_snapshot(fixed).expect("first bytes"),
-            machine.export_snapshot(fixed_again).expect("second bytes")
-        );
-        let canonical = machine.export_snapshot(fixed).expect("canonical bytes");
+        let canonical = machine.take_snapshot(fixed).expect("first bytes");
+        let repeated = machine.take_snapshot(fixed_again).expect("second bytes");
+        assert_eq!(canonical, repeated);
         assert_eq!(
             &canonical[STATE_HEADER_LEN + 65..STATE_HEADER_LEN + 68],
             &[0; 3]
@@ -1079,21 +1227,27 @@ mod tests {
         let imported = machine.import_snapshot(&noncanonical);
         assert!(machine.replay(imported).is_err());
 
-        let moved = machine
-            .take_snapshot(fixed_again)
-            .expect("move snapshot out");
-        assert_eq!(moved, canonical);
-        assert!(machine.export_snapshot(fixed_again).is_err());
-
-        let mut legacy = canonical.clone();
-        legacy[..8].copy_from_slice(b"HQNESST1");
-        let imported = machine.import_snapshot(&legacy);
-        assert!(machine.replay(imported).is_err());
+        assert!(machine.take_snapshot(fixed_again).is_err());
 
         let foreign_identity = validate_sha256(&"b".repeat(64)).expect("foreign identity");
         let mut foreign = QuickNesMachine::from_api(&[0], foreign_identity, loopback::api())
             .expect("foreign core");
         let imported = foreign.import_snapshot(&canonical);
         assert!(foreign.replay(imported).is_err());
+    }
+
+    #[test]
+    fn loopback_machines_keep_independent_state() {
+        let mut first = QuickNesMachine::loopback_for_tests(&[0]).expect("first loopback core");
+        let second = QuickNesMachine::loopback_for_tests(&[0]).expect("second loopback core");
+        let base = first.snapshot().expect("first snapshot");
+        first
+            .branch(base, &nes::reproducer(&[nes::ButtonChord::new(0, 3)]))
+            .expect("first branch");
+        first
+            .run(StopConditions::default(), None)
+            .expect("first run");
+        assert_eq!(first.read_wram().expect("first RAM")[0], 3);
+        assert_eq!(second.read_wram().expect("second RAM")[0], 0);
     }
 }

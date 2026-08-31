@@ -14,7 +14,8 @@ use crate::{MachineError, Reproducer};
 /// Size of the NES CPU work RAM, the low mirror-free window of the address
 /// space [`Machine::read`] serves.
 pub const WRAM_SIZE: usize = 2 * 1024;
-/// Bytes the NES CPU can address, the length of [`Machine::read`]'s space.
+/// Bytes the NES CPU can address. Backends may expose a smaller readable
+/// window through [`Machine::read`]; QuickNES exposes only [`WRAM_SIZE`].
 pub const ADDRESS_SPACE_SIZE: u64 = 64 * 1024;
 /// Longest controller hold accepted from an input.
 pub const MAX_HOLD_FRAMES: u8 = 120;

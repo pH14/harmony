@@ -9,6 +9,6 @@ test-loopback = []
 
 [dependencies]
 # Pinned for reproducibility; upgrade deliberately.
-libc = "0.2"
+libc = "=0.2.189"
 serde = { version = "=1.0.228", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "=0.10.9"

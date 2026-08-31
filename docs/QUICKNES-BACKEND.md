@@ -16,15 +16,16 @@ The adapter pins QuickNES revision
 `GIT_VERSION`, and all libretro options in `machine::quicknes`. Every stream
 records those choices and the exact shared object's SHA-256. Every persisted
 state carries the revision, binary hash, and fixed state length and rejects
-cross-core or cross-build restore.
+cross-core or cross-build restore. Loading also requires
+`retro_get_system_info().library_version` to equal the pinned revision, so a
+binary built from another revision is rejected even when its hash is supplied.
 
 QuickNES leaves the three bytes named `ppu_state_t::unused2` uninitialized but
 includes them in every libretro state. The adapter parses the core's block
 format, requires the one 52-byte `PPUR` block, and zeros only those three
 semantically unused bytes before a snapshot can enter the search. Restore
-requires that canonical form. The earlier experimental `HQNESST1` state is
-explicitly incompatible; `HQNESST2` prevents its nondeterministic padding from
-being mistaken for a current checkpoint.
+requires that canonical form. `HQNESST2` is the only supported adapter state
+magic; the normal revision and format checks reject other bytes.
 
 Build an external core with:
 
@@ -46,4 +47,22 @@ each machine, loads that private image with local symbol visibility, and
 unlinks it immediately. Workers never share an emulator and no lock serializes
 execution. Video and audio are hard-disabled, controller input is provided
 synchronously, system RAM is read directly from the core's validated 2 KiB
-block, and state uses fixed-buffer serialize/unserialize.
+block, and state uses fixed-buffer serialize/unserialize. The QuickNES machine
+boundary exposes only that 2 KiB work-RAM window through `Machine::read`, not
+the NES CPU's complete 64 KiB address space.
+
+## Behavioral differences from the retired backend
+
+The pinned QuickNES core silently advances past illegal CPU opcodes. Its
+internal `error_count` is not exposed by the pinned libretro ABI, so this
+adapter has no sound signal from which to return `StopReason::Crash` for CPU
+corruption. A heuristic based on game state would misclassify valid execution
+and would not restore the retired backend's oracle. Campaigns therefore record
+only machine failures that the ABI actually reports; illegal-opcode corruption
+can remain live and enter the archive.
+
+The frozen option `quicknes_up_down_allowed=disabled` also filters opposing
+directions. In the default `nes_down_ten` vocabulary, mask `0xc1`
+(A+Left+Right) consequently reaches the game as plain A. Changing the option
+would change the frozen emulator identity and invalidate v2 fixtures, so a
+future vocabulary revision must replace that dead entry instead.
