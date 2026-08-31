@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 
 const MANIFEST_FORMAT: &str = "dissonance-fixture-private-v2";
 const CHALLENGE_FORMAT: &str = "dissonance-fixture-challenge-v2";
+const EVALUATOR_WORKERS: u32 = 12;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct PrivateManifest {
@@ -40,6 +41,9 @@ struct PrivateManifest {
     expected_level: u8,
     expected_progress: u16,
     action_count: usize,
+    workers: u32,
+    action_limit: usize,
+    screen_budget: u64,
     rom_sha256: String,
     emulator_backend: String,
     prefix_sha256: String,
@@ -153,6 +157,9 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         expected_level,
         expected_progress: 0,
         action_count: prefix.actions.len(),
+        workers: EVALUATOR_WORKERS,
+        action_limit,
+        screen_budget,
         rom_sha256: rom_sha256.clone(),
         emulator_backend: game.emulator_identity().to_owned(),
         prefix_sha256,
@@ -171,7 +178,7 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
             level: expected_level,
         }
         .identifier(),
-        workers: 12,
+        workers: EVALUATOR_WORKERS,
         action_limit,
         screen_budget,
     };
@@ -206,7 +213,9 @@ fn verify(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box
         || challenge.checkpoint_sha256 != manifest.checkpoint_sha256
         || challenge.rom_sha256 != manifest.rom_sha256
         || challenge.emulator_backend != manifest.emulator_backend
-        || challenge.workers == 0
+        || challenge.workers != manifest.workers
+        || challenge.action_limit != manifest.action_limit
+        || challenge.screen_budget != manifest.screen_budget
     {
         return Err("private and worker-visible fixture descriptors disagree".into());
     }
@@ -340,12 +349,7 @@ fn read_rom() -> Result<Vec<u8>, Box<dyn Error>> {
 }
 
 fn selected_game(rom: &[u8]) -> Result<SmbGame, Box<dyn Error>> {
-    let core_path = PathBuf::from(
-        env::var_os("HARMONY_QUICKNES_CORE")
-            .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
-    );
-    let core_sha256 = file_sha256(&core_path)?;
-    Ok(SmbGame::new(rom, &core_path, &core_sha256))
+    SmbGame::from_environment(rom)
 }
 
 fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {

@@ -4,10 +4,11 @@
 //! archive key. Numbers are wall-clock and machine-specific; the binary
 //! exists to find which operation bounds campaign throughput.
 
-use std::{env, error::Error, fs, path::PathBuf, time::Instant};
+use std::{env, error::Error, fs, time::Instant};
 
 use searcher::{
-    smb::target::{ButtonChord, SmbTarget},
+    search::campaign::Game,
+    smb::{campaign::SmbGame, target::ButtonChord},
     target::Target,
 };
 use sha2::{Digest, Sha256};
@@ -25,12 +26,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state_rounds = rounds.saturating_mul(100).max(10_000);
 
     let base = target.snapshot().ok_or("snapshot")?;
-    let snapshot_json = serde_json::to_value(&base)?;
-    let emulator_state_bytes = snapshot_json
-        .get("emulator_state")
-        .and_then(serde_json::Value::as_array)
-        .map_or(0, Vec::len);
-    println!("emulator state bytes: {emulator_state_bytes}");
+    println!("emulator state bytes: {}", base.emulator_state_bytes_len());
     println!(
         "complete snapshot JSON bytes: {}",
         serde_json::to_vec(&base)?.len()
@@ -40,10 +36,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fixed = target.snapshot().ok_or("fixpoint snapshot")?;
     target.restore(&fixed)?;
     let fixed_again = target.snapshot().ok_or("second fixpoint snapshot")?;
-    println!(
-        "snapshot restore fixpoint: {}",
-        serde_json::to_vec(&fixed)? == serde_json::to_vec(&fixed_again)?
-    );
+    let restore_fixpoint = fixed == fixed_again;
+    println!("snapshot restore fixpoint: {restore_fixpoint}");
+    if !restore_fixpoint {
+        return Err("snapshot restore did not reach a fixpoint".into());
+    }
 
     let started = Instant::now();
     let mut frames = 0_u64;
@@ -127,15 +124,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn selected_target(rom: &[u8]) -> Result<SmbTarget, Box<dyn Error>> {
-    let core_path = PathBuf::from(
-        env::var_os("HARMONY_QUICKNES_CORE")
-            .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
-    );
-    let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core_path)?));
-    Ok(SmbTarget::from_smb_rom_bytes_headless(
-        rom,
-        &core_path,
-        &core_sha256,
-    )?)
+fn selected_target(rom: &[u8]) -> Result<searcher::smb::target::SmbTarget, Box<dyn Error>> {
+    SmbGame::from_environment(rom)?
+        .new_target()
+        .map_err(Into::into)
 }

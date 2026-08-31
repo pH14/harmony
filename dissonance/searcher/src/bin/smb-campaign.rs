@@ -167,7 +167,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     }
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
-    let game = selected_game(&rom)?;
+    let game = SmbGame::from_environment(&rom)?;
     let checkpoint_format = game.snapshot_checkpoint_format();
     let origin = load_origin(
         &origin_arg.to_string_lossy(),
@@ -237,40 +237,20 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         return Err("unexpected extra replay argument".into());
     }
     let rom = read_rom()?;
-    let game = selected_game(&rom)?;
+    let game = SmbGame::from_environment(&rom)?;
     let checkpoint_format = game.snapshot_checkpoint_format();
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
-    let origin_name = origin_arg.to_string_lossy();
-    let (origin_report, origin_checkpoint) = if origin_name == "genesis" {
-        if checkpoint_arg.is_some() {
-            return Err("genesis replay does not accept a snapshot checkpoint".into());
-        }
-        (None, None)
-    } else if let Some(logical_path) = origin_name.strip_prefix("snapshot-root:") {
-        if logical_path.is_empty() {
-            return Err("snapshot-root origin needs a nonempty logical checkpoint path".into());
-        }
-        let checkpoint_path = checkpoint_arg
-            .as_deref()
-            .ok_or("snapshot-root replay needs a checkpoint file")?;
-        (
-            None,
-            Some(load_checkpoint_as(
-                checkpoint_path,
-                logical_path.to_owned(),
-                checkpoint_format,
-            )?),
-        )
-    } else {
-        (
-            Some(serde_json::from_slice::<SmbArchiveReport>(&fs::read(
-                origin_name.as_ref(),
-            )?)?),
-            checkpoint_arg
-                .as_deref()
-                .map(|path| load_checkpoint(path, checkpoint_format))
-                .transpose()?,
-        )
+    let origin = load_origin(
+        &origin_arg.to_string_lossy(),
+        checkpoint_arg.as_deref(),
+        checkpoint_format,
+    )?;
+    let (origin_report, origin_checkpoint) = match origin {
+        SmbCampaignOrigin::Genesis => (None, None),
+        SmbCampaignOrigin::SnapshotRoot { checkpoint } => (None, Some(checkpoint)),
+        SmbCampaignOrigin::Archive {
+            report, checkpoint, ..
+        } => (Some(*report), checkpoint),
     };
     let (report, checkpoint) = replay_smb_campaign_checkpointed(
         &game,
@@ -474,16 +454,6 @@ fn read_rom() -> Result<Vec<u8>, Box<dyn Error>> {
             .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
     );
     Ok(fs::read(rom_path)?)
-}
-
-fn selected_game(rom: &[u8]) -> Result<SmbGame, Box<dyn Error>> {
-    let core_path = PathBuf::from(
-        env::var_os("HARMONY_QUICKNES_CORE")
-            .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
-    );
-    let core = fs::read(&core_path)?;
-    let core_sha256 = format!("{:x}", Sha256::digest(&core));
-    Ok(SmbGame::new(rom, &core_path, &core_sha256))
 }
 
 #[allow(clippy::cast_precision_loss)] // Throughput display only; counts stay far below 2^52.
