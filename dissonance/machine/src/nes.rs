@@ -51,7 +51,9 @@ pub fn actions_of(env: &Reproducer) -> Result<Vec<ButtonChord>, MachineError> {
     }
     Ok(env
         .bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| ButtonChord::new(pair[0], pair[1]))
         .collect())
 }
