@@ -692,7 +692,30 @@ mod tests {
                 .iter()
                 .copied(),
         );
-        assert!(validate_acceptance(&extra).is_err());
+        assert_eq!(
+            validate_acceptance(&extra),
+            Err(M3ReportError::WrongRowCount {
+                expected: WORKLOAD_ROWS,
+                observed: WORKLOAD_ROWS + 1,
+            })
+        );
+
+        // Rows beyond the fixed workload are counted but deliberately not
+        // parsed: their content is outside the SQL oracle. This pins the
+        // boundary independently from the final row-count rejection.
+        let mut malformed_extra = serial();
+        let position = malformed_extra
+            .windows(marker.len())
+            .position(|w| w == marker)
+            .unwrap();
+        malformed_extra.splice(position..position, b"row|malformed\n".iter().copied());
+        assert_eq!(
+            validate_acceptance(&malformed_extra),
+            Err(M3ReportError::WrongRowCount {
+                expected: WORKLOAD_ROWS,
+                observed: WORKLOAD_ROWS + 1,
+            })
+        );
     }
 
     #[test]

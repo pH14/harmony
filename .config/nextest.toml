@@ -10,3 +10,10 @@ filter = 'test(control::tests::idle_hlt_before_fault_recorded_env_reproduces)'
 # parallel. A prerequisite-destroying mutant can otherwise leave its control
 # loop unbounded after another test has already killed that mutant.
 slow-timeout = { period = "120s", terminate-after = 1 }
+
+[[profile.mutants.overrides]]
+filter = 'test(control::tests::arbitrary_schedule_applied_twice_is_identical) | test(control::tests::verb_sequence_recorded_env_reproduces_live_hash)'
+# These normally complete in about 5s and 20s locally (the latter has reached
+# 55s under full hosted-shard load). Checkpoint mutants can otherwise leave
+# both loops running after a direct truth-table test has already killed them.
+slow-timeout = { period = "75s", terminate-after = 1 }

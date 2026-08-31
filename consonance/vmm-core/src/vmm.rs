@@ -4360,7 +4360,20 @@ mod tests {
         assert!(vmm.doorbell_service_offered(ServiceId::Event as u16));
         assert!(vmm.doorbell_service_offered(ServiceId::Sdk as u16));
         assert!(vmm.doorbell_service_offered(ServiceId::Entropy as u16));
+        assert!(!vmm.doorbell_service_offered(ServiceId::Net as u16));
         assert!(!vmm.doorbell_service_offered(ServiceId::Payload as u16));
+        assert!(!vmm.doorbell_service_offered(ServiceId::Pvclock as u16));
+
+        let mut payload_spec = spec;
+        payload_spec.set_payloads(Some(Vec::new()));
+        let mut payload_vmm = Vmm::new(
+            configured_mock(Vec::new()),
+            GuestRam::new(TEST_RAM).unwrap(),
+        );
+        payload_vmm.enable_sdk(payload_spec.materialize(), payload_spec.policy());
+        assert!(payload_vmm.doorbell_service_offered(ServiceId::Payload as u16));
+        assert!(!payload_vmm.doorbell_service_offered(ServiceId::Pvclock as u16));
+        assert!(!payload_vmm.doorbell_service_offered(u16::MAX));
     }
 
     // ---- task 95 M2.1: the dirty drain (backend log ∪ host-side writes) ----
@@ -4672,6 +4685,44 @@ mod tests {
             let (header, payload) = decode(page).unwrap();
             (step, header.status, payload.to_vec())
         }
+
+        let make_vmm = |entries| {
+            let tape = spec(entries);
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            vmm.enable_sdk(tape.materialize(), tape.policy());
+            vmm
+        };
+
+        let mut zero = make_vmm(vec![Vec::new()]);
+        assert_eq!(
+            ring(&mut zero, 0),
+            (Step::Continued, Status::BadRequest as u16, Vec::new())
+        );
+        assert_eq!(
+            zero.sdk_snapshot().unwrap().remaining_payloads(),
+            Some(vec![Vec::new()]),
+            "zero is rejected before the tape can consume an empty entry"
+        );
+
+        let max_entry = vec![0x5a; MAX_PAYLOAD];
+        let mut exact_max = make_vmm(vec![max_entry.clone()]);
+        assert_eq!(
+            ring(&mut exact_max, MAX_PAYLOAD as u32),
+            (Step::Continued, Status::Ok as u16, max_entry),
+            "the inclusive maximum remains admissible"
+        );
+
+        let oversized_len = MAX_PAYLOAD + 2;
+        let mut oversized = make_vmm(vec![vec![0x33; oversized_len]]);
+        assert_eq!(
+            ring(&mut oversized, oversized_len as u32),
+            (Step::Continued, Status::BadRequest as u16, Vec::new())
+        );
+        assert_eq!(
+            oversized.sdk_snapshot().unwrap().remaining_payloads(),
+            Some(vec![vec![0x33; oversized_len]]),
+            "every value above the maximum is rejected before tape consumption"
+        );
 
         let tape = spec(vec![vec![0x81, 4], vec![0, 2]]);
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());

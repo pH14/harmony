@@ -148,6 +148,10 @@ impl PortableSnapshotRef<'_> {
             out.write_all(bytes)?;
         }
         out.write_all(&policy)?;
+        // Finish the authenticated body before consuming the hash adapter;
+        // the digest itself is then written and flushed through the original
+        // writer below.
+        out.flush()?;
         let digest = out.finish();
         writer.write_all(&digest)?;
         writer.flush()?;
@@ -749,6 +753,60 @@ mod tests {
         }
         .write_to(FlushFails(Vec::new()));
         assert!(matches!(result, Err(PortableSnapshotError::Io(_))));
+    }
+
+    #[test]
+    fn snapshot_writer_flushes_the_body_and_the_complete_artifact() {
+        use std::{cell::Cell, rc::Rc};
+
+        struct FlushCounter {
+            bytes: Vec<u8>,
+            flushes: Rc<Cell<usize>>,
+        }
+        impl Write for FlushCounter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushes.set(self.flushes.get() + 1);
+                Ok(())
+            }
+        }
+
+        let flushes = Rc::new(Cell::new(0));
+        let memory = [0; 1];
+        let policy = FaultPolicy::none();
+        PortableSnapshotRef {
+            memory: &memory,
+            vm_state: b"v",
+            sdk: None,
+            net: None,
+            policy: &policy,
+            at: 0,
+            sdk_events: 0,
+            trace_events: 0,
+            trace_schedules: 0,
+            tainted: false,
+            state_hash: [0; 32],
+        }
+        .write_to(FlushCounter {
+            bytes: Vec::new(),
+            flushes: Rc::clone(&flushes),
+        })
+        .unwrap();
+        assert_eq!(flushes.get(), 2);
+    }
+
+    #[test]
+    fn section_count_bound_uses_division_not_a_loose_product() {
+        let mut bytes = 2_u64.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&[0; 20]);
+        let mut reader = SliceReader::new(&bytes);
+        assert!(matches!(
+            reader.count("planted count", 20),
+            Err(PortableSnapshotError::Malformed("planted count"))
+        ));
     }
 
     #[test]

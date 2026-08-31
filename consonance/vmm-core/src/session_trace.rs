@@ -528,6 +528,7 @@ mod tests {
         assert_eq!(compare_session_traces(&trace, &trace.clone()), Ok(()));
         assert_eq!(check_session_delivery_placement(&trace), Ok(()));
         assert_eq!(trace.event_count(), 3);
+        assert_eq!(trace.schedule_count(), 0);
         assert_eq!(trace.checkpoint_count(), 3);
         assert_eq!(trace.segments()[0].normalized_log().events.len(), 1);
         assert!(trace.segments()[0].schedule().is_empty());
@@ -553,6 +554,8 @@ mod tests {
         });
         let trace = SessionVirtualTimeTrace::from_segments(vec![scheduled]);
         assert_eq!(trace.schedule_count(), 1);
+        assert_eq!(trace.segments()[0].schedule().len(), 1);
+        assert_eq!(trace.segments()[0].schedule()[0].interrupt_id, 27);
         assert!(matches!(
             check_session_delivery_placement(&trace),
             Err(SessionPlacementViolation {
@@ -671,6 +674,24 @@ mod tests {
         let hashes = [[7; 32], [8; 32], [9; 32]];
         assert_eq!(
             compare_portable_continuation(&source, 1, 1, &hashes, &restored, &hashes),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn portable_continuation_accepts_cuts_at_both_exact_ends() {
+        let (source, mut restored) = portable_pair();
+        restored.normalized.events.clear();
+        restored.schedule.clear();
+        assert_eq!(
+            compare_portable_continuation(
+                &source,
+                source.normalized.events.len(),
+                source.schedule.len(),
+                &[],
+                &restored,
+                &[],
+            ),
             Ok(())
         );
     }

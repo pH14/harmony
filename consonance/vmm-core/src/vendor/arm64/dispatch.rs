@@ -89,6 +89,38 @@ fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
     addr >= frame.0 && addr < frame.0 + frame.1
 }
 
+fn pvclock_registration_accepted(status: Status, abi: Option<u32>) -> bool {
+    status == Status::Ok && abi == Some(vtime::pvclock::PVCLOCK_ABI_VERSION)
+}
+
+fn is_64_bit_gic_read(size: u8) -> bool {
+    size == 8
+}
+
+fn join_u32_halves(lo: u32, hi: u32) -> u64 {
+    u64::from(lo) | (u64::from(hi) << 32)
+}
+
+fn no_userspace_or_kernel_gic(userspace_wired: bool, in_kernel_gic: bool) -> bool {
+    !userspace_wired && !in_kernel_gic
+}
+
+fn kernel_gic_only(userspace_wired: bool, in_kernel_gic: bool) -> bool {
+    !userspace_wired && in_kernel_gic
+}
+
+fn same_gic_config(snapshot: (u32, u64, u32), target: (u32, u64, u32)) -> bool {
+    snapshot == target
+}
+
+fn clockevent_present_in_gic(pending: u32, active: u32, line_level: u32, mask: u32) -> bool {
+    (pending | active | line_level) & mask != 0
+}
+
+fn should_reassert_clockevent(intid: u32, line_asserted: bool) -> bool {
+    intid == super::board::PVCLOCK_PPI && line_asserted
+}
+
 /// Whether `addr` is an implemented SPI's 64-bit `GICD_IROUTERn` register.
 /// The uniprocessor model has one fixed affinity target (Aff0..3 = 0), so the
 /// register is stateless and its only supported value is zero.
@@ -299,7 +331,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 })?;
                 // The clockevent PPI is a level input. If a broken guest EOIs without first
                 // ACKing the device, the still-high line becomes pending again.
-                if intid == super::board::PVCLOCK_PPI && self.devices.clockevent.line_asserted {
+                if should_reassert_clockevent(intid, self.devices.clockevent.line_asserted) {
                     gic.assert_line(intid).map_err(|e| {
                         VmmError::ContractViolation(format!(
                             "clockevent PPI level reassertion after EOI failed: {e}"
@@ -503,7 +535,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return match (offset, write) {
                 (0x000, Some(gpa)) => {
                     let (status, abi) = self.pvclock_register(gpa);
-                    if status != Status::Ok || abi != Some(vtime::pvclock::PVCLOCK_ABI_VERSION) {
+                    if !pvclock_registration_accepted(status, abi) {
                         return Err(VmmError::ContractViolation(format!(
                             "arm64 pvclock registration rejected GPA {gpa:#x}: status \
                              {status:?}, abi {abi:?}"
@@ -581,7 +613,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     let lo = gic.mmio_read(frame, offset, now_vns).map_err(|e| {
                         VmmError::ContractViolation(format!("GICv3 read {offset:#x}: {e}"))
                     })?;
-                    let value = if size == 8 {
+                    let value = if is_64_bit_gic_read(size) {
                         let hi_offset = offset.checked_add(4).ok_or_else(|| {
                             VmmError::ContractViolation(
                                 "GICv3 64-bit read offset overflow".to_string(),
@@ -590,7 +622,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                         let hi = gic.mmio_read(frame, hi_offset, now_vns).map_err(|e| {
                             VmmError::ContractViolation(format!("GICv3 read {hi_offset:#x}: {e}"))
                         })?;
-                        u64::from(lo) | (u64::from(hi) << 32)
+                        join_u32_halves(lo, hi)
                     } else {
                         u64::from(lo)
                     };
@@ -775,7 +807,10 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// the fabric is unwired (the x86 unwired-LAPIC posture: the backend's
     /// inject seam is never touched and `state_hash` carries no fabric chunk).
     pub(crate) fn service_pending_irqs_arm64(&mut self) -> Result<(), VmmError> {
-        if self.devices.gic.is_none() && !self.backend.capabilities().arch.in_kernel_gic {
+        if no_userspace_or_kernel_gic(
+            self.devices.gic.is_some(),
+            self.backend.capabilities().arch.in_kernel_gic,
+        ) {
             return Ok(());
         }
         if self.devices.gic.is_none() {
@@ -814,7 +849,10 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// Peeks without advancing (the run loop advances before every entry, so
     /// at an idle exit the fabric is already current). No fabric ⇒ never.
     pub(crate) fn pending_deliverable_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
-        if self.devices.gic.is_none() && self.backend.capabilities().arch.in_kernel_gic {
+        if kernel_gic_only(
+            self.devices.gic.is_some(),
+            self.backend.capabilities().arch.in_kernel_gic,
+        ) {
             return Ok(self.devices.clockevent.line_asserted);
         }
         Ok(self
@@ -1000,9 +1038,10 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 // guest sees. Reject a mismatch (the LAPIC wiring-mismatch
                 // posture), never a silent adoption.
                 let have = target.config();
-                if (gs.impl_spis, gs.timer_hz, gs.timer_intid)
-                    != (have.impl_spis, have.timer_hz, have.timer_intid)
-                {
+                if !same_gic_config(
+                    (gs.impl_spis, gs.timer_hz, gs.timer_intid),
+                    (have.impl_spis, have.timer_hz, have.timer_intid),
+                ) {
                     return Err(VmmError::ContractViolation(format!(
                         "restore_vm_state: GICv3 config mismatch (snapshot impl_spis={} timer_hz={} \
                          timer_intid={} vs this VM's {}/{}/{}) — the distributor bound and the \
@@ -1027,9 +1066,10 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             }
             (Some(gs), true, None) => {
                 let have = super::board::gic_config();
-                if (gs.impl_spis, gs.timer_hz, gs.timer_intid)
-                    != (have.impl_spis, have.timer_hz, have.timer_intid)
-                {
+                if !same_gic_config(
+                    (gs.impl_spis, gs.timer_hz, gs.timer_intid),
+                    (have.impl_spis, have.timer_hz, have.timer_intid),
+                ) {
                     return Err(VmmError::ContractViolation(format!(
                         "restore_vm_state: GICv3 config mismatch (snapshot impl_spis={} timer_hz={} \
                          timer_intid={} vs this VM's {}/{}/{}) — restore into a VM composed like \
@@ -1118,7 +1158,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     )));
                 };
                 let mask = 1u32 << super::board::PVCLOCK_PPI;
-                if (gs.pending[0] | gs.active[0] | gs.line_level[0]) & mask == 0 {
+                if !clockevent_present_in_gic(gs.pending[0], gs.active[0], gs.line_level[0], mask) {
                     return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
                         "asserted clockevent line absent from GIC pending/active state",
                     )));
@@ -1354,7 +1394,9 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vendor::arm64::board::{GICD, GICR, IMPL_SPIS, PL011, new_gic};
+    use crate::vendor::arm64::board::{
+        CNTFRQ_HZ, GICD, GICR, IMPL_SPIS, PL011, PVCLOCK_PPI, new_gic,
+    };
     use crate::vmm::GuestRam;
     use vmm_backend::{Arm64Exit, Arm64MockCompletion, Arm64Policy, MockArm64Backend};
 
@@ -1362,6 +1404,73 @@ mod tests {
         let mut backend = MockArm64Backend::with_exits(exits);
         backend.set_policy(&Arm64Policy::default()).unwrap();
         Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+    }
+
+    #[test]
+    fn dispatch_boundary_predicates_have_complete_truth_tables() {
+        let abi = vtime::pvclock::PVCLOCK_ABI_VERSION;
+        assert!(pvclock_registration_accepted(Status::Ok, Some(abi)));
+        assert!(!pvclock_registration_accepted(Status::Ok, None));
+        assert!(!pvclock_registration_accepted(
+            Status::BadRequest,
+            Some(abi)
+        ));
+        assert!(!pvclock_registration_accepted(Status::BadRequest, None));
+
+        assert!(!is_64_bit_gic_read(4));
+        assert!(is_64_bit_gic_read(8));
+        assert_eq!(
+            join_u32_halves(0x89ab_cdef, 0x0123_4567),
+            0x0123_4567_89ab_cdef
+        );
+
+        assert!(no_userspace_or_kernel_gic(false, false));
+        assert!(!no_userspace_or_kernel_gic(false, true));
+        assert!(!no_userspace_or_kernel_gic(true, false));
+        assert!(!no_userspace_or_kernel_gic(true, true));
+        assert!(!kernel_gic_only(false, false));
+        assert!(kernel_gic_only(false, true));
+        assert!(!kernel_gic_only(true, false));
+        assert!(!kernel_gic_only(true, true));
+
+        let config = (32, 1_000_000_000, 27);
+        assert!(same_gic_config(config, config));
+        assert!(!same_gic_config(config, (64, config.1, config.2)));
+        assert!(!same_gic_config(config, (config.0, 999, config.2)));
+        assert!(!same_gic_config(config, (config.0, config.1, 30)));
+
+        let mask = 1 << 5;
+        assert!(!clockevent_present_in_gic(0, 0, 0, mask));
+        assert!(clockevent_present_in_gic(mask, 0, 0, mask));
+        assert!(clockevent_present_in_gic(0, mask, 0, mask));
+        assert!(clockevent_present_in_gic(0, 0, mask, mask));
+        assert!(!clockevent_present_in_gic(1, 2, 4, mask));
+
+        assert!(!should_reassert_clockevent(PVCLOCK_PPI, false));
+        assert!(should_reassert_clockevent(PVCLOCK_PPI, true));
+        assert!(!should_reassert_clockevent(PVCLOCK_PPI - 1, true));
+        assert!(!should_reassert_clockevent(PVCLOCK_PPI + 1, true));
+    }
+
+    #[test]
+    fn next_timer_deadline_distinguishes_none_from_an_armed_clockevent() {
+        use crate::vmm::VtimeWiring;
+
+        let mut vmm = mock_vmm(Vec::new());
+        assert_eq!(vmm.next_timer_deadline_vns_arm64(), None);
+        vmm.wire_vtime(
+            VtimeWiring::new_virtual_time(
+                vtime::VClockConfig {
+                    guest_hz: CNTFRQ_HZ,
+                    guest_base: 0,
+                    vns_base: 0,
+                },
+                7,
+            )
+            .unwrap(),
+        );
+        vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+        assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
     }
 
     /// The N6 PMU listing is a deny surface: every trapped access becomes

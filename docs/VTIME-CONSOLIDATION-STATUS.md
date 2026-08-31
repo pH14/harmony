@@ -2549,3 +2549,65 @@ survivor. Shards 0 through 4, the general gate, coverage, Kani, and public API
 had already passed. The profile limit is raised to 120 seconds, still bounded
 well below the job tripwire, so a prerequisite-destroying mutant remains a
 loud per-test failure without rejecting a slow but unmodified hosted baseline.
+
+The corrected exact-head run then passed shard 6 and exposed three genuine
+Payload-service boundary survivors in shard 12: collapsing the zero/oversize
+disjunction, treating only equality with the maximum as invalid, and rejecting
+the inclusive maximum. The strengthened oracle uses an empty tape entry to
+prove zero is rejected before consumption, accepts and returns an entry of
+exactly `MAX_PAYLOAD`, and uses a matching oversized tape entry to prove every
+larger request is rejected before consumption. The exact five-mutant condition
+family then completed locally with four caught and one unviable; no survivor
+or timeout remained.
+
+Shard 8 next exposed two portable-snapshot survivors. `HashWriter::flush` had
+been a forwarding method with no observable call site because the adapter was
+consumed before only the underlying writer was flushed; the encoder now
+flushes the authenticated body through the adapter and then flushes the final
+artifact after appending its digest, with an oracle requiring both calls. A
+direct `SliceReader::count` negative now proves the admissible record count is
+bounded by `remaining / minimum_record_len`, rather than by a loose product.
+The exact eight-mutant family completed locally with all eight caught.
+
+Shard 10 reported two checkpoint-helper timeouts, not survivors: a direct
+truth-table oracle failed immediately, but two already-running control loops
+continued until cargo-mutants' 97-second whole-suite timeout and converted the
+failure into a timeout verdict. The mutation profile now gives those two tests
+75-second bounds (their local baselines are about 5 and 20 seconds, with the
+longer observed at 55 seconds under full hosted load), while cargo-mutants has
+a 180-second minimum whole-suite timeout. This preserves a loud bounded test
+failure and gives nextest time to report it. The exact four-mutant
+`synchronous_checkpoint_due` family then completed locally with all four
+caught.
+
+The remainder of that discovery run was allowed to drain rather than being
+discarded after the first failures. Shard 11 exposed an offered-service guard
+gap; shard 14 exposed ARM MMIO, interrupt, deadline, and restore-expression
+gaps; shard 7 exposed the M3 extra-row boundary and a snapshot flag expression;
+and the partially completed shards 9 and 13 exposed session-trace accessors,
+exact-end continuation cuts, and the ARM clockevent-EOI identity condition.
+The run was cancelled by GitHub only after those partial logs had been
+preserved. No additional Consonance command was launched on msr1.
+
+The new oracles pin every one of those behaviors directly. A payload-equipped
+SDK composition now proves that Payload is offered without accidentally
+offering pvclock or unknown services. The M3 oracle proves a malformed row
+beyond the fixed workload is counted but not parsed. ARM dispatch and restore
+conditions are factored into pure predicates with complete truth tables for
+pvclock registration, 32/64-bit GIC reads, high-half placement, userspace vs
+in-kernel GIC ownership, exact GIC configuration, clockevent bitmap presence,
+and EOI reassertion identity. The deadline oracle distinguishes no timer from
+an exact armed deadline. Session-trace tests observe a nonempty schedule,
+distinguish zero from one total schedule, and accept event and schedule cuts
+at their exact ends.
+
+Focused local mutation evidence is: all 39 relevant ARM predicate/deadline
+mutants caught (the one reported miss in that 53-candidate invocation was an
+unrelated x86 struct-field candidate that cargo-mutants admitted despite the
+name filter); the exact six session-trace survivors produced five caught and
+one unviable; the EOI predicate produced four caught; and the exact M3 and
+Payload survivors were each caught individually. The snapshot shard's
+`FLAG_SDK` mutation is `1 << 0` to `1 >> 0`: both are identically one, which the
+wire-value test correctly cannot distinguish. Only that exact source-line
+mutation is excluded; the neighboring NET and TAINTED shifts remain gated and
+were caught in the same focused run.
