@@ -263,8 +263,6 @@ pub fn vmm_core::vendor::arm64::board::gic_config() -> gicv3::device::GicConfig
 pub fn vmm_core::vendor::arm64::board::new_gic() -> gicv3::device::Gicv3
 pub mod vmm_core::vendor::arm64::bringup
 pub fn vmm_core::vendor::arm64::bringup::boot<B: vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>>(B, &[u8], &str, usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::arm64::bringup::boot_selected(&[u8], &[u8], &str, usize) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>>>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vendor::arm64::bringup::boot_selected_control(&[u8], &[u8], &str, usize) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>>>, vmm_core::vmm::VmmError>
 pub mod vmm_core::vendor::arm64::contract
 pub const vmm_core::vendor::arm64::contract::ARCH_CONTROL_EXIT_VNS: u64
 pub const vmm_core::vendor::arm64::contract::IDENTITY_BASELINE: [(u32, u64); 21]
@@ -358,6 +356,11 @@ impl vmm_core::vendor::x86::bringup::ImageKind
 pub fn vmm_core::vendor::x86::bringup::ImageKind::detect(&[u8]) -> core::option::Option<vmm_core::vendor::x86::bringup::ImageKind>
 pub fn vmm_core::vendor::x86::bringup::boot<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::boot_linux<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], &[u8], usize, &str) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_linux_patched_with_dirty_log(&[u8], &[u8], usize, &str, u64, bool) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_linux_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(&[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_patched_corpus(&[u8], usize, u64) -> core::result::Result<vmm_core::corpus::CorpusMachine<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], usize, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::compose_restore_target<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, snapshot_store::mapping::Mapping, bool) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
 pub mod vmm_core::vendor::x86::contract
 pub enum vmm_core::vendor::x86::contract::MsrDisposition

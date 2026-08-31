@@ -5,10 +5,10 @@
 //! Regenerates this crate's public surface with `cargo public-api` on the
 //! pinned nightly toolchain and asserts it byte-matches the committed
 //! `tests/public-api.txt`. Any drift in the frozen public contract becomes a
-//! failing test and a reviewable diff. `vmm-core` has Linux-only public
-//! composition items (`bringup::boot_selected`), so the frozen
-//! surface is the **Linux** one (generated/checked on the Linux box); the test
-//! skips loudly on other platforms, where the surface is a strict subset.
+//! failing test and a reviewable diff. `vmm-core` has architecture-specific
+//! Linux composition items, so the frozen surface is the **x86-64 Linux** one
+//! generated and checked by CI. The test skips loudly on other targets, whose
+//! concrete composition surface is different.
 //!
 //! Refresh after an intentional, reviewed API change:
 //!   `UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api`
@@ -28,12 +28,10 @@ const CRATE: &str = "vmm-core";
 #[test]
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]
 fn public_api_matches_snapshot() {
-    // vmm-core has Linux-only public composition items, so the frozen
-    // surface is the **Linux** one. On other platforms it is a strict subset — skip
-    // loudly there (mirroring `vmm-backend`'s public-api test) rather than diffing a
-    // subset against the Linux snapshot. The CI public-api job runs on the Linux box.
-    if !cfg!(target_os = "linux") {
-        eprintln!("SKIP: {CRATE} public-api test — frozen on Linux (boot_selected is Linux-only)");
+    // The concrete composition functions differ by architecture. CI freezes
+    // the x86-64 Linux surface; do not compare another target against it.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        eprintln!("SKIP: {CRATE} public-api test — frozen on x86-64 Linux");
         return;
     }
 
