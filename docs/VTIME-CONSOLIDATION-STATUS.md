@@ -2464,3 +2464,16 @@ existed. Kani is now pinned independently to 0.67.0, its cache key carries that
 version, and installation is skipped only when the cached binary reports that
 exact version; a different cached version is replaced with `--force`. The
 formal proofs therefore run instead of failing or passing through a stale tool.
+
+The subsequent general gate passed the complete current-main Dissonance format,
+Clippy, and release test suite (59 tests, including the long seed sweep), then
+failed its dependency audit because upstream yanked `chacha20` 0.10.1 from the
+unchanged `dissonance/Cargo.lock`. The pull request still has no Dissonance path
+diff, so changing that lockfile here would mix independent work into the
+Consonance branch. The shared workflow now fetches enough history to compare
+the checked-out commit with its first parent and runs the full standalone
+Dissonance gate exactly when that diff touches `dissonance/`; otherwise it
+records an explicit out-of-scope skip. This preserves the gate on Dissonance
+pull requests and main pushes while preventing unrelated changes from being
+blocked by its independently pinned dependency graph. A missing first parent
+is a hard workflow failure, not a silent skip.

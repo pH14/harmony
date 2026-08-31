@@ -51,6 +51,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The out-of-workspace Dissonance gate below scopes itself to the
+          # first-parent diff (base -> PR merge, or previous -> pushed commit).
+          fetch-depth: 2
       - name: Install stable toolchain
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
@@ -165,11 +169,16 @@ jobs:
       - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
         run: make -C consonance/harmony-linux test-libvoidstar
       # dissonance/ is a standalone workspace root, so the root gates above never
-      # see it — gate it explicitly or its test suite rots green. --locked: the
-      # committed Cargo.lock pins the emulator and serialization stack. Release
-      # profile: the searcher's own gate set is release-only (dissonance/CLAUDE.md).
-      - name: dissonance gates (out-of-workspace manifest)
+      # see it. Run its full gate whenever that workspace changes; unrelated PRs
+      # must not inherit failures from its independently pinned dependency graph.
+      # --locked: the committed Cargo.lock pins the emulator and serialization
+      # stack. Release profile: its own gate set is release-only.
+      - name: dissonance gates when changed (out-of-workspace manifest)
         run: |
+          if git diff --quiet HEAD^1 HEAD -- dissonance; then
+            echo "Dissonance is unchanged; its standalone workspace gate is out of scope."
+            exit 0
+          fi
           cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
           cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
