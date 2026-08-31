@@ -2,7 +2,14 @@
 
 //! Recorded campaign-mode conquest runs and their exact replays.
 
-use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
+use std::{
+    env,
+    error::Error,
+    fs,
+    io::{BufReader, BufWriter, Read},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use searcher::{
     search::archive::{
@@ -279,21 +286,25 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     )?;
     fs::write(run_dir.join("snapshots-replay.bin"), checkpoint.to_bytes()?)?;
 
-    let archive_live = fs::read(run_dir.join("archive-live.json"))?;
-    let archive_replay = fs::read(run_dir.join("archive-replay.json"))?;
-    let report_live = fs::read(run_dir.join("campaign-report.json"))?;
-    let report_replay = fs::read(run_dir.join("campaign-report-replay.json"))?;
-    let snapshots_live = fs::read(run_dir.join("snapshots-live.bin"))?;
-    let snapshots_replay = fs::read(run_dir.join("snapshots-replay.bin"))?;
-    let replay_verified = archive_live == archive_replay
-        && report_live == report_replay
-        && snapshots_live == snapshots_replay;
+    let stream_sha256 = report.stream_sha256.clone();
+    let executions_completed = report.executions_completed;
+    drop(checkpoint);
+    drop(report);
+    let archive_live = run_dir.join("archive-live.json");
+    let archive_replay = run_dir.join("archive-replay.json");
+    let report_live = run_dir.join("campaign-report.json");
+    let report_replay = run_dir.join("campaign-report-replay.json");
+    let snapshots_live = run_dir.join("snapshots-live.bin");
+    let snapshots_replay = run_dir.join("snapshots-replay.bin");
+    let replay_verified = files_equal(&archive_live, &archive_replay)?
+        && files_equal(&report_live, &report_replay)?
+        && files_equal(&snapshots_live, &snapshots_replay)?;
     let verdict = serde_json::json!({
         "replay_verified": replay_verified,
-        "archive_sha256": format!("{:x}", Sha256::digest(&archive_live)),
-        "report_sha256": format!("{:x}", Sha256::digest(&report_live)),
-        "stream_sha256": report.stream_sha256,
-        "executions_completed": report.executions_completed,
+        "archive_sha256": sha256_file(&archive_live)?,
+        "report_sha256": sha256_file(&report_live)?,
+        "stream_sha256": stream_sha256,
+        "executions_completed": executions_completed,
     });
     fs::write(
         run_dir.join("replay-verdict.json"),
@@ -304,6 +315,40 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         return Err("campaign replay diverged from the recorded run".into());
     }
     Ok(())
+}
+
+fn files_equal(left: &Path, right: &Path) -> Result<bool, Box<dyn Error>> {
+    if fs::metadata(left)?.len() != fs::metadata(right)?.len() {
+        return Ok(false);
+    }
+    let mut left = BufReader::new(fs::File::open(left)?);
+    let mut right = BufReader::new(fs::File::open(right)?);
+    let mut left_buffer = vec![0_u8; 1024 * 1024];
+    let mut right_buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let left_read = left.read(&mut left_buffer)?;
+        let right_read = right.read(&mut right_buffer)?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
+    let mut file = BufReader::new(fs::File::open(path)?);
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn load_origin(

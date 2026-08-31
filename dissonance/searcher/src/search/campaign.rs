@@ -2511,39 +2511,23 @@ where
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
-    let replay_origin: CampaignOrigin<G> = match header.origin_kind.as_str() {
-        "genesis" => CampaignOrigin::Genesis,
-        "snapshot_root" => CampaignOrigin::SnapshotRoot {
-            checkpoint: origin_checkpoint
-                .cloned()
-                .ok_or("snapshot-root replay requires its snapshot checkpoint")?,
-        },
-        "archive" => CampaignOrigin::Archive {
-            path: header.origin_path.clone().unwrap_or_default(),
-            file_sha256: header.origin_archive_sha256.clone().unwrap_or_default(),
-            report: Box::new(
-                origin_report
-                    .ok_or("archive campaign replay requires the source archive")?
-                    .clone(),
-            ),
-            checkpoint: origin_checkpoint.cloned(),
-        },
-        _ => return Err("campaign stream origin kind is not recognized".into()),
-    };
     if let Some(checkpoint) = origin_checkpoint
         && (header.origin_checkpoint_sha256.as_deref() != Some(checkpoint.file_sha256.as_str())
             || header.origin_checkpoint_path.as_deref() != Some(checkpoint.path.as_str()))
     {
         return Err("campaign replay checkpoint does not match the recorded stream".into());
     }
-    let draw_origin = match &replay_origin {
-        CampaignOrigin::Genesis => None,
-        CampaignOrigin::SnapshotRoot { .. } => None,
-        CampaignOrigin::Archive {
-            file_sha256,
-            report,
-            ..
-        } => Some((file_sha256.as_str(), report.as_ref())),
+    // Replay already borrows the decoded origin from its caller. Do not clone
+    // a mature archive and its multi-gigabyte checkpoint merely to satisfy the
+    // live-run ownership shape: the clone survives the whole replay and can
+    // double peak memory without changing any campaign state.
+    let draw_origin = match header.origin_kind.as_str() {
+        "archive" => Some((
+            header.origin_archive_sha256.as_deref().unwrap_or_default(),
+            origin_report.ok_or("archive campaign replay requires the source archive")?,
+        )),
+        "genesis" | "snapshot_root" => None,
+        _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     let (mut draw_state, replay_draw_header) = game.initial_draw_state(&replay_run, draw_origin)?;
     if replay_draw_header != header.draw_table {
@@ -2558,7 +2542,27 @@ where
         format!("failed to build the replay target: {error}").into()
     })?;
     let frames_before = game.frames_clocked(&target);
-    counters.tree_import = bootstrap_core(game, &mut core, &mut target, &replay_origin)?;
+    counters.tree_import = match header.origin_kind.as_str() {
+        "genesis" => {
+            core.bootstrap(game, &mut target)?;
+            None
+        }
+        "snapshot_root" => {
+            core.bootstrap_snapshot_root(
+                game,
+                &mut target,
+                origin_checkpoint.ok_or("snapshot-root replay requires its snapshot checkpoint")?,
+            )?;
+            None
+        }
+        "archive" => Some(core.import_tree(
+            game,
+            &mut target,
+            origin_report.ok_or("archive campaign replay requires the source archive")?,
+            origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
+        )?),
+        _ => return Err("campaign stream origin kind is not recognized".into()),
+    };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
 
     for line in record_lines {

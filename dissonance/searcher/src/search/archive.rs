@@ -688,10 +688,87 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// Active entries under the cap, pooled by walk class (deepest first)
     /// and, inside each class, by selection cell.
     classes: BTreeMap<Reverse<K::Group>, ClassCells<K>>,
+    /// Live child groups beneath each selected parent group, indexed by the
+    /// child depth. These are derived selector state and preserve the exact
+    /// ordered group sets the walk previously rebuilt on every draw.
+    live_children: LiveChildren<K>,
+    /// Number of live selection cells in each pooled group, indexed by depth.
+    /// The cell depth itself is represented by `CellMembers::sampleable`.
+    live_group_cells: LiveGroupCells<K>,
+    /// Active and live progress-band groups per walk class. Their key counts
+    /// reproduce `classes_skipped` without rescanning every cell.
+    active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
+    live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
 }
 
 /// Members of one walk class, ascending per selection cell.
-type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, Vec<usize>>;
+type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, CellMembers>;
+type GroupPair<K> = (<K as ArchiveKey>::Group, <K as ArchiveKey>::Group);
+type LiveChildren<K> = Vec<BTreeMap<GroupPair<K>, BTreeSet<<K as ArchiveKey>::Group>>>;
+type LiveGroupCells<K> = Vec<BTreeMap<GroupPair<K>, usize>>;
+
+#[derive(Default)]
+struct CellMembers {
+    ids: Vec<usize>,
+    sampleable: usize,
+}
+
+fn update_count<T: Copy + Ord>(map: &mut BTreeMap<T, usize>, key: T, add: bool) -> bool {
+    if add {
+        let count = map.entry(key).or_default();
+        let transitioned = *count == 0;
+        *count = count.saturating_add(1);
+        transitioned
+    } else {
+        let Some(count) = map.get_mut(&key) else {
+            return false;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            map.remove(&key);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn decrement_nested_count<T: Copy + Ord>(
+    map: &mut BTreeMap<T, BTreeMap<T, usize>>,
+    outer: T,
+    inner: T,
+) {
+    let Some(counts) = map.get_mut(&outer) else {
+        return;
+    };
+    if let Some(count) = counts.get_mut(&inner) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            counts.remove(&inner);
+        }
+    }
+    if counts.is_empty() {
+        map.remove(&outer);
+    }
+}
+
+fn update_child<T: Copy + Ord>(
+    children: &mut BTreeMap<(T, T), BTreeSet<T>>,
+    class: T,
+    parent: T,
+    child: T,
+    add: bool,
+) {
+    let key = (class, parent);
+    if add {
+        children.entry(key).or_default().insert(child);
+    } else if let Some(values) = children.get_mut(&key) {
+        values.remove(&child);
+        if values.is_empty() {
+            children.remove(&key);
+        }
+    }
+}
 
 impl<A, K, M, S> Archive<A, K, M, S>
 where
@@ -735,6 +812,10 @@ where
             frontier_cap: None,
             active_list: Vec::new(),
             classes: BTreeMap::new(),
+            live_children: vec![BTreeMap::new(); K::groups()],
+            live_group_cells: vec![BTreeMap::new(); K::groups()],
+            active_skip_groups: BTreeMap::new(),
+            live_skip_groups: BTreeMap::new(),
         }
     }
 
@@ -755,15 +836,13 @@ where
         self.frontier_cap = Some(max_actions);
         self.active_list = self.active_ids(max_actions);
         self.classes = BTreeMap::new();
-        let depth = Self::class_depth();
-        for id in &self.active_list {
-            let key = self.entries[*id].report.key;
-            self.classes
-                .entry(Reverse(key.group(depth)))
-                .or_default()
-                .entry(key.group(Self::cell_depth()))
-                .or_default()
-                .push(*id);
+        self.live_children.iter_mut().for_each(BTreeMap::clear);
+        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
+        self.active_skip_groups.clear();
+        self.live_skip_groups.clear();
+        let active = self.active_list.clone();
+        for id in active {
+            self.insert_active_cell_member(id);
         }
     }
 
@@ -777,13 +856,7 @@ where
             return;
         }
         self.active_list.push(id);
-        let key = self.entries[id].report.key;
-        self.classes
-            .entry(Reverse(key.group(Self::class_depth())))
-            .or_default()
-            .entry(key.group(Self::cell_depth()))
-            .or_default()
-            .push(id);
+        self.insert_active_cell_member(id);
     }
 
     /// Drop a displaced entry from the selector index.
@@ -797,17 +870,154 @@ where
         let key = self.entries[id].report.key;
         let class = Reverse(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
+        let was_sampleable = self.entry_unexhausted(id);
+        let mut became_dead = false;
+        let mut removed_cell = false;
+        let mut removed_class = false;
         if let Some(cells) = self.classes.get_mut(&class) {
             if let Some(members) = cells.get_mut(&cell) {
-                if let Ok(position) = members.binary_search(&id) {
-                    members.remove(position);
+                if let Ok(position) = members.ids.binary_search(&id) {
+                    members.ids.remove(position);
+                    if was_sampleable {
+                        members.sampleable = members.sampleable.saturating_sub(1);
+                    }
+                    became_dead = members.sampleable == 0 && was_sampleable;
                 }
-                if members.is_empty() {
+                if members.ids.is_empty() {
                     cells.remove(&cell);
+                    removed_cell = true;
                 }
             }
-            if cells.is_empty() {
-                self.classes.remove(&class);
+            removed_class = cells.is_empty();
+        }
+        if removed_class {
+            self.classes.remove(&class);
+        }
+        if became_dead {
+            self.set_cell_live(key, false);
+        }
+        if removed_cell {
+            self.remove_active_cell(key);
+        }
+    }
+
+    fn insert_active_cell_member(&mut self, id: usize) {
+        let key = self.entries[id].report.key;
+        let class = Reverse(key.group(Self::class_depth()));
+        let cell = key.group(Self::cell_depth());
+        let sampleable = self.entry_unexhausted(id);
+        let members = self
+            .classes
+            .entry(class)
+            .or_default()
+            .entry(cell)
+            .or_default();
+        let new_cell = members.ids.is_empty();
+        let was_live = members.sampleable > 0;
+        members.ids.push(id);
+        members.sampleable = members.sampleable.saturating_add(usize::from(sampleable));
+        if new_cell {
+            self.insert_active_cell(key);
+        }
+        if !was_live && sampleable {
+            self.set_cell_live(key, true);
+        }
+    }
+
+    fn insert_active_cell(&mut self, key: K) {
+        let class = key.group(Self::class_depth());
+        let skip = key.group(2.min(Self::class_depth()));
+        *self
+            .active_skip_groups
+            .entry(class)
+            .or_default()
+            .entry(skip)
+            .or_default() += 1;
+    }
+
+    fn remove_active_cell(&mut self, key: K) {
+        let class = key.group(Self::class_depth());
+        let skip = key.group(2.min(Self::class_depth()));
+        decrement_nested_count(&mut self.active_skip_groups, class, skip);
+    }
+
+    fn set_cell_live(&mut self, key: K, live: bool) {
+        let class = key.group(Self::class_depth());
+        let skip = key.group(2.min(Self::class_depth()));
+        if live {
+            *self
+                .live_skip_groups
+                .entry(class)
+                .or_default()
+                .entry(skip)
+                .or_default() += 1;
+        } else {
+            decrement_nested_count(&mut self.live_skip_groups, class, skip);
+        }
+
+        let cell_depth = Self::cell_depth();
+        let class_depth = Self::class_depth();
+        if cell_depth < class_depth {
+            update_child(
+                &mut self.live_children[cell_depth],
+                class,
+                key.group(cell_depth + 1),
+                key.group(cell_depth),
+                live,
+            );
+        }
+        for depth in (cell_depth + 1)..=class_depth {
+            let group = key.group(depth);
+            let map_key = (class, group);
+            let transitioned = update_count(&mut self.live_group_cells[depth], map_key, live);
+            if transitioned && depth < class_depth {
+                update_child(
+                    &mut self.live_children[depth],
+                    class,
+                    key.group(depth + 1),
+                    group,
+                    live,
+                );
+            }
+        }
+    }
+
+    fn set_entry_sampleable(&mut self, id: usize, sampleable: bool) {
+        let key = self.entries[id].report.key;
+        let class = Reverse(key.group(Self::class_depth()));
+        let cell = key.group(Self::cell_depth());
+        let Some(members) = self
+            .classes
+            .get_mut(&class)
+            .and_then(|cells| cells.get_mut(&cell))
+        else {
+            return;
+        };
+        let was_live = members.sampleable > 0;
+        if sampleable {
+            members.sampleable = members.sampleable.saturating_add(1);
+        } else {
+            members.sampleable = members.sampleable.saturating_sub(1);
+        }
+        let live = members.sampleable > 0;
+        if live != was_live {
+            self.set_cell_live(key, live);
+        }
+    }
+
+    fn rebuild_live_selector_index(&mut self) {
+        self.live_children.iter_mut().for_each(BTreeMap::clear);
+        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
+        self.live_skip_groups.clear();
+        for cells in self.classes.values_mut() {
+            for members in cells.values_mut() {
+                members.sampleable = 0;
+            }
+        }
+        let active = self.active_list.clone();
+        for id in active {
+            if self.entry_unexhausted(id) {
+                self.set_entry_sampleable(id, true);
             }
         }
     }
@@ -1010,6 +1220,7 @@ where
         let cell = parent_key.group(Self::cell_depth());
         let members = self.classes.get(&class)?.get(&cell)?;
         let donor = members
+            .ids
             .iter()
             .filter(|member| **member != parent)
             .max_by_key(|member| self.deepest_leaf[**member])?;
@@ -1038,6 +1249,7 @@ where
         let cell = parent_key.group(Self::cell_depth());
         let members = self.classes.get(&class)?.get(&cell)?;
         let donor_id = members
+            .ids
             .iter()
             .filter(|member| **member != parent)
             .max_by_key(|member| self.deepest_leaf[**member])
@@ -1195,6 +1407,18 @@ where
         classes_skipped: &mut u64,
         ignore_streaks: bool,
     ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
+        if !ignore_streaks && !matches!(self.selector_policy, SelectorPolicy::Retire(_)) {
+            return self.walk_live_index(rand, classes_skipped);
+        }
+        self.walk_to_cell_scan(rand, classes_skipped, ignore_streaks)
+    }
+
+    fn walk_to_cell_scan(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        classes_skipped: &mut u64,
+        ignore_streaks: bool,
+    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
         let skip_depth = 2.min(Self::coarsest_depth());
         for cell_map in self.classes.values() {
             let mut cells = Vec::new();
@@ -1206,10 +1430,11 @@ where
                 // and only the finally chosen cell's live members are
                 // materialized, so a draw allocates one member list rather
                 // than one per cell.
-                let key = self.entries[members[0]].report.key;
+                let key = self.entries[members.ids[0]].report.key;
                 let group_live = ignore_streaks || self.groups_unexhausted(key);
                 let live = group_live
                     && members
+                        .ids
                         .iter()
                         .any(|id| ignore_streaks || self.entry_unexhausted(*id));
                 let subclass = subclass_live.entry(key.group(skip_depth)).or_insert(false);
@@ -1254,11 +1479,85 @@ where
             let members = cells.swap_remove(index).1;
             return Ok(Some(
                 members
+                    .ids
                     .iter()
                     .copied()
                     .filter(|id| ignore_streaks || self.entry_unexhausted(*id))
                     .collect(),
             ));
+        }
+        Ok(None)
+    }
+
+    fn walk_live_index(
+        &self,
+        rand: &mut RomuDuoJrRand,
+        classes_skipped: &mut u64,
+    ) -> Result<Option<Vec<usize>>, Box<dyn Error>> {
+        let class_depth = Self::class_depth();
+        let cell_depth = Self::cell_depth();
+        for (reverse_class, cells) in &self.classes {
+            let class = reverse_class.0;
+            let active_skip = self.active_skip_groups.get(&class).map_or(0, BTreeMap::len);
+            let live_skip = self.live_skip_groups.get(&class).map_or(0, BTreeMap::len);
+            *classes_skipped = classes_skipped.saturating_add(
+                u64::try_from(active_skip.saturating_sub(live_skip)).unwrap_or(u64::MAX),
+            );
+            if live_skip == 0 {
+                continue;
+            }
+
+            let mut parent = class;
+            for depth in ((cell_depth + 1)..class_depth).rev() {
+                let groups = self
+                    .live_children
+                    .get(depth)
+                    .and_then(|children| children.get(&(class, parent)))
+                    .ok_or("live selector hierarchy is missing a pooled group")?
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>();
+                let index = self.draw_group_index(rand, depth, &groups)?;
+                parent = groups[index];
+            }
+
+            let cell = if cell_depth < class_depth {
+                let groups = self
+                    .live_children
+                    .get(cell_depth)
+                    .and_then(|children| children.get(&(class, parent)))
+                    .ok_or("live selector hierarchy is missing a selection cell")?
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>();
+                if class_depth >= 1 {
+                    groups[self.draw_group_index(rand, cell_depth, &groups)?]
+                } else {
+                    groups[rand
+                        .below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
+                }
+            } else {
+                let only = [class];
+                if class_depth >= 1 {
+                    let _ = self.draw_group_index(rand, cell_depth, &only)?;
+                } else {
+                    let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
+                }
+                class
+            };
+            let members = cells
+                .get(&cell)
+                .ok_or("live selector hierarchy chose an absent cell")?;
+            let sampleable = members
+                .ids
+                .iter()
+                .copied()
+                .filter(|id| self.entry_unexhausted(*id))
+                .collect::<Vec<_>>();
+            if sampleable.len() != members.sampleable {
+                return Err("live selector cell count diverged from entry state".into());
+            }
+            return Ok(Some(sampleable));
         }
         Ok(None)
     }
@@ -1453,9 +1752,14 @@ where
             for map in &mut self.group_barren {
                 map.clear();
             }
+            self.rebuild_live_selector_index();
         }
+        let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
+        if was_sampleable && !self.entry_unexhausted(id) {
+            self.set_entry_sampleable(id, false);
+        }
         if matches!(
             self.selector_policy,
             SelectorPolicy::Retire(_)
@@ -1515,8 +1819,12 @@ where
         if !retained_descendant {
             return;
         }
+        let was_sampleable = self.entry_unexhausted(id);
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
+        if !was_sampleable && self.entry_unexhausted(id) {
+            self.set_entry_sampleable(id, true);
+        }
         // Retire clears its pooled counters on any retained child so
         // historical streams replay unchanged; energy clears only when a
         // child opened a new retention slot, because admission that keeps
@@ -1708,6 +2016,67 @@ mod tests {
                 .expect("retain flat entry");
         }
         archive
+    }
+
+    #[test]
+    fn live_hierarchy_matches_the_original_cell_scan_across_exhaustion() {
+        let keys = [
+            [0, 0, 0, 0],
+            [1, 0, 0, 0],
+            [0, 1, 0, 0],
+            [1, 1, 0, 0],
+            [0, 0, 1, 0],
+            [1, 0, 1, 0],
+            [0, 1, 1, 0],
+            [1, 1, 1, 0],
+            [0, 0, 0, 1],
+            [1, 0, 0, 1],
+            [0, 1, 0, 1],
+            [1, 1, 0, 1],
+        ];
+        let mut archive = flat_archive::<5>(&keys);
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 2,
+            groups: vec![3, 4, 5],
+        });
+        archive.rebuild_selector_index(10);
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_cace);
+        for step in 0..100 {
+            let mut cached_rand = rand;
+            let mut scanned_rand = rand;
+            let mut cached_skipped = 0;
+            let mut scanned_skipped = 0;
+            let cached = archive
+                .walk_live_index(&mut cached_rand, &mut cached_skipped)
+                .expect("cached walk");
+            let scanned = archive
+                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, false)
+                .expect("scanned walk");
+            assert_eq!(cached, scanned);
+            assert_eq!(cached_skipped, scanned_skipped);
+            assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
+            rand = cached_rand;
+
+            let Some(cached) = cached else {
+                let draw = SelectorDraw {
+                    path: SelectorPath::GroupWalk,
+                    classes_skipped: cached_skipped,
+                    counter_reset: true,
+                    concentration: None,
+                };
+                archive.record_selection(0, &draw);
+                continue;
+            };
+            let id = cached[step % cached.len()];
+            let draw = SelectorDraw {
+                path: SelectorPath::GroupWalk,
+                classes_skipped: cached_skipped,
+                counter_reset: false,
+                concentration: None,
+            };
+            archive.record_selection(id, &draw);
+            archive.record_selection_outcome(id, step % 3 == 0, false, false);
+        }
     }
 
     /// A splice tail is the cell-mate's stored path to its deepest

@@ -278,6 +278,107 @@ expected to change the deterministic search trajectory. These are two 24-worker,
 No search policy or game knowledge was changed or tuned for these results.
 Only the deterministic coordination window changed.
 
+## Deep-archive selector-index follow-up
+
+An exploratory 24-worker run from SMB genesis exposed a second scale-dependent
+cost after the archive grew far beyond the 30K acceptance campaigns. The run
+was stopped on request after 366,686 stream jobs (366,564 in the last sidecar
+sample), 1,675 seconds, and 792,251 retained candidates. It reached 2-2. The
+first entry into each level was:
+
+| Level | Elapsed | Executions |
+| --- | ---: | ---: |
+| 1-1 | 0 s | 1 |
+| 1-2 | 5 s | 18,151 |
+| 1-3 | 69 s | 85,717 |
+| 1-4 | 207 s | 151,199 |
+| 2-1 | 286 s | 176,266 |
+| 2-2 | 604 s | 245,010 |
+
+That exploratory binary carried a level-transition logger which called the
+read-only `live_progress` full-archive scan after every admission. At roughly
+800K entries the logger itself became an O(archive-size) serial stage, so its
+3--4-core utilization was not production behavior. The partial evidence is
+preserved on `ms02` in
+`results/experiment-e2e/ms02-genesis-24-1m-1h`; the logger was never added to
+the production branch.
+
+The uninstrumented production binary was then profiled from the last complete
+checkpoint: 350,000 source executions and 754,944 retained entries. In a
+10,000-job sample, 96.4% of parent-selection time was spent in
+`walk_to_cell`. Every draw scanned the deepest walk class and reconstructed
+the same live room/band/cell hierarchy from 587K active entries and 404K
+occupied cells.
+
+The retained change keeps that hierarchy as derived state. Inserts,
+displacements, exhaustion, productivity, and deterministic counter resets
+update ordered `BTreeMap`/`BTreeSet` indexes; the seeded draw still sees the
+same ordered group set at every depth. The serialized archive, public API,
+selector policy, random draws, and accounting are unchanged. A unit test
+drives exhaustion and reactivation while comparing every cached walk and the
+post-walk RNG state against the original full scan.
+
+The same 24-worker, 10,000-job mature campaign before and after measured:
+
+| Metric | Full scan | Derived live index | Change |
+| --- | ---: | ---: | ---: |
+| search-loop wall time | 10.181 s | 8.516 s | 1.195x faster |
+| search-loop executions/s | 982.267 | 1,174.257 | 1.195x |
+| parent selection | 4.330 s | 0.208 s | 20.84x faster |
+| worker busy fraction | 80.06% | 96.45% | +16.39 pp |
+| total 24-core CPU occupancy | 82.66% | 97.75% | +15.09 pp |
+
+The complete CLI rate, which additionally materializes and writes the final
+755K-entry report and 12 GiB checkpoint after the search has stopped, improved
+from 461.647 to 501.587 executions/s. Those final-output costs are intentionally
+excluded from the worker-saturation calculation.
+
+A short fixed 2,000-job mature curve records the hybrid-core shape and the
+one-time index-build sensitivity:
+
+| Workers | Search-loop executions/s | Frames/s | Worker busy fraction |
+| ---: | ---: | ---: | ---: |
+| 1 | 89.604 | 40,927.42 | 99.6% |
+| 2 | 137.577 | 80,408.24 | 98.9% |
+| 4 | 353.444 | 151,686.69 | 97.3% |
+| 8 | 522.576 | 291,655.28 | 93.4% |
+| 16 | 675.228 | 454,334.03 | 80.3% |
+| 24 | 769.372 | 660,552.51 | 86.4% |
+
+The longer 10K point is the saturation result because it amortizes rebuilding
+the derived index from the imported tree: workers occupy 96.45% of their
+available core-time and the coordinator lifts total machine CPU occupancy to
+97.75%.
+
+The optimized 10K stream, archive JSON, and snapshot checkpoint matched the
+full-scan artifacts byte-for-byte. Formal replay also passed with
+`replay_verified: true`; its stream SHA-256 is
+`31af97d732615bfbdd1b7c6b325100036dc854f8285ad3c2c8e7f761e445707a`.
+The replay CLI now borrows the decoded source archive instead of cloning it and
+compares multi-gigabyte artifacts through bounded buffers instead of reading
+both files wholly into memory. This removed two replay-only memory spikes; it
+does not change campaign state or recorded bytes.
+
+## msr1 QuickNES scaling
+
+The same short protocol was also run on the 12-core arm64 `msr1`: genesis,
+seed `6672613057367113729`, action limit 512, and 2,000 executions per point.
+Its locally built pinned QuickNES core has SHA-256
+`5a65587bf6faa5bc86ea05648b81b0e01e5f639ea5020166a14b5d96a92a3db0`.
+
+| Workers | Executions/s | Speedup | Efficiency | Process cores used |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 114.108 | 1.000x | 100.0% | 1.01 |
+| 2 | 235.339 | 2.062x | 103.1% | 2.00 |
+| 4 | 412.508 | 3.615x | 90.4% | 3.90 |
+| 8 | 671.451 | 5.884x | 73.6% | 7.39 |
+| 12 | 781.984 | 6.853x | 57.1% | 10.41 |
+
+All five streams replayed exactly. The 12-worker point is 23.49x the historical
+33.294 executions/s old-box baseline, but that ratio is cross-host context,
+not a controlled same-machine before/after comparison. Raw artifacts are in
+`/root/harmony-searcher-scaling/experiment-perf` on `msr1`.
+
 ## Validation gates
 
 The root workspace passed `cargo build --all-features`, 1,224 nextest tests,
