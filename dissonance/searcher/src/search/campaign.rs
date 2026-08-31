@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
-    io::Write,
+    io::{BufWriter, Write},
     path::PathBuf,
     time::Duration,
 };
@@ -1611,10 +1611,12 @@ where
         entries: Vec<EntryRef<'a, S>>,
     }
     let archive_tmp = directory.join("checkpoint-archive.json.tmp");
-    std::fs::write(
-        &archive_tmp,
-        serde_json::to_vec(&core.archive_report_snapshot(game, campaign_seed))?,
-    )?;
+    let report = core.archive_report_snapshot(game, campaign_seed);
+    {
+        let mut archive_writer = BufWriter::new(std::fs::File::create(&archive_tmp)?);
+        serde_json::to_writer(&mut archive_writer, &report)?;
+        archive_writer.flush()?;
+    }
     let entries = core
         .archive
         .entries
@@ -1629,7 +1631,11 @@ where
         entries,
     };
     let snapshots_tmp = directory.join("checkpoint-snapshots.bin.tmp");
-    std::fs::write(&snapshots_tmp, postcard::to_allocvec(&checkpoint)?)?;
+    {
+        let mut snapshots_writer = BufWriter::new(std::fs::File::create(&snapshots_tmp)?);
+        postcard::to_io(&checkpoint, &mut snapshots_writer)?;
+        snapshots_writer.flush()?;
+    }
     std::fs::rename(&archive_tmp, directory.join("checkpoint-archive.json"))?;
     std::fs::rename(&snapshots_tmp, directory.join("checkpoint-snapshots.bin"))?;
     Ok(())

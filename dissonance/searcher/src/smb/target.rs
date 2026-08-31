@@ -7,11 +7,11 @@
 //! boundary or encodes actions as controller inputs; the emulator itself sits
 //! behind [`machine::Machine`].
 
-use std::{error::Error, path::Path};
+use std::{error::Error, path::Path, sync::Arc};
 
 use crate::target::ExitKind;
 use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
@@ -57,10 +57,77 @@ pub struct SmbObservations {
 /// Complete in-memory state needed to resume an NES prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbSnapshot {
-    emulator_state: Vec<u8>,
+    emulator_state: SharedState,
     observation: SmbObservations,
     dead: bool,
     failed: bool,
+}
+
+const STATE_CHUNK_SIZE: usize = 512;
+
+#[derive(Debug, Eq, PartialEq)]
+struct SharedStateInner {
+    chunks: Vec<Arc<[u8; STATE_CHUNK_SIZE]>>,
+    len: usize,
+}
+
+/// Copy-on-write emulator bytes. Its Serde representation is deliberately
+/// identical to `Vec<u8>`, so sharing is an in-memory detail and recorded
+/// streams/checkpoints do not change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SharedState(Arc<SharedStateInner>);
+
+impl SharedState {
+    fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
+        let mut chunks = Vec::with_capacity(bytes.len().div_ceil(STATE_CHUNK_SIZE));
+        for (index, source) in bytes.chunks(STATE_CHUNK_SIZE).enumerate() {
+            let mut chunk = [0_u8; STATE_CHUNK_SIZE];
+            chunk[..source.len()].copy_from_slice(source);
+            let shared = base
+                .and_then(|state| state.0.chunks.get(index))
+                .filter(|existing| existing.as_ref() == &chunk)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(chunk));
+            chunks.push(shared);
+        }
+        Self(Arc::new(SharedStateInner {
+            chunks,
+            len: bytes.len(),
+        }))
+    }
+
+    fn materialize(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.0.len);
+        for chunk in &self.0.chunks {
+            let remaining = self.0.len.saturating_sub(bytes.len());
+            bytes.extend_from_slice(&chunk[..remaining.min(STATE_CHUNK_SIZE)]);
+        }
+        bytes
+    }
+}
+
+impl Serialize for SharedState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len))?;
+        for index in 0..self.0.len {
+            sequence.serialize_element(
+                &self.0.chunks[index / STATE_CHUNK_SIZE][index % STATE_CHUNK_SIZE],
+            )?;
+        }
+        sequence.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SharedState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<u8>::deserialize(deserializer).map(|bytes| Self::from_bytes(bytes, None))
+    }
 }
 
 impl SmbSnapshot {
@@ -103,6 +170,7 @@ pub struct SmbTarget {
     action_observations: Vec<SmbObservations>,
     dead: bool,
     failed: bool,
+    snapshot_base: Option<SharedState>,
 }
 
 impl SmbTarget {
@@ -129,6 +197,7 @@ impl SmbTarget {
             observation,
             dead: false,
             failed: false,
+            snapshot_base: None,
         })
     }
 
@@ -323,6 +392,7 @@ impl Target for SmbTarget {
 
     fn reset(&mut self) {
         self.failed = self.machine.replay(self.genesis).is_err();
+        self.snapshot_base = None;
         self.dead = false;
         let wram = self.wram();
         self.observation = self.observation_from(&wram, 0, &[0; WRAM_SIZE], false);
@@ -429,6 +499,8 @@ impl Target for SmbTarget {
             self.failed = true;
             return None;
         };
+        let emulator_state = SharedState::from_bytes(emulator_state, self.snapshot_base.as_ref());
+        self.snapshot_base = Some(emulator_state.clone());
         Some(SmbSnapshot {
             emulator_state,
             observation: self.observation.clone(),
@@ -438,10 +510,12 @@ impl Target for SmbTarget {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        let imported = self.machine.import_snapshot(&snapshot.emulator_state);
+        let emulator_state = snapshot.emulator_state.materialize();
+        let imported = self.machine.import_snapshot(&emulator_state);
         let restored = self.machine.replay(imported);
         let _ = self.machine.drop_snapshot(imported);
         restored.map_err(|error| error.to_string())?;
+        self.snapshot_base = Some(snapshot.emulator_state.clone());
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.dead = snapshot.dead;
@@ -607,10 +681,41 @@ fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
-        smb_mechanical_state_from_wram,
+        ButtonChord, MAX_HOLD_FRAMES, STATE_CHUNK_SIZE, SharedState, SmbTarget, WRAM_SIZE,
+        smb_is_victory, smb_mechanical_state_from_wram,
     };
     use crate::target::Target;
+    use std::sync::Arc;
+
+    #[test]
+    fn shared_state_preserves_the_flat_byte_wire_format() {
+        let bytes = (0_u16..333).map(|value| value as u8).collect::<Vec<_>>();
+        let state = SharedState::from_bytes(bytes.clone(), None);
+        assert_eq!(state.materialize(), bytes);
+        assert_eq!(
+            postcard::to_allocvec(&state).expect("encode shared state"),
+            postcard::to_allocvec(&bytes).expect("encode flat state")
+        );
+        assert_eq!(
+            serde_json::to_vec(&state).expect("encode shared JSON"),
+            serde_json::to_vec(&bytes).expect("encode flat JSON")
+        );
+        let decoded: SharedState =
+            postcard::from_bytes(&postcard::to_allocvec(&state).expect("encode round-trip state"))
+                .expect("decode shared state");
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn shared_state_reuses_only_byte_identical_chunks() {
+        let base = SharedState::from_bytes(vec![1_u8; STATE_CHUNK_SIZE * 3], None);
+        let mut changed = base.materialize();
+        changed[STATE_CHUNK_SIZE + 1] = 2;
+        let child = SharedState::from_bytes(changed, Some(&base));
+        assert!(Arc::ptr_eq(&base.0.chunks[0], &child.0.chunks[0]));
+        assert!(!Arc::ptr_eq(&base.0.chunks[1], &child.0.chunks[1]));
+        assert!(Arc::ptr_eq(&base.0.chunks[2], &child.0.chunks[2]));
+    }
 
     #[test]
     fn chord_duration_is_total_and_bounded() {

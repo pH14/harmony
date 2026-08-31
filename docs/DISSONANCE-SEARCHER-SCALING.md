@@ -379,11 +379,55 @@ All five streams replayed exactly. The 12-worker point is 23.49x the historical
 not a controlled same-machine before/after comparison. Raw artifacts are in
 `/root/harmony-searcher-scaling/experiment-perf` on `msr1`.
 
+## Follow-up memory and speculative-work experiments
+
+QuickNES states are 12,912 bytes, but adjacent parent/child states differ in
+only 234 bytes on average. The retained in-memory representation splits each
+state into 512-byte reference-counted chunks and reuses byte-identical chunks
+from the restored parent. Its Serde representation remains exactly the same
+byte sequence as the former `Vec<u8>`. Checkpoint and report I/O now streams
+through bounded buffers instead of first allocating a second complete encoded
+artifact.
+
+On the same 24-worker 30K genesis campaign, the flat and shared versions ran at
+3,642.811 and 3,642.712 executions/s respectively, while peak RSS fell from
+2,020,292 KiB to 506,744 KiB: a 74.9% reduction with no measurable throughput
+cost. The matching mature-resume probe used the same source archive,
+checkpoint, seed, 2,000 executions, and 523,999 emulated frames:
+
+| Representation | Peak RSS | Executions/s |
+| --- | ---: | ---: |
+| Flat states and whole-file I/O | 3,101,424 KiB | 1,402.190 |
+| Shared 512-byte chunks and streamed I/O | 1,387,780 KiB | 1,555.855 |
+
+That is 55.3% lower peak RSS on resume. A full 30K continuation from the same
+61,481-entry source completed at 2,241.825 executions/s and 633,864.77
+frames/s. The final retained genesis stream replayed with byte-identical
+report, archive, and checkpoint artifacts; its stream SHA-256 is
+`34113b35ba2123416de50f5305b2c1bc09d1f2f6a5c8fd17884e0df19868fae1`.
+
+Two ways of avoiding speculative duplicate work were measured and removed:
+
+- A deterministic pending-input index reduced duplicate admission decisions
+  from 5,428 to 3,874 (28.6%), but a paired 30K run fell from 3,634.151 to
+  3,579.136 executions/s. A fixed executed-job budget replaces suppressed
+  duplicates with other jobs; the replacements happened to contain more
+  emulator frames. This is a search-efficiency change, not a throughput win.
+- Reducing the reservation window exposed why the duplicate work exists. With
+  8, 16, 32, 48, and 64 jobs per worker, aggregate frame rates were 423K,
+  623K, 697K, 723K, and 738K frames/s. Long-tail jobs drain shallow queues
+  while deterministic admission waits for a reservation gap. The 64-job
+  window remains the smallest measured setting that keeps all cores saturated.
+
+The rejected pending-input implementation replayed exactly before removal. No
+transition cache, dependency scheduler, new search policy, or game knowledge
+was retained.
+
 ## Validation gates
 
 The root workspace passed `cargo build --all-features`, 1,224 nextest tests,
 clippy with warnings denied, formatting, and `cargo deny check`. The standalone
-Dissonance workspace passed the same five gates with 73 nextest tests. The
+Dissonance workspace passed the same five gates with 77 nextest tests. The
 unsafe `machine` crate passed `cargo +nightly miri test -p machine` (6 tests),
 including the libretro function-table seam, fixed-buffer state, direct-RAM
 access, padding canonicalization, and restore fixpoint.

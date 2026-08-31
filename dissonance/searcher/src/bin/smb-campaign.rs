@@ -6,7 +6,7 @@ use std::{
     env,
     error::Error,
     fs,
-    io::{BufReader, BufWriter, Read},
+    io::{BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -211,7 +211,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         "archive-live.json",
         "campaign-report.json",
     )?;
-    fs::write(output.join("snapshots-live.bin"), checkpoint.to_bytes()?)?;
+    write_snapshot_file(&output.join("snapshots-live.bin"), &checkpoint)?;
     let throughput = LiveThroughput {
         wall_seconds,
         executions_completed: report.executions_completed,
@@ -284,7 +284,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         "archive-replay.json",
         "campaign-report-replay.json",
     )?;
-    fs::write(run_dir.join("snapshots-replay.bin"), checkpoint.to_bytes()?)?;
+    write_snapshot_file(&run_dir.join("snapshots-replay.bin"), &checkpoint)?;
 
     let stream_sha256 = report.stream_sha256.clone();
     let executions_completed = report.executions_completed;
@@ -375,11 +375,12 @@ fn load_origin(
             )?,
         });
     }
-    let bytes = fs::read(origin_arg)?;
-    let report: SmbArchiveReport = serde_json::from_slice(&bytes)?;
+    let file_sha256 = sha256_file(Path::new(origin_arg))?;
+    let report: SmbArchiveReport =
+        serde_json::from_reader(BufReader::new(fs::File::open(origin_arg)?))?;
     Ok(SmbCampaignOrigin::Archive {
         path: origin_arg.to_owned(),
-        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+        file_sha256,
         report: Box::new(report),
         checkpoint: checkpoint_path
             .map(|path| load_checkpoint(path, checkpoint_format))
@@ -399,11 +400,19 @@ fn load_checkpoint_as(
     logical_path: String,
     checkpoint_format: &str,
 ) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
-    let bytes = fs::read(path)?;
+    let mut scratch = vec![0_u8; 1024 * 1024];
+    let (snapshots, _) = postcard::from_io((
+        BufReader::new(fs::File::open(path)?),
+        scratch.as_mut_slice(),
+    ))?;
+    let snapshots: SmbSnapshotCheckpoint = snapshots;
+    if snapshots.format != checkpoint_format {
+        return Err("snapshot checkpoint format is not recognized".into());
+    }
     Ok(SmbCampaignCheckpoint {
         path: logical_path,
-        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
-        snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes, checkpoint_format)?,
+        file_sha256: sha256_file(path)?,
+        snapshots,
     })
 }
 
@@ -413,14 +422,25 @@ fn write_report_files(
     archive_name: &str,
     report_name: &str,
 ) -> Result<(), Box<dyn Error>> {
-    fs::write(
-        directory.join(archive_name),
-        serde_json::to_vec_pretty(&report.archive)?,
-    )?;
-    fs::write(
-        directory.join(report_name),
-        serde_json::to_vec_pretty(report)?,
-    )?;
+    write_json_pretty(&directory.join(archive_name), &report.archive)?;
+    write_json_pretty(&directory.join(report_name), report)?;
+    Ok(())
+}
+
+fn write_json_pretty(path: &Path, value: &impl Serialize) -> Result<(), Box<dyn Error>> {
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_snapshot_file(
+    path: &Path,
+    checkpoint: &SmbSnapshotCheckpoint,
+) -> Result<(), Box<dyn Error>> {
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    postcard::to_io(checkpoint, &mut writer)?;
+    writer.flush()?;
     Ok(())
 }
 
