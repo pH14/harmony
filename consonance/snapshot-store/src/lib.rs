@@ -763,6 +763,12 @@ mod tests {
         assert_eq!(raw.finish(), 0);
         assert_ne!(fold(&zero), 0);
 
+        // A non-word-sized write must fold its padded tail. Full 32-byte page
+        // hashes never take this branch, so pin it independently.
+        let mut tail = PageHashHasher::default();
+        tail.write(&[0x12, 0x34, 0x56]);
+        assert_eq!(tail.finish(), 0x56_3412);
+
         // XOR-folding is not a mixer: two keys whose four 8-byte words cancel to the
         // same value fold identically — [0xFF; 32] and [0; 32] both cancel to 0. That
         // is sound *here* only because these keys are BLAKE3 digests of page content,
@@ -987,7 +993,9 @@ mod tests {
         builder.write_page(1, &[0x5a; PAGE_SIZE]).unwrap();
         let snap = builder.seal(b"vcpu-device-state".to_vec());
 
-        store.corrupt_page_for_test(snap, 1, 7, 0x80).unwrap();
+        // The mask equals the source byte: XOR clears it while OR and AND both
+        // leave it untouched, making the integrity negative mutation-sensitive.
+        store.corrupt_page_for_test(snap, 1, 7, 0x5a).unwrap();
         let mut out = [0_u8; PAGE_SIZE];
         assert!(matches!(
             store.read_page(snap, 1, &mut out),
@@ -1000,7 +1008,7 @@ mod tests {
 
         let mut clean = Store::new(StoreConfig { mem_pages: 1 });
         let snap = clean.begin_base().seal(b"vcpu-device-state".to_vec());
-        clean.corrupt_vm_state_for_test(snap, 5, 0x01).unwrap();
+        clean.corrupt_vm_state_for_test(snap, 5, b'd').unwrap();
         assert!(matches!(
             clean.vm_state(snap),
             Err(StoreError::VmStateIntegrity)

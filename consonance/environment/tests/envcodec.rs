@@ -375,6 +375,23 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
         "standing in tail is rejected"
     );
 
+    // Payload tapes are a second, independent non-composable axis. Exercise
+    // each side alone so weakening either `||` guard cannot pass.
+    let mut base_payloads = plain.clone();
+    base_payloads.set_payloads(Some(vec![vec![1, 2, 3]]));
+    assert_eq!(
+        EnvCodec::compose(&base_payloads, &plain, 0),
+        Err(EnvError::UnsupportedComposition),
+        "payload tape in base is rejected"
+    );
+    let mut tail_payloads = plain.clone();
+    tail_payloads.set_payloads(Some(vec![vec![4, 5]]));
+    assert_eq!(
+        EnvCodec::compose(&plain, &tail_payloads, 0),
+        Err(EnvError::UnsupportedComposition),
+        "payload tape in tail is rejected"
+    );
+
     // Seed mismatch — two Recorded envs (so the Seeded check passes) with
     // different seeds. One EnvSpec cannot carry a piecewise stream.
     let rec = |seed, policy| EnvSpec::Recorded {

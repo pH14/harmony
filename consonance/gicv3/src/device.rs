@@ -571,7 +571,7 @@ impl Gicv3 {
         let (w, b) = ((intid / 32) as usize, intid % 32);
         if self.enable[w] & (1 << b) == 0
             || self.group[w] & (1 << b) == 0
-            || self.active[w] & (1 << b) != 0
+            || bitmap_contains(&self.active, intid)
         {
             return false;
         }
@@ -597,16 +597,16 @@ impl Gicv3 {
     pub fn active_interrupt(&self) -> Option<u32> {
         let mut best: Option<(u16, u32)> = None;
         for word in 0..BITMAP_WORDS {
-            let mut bits = self.active[word];
-            while bits != 0 {
-                let bit = bits.trailing_zeros();
-                bits &= bits - 1;
+            for bit in 0..32 {
+                if self.active[word] & (1 << bit) == 0 {
+                    continue;
+                }
                 let intid = word as u32 * 32 + bit;
                 if !self.implemented(intid) {
                     continue;
                 }
                 let key = (u16::from(self.priority[intid as usize]), intid);
-                if best.is_none_or(|current| key < current) {
+                if best.is_none_or(|current| key.cmp(&current).is_lt()) {
                     best = Some(key);
                 }
             }
@@ -842,6 +842,11 @@ fn word_index(offset: u64, base: u64) -> Option<usize> {
     }
 }
 
+/// Testable one-bit lookup shared by delivery gates.
+fn bitmap_contains(bitmap: &[u32; BITMAP_WORDS], intid: u32) -> bool {
+    bitmap[(intid / 32) as usize] & (1 << (intid % 32)) != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,6 +948,113 @@ mod tests {
         assert_ne!(typer, planted_typer);
         assert!(ctlr & GICR_CTLR_IR != 0 || typer & (1 << 3) != 0);
         assert_eq!(g.mmio_read(GicFrame::Redist, GICR_TYPER_HI, 0).unwrap(), 0);
+        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_PIDR2, 0).unwrap(), 0x30);
+        assert_eq!(g.mmio_read(GicFrame::Redist, GICR_IIDR, 0).unwrap(), 0);
+        assert_eq!(g.mmio_read(GicFrame::Redist, GICR_PIDR2, 0).unwrap(), 0x30);
+    }
+
+    #[test]
+    fn line_inputs_and_pulses_preserve_exact_bitmap_identity() {
+        let mut g = gic();
+        arm(&mut g, 65, 0x20);
+
+        g.assert_line(65).unwrap();
+        assert_eq!(g.snapshot().line_level[..3], [0, 0, 2]);
+        assert_eq!(g.peek_interrupt(), Some(65));
+        g.deassert_line(65).unwrap();
+        assert_eq!(g.snapshot().line_level[..3], [0, 0, 0]);
+        assert_eq!(g.peek_interrupt(), None);
+
+        g.pulse(65).unwrap();
+        assert_eq!(g.snapshot().pending[..3], [0, 0, 2]);
+        assert_eq!(g.peek_interrupt(), Some(65));
+        assert_eq!(g.assert_line(96), Err(GicError::BadIntId(96)));
+        assert_eq!(g.deassert_line(96), Err(GicError::BadIntId(96)));
+        assert_eq!(g.pulse(96), Err(GicError::BadIntId(96)));
+    }
+
+    #[test]
+    fn pending_and_level_inputs_are_combined_without_cancellation() {
+        let mut g = gic();
+        arm(&mut g, 40, 0x20);
+        g.raise(40).unwrap();
+        g.assert_line(40).unwrap();
+        assert_eq!(g.peek_interrupt(), Some(40));
+    }
+
+    #[test]
+    fn every_input_delivery_gate_is_independently_observable() {
+        let mut g = gic();
+        assert!(!g.group1_enabled());
+        arm(&mut g, 40, 0x40);
+        assert!(g.group1_enabled());
+        assert!(g.input_deliverable(40));
+
+        g.set_group1_enabled(false);
+        assert!(!g.group1_enabled());
+        assert!(!g.input_deliverable(40));
+        g.raise(40).unwrap();
+        assert_eq!(g.peek_interrupt(), None);
+        g.set_group1_enabled(true);
+        assert_eq!(g.peek_interrupt(), Some(40));
+        g.lower(40).unwrap();
+
+        g.mmio_write(GicFrame::Dist, GICD_CTLR, 0, 0).unwrap();
+        assert!(!g.input_deliverable(40));
+        g.raise(40).unwrap();
+        assert_eq!(g.peek_interrupt(), None);
+        g.mmio_write(GicFrame::Dist, GICD_CTLR, GICD_CTLR_ENABLE_GRP1, 0)
+            .unwrap();
+        assert_eq!(g.peek_interrupt(), Some(40));
+        g.lower(40).unwrap();
+
+        g.mmio_write(GicFrame::Dist, ICENABLER_BASE + 4, 1 << 8, 0)
+            .unwrap();
+        assert!(!g.input_deliverable(40));
+        g.mmio_write(GicFrame::Dist, ISENABLER_BASE + 4, 1 << 8, 0)
+            .unwrap();
+
+        g.mmio_write(GicFrame::Dist, IGROUPR_BASE + 4, 0, 0)
+            .unwrap();
+        assert!(!g.input_deliverable(40));
+        g.mmio_write(GicFrame::Dist, IGROUPR_BASE + 4, 1 << 8, 0)
+            .unwrap();
+
+        g.set_pmr(0x40);
+        assert!(!g.input_deliverable(40));
+        g.set_pmr(0x41);
+        assert!(g.input_deliverable(40));
+
+        // A currently active equal-priority interrupt closes only the strict
+        // running-priority gate for 40; a still-higher priority reprogramming
+        // reopens it.
+        arm(&mut g, 41, 0x20);
+        g.raise(41).unwrap();
+        assert_eq!(g.take_interrupt(), Some(41));
+        arm(&mut g, 40, 0x20);
+        assert!(!g.input_deliverable(40));
+        arm(&mut g, 40, 0x10);
+        assert!(g.input_deliverable(40));
+
+        let mut bitmap = [0_u32; BITMAP_WORDS];
+        bitmap[2] = 1 << 1;
+        assert!(bitmap_contains(&bitmap, 65));
+        assert!(!bitmap_contains(&bitmap, 64));
+        assert!(!bitmap_contains(&bitmap, 66));
+    }
+
+    #[test]
+    fn active_interrupt_scans_every_bitmap_word_and_breaks_ties() {
+        let mut g = gic();
+        arm(&mut g, 64, 0x40);
+        g.raise(64).unwrap();
+        assert_eq!(g.take_interrupt(), Some(64));
+        arm(&mut g, 65, 0x20);
+        g.raise(65).unwrap();
+        assert_eq!(g.take_interrupt(), Some(65));
+        assert_eq!(g.active_interrupt(), Some(65));
+        g.eoi(65).unwrap();
+        assert_eq!(g.active_interrupt(), Some(64));
     }
 
     #[test]
@@ -1037,6 +1149,21 @@ mod tests {
         assert!(!g.advance_to(3000));
         g.write_cntv_cval(250); // re-arm
         assert_eq!(g.next_timer_deadline(), Some(4000));
+    }
+
+    #[test]
+    fn timer_delivery_requires_both_a_deadline_and_an_open_input() {
+        let mut g = gic();
+        g.write_cntv_cval(125);
+        g.write_cntv_ctl(CNTV_CTL_ENABLE);
+        assert_eq!(g.next_timer_deadline(), Some(2000));
+        assert!(!g.armed_timer_deliverable());
+
+        arm(&mut g, 27, 0x20);
+        assert!(g.armed_timer_deliverable());
+        g.write_cntv_ctl(0);
+        assert!(g.input_deliverable(27));
+        assert!(!g.armed_timer_deliverable());
     }
 
     #[test]

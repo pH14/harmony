@@ -258,10 +258,9 @@ jobs:
   # timeouts, main.rs exclusion) lives in mutants.toml. Skipped on pushes to
   # main, where there is no diff to compare against.
   #
-  # Sharded 4-way: a single-job run was killed by hosted-runner preemption at
-  # ~59 min twice in a row on a 274-mutant diff (hm-4w7q) — each shard tests a
-  # deterministic quarter of the mutant list so every leg finishes well inside
-  # the preemption window.
+  # Sharded 16-way: large consolidation PRs can contain thousands of mutants;
+  # each shard tests a deterministic sixteenth of the list so every mutant is
+  # retained while each hosted-runner leg stays inside the timeout.
   #
   # Runner survivability (hm-y53x). The ~59-min kills were diagnosed as genuine
   # hosted-runner preemption: the killed steps logged "The runner has received a
@@ -291,17 +290,17 @@ jobs:
   # survive it; that residual is covered by the sharding above plus the
   # self-hosted option in the task-139 write-up.
   mutants:
-    name: mutants (${{ matrix.shard }}/4)
+    name: mutants (${{ matrix.shard }}/16)
     runs-on: ubuntu-latest
     # Comfortably above the observed ~59-min preemption window and far below the
-    # 6h hosted-runner job ceiling; calibrated for the 4-way-sharded job (typical
-    # shard ~30-40 min). See the header comment (hm-y53x).
+    # 6h hosted-runner job ceiling; the 16-way split keeps even large diffs well
+    # below this tripwire. See the header comment (hm-y53x).
     timeout-minutes: 90
     if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -323,7 +322,7 @@ jobs:
         # comment. Exit 2/3 (real surviving/timed-out mutants) is never retried.
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
@@ -342,7 +341,7 @@ jobs:
         # Infra-only retry (same contract as the root step above).
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"

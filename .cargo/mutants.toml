@@ -50,6 +50,13 @@ timeout_multiplier = 3.0
 # (`region`/`run_buf`, the value types, the `MockBackend` run-loop contract).
 exclude_globs = [
     "**/main.rs",
+    # Cargo also treats every file under `src/bin/` as a binary entry point;
+    # most of this repository's hardware probes use descriptive filenames
+    # rather than `main.rs`. They are the same demo/debug/box-only composition
+    # glue described above, and the hosted mutation oracle cannot execute their
+    # HVF or `/dev/kvm` paths. Keep their portable library seams mutation-gated,
+    # but do not count unentered probe mains as surviving library mutants.
+    "**/src/bin/*.rs",
     # `dissonance/campaign-runner`'s box composition root (issue #69 coverage
     # recovery): split out of `main.rs` into its own file so the portable CLI
     # dispatch logic around it stays mutation-gated. Same rationale as the
@@ -92,6 +99,13 @@ exclude_globs = [
     "**/kvm.rs",
     "**/kvm/**",
     "**/kvm_sys.rs",
+    # Target-specific substrate implementations that the Ubuntu mutation
+    # runner does not compile: Hypervisor.framework exists only on Apple
+    # Silicon, and the KVM/arm64 syscall ABI exists only on Linux/aarch64.
+    # Their portable policy/exit/state logic remains in `arm64_kvm.rs`; these
+    # concrete FFI halves are verified by the exact HVF/KVM hardware lanes.
+    "consonance/vmm-backend/src/hvf.rs",
+    "consonance/vmm-backend/src/arm64_kvm_sys.rs",
     # The patched backend syscall orchestration cannot run without its patched
     # `/dev/kvm`, so the portable mutation oracle cannot exercise it.
     "**/patched_kvm.rs",
@@ -118,6 +132,22 @@ exclude_re = [
     #     and byte-merge; CR0 = PE|NE). No test distinguishes OR from XOR for
     #     disjoint operands. Scoped to vmm-core so sibling crates' `|` stays gated.
     "consonance/vmm-core/src/.*replace \\| with \\^",
+    # KVM's ARM64 one-register IDs and vGIC sysreg IDs are concatenations of
+    # non-overlapping ABI bitfields. For these exact expressions `|` and `^`
+    # are mathematically identical; the neighboring `|`→`&`, shift, class,
+    # index, and return-value mutants remain gated by the exact-value tests.
+    "consonance/vmm-backend/src/arm64_kvm\\.rs:(110|434|446|448|450|452|466|501|751):.*replace \\| with \\^",
+    # GICD_CTLR's retained Group-1 bit and the fixed ARE/DS bits occupy
+    # disjoint positions, so OR and XOR return the same register value for all
+    # reachable states. The writable-bit and exact-value mutants stay gated.
+    "replace \\| with \\^ in Gicv3::dist_read",
+    # GICR_IIDR is architecturally zero, and the RD-frame fallback is also
+    # RES0. Removing this explicit documentary arm cannot change any result.
+    "delete match arm GICR_IIDR in Gicv3::redist_read",
+    # TCO and BTYPE occupy disjoint PSTATE bit positions, so OR and XOR are
+    # identical for this constant mask. The clearing and detection operations
+    # that consume the mask remain mutation-gated.
+    "consonance/vmm-backend/src/arch/arm64/state\\.rs.*replace \\| with \\^",
     # (c) Observability-/structurally-unkillable helpers in vmm-core/vmm.rs: the §1
     #     MSR loud-log (`loud_msr`) and the best-effort guest RIP it logs
     #     (`guest_rip`) have no architectural effect and no test-observable return —

@@ -471,6 +471,7 @@ mod tests {
         // descriptor for a null-loaded segment, SVM reports zeros.
         let intel = Segment {
             base: 726582208,
+            selector: 0x23,
             limit: 0xFFFF_FFFF,
             type_: 1,
             db: 1,
@@ -480,6 +481,7 @@ mod tests {
         };
         let amd = Segment {
             base: 726582208,
+            selector: 0x23,
             unusable: 1,
             ..Segment::default()
         };
@@ -495,6 +497,8 @@ mod tests {
         canonicalize_sregs(&mut b);
         assert_eq!(a, b);
         assert_eq!(a.fs.base, 726582208);
+        assert_eq!(a.fs.selector, 0x23);
+        assert_eq!(a.fs.unusable, 1);
     }
 
     #[test]
@@ -525,5 +529,24 @@ mod tests {
         let before = image.clone();
         canonicalize_xsave(&mut image);
         assert_eq!(image, before);
+    }
+
+    #[test]
+    fn xsave_header_length_boundary_is_fail_closed_and_inclusive() {
+        // One byte short cannot contain XCOMP_BV and must return without an
+        // index panic. Exactly 528 bytes does contain the complete header and
+        // must be canonicalized rather than mistaken for a short image.
+        let mut short = vec![0xa5; XCOMP_BV + 7];
+        let before = short.clone();
+        canonicalize_xsave(&mut short);
+        assert_eq!(short, before);
+
+        let mut exact = init_image(0x2);
+        exact.truncate(XCOMP_BV + 8);
+        exact[MXCSR_MASK].copy_from_slice(&0x0002_FFFFu32.to_le_bytes());
+        exact[LEGACY_TAIL].fill(0xa5);
+        canonicalize_xsave(&mut exact);
+        assert_eq!(exact[MXCSR_MASK], MXCSR_MASK_PINNED);
+        assert!(exact[LEGACY_TAIL].iter().all(|&byte| byte == 0));
     }
 }

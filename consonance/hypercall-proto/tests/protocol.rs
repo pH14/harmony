@@ -345,6 +345,21 @@ fn payload_fetch_is_exact_and_exhaustion_is_a_clean_status() {
         client.payload_fetch(&mut []),
         Err(ClientError::InvalidLength)
     );
+    let mut oversized = vec![0_u8; MAX_PAYLOAD + 1];
+    assert_eq!(
+        client.payload_fetch(&mut oversized),
+        Err(ClientError::InvalidLength)
+    );
+
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(
+        ServiceId::Payload,
+        Box::new(OnePayload(Some(vec![0xa5; MAX_PAYLOAD]))),
+    );
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    let mut maximum = vec![0_u8; MAX_PAYLOAD];
+    client.payload_fetch(&mut maximum).unwrap();
+    assert!(maximum.iter().all(|&byte| byte == 0xa5));
 }
 
 /// The task-73 SDK buggify round-trip: the guest `buggify_decide(point)` reaches

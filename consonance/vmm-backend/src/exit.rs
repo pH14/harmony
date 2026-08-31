@@ -114,6 +114,29 @@ impl<A: Arch> From<CommonExit> for Exit<A> {
     }
 }
 
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_mmio_load_stages_a_common_completion() {
+        let load = CommonExit::Mmio {
+            gpa: Gpa(0x1000),
+            size: 4,
+            write: None,
+        };
+        let store = CommonExit::Mmio {
+            gpa: Gpa(0x1000),
+            size: 4,
+            write: Some(7),
+        };
+        assert!(load.stages_completion());
+        assert!(!store.stages_completion());
+        assert!(!CommonExit::Idle.stages_completion());
+        assert!(!CommonExit::Shutdown.stages_completion());
+    }
+}
+
 /// The hypercall argument frame (INTEGRATION.md §1): four guest argument slots
 /// in transport-ABI order — `args[0]` = the transport magic `0x3150_4348`,
 /// `args[1]` = request-page GPA, `args[2]` = response-page GPA, `args[3]` is

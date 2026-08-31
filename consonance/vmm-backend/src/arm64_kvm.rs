@@ -608,11 +608,14 @@ fn vgic_priority_attr(word: usize) -> (u32, u64) {
     }
 }
 
+fn vgic_level_attr(block: u32) -> u64 {
+    VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
+}
+
 /// Capture the in-kernel vGIC through KVM's migration API and normalize it to
 /// the same architectural record used by the userspace model.
 fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
     let mut s = Arm64GicState {
-        version: GIC_STATE_VERSION,
         impl_spis: HARMONY_GIC_IMPL_SPIS,
         timer_hz: HARMONY_TIMER_HZ,
         timer_intid: HARMONY_TIMER_INTID,
@@ -636,7 +639,7 @@ fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
         }
         s.line_level[word] = u32::try_from(k.get_vgic_attr(
             KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
-            VGIC_LEVEL_INFO_LINE_LEVEL | (word as u64 * 32),
+            vgic_level_attr(word as u32 * 32),
             false,
         )?)
         .map_err(|_| BackendError::InvalidState)?;
@@ -711,7 +714,7 @@ fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()
 
         k.set_vgic_attr(
             KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
-            VGIC_LEVEL_INFO_LINE_LEVEL | (word as u64 * 32),
+            vgic_level_attr(word as u32 * 32),
             false,
             u64::from(s.line_level[word]),
         )?;
@@ -1406,7 +1409,7 @@ impl Arm64Kvm for FakeKvm {
         let block = id.0 / 32 * 32;
         let key = (
             KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
-            VGIC_LEVEL_INFO_LINE_LEVEL | u64::from(block),
+            vgic_level_attr(block),
             false,
         );
         let bit = 1u64 << (id.0 % 32);
@@ -1445,11 +1448,7 @@ impl Arm64Kvm for FakeKvm {
         if self.accept_irqs {
             let levels = self
                 .vgic_attrs
-                .get(&(
-                    KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
-                    VGIC_LEVEL_INFO_LINE_LEVEL,
-                    false,
-                ))
+                .get(&(KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(0), false))
                 .copied()
                 .unwrap_or(0);
             let private = levels & 0xffff_0000;
@@ -1591,6 +1590,9 @@ mod tests {
         assert_eq!(KVM_REG_ARM_CORE, 0x10_0000, "0x0010 << 16");
         assert_eq!(KVM_REG_ARM64_SYSREG, 0x13_0000, "0x0013 << 16");
         assert_eq!(KVM_REG_ARM_FW, 0x14_0000, "0x0014 << 16");
+        assert_eq!(KVM_REG_ARM_FW_FEAT_BMAP, 0x16_0000, "0x0016 << 16");
+        assert_eq!(HARMONY_GIC_NR_IRQS, 96);
+        assert_eq!(Arm64GicState::default().version, GIC_STATE_VERSION);
 
         // Full IDs vs the canonical KVM values (the strongest, non-circular
         // pin — verifies the whole encoding: class shift + field layout):
@@ -1604,6 +1606,19 @@ mod tests {
             "KVM firmware pseudo-register 0"
         );
         assert_eq!(KVM_ARM_PSCI_1_0, 0x0001_0000);
+        assert_eq!(KVM_REG_ARM_STD_BMAP, 0x6030_0000_0016_0000);
+        assert_eq!(KVM_REG_ARM_STD_HYP_BMAP, 0x6030_0000_0016_0001);
+        assert_eq!(KVM_REG_ARM_VENDOR_HYP_BMAP, 0x6030_0000_0016_0002);
+        assert_eq!(KVM_REG_ARM_VENDOR_HYP_BMAP_2, 0x6030_0000_0016_0003);
+        assert_eq!(
+            core_reg_sized(KVM_REG_SIZE_U32, 0x155),
+            0x6020_0000_0010_0155
+        );
+        assert_eq!(
+            core_reg_sized(KVM_REG_SIZE_U128, 0x2aa),
+            0x6040_0000_0010_02aa
+        );
+        assert_eq!(vgic_sysreg(3, 2, 11, 5, 6), 0xd5ae);
         assert_eq!(
             sysreg_id(3, 0, 1, 0, 0),
             0x6030_0000_0013_c080,
@@ -1618,6 +1633,144 @@ mod tests {
             sysreg_id(3, 3, 14, 3, 2),
             "the architectural CVAL encoding is KVM_REG_ARM_TIMER_CNT"
         );
+        assert_eq!(KVM_SCTLR_NONPORTABLE_BITS, 0x0200_0020_0000_0000);
+        assert_eq!(KVM_TCR_NONPORTABLE_BITS, 0x0000_0010_0000_0000);
+
+        // Pin both sides of each redistributor/distributor boundary. These
+        // helpers feed the migration ABI directly, so zero-filled round trips
+        // alone are not a sufficient oracle for their address arithmetic.
+        assert_eq!(
+            vgic_bitmap_attr(0, GIC_ISENABLER),
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, 0x1_0100)
+        );
+        assert_eq!(
+            vgic_bitmap_attr(1, GIC_ISENABLER),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x0104)
+        );
+        assert_eq!(
+            vgic_bitmap_attr(17, GIC_ISPENDR),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x0244)
+        );
+        assert_eq!(
+            vgic_priority_attr(0),
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, 0x1_0400)
+        );
+        assert_eq!(
+            vgic_priority_attr(7),
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, 0x1_041c)
+        );
+        assert_eq!(
+            vgic_priority_attr(8),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x0420)
+        );
+        assert_eq!(
+            vgic_priority_attr(23),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x045c)
+        );
+
+        let mut fake = FakeKvm::new();
+        // KVM_IRQ_LINE is level-triggered: asserting an already-high line is
+        // idempotent, and lowering an already-low line stays low. This also
+        // distinguishes the required bitmap OR from a toggling XOR.
+        let test_irq = GicIntId(65);
+        fake.set_irq_line(test_irq, true).unwrap();
+        fake.set_irq_line(test_irq, true).unwrap();
+        assert_eq!(
+            fake.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(64), false,)
+                .unwrap(),
+            1 << 1,
+        );
+        fake.set_irq_line(test_irq, false).unwrap();
+        fake.set_irq_line(test_irq, false).unwrap();
+        assert_eq!(
+            fake.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(64), false,)
+                .unwrap(),
+            0,
+        );
+
+        fake.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+            vgic_level_attr(32),
+            false,
+            0xa5a5_5a5a,
+        )
+        .unwrap();
+        let (priority_group, priority_attr) = vgic_priority_attr(8);
+        fake.set_vgic_attr(
+            priority_group,
+            priority_attr,
+            false,
+            u64::from(0x4433_2211_u32),
+        )
+        .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_PMR_EL1, true, 0x7f)
+            .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_IGRPEN1_EL1, true, 1)
+            .unwrap();
+        let saved = save_vgic(&fake).unwrap();
+        assert_eq!(saved.line_level[0], 0);
+        assert_eq!(saved.line_level[1], 0xa5a5_5a5a);
+        assert_eq!(saved.priority[32..36], [0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(saved.pmr, 0x7f);
+        assert!(saved.igrpen1);
+        validate_vgic_state(&saved).unwrap();
+
+        let mut restored = FakeKvm::new();
+        restore_vgic(&mut restored, &saved).unwrap();
+        assert_eq!(save_vgic(&restored).unwrap(), saved);
+
+        for invalid in [
+            Arm64GicState {
+                version: saved.version + 1,
+                ..saved
+            },
+            Arm64GicState {
+                impl_spis: saved.impl_spis + 1,
+                ..saved
+            },
+            Arm64GicState {
+                timer_hz: saved.timer_hz + 1,
+                ..saved
+            },
+            Arm64GicState {
+                timer_intid: saved.timer_intid + 1,
+                ..saved
+            },
+            Arm64GicState {
+                gicd_ctlr: 1,
+                ..saved
+            },
+            Arm64GicState {
+                cntv_ctl: 1,
+                ..saved
+            },
+            Arm64GicState {
+                cntv_cval: 1,
+                ..saved
+            },
+            Arm64GicState {
+                timer_fired: true,
+                ..saved
+            },
+        ] {
+            assert!(matches!(
+                validate_vgic_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+        }
+
+        let mut invalid_bitmap = saved;
+        invalid_bitmap.pending[3] = 1;
+        assert!(matches!(
+            validate_vgic_state(&invalid_bitmap),
+            Err(BackendError::InvalidState)
+        ));
+        let mut invalid_priority = saved;
+        invalid_priority.priority[96] = 1;
+        assert!(matches!(
+            validate_vgic_state(&invalid_priority),
+            Err(BackendError::InvalidState)
+        ));
     }
 
     /// Finding 1 (review r1): a non-architectural MMIO access width is a

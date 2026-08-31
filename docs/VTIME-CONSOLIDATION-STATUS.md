@@ -2477,3 +2477,35 @@ records an explicit out-of-scope skip. This preserves the gate on Dissonance
 pull requests and main pushes while preventing unrelated changes from being
 blocked by its independently pinned dependency graph. A missing first parent
 is a hard workflow failure, not a silent skip.
+
+The next exact-head run confirmed that isolation: the general gate passed in
+3m58s, with the unchanged Dissonance workspace explicitly out of scope. Its
+mutation lane then exposed two independent quality-gate defects. First, the
+configuration's documented binary-entrypoint exclusion matched only files
+named `main.rs`, so named HVF/KVM hardware probes were counted even though the
+Ubuntu oracle cannot enter them; the same runner cannot compile the
+Apple-Silicon `hvf.rs` or Linux/aarch64 `arm64_kvm_sys.rs` substrate halves.
+Those exact composition/FFI paths are now excluded while their portable ARM
+policy, exit, state, and fake-KVM seams remain mutation-gated. Second, the four
+shards were calibrated for much smaller diffs: two ran into the explicit
+90-minute tripwire. The lane now uses 16 deterministic shards, retaining every
+in-scope mutant while bounding each hosted-runner job.
+
+The same run also found genuine portable test gaps rather than infrastructure
+noise. Focused assertions now pin: every GIC delivery gate and bitmap boundary;
+multiword active arbitration; ARM KVM register/vGIC encodings; nonzero vGIC
+save/restore state and every validator negative; exact payload-size bounds;
+both sides of environment composition rejection; short/exact XSAVE headers;
+unusable-segment selector retention; snapshot corruption semantics; and common
+exit completion staging. Provably identical disjoint-bit OR/XOR encodings are
+excluded by narrowly scoped mutation descriptions, not broad source globs.
+The old four-way local shard was stopped only after it became stale relative to
+these edits; the final 16-way exact-tree CI run is the gate of record. None of
+these mutation repairs touches `dissonance/`.
+
+Before commit, the resulting tree passed format and warnings-denied Clippy,
+and all 1,183 all-feature nextest cases passed (25 explicitly skipped). A
+focused mutation run over the remaining non-equivalent ARM IRQ-line bitmap
+family caught all seven generated mutants; the equivalent ARM ABI encodings
+were re-listed after formatting to confirm that the exact exclusions still
+match. Hosted CI remains authoritative for the complete 16-way mutation set.
