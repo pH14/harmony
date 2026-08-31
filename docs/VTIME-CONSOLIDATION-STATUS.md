@@ -2611,3 +2611,14 @@ Payload survivors were each caught individually. The snapshot shard's
 wire-value test correctly cannot distinguish. Only that exact source-line
 mutation is excluded; the neighboring NET and TAINTED shifts remain gated and
 were caught in the same focused run.
+
+The next exact-head run passed every general, coverage, Kani, public-API, and
+mutation job except shard 14 (19 of 20 jobs green). That shard found one final
+call-site survivor in the in-kernel-GIC restore branch: deleting the negation
+around the tested equality helper left that branch unobserved. Both restore
+branches now call a directly named `gic_config_mismatch` predicate, whose
+complete truth table covers equal configurations and each independently
+different tuple field; there is no call-site negation to mutate. The focused
+three-mutant family completed locally with all three caught. Formatting, the
+focused nextest oracle, and warnings-denied all-feature/all-target vmm-core
+Clippy pass on the repaired tree.

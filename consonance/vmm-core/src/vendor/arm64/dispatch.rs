@@ -109,8 +109,8 @@ fn kernel_gic_only(userspace_wired: bool, in_kernel_gic: bool) -> bool {
     !userspace_wired && in_kernel_gic
 }
 
-fn same_gic_config(snapshot: (u32, u64, u32), target: (u32, u64, u32)) -> bool {
-    snapshot == target
+fn gic_config_mismatch(snapshot: (u32, u64, u32), target: (u32, u64, u32)) -> bool {
+    snapshot != target
 }
 
 fn clockevent_present_in_gic(pending: u32, active: u32, line_level: u32, mask: u32) -> bool {
@@ -1038,7 +1038,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 // guest sees. Reject a mismatch (the LAPIC wiring-mismatch
                 // posture), never a silent adoption.
                 let have = target.config();
-                if !same_gic_config(
+                if gic_config_mismatch(
                     (gs.impl_spis, gs.timer_hz, gs.timer_intid),
                     (have.impl_spis, have.timer_hz, have.timer_intid),
                 ) {
@@ -1066,7 +1066,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             }
             (Some(gs), true, None) => {
                 let have = super::board::gic_config();
-                if !same_gic_config(
+                if gic_config_mismatch(
                     (gs.impl_spis, gs.timer_hz, gs.timer_intid),
                     (have.impl_spis, have.timer_hz, have.timer_intid),
                 ) {
@@ -1434,10 +1434,10 @@ mod tests {
         assert!(!kernel_gic_only(true, true));
 
         let config = (32, 1_000_000_000, 27);
-        assert!(same_gic_config(config, config));
-        assert!(!same_gic_config(config, (64, config.1, config.2)));
-        assert!(!same_gic_config(config, (config.0, 999, config.2)));
-        assert!(!same_gic_config(config, (config.0, config.1, 30)));
+        assert!(!gic_config_mismatch(config, config));
+        assert!(gic_config_mismatch(config, (64, config.1, config.2)));
+        assert!(gic_config_mismatch(config, (config.0, 999, config.2)));
+        assert!(gic_config_mismatch(config, (config.0, config.1, 30)));
 
         let mask = 1 << 5;
         assert!(!clockevent_present_in_gic(0, 0, 0, mask));
