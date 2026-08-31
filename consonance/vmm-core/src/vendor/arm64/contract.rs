@@ -157,7 +157,10 @@ mod tests {
 
     #[test]
     fn contract_hash_is_deterministic_and_row_sensitive() {
-        assert_eq!(contract_hash(), contract_hash());
+        let frozen = contract_hash();
+        assert_eq!(frozen, contract_hash());
+        assert_ne!(frozen, [0; 32]);
+        assert_ne!(frozen, [1; 32]);
         // One changed row must hash differently — the anti-drift property the
         // snapshot check relies on.
         let mut p = policy();

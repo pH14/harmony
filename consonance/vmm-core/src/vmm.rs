@@ -447,6 +447,10 @@ enum StampKind {
     Canonical,
 }
 
+fn synchronous_checkpoint_due(checkpoint: bool, deferred: bool) -> bool {
+    checkpoint && !deferred
+}
+
 /// What an `CommonExit::Idle` should do, decided by [`Vmm::idle_action`] (task 52).
 enum IdleAction {
     /// Terminal halt — `IF == 0`, off the determinism path, or no deliverable wake.
@@ -1847,7 +1851,8 @@ where
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
             let checkpoint = (event_index + 1).is_multiple_of(256);
             let state_hash =
-                (checkpoint && !self.deferred_virtual_time_checkpoints).then(|| self.state_hash());
+                synchronous_checkpoint_due(checkpoint, self.deferred_virtual_time_checkpoints)
+                    .then(|| self.state_hash());
             let vns_after = self
                 .vtime
                 .as_ref()
@@ -4149,6 +4154,7 @@ mod tests {
     //! the engine is generic, but a test needs *a* vendor to run against.
 
     use super::*;
+    use crate::virtual_time::NormalizedEventClass;
     use vmm_backend::{Gpa, VcpuState, X86, X86Caps, X86Exit, X86Policy};
 
     use crate::vendor::x86::devices::REPORT_PORT;
@@ -4265,6 +4271,96 @@ mod tests {
                 .checkpoint_virtual_time_trace_at(254, expected)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn trace_and_snapshot_boundary_guards_fail_closed_independently() {
+        assert!(!synchronous_checkpoint_due(false, false));
+        assert!(!synchronous_checkpoint_due(false, true));
+        assert!(synchronous_checkpoint_due(true, false));
+        assert!(!synchronous_checkpoint_due(true, true));
+        let mut unwired = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        assert!(unwired.checkpoint_virtual_time_trace().is_err());
+        assert_eq!(unwired.current_vns(), None);
+        unwired.set_idle_wake_vns(Some(123));
+        assert_eq!(unwired.idle_wake_vns, Some(123));
+        unwired.set_idle_wake_vns(None);
+        assert_eq!(unwired.idle_wake_vns, None);
+        unwired.rng_completion_staged = true;
+        assert!(!unwired.can_snapshot());
+
+        // A substrate-private raw record alone is enough to make enabling
+        // deferred hashing too late; it need not also have a portable event.
+        let mut raw_only = vtime_vmm(Vec::new(), 1);
+        raw_only
+            .virtual_time_trace
+            .as_mut()
+            .unwrap()
+            .record_raw_only(vmm_backend::ExitReason::Sysreg, "raw-only".to_string())
+            .unwrap();
+        assert!(raw_only.defer_virtual_time_checkpoint_hashes().is_err());
+        assert_eq!(raw_only.current_vns(), Some(0));
+
+        // Deferral during a portable event requires an active schedule. The
+        // wrapper must propagate that trace-level contract failure.
+        let mut no_schedule = vtime_vmm(Vec::new(), 1);
+        no_schedule
+            .virtual_time_trace
+            .as_mut()
+            .unwrap()
+            .begin(
+                vmm_backend::ExitReason::Rdtsc,
+                "rdtsc".to_string(),
+                NormalizedEventClass::TimeRead,
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(no_schedule.trace_arm_clockevent_defer().is_err());
+    }
+
+    #[test]
+    fn lifecycle_event_classifier_distinguishes_frame_complete_from_neighbors() {
+        let id = |local| (u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT) | local;
+        assert_eq!(
+            Vmm::<MockBackend>::classify_sdk_event(id(1), &[0; 8]),
+            SdkEventAction::DeferSnapshot
+        );
+        assert_eq!(
+            Vmm::<MockBackend>::classify_sdk_event(id(2), &[0; 8]),
+            SdkEventAction::Capture
+        );
+        assert_eq!(
+            Vmm::<MockBackend>::classify_sdk_event(id(1), &[]),
+            SdkEventAction::Malformed
+        );
+    }
+
+    #[test]
+    fn doorbell_offer_predicate_is_exact_for_an_unconfigured_composition() {
+        let mut vmm = Vmm::new(
+            configured_mock(Vec::new()),
+            GuestRam::new(TEST_RAM).unwrap(),
+        );
+        for service in [
+            ServiceId::Event,
+            ServiceId::Sdk,
+            ServiceId::Net,
+            ServiceId::Entropy,
+            ServiceId::Payload,
+            ServiceId::Pvclock,
+        ] {
+            assert!(!vmm.doorbell_service_offered(service as u16));
+        }
+
+        let spec = environment::EnvSpec::Seeded {
+            seed: 7,
+            policy: environment::FaultPolicy::none(),
+        };
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+        assert!(vmm.doorbell_service_offered(ServiceId::Event as u16));
+        assert!(vmm.doorbell_service_offered(ServiceId::Sdk as u16));
+        assert!(vmm.doorbell_service_offered(ServiceId::Entropy as u16));
+        assert!(!vmm.doorbell_service_offered(ServiceId::Payload as u16));
     }
 
     // ---- task 95 M2.1: the dirty drain (backend log ∪ host-side writes) ----
@@ -4582,6 +4678,13 @@ mod tests {
         vmm.enable_sdk(tape.materialize(), tape.policy());
 
         let before = encode_sdk_channel(vmm.sdk.as_ref().unwrap());
+        for invalid in [0, (MAX_PAYLOAD as u32) + 1] {
+            assert_eq!(
+                ring(&mut vmm, invalid),
+                (Step::Continued, Status::BadRequest as u16, Vec::new())
+            );
+            assert_eq!(encode_sdk_channel(vmm.sdk.as_ref().unwrap()), before);
+        }
         assert_eq!(
             ring(&mut vmm, 1),
             (Step::Continued, Status::BadRequest as u16, Vec::new()),
@@ -6653,6 +6756,18 @@ mod tests {
         );
         // A report write is a pure OUT — it never stages a completion.
         assert!(vmm.backend.completions().is_empty());
+    }
+
+    #[test]
+    fn report_port_advances_the_paravirtual_exit_budget() {
+        let mut vmm = vtime_vmm(vec![report_out(0xA5A5_5A5A)], 1);
+        let before = vmm.effective_vns().unwrap();
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
+        assert_eq!(
+            vmm.effective_vns().unwrap() - before,
+            crate::vendor::x86::contract::PARAVIRTUAL_EXIT_VNS
+        );
+        assert_eq!(vmm.report_stream(), [0xA5A5_5A5A]);
     }
 
     #[test]
@@ -9147,6 +9262,8 @@ mod tests {
         // (vns 10, clock 20), which is not a refresh-log entry — so the first
         // logged publish is step 2, and step 3's RDTSC is a value-keyed no-op.
         assert_eq!(vmm.pvclock_refreshes(), &[(2, 9), (3, 11)]);
+        vmm.pvclock_clear_refreshes();
+        assert!(vmm.pvclock_refreshes().is_empty());
     }
 
     /// G2's evidence-integrity bar (the deliberate-fault test the task spec

@@ -1456,6 +1456,25 @@ impl Arm64Kvm for FakeKvm {
                 (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_ISACTIVER0, false),
                 private,
             );
+            for block in [32, 64] {
+                let levels = self
+                    .vgic_attrs
+                    .get(&(
+                        KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+                        vgic_level_attr(block),
+                        false,
+                    ))
+                    .copied()
+                    .unwrap_or(0);
+                self.vgic_attrs.insert(
+                    (
+                        KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                        GIC_ISACTIVER + u64::from(block / 32) * 4,
+                        false,
+                    ),
+                    levels,
+                );
+            }
         }
         self.run_queue
             .pop_front()
@@ -1635,6 +1654,7 @@ mod tests {
         );
         assert_eq!(KVM_SCTLR_NONPORTABLE_BITS, 0x0200_0020_0000_0000);
         assert_eq!(KVM_TCR_NONPORTABLE_BITS, 0x0000_0010_0000_0000);
+        assert_eq!(GICR_ISACTIVER0, 0x1_0300);
 
         // Pin both sides of each redistributor/distributor boundary. These
         // helpers feed the migration ABI directly, so zero-filled round trips
@@ -1707,7 +1727,10 @@ mod tests {
             .unwrap();
         fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_IGRPEN1_EL1, true, 1)
             .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false, 0b10)
+            .unwrap();
         let saved = save_vgic(&fake).unwrap();
+        assert_eq!(saved.gicd_ctlr, 0b10);
         assert_eq!(saved.line_level[0], 0);
         assert_eq!(saved.line_level[1], 0xa5a5_5a5a);
         assert_eq!(saved.priority[32..36], [0x11, 0x22, 0x33, 0x44]);
@@ -1717,6 +1740,13 @@ mod tests {
 
         let mut restored = FakeKvm::new();
         restore_vgic(&mut restored, &saved).unwrap();
+        assert_eq!(
+            restored
+                .get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)
+                .unwrap(),
+            0b1_0010,
+            "restore must reconstitute the fixed ARE bit without losing Group-1 enable"
+        );
         assert_eq!(save_vgic(&restored).unwrap(), saved);
 
         for invalid in [
@@ -2028,10 +2058,16 @@ mod tests {
             .unwrap();
         fake.set_one_reg(core_reg(CORE_SPSR_EL1), 0x6000_0005 | TCO | BTYPE)
             .unwrap();
+        fake.set_one_reg(SYSREGS[0].0, 0x1234 | KVM_SCTLR_NONPORTABLE_BITS)
+            .unwrap();
+        fake.set_one_reg(SYSREGS[3].0, 0x5678 | KVM_TCR_NONPORTABLE_BITS)
+            .unwrap();
 
         let saved = save_vcpu(&fake).unwrap();
         assert_eq!(saved.core.pstate, 0xc5);
         assert_eq!(saved.core.spsr_el1, 0x6000_0005);
+        assert_eq!(saved.sysregs.sctlr_el1, 0x1234);
+        assert_eq!(saved.sysregs.tcr_el1, 0x5678);
 
         let mut noncanonical = saved;
         noncanonical.core.pstate |= TCO | BTYPE;
@@ -2039,6 +2075,54 @@ mod tests {
             restore_vcpu(&mut fake, &noncanonical),
             Err(BackendError::InvalidState)
         ));
+    }
+
+    #[test]
+    fn restore_vcpu_rejects_each_noncanonical_field_independently() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+
+        let mut trap_debug_exceptions = valid;
+        trap_debug_exceptions.debug.trap_debug_exceptions = true;
+        let mut trap_debug_reg_accesses = valid;
+        trap_debug_reg_accesses.debug.trap_debug_reg_accesses = true;
+        let mut timer_unmasked = valid;
+        timer_unmasked.vtimer.masked = false;
+        let mut timer_offset = valid;
+        timer_offset.vtimer.offset = 1;
+        let mut timer_ctl_reserved = valid;
+        timer_ctl_reserved.vtimer.cntv_ctl_el0 = 1 << 2;
+        let mut sctlr_residue = valid;
+        sctlr_residue.sysregs.sctlr_el1 = KVM_SCTLR_NONPORTABLE_BITS;
+        let mut tcr_residue = valid;
+        tcr_residue.sysregs.tcr_el1 = KVM_TCR_NONPORTABLE_BITS;
+        let mut irq = valid;
+        irq.interrupts.irq = true;
+        let mut fiq = valid;
+        fiq.interrupts.fiq = true;
+
+        for (name, invalid) in [
+            ("trap-debug-exceptions", trap_debug_exceptions),
+            ("trap-debug-register-accesses", trap_debug_reg_accesses),
+            ("host-timer-unmasked", timer_unmasked),
+            ("host-timer-offset", timer_offset),
+            ("host-timer-control-reserved", timer_ctl_reserved),
+            ("SCTLR substrate residue", sctlr_residue),
+            ("TCR substrate residue", tcr_residue),
+            ("pending IRQ", irq),
+            ("pending FIQ", fiq),
+        ] {
+            let mut target = FakeKvm::new();
+            target.vcpu_init().unwrap();
+            assert!(
+                matches!(
+                    restore_vcpu(&mut target, &invalid),
+                    Err(BackendError::InvalidState)
+                ),
+                "restore accepted noncanonical {name}"
+            );
+        }
     }
 
     /// The MMIO read/completion round-trip: a load stays pending until
@@ -2064,6 +2148,15 @@ mod tests {
         ));
         // Resuming without completing is fail-closed.
         assert!(matches!(b.run(), Err(BackendError::PendingCompletion)));
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            0,
+            "an MMIO read is completed only after complete_read supplies data"
+        );
         b.complete_read(0x90).unwrap();
         assert!(
             b.kvm()
@@ -2075,6 +2168,51 @@ mod tests {
         let exit = b.run().unwrap();
         assert_eq!(exit, CommonExit::Shutdown.into());
         assert_eq!(b.kvm().last_mmio_data, Some(le_data(0x90, 4)));
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn only_mmio_writes_are_completed_during_exit_decode() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_SYSTEM_EVENT,
+            system_event_type: KVM_SYSTEM_EVENT_SHUTDOWN,
+            ..Default::default()
+        });
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        assert!(matches!(
+            b.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { write: Some(_), .. })
+        ));
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            1
+        );
+        assert_eq!(b.run().unwrap(), CommonExit::Shutdown.into());
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            1,
+            "non-MMIO exits must not complete a stale MMIO transaction"
+        );
     }
 
     /// `map_memory` forwards the (validated, page-aligned) region through the
@@ -2155,9 +2293,53 @@ mod tests {
         ));
         assert_eq!(b.take_accepted_interrupt(), Some(GicIntId(27)));
         assert_eq!(b.take_accepted_interrupt(), None);
+        assert_eq!(
+            b.save().unwrap().gic.unwrap().active[0],
+            1 << 27,
+            "the fake kernel must promote only the asserted private line"
+        );
+
+        // While the same line remains asserted, observe one inactive exit and
+        // then a new active transition. The second transition is reportable
+        // only if the inactive observation cleared the edge detector.
+        b.kvm.accept_irqs = false;
+        b.kvm.vgic_attrs.insert(
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_ISACTIVER0, false),
+            0,
+        );
+        b.kvm.push_run(mmio_store(0x0900_0000, u64::from(b'-'), 1));
+        assert!(matches!(
+            b.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(b.take_accepted_interrupt(), None);
+        b.kvm.accept_irqs = true;
+        b.kvm.push_run(mmio_store(0x0900_0000, u64::from(b'+'), 1));
+        assert!(matches!(
+            b.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(b.take_accepted_interrupt(), Some(GicIntId(27)));
+
         b.set_pending_irq(None).unwrap();
         let lowered = b.save().unwrap().gic.unwrap();
         assert_eq!(lowered.line_level[0] & (1 << 27), 0);
+
+        // An SPI in the third bitmap word pins the distributor attribute and
+        // bit arithmetic used by acceptance observation.
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_accept_irqs(true);
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'S'), 1));
+        let mut spi = Arm64KvmBackend::new(fake);
+        spi.set_policy(&Arm64Policy::default()).unwrap();
+        spi.set_pending_irq(Some(GicIntId(65))).unwrap();
+        assert!(matches!(
+            spi.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(spi.take_accepted_interrupt(), Some(GicIntId(65)));
+        assert_eq!(spi.save().unwrap().gic.unwrap().active[2], 1 << 1);
 
         // Planted negative: the same asserted line and exit script cannot pass
         // the oracle when the fake kernel deliberately withholds the
@@ -2187,6 +2369,15 @@ mod tests {
             intid: GicIntId(30),
         })
         .unwrap();
+        assert_ne!(
+            b.save().unwrap().gic.unwrap().line_level[0] & (1 << 30),
+            0,
+            "inject must route through the same level-setting contract"
+        );
+        assert!(matches!(
+            b.inject(crate::arch::arm64::Arm64Injection::Interrupt { intid: GicIntId(1) }),
+            Err(BackendError::InvalidState)
+        ));
         b.set_pending_irq(Some(GicIntId(27))).unwrap();
         assert!(matches!(
             b.set_pending_irq(Some(GicIntId(1))),

@@ -553,6 +553,12 @@ impl<'a> SliceReader<'a> {
 mod tests {
     use super::*;
 
+    fn refresh_digest(bytes: &mut [u8]) {
+        let body_len = bytes.len() - 32;
+        let digest: [u8; 32] = Sha256::digest(&bytes[..body_len]).into();
+        bytes[body_len..].copy_from_slice(&digest);
+    }
+
     fn fixture_with_memory_len(
         memory_len: usize,
     ) -> (Vec<u8>, Vec<u8>, SdkSnapshot, NetSnapshot, FaultPolicy) {
@@ -573,6 +579,20 @@ mod tests {
 
     fn fixture() -> (Vec<u8>, Vec<u8>, SdkSnapshot, NetSnapshot, FaultPolicy) {
         fixture_with_memory_len(8192)
+    }
+
+    #[test]
+    fn wire_constants_are_exact_contract_values() {
+        assert_eq!(MAGIC, *b"HMSNAP01");
+        assert_eq!(VERSION, 1);
+        assert_eq!(
+            (FLAG_SDK, FLAG_NET, FLAG_TAINTED, KNOWN_FLAGS),
+            (1, 2, 4, 7)
+        );
+        assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
+        assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
+        assert_eq!(MAX_NET_LEN, 64 * 1024 * 1024);
+        assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
     }
 
     fn encoded_with_memory_len(memory_len: usize) -> Vec<u8> {
@@ -598,6 +618,137 @@ mod tests {
 
     fn encoded() -> Vec<u8> {
         encoded_with_memory_len(8192)
+    }
+
+    #[test]
+    fn absent_optional_sections_and_clear_flags_round_trip() {
+        let memory = vec![0x5a; 32];
+        let policy = FaultPolicy::none();
+        let mut bytes = Vec::new();
+        PortableSnapshotRef {
+            memory: &memory,
+            vm_state: b"vm",
+            sdk: None,
+            net: None,
+            policy: &policy,
+            at: 1,
+            sdk_events: 0,
+            trace_events: 0,
+            trace_schedules: 0,
+            tainted: false,
+            state_hash: [7; 32],
+        }
+        .write_to(&mut bytes)
+        .unwrap();
+        let decoded = PortableSnapshot::read_from(bytes.as_slice(), memory.len()).unwrap();
+        assert!(decoded.sdk.is_none());
+        assert!(decoded.net.is_none());
+        assert!(!decoded.tainted);
+    }
+
+    #[test]
+    fn every_presence_flag_must_match_its_section_length() {
+        // Header offsets: flags=10, sdk length=28, net length=36.
+        for flag in [FLAG_SDK, FLAG_NET] {
+            let mut flag_without_section = encoded();
+            flag_without_section[10..12].copy_from_slice(&(KNOWN_FLAGS & !flag).to_le_bytes());
+            refresh_digest(&mut flag_without_section);
+            assert!(matches!(
+                PortableSnapshot::read_from(flag_without_section.as_slice(), 8192),
+                Err(PortableSnapshotError::BadFlags)
+            ));
+
+            let memory = vec![0; 16];
+            let policy = FaultPolicy::none();
+            let mut section_without_flag = Vec::new();
+            PortableSnapshotRef {
+                memory: &memory,
+                vm_state: b"v",
+                sdk: None,
+                net: None,
+                policy: &policy,
+                at: 0,
+                sdk_events: 0,
+                trace_events: 0,
+                trace_schedules: 0,
+                tainted: false,
+                state_hash: [0; 32],
+            }
+            .write_to(&mut section_without_flag)
+            .unwrap();
+            section_without_flag[10..12].copy_from_slice(&flag.to_le_bytes());
+            refresh_digest(&mut section_without_flag);
+            assert!(matches!(
+                PortableSnapshot::read_from(section_without_flag.as_slice(), memory.len()),
+                Err(PortableSnapshotError::BadFlags)
+            ));
+        }
+
+        let mut unknown = encoded();
+        unknown[10..12].copy_from_slice(&(KNOWN_FLAGS | 0x8000).to_le_bytes());
+        refresh_digest(&mut unknown);
+        assert!(matches!(
+            PortableSnapshot::read_from(unknown.as_slice(), 8192),
+            Err(PortableSnapshotError::BadFlags)
+        ));
+    }
+
+    #[test]
+    fn sdk_without_optional_payloads_round_trips() {
+        let (_, _, mut sdk, _, _) = fixture();
+        sdk.payloads = None;
+        let bytes = encode_sdk(&sdk).unwrap();
+        assert_eq!(decode_sdk(&bytes).unwrap().payloads, None);
+    }
+
+    #[test]
+    fn sdk_decoder_rejects_impossible_counts_and_trailing_bytes() {
+        let (_, _, sdk, _, _) = fixture();
+        let mut impossible = encode_sdk(&sdk).unwrap();
+        impossible[17..25].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            decode_sdk(&impossible),
+            Err(PortableSnapshotError::Malformed("SDK event count"))
+        ));
+
+        let mut trailing = encode_sdk(&sdk).unwrap();
+        trailing.push(0);
+        assert!(matches!(
+            decode_sdk(&trailing),
+            Err(PortableSnapshotError::Malformed("SDK"))
+        ));
+    }
+
+    #[test]
+    fn snapshot_writer_propagates_the_final_flush_error() {
+        struct FlushFails(Vec<u8>);
+        impl Write for FlushFails {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("planted flush failure"))
+            }
+        }
+
+        let memory = [0; 1];
+        let policy = FaultPolicy::none();
+        let result = PortableSnapshotRef {
+            memory: &memory,
+            vm_state: b"v",
+            sdk: None,
+            net: None,
+            policy: &policy,
+            at: 0,
+            sdk_events: 0,
+            trace_events: 0,
+            trace_schedules: 0,
+            tainted: false,
+            state_hash: [0; 32],
+        }
+        .write_to(FlushFails(Vec::new()));
+        assert!(matches!(result, Err(PortableSnapshotError::Io(_))));
     }
 
     #[test]

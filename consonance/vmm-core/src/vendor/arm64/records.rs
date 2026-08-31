@@ -668,6 +668,23 @@ mod tests {
         }
     }
 
+    fn sample_with_empty_pvclock() -> Arm64DeviceState {
+        Arm64DeviceState {
+            pvclock: Some(Arm64PvclockState {
+                gpa: None,
+                registrable: false,
+                virtual_time: false,
+                clockevent: Arm64ClockeventState {
+                    deadline: None,
+                    line_asserted: false,
+                    assertions: 0,
+                    acknowledgements: 0,
+                },
+            }),
+            ..sample()
+        }
+    }
+
     #[test]
     fn device_blob_round_trips() {
         // All eight version shapes: the existing GIC/doorbell combinations and
@@ -688,6 +705,7 @@ mod tests {
             sample_with_doorbell(),
             gic_and_doorbell,
             sample_with_pvclock(),
+            sample_with_empty_pvclock(),
             gic_and_pvclock,
             doorbell_and_pvclock,
             all,
@@ -695,6 +713,14 @@ mod tests {
             let blob = encode_device_blob(&d);
             assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
         }
+    }
+
+    #[test]
+    fn backend_gic_conversion_preserves_every_nondefault_field() {
+        let state = sample_with_gic().gic.unwrap();
+        let backend = gic_to_backend(&state);
+        assert_eq!(gic_from_backend(&backend), state);
+        assert_ne!(backend, Arm64GicState::default());
     }
 
     #[test]

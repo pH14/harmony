@@ -2509,3 +2509,33 @@ focused mutation run over the remaining non-equivalent ARM IRQ-line bitmap
 family caught all seven generated mutants; the equivalent ARM ABI encodings
 were re-listed after formatting to confirm that the exact exclusions still
 match. Hosted CI remains authoritative for the complete 16-way mutation set.
+
+The first hosted 16-shard run on signed commit `17739a6f` was retained as
+discovery evidence, not reported as a pass. Shards 0, 1, and 2 passed; the
+other completed shards reported surviving or timed-out mutants and shard 7
+was cancelled only after its partial log had been collected. Each reported
+portable Consonance family now has an independent oracle: exact ARM backend
+register and vGIC state, control restore boundaries, portable-snapshot flags
+and limits, session trace rebasing and placement, M3 report identity and
+acceptance fields, ARM bring-up/layout/dispatch/GIC behavior, and VMM
+checkpoint, snapshot, doorbell, and pvclock behavior. The hardware-only
+composition seams and algebraically equivalent disjoint-bit encodings remain
+the only narrow mutation exclusions. A `mutants` nextest profile keeps the
+known long idle-reproduction oracle bounded at 45 seconds and preserves
+fail-fast behavior; the exact `restore_vtime` family then caught all seven of
+seven mutants locally instead of converting an already-caught failure into a
+suite timeout.
+
+After the final oracle repairs, full-workspace formatting and all-feature,
+all-target Clippy with warnings denied passed. The permission-correct
+all-feature nextest run passed all 1,214 tests with 25 configured skips. The
+initial sandboxed nextest attempt was stopped after 409 passes when a telemetry
+test was denied permission to open its loopback listener; it is environment
+denial, not repository evidence. A focused mutation discovery run found that
+the PL011 transfer-width arithmetic was observationally redundant with the
+UART's own byte truncation; the implementation was rewritten as an explicit
+1/2/4-byte mask table and its exact capture/read behavior is now asserted.
+The complete post-repair 16-shard hosted mutation run remains the gate of
+record. A path-limited comparison against current `main` is still empty for
+`dissonance/`: these repairs contain only Consonance code/tests plus shared
+quality configuration and this evidence record.

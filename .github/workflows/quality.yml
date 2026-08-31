@@ -322,7 +322,11 @@ jobs:
         # comment. Exit 2/3 (real surviving/timed-out mutants) is never retried.
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16; rc=$?; set -e
+            # Stop the oracle as soon as one test kills a mutant. Besides
+            # avoiding wasted runner time, this ensures a later test that
+            # loops only because the mutant already violated a prerequisite
+            # cannot turn an immediate assertion failure into TIMEOUT.
+            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --cargo-test-arg=--profile --cargo-test-arg=mutants; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
@@ -341,7 +345,7 @@ jobs:
         # Infra-only retry (same contract as the root step above).
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16; rc=$?; set -e
+            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --cargo-test-arg=--profile --cargo-test-arg=mutants; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"

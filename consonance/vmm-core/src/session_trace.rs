@@ -529,6 +529,42 @@ mod tests {
         assert_eq!(check_session_delivery_placement(&trace), Ok(()));
         assert_eq!(trace.event_count(), 3);
         assert_eq!(trace.checkpoint_count(), 3);
+        assert_eq!(trace.segments()[0].normalized_log().events.len(), 1);
+        assert!(trace.segments()[0].schedule().is_empty());
+
+        let mut text = Vec::new();
+        trace.write_text(&mut text).unwrap();
+        let text = String::from_utf8(text).unwrap();
+        assert!(text.contains("segment 0 start=initial events=1 schedules=0"));
+        assert!(text.contains("segment 1 start=replay:1 events=1 schedules=0"));
+        assert!(text.contains("segment 2 start=branch:2 events=1 schedules=0"));
+        assert_eq!(hex(&[0x00, 0xab, 0xff]), "00abff");
+    }
+
+    #[test]
+    fn schedule_count_text_and_placement_are_not_vacuous() {
+        let mut scheduled = segment(SessionTraceStart::InitialBoot, 10);
+        scheduled.schedule.push(ScheduledInterrupt {
+            deadline_vns: 10,
+            schedule_index: 0,
+            armed_for_event: 0,
+            canceled_at_event: None,
+            interrupt_id: 27,
+        });
+        let trace = SessionVirtualTimeTrace::from_segments(vec![scheduled]);
+        assert_eq!(trace.schedule_count(), 1);
+        assert!(matches!(
+            check_session_delivery_placement(&trace),
+            Err(SessionPlacementViolation {
+                segment_index: 0,
+                ..
+            })
+        ));
+        let mut text = Vec::new();
+        trace.write_text(&mut text).unwrap();
+        let text = String::from_utf8(text).unwrap();
+        assert!(text.starts_with("format consonance.session-prescriptive-log.v1\ndigest "));
+        assert!(text.contains("schedule 0:0 deadline_vns=10"));
     }
 
     #[test]
@@ -672,5 +708,84 @@ mod tests {
             ),
             Err(ContinuationDivergence::BoundaryStateHash { boundary_index: 1 })
         );
+    }
+
+    #[test]
+    fn portable_continuation_rejects_each_cut_and_rebased_identity_independently() {
+        let (source, restored) = portable_pair();
+        let hashes = [[7; 32], [8; 32], [9; 32]];
+        for (event_cut, schedule_cut) in [(4, 1), (1, 3)] {
+            assert!(matches!(
+                compare_portable_continuation(
+                    &source,
+                    event_cut,
+                    schedule_cut,
+                    &hashes,
+                    &restored,
+                    &hashes,
+                ),
+                Err(ContinuationDivergence::CutOutOfRange { .. })
+            ));
+        }
+
+        let mut bad_source = source.clone();
+        bad_source.normalized.events[1].event_index = 0;
+        assert!(matches!(
+            compare_portable_continuation(&bad_source, 1, 1, &hashes, &restored, &hashes),
+            Err(ContinuationDivergence::Log { .. })
+        ));
+        let mut bad_restored = restored.clone();
+        bad_restored.normalized.events[0].event_index = 1;
+        assert!(matches!(
+            compare_portable_continuation(&source, 1, 1, &hashes, &bad_restored, &hashes),
+            Err(ContinuationDivergence::Log { .. })
+        ));
+        let mut bad_source = source.clone();
+        bad_source.schedule[1].schedule_index = 0;
+        assert!(matches!(
+            compare_portable_continuation(&bad_source, 1, 1, &hashes, &restored, &hashes),
+            Err(ContinuationDivergence::Schedule { .. })
+        ));
+        let mut bad_restored = restored.clone();
+        bad_restored.schedule[0].schedule_index = 1;
+        assert!(matches!(
+            compare_portable_continuation(&source, 1, 1, &hashes, &bad_restored, &hashes),
+            Err(ContinuationDivergence::Schedule { .. })
+        ));
+    }
+
+    #[test]
+    fn interrupt_rebasing_checks_every_field_and_optional_bound() {
+        let source = InterruptDelivery {
+            deadline_vns: 30,
+            schedule_index: 4,
+            interrupt_id: 27,
+        };
+        let restored = InterruptDelivery {
+            schedule_index: 1,
+            ..source
+        };
+        assert!(interrupts_equal_rebased(&[source], &[restored], 3));
+        assert!(!interrupts_equal_rebased(&[source], &[], 3));
+        for changed in [
+            InterruptDelivery {
+                deadline_vns: 31,
+                ..restored
+            },
+            InterruptDelivery {
+                schedule_index: 2,
+                ..restored
+            },
+            InterruptDelivery {
+                interrupt_id: 28,
+                ..restored
+            },
+        ] {
+            assert!(!interrupts_equal_rebased(&[source], &[changed], 3));
+        }
+        assert_eq!(rebase_optional(None, 3), Some(None));
+        assert_eq!(rebase_optional(Some(2), 3), None);
+        assert_eq!(rebase_optional(Some(3), 3), Some(Some(0)));
+        assert_eq!(rebase_optional(Some(4), 3), Some(Some(1)));
     }
 }

@@ -439,11 +439,12 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 self.advance_virtual_time_vtime(contract::SERIAL_EXIT_VNS)?;
             }
             let offset = addr - PL011.0;
-            let bits = u32::from(size) * 8;
-            let mask = if bits == 32 {
-                u32::MAX
-            } else {
-                (1u32 << bits) - 1
+            let mask = match size {
+                1 => u32::from(u8::MAX),
+                2 => u32::from(u16::MAX),
+                4 => u32::MAX,
+                // The modeled-frame validation above accepts only 1/2/4.
+                _ => unreachable!("validated PL011 access width"),
             };
             return match write {
                 None => {
@@ -1353,7 +1354,7 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vendor::arm64::board::{GICD, GICR, PL011};
+    use crate::vendor::arm64::board::{GICD, GICR, IMPL_SPIS, PL011, new_gic};
     use crate::vmm::GuestRam;
     use vmm_backend::{Arm64Exit, Arm64MockCompletion, Arm64Policy, MockArm64Backend};
 
@@ -1408,12 +1409,170 @@ mod tests {
         // PMEVCNTR31 is outside the frozen 0..30 range. PMEVTYPER31's
         // encoding is separately PMCCFILTR and is intentionally ruled above.
         let adjacent = sysreg(3, 3, 14, 11, 7);
-        let mut unruled = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
-            sysreg: adjacent,
-            write: None,
-        })]);
-        let error = unruled.step().unwrap_err();
-        assert!(format!("{error}").contains("no ruled disposition"));
+        for adjacent in [
+            adjacent,
+            sysreg(2, 3, 9, 12, 0),
+            sysreg(3, 2, 9, 12, 0),
+            sysreg(3, 3, 9, 14, 1),
+        ] {
+            let mut unruled = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
+                sysreg: adjacent,
+                write: None,
+            })]);
+            let error = unruled.step().unwrap_err();
+            assert!(format!("{error}").contains("no ruled disposition"));
+        }
+    }
+
+    #[test]
+    fn irouter_range_is_exactly_the_implemented_aligned_spi_window() {
+        let first = GICD.0 + 0x6000 + 32 * 8;
+        let last = first + (u64::from(IMPL_SPIS) - 1) * 8;
+        assert!(is_gicd_irouter(first));
+        assert!(is_gicd_irouter(last));
+        assert!(!is_gicd_irouter(first - 8));
+        assert!(!is_gicd_irouter(first + 4));
+        assert!(!is_gicd_irouter(last + 8));
+    }
+
+    #[test]
+    fn canonical_gic_state_reports_the_userspace_fabric() {
+        let mut vmm = mock_vmm(Vec::new());
+        assert_eq!(vmm.canonical_arm64_gic_state().unwrap(), None);
+        let expected = new_gic().snapshot();
+        vmm.wire_gic(new_gic());
+        assert_eq!(vmm.canonical_arm64_gic_state().unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn pending_irq_service_preserves_the_arbitrated_identity() {
+        const INTID: u32 = 40;
+        let mut vmm = mock_vmm(Vec::new());
+        assert!(!vmm.pending_deliverable_interrupt_arm64().unwrap());
+        vmm.service_pending_irqs_arm64().unwrap();
+        assert_eq!(vmm.backend().pending_irq(), None);
+
+        let mut gic = new_gic();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0, 2, 0).unwrap();
+        gic.set_group1_enabled(true);
+        gic.set_pmr(u8::MAX);
+        gic.mmio_write(gicv3::GicFrame::Dist, 0x84, 1 << 8, 0)
+            .unwrap();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0x104, 1 << 8, 0)
+            .unwrap();
+        gic.assert_line(INTID).unwrap();
+        vmm.wire_gic(gic);
+
+        assert!(vmm.pending_deliverable_interrupt_arm64().unwrap());
+        vmm.service_pending_irqs_arm64().unwrap();
+        assert_eq!(
+            vmm.backend().pending_irq(),
+            Some(vmm_backend::GicIntId(INTID))
+        );
+    }
+
+    #[test]
+    fn mmio_width_masks_and_64_bit_gic_registers_are_exact() {
+        let irouter = GICD.0 + 0x6000 + 32 * 8;
+        let exits = vec![
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(PL011.0),
+                size: 1,
+                write: Some(0x1_41),
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(PL011.0),
+                size: 1,
+                write: None,
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(GICR.0 + 8),
+                size: 8,
+                write: None,
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(irouter),
+                size: 8,
+                write: None,
+            }),
+        ];
+        let mut vmm = mock_vmm(exits);
+        vmm.wire_gic(new_gic());
+        for _ in 0..4 {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(vmm.devices.uart.capture(), b"A");
+        assert_eq!(
+            vmm.backend().completions(),
+            &[
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Read(16),
+                Arm64MockCompletion::Read(0),
+            ]
+        );
+
+        assert_eq!(
+            vmm.dispatch_mmio_arm64(Gpa(irouter), 8, Some(0)).unwrap(),
+            Step::Continued
+        );
+        assert!(vmm.dispatch_mmio_arm64(Gpa(irouter), 8, Some(1)).is_err());
+    }
+
+    #[test]
+    fn every_ruled_gic_cpu_interface_access_has_an_exact_completion() {
+        let accesses = [
+            (ICC_PMR_EL1, None),
+            (ICC_PMR_EL1, Some(0x42)),
+            (ICC_PMR_EL1, None),
+            (ICC_IGRPEN1_EL1, Some(0)),
+            (ICC_IGRPEN1_EL1, None),
+            (ICC_IGRPEN1_EL1, Some(1)),
+            (ICC_IGRPEN1_EL1, None),
+            (ICC_BPR1_EL1, Some(0)),
+            (ICC_BPR1_EL1, None),
+            (ICC_CTLR_EL1, Some(0)),
+            (ICC_CTLR_EL1, None),
+            (ICC_RPR_EL1, None),
+            (ICC_HPPIR1_EL1, None),
+        ];
+        let exits = accesses
+            .into_iter()
+            .map(|(sysreg, write)| Exit::Arch(Arm64Exit::Sysreg { sysreg, write }))
+            .collect();
+        let mut vmm = mock_vmm(exits);
+        vmm.wire_gic(new_gic());
+        for _ in accesses {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+
+        assert_eq!(
+            vmm.backend().completions(),
+            &[
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0x42),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(1),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Read(0xff),
+                Arm64MockCompletion::Read(u64::from(vmm_backend::GicIntId::SPURIOUS.0)),
+            ]
+        );
+
+        for (sysreg, value) in [(ICC_IGRPEN1_EL1, 2), (ICC_BPR1_EL1, 1)] {
+            let mut invalid = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
+                sysreg,
+                write: Some(value),
+            })]);
+            invalid.wire_gic(new_gic());
+            assert!(invalid.step().is_err());
+            assert!(invalid.backend().completions().is_empty());
+        }
     }
 
     #[test]

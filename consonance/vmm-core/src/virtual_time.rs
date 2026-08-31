@@ -1089,6 +1089,14 @@ mod live_trace_tests {
         assert_eq!(trace.raw[1].portable_event_index, Some(0));
         assert_eq!(trace.normalized.events.len(), 1);
         assert_eq!(trace.normalized.events[0].event_index, 0);
+        assert_eq!(trace.raw_log().len(), 2);
+        assert_ne!(trace.normalized_digest(), [0; 32]);
+        assert_ne!(trace.normalized_digest(), [1; 32]);
+        trace.checkpoint_last([9; 32]).unwrap();
+        assert_eq!(trace.normalized.events[0].state_hash, Some([9; 32]));
+
+        let mut empty = LiveVirtualTimeTrace::default();
+        assert!(empty.checkpoint_last([1; 32]).is_err());
     }
 
     #[test]
@@ -1254,5 +1262,14 @@ mod live_trace_tests {
             check_delivery_placement(&schedule, &due),
             Err(PlacementViolation::WrongDelivery { event_index: 0, .. })
         ));
+
+        // A schedule whose eligibility epoch begins after this finite prefix
+        // is not missing, even when its deadline value is already small.
+        let future_epoch = [ScheduledInterrupt {
+            deadline_vns: 0,
+            armed_for_event: 1,
+            ..schedule[0]
+        }];
+        assert_eq!(check_delivery_placement(&future_epoch, &prefix), Ok(()));
     }
 }

@@ -156,6 +156,10 @@ exclude_re = [
     #     `current_work` (task 21) is the V-time count fed only to the `loud_msr`
     #     log — same observability-only category (no test-observable return).
     "consonance/vmm-core/src/vmm\\.rs.*(loud_msr|guest_rip|GuestRam::is_empty|current_work)",
+    # The x86 vendor split moved the same mandated host-only loud MSR event out
+    # of vmm.rs. It is deliberately emitted before architectural effects and
+    # has no state or return value for a portable test oracle to observe.
+    "consonance/vmm-core/src/vendor/x86/dispatch\\.rs.*replace loud_msr with \\(\\)",
     # (d) `msr_filter_allow`'s `read == stateful && write == stateful`: every
     #     `allow-stateful` row in the frozen contract is bidirectional (verified: 14
     #     bidirectional, 0 one-directional), so `&&` ≡ `||` on this contract.
@@ -168,6 +172,15 @@ exclude_re = [
     #     tests do); same precedent as the `kvm`/`probe::` paths. The `compose_*`
     #     helpers and `apply_*` overlays they call are mock-tested and stay gated.
     "boot(_linux)?_selected",
+    # The Apple-Silicon HVF boot roots are the arm64 counterparts of the
+    # Linux/KVM composition roots above. They open Hypervisor.framework and
+    # cannot be entered by the Ubuntu mutation oracle; portable `compose*`
+    # image/DTB policy remains mutation-gated and mock-tested.
+    "boot_hvf(_control)?",
+    # Host-only HVF liveness handle forwarding is compiled only on Apple
+    # Silicon and cannot be entered by the Ubuntu mutation oracle. The handle
+    # itself is exercised by the exact HVF hardware lanes.
+    "hvf_exit_handle",
     # (f) `draw_rng` (task 21): the fail-closed `status != Ok || got != n` guard is
     #     unreachable for the in-tree infallible `SeededEntropy` with a validated
     #     `n ∈ 1..=8` count + `n`-byte buffer, so the `||`→`&&` mutant is provably
@@ -175,6 +188,9 @@ exclude_re = [
     #     width-range guard stay mutation-gated (killed by the RNG draw / width
     #     unit tests); only this one equivalent mutant is excluded.
     "replace \\|\\| with && in .*draw_rng",
+    # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
+    # OR and XOR are identical for this compile-time constant expression.
+    "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",
     # (g) `impl Backend for Box<B>`'s `inject` forward (task 21): `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
@@ -209,4 +225,8 @@ exclude_re = [
     #     / `periodic_timer_idle_loop_advances_vtime_each_tick`'s `idle_landings() == &[..]`
     #     assertions. Scoped to vmm.rs's resume_idle.
     "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*resume_idle",
+    # The pvclock refresh vector is likewise bounded diagnostic evidence only.
+    # `< CAP`→`<= CAP` changes only whether the saturated log contains 4096 or
+    # 4097 entries; it cannot affect page bytes, guest state, or any hash.
+    "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*pvclock_stamp",
 ]

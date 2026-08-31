@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[profile.mutants]
+fail-fast = true
+
+[[profile.mutants.overrides]]
+filter = 'test(control::tests::idle_hlt_before_fault_recorded_env_reproduces)'
+# The unmutated property test completes in about 15 seconds on the mutation
+# runner. A prerequisite-destroying mutant can otherwise leave its control
+# loop unbounded after another test has already killed that mutant.
+slow-timeout = { period = "45s", terminate-after = 1 }

@@ -129,10 +129,8 @@ fn compose_inner<B: Backend<A = Arm64>>(
         VmmError::ContractViolation("arm64 DTB extent wraps host address space".into())
     })?;
     let ram_bytes = ram.as_mut_bytes();
-    if dtb_end > ram_bytes.len()
-        || pvclock_end > ram_len
-        || initrd_layout.is_some_and(|(_, end, _, _)| end > ram_len)
-    {
+    let initrd_end = initrd_layout.map(|(_, end, _, _)| end);
+    if !layout_fits(dtb_end, pvclock_end, initrd_end, ram_bytes.len(), ram_len) {
         return Err(VmmError::ContractViolation(format!(
             "arm64 boot: image + initramfs + DTB + reserved pvclock page do not fit in {guest_ram_len:#x} \
              bytes of guest RAM (DTB ends at {dtb_end:#x}, pvclock page at \
@@ -183,6 +181,18 @@ fn compose_inner<B: Backend<A = Arm64>>(
         vmm.map_doorbell_pages()?;
     }
     Ok(vmm)
+}
+
+fn layout_fits(
+    dtb_end: usize,
+    pvclock_end: u64,
+    initrd_end: Option<u64>,
+    ram_bytes_len: usize,
+    ram_len: u64,
+) -> bool {
+    dtb_end <= ram_bytes_len
+        && pvclock_end <= ram_len
+        && initrd_end.is_none_or(|end| end <= ram_len)
 }
 
 /// Compose the measured macOS/arm64 Hypervisor.framework backend for the M1
@@ -440,5 +450,14 @@ mod tests {
         // 4 KiB RAM cannot hold even the header + a DTB.
         let backend = MockArm64Backend::new();
         assert!(compose(backend, &tiny_image(), "", 0x1000).is_err());
+    }
+
+    #[test]
+    fn layout_fit_checks_each_extent_and_accepts_exact_boundaries() {
+        assert!(layout_fits(10, 10, None, 10, 10));
+        assert!(layout_fits(10, 10, Some(10), 10, 10));
+        assert!(!layout_fits(11, 10, None, 10, 10));
+        assert!(!layout_fits(10, 11, None, 10, 10));
+        assert!(!layout_fits(10, 10, Some(11), 10, 10));
     }
 }

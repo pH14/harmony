@@ -412,6 +412,10 @@ struct SnapshotMeta {
     policy: FaultPolicy,
 }
 
+fn reseed_marker_requires_arrival(marker: u64, restored_floor: u64) -> bool {
+    marker > restored_floor
+}
+
 impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// Build a server around a live VM. The [`SnapshotEngine`] is sized to the
     /// VM's guest-memory image; `factory` boots the fresh restore target for
@@ -1370,7 +1374,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     floor: restored_floor,
                 }));
             }
-            if m > restored_floor && !self.vmm.as_ref().is_some_and(|v| v.vtime_wired()) {
+            if reseed_marker_requires_arrival(m, restored_floor)
+                && !self.vmm.as_ref().is_some_and(|v| v.vtime_wired())
+            {
                 return Ok(Err(ControlError::Unsupported));
             }
         }
@@ -2137,7 +2143,10 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::{ControlServer, ServeError, page_console, page_sdk_events, server_caps};
+    use super::{
+        ControlServer, ServeError, page_console, page_sdk_events, reseed_marker_requires_arrival,
+        server_caps,
+    };
     use crate::vendor::Vendor;
     use crate::vendor::x86::contract_vclock_config;
     use crate::vmm::{GuestRam, Vmm, VmmError, VtimeWiring};
@@ -2432,7 +2441,7 @@ mod tests {
 
     /// Drive the production control replacement path twice so the returned
     /// evidence contains the initial VMM plus two replay-delimited segments.
-    fn accumulated_session_trace() -> crate::session_trace::SessionVirtualTimeTrace {
+    fn accumulated_session_server() -> ControlServer<MockArm64Backend> {
         let make_vmm = |exits: Vec<Exit<Arm64>>, seed: u64| {
             let mut backend = MockArm64Backend::with_exits(exits);
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -2481,6 +2490,10 @@ mod tests {
             ));
         }
         server
+    }
+
+    fn accumulated_session_trace() -> crate::session_trace::SessionVirtualTimeTrace {
+        accumulated_session_server()
             .session_virtual_time_trace()
             .expect("virtual_time control server produces a session trace")
     }
@@ -2522,6 +2535,25 @@ mod tests {
         assert_eq!(compare_session_traces(&left, &right), Ok(()));
         assert_eq!(check_session_delivery_placement(&left), Ok(()));
         assert_eq!(left.digest(), right.digest());
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot materialize through two production Replay verbs; the pure session comparator and planted negative remain Miri-covered"
+    )]
+    fn taking_the_session_trace_returns_and_drains_completed_segments() {
+        let mut server = accumulated_session_server();
+        let viewed = server.session_virtual_time_trace().unwrap();
+        let taken = server.take_session_virtual_time_trace().unwrap();
+        assert_eq!(taken, viewed);
+        assert_eq!(taken.segments().len(), 3);
+
+        // Taking drains only the completed host-side buffer. The live final
+        // segment remains available and is captured again without mutation.
+        let live_only = server.take_session_virtual_time_trace().unwrap();
+        assert_eq!(live_only.segments().len(), 1);
+        assert_eq!(live_only.segments()[0], taken.segments()[2]);
     }
 
     // ---- task 95 M2: O(dirty) capture + remap restore -------------------------
@@ -3174,7 +3206,11 @@ mod tests {
         let a = snap(&mut s);
         let b = snap(&mut s);
         assert_ne!(a, b, "handles are pool-wide and never reused");
+        assert_eq!(s.latest_snapshot(), Some(b));
+        assert_eq!(s.handle(&Request::Drop(b)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.latest_snapshot(), Some(a));
         assert_eq!(s.handle(&Request::Drop(a)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.latest_snapshot(), None);
         assert_eq!(
             s.handle(&Request::Drop(a)).unwrap(),
             Err(ControlError::UnknownSnapshot(a)),
@@ -3185,7 +3221,6 @@ mod tests {
             Err(ControlError::UnknownSnapshot(a)),
             "a dropped handle cannot be restored"
         );
-        assert_eq!(s.handle(&Request::Drop(b)).unwrap(), Ok(Reply::Unit));
     }
 
     /// A **replay** restores the buggify policy captured with the SDK snapshot
@@ -6294,6 +6329,13 @@ mod tests {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
         }
+    }
+
+    #[test]
+    fn reseed_arrival_requirement_is_strictly_beyond_the_restore_floor() {
+        assert!(!reseed_marker_requires_arrival(99, 100));
+        assert!(!reseed_marker_requires_arrival(100, 100));
+        assert!(reseed_marker_requires_arrival(101, 100));
     }
 
     #[test]

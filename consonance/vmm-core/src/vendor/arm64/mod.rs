@@ -659,6 +659,22 @@ mod comparator_tests {
     use super::*;
 
     #[test]
+    fn architectural_text_helpers_emit_the_exact_frozen_shapes() {
+        let mut out = Vec::new();
+        write_u64(&mut out, "u64", 0x12).unwrap();
+        write_bool(&mut out, "yes", true).unwrap();
+        write_bool(&mut out, "no", false).unwrap();
+        write_u64_array(&mut out, "a64", &[1, 2]).unwrap();
+        write_u32_array(&mut out, "a32", &[3, 4]).unwrap();
+        write_hex(&mut out, &[0x0a, 0xbc]).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "u64 0000000000000012\nyes 1\nno 0\na64.0 0000000000000001\na64.1 \\n+             0000000000000002\na32.0 00000003\na32.1 00000004\n0abc"
+                .replace("\\n+             ", "")
+        );
+    }
+
+    #[test]
     fn architectural_comparator_localizes_a_planted_gic_corruption() {
         let expected = board::new_gic().snapshot();
         let mut planted = expected.clone();
@@ -730,5 +746,53 @@ mod comparator_tests {
             embedded.write_text(Vec::new()).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+
+        let plain = Arm64ArchitecturalState {
+            vcpu: vmm_backend::Arm64VcpuState::default(),
+            gic: None,
+        };
+        assert_eq!(compare_arm64_architecture(&plain, &plain), Ok(()));
+        let one_embedded = Arm64ArchitecturalState {
+            vcpu: vmm_backend::Arm64VcpuState {
+                gic: Some(records::gic_to_backend(&board::new_gic().snapshot())),
+                ..Default::default()
+            },
+            gic: None,
+        };
+        assert!(matches!(
+            compare_arm64_architecture(&plain, &one_embedded),
+            Err(Arm64ArchitectureDifference::Vcpu {
+                field: "vcpu.gic",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn arm64_device_hash_and_inflight_predicates_are_exact() {
+        let vcpu = vmm_backend::Arm64VcpuState::default();
+        let mut devices = Arm64Devices::new();
+        let mut out = Vec::new();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut out);
+        assert!(out.is_empty());
+        devices.clockevent.deadline = Some(7);
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut out);
+        assert!(out.starts_with(b"PVCE"));
+
+        for (irq, fiq, expected) in [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            let state = vmm_backend::Arm64VcpuState {
+                interrupts: vmm_backend::Arm64InterruptState { irq, fiq },
+                ..Default::default()
+            };
+            assert_eq!(
+                <Arm64 as Vendor>::vcpu_has_inflight_injection(&state),
+                expected
+            );
+        }
     }
 }

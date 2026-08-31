@@ -588,6 +588,7 @@ mod tests {
         let summary = validate_acceptance(&serial()).unwrap();
         assert_eq!(summary.rows(), WORKLOAD_ROWS);
         assert_eq!(summary.final_uuid(), "00000000-0000-4000-8000-000000000020");
+        assert_eq!(summary.final_timestamp(), "2026-08-26 12:34:20+00");
     }
 
     #[test]
@@ -614,12 +615,111 @@ mod tests {
     }
 
     #[test]
+    fn uuid_timestamp_and_gap_buckets_reject_every_single_field_corruption() {
+        let uuid = b"00000000-0000-4000-8000-000000000020";
+        assert!(is_uuid(uuid));
+        assert!(!is_uuid(&uuid[..35]));
+        assert!(!is_uuid(&[uuid.as_slice(), b"0"].concat()));
+        for index in 0..uuid.len() {
+            let mut bad = uuid.to_vec();
+            bad[index] = if matches!(index, 8 | 13 | 18 | 23) {
+                b'0'
+            } else {
+                b'g'
+            };
+            assert!(!is_uuid(&bad), "UUID byte {index} must be validated");
+        }
+
+        let timestamp = b"2026-08-26 12:34:20";
+        assert!(is_timestamp(timestamp));
+        assert!(!is_timestamp(&timestamp[..18]));
+        for index in 0..timestamp.len() {
+            let mut bad = timestamp.to_vec();
+            bad[index] = match index {
+                4 | 7 => b'/',
+                10 => b'T',
+                13 | 16 => b'.',
+                _ => b'x',
+            };
+            assert!(
+                !is_timestamp(&bad),
+                "timestamp byte {index} must be validated"
+            );
+        }
+
+        for (gap, expected) in [
+            (0, 0),
+            (1, 1),
+            (1_000, 1),
+            (1_001, 2),
+            (100_000, 2),
+            (100_001, 3),
+            (1_000_000, 3),
+            (1_000_001, 4),
+            (5_000_000, 4),
+            (5_000_001, 5),
+            (10_000_000, 5),
+            (10_000_001, 6),
+            (MAX_GAP_VNS, 6),
+            (MAX_GAP_VNS + 1, 7),
+        ] {
+            assert_eq!(bucket_index(gap), expected, "gap {gap}");
+        }
+    }
+
+    #[test]
+    fn acceptance_rejects_each_sql_identity_field_and_extra_rows() {
+        for replacement in ["row|20|19|210|", "row|20|20|209|"] {
+            let malformed = String::from_utf8(serial())
+                .unwrap()
+                .replace("row|20|20|210|", replacement)
+                .into_bytes();
+            assert!(matches!(
+                validate_acceptance(&malformed),
+                Err(M3ReportError::MalformedRow { row: 20, .. })
+            ));
+        }
+
+        let mut extra = serial();
+        let marker = b"PGC38: workload end\n";
+        let position = extra
+            .windows(marker.len())
+            .position(|w| w == marker)
+            .unwrap();
+        extra.splice(
+            position..position,
+            b"row|21|21|231|00000000-0000-4000-8000-000000000021|2026-08-26 12:34:21+00\n"
+                .iter()
+                .copied(),
+        );
+        assert!(validate_acceptance(&extra).is_err());
+    }
+
+    #[test]
     fn gap_positive_and_independent_comparator_agree() {
         let histogram = GapHistogram::analyze(&[10, 10, 1_010, 10_001_010]).unwrap();
         histogram.validate_bound().unwrap();
+        assert_eq!(MAX_GAP_VNS, 20_000_000);
         assert_eq!(histogram.max_gap_vns(), 10_000_000);
         assert_eq!(histogram.gap_count(), 3);
+        assert_eq!(histogram.counts(), &[1, 1, 0, 0, 0, 1, 0, 0]);
         compare_gap_oracles(&histogram, 10_000_000, 3).unwrap();
+    }
+
+    #[test]
+    fn gap_regression_index_and_exact_bound_are_pinned() {
+        assert_eq!(
+            GapHistogram::analyze(&[0, 10, 5]),
+            Err(M3ReportError::VtimeRegressed {
+                observation: 2,
+                before: 10,
+                after: 5,
+            })
+        );
+        GapHistogram::analyze(&[0, MAX_GAP_VNS])
+            .unwrap()
+            .validate_bound()
+            .unwrap();
     }
 
     #[test]
@@ -676,6 +776,64 @@ mod tests {
                 ..
             })
         ));
+        assert!(matches!(
+            PhasePerformance::between(
+                "no exits",
+                mark,
+                PerformanceMark {
+                    exits: mark.exits,
+                    wall_ns: mark.wall_ns + 1,
+                },
+            ),
+            Err(M3ReportError::InvalidPerformancePhase {
+                phase: "no exits",
+                ..
+            })
+        ));
+        assert!(matches!(
+            PhasePerformance::between(
+                "no wall time",
+                mark,
+                PerformanceMark {
+                    exits: mark.exits + 1,
+                    wall_ns: mark.wall_ns,
+                },
+            ),
+            Err(M3ReportError::InvalidPerformancePhase {
+                phase: "no wall time",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn throughput_integer_scale_and_zero_duration_are_exact() {
+        assert_eq!(
+            Throughput {
+                rows: 20,
+                wall_ns: 2_000_000_000,
+            }
+            .milli_rows_per_second(),
+            10_000
+        );
+        assert_eq!(
+            Throughput {
+                rows: 2,
+                wall_ns: 0,
+            }
+            .milli_rows_per_second(),
+            2_000_000_000_000
+        );
+    }
+
+    #[test]
+    fn kernel_liveness_markers_are_case_insensitive() {
+        let mut failed = serial();
+        failed.extend_from_slice(b"RcU StAlL detected\n");
+        assert_eq!(
+            validate_acceptance(&failed),
+            Err(M3ReportError::KernelLiveness("RCU stall"))
+        );
     }
 
     #[test]
