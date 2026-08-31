@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# QuickNES NES backend
+# Running the SMB workload with QuickNES
 
-The SMB campaign loads QuickNES directly through the libretro C ABI. QuickNES
-is the sole live NES backend: there is no runtime backend selector and no
-cross-core stream or checkpoint compatibility surface. Its streams use
+QuickNES and the SMB ROM are external workload inputs. Harmony carries only
+the libretro adapter and a reproducible build helper; it does not vendor the
+emulator or ROM. The SMB campaign loads a user-supplied QuickNES core directly
+through the libretro C ABI. Its streams use
 `smb-quicknes-campaign-stream-v2`, its checkpoints use
 `smb-quicknes-snapshot-checkpoint-v2`, and evaluator-private fixtures use the
 `dissonance-fixture-*-v2` formats. Historical measurements from the retired
@@ -46,14 +47,3 @@ unlinks it immediately. Workers never share an emulator and no lock serializes
 execution. Video and audio are hard-disabled, controller input is provided
 synchronously, system RAM is read directly from the core's validated 2 KiB
 block, and state uses fixed-buffer serialize/unserialize.
-
-## Distribution license gate
-
-The upstream repository's top-level `LICENSE` is GPL version 2, its core-info
-metadata says LGPL-2.1-or-later, and its source contains both GPL-2.0-or-later
-mapper files and LGPL-2.1-or-later emulator files. Harmony is
-AGPL-3.0-or-later. Harmony therefore does not vendor or bundle the core.
-Distribution of a QuickNES binary together with Harmony is blocked until an
-appropriate licensing review resolves the mixed upstream notices and
-GPL-version compatibility. Supplying a separately built core for internal
-measurement does not remove that distribution gate.

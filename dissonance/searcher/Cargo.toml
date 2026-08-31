@@ -14,6 +14,7 @@ sha2 = "=0.10.9"
 
 [dev-dependencies]
 criterion = "=0.5.1"
+machine = { path = "../machine", version = "=0.1.0", features = ["test-loopback"] }
 
 [[bench]]
 name = "empirical_steps"

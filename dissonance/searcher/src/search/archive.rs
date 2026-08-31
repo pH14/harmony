@@ -1449,9 +1449,7 @@ where
         // stream position. Retirement is soft: the reset also clears the
         // pooled barren counters, so the search can never seal itself out.
         if draw.counter_reset {
-            for counter in &mut self.since_retained {
-                *counter = 0;
-            }
+            self.since_retained.fill(0);
             for map in &mut self.group_barren {
                 map.clear();
             }

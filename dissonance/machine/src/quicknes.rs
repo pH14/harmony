@@ -581,7 +581,7 @@ impl QuickNesMachine {
     /// This seam exists so the unsafe fixed-buffer and direct-RAM paths remain
     /// Miri-exercisable. Production builds do not select it.
     #[doc(hidden)]
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "test-loopback"))]
     pub fn loopback_for_tests(rom: &[u8]) -> Result<Self, MachineError> {
         loopback::reset();
         let identity = validate_sha256(&"a".repeat(64))?;
@@ -858,7 +858,7 @@ extern "C" fn input_state_callback(port: u32, device: u32, index: u32, id: u32) 
     })
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "test-loopback"))]
 mod loopback {
     use std::{cell::UnsafeCell, ffi::c_void};
 

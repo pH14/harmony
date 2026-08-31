@@ -9,9 +9,6 @@ output=${1:-quicknes_libretro.so}
 build_root=$(mktemp -d "${TMPDIR:-/tmp}/harmony-quicknes.XXXXXX")
 trap 'rm -rf "$build_root"' EXIT HUP INT TERM
 
-echo "QuickNES distribution gate: upstream carries mixed GPL-2.0-or-later and LGPL-2.1-or-later source plus a top-level GPL-2.0 license."
-echo "This script builds an external benchmark core; do not bundle or distribute it with Harmony until licensing compatibility is reviewed."
-
 git clone --quiet "$repository" "$build_root/core"
 git -C "$build_root/core" checkout --quiet --detach "$revision"
 test "$(git -C "$build_root/core" rev-parse HEAD)" = "$revision"
