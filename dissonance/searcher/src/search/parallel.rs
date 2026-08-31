@@ -24,8 +24,6 @@ pub enum WorkerPoolError {
     WorkerExited,
     /// Every worker reply sender closed while a result was still expected.
     RepliesClosed,
-    /// One worker replied twice before the coordinator consumed its first reply.
-    DuplicateReply,
 }
 
 impl fmt::Display for WorkerPoolError {
@@ -35,7 +33,6 @@ impl fmt::Display for WorkerPoolError {
             Self::WorkerClosed => "campaign worker channel is already closed",
             Self::WorkerExited => "campaign worker exited before accepting its next job",
             Self::RepliesClosed => "every campaign worker exited while a reply was expected",
-            Self::DuplicateReply => "campaign worker replied twice before admission",
         })
     }
 }
@@ -46,7 +43,6 @@ impl Error for WorkerPoolError {}
 pub struct WorkerPool<Job, Output> {
     job_senders: Vec<Option<mpsc::Sender<Job>>>,
     reply_receiver: mpsc::Receiver<WorkerReply<Output>>,
-    buffered_replies: Vec<Option<WorkerReply<Output>>>,
 }
 
 impl<Job, Output> WorkerPool<Job, Output> {
@@ -88,39 +84,6 @@ impl<Job, Output> WorkerPool<Job, Output> {
         self.reply_receiver
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
-    }
-
-    /// Wait for one named worker's reply, buffering replies that finish ahead
-    /// of it. This lets a coordinator make admission order independent of host
-    /// thread scheduling while workers continue executing concurrently.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown worker, a duplicate buffered reply, or
-    /// if every reply sender closes before the named worker replies.
-    pub fn receive_for(&mut self, worker: u32) -> Result<WorkerReply<Output>, WorkerPoolError> {
-        let expected = usize::try_from(worker).map_err(|_| WorkerPoolError::UnknownWorker)?;
-        if expected >= self.buffered_replies.len() {
-            return Err(WorkerPoolError::UnknownWorker);
-        }
-        if let Some(reply) = self.buffered_replies[expected].take() {
-            return Ok(reply);
-        }
-        loop {
-            let reply = self.receive()?;
-            if reply.worker == worker {
-                return Ok(reply);
-            }
-            let index =
-                usize::try_from(reply.worker).map_err(|_| WorkerPoolError::UnknownWorker)?;
-            let slot = self
-                .buffered_replies
-                .get_mut(index)
-                .ok_or(WorkerPoolError::UnknownWorker)?;
-            if slot.replace(reply).is_some() {
-                return Err(WorkerPoolError::DuplicateReply);
-            }
-        }
     }
 }
 
@@ -177,7 +140,6 @@ where
         let mut pool = WorkerPool {
             job_senders,
             reply_receiver,
-            buffered_replies: (0..workers).map(|_| None).collect(),
         };
         coordinate(&mut pool)
     })
@@ -187,7 +149,7 @@ where
 mod tests {
     use std::sync::mpsc;
 
-    use super::{WorkerPool, WorkerReply, with_worker_pool};
+    use super::with_worker_pool;
 
     #[test]
     fn one_worker_uses_the_same_pool_path() {
@@ -207,28 +169,33 @@ mod tests {
     }
 
     #[test]
-    fn a_named_receive_buffers_out_of_order_replies() {
-        let (reply_sender, reply_receiver) = mpsc::channel();
-        reply_sender
-            .send(WorkerReply {
-                worker: 0,
-                outcome: Ok::<_, String>(10_u64),
-            })
-            .expect("send worker zero");
-        reply_sender
-            .send(WorkerReply {
-                worker: 1,
-                outcome: Ok::<_, String>(11_u64),
-            })
-            .expect("send worker one");
-        let mut pool = WorkerPool::<(), u64> {
-            job_senders: vec![None, None],
-            reply_receiver,
-            buffered_replies: vec![None, None],
-        };
-        let one = pool.receive_for(1).expect("receive worker one");
-        let zero = pool.receive_for(0).expect("receive buffered worker zero");
-        assert_eq!(one.outcome.expect("worker one outcome"), 11);
-        assert_eq!(zero.outcome.expect("worker zero outcome"), 10);
+    fn a_completed_worker_can_be_reissued_while_another_is_busy() {
+        let (release_sender, release_receiver) = mpsc::channel();
+        let replies = with_worker_pool(
+            2,
+            |_| Ok::<_, String>(()),
+            |_, job: (Option<mpsc::Receiver<()>>, u64)| {
+                if let Some(release) = job.0 {
+                    release.recv().map_err(|error| error.to_string())?;
+                }
+                Ok::<_, String>(job.1)
+            },
+            |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
+                pool.send(0, (Some(release_receiver), 10))?;
+                pool.send(1, (None, 11))?;
+                let first = pool.receive()?;
+                pool.send(first.worker, (None, 12))?;
+                let second = pool.receive()?;
+                release_sender.send(())?;
+                let third = pool.receive()?;
+                Ok(vec![
+                    (first.worker, first.outcome?),
+                    (second.worker, second.outcome?),
+                    (third.worker, third.outcome?),
+                ])
+            },
+        )
+        .expect("coordinate two workers");
+        assert_eq!(replies, vec![(1, 11), (1, 12), (0, 10)]);
     }
 }

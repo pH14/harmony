@@ -1285,34 +1285,39 @@ where
         let Some(scale) = scales.groups.get(depth - 1).copied() else {
             return Ok(rand.below(count));
         };
-        let weights = groups
-            .iter()
-            .map(|group| {
-                let barren = self
-                    .group_barren
-                    .get(depth - 1)
-                    .and_then(|map| map.get(group))
-                    .copied()
-                    .unwrap_or(0);
-                let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
-                let energy = 256_usize >> halvings;
-                if !frontier {
-                    return energy;
-                }
-                // Rank from the deepest distinct group value at this depth;
-                // the deepest group keeps its full energy weight.
-                let rank = {
-                    let mut deeper = groups
-                        .iter()
-                        .filter(|other| *other > group)
-                        .collect::<Vec<_>>();
-                    deeper.sort_unstable();
-                    deeper.dedup();
-                    deeper.len()
-                };
-                (energy >> rank.min(8)).max(1)
-            })
-            .collect::<Vec<_>>();
+        // Frontier rank depends only on the set of distinct groups. Build
+        // that ordering once instead of filtering, allocating, sorting, and
+        // deduplicating the complete group list once per candidate group.
+        let ranked = if frontier {
+            let mut ranked = groups.to_vec();
+            ranked.sort_unstable();
+            ranked.dedup();
+            ranked
+        } else {
+            Vec::new()
+        };
+        let mut weights = Vec::with_capacity(groups.len());
+        for group in groups {
+            let barren = self
+                .group_barren
+                .get(depth - 1)
+                .and_then(|map| map.get(group))
+                .copied()
+                .unwrap_or(0);
+            let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
+            let energy = 256_usize >> halvings;
+            if !frontier {
+                weights.push(energy);
+                continue;
+            }
+            // Rank from the deepest distinct group value at this depth; the
+            // deepest group keeps its full energy weight.
+            let position = ranked
+                .binary_search(group)
+                .map_err(|_| "energy frontier group is missing from its own rank table")?;
+            let rank = ranked.len().saturating_sub(position.saturating_add(1));
+            weights.push((energy >> rank.min(8)).max(1));
+        }
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
         let mut draw = rand.below(total);
         for (index, weight) in weights.iter().enumerate() {
@@ -1594,20 +1599,29 @@ where
             .collect()
     }
 
-    /// Extract the entry reports, stamping per-entry selection counters.
-    pub fn take_entry_reports(&mut self) -> Vec<ArchiveEntryReport<A, K, M>> {
-        std::mem::take(&mut self.entries)
-            .into_iter()
-            .enumerate()
-            .map(|(id, entry)| {
+    /// Extract entry reports and snapshots together, stamping per-entry
+    /// selection counters without cloning the snapshot set.
+    #[allow(clippy::type_complexity)] // The paired vectors preserve one-pass entry ownership.
+    pub fn take_entry_reports_and_snapshots(
+        &mut self,
+    ) -> (Vec<ArchiveEntryReport<A, K, M>>, Vec<(u64, S)>) {
+        let entries = std::mem::take(&mut self.entries);
+        let mut reports = Vec::with_capacity(entries.len());
+        let mut snapshots = Vec::with_capacity(entries.len());
+        for (id, entry) in entries.into_iter().enumerate() {
+            let snapshot_id = entry.report.id;
+            let report = {
                 let mut report = entry.report;
                 report.selector = Some(EntrySelectorCounters {
                     selected: self.selected[id],
                     productive: self.productive[id],
                 });
                 report
-            })
-            .collect()
+            };
+            reports.push(report);
+            snapshots.push((snapshot_id, entry.snapshot));
+        }
+        (reports, snapshots)
     }
 }
 

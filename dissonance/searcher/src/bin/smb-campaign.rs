@@ -14,8 +14,8 @@ use searcher::{
     },
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
-        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig,
-        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint, SmbTerminalPredicate,
+        SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport,
+        SmbCampaignOrigin, SmbGame, SmbSnapshotCheckpoint, SmbTerminalPredicate,
         button_vocabulary_from_identifier, chord_policy_from_identifier,
         replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
@@ -160,7 +160,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     }
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
-    let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
+    let game = selected_game(&rom)?;
+    let checkpoint_format = game.snapshot_checkpoint_format();
+    let origin = load_origin(
+        &origin_arg.to_string_lossy(),
+        checkpoint_path.as_deref(),
+        checkpoint_format,
+    )?;
     let config = SmbCampaignConfig {
         vocabulary,
         terminal,
@@ -188,7 +194,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut progress = BufWriter::new(fs::File::create(output.join("progress-live.jsonl"))?);
     let started = std::time::Instant::now();
     let (report, checkpoint) =
-        run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, Some(&mut progress))?;
+        run_smb_campaign_checkpointed(&game, &config, &origin, &mut stream, Some(&mut progress))?;
     let wall_seconds = started.elapsed().as_secs_f64();
     drop(stream);
 
@@ -224,6 +230,8 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         return Err("unexpected extra replay argument".into());
     }
     let rom = read_rom()?;
+    let game = selected_game(&rom)?;
+    let checkpoint_format = game.snapshot_checkpoint_format();
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
     let origin_name = origin_arg.to_string_lossy();
     let (origin_report, origin_checkpoint) = if origin_name == "genesis" {
@@ -243,6 +251,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
             Some(load_checkpoint_as(
                 checkpoint_path,
                 logical_path.to_owned(),
+                checkpoint_format,
             )?),
         )
     } else {
@@ -250,11 +259,14 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
             Some(serde_json::from_slice::<SmbArchiveReport>(&fs::read(
                 origin_name.as_ref(),
             )?)?),
-            checkpoint_arg.as_deref().map(load_checkpoint).transpose()?,
+            checkpoint_arg
+                .as_deref()
+                .map(|path| load_checkpoint(path, checkpoint_format))
+                .transpose()?,
         )
     };
     let (report, checkpoint) = replay_smb_campaign_checkpointed(
-        &rom,
+        &game,
         &stream_bytes,
         origin_report.as_ref(),
         origin_checkpoint.as_ref(),
@@ -297,6 +309,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
 fn load_origin(
     origin_arg: &str,
     checkpoint_path: Option<&std::path::Path>,
+    checkpoint_format: &str,
 ) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
     if origin_arg == "genesis" {
         if checkpoint_path.is_some() {
@@ -310,7 +323,11 @@ fn load_origin(
         }
         let checkpoint_path = checkpoint_path.ok_or("snapshot-root origin needs --checkpoint")?;
         return Ok(SmbCampaignOrigin::SnapshotRoot {
-            checkpoint: load_checkpoint_as(checkpoint_path, logical_path.to_owned())?,
+            checkpoint: load_checkpoint_as(
+                checkpoint_path,
+                logical_path.to_owned(),
+                checkpoint_format,
+            )?,
         });
     }
     let bytes = fs::read(origin_arg)?;
@@ -319,23 +336,29 @@ fn load_origin(
         path: origin_arg.to_owned(),
         file_sha256: format!("{:x}", Sha256::digest(&bytes)),
         report: Box::new(report),
-        checkpoint: checkpoint_path.map(load_checkpoint).transpose()?,
+        checkpoint: checkpoint_path
+            .map(|path| load_checkpoint(path, checkpoint_format))
+            .transpose()?,
     })
 }
 
-fn load_checkpoint(path: &std::path::Path) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
-    load_checkpoint_as(path, path.to_string_lossy().into_owned())
+fn load_checkpoint(
+    path: &std::path::Path,
+    checkpoint_format: &str,
+) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    load_checkpoint_as(path, path.to_string_lossy().into_owned(), checkpoint_format)
 }
 
 fn load_checkpoint_as(
     path: &std::path::Path,
     logical_path: String,
+    checkpoint_format: &str,
 ) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
     let bytes = fs::read(path)?;
     Ok(SmbCampaignCheckpoint {
         path: logical_path,
         file_sha256: format!("{:x}", Sha256::digest(&bytes)),
-        snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes, SNAPSHOT_CHECKPOINT_FORMAT)?,
+        snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes, checkpoint_format)?,
     })
 }
 
@@ -386,6 +409,16 @@ fn read_rom() -> Result<Vec<u8>, Box<dyn Error>> {
             .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?,
     );
     Ok(fs::read(rom_path)?)
+}
+
+fn selected_game(rom: &[u8]) -> Result<SmbGame, Box<dyn Error>> {
+    let core_path = PathBuf::from(
+        env::var_os("HARMONY_QUICKNES_CORE")
+            .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
+    );
+    let core = fs::read(&core_path)?;
+    let core_sha256 = format!("{:x}", Sha256::digest(&core));
+    Ok(SmbGame::new(rom, &core_path, &core_sha256))
 }
 
 #[allow(clippy::cast_precision_loss)] // Throughput display only; counts stay far below 2^52.

@@ -3,18 +3,24 @@
 //! Scratch diagnostic: measure how many kept states at the deepest band die
 //! on a short neutral hold.
 
-use std::{env, error::Error, fs};
+use std::{env, error::Error, fs, path::PathBuf};
 
 use searcher::{
     smb::archive::SmbArchiveReport,
     smb::target::{ButtonChord, SmbTarget},
     target::Target,
 };
+use sha2::{Digest, Sha256};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let report_path = args.next().ok_or("usage: pipe_probe <report>")?;
     let rom = fs::read(env::var("HARMONY_SMB_ROM")?)?;
+    let core_path = PathBuf::from(
+        env::var_os("HARMONY_QUICKNES_CORE")
+            .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
+    );
+    let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core_path)?));
     let report: SmbArchiveReport = serde_json::from_slice(&fs::read(&report_path)?)?;
     let mut candidates = report
         .entries
@@ -35,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut dead = 0_u32;
     let mut alive = 0_u32;
     for entry in &sample {
-        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom)?;
+        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom, &core_path, &core_sha256)?;
         for action in &entry.input.actions {
             target.apply(action);
         }

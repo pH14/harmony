@@ -4,9 +4,10 @@
 //!
 //! A campaign runs W workers on one machine against one shared archive. A job
 //! is a pure function of (parent snapshot, mutation seed); the coordinator
-//! serializes selection and admission in deterministic reservation order, and
-//! records the complete admission-ordered job stream. Workers execute
-//! concurrently, but host completion order cannot reach campaign state.
+//! serializes selection and admission through a deterministic sliding window,
+//! and records the complete admission-ordered job stream. Physical workers
+//! drain the window dynamically, but host completion order cannot reach
+//! campaign state.
 //!
 //! Everything game-specific arrives through [`Game`]: target construction and
 //! stepping, key and milestone decoding, alive/dead/won classification, the
@@ -54,16 +55,35 @@ pub type CampaignOutcome<G> = (
 /// A game's initial draw state and the header provenance recorded for it.
 pub type InitialDrawState<G> = (<G as Game>::DrawState, Option<<G as Game>::TableHeader>);
 
-/// Fixed statement of the deterministic worker schedule, recorded in new reports.
-pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "selection, reservation, and admission follow the \
-     deterministic worker ring; host completion order cannot reach campaign state; the same \
-     seed, configuration, origin, and game bytes produce the same recorded stream";
+/// Fixed statement of the live worker schedule, recorded in new reports.
+pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
+     window and admitted in reservation order; physical workers drain the window dynamically, \
+     but host completion order cannot reach campaign state; the same seed, configuration, \
+     origin, and game bytes produce the same recorded stream";
 
+const RESERVATION_ORDER_SCHEDULE_IDENTITY: &str = "selection, reservation, and admission follow \
+     the deterministic worker ring; host completion order cannot reach campaign state; the same \
+     seed, configuration, origin, and game bytes produce the same recorded stream";
+const COMPLETION_ORDER_SCHEDULE_IDENTITY: &str = "selection, reservation, and admission follow \
+     host completion order; the recorded stream is this campaign's identity; every recorded run \
+     replays exactly";
 const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
      alone; the recorded stream is this campaign's identity; two live runs at one seed may \
      differ, and each replays exactly";
-const CAMPAIGN_SCHEDULE_POLICY: &str = "reservation_order_v1";
+const CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
+const COMPLETION_ORDER_SCHEDULE_POLICY: &str = "completion_order_v1";
+const RESERVATION_ORDER_SCHEDULE_POLICY: &str = "reservation_order_v1";
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
+
+/// Deterministic reservations kept ahead of admission per worker. The window
+/// hides individual long jobs while bounding result memory and wall-budget
+/// overshoot to a small number of jobs per core.
+const WINDOW_JOBS_PER_WORKER: usize = 64;
+
+/// Already-reserved jobs buffered in each physical executor. This is smaller
+/// than the logical reorder window and changes only overlap: logical worker
+/// identity, selection, and admission remain coordinator-owned.
+const EXECUTOR_PREFETCH_JOBS: usize = 8;
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
 /// next drawn job anyway and lets admission deduplicate, so a saturated archive
@@ -140,6 +160,9 @@ pub trait Game: Sync {
     fn max_action_limit(&self) -> usize;
     /// Time-accounting function handed to the archive.
     fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
+
+    /// Incrementally digest one complete worker result for stream replay verification.
+    fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
 
     /// The recorded identifiers of one run's game-owned policies.
     fn policies(&self, run: &Self::Run) -> GamePolicies;
@@ -508,8 +531,7 @@ pub struct CampaignStreamHeader<T> {
     pub campaign_seed: u64,
     /// Worker count W.
     pub workers: u32,
-    /// Deterministic reservation/admission policy. Absent from streams whose
-    /// admission order followed host completion order.
+    /// Live admission-order policy. Absent from historical completion-order streams.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_policy: Option<String>,
     /// Deterministic progress-curve payload policy. Absent from streams whose
@@ -1262,7 +1284,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         &mut self,
         game: &G,
         parent_id: u64,
-        result: &CampaignJobResult<G>,
+        result: CampaignJobResult<G>,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
         self.sequence = self.sequence.saturating_add(1);
         let sequence = self.sequence;
@@ -1279,9 +1301,9 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             .clone();
         let mut current_parent = parent_index;
         let mut decisions = Vec::new();
-        for action in &result.actions {
+        for action in result.actions {
             input.actions.push(action.action);
-            game.merge_action_evidence(&mut self.evidence, action, sequence, &input);
+            game.merge_action_evidence(&mut self.evidence, &action, sequence, &input);
             if action.dead {
                 self.deaths = self.deaths.saturating_add(1);
             }
@@ -1290,7 +1312,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 self.victory_input.get_or_insert_with(|| input.clone());
                 decisions.push(CampaignAdmissionDecision::Victory);
             }
-            if let Some(candidate) = &action.candidate {
+            if let Some(candidate) = action.candidate {
                 if !candidate.viable {
                     self.probe_refused = self.probe_refused.saturating_add(1);
                     decisions.push(CampaignAdmissionDecision::ProbeRefused);
@@ -1305,7 +1327,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         key: game.complete_candidate_key(candidate.key, &candidate.snapshot)?,
                         milestones: action.milestones,
                     },
-                    candidate.snapshot.clone(),
+                    candidate.snapshot,
                 )? {
                     Some(id) if id == inserted_before => {
                         decisions.push(CampaignAdmissionDecision::Retained {
@@ -1395,9 +1417,13 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         )
     }
 
-    pub(crate) fn into_archive_report(mut self, game: &G, campaign_seed: u64) -> G::ArchiveReport {
-        let entries = self.archive.take_entry_reports();
-        game.archive_report(
+    pub(crate) fn into_archive_report_and_snapshots(
+        mut self,
+        game: &G,
+        campaign_seed: u64,
+    ) -> (G::ArchiveReport, Vec<(u64, G::Snapshot)>) {
+        let (entries, snapshots) = self.archive.take_entry_reports_and_snapshots();
+        let report = game.archive_report(
             &self.evidence,
             ArchiveReportState {
                 seed: campaign_seed,
@@ -1409,7 +1435,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 deaths: self.deaths,
                 selector: self.archive.selector_report(),
             },
-        )
+        );
+        (report, snapshots)
     }
 }
 
@@ -1616,28 +1643,24 @@ fn build_report<G: Game>(
     counters: &CampaignCounters,
     stream_sha256: String,
 ) -> CampaignOutcome<G> {
-    let checkpoint = SnapshotCheckpoint {
-        format: game.checkpoint_format().to_owned(),
-        entries: core
-            .archive
-            .entries
-            .iter()
-            .map(|entry| SnapshotCheckpointEntry {
-                id: entry.report.id,
-                snapshot: entry.snapshot.clone(),
-            })
-            .collect(),
-    };
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
     let victories = core.victories;
     let victory_input = core.victory_input.clone();
     let replacement_frames_displaced = core.archive.replacement_time_displaced();
-    let archive = core.into_archive_report(game, header.campaign_seed);
-    let schedule_identity = if header.schedule_policy.as_deref() == Some(CAMPAIGN_SCHEDULE_POLICY) {
-        CAMPAIGN_SCHEDULE_IDENTITY
-    } else {
-        LEGACY_CAMPAIGN_SCHEDULE_IDENTITY
+    let (archive, snapshots) = core.into_archive_report_and_snapshots(game, header.campaign_seed);
+    let checkpoint = SnapshotCheckpoint {
+        format: game.checkpoint_format().to_owned(),
+        entries: snapshots
+            .into_iter()
+            .map(|(id, snapshot)| SnapshotCheckpointEntry { id, snapshot })
+            .collect(),
+    };
+    let schedule_identity = match header.schedule_policy.as_deref() {
+        Some(CAMPAIGN_SCHEDULE_POLICY) => CAMPAIGN_SCHEDULE_IDENTITY,
+        Some(COMPLETION_ORDER_SCHEDULE_POLICY) => COMPLETION_ORDER_SCHEDULE_IDENTITY,
+        Some(RESERVATION_ORDER_SCHEDULE_POLICY) => RESERVATION_ORDER_SCHEDULE_IDENTITY,
+        _ => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
     };
     let report = CampaignModeReport {
         mode: "campaign".to_owned(),
@@ -1678,12 +1701,45 @@ fn build_report<G: Game>(
     (report, checkpoint)
 }
 
-fn result_sha256<G: Game>(result: &CampaignJobResult<G>) -> Result<String, Box<dyn Error>> {
-    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(result)?)))
+struct PostcardSha256(Sha256);
+
+impl postcard::ser_flavors::Flavor for PostcardSha256 {
+    type Output = sha2::digest::Output<Sha256>;
+
+    fn try_extend(&mut self, data: &[u8]) -> postcard::Result<()> {
+        self.0.update(data);
+        Ok(())
+    }
+
+    fn try_push(&mut self, data: u8) -> postcard::Result<()> {
+        self.0.update([data]);
+        Ok(())
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Output> {
+        Ok(self.0.finalize())
+    }
+}
+
+/// Incrementally digest the pinned postcard representation without building
+/// a full encoded result buffer.
+pub(crate) fn postcard_result_sha256<G: Game + ?Sized>(
+    result: &CampaignJobResult<G>,
+) -> Result<String, Box<dyn Error>> {
+    postcard_sha256(result)
+}
+
+fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
+    let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
+        value,
+        PostcardSha256(Sha256::new()),
+    )?;
+    Ok(format!("{digest:x}"))
 }
 
 /// Job specification sent to a worker.
 struct JobSpec<G: Game + ?Sized> {
+    reservation: usize,
     snapshot: G::Snapshot,
     parent_actions: usize,
     parent_milestones: G::Milestones,
@@ -1695,6 +1751,7 @@ type SelectedJob<G> = (JobSpec<G>, PendingJob);
 
 /// What the coordinator remembers about a worker's in-flight job.
 struct PendingJob {
+    worker: u32,
     parent_id: u64,
     mutation_seed: u64,
     mixture_weight: u8,
@@ -1702,6 +1759,16 @@ struct PendingJob {
     splice: Option<CampaignSpliceRecord>,
     selector: SelectorDraw,
     draw_table_before: Option<EmpiricalStepCheckpoint>,
+}
+
+/// One finished window slot, held until every earlier reservation can be
+/// admitted in deterministic order.
+struct CompletedJob<G: Game + ?Sized> {
+    worker: u32,
+    pending: PendingJob,
+    result: CampaignJobResult<G>,
+    frames: u64,
+    result_sha256: String,
 }
 
 fn replay_splice<G: Game>(
@@ -1897,8 +1964,6 @@ where
     let mut next_progress = 0_u64;
 
     let mut reserved = 0_u64;
-    let mut pending: Vec<Option<PendingJob>> = Vec::new();
-    pending.resize_with(workers, || None);
 
     let max_actions = config.action_limit;
     let retention = config.retention;
@@ -1906,6 +1971,7 @@ where
         config.workers,
         |_| game.new_target(),
         |target, spec: JobSpec<G>| {
+            let reservation = spec.reservation;
             let frames_before = game.frames_clocked(target);
             game.execute_job(
                 &config.run,
@@ -1917,11 +1983,16 @@ where
                 max_actions,
                 retention,
             )
-            .map(|result| {
-                (
+            .and_then(|result| {
+                let result_sha256 = game
+                    .result_sha256(&result)
+                    .map_err(|error| error.to_string())?;
+                Ok((
+                    reservation,
                     result,
                     game.frames_clocked(target).saturating_sub(frames_before),
-                )
+                    result_sha256,
+                ))
             })
             .map_err(|error| error.to_string())
         },
@@ -1998,9 +2069,9 @@ where
                             mutation_seed,
                         )?,
                     };
-                    if consecutive_skips < CONSECUTIVE_SKIP_LIMIT
-                        && core.all_prefixes_archived(parent_index, &suffix)
-                    {
+                    let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
+                        && core.all_prefixes_archived(parent_index, &suffix);
+                    if all_prefixes_archived {
                         let draw_table_after =
                             game.finish_stream_record(&config.run, draw_state, &[])?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
@@ -2025,12 +2096,14 @@ where
                     let entry = &core.archive.entries[parent_index];
                     return Ok(Some((
                         JobSpec {
+                            reservation: 0,
                             snapshot: entry.snapshot.clone(),
                             parent_actions: entry.report.input.actions.len(),
                             parent_milestones: entry.report.milestones,
                             suffix,
                         },
                         PendingJob {
+                            worker,
                             parent_id: u64::try_from(parent_index)?,
                             mutation_seed,
                             mixture_weight,
@@ -2043,10 +2116,14 @@ where
                 }
             };
 
-            let mut in_flight = 0_usize;
-            let mut admission_order = VecDeque::with_capacity(workers);
-            for worker in 0..config.workers {
-                match select(
+            let window_capacity = workers.saturating_mul(WINDOW_JOBS_PER_WORKER);
+            let mut pending = BTreeMap::<usize, PendingJob>::new();
+            let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
+            let mut queued_specs = VecDeque::with_capacity(window_capacity);
+            for _ in 0..window_capacity {
+                let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
+                let worker = u32::try_from(worker_index)?;
+                let selected = select(
                     &mut core,
                     &mut rands,
                     &mut draw_state,
@@ -2054,149 +2131,228 @@ where
                     &mut counters,
                     &mut reserved,
                     worker,
-                )? {
-                    Some((spec, pending_job)) => {
-                        pending[worker as usize] = Some(pending_job);
-                        pool.send(worker, spec)?;
-                        admission_order.push_back(worker);
-                        in_flight += 1;
-                    }
-                    None => {
-                        pool.close(worker)?;
-                    }
+                )?;
+                let Some((mut spec, pending_job)) = selected else {
+                    break;
+                };
+                let reservation = usize::try_from(reserved.saturating_sub(1))?;
+                spec.reservation = reservation;
+                if pending.insert(reservation, pending_job).is_some() {
+                    return Err("campaign reserved one job twice".into());
+                }
+                queued_specs.push_back(spec);
+            }
+            let mut physical_queued = vec![0_usize; workers];
+            'prefill: for _ in 0..EXECUTOR_PREFETCH_JOBS {
+                for worker in 0..config.workers {
+                    let Some(spec) = queued_specs.pop_front() else {
+                        break 'prefill;
+                    };
+                    pool.send(worker, spec)?;
+                    physical_queued[usize::try_from(worker)?] =
+                        physical_queued[usize::try_from(worker)?].saturating_add(1);
                 }
             }
+            let mut idle_workers = physical_queued
+                .iter()
+                .enumerate()
+                .filter_map(|(worker, queued)| (*queued == 0).then_some(worker))
+                .map(u32::try_from)
+                .collect::<Result<VecDeque<_>, _>>()?;
 
-            while in_flight > 0 {
-                let expected_worker = admission_order
-                    .pop_front()
-                    .ok_or("campaign admission order ended with jobs still in flight")?;
-                let reply = pool.receive_for(expected_worker)?;
-                let worker_index = reply.worker as usize;
-                let (result, frames) = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                    format!("campaign worker {} failed: {error}", reply.worker).into()
-                })?;
-                let pending_job = pending[worker_index]
-                    .take()
-                    .ok_or("campaign worker replied without a pending job")?;
-                let victories_before = core.victories;
-                let (sequence, decisions) = core.admit_job(game, pending_job.parent_id, &result)?;
-                let parent_index = usize::try_from(pending_job.parent_id)?;
-                core.archive
-                    .record_selection(parent_index, &pending_job.selector);
-                let retained_ids = decisions
-                    .iter()
-                    .filter_map(|decision| match decision {
-                        CampaignAdmissionDecision::Retained { id } => usize::try_from(*id).ok(),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let new_slot_descendant = retained_ids
-                    .iter()
-                    .any(|id| core.archive.opened_new_slot(*id));
-                let new_cell_descendant = retained_ids
-                    .iter()
-                    .any(|id| core.archive.opened_new_cell(*id));
-                core.archive.record_selection_outcome(
-                    parent_index,
-                    !retained_ids.is_empty(),
-                    new_slot_descendant,
-                    new_cell_descendant,
-                );
-                if let DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } =
-                    config.mixture
+            let mut next_admission = 0_usize;
+            while !pending.is_empty() {
+                let reply = pool.receive()?;
+                let physical_worker = reply.worker;
+                let physical_index = usize::try_from(physical_worker)?;
+                let queued = physical_queued
+                    .get_mut(physical_index)
+                    .ok_or("campaign worker replied with an unknown physical identifier")?;
+                *queued = queued
+                    .checked_sub(1)
+                    .ok_or("campaign worker replied without queued work")?;
+                let (reservation, result, frames, result_sha256) =
+                    reply.outcome.map_err(|error| -> Box<dyn Error> {
+                        format!("campaign worker {physical_worker} failed: {error}").into()
+                    })?;
+                let pending_job = pending
+                    .remove(&reservation)
+                    .ok_or("campaign worker replied for an unknown reservation")?;
+                if completed
+                    .insert(
+                        reservation,
+                        CompletedJob {
+                            worker: pending_job.worker,
+                            pending: pending_job,
+                            result,
+                            frames,
+                            result_sha256,
+                        },
+                    )
+                    .is_some()
                 {
-                    let strategy = energy_strategy(
-                        pending_job.mutation_seed,
-                        pending_job.mixture_weight,
-                        pending_job.splice_weight,
-                    )?;
-                    core.mixture_energy
-                        .record_outcome(strategy, new_slot_descendant);
+                    return Err("campaign worker completed one reservation twice".into());
                 }
-                if victories_before == 0
-                    && let (Some(path), Some(input)) =
-                        (&config.victory_input_path, &core.victory_input)
-                {
-                    std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
+
+                // Keep the physical executor busy while the coordinator
+                // admits the deterministic contiguous result prefix. The
+                // replacement job was already selected and reserved, so this
+                // overlap cannot change campaign state or recorded order.
+                if let Some(spec) = queued_specs.pop_front() {
+                    pool.send(physical_worker, spec)?;
+                    physical_queued[physical_index] =
+                        physical_queued[physical_index].saturating_add(1);
+                } else if physical_queued[physical_index] == 0 {
+                    idle_workers.push_back(physical_worker);
                 }
-                let draw_table_after =
-                    finish_record(game, &config.run, &mut draw_state, &core, &decisions)?;
-                writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
-                    sequence,
-                    worker: reply.worker,
-                    parent_id: pending_job.parent_id,
-                    mutation_seed: pending_job.mutation_seed,
-                    frames,
-                    result_sha256: result_sha256::<G>(&result)?,
-                    decisions,
-                    mixture_weight: pending_job.mixture_weight,
-                    splice_weight: pending_job.splice_weight,
-                    splice: pending_job.splice,
-                    selector: pending_job.selector,
-                    draw_table_before: pending_job.draw_table_before,
-                    draw_table_after,
-                }))?;
-                counters.jobs_per_worker[worker_index] =
-                    counters.jobs_per_worker[worker_index].saturating_add(1);
-                counters.job_frames = counters.job_frames.saturating_add(frames);
-                in_flight -= 1;
-                if let Some(directory) = &config.checkpoint_dir
-                    && sequence > 0
-                    && sequence.is_multiple_of(LIVE_CHECKPOINT_INTERVAL)
-                {
-                    write_live_checkpoint(game, &core, config.campaign_seed, directory)?;
-                }
-                if let Some(sink) = progress.as_deref_mut() {
-                    // Wall-clock gates the sidecar only. It selects nothing and
-                    // enters no recorded artifact, so its nondeterminism cannot
-                    // reach the stream.
-                    #[allow(clippy::disallowed_methods)]
-                    let elapsed = progress_started.elapsed().as_secs();
-                    if elapsed >= next_progress {
-                        next_progress = elapsed
-                            .saturating_add(PROGRESS_INTERVAL_SECONDS)
-                            .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+
+                while let Some(completed_job) = completed.remove(&next_admission) {
+                    let worker_index = usize::try_from(completed_job.worker)?;
+                    let pending_job = completed_job.pending;
+                    let result = completed_job.result;
+                    let frames = completed_job.frames;
+                    let result_sha256 = completed_job.result_sha256;
+                    let victories_before = core.victories;
+                    let (sequence, decisions) =
+                        core.admit_job(game, pending_job.parent_id, result)?;
+                    let parent_index = usize::try_from(pending_job.parent_id)?;
+                    core.archive
+                        .record_selection(parent_index, &pending_job.selector);
+                    let retained_ids = decisions
+                        .iter()
+                        .filter_map(|decision| match decision {
+                            CampaignAdmissionDecision::Retained { id } => usize::try_from(*id).ok(),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    let new_slot_descendant = retained_ids
+                        .iter()
+                        .any(|id| core.archive.opened_new_slot(*id));
+                    let new_cell_descendant = retained_ids
+                        .iter()
+                        .any(|id| core.archive.opened_new_cell(*id));
+                    core.archive.record_selection_outcome(
+                        parent_index,
+                        !retained_ids.is_empty(),
+                        new_slot_descendant,
+                        new_cell_descendant,
+                    );
+                    if let DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } =
+                        config.mixture
+                    {
+                        let strategy = energy_strategy(
+                            pending_job.mutation_seed,
+                            pending_job.mixture_weight,
+                            pending_job.splice_weight,
+                        )?;
+                        core.mixture_energy
+                            .record_outcome(strategy, new_slot_descendant);
+                    }
+                    if victories_before == 0
+                        && let (Some(path), Some(input)) =
+                            (&config.victory_input_path, &core.victory_input)
+                    {
+                        std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
+                    }
+                    let draw_table_after =
+                        finish_record(game, &config.run, &mut draw_state, &core, &decisions)?;
+                    writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
+                        sequence,
+                        worker: completed_job.worker,
+                        parent_id: pending_job.parent_id,
+                        mutation_seed: pending_job.mutation_seed,
+                        frames,
+                        result_sha256,
+                        decisions,
+                        mixture_weight: pending_job.mixture_weight,
+                        splice_weight: pending_job.splice_weight,
+                        splice: pending_job.splice,
+                        selector: pending_job.selector,
+                        draw_table_before: pending_job.draw_table_before,
+                        draw_table_after,
+                    }))?;
+                    counters.jobs_per_worker[worker_index] =
+                        counters.jobs_per_worker[worker_index].saturating_add(1);
+                    counters.job_frames = counters.job_frames.saturating_add(frames);
+                    if let Some(directory) = &config.checkpoint_dir
+                        && sequence > 0
+                        && sequence.is_multiple_of(LIVE_CHECKPOINT_INTERVAL)
+                    {
+                        write_live_checkpoint(game, &core, config.campaign_seed, directory)?;
+                    }
+                    if let Some(sink) = progress.as_deref_mut() {
+                        // Wall-clock gates the sidecar only. It selects nothing and
+                        // enters no recorded artifact, so its nondeterminism cannot
+                        // reach the stream.
                         #[allow(clippy::disallowed_methods)]
-                        let unix_time = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_or(0, |since| since.as_secs());
-                        let (deepest_key, cheapest, retained) = core
-                            .archive
-                            .live_progress()
-                            .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
-                            .unwrap_or((None, 0, 0));
-                        let line = serde_json::to_string(&CampaignProgressRecord {
-                            unix_time,
-                            executions: sequence,
-                            deepest_key,
-                            cheapest_time_in_group: cheapest,
-                            retained,
-                        })?;
-                        sink.write_all(line.as_bytes())?;
-                        sink.write_all(b"\n")?;
-                        sink.flush()?;
+                        let elapsed = progress_started.elapsed().as_secs();
+                        if elapsed >= next_progress {
+                            next_progress = elapsed
+                                .saturating_add(PROGRESS_INTERVAL_SECONDS)
+                                .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+                            #[allow(clippy::disallowed_methods)]
+                            let unix_time = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |since| since.as_secs());
+                            let (deepest_key, cheapest, retained) = core
+                                .archive
+                                .live_progress()
+                                .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
+                                .unwrap_or((None, 0, 0));
+                            let line = serde_json::to_string(&CampaignProgressRecord {
+                                unix_time,
+                                executions: sequence,
+                                deepest_key,
+                                cheapest_time_in_group: cheapest,
+                                retained,
+                            })?;
+                            sink.write_all(line.as_bytes())?;
+                            sink.write_all(b"\n")?;
+                            sink.flush()?;
+                        }
+                    }
+                    next_admission = next_admission.saturating_add(1);
+                    let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
+                    let worker = u32::try_from(worker_index)?;
+                    let selected = select(
+                        &mut core,
+                        &mut rands,
+                        &mut draw_state,
+                        &mut writer,
+                        &mut counters,
+                        &mut reserved,
+                        worker,
+                    )?;
+                    if let Some((mut spec, pending_job)) = selected {
+                        let reservation = usize::try_from(reserved.saturating_sub(1))?;
+                        spec.reservation = reservation;
+                        if pending.insert(reservation, pending_job).is_some() {
+                            return Err("campaign reserved one job twice".into());
+                        }
+                        queued_specs.push_back(spec);
                     }
                 }
-                match select(
-                    &mut core,
-                    &mut rands,
-                    &mut draw_state,
-                    &mut writer,
-                    &mut counters,
-                    &mut reserved,
-                    reply.worker,
-                )? {
-                    Some((spec, pending_job)) => {
-                        pending[worker_index] = Some(pending_job);
-                        pool.send(reply.worker, spec)?;
-                        admission_order.push_back(reply.worker);
-                        in_flight += 1;
-                    }
-                    None => {
-                        pool.close(reply.worker)?;
-                    }
+                while !queued_specs.is_empty() {
+                    let Some(worker) = idle_workers.pop_front() else {
+                        break;
+                    };
+                    let spec = queued_specs
+                        .pop_front()
+                        .ok_or("campaign queued-job count changed while dispatching")?;
+                    pool.send(worker, spec)?;
+                    let physical_index = usize::try_from(worker)?;
+                    physical_queued[physical_index] =
+                        physical_queued[physical_index].saturating_add(1);
                 }
+            }
+            if !completed.is_empty() {
+                return Err("campaign reorder window ended with an admission gap".into());
+            }
+            if !queued_specs.is_empty() {
+                return Err("campaign reorder window ended with queued jobs".into());
+            }
+            for worker in 0..config.workers {
+                pool.close(worker)?;
             }
             Ok(())
         },
@@ -2289,11 +2445,11 @@ where
     if header.format != game.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
-    if header
-        .schedule_policy
-        .as_deref()
-        .is_some_and(|policy| policy != CAMPAIGN_SCHEDULE_POLICY)
-    {
+    if header.schedule_policy.as_deref().is_some_and(|policy| {
+        policy != CAMPAIGN_SCHEDULE_POLICY
+            && policy != COMPLETION_ORDER_SCHEDULE_POLICY
+            && policy != RESERVATION_ORDER_SCHEDULE_POLICY
+    }) {
         return Err("campaign stream schedule policy is not recognized".into());
     }
     if header
@@ -2511,15 +2667,15 @@ where
                     )
                     .into());
                 }
-                let digest = result_sha256::<G>(&result)?;
+                let digest = game.result_sha256(&result)?;
                 if digest != job.result_sha256 {
                     return Err(format!(
-                        "replayed job {} result digest diverged from the recorded stream",
-                        job.sequence
+                        "replayed job {} result digest {digest} diverged from recorded {}",
+                        job.sequence, job.result_sha256
                     )
                     .into());
                 }
-                let (sequence, decisions) = core.admit_job(game, job.parent_id, &result)?;
+                let (sequence, decisions) = core.admit_job(game, job.parent_id, result)?;
                 if sequence != job.sequence {
                     return Err(format!(
                         "replayed admission order {sequence} diverged from recorded {}",
@@ -2596,9 +2752,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CampaignJobRecord, CampaignStreamHeader, CampaignStreamRecord, GamePolicies};
+    use super::{
+        CampaignJobRecord, CampaignStreamHeader, CampaignStreamRecord, GamePolicies,
+        postcard_sha256,
+    };
     use crate::search::archive::{SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
+    use sha2::{Digest, Sha256};
 
     /// The header a stream recorded before the policy map existed, verbatim.
     /// The generic layer now holds the game's policies in a map and names its
@@ -2613,6 +2773,17 @@ mod tests {
 "resume_policy":"whole_tree","retention_policy":"admit_alive",
 "parent_scheduler":"room_cell_uniform_128","executor_mode":"snapshot_resume_archive",
 "worker_seed_derivation":"x","rom_sha256":"cd"}"#;
+
+    #[test]
+    fn incremental_postcard_digest_matches_encoded_bytes() {
+        let value = (17_u64, vec![0_u8, 1, 15, 16, 255], Some("deterministic"));
+        let encoded = postcard::to_allocvec(&value).expect("fixture encodes");
+        let expected = format!("{:x}", Sha256::digest(encoded));
+        let actual = postcard_sha256(&value).expect("incremental digest succeeds");
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 64);
+    }
 
     #[test]
     fn a_recorded_header_still_reads_and_writes_its_field_names() {

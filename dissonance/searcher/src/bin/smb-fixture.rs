@@ -11,22 +11,22 @@ use std::{
 };
 
 use searcher::{
-    search::archive::Input,
+    search::{archive::Input, campaign::Game},
     smb::{
         archive::SmbArchiveReport,
         campaign::{
-            SNAPSHOT_CHECKPOINT_FORMAT, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
+            SNAPSHOT_CHECKPOINT_FORMAT, SmbGame, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
             SmbTerminalPredicate,
         },
-        target::{ButtonChord, SmbInput, SmbSnapshot, SmbTarget, smb_mechanical_state_from_wram},
+        target::{ButtonChord, SmbInput, SmbSnapshot, smb_mechanical_state_from_wram},
     },
     target::{ExitKind, Target},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const MANIFEST_FORMAT: &str = "dissonance-fixture-private-v1";
-const CHALLENGE_FORMAT: &str = "dissonance-fixture-challenge-v1";
+const MANIFEST_FORMAT: &str = "dissonance-fixture-private-v2";
+const CHALLENGE_FORMAT: &str = "dissonance-fixture-challenge-v2";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct PrivateManifest {
@@ -41,6 +41,7 @@ struct PrivateManifest {
     expected_progress: u16,
     action_count: usize,
     rom_sha256: String,
+    emulator_backend: String,
     prefix_sha256: String,
     checkpoint_sha256: String,
     trace_sha256: String,
@@ -53,6 +54,7 @@ struct ChallengeDescriptor {
     checkpoint_file: String,
     checkpoint_sha256: String,
     rom_sha256: String,
+    emulator_backend: String,
     terminal_policy: String,
     workers: u32,
     action_limit: usize,
@@ -101,6 +103,7 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
     }
 
     let rom = read_rom()?;
+    let game = selected_game(&rom)?;
     let source_archive_sha256 = file_sha256(&source_path)?;
     let report: SmbArchiveReport =
         serde_json::from_reader(BufReader::new(fs::File::open(&source_path)?))?;
@@ -115,7 +118,8 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         .transpose()?
         .unwrap_or_default();
     prefix.actions.extend_from_slice(&entry.input.actions);
-    let (snapshot, trace_sha256) = replay_prefix(&rom, &prefix, expected_world, expected_level, 0)?;
+    let (snapshot, trace_sha256) =
+        replay_prefix(&game, &prefix, expected_world, expected_level, 0)?;
     let checkpoint = one_entry_checkpoint(snapshot);
     let prefix_bytes = serde_json::to_vec_pretty(&prefix)?;
     let checkpoint_bytes = checkpoint.to_bytes()?;
@@ -150,6 +154,7 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         expected_progress: 0,
         action_count: prefix.actions.len(),
         rom_sha256: rom_sha256.clone(),
+        emulator_backend: game.emulator_identity().to_owned(),
         prefix_sha256,
         checkpoint_sha256: checkpoint_sha256.clone(),
         trace_sha256,
@@ -160,6 +165,7 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
         checkpoint_file: "checkpoint.bin".to_owned(),
         checkpoint_sha256,
         rom_sha256,
+        emulator_backend: game.emulator_identity().to_owned(),
         terminal_policy: SmbTerminalPredicate::LevelTransition {
             world: expected_world,
             level: expected_level,
@@ -199,6 +205,7 @@ fn verify(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box
         || challenge.checkpoint_file != "checkpoint.bin"
         || challenge.checkpoint_sha256 != manifest.checkpoint_sha256
         || challenge.rom_sha256 != manifest.rom_sha256
+        || challenge.emulator_backend != manifest.emulator_backend
         || challenge.workers == 0
     {
         return Err("private and worker-visible fixture descriptors disagree".into());
@@ -218,8 +225,12 @@ fn verify(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box
     // an otherwise self-contained fixture impossible to move between evaluator
     // hosts.
     let rom = read_rom()?;
+    let game = selected_game(&rom)?;
     if sha256(&rom) != manifest.rom_sha256 {
         return Err("fixture ROM hash changed".into());
+    }
+    if game.emulator_identity() != manifest.emulator_backend {
+        return Err("fixture QuickNES identity changed".into());
     }
     let prefix_bytes = fs::read(directory.join("prefix.json"))?;
     if sha256(&prefix_bytes) != manifest.prefix_sha256 {
@@ -230,7 +241,7 @@ fn verify(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box
         return Err("fixture prefix action count changed".into());
     }
     let (snapshot, trace_sha256) = replay_prefix(
-        &rom,
+        &game,
         &prefix,
         manifest.expected_world,
         manifest.expected_level,
@@ -262,13 +273,15 @@ fn verify(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box
 }
 
 fn replay_prefix(
-    rom: &[u8],
+    game: &SmbGame,
     prefix: &Input<ButtonChord>,
     expected_world: u8,
     expected_level: u8,
     expected_progress: u16,
 ) -> Result<(SmbSnapshot, String), Box<dyn Error>> {
-    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
+    let mut target = game
+        .new_target()
+        .map_err(|error| -> Box<dyn Error> { error.into() })?;
     target.reset();
     let mut trace = Sha256::new();
     update_trace(&mut trace, &target.wram()[..])?;
@@ -324,6 +337,15 @@ fn read_rom() -> Result<Vec<u8>, Box<dyn Error>> {
     let path = env::var_os("HARMONY_SMB_ROM")
         .ok_or("HARMONY_SMB_ROM must name the external Super Mario Bros ROM")?;
     Ok(fs::read(path)?)
+}
+
+fn selected_game(rom: &[u8]) -> Result<SmbGame, Box<dyn Error>> {
+    let core_path = PathBuf::from(
+        env::var_os("HARMONY_QUICKNES_CORE")
+            .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
+    );
+    let core_sha256 = file_sha256(&core_path)?;
+    Ok(SmbGame::new(rom, &core_path, &core_sha256))
 }
 
 fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {

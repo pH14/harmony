@@ -4,7 +4,7 @@
 //! archive key. Numbers are wall-clock and machine-specific; the binary
 //! exists to find which operation bounds campaign throughput.
 
-use std::{env, error::Error, fs, time::Instant};
+use std::{env, error::Error, fs, path::PathBuf, time::Instant};
 
 use searcher::{
     smb::target::{ButtonChord, SmbTarget},
@@ -16,15 +16,34 @@ use sha2::{Digest, Sha256};
 fn main() -> Result<(), Box<dyn Error>> {
     let rom =
         fs::read(env::var_os("HARMONY_SMB_ROM").ok_or("HARMONY_SMB_ROM must name the SMB ROM")?)?;
-    let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom)?;
+    let mut target = selected_target(&rom)?;
     let rounds: u32 = env::args()
         .nth(1)
         .map(|value| value.parse())
         .transpose()?
         .unwrap_or(200);
+    let state_rounds = rounds.saturating_mul(100).max(10_000);
 
     let base = target.snapshot().ok_or("snapshot")?;
-    println!("snapshot bytes: {}", serde_json::to_vec(&base)?.len());
+    let snapshot_json = serde_json::to_value(&base)?;
+    let emulator_state_bytes = snapshot_json
+        .get("emulator_state")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    println!("emulator state bytes: {emulator_state_bytes}");
+    println!(
+        "complete snapshot JSON bytes: {}",
+        serde_json::to_vec(&base)?.len()
+    );
+
+    target.restore(&base)?;
+    let fixed = target.snapshot().ok_or("fixpoint snapshot")?;
+    target.restore(&fixed)?;
+    let fixed_again = target.snapshot().ok_or("second fixpoint snapshot")?;
+    println!(
+        "snapshot restore fixpoint: {}",
+        serde_json::to_vec(&fixed)? == serde_json::to_vec(&fixed_again)?
+    );
 
     let started = Instant::now();
     let mut frames = 0_u64;
@@ -41,19 +60,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let started = Instant::now();
-    for _ in 0..rounds {
+    for _ in 0..state_rounds {
         target.restore(&base)?;
     }
-    let restore_ms = started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds);
-    println!("restore: {restore_ms:.3} ms");
+    let restore_secs = started.elapsed().as_secs_f64();
+    println!(
+        "restore: {:.3} us, {:.0} states/s",
+        restore_secs * 1_000_000.0 / f64::from(state_rounds),
+        f64::from(state_rounds) / restore_secs
+    );
 
     let started = Instant::now();
-    for _ in 0..rounds {
+    for _ in 0..state_rounds {
         let _ = target.snapshot().ok_or("snapshot")?;
     }
+    let snapshot_secs = started.elapsed().as_secs_f64();
     println!(
-        "snapshot: {:.3} ms",
-        started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds)
+        "snapshot: {:.3} us, {:.0} states/s",
+        snapshot_secs * 1_000_000.0 / f64::from(state_rounds),
+        f64::from(state_rounds) / snapshot_secs
     );
 
     let started = Instant::now();
@@ -100,4 +125,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds)
     );
     Ok(())
+}
+
+fn selected_target(rom: &[u8]) -> Result<SmbTarget, Box<dyn Error>> {
+    let core_path = PathBuf::from(
+        env::var_os("HARMONY_QUICKNES_CORE")
+            .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
+    );
+    let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core_path)?));
+    Ok(SmbTarget::from_smb_rom_bytes_headless(
+        rom,
+        &core_path,
+        &core_sha256,
+    )?)
 }

@@ -284,8 +284,8 @@ No consonance/VM integration, no fault vocabulary, no libafl version bump,
 no changes to the old `dissonance/` stack, no reading it either. No model
 calls in `cargo test`. No asynchronous triage, lineage-scoped feedback,
 special corpus retention, or parallel search in this step. If a step fights
-the harness for more than a day (e.g. fast mode has no valid knob, tetanes
-determinism doesn't hold), stop and report with evidence rather than working
+the harness for more than a day (e.g. fast mode has no valid knob, the NES
+core's determinism doesn't hold), stop and report with evidence rather than working
 around it silently.
 
 ## Process
