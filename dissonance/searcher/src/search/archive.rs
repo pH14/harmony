@@ -993,6 +993,12 @@ where
         else {
             return;
         };
+        // A selected job may finish after an earlier admission displaced its
+        // parent. The cell can still exist for other entries, but that stale
+        // parent must not change their cached live-member count.
+        if members.ids.binary_search(&id).is_err() {
+            return;
+        }
         let was_live = members.sampleable > 0;
         if sampleable {
             members.sampleable = members.sampleable.saturating_add(1);
@@ -2077,6 +2083,59 @@ mod tests {
             archive.record_selection(id, &draw);
             archive.record_selection_outcome(id, step % 3 == 0, false, false);
         }
+    }
+
+    #[test]
+    fn displaced_inflight_parent_does_not_change_its_surviving_cell_count() {
+        let mut archive = flat_archive::<5>(&[[0, 0, 0, 0], [1, 0, 0, 0]]);
+        archive.selector_policy = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+            entry: 1,
+            groups: vec![3, 4, 5],
+        });
+        archive.rebuild_selector_index(10);
+
+        // Model a result still in flight when an earlier admission displaces
+        // its selected parent. Another entry keeps the same cell present.
+        archive.active[0] = false;
+        archive.index_remove(0);
+        let draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        archive.record_selection(0, &draw);
+
+        let mut cached_rand = RomuDuoJrRand::with_seed(0xd15f_1ace);
+        let mut scanned_rand = cached_rand;
+        let mut cached_skipped = 0;
+        let mut scanned_skipped = 0;
+        assert_eq!(
+            archive
+                .walk_live_index(&mut cached_rand, &mut cached_skipped)
+                .expect("cached walk"),
+            archive
+                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, false)
+                .expect("scanned walk")
+        );
+        assert_eq!(cached_skipped, scanned_skipped);
+        assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
+
+        archive.record_selection_outcome(0, true, true, true);
+        let mut cached_rand = RomuDuoJrRand::with_seed(0x0af7_c0de);
+        let mut scanned_rand = cached_rand;
+        let mut cached_skipped = 0;
+        let mut scanned_skipped = 0;
+        assert_eq!(
+            archive
+                .walk_live_index(&mut cached_rand, &mut cached_skipped)
+                .expect("cached walk after stale outcome"),
+            archive
+                .walk_to_cell_scan(&mut scanned_rand, &mut scanned_skipped, false)
+                .expect("scanned walk after stale outcome")
+        );
+        assert_eq!(cached_skipped, scanned_skipped);
+        assert_eq!(cached_rand.next_u64(), scanned_rand.next_u64());
     }
 
     /// A splice tail is the cell-mate's stored path to its deepest
