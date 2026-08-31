@@ -7,10 +7,11 @@
 //! `tests/public-api.txt`. Any drift in the frozen public contract becomes a
 //! failing test and a reviewable diff.
 //!
-//! **The frozen surface is the Linux one** (it includes `KvmBackend`, which is
-//! `#[cfg(target_os = "linux")]`), so the snapshot is generated and checked on
-//! the Linux CI runner. On macOS the public surface is a strict subset, so this
-//! test skips loudly there rather than reporting a spurious drift.
+//! **The frozen surface is the x86-64 Linux one** (it includes `KvmBackend` and
+//! `PatchedKvmBackend`), so the snapshot is generated and checked on the x86-64
+//! Linux CI runner. Other targets have different architecture-gated concrete
+//! backends, so this test skips loudly there rather than comparing unlike
+//! surfaces.
 //!
 //! Refresh after an intentional, reviewed API change (on Linux):
 //!   `UPDATE_PUBLIC_API=1 cargo test -p vmm-backend --all-features --test public_api`
@@ -30,10 +31,10 @@ const CRATE: &str = "vmm-backend";
 #[test]
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]
 fn public_api_matches_snapshot() {
-    // The frozen contract is the Linux surface (includes `KvmBackend`). Skip on
-    // other platforms instead of diffing a subset.
-    if !cfg!(target_os = "linux") {
-        eprintln!("SKIP: {CRATE} public-api test — frozen on Linux (KvmBackend is Linux-only)");
+    // The frozen contract is the x86-64 Linux surface (includes KvmBackend and
+    // PatchedKvmBackend). Other targets expose different concrete backends.
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        eprintln!("SKIP: {CRATE} public-api test — frozen on x86-64 Linux");
         return;
     }
 

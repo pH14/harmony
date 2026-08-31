@@ -2433,3 +2433,13 @@ and M6 evidence, but are not final-tree repository gates. Reintroducing those
 obsolete Dissonance implementations would violate the isolation decision;
 future live reruns must use a separately versioned Dissonance checkout or a
 new Consonance-owned oracle rather than silently restoring stale search code.
+
+The first post-reconciliation public-API CI job exposed that the committed
+`vmm-backend` snapshot had been generated on aarch64 Linux even though the job
+and its documentation define the frozen surface as x86-64 Linux. That snapshot
+contained `LiveKvm` and omitted the x86-only `KvmBackend` and
+`PatchedKvmBackend`. The snapshot was regenerated with cargo-public-api 0.52.0,
+pinned nightly `2026-06-16`, and explicit target
+`x86_64-unknown-linux-gnu`; a second independent generation compares
+byte-for-byte. The guard now skips non-x86-64 targets explicitly instead of
+mis-comparing architecture-specific concrete backends.
