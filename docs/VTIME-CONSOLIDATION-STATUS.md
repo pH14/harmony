@@ -2622,3 +2622,13 @@ different tuple field; there is no call-site negation to mutate. The focused
 three-mutant family completed locally with all three caught. Formatting, the
 focused nextest oracle, and warnings-denied all-feature/all-target vmm-core
 Clippy pass on the repaired tree.
+
+Signed implementation head `9988d68a896808799bcf5e668237a8df0b81b645`
+then passed the complete hosted quality workflow (run `33445125414`): all 20
+jobs were green, including the general gate, coverage, Kani, public API, and
+all 16 mutation shards. The complete PR check rollup at that head was 45 of 45
+successful (quality, x86 virtual-time, and both secret scans), with GitHub
+reporting the PR `MERGEABLE` / `CLEAN`. The committed comparison against
+current `origin/main` remained empty under `dissonance/`; the implementation
+and its evidence contain no Dissonance source, test, manifest, or lockfile
+changes.
