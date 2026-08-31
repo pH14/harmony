@@ -2521,7 +2521,7 @@ acceptance fields, ARM bring-up/layout/dispatch/GIC behavior, and VMM
 checkpoint, snapshot, doorbell, and pvclock behavior. The hardware-only
 composition seams and algebraically equivalent disjoint-bit encodings remain
 the only narrow mutation exclusions. A `mutants` nextest profile keeps the
-known long idle-reproduction oracle bounded at 45 seconds and preserves
+known long idle-reproduction oracle bounded at 120 seconds and preserves
 fail-fast behavior; the exact `restore_vtime` family then caught all seven of
 seven mutants locally instead of converting an already-caught failure into a
 suite timeout.
@@ -2539,3 +2539,13 @@ The complete post-repair 16-shard hosted mutation run remains the gate of
 record. A path-limited comparison against current `main` is still empty for
 `dissonance/`: these repairs contain only Consonance code/tests plus shared
 quality configuration and this evidence record.
+
+The first exact-head hosted attempt on `5c1b0003` exposed an infrastructure
+calibration error before shard 6 tested any mutant: under simultaneous
+16-shard runner load, the unmutated baseline's long idle-reproduction test
+exceeded the local 45-second per-test limit on both retries. The job reported
+exit 4 and explicitly said no mutants were tested; it is not a mutation
+survivor. Shards 0 through 4, the general gate, coverage, Kani, and public API
+had already passed. The profile limit is raised to 120 seconds, still bounded
+well below the job tripwire, so a prerequisite-destroying mutant remains a
+loud per-test failure without rejecting a slow but unmodified hosted baseline.
