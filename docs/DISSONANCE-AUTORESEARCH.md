@@ -1,7 +1,5 @@
 # Dissonance autoresearch charter
 
-**Status: governing research and execution plan for Dissonance search work.**
-
 This charter controls work whose purpose is to improve Dissonance's search speed,
 resource efficiency, or generality. It replaces the charter at commit `2d09ea64`;
 ledger entries recorded under that version stay in the ledger. The from-scratch
@@ -508,7 +506,7 @@ every round alongside algorithmic challengers:
   non-SMB test target and a dependency check preventing generic modules from
   importing SMB; remove the 45-frame probe. Promotes on unchanged default
   streams, exact replay, and a falling complexity score.
-- **memory lens (E06):** byte census at 10K/30K/100K, then one lifetime change
+- **E06 memory accounting:** byte census at 10K/30K/100K, then one lifetime change
   at a time (release displaced snapshots, parent-plus-suffix input encoding,
   minimal live checkpoints). Promotes on at least 30% lower mature
   archive-plus-checkpoint bytes with no search-effectiveness regression.

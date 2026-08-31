@@ -210,7 +210,7 @@ The first QuickNES 30K curve used a 32-job deterministic window per worker. It
 reached 2,771.959 executions/s at 24 workers but only 75.5% efficiency. This
 negative result is preserved in `quicknes-window32-authoritative-curve30k-v2`.
 Increasing the bounded reservation window to 64 jobs per worker was the
-smallest further coordination change that cleared the gate; executor prefetch
+smallest further coordination change that cleared the threshold; executor prefetch
 remains eight jobs.
 
 ## Authoritative sole-QuickNES 30K curve
@@ -225,7 +225,7 @@ remains eight jobs.
 | 24 | 8.628 s | 3,477.006 | 20.497x | **85.4%** | 6,091,786 | 706,039.20 |
 
 The cleaned 24-worker result is 104.43x the documented 33.294185/s baseline
-and 20.88x the required 166.471/s absolute threshold. Both acceptance gates
+and 20.88x the required 166.471/s absolute threshold. Both acceptance checks
 therefore pass: efficiency is above 80%, and absolute throughput is above 5x
 baseline.
 
@@ -254,7 +254,7 @@ match the live files byte-for-byte. The recorded stream hashes are:
 An independent second 24-worker live run produced the same stream, archive,
 report, and snapshot bytes (`cmp` on all four files) and itself replayed
 exactly. Its throughput was 3,487.007 executions/s. The cleaned binary also
-replayed the preserved pre-cleanup 1-worker and 24-worker QuickNES gate
+replayed the preserved pre-cleanup 1-worker and 24-worker QuickNES check
 streams, proving that removal of the retired backend did not change the
 QuickNES target identity. The mature-archive stream also replayed exactly.
 
@@ -423,16 +423,16 @@ The rejected pending-input implementation replayed exactly before removal. No
 transition cache, dependency scheduler, new search policy, or game knowledge
 was retained.
 
-## Validation gates
+## Validation checks
 
 The root workspace passed `cargo build --all-features`, 1,224 nextest tests,
 clippy with warnings denied, formatting, and `cargo deny check`. The standalone
-Dissonance workspace passed the same five gates with 77 nextest tests. The
-unsafe `machine` crate passed `cargo +nightly miri test -p machine` (6 tests),
-including the libretro function-table seam, fixed-buffer state, direct-RAM
+Dissonance workspace passed the same five checks with 79 nextest tests. The
+unsafe `machine` crate passed `cargo +nightly miri test -p machine` (7 tests),
+including the libretro function-table interface, fixed-buffer state, direct-RAM
 access, padding canonicalization, and restore fixpoint.
 
-## Backend retirement and distribution gate
+## Backend retirement and distribution check
 
 All live TetaNES machine code, dependencies, lockfile entries, selectors,
 commands, tests, and backend-specific CI support were removed. Dissonance has
@@ -446,7 +446,7 @@ QuickNES is not vendored or bundled. Upstream carries mixed GPL-2.0-or-later
 and LGPL-2.1-or-later source notices plus a top-level GPL version 2 license.
 Distribution with Harmony remains blocked pending a licensing review of those
 notices and GPL-version compatibility. This experiment's separately built
-core does not waive that gate.
+core does not waive that check.
 
 A fresh `dissonance-fixture-private-v2` / `dissonance-fixture-challenge-v2`
 genesis fixture was generated from the final 24-worker archive and verified

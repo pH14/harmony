@@ -8,15 +8,17 @@ before working here and obey its rules.
 ## Current status
 
 The typed inputs, deterministic replay, labels, generated code, retirement,
-SMB executor, baseline, live-model campaign, and films are built. Step 3
-starts from the measured M6 plateau and changes only the existing SMB path.
+SMB executor, baseline, and live-model campaign are built. Historical films
+were produced before the video pipeline was retired; the remaining headless
+QuickNES backend cannot produce new ones. Step 3 starts from the measured M6
+plateau and changes only the existing SMB path.
 The record of M0–M7 decisions and results (`dissonance/NOTES.md`) lives in git history.
 
 ## The model harness
 
 ### Which model, at which settings
 
-The agent behind both seams is **GPT-5.6 Luna**, invoked non-interactively
+The agent behind both interfaces is **GPT-5.6 Luna**, invoked non-interactively
 through the codex CLI (`codex exec`, installed at `~/.local/bin/codex`,
 verified ≥ 0.147). Two configurations:
 
@@ -40,7 +42,7 @@ gtimeout 120 codex exec \
   - < "$PROMPT_FILE"
 ```
 
-Notes that are load-bearing:
+Essential invocation details:
 
 - **`--ignore-user-config` is required.** Pass the model, effort, service
   tier, sandbox, working directory, schema, and timeouts explicitly. The
@@ -105,8 +107,8 @@ A/B's defense against "it worked once". Model quality is never asserted in
   generated-code build path, retirement, and no-model replay were validated on
   the adventure target.
 - The deterministic SMB executor, position-only base map, snapshots, baseline,
-  live-model arms, and milestone films are built. M6 stopped at the plateau
-  summarized below; M7 recorded the corresponding films.
+  and live-model arms are built. M6 stopped at the plateau summarized below;
+  M7's historical films remain evidence from the retired video-capable backend.
 - The ROM remains external at
   `/Users/phemberger/workspace/roms/Super Mario Bros. (World).nes`, is supplied
   through `HARMONY_SMB_ROM`, and has SHA-256
@@ -248,9 +250,9 @@ the review path.
 - The initial instrumentor call uses the M10 smoke evidence. Further calls
   occur only at M13's 5,000- and 20,000-execution checkpoints, and only when
   max x did not increase during the preceding 500-execution batch. Evidence
-  contains the highest-max-x testcases, observations ending in death, and a
-  film. Keep one generated file per existing invocation and the existing
-  retries.
+  contains the highest-max-x testcases, observations ending in death, and the
+  recorded mechanical traces. Keep one generated file per existing invocation
+  and the existing retries.
 - Exit: the shotgun fixture is rejected and every attempted generated file
   has a recorded result. Zero accepted files is a valid outcome; do not
   weaken checks or extend the predeclared attempt budget to force an install.
@@ -263,9 +265,10 @@ the review path.
   labels, + validated generated code.
 - Hypothesis: the full stack reaches **the 1-1 flag** within 100,000
   executions; stretch: reach 1-2. Reaching neither is a valid result after
-  the fixed budget. Preserve films for every first-milestone input, a full
-  no-model replay of the best run, and one report comparing the M5 and M13
-  curves.
+  the fixed budget. Preserve every first-milestone input with its recorded
+  observations, a full no-model replay of the best run, and one report
+  comparing the M5 and M13 curves. New visual films are not an output of the
+  headless QuickNES backend.
 
 ## Non-goals for all steps
 
@@ -296,4 +299,4 @@ current `origin/main`, committing per milestone in the existing
 confirm operator authorization for the evidence being sent and the stated
 call budget. At completion (or at a hard blocker), use the handoff flow: push
 the branch, open a draft PR whose description grounds a reviewer in this
-plan, the matrix results, the films, and the replay evidence.
+plan, the matrix results, the recorded observations, and the replay evidence.
