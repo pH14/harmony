@@ -2456,3 +2456,11 @@ therefore pinned, as its pre-existing comment required, to exact stable Rust
 current-main Dissonance workspace pass all-feature/all-target Clippy with
 warnings denied on 1.97.0. All CI installation steps, including the coverage
 job's `llvm-tools-preview`, now install that same exact toolchain.
+
+The first pinned-toolchain CI attempt also exposed a pre-existing vacuity in
+the Kani installer: its cache restored `cargo-kani` and `kani`, after which an
+unconditional `cargo install` failed merely because those binary paths already
+existed. Kani is now pinned independently to 0.67.0, its cache key carries that
+version, and installation is skipped only when the cached binary reports that
+exact version; a different cached version is replaced with `--force`. The
+formal proofs therefore run instead of failing or passing through a stale tool.

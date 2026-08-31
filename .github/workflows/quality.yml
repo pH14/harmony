@@ -41,6 +41,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  HARMONY_KANI_VERSION: 0.67.0
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
@@ -372,10 +373,12 @@ jobs:
             ~/.cargo/bin/cargo-kani
             ~/.cargo/bin/kani
             ~/.kani
-          key: kani-${{ runner.os }}-v1
+          key: kani-${{ runner.os }}-${{ env.HARMONY_KANI_VERSION }}
       - name: Install Kani
         run: |
-          cargo install --locked kani-verifier
+          if ! cargo kani --version 2>/dev/null | grep -Fq "${HARMONY_KANI_VERSION}"; then
+            cargo install --locked --force --version "${HARMONY_KANI_VERSION}" kani-verifier
+          fi
           cargo kani setup
       - name: cargo kani (vtime + lapic + vmm-backend + environment)
         run: |
