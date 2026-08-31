@@ -10,4 +10,4 @@ portable bare-metal workloads and committed goldens it evaluates:
 - `golden/` contains the reviewed observations and digests.
 
 This directory is consonance's test surface, not a guest OS tier. Linux kernels,
-agents, and compatibility libraries live under `harmony-linux`.
+agents, and compatibility libraries live under `consonance/harmony-linux`.

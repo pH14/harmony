@@ -2,9 +2,8 @@
 //! Task 95 M1.1 — the production-shape bench (informational, not pass/fail).
 //!
 //! `tests/bench.rs` measures the store at a 32 MiB toy shape. This file measures it at
-//! the shape production actually runs: the 2 GiB guest of
-//! `consonance/vmm-core/tests/seal_rate_sweep.rs` (`GUEST_RAM_LEN = 2 << 30`), i.e.
-//! 524,288 frames, on a synthetic *booted-guest* image (mostly zeros, some duplicate
+//! the shape production actually runs: a 2 GiB guest, i.e. 524,288 frames, on a
+//! synthetic *booted-guest* image (mostly zeros, some duplicate
 //! page contents). Every number printed here goes into `IMPLEMENTATION.md`.
 //!
 //! Run with:
@@ -28,8 +27,8 @@ use std::time::{Duration, Instant};
 use memmap2::MmapOptions;
 use snapshot_store::{PAGE_SIZE, SnapshotId, Store, StoreConfig};
 
-/// Production shape: 2 GiB guest (seal_rate_sweep's GUEST_RAM_LEN), overridable for
-/// constrained machines via HARMONY_BENCH_PAGES (power of two, >= 4096).
+/// Production shape: a 2 GiB guest, overridable for constrained machines via
+/// HARMONY_BENCH_PAGES (power of two, >= 4096).
 const PROD_MEM_PAGES: u64 = 524_288;
 /// Non-zero fraction of the synthetic booted image: 1 in 4 pages (a booted guest is
 /// mostly zeros); every 8th non-zero page repeats an earlier content (dedup realism).

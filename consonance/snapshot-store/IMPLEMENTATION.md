@@ -149,10 +149,10 @@ Apple Silicon, release profile:
 
 ## Production-shape bench (task 95)
 
-`tests/bench_production_shape.rs` measures the store at the shape production runs — the
-2 GiB guest of `consonance/vmm-core/tests/seal_rate_sweep.rs` (`GUEST_RAM_LEN = 2 << 30`,
-524,288 frames) — on a synthetic booted-guest image: 1 in 4 pages non-zero, every 8th
-non-zero page a duplicate of an earlier one (so 131,072 non-zero / 114,688 unique).
+`tests/bench_production_shape.rs` measures the store at the 2 GiB production shape
+(524,288 frames) on a synthetic booted-guest image: 1 in 4 pages non-zero, every
+8th non-zero page a duplicate of an earlier one (so 131,072 non-zero / 114,688
+unique).
 Informational `#[ignore]` tests, not CI. `tests/bench.rs` (32 MiB toy shape) stays.
 
 ```

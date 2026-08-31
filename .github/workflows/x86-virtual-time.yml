@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: x86-virtual-time
 
-# The x86 VM-exit-count V-time bring-up lives on GitHub-hosted runners: standard
-# x86-64 Linux runners expose /dev/kvm (nested virtualization), and the hardware
-# alternates between Intel and AMD draws — the probe runs as replicas so one push
-# samples both vendors. Every result is uploaded as an artifact because the
-# runner is unreachable after the job ends.
+# This dispatch-only x86 VM-exit-count V-time evidence lane uses GitHub-hosted
+# runners. Standard x86-64 Linux runners expose /dev/kvm through nested
+# virtualization, and replicas sample the pool's Intel and AMD hardware draws.
+# Every result is uploaded because the runner is unreachable after the job ends.
 on:
-  push:
-    branches: [claude/consonance-virtual-time-6kvrz6]
-  # Manual dispatch re-rolls the runner hardware draw without a commit; the
-  # x2-intel-hunt job needs many draws because the pool serves Intel rarely.
+  # A dispatch re-rolls the runner hardware draw; the x2-intel-hunt job needs
+  # many draws because the pool serves Intel rarely.
   workflow_dispatch:
 
 concurrency:

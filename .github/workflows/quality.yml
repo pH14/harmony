@@ -339,13 +339,13 @@ jobs:
       # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
       # diffed lines on their own manifest, mirroring the fmt/clippy/test/public-api
       # split the `gates` job already applies to consonance/harmony-linux/sdk. `--in-diff` filters to
-      # the PR's changed consonance/harmony-linux/sdk lines; its own `.cargo/mutants.toml` (if any)
-      # auto-discovers, else the run is config-free.
+      # the PR's changed consonance/harmony-linux/sdk lines. The SDK has no local
+      # nextest mutant profile, so cargo-mutants drives its default cargo test.
       - name: cargo mutants --in-diff (consonance/harmony-linux/sdk, out-of-workspace manifest)
         # Infra-only retry (same contract as the root step above).
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 --cargo-test-arg=--profile --cargo-test-arg=mutants; rc=$?; set -e
+            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"

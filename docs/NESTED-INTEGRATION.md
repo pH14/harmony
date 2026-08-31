@@ -13,6 +13,7 @@ stream, and assigns time solely from normalized exits.
 Nested support is accepted with the same evidence as bare metal: two same-seed
 runs must produce identical normalized logs and checkpoint hashes, snapshot
 restore must be a fixpoint, and a planted mismatch must fail the comparator.
-Current x86 GitHub-hosted runner evidence is recorded in
-`docs/PRESCRIPTIVE-VTIME-STATUS.md`; untested cells remain marked as such in
-`docs/DETERMINISM.md`.
+PR #235 records the completed x86 GitHub-hosted runner evidence, with the final
+exact-tree execution preserved in
+[Actions run 33343244890](https://github.com/pH14/harmony/actions/runs/33343244890).
+Untested cells remain marked as such in [`DETERMINISM.md`](DETERMINISM.md).

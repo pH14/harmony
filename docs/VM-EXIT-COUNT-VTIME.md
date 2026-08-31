@@ -11,13 +11,14 @@ post-advance time reaches its deadline. When a guest is idle with a modeled
 timer pending, the same clock advances directly to the deterministic deadline.
 
 The design was brought up on macOS arm64 HVF, Linux arm64 KVM, and Linux x86 KVM.
-The milestone evidence, planted negatives, normalized logs, checkpoint hashes,
-and cross-host comparisons are recorded in
-`docs/VM-EXIT-COUNT-VTIME-STATUS.md` and
-`docs/PRESCRIPTIVE-VTIME-STATUS.md`. The current determinism argument and
-support matrix live in `docs/DETERMINISM.md`.
+PR #235 records the completed milestone evidence: planted negatives, normalized
+logs, checkpoint hashes, cross-host comparisons, and the exact guest-image
+inputs. The final x86 execution is preserved in
+[Actions run 33343244890](https://github.com/pH14/harmony/actions/runs/33343244890).
+The standing determinism argument, confinement rules, and support matrix live in
+[`DETERMINISM.md`](DETERMINISM.md).
 
 The active implementation is `consonance/vtime`,
 `consonance/vmm-core/src/virtual_time.rs`, and the two vendor dispatch trees.
 Historical experiments and superseded clock designs remain available in Git
-history and the status records.
+history and [PR #235](https://github.com/pH14/harmony/pull/235).

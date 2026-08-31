@@ -65,8 +65,8 @@ crate is not vmm-core.)
 ## Native ARM64 KVM validation
 
 Run the M4 live oracle on `msr1`. The image hashes must match the M1/HVF inputs
-recorded in `docs/VM-EXIT-COUNT-VTIME-STATUS.md`; different bytes make no
-cross-host claim.
+attested in [PR #235](https://github.com/pH14/harmony/pull/235); different bytes
+make no cross-host claim.
 
 ```sh
 ssh msr1
