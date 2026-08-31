@@ -28,6 +28,7 @@ defaults:
 
 env:
   CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
   # X0: CPU identity, /dev/kvm, the KVM capability table, and one minimal
@@ -43,8 +44,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Build probe
         run: cargo build -p vmm-backend --bin x86_kvm_probe
@@ -95,8 +96,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Grant /dev/kvm access
         run: |
@@ -159,8 +160,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Grant /dev/kvm access
         run: |
@@ -230,8 +231,8 @@ jobs:
           (cd nix-guest-output && sha256sum -c guest-image-report.txt)
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Grant /dev/kvm access
         run: |
@@ -306,8 +307,8 @@ jobs:
           (cd nix-guest-output && sha256sum -c guest-image-report.txt)
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Grant /dev/kvm access
         run: |
@@ -336,8 +337,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --check -p vmm-backend -p vmm-core

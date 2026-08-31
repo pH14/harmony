@@ -2445,3 +2445,14 @@ snapshots were regenerated with cargo-public-api 0.52.0, pinned nightly
 second generations compare byte-for-byte. Both guards now skip non-x86-64
 targets explicitly instead of mis-comparing architecture-specific concrete
 surfaces.
+
+The next general gate reached current-main Dissonance unchanged and failed
+because floating `stable` advanced to Rust 1.98, whose new
+`clippy::chunks_exact_to_as_chunks` lint rejects `dissonance/machine/src/nes.rs`.
+Changing or suppressing that Dissonance code would either violate the isolation
+decision or weaken the warnings-denied gate. The repository toolchain is
+therefore pinned, as its pre-existing comment required, to exact stable Rust
+1.97.0. Both the complete Consonance workspace and the byte-identical
+current-main Dissonance workspace pass all-feature/all-target Clippy with
+warnings denied on 1.97.0. All CI installation steps, including the coverage
+job's `llvm-tools-preview`, now install that same exact toolchain.

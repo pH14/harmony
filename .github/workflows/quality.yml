@@ -41,6 +41,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
   # Gating: fmt, clippy (enforces clippy.toml), cargo-deny, and the test suite.
@@ -51,8 +52,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
@@ -197,8 +198,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component llvm-tools-preview
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component llvm-tools-preview
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
@@ -298,8 +299,8 @@ jobs:
           fetch-depth: 0
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
@@ -358,8 +359,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       # Kani downloads CBMC + its solver backends on `cargo kani setup` (minutes).
       # Cache the verifier binary + the setup dir so nightly reruns skip the download;
@@ -400,8 +401,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install toolchains (stable default + pinned nightly)
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
       - uses: Swatinem/rust-cache@v2
       # The `public_api` snapshot tests shell out to `cargo public-api`; without
