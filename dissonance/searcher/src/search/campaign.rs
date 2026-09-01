@@ -72,20 +72,21 @@ const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 
-/// Deterministic reservations kept ahead of admission per worker. The window
-/// hides individual long jobs while bounding result memory and wall-budget
-/// overshoot to a small number of jobs per core.
-const WINDOW_JOBS_PER_WORKER: usize = 64;
-
-/// Already-reserved jobs buffered in each physical executor. This is smaller
-/// than the logical reorder window and changes only overlap: logical worker
-/// identity, selection, and admission remain coordinator-owned.
+/// Already-reserved jobs buffered in each physical executor. It changes only
+/// overlap: logical worker identity, selection, and admission remain
+/// coordinator-owned.
 const EXECUTOR_PREFETCH_JOBS: usize = 8;
 
-/// Ordered admissions processed before the coordinator returns to completed
-/// physical workers. This bounds refill latency without changing admission
-/// order or any recorded choice.
-const ADMISSION_BATCH_JOBS: usize = 32;
+/// Number of reservations that may be ahead of the ordered admission cursor.
+///
+/// This is the actual sliding-window depth, not a speculative batch size. The
+/// initial fill puts only this many jobs in flight; after each ordered
+/// admission exactly one new reservation is selected. Consequently selection
+/// of reservation `k` observes archive state no older than admission
+/// `k - pipeline_depth`, while the physical executors retain their prefetch.
+const fn admission_window_depth(workers: usize) -> usize {
+    workers.saturating_mul(EXECUTOR_PREFETCH_JOBS)
+}
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
 /// next drawn job anyway and lets admission deduplicate, so a saturated archive
@@ -2446,11 +2447,14 @@ where
                 }
             };
 
-            let window_capacity = workers.saturating_mul(WINDOW_JOBS_PER_WORKER);
+            let pipeline_depth = admission_window_depth(workers);
             let mut pending = BTreeMap::<usize, PendingJob>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            let mut queued_specs = VecDeque::with_capacity(window_capacity);
-            for _ in 0..window_capacity {
+            let mut queued_specs = VecDeque::with_capacity(pipeline_depth);
+            // Fill only the pipeline depth. Every later reservation is
+            // selected after, and therefore from the archive produced by,
+            // its predecessor's ordered admission.
+            for _ in 0..pipeline_depth {
                 let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                 let worker = u32::try_from(worker_index)?;
                 let selection_started = profile_now(coordinator_profile.enabled);
@@ -2554,10 +2558,7 @@ where
                     ready_reply = pool.try_receive()?;
                 }
 
-                for _ in 0..ADMISSION_BATCH_JOBS {
-                    let Some(completed_job) = completed.remove(&next_admission) else {
-                        break;
-                    };
+                while let Some(completed_job) = completed.remove(&next_admission) {
                     let pending_job = completed_job.pending;
                     let worker_index = usize::try_from(pending_job.worker)?;
                     let result = completed_job.result;
@@ -2785,6 +2786,23 @@ where
                             return Err("campaign reserved one job twice".into());
                         }
                         queued_specs.push_back(spec);
+                    }
+
+                    // Refill an executor as soon as the corresponding
+                    // reservation is selected. This keeps the physical
+                    // pipeline full while preserving logical reservation and
+                    // admission order.
+                    while !queued_specs.is_empty() {
+                        let Some(worker) = idle_workers.pop_front() else {
+                            break;
+                        };
+                        let spec = queued_specs
+                            .pop_front()
+                            .ok_or("campaign queued-job count changed while dispatching")?;
+                        pool.send(worker, spec)?;
+                        let physical_index = usize::try_from(worker)?;
+                        physical_queued[physical_index] =
+                            physical_queued[physical_index].saturating_add(1);
                     }
                 }
                 while !queued_specs.is_empty() {
@@ -3321,10 +3339,10 @@ mod tests {
         CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate, CampaignJobRecord,
         CampaignJobResult, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
         CoordinatorCore, EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP, archive_entry_limit_is_valid,
-        compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
-        live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
-        progress_policy_is_supported, record_compaction_elapsed, replay_splice,
+        MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP, admission_window_depth,
+        archive_entry_limit_is_valid, compact_progress_curve, draw_state_memory_is_within_reserve,
+        finish_record, is_zero_usize, live_coordinator_profile, postcard_sha256, profile_elapsed,
+        profile_now, progress_policy_is_supported, record_compaction_elapsed, replay_splice,
         retained_archive_indexes, uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
@@ -3679,6 +3697,46 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn sliding_window_depth_is_the_only_selection_staleness() {
+        let workers = 3;
+        let depth = admission_window_depth(workers);
+        assert_eq!(depth, workers * 8);
+
+        // Model the coordinator's event order: fill the pipeline, then admit
+        // one result and select one replacement. No reservation can be more
+        // than `depth` ahead of the ordered admission cursor.
+        let mut next_selection = 0_usize;
+        let mut selected = Vec::new();
+        for next_admission in 0..=depth {
+            while next_selection < next_admission + depth {
+                selected.push((next_selection, next_admission));
+                next_selection += 1;
+            }
+            assert_eq!(next_selection, next_admission + depth);
+        }
+
+        assert_eq!(selected.first(), Some(&(0, 0)));
+        assert_eq!(selected.last(), Some(&(depth * 2 - 1, depth)));
+        assert!(
+            selected
+                .iter()
+                .all(|(reservation, admitted)| *reservation < admitted + depth)
+        );
+        assert!(
+            selected
+                .iter()
+                .skip(depth)
+                .all(|(reservation, admitted)| *admitted >= reservation - depth)
+        );
+    }
+
+    #[test]
+    fn sliding_window_depth_saturates_without_overflow() {
+        assert_eq!(admission_window_depth(0), 0);
+        assert_eq!(admission_window_depth(usize::MAX), usize::MAX);
     }
 
     #[test]
