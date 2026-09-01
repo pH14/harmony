@@ -527,6 +527,56 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_boundary_carries_its_room_to_the_next_boundary() {
+        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
+                      parent: Option<usize>,
+                      previous: Option<SmbArchiveKey>,
+                      actions: usize,
+                      key| {
+            archive
+                .insert_after(
+                    parent,
+                    previous,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![1_u8; actions],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+        };
+        let (land, _) = insert(&mut archive, None, None, 1, key(10, [3, 5]));
+        let land = land.expect("land");
+        // Two entries fill the water page-0 slot.
+        let (first, _) = insert(&mut archive, Some(land), None, 1, key(3, [0, 2]));
+        let first = first.expect("first");
+        let (second, _) = insert(&mut archive, Some(land), None, 2, key(3, [0, 2]));
+        second.expect("second");
+        assert_eq!(archive.entries[first].key.room, [0, 2, 0]);
+        // A third boundary at page 0 is rejected; the boundary after it,
+        // at page 3, stays in the page-0 room instead of opening a room.
+        let (rejected, at_page_0) = insert(&mut archive, Some(land), None, 3, key(3, [0, 2]));
+        assert!(rejected.is_none());
+        assert_eq!(at_page_0.room, [0, 2, 0]);
+        let (deep, key_deep) = insert(
+            &mut archive,
+            Some(land),
+            Some(at_page_0),
+            4,
+            key(50, [0, 2]),
+        );
+        let deep = deep.expect("deep");
+        assert_eq!(key_deep.room, [0, 2, 0]);
+        assert_eq!(archive.entries[deep].key.room, [0, 2, 0]);
+        // Without the carried boundary the same candidate opens a page-3 room.
+        let (fresh, _) = insert(&mut archive, Some(land), None, 5, key(50, [0, 2]));
+        assert_eq!(archive.entries[fresh.expect("fresh")].key.room, [0, 2, 3]);
+    }
+
+    #[test]
     fn groups_pool_from_slot_to_pair() {
         let key = key(153, [3, 5]);
         assert_eq!(key.group(0), key);

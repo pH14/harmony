@@ -1479,6 +1479,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         // read here is identical to the parent the worker saw at selection.
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
+        let mut previous_key = None;
         let mut decisions = Vec::new();
         for action in result.actions {
             pending_suffix.push(action.action);
@@ -1512,8 +1513,9 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     continue;
                 }
                 let retained_before = self.archive.retained;
-                match self.archive.insert(
+                let (admitted, key) = self.archive.insert_after(
                     Some(current_parent),
+                    previous_key,
                     sequence,
                     ArchiveCandidate {
                         suffix: pending_suffix.clone(),
@@ -1521,7 +1523,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
-                )? {
+                )?;
+                match admitted {
                     Some(id) if self.archive.retained > retained_before => {
                         decisions.push(CampaignAdmissionDecision::Retained {
                             id: self
@@ -1531,6 +1534,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        previous_key = None;
                     }
                     Some(id) => {
                         decisions.push(CampaignAdmissionDecision::Duplicate {
@@ -1541,8 +1545,12 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        previous_key = None;
                     }
-                    None => decisions.push(CampaignAdmissionDecision::Rejected),
+                    None => {
+                        decisions.push(CampaignAdmissionDecision::Rejected);
+                        previous_key = Some(key);
+                    }
                 }
             }
         }

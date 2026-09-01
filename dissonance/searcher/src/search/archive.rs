@@ -2206,18 +2206,42 @@ where
         candidate: ArchiveCandidate<A, K, M>,
         snapshot: S,
     ) -> Result<Option<usize>, Box<dyn Error>> {
+        self.insert_after(parent_id, None, execution, candidate, snapshot)
+            .map(|(id, _)| id)
+    }
+
+    /// Offer a candidate to retention, completing its key against
+    /// `previous` when given: the completed key of the boundary just before
+    /// this one on the same input, which retention did not keep. A job walks
+    /// many boundaries past its parent, and the ones landing in full slots
+    /// still carry the lineage's position forward, so completion follows the
+    /// last boundary rather than the last retained entry. Returns the
+    /// completed key with the outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on id-space overflow or a missing parent.
+    pub fn insert_after(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<A, K, M>,
+        snapshot: S,
+    ) -> Result<(Option<usize>, K), Box<dyn Error>> {
         let ArchiveCandidate {
             suffix,
             key,
             milestones,
         } = candidate;
         if let Some(existing) = self.existing_input_id(parent_id, &suffix) {
-            return Ok(Some(existing));
+            return Ok((Some(existing), self.entries[existing].key));
         }
         if parent_id.is_some_and(|id| self.entries.get(id).is_none()) {
             return Err("archive candidate parent is missing".into());
         }
-        let parent_ctx = parent_id.map(|id| (self.entries[id].key, &self.lineages[id]));
+        let parent_ctx =
+            parent_id.map(|id| (previous.unwrap_or(self.entries[id].key), &self.lineages[id]));
         let key = key.complete(parent_ctx);
         let depth = Self::coarsest_depth();
         let mut lineage = match parent_id {
@@ -2244,7 +2268,7 @@ where
         };
         if slot_full && replace.is_none() {
             self.rejected = self.rejected.saturating_add(1);
-            return Ok(None);
+            return Ok((None, key));
         }
         let population_retirements = self
             .active_count
@@ -2354,7 +2378,7 @@ where
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
         self.enforce_snapshot_memory_budget()?;
-        Ok(Some(id))
+        Ok((Some(id), key))
     }
 
     /// Derive a campaign splice after ensuring the selection-cell index is
