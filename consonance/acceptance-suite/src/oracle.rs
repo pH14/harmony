@@ -343,7 +343,9 @@ fn decode_hex32(s: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    for (i, pair) in raw.as_chunks::<2>().0.iter().enumerate() {
+    let (pairs, remainder) = raw.as_chunks::<2>();
+    debug_assert!(remainder.is_empty());
+    for (i, pair) in pairs.iter().enumerate() {
         // High nibble (bits 4-7) + low nibble (bits 0-3): the operands never
         // share a bit, so `+` here equals `|`/`^` — but `+` keeps the byte
         // assembly distinguishable under mutation (a `^`/`&` swap on `|` would be

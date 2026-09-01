@@ -2,7 +2,14 @@
 
 //! Recorded campaign-mode conquest runs and their exact replays.
 
-use std::{env, error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
+use std::{
+    env,
+    error::Error,
+    fs,
+    io::{BufReader, BufWriter, Read, Write},
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use searcher::{
     search::archive::{
@@ -14,8 +21,8 @@ use searcher::{
     },
     smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveReport, selector_policy_from_identifier},
     smb::campaign::{
-        SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig,
-        SmbCampaignModeReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
+        SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport,
+        SmbCampaignOrigin, SmbGame, SmbSnapshotCheckpoint, SmbTerminalPredicate,
         button_vocabulary_from_identifier, chord_policy_from_identifier,
         replay_smb_campaign_checkpointed, run_smb_campaign_checkpointed,
     },
@@ -92,6 +99,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         groups: vec![6, 12, 2],
     });
     let mut vocabulary = SmbButtonVocabulary::default();
+    let mut terminal = SmbTerminalPredicate::GameVictory;
     let mut suffix = SuffixShape::default();
     let mut mixture = DrawMixture::EnergySplice { scale: 6 };
     let mut checkpoint_path = None;
@@ -143,6 +151,13 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
             checkpoint_path = Some(PathBuf::from(
                 args.next().ok_or("missing --checkpoint value")?,
             ));
+        } else if flag == "--terminal" {
+            terminal = SmbTerminalPredicate::from_identifier(
+                &args
+                    .next()
+                    .ok_or("missing --terminal value")?
+                    .to_string_lossy(),
+            )?;
         } else {
             return Err("unexpected run argument".into());
         }
@@ -152,9 +167,16 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     }
     fs::create_dir_all(&output)?;
     let rom = read_rom()?;
-    let origin = load_origin(&origin_arg.to_string_lossy(), checkpoint_path.as_deref())?;
+    let game = SmbGame::from_environment(&rom)?;
+    let checkpoint_format = game.snapshot_checkpoint_format();
+    let origin = load_origin(
+        &origin_arg.to_string_lossy(),
+        checkpoint_path.as_deref(),
+        checkpoint_format,
+    )?;
     let config = SmbCampaignConfig {
         vocabulary,
+        terminal,
         campaign_seed,
         workers,
         execution_budget,
@@ -179,7 +201,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut progress = BufWriter::new(fs::File::create(output.join("progress-live.jsonl"))?);
     let started = std::time::Instant::now();
     let (report, checkpoint) =
-        run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, Some(&mut progress))?;
+        run_smb_campaign_checkpointed(&game, &config, &origin, &mut stream, Some(&mut progress))?;
     let wall_seconds = started.elapsed().as_secs_f64();
     drop(stream);
 
@@ -189,7 +211,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         "archive-live.json",
         "campaign-report.json",
     )?;
-    fs::write(output.join("snapshots-live.bin"), checkpoint.to_bytes()?)?;
+    write_snapshot_file(&output.join("snapshots-live.bin"), &checkpoint)?;
     let throughput = LiveThroughput {
         wall_seconds,
         executions_completed: report.executions_completed,
@@ -215,16 +237,23 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         return Err("unexpected extra replay argument".into());
     }
     let rom = read_rom()?;
+    let game = SmbGame::from_environment(&rom)?;
+    let checkpoint_format = game.snapshot_checkpoint_format();
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
-    let origin_report = match origin_arg.to_string_lossy().as_ref() {
-        "genesis" => None,
-        path => Some(serde_json::from_slice::<SmbArchiveReport>(&fs::read(
-            path,
-        )?)?),
+    let origin = load_origin(
+        &origin_arg.to_string_lossy(),
+        checkpoint_arg.as_deref(),
+        checkpoint_format,
+    )?;
+    let (origin_report, origin_checkpoint) = match origin {
+        SmbCampaignOrigin::Genesis => (None, None),
+        SmbCampaignOrigin::SnapshotRoot { checkpoint } => (None, Some(checkpoint)),
+        SmbCampaignOrigin::Archive {
+            report, checkpoint, ..
+        } => (Some(*report), checkpoint),
     };
-    let origin_checkpoint = checkpoint_arg.as_deref().map(load_checkpoint).transpose()?;
     let (report, checkpoint) = replay_smb_campaign_checkpointed(
-        &rom,
+        &game,
         &stream_bytes,
         origin_report.as_ref(),
         origin_checkpoint.as_ref(),
@@ -235,23 +264,27 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         "archive-replay.json",
         "campaign-report-replay.json",
     )?;
-    fs::write(run_dir.join("snapshots-replay.bin"), checkpoint.to_bytes()?)?;
+    write_snapshot_file(&run_dir.join("snapshots-replay.bin"), &checkpoint)?;
 
-    let archive_live = fs::read(run_dir.join("archive-live.json"))?;
-    let archive_replay = fs::read(run_dir.join("archive-replay.json"))?;
-    let report_live = fs::read(run_dir.join("campaign-report.json"))?;
-    let report_replay = fs::read(run_dir.join("campaign-report-replay.json"))?;
-    let snapshots_live = fs::read(run_dir.join("snapshots-live.bin"))?;
-    let snapshots_replay = fs::read(run_dir.join("snapshots-replay.bin"))?;
-    let replay_verified = archive_live == archive_replay
-        && report_live == report_replay
-        && snapshots_live == snapshots_replay;
+    let stream_sha256 = report.stream_sha256.clone();
+    let executions_completed = report.executions_completed;
+    drop(checkpoint);
+    drop(report);
+    let archive_live = run_dir.join("archive-live.json");
+    let archive_replay = run_dir.join("archive-replay.json");
+    let report_live = run_dir.join("campaign-report.json");
+    let report_replay = run_dir.join("campaign-report-replay.json");
+    let snapshots_live = run_dir.join("snapshots-live.bin");
+    let snapshots_replay = run_dir.join("snapshots-replay.bin");
+    let replay_verified = files_equal(&archive_live, &archive_replay)?
+        && files_equal(&report_live, &report_replay)?
+        && files_equal(&snapshots_live, &snapshots_replay)?;
     let verdict = serde_json::json!({
         "replay_verified": replay_verified,
-        "archive_sha256": format!("{:x}", Sha256::digest(&archive_live)),
-        "report_sha256": format!("{:x}", Sha256::digest(&report_live)),
-        "stream_sha256": report.stream_sha256,
-        "executions_completed": report.executions_completed,
+        "archive_sha256": sha256_file(&archive_live)?,
+        "report_sha256": sha256_file(&report_live)?,
+        "stream_sha256": stream_sha256,
+        "executions_completed": executions_completed,
     });
     fs::write(
         run_dir.join("replay-verdict.json"),
@@ -264,32 +297,102 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     Ok(())
 }
 
+fn files_equal(left: &Path, right: &Path) -> Result<bool, Box<dyn Error>> {
+    if fs::metadata(left)?.len() != fs::metadata(right)?.len() {
+        return Ok(false);
+    }
+    let mut left = BufReader::new(fs::File::open(left)?);
+    let mut right = BufReader::new(fs::File::open(right)?);
+    let mut left_buffer = vec![0_u8; 1024 * 1024];
+    let mut right_buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let left_read = left.read(&mut left_buffer)?;
+        let right_read = right.read(&mut right_buffer)?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
+    let mut file = BufReader::new(fs::File::open(path)?);
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 fn load_origin(
     origin_arg: &str,
     checkpoint_path: Option<&std::path::Path>,
+    checkpoint_format: &str,
 ) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
     if origin_arg == "genesis" {
         if checkpoint_path.is_some() {
-            return Err("a snapshot checkpoint needs a source archive origin".into());
+            return Err("genesis does not accept a snapshot checkpoint".into());
         }
         return Ok(SmbCampaignOrigin::Genesis);
     }
-    let bytes = fs::read(origin_arg)?;
-    let report: SmbArchiveReport = serde_json::from_slice(&bytes)?;
+    if let Some(logical_path) = origin_arg.strip_prefix("snapshot-root:") {
+        if logical_path.is_empty() {
+            return Err("snapshot-root origin needs a nonempty logical checkpoint path".into());
+        }
+        let checkpoint_path = checkpoint_path.ok_or("snapshot-root origin needs --checkpoint")?;
+        return Ok(SmbCampaignOrigin::SnapshotRoot {
+            checkpoint: load_checkpoint_as(
+                checkpoint_path,
+                logical_path.to_owned(),
+                checkpoint_format,
+            )?,
+        });
+    }
+    let file_sha256 = sha256_file(Path::new(origin_arg))?;
+    let report: SmbArchiveReport =
+        serde_json::from_reader(BufReader::new(fs::File::open(origin_arg)?))?;
     Ok(SmbCampaignOrigin::Archive {
         path: origin_arg.to_owned(),
-        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+        file_sha256,
         report: Box::new(report),
-        checkpoint: checkpoint_path.map(load_checkpoint).transpose()?,
+        checkpoint: checkpoint_path
+            .map(|path| load_checkpoint(path, checkpoint_format))
+            .transpose()?,
     })
 }
 
-fn load_checkpoint(path: &std::path::Path) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
-    let bytes = fs::read(path)?;
+fn load_checkpoint(
+    path: &std::path::Path,
+    checkpoint_format: &str,
+) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    load_checkpoint_as(path, path.to_string_lossy().into_owned(), checkpoint_format)
+}
+
+fn load_checkpoint_as(
+    path: &std::path::Path,
+    logical_path: String,
+    checkpoint_format: &str,
+) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    let mut scratch = vec![0_u8; 1024 * 1024];
+    let (snapshots, _) = postcard::from_io((
+        BufReader::new(fs::File::open(path)?),
+        scratch.as_mut_slice(),
+    ))?;
+    let snapshots: SmbSnapshotCheckpoint = snapshots;
+    if snapshots.format != checkpoint_format {
+        return Err("snapshot checkpoint format is not recognized".into());
+    }
     Ok(SmbCampaignCheckpoint {
-        path: path.to_string_lossy().into_owned(),
-        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
-        snapshots: SmbSnapshotCheckpoint::from_bytes(&bytes, SNAPSHOT_CHECKPOINT_FORMAT)?,
+        path: logical_path,
+        file_sha256: sha256_file(path)?,
+        snapshots,
     })
 }
 
@@ -299,14 +402,25 @@ fn write_report_files(
     archive_name: &str,
     report_name: &str,
 ) -> Result<(), Box<dyn Error>> {
-    fs::write(
-        directory.join(archive_name),
-        serde_json::to_vec_pretty(&report.archive)?,
-    )?;
-    fs::write(
-        directory.join(report_name),
-        serde_json::to_vec_pretty(report)?,
-    )?;
+    write_json_pretty(&directory.join(archive_name), &report.archive)?;
+    write_json_pretty(&directory.join(report_name), report)?;
+    Ok(())
+}
+
+fn write_json_pretty(path: &Path, value: &impl Serialize) -> Result<(), Box<dyn Error>> {
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    serde_json::to_writer_pretty(&mut writer, value)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_snapshot_file(
+    path: &Path,
+    checkpoint: &SmbSnapshotCheckpoint,
+) -> Result<(), Box<dyn Error>> {
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    postcard::to_io(checkpoint, &mut writer)?;
+    writer.flush()?;
     Ok(())
 }
 

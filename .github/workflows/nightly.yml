@@ -112,6 +112,10 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p snapshot-store --lib
         env:
           MIRIFLAGS: -Zmiri-permissive-provenance -Zmiri-disable-isolation
+      # machine's native QuickNES loader is cfg(not(miri)); the loopback table
+      # drives the same function-pointer, fixed-buffer, and direct-RAM logic.
+      - name: miri — machine
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path dissonance/Cargo.toml -p machine
       # consonance/harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest): its
       # ONLY unsafe is the binary's cfg(linux) libretro dlopen FFI + the hugetlb/
       # pagemap/mlock billboard pinning + the /dev/mem doorbell — real syscalls

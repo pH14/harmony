@@ -13,11 +13,13 @@
 //! searcher code that handles the set compiles and runs against both.
 //!
 //! Resume persistence uses snapshot export/import on the emulator
-//! implementation only, outside the mirrored verb set, because rebuilding
+//! implementation, outside the mirrored verb set, because rebuilding
 //! every snapshot by re-running inputs would price a whole-tree resume in
 //! re-emulation the export already paid for.
 
 pub mod nes;
+#[cfg(unix)]
+pub mod quicknes;
 
 use std::fmt;
 

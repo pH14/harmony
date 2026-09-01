@@ -6,8 +6,9 @@
 use std::{env, error::Error, fs};
 
 use searcher::{
+    search::campaign::Game,
     smb::archive::SmbArchiveReport,
-    smb::target::{ButtonChord, SmbTarget},
+    smb::{campaign::SmbGame, target::ButtonChord},
     target::Target,
 };
 
@@ -15,6 +16,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args().skip(1);
     let report_path = args.next().ok_or("usage: pipe_probe <report>")?;
     let rom = fs::read(env::var("HARMONY_SMB_ROM")?)?;
+    let game = SmbGame::from_environment(&rom)?;
+    let mut target = game
+        .new_target()
+        .map_err(|error| -> Box<dyn Error> { error.into() })?;
     let report: SmbArchiveReport = serde_json::from_slice(&fs::read(&report_path)?)?;
     let mut candidates = report
         .entries
@@ -35,7 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut dead = 0_u32;
     let mut alive = 0_u32;
     for entry in &sample {
-        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom)?;
+        target.reset();
         for action in &entry.input.actions {
             target.apply(action);
         }

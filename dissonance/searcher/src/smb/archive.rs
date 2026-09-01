@@ -205,7 +205,8 @@ impl ArchiveKey for SmbArchiveKey {
 }
 
 /// The SMB progress-curve point instantiation.
-pub type SmbArchiveProgressPoint = crate::search::archive::ProgressPoint<SmbMilestones>;
+pub type SmbArchiveProgressPoint =
+    crate::search::archive::ProgressPoint<SmbMilestones, SmbProgressWatermark>;
 
 /// The SMB entry report instantiation.
 pub type SmbArchiveEntryReport = ArchiveEntryReport<ButtonChord, SmbArchiveKey, SmbMilestones>;
@@ -357,7 +358,9 @@ pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
 
 /// The controller vocabulary in the emulator's bit order: no button, Right,
 /// Left, B, A, A+Right, A+Left, A+Left+Right, Up, Down. Start and Select are
-/// excluded because either pauses or leaves the game.
+/// excluded because either pauses or leaves the game. The pinned QuickNES
+/// options filter Left+Right, so `0xc1` currently reaches the game as plain A;
+/// a future vocabulary identity can replace that dead entry.
 pub const NES_DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0xc1, 0x10, 0x20];
 

@@ -147,6 +147,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::with_worker_pool;
 
     #[test]
@@ -164,5 +166,36 @@ mod tests {
         )
         .expect("coordinate one worker");
         assert_eq!(replies, vec![(0, 17)]);
+    }
+
+    #[test]
+    fn a_completed_worker_can_be_reissued_while_another_is_busy() {
+        let (release_sender, release_receiver) = mpsc::channel();
+        let replies = with_worker_pool(
+            2,
+            |_| Ok::<_, String>(()),
+            |_, job: (Option<mpsc::Receiver<()>>, u64)| {
+                if let Some(release) = job.0 {
+                    release.recv().map_err(|error| error.to_string())?;
+                }
+                Ok::<_, String>(job.1)
+            },
+            |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
+                pool.send(0, (Some(release_receiver), 10))?;
+                pool.send(1, (None, 11))?;
+                let first = pool.receive()?;
+                pool.send(first.worker, (None, 12))?;
+                let second = pool.receive()?;
+                release_sender.send(())?;
+                let third = pool.receive()?;
+                Ok(vec![
+                    (first.worker, first.outcome?),
+                    (second.worker, second.outcome?),
+                    (third.worker, third.outcome?),
+                ])
+            },
+        )
+        .expect("coordinate two workers");
+        assert_eq!(replies, vec![(1, 11), (1, 12), (0, 10)]);
     }
 }

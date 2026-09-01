@@ -7,14 +7,11 @@
 //! boundary or encodes actions as controller inputs; the emulator itself sits
 //! behind [`machine::Machine`].
 
-use std::error::Error;
+use std::{error::Error, path::Path, sync::Arc};
 
 use crate::target::ExitKind;
-use machine::{
-    Machine, MachineError, SnapId, StopConditions, nes,
-    nes::{NesMachine, RenderMode},
-};
-use serde::{Deserialize, Serialize};
+use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
@@ -60,10 +57,77 @@ pub struct SmbObservations {
 /// Complete in-memory state needed to resume an NES prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbSnapshot {
-    emulator_state: Vec<u8>,
+    emulator_state: SharedState,
     observation: SmbObservations,
     dead: bool,
     failed: bool,
+}
+
+const STATE_CHUNK_SIZE: usize = 512;
+
+#[derive(Debug, Eq, PartialEq)]
+struct SharedStateInner {
+    chunks: Vec<Arc<[u8; STATE_CHUNK_SIZE]>>,
+    len: usize,
+}
+
+/// Copy-on-write emulator bytes. Its Serde representation is deliberately
+/// identical to `Vec<u8>`, so sharing is an in-memory detail and recorded
+/// streams/checkpoints do not change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SharedState(Arc<SharedStateInner>);
+
+impl SharedState {
+    fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
+        let mut chunks = Vec::with_capacity(bytes.len().div_ceil(STATE_CHUNK_SIZE));
+        for (index, source) in bytes.chunks(STATE_CHUNK_SIZE).enumerate() {
+            let mut chunk = [0_u8; STATE_CHUNK_SIZE];
+            chunk[..source.len()].copy_from_slice(source);
+            let shared = base
+                .and_then(|state| state.0.chunks.get(index))
+                .filter(|existing| existing.as_ref() == &chunk)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(chunk));
+            chunks.push(shared);
+        }
+        Self(Arc::new(SharedStateInner {
+            chunks,
+            len: bytes.len(),
+        }))
+    }
+
+    fn materialize(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.0.len);
+        for chunk in &self.0.chunks {
+            let remaining = self.0.len.saturating_sub(bytes.len());
+            bytes.extend_from_slice(&chunk[..remaining.min(STATE_CHUNK_SIZE)]);
+        }
+        bytes
+    }
+}
+
+impl Serialize for SharedState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len))?;
+        for index in 0..self.0.len {
+            sequence.serialize_element(
+                &self.0.chunks[index / STATE_CHUNK_SIZE][index % STATE_CHUNK_SIZE],
+            )?;
+        }
+        sequence.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SharedState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<u8>::deserialize(deserializer).map(|bytes| Self::from_bytes(bytes, None))
+    }
 }
 
 impl SmbSnapshot {
@@ -71,6 +135,12 @@ impl SmbSnapshot {
     #[must_use]
     pub fn wram(&self) -> &[u8] {
         &self.observation.wram
+    }
+
+    /// Number of persisted emulator-state bytes held by this snapshot.
+    #[must_use]
+    pub fn emulator_state_bytes_len(&self) -> usize {
+        self.emulator_state.0.len
     }
 }
 
@@ -100,17 +170,17 @@ const BOOT_WALK: [ButtonChord; 4] = [
 /// Machine-backed target used by the Super Mario Bros campaigns.
 #[derive(Debug)]
 pub struct SmbTarget {
-    machine: NesMachine,
+    machine: QuickNesMachine,
     genesis: SnapId,
     observation: SmbObservations,
     action_observations: Vec<SmbObservations>,
     dead: bool,
     failed: bool,
+    snapshot_base: Option<SharedState>,
 }
 
 impl SmbTarget {
-    fn from_smb_rom_bytes_with_mode(rom: &[u8], render: RenderMode) -> Result<Self, MachineError> {
-        let mut machine = NesMachine::from_rom_bytes(rom, render)?;
+    fn from_machine(mut machine: QuickNesMachine) -> Result<Self, MachineError> {
         let power_on = machine.snapshot()?;
         machine.branch(power_on, &nes::reproducer(&BOOT_WALK))?;
         machine.run(StopConditions::default(), None)?;
@@ -133,80 +203,30 @@ impl SmbTarget {
             observation,
             dead: false,
             failed: false,
+            snapshot_base: None,
         })
     }
 
-    /// Load SMB and deterministically advance through its title screen to a gameplay genesis.
+    /// Load SMB at gameplay genesis through the pinned native QuickNES core.
     ///
-    /// The campaign input begins at the resulting state, and `reset` returns to it exactly.
-    ///
-    /// # Errors
-    ///
-    /// Returns a machine error if ROM loading, frame execution, or state capture fails.
-    pub fn from_smb_rom_bytes(rom: &[u8]) -> Result<Self, MachineError> {
-        Self::from_smb_rom_bytes_with_mode(rom, RenderMode::Video)
-    }
-
-    /// Load SMB at gameplay genesis with both audio and video work disabled for campaigns.
+    /// This constructor is headless by contract. `core_sha256` becomes part
+    /// of every snapshot compatibility header.
     ///
     /// # Errors
     ///
-    /// Returns a machine error if ROM loading, frame execution, or state capture fails.
-    pub fn from_smb_rom_bytes_headless(rom: &[u8]) -> Result<Self, MachineError> {
-        Self::from_smb_rom_bytes_with_mode(rom, RenderMode::Neither)
+    /// Returns a machine error if the core, ROM, bootstrap, or snapshot fails.
+    pub fn from_smb_rom_bytes_headless(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+        Self::from_machine(machine)
     }
 
-    /// Load SMB at gameplay genesis with sound synthesis enabled, for film rendering only.
-    ///
-    /// Campaigns stay on the silent constructors: sound mixing is pure render-side cost and
-    /// the mixer's sample buffer is not part of campaign state or snapshots.
-    ///
-    /// # Errors
-    ///
-    /// Returns a machine error if ROM loading, frame execution, or state capture fails.
-    pub fn from_smb_rom_bytes_with_audio(rom: &[u8]) -> Result<Self, MachineError> {
-        Self::from_smb_rom_bytes_with_mode(rom, RenderMode::Both)
-    }
-
-    /// Return the latest RGBA frame for film generation.
-    #[must_use]
-    pub fn frame_rgba(&mut self) -> Vec<u8> {
-        self.machine.frame_rgba()
-    }
-
-    /// Return the sound samples mixed for the most recently clocked frame.
-    ///
-    /// Each read is exactly one frame of audio: 48 kHz mono `f32` under the
-    /// deck's default sample rate. Empty when the target was constructed
-    /// without audio.
-    #[must_use]
-    pub fn audio_samples(&self) -> &[f32] {
-        self.machine.audio_samples()
-    }
-
-    /// Advance exactly one video frame with the supplied raw controller mask.
-    ///
-    /// This is the film-generation boundary: campaign execution continues to
-    /// use bounded [`ButtonChord`] actions, while a renderer can capture every
-    /// intermediate frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns a machine error if frame execution fails.
-    pub fn clock_frame_for_film(&mut self, buttons: u8) -> Result<(), MachineError> {
-        if self.dead {
-            return Ok(());
-        }
-        match self.machine.clock_frame_with(buttons) {
-            Ok(()) => {
-                self.dead = self.read_dead();
-                Ok(())
-            }
-            Err(error) => {
-                self.failed = true;
-                Err(error)
-            }
-        }
+    #[cfg(test)]
+    pub(crate) fn loopback_for_tests(rom: &[u8]) -> Result<Self, MachineError> {
+        Self::from_machine(QuickNesMachine::loopback_for_tests(rom)?)
     }
 
     /// Clock one fixed mask for a bounded horizon and report whether the run stays alive.
@@ -278,15 +298,14 @@ impl SmbTarget {
         }
     }
 
-    /// Release every controller button after a filmed chord.
-    pub fn release_buttons_for_film(&mut self) {
-        self.machine.release_buttons();
-    }
-
     /// Return the latest raw work RAM without semantic decoding.
     #[must_use]
     pub fn wram(&self) -> [u8; WRAM_SIZE] {
         wram_array(&self.machine).unwrap_or([0; WRAM_SIZE])
+    }
+
+    pub(crate) fn mechanical_state(&self) -> SmbMechanicalState {
+        self.observation.decoded
     }
 
     fn read_dead(&self) -> bool {
@@ -313,17 +332,25 @@ impl SmbTarget {
     #[cfg(test)]
     pub(crate) fn poke_wram(&mut self, addr: usize, byte: u8) {
         self.machine.poke_wram(addr, byte);
+        if let Ok(wram) = wram_array(&self.machine) {
+            self.observation.wram = wram.to_vec();
+            self.observation.decoded = smb_mechanical_state_from_wram(&wram);
+        }
     }
 
     /// Return whether the game is in its victory mode.
     ///
-    /// Read from work RAM rather than carried as state: the operating mode
-    /// stays at the victory value once reached, so a restored snapshot
-    /// answers correctly without the snapshot format carrying the flag.
+    /// The latest observation carries the exact work RAM from its boundary,
+    /// so restore answers without another emulator read or a snapshot-format
+    /// field.
     #[must_use]
     pub fn is_victory(&self) -> bool {
-        self.read_byte(OPERATING_MODE_OFFSET) == VICTORY_OPERATING_MODE
-            && self.read_byte(WORLD_NUMBER_OFFSET) == FINAL_WORLD_NUMBER
+        self.observation
+            .wram
+            .as_slice()
+            .try_into()
+            .ok()
+            .is_some_and(smb_is_victory)
     }
 
     /// Return the total frames this instance has emulated since construction.
@@ -372,35 +399,8 @@ impl SmbTarget {
     }
 }
 
-fn wram_array(machine: &NesMachine) -> Result<[u8; WRAM_SIZE], MachineError> {
-    let bytes = machine.read(0, u32::try_from(WRAM_SIZE).unwrap_or(0))?;
-    let mut wram = [0_u8; WRAM_SIZE];
-    if bytes.len() == WRAM_SIZE {
-        wram.copy_from_slice(&bytes);
-        Ok(wram)
-    } else {
-        Err(MachineError::ReadOutOfBounds)
-    }
-}
-
-/// Replay one SMB input from gameplay genesis and return its mechanical observation trace.
-pub fn observe_smb_input(
-    rom: &[u8],
-    input: &SmbInput,
-) -> Result<Vec<SmbObservations>, MachineError> {
-    let mut target = SmbTarget::from_smb_rom_bytes_headless(rom)?;
-    let mut observations = vec![target.observe()];
-    for action in &input.actions {
-        if target.is_dead() {
-            break;
-        }
-        target.apply(action);
-        observations.extend_from_slice(target.last_action_observations());
-        if target.is_dead() || target.exit_kind() != ExitKind::Ok {
-            break;
-        }
-    }
-    Ok(observations)
+fn wram_array(machine: &QuickNesMachine) -> Result<[u8; WRAM_SIZE], MachineError> {
+    machine.read_wram()
 }
 
 impl Target for SmbTarget {
@@ -410,6 +410,7 @@ impl Target for SmbTarget {
 
     fn reset(&mut self) {
         self.failed = self.machine.replay(self.genesis).is_err();
+        self.snapshot_base = None;
         self.dead = false;
         let wram = self.wram();
         self.observation = self.observation_from(&wram, 0, &[0; WRAM_SIZE], false);
@@ -511,12 +512,13 @@ impl Target for SmbTarget {
             self.failed = true;
             return None;
         };
-        let exported = self.machine.export_snapshot(snap);
-        let _ = self.machine.drop_snapshot(snap);
+        let exported = self.machine.take_snapshot(snap);
         let Ok(emulator_state) = exported else {
             self.failed = true;
             return None;
         };
+        let emulator_state = SharedState::from_bytes(emulator_state, self.snapshot_base.as_ref());
+        self.snapshot_base = Some(emulator_state.clone());
         Some(SmbSnapshot {
             emulator_state,
             observation: self.observation.clone(),
@@ -526,10 +528,11 @@ impl Target for SmbTarget {
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        let imported = self.machine.import_snapshot(&snapshot.emulator_state);
-        let restored = self.machine.replay(imported);
-        let _ = self.machine.drop_snapshot(imported);
-        restored.map_err(|error| error.to_string())?;
+        let emulator_state = snapshot.emulator_state.materialize();
+        self.machine
+            .restore_bytes(&emulator_state)
+            .map_err(|error| error.to_string())?;
+        self.snapshot_base = Some(snapshot.emulator_state.clone());
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.dead = snapshot.dead;
@@ -692,100 +695,44 @@ fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
         level
     }
 }
-/// Rendered frame width in pixels.
-pub const FRAME_WIDTH: usize = 256;
-/// Rendered frame height in pixels.
-pub const FRAME_HEIGHT: usize = 240;
-
-/// Encode one rendered RGBA frame as an uncompressed PNG.
-///
-/// # Errors
-///
-/// Returns an error when the buffer is not exactly one `FRAME_WIDTH` by
-/// `FRAME_HEIGHT` RGBA frame.
-pub fn encode_smb_frame_png(rgba: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let expected = FRAME_WIDTH
-        .checked_mul(FRAME_HEIGHT)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or("PNG dimensions overflow")?;
-    if rgba.len() != expected {
-        return Err("unexpected TetaNES RGBA frame length".into());
-    }
-    let mut scanlines = Vec::with_capacity(expected + FRAME_HEIGHT);
-    for row in rgba.chunks_exact(FRAME_WIDTH * 4) {
-        scanlines.push(0);
-        scanlines.extend_from_slice(row);
-    }
-    let compressed = zlib_stored(&scanlines)?;
-    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend_from_slice(&u32::try_from(FRAME_WIDTH)?.to_be_bytes());
-    ihdr.extend_from_slice(&u32::try_from(FRAME_HEIGHT)?.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
-    append_png_chunk(&mut png, *b"IHDR", &ihdr)?;
-    append_png_chunk(&mut png, *b"IDAT", &compressed)?;
-    append_png_chunk(&mut png, *b"IEND", &[])?;
-    Ok(png)
-}
-
-fn zlib_stored(data: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mut result = vec![0x78, 0x01];
-    let mut remaining = data;
-    while !remaining.is_empty() {
-        let length = remaining.len().min(u16::MAX as usize);
-        let final_block = length == remaining.len();
-        result.push(u8::from(final_block));
-        let length_u16 = u16::try_from(length)?;
-        result.extend_from_slice(&length_u16.to_le_bytes());
-        result.extend_from_slice(&(!length_u16).to_le_bytes());
-        result.extend_from_slice(&remaining[..length]);
-        remaining = &remaining[length..];
-    }
-    result.extend_from_slice(&adler32(data).to_be_bytes());
-    Ok(result)
-}
-
-fn append_png_chunk(png: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) -> Result<(), Box<dyn Error>> {
-    png.extend_from_slice(&u32::try_from(data.len())?.to_be_bytes());
-    png.extend_from_slice(&kind);
-    png.extend_from_slice(data);
-    let mut checksum_input = Vec::with_capacity(4 + data.len());
-    checksum_input.extend_from_slice(&kind);
-    checksum_input.extend_from_slice(data);
-    png.extend_from_slice(&crc32(&checksum_input).to_be_bytes());
-    Ok(())
-}
-
-fn adler32(data: &[u8]) -> u32 {
-    const MODULUS: u32 = 65_521;
-    let mut a = 1_u32;
-    let mut b = 0_u32;
-    for byte in data {
-        a = (a + u32::from(*byte)) % MODULUS;
-        b = (b + a) % MODULUS;
-    }
-    (b << 16) | a
-}
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = u32::MAX;
-    for byte in data {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            let mask = 0_u32.wrapping_sub(crc & 1);
-            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-        }
-    }
-    !crc
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        ButtonChord, FRAME_HEIGHT, FRAME_WIDTH, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE,
-        encode_smb_frame_png, smb_is_victory, smb_mechanical_state_from_wram,
+        ButtonChord, MAX_HOLD_FRAMES, STATE_CHUNK_SIZE, SharedState, SmbTarget, WRAM_SIZE,
+        smb_is_victory, smb_mechanical_state_from_wram,
     };
     use crate::target::Target;
+    use std::sync::Arc;
+
+    #[test]
+    fn shared_state_preserves_the_flat_byte_wire_format() {
+        let bytes = (0_u16..333).map(|value| value as u8).collect::<Vec<_>>();
+        let state = SharedState::from_bytes(bytes.clone(), None);
+        assert_eq!(state.materialize(), bytes);
+        assert_eq!(
+            postcard::to_allocvec(&state).expect("encode shared state"),
+            postcard::to_allocvec(&bytes).expect("encode flat state")
+        );
+        assert_eq!(
+            serde_json::to_vec(&state).expect("encode shared JSON"),
+            serde_json::to_vec(&bytes).expect("encode flat JSON")
+        );
+        let decoded: SharedState =
+            postcard::from_bytes(&postcard::to_allocvec(&state).expect("encode round-trip state"))
+                .expect("decode shared state");
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
+    fn shared_state_reuses_only_byte_identical_chunks() {
+        let base = SharedState::from_bytes(vec![1_u8; STATE_CHUNK_SIZE * 3], None);
+        let mut changed = base.materialize();
+        changed[STATE_CHUNK_SIZE + 1] = 2;
+        let child = SharedState::from_bytes(changed, Some(&base));
+        assert!(Arc::ptr_eq(&base.0.chunks[0], &child.0.chunks[0]));
+        assert!(!Arc::ptr_eq(&base.0.chunks[1], &child.0.chunks[1]));
+        assert!(Arc::ptr_eq(&base.0.chunks[2], &child.0.chunks[2]));
+    }
 
     #[test]
     fn chord_duration_is_total_and_bounded() {
@@ -838,25 +785,18 @@ mod tests {
     #[test]
     fn a_snapshot_in_victory_mode_reports_victory_and_takes_no_action() {
         let rom = synthetic_nrom();
-        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         target.reset();
         assert!(!target.is_victory());
         target.poke_wram(0x0770, 2);
         target.poke_wram(0x075f, 7);
         let won = target.snapshot().expect("snapshot victory state");
-        let mut restored = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        let mut restored = SmbTarget::loopback_for_tests(&rom).expect("load target");
         restored.restore(&won).expect("restore victory snapshot");
         assert!(restored.is_victory());
         let frames_before = restored.frames_clocked();
         restored.apply(&ButtonChord::new(0x01, 10));
         assert_eq!(restored.frames_clocked(), frames_before);
         assert!(restored.last_action_observations().is_empty());
-    }
-
-    #[test]
-    fn png_encoder_rejects_malformed_frames() {
-        let expected = FRAME_WIDTH * FRAME_HEIGHT * 4;
-        assert!(encode_smb_frame_png(&vec![0; expected]).is_ok());
-        assert!(encode_smb_frame_png(&vec![0; expected - 1]).is_err());
     }
 }

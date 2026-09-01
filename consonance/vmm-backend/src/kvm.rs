@@ -947,8 +947,9 @@ pub(crate) fn xsave_from_bytes(bytes: &[u8]) -> Result<kvm_xsave> {
     if bytes.len() != x.region.len() * 4 {
         return Err(BackendError::InvalidState);
     }
-    let (words, _) = bytes.as_chunks::<4>();
-    for (word, chunk) in x.region.iter_mut().zip(words) {
+    let (chunks, remainder) = bytes.as_chunks::<4>();
+    debug_assert!(remainder.is_empty());
+    for (word, chunk) in x.region.iter_mut().zip(chunks) {
         *word = u32::from_le_bytes(*chunk);
     }
     Ok(x)

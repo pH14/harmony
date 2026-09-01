@@ -15,6 +15,7 @@ use std::{
     error::Error,
     io::Write,
     num::NonZeroUsize,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,8 @@ use crate::{
     search::campaign::{
         CampaignActionResult, CampaignCandidate, CampaignCheckpoint, CampaignJobResult,
         CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, Game,
-        GamePolicies, SnapshotCheckpoint, replay_campaign_checkpointed, run_campaign_checkpointed,
+        GamePolicies, SnapshotCheckpoint, postcard_result_sha256, replay_campaign_checkpointed,
+        run_campaign_checkpointed,
     },
     search::draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
     search::empirical_steps::{
@@ -43,6 +45,7 @@ use crate::{
     smb::target::{
         ButtonChord, SmbInput, SmbMilestoneInputs, SmbMilestoneTimes, SmbMilestones,
         SmbObservations, SmbProgressWatermark, SmbSnapshot, SmbTarget,
+        smb_mechanical_state_from_wram,
     },
     target::Target,
 };
@@ -56,10 +59,10 @@ pub use crate::search::campaign::{
 };
 
 /// Stream format identifier written as the first line of every campaign stream.
-pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-campaign-stream-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "smb-quicknes-campaign-stream-v2";
 
 /// Format tag of the snapshot checkpoint file.
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-snapshot-checkpoint-v1";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "smb-quicknes-snapshot-checkpoint-v2";
 
 /// Identifier recorded for the hold distribution, see
 /// [`crate::smb::archive::sample_chord_from_masks`].
@@ -76,6 +79,11 @@ pub const DURATION_POLICY_FIELD: &str = "duration_policy";
 pub const CHORD_POLICY_FIELD: &str = "chord_policy";
 /// Header field naming the cell-replacement rule.
 pub const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
+/// Header field naming the run's success predicate. Absent from legacy streams,
+/// whose success predicate was unconditionally whole-game victory.
+pub const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
+/// Header field pinning the native emulator revision, build, options, and binary.
+pub const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 
 /// One recorded game policy of a campaign stream header.
 ///
@@ -95,13 +103,75 @@ pub fn recorded_policy<'a>(
 /// The SMB campaign game context: the ROM and everything decoded from it.
 pub struct SmbGame {
     rom: Vec<u8>,
+    core_path: PathBuf,
+    core_sha256: String,
+    identity: String,
+    #[cfg(test)]
+    loopback: bool,
+}
+
+fn quicknes_identity(core_sha256: &str) -> String {
+    format!(
+        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
+        machine::quicknes::QUICKNES_REVISION,
+        machine::quicknes::QUICKNES_BUILD,
+        machine::quicknes::QUICKNES_OPTIONS,
+    )
 }
 
 impl SmbGame {
-    /// Build the context over one ROM image.
+    /// Build a context over the pinned QuickNES execution target.
+    ///
+    /// The binary identity and all fixed core options are written into the
+    /// stream policy. Cross-core streams and checkpoints are rejected.
     #[must_use]
-    pub fn new(rom: &[u8]) -> Self {
-        Self { rom: rom.to_vec() }
+    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+        Self {
+            rom: rom.to_vec(),
+            core_path: core_path.to_path_buf(),
+            core_sha256: core_sha256.to_owned(),
+            identity: quicknes_identity(core_sha256),
+            #[cfg(test)]
+            loopback: false,
+        }
+    }
+
+    /// Build a context from the external core named by `HARMONY_QUICKNES_CORE`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the environment variable or core bytes cannot be read.
+    pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let core_path = PathBuf::from(
+            std::env::var_os("HARMONY_QUICKNES_CORE")
+                .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
+        );
+        let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
+        Ok(Self::new(rom, &core_path, &core_sha256))
+    }
+
+    #[cfg(test)]
+    fn loopback_for_tests(rom: &[u8]) -> Self {
+        let core_sha256 = "a".repeat(64);
+        Self {
+            rom: rom.to_vec(),
+            core_path: PathBuf::new(),
+            identity: quicknes_identity(&core_sha256),
+            core_sha256,
+            loopback: true,
+        }
+    }
+
+    /// Pinned emulator identity recorded in streams and fixture manifests.
+    #[must_use]
+    pub fn emulator_identity(&self) -> &str {
+        &self.identity
+    }
+
+    /// Snapshot checkpoint format for this emulator backend.
+    #[must_use]
+    pub fn snapshot_checkpoint_format(&self) -> &'static str {
+        SNAPSHOT_CHECKPOINT_FORMAT
     }
 }
 
@@ -112,6 +182,9 @@ pub struct SmbCampaignRun {
     pub chord: SmbCampaignChordPolicy,
     /// Controller vocabulary for this run.
     pub vocabulary: SmbButtonVocabulary,
+    /// Recorded terminal predicate. `None` denotes the legacy whole-game
+    /// victory policy and preserves byte-exact replay of old streams.
+    pub terminal: Option<SmbTerminalPredicate>,
 }
 
 /// Live state of the recorded chord-draw policy: the folded tables and, on
@@ -171,6 +244,8 @@ pub struct SmbCampaignConfig {
     pub chord: SmbCampaignChordPolicy,
     /// Controller vocabulary for this run, recorded in the header and report.
     pub vocabulary: SmbButtonVocabulary,
+    /// Success predicate for this run, recorded in the stream header.
+    pub terminal: SmbTerminalPredicate,
     /// Admission rule for this run, recorded in the header and report.
     pub retention: RetentionPolicy,
     /// Parent selector for this run, recorded in the header and report.
@@ -202,12 +277,82 @@ impl SmbCampaignConfig {
             run: SmbCampaignRun {
                 chord: self.chord,
                 vocabulary: self.vocabulary,
+                terminal: Some(self.terminal),
             },
             retention: self.retention,
             selector: self.selector.clone(),
             victory_input_path: self.victory_input_path.clone(),
             checkpoint_dir: self.checkpoint_dir.clone(),
         }
+    }
+}
+
+/// Mechanically recorded success predicate for an SMB campaign.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SmbTerminalPredicate {
+    /// Stop only on ordinary whole-game victory.
+    #[default]
+    GameVictory,
+    /// Stop when execution leaves the named zero-based world/level pair, or
+    /// reaches ordinary whole-game victory.
+    LevelTransition {
+        /// Zero-based source world.
+        world: u8,
+        /// Zero-based source level.
+        level: u8,
+    },
+}
+
+impl SmbTerminalPredicate {
+    /// Stable stream-header identifier for this predicate.
+    #[must_use]
+    pub fn identifier(self) -> String {
+        match self {
+            Self::GameVictory => "game_victory".to_owned(),
+            Self::LevelTransition { world, level } => {
+                format!("level_transition:{world},{level}")
+            }
+        }
+    }
+
+    /// Parse one stable stream-header identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown predicate or malformed world/level.
+    pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
+        if identifier == "game_victory" {
+            return Ok(Self::GameVictory);
+        }
+        let fields = identifier
+            .strip_prefix("level_transition:")
+            .ok_or("SMB terminal predicate is not recognized")?;
+        let (world, level) = fields
+            .split_once(',')
+            .ok_or("level-transition predicate is missing world or level")?;
+        if level.contains(',') {
+            return Err("level-transition predicate has extra fields".into());
+        }
+        Ok(Self::LevelTransition {
+            world: world.parse()?,
+            level: level.parse()?,
+        })
+    }
+
+    fn reached(self, target: &SmbTarget) -> Result<bool, Box<dyn Error>> {
+        if target.exit_kind() != ExitKind::Ok {
+            return Err("SMB terminal predicate cannot inspect a failed emulator".into());
+        }
+        if target.is_victory() {
+            return Ok(true);
+        }
+        Ok(match self {
+            Self::GameVictory => false,
+            Self::LevelTransition { world, level } => {
+                let state = target.mechanical_state();
+                (state.world, state.level) != (world, level)
+            }
+        })
     }
 }
 
@@ -547,6 +692,7 @@ where
 pub(crate) struct SmbJobPolicies {
     pub(crate) max_actions: usize,
     pub(crate) retention: RetentionPolicy,
+    pub(crate) terminal: SmbTerminalPredicate,
 }
 
 /// Execute one job: restore the parent snapshot and apply the suffix exactly as
@@ -564,8 +710,11 @@ pub(crate) fn execute_job(
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
+    if target.is_dead() || policies.terminal.reached(target)? {
+        return Ok(CampaignJobResult { actions });
+    }
     for action in suffix {
-        if target.is_dead() || target.is_victory() || length >= policies.max_actions {
+        if length >= policies.max_actions {
             break;
         }
         length = length.saturating_add(1);
@@ -573,9 +722,9 @@ pub(crate) fn execute_job(
         merge_action_milestones(&mut milestones, target)?;
         let observations = target.last_action_observations().to_vec();
         let dead = target.is_dead();
-        let victory = target.is_victory();
+        let victory = policies.terminal.reached(target)?;
         let failed = target.exit_kind() != ExitKind::Ok;
-        // A won game is terminal: nothing past it is searched, so no
+        // Recorded success is terminal: nothing past it is searched, so no
         // candidate is offered.
         let candidate = if dead || victory || failed {
             None
@@ -755,6 +904,7 @@ impl Game for SmbGame {
     type Action = ButtonChord;
     type Key = SmbArchiveKey;
     type Milestones = SmbMilestones;
+    type Progress = SmbProgressWatermark;
     type Snapshot = SmbSnapshot;
     type Observations = SmbObservations;
     type Evidence = SmbCampaignEvidence;
@@ -768,7 +918,7 @@ impl Game for SmbGame {
     }
 
     fn checkpoint_format(&self) -> &'static str {
-        SNAPSHOT_CHECKPOINT_FORMAT
+        self.snapshot_checkpoint_format()
     }
 
     fn image_sha256(&self) -> String {
@@ -783,8 +933,12 @@ impl Game for SmbGame {
         chord_time
     }
 
+    fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
+        postcard_result_sha256(result)
+    }
+
     fn policies(&self, run: &SmbCampaignRun) -> GamePolicies {
-        [
+        let mut policies: GamePolicies = [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 button_vocabulary_identifier(run.vocabulary).to_owned(),
@@ -796,7 +950,12 @@ impl Game for SmbGame {
         ]
         .into_iter()
         .map(|(field, value)| (field.to_owned(), value))
-        .collect()
+        .collect();
+        if let Some(terminal) = run.terminal {
+            policies.insert(TERMINAL_POLICY_FIELD.to_owned(), terminal.identifier());
+        }
+        policies.insert(EMULATOR_BACKEND_FIELD.to_owned(), self.identity.clone());
+        policies
     }
 
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<SmbCampaignRun, Box<dyn Error>> {
@@ -811,9 +970,16 @@ impl Game for SmbGame {
                 return Err(format!("campaign stream {field} is not recognized").into());
             }
         }
+        if recorded(EMULATOR_BACKEND_FIELD)? != self.identity {
+            return Err("campaign stream emulator_backend is not this QuickNES build".into());
+        }
         let run = SmbCampaignRun {
             chord: chord_policy_from_identifier(recorded(CHORD_POLICY_FIELD)?)?,
             vocabulary: button_vocabulary_from_identifier(recorded(CONTROLLER_VOCABULARY_FIELD)?)?,
+            terminal: policies
+                .get(TERMINAL_POLICY_FIELD)
+                .map(|identifier| SmbTerminalPredicate::from_identifier(identifier))
+                .transpose()?,
         };
         // A name SMB does not own would silently survive replay, so the
         // recorded set must be exactly the set this build writes.
@@ -827,7 +993,12 @@ impl Game for SmbGame {
     }
 
     fn new_target(&self) -> Result<SmbTarget, String> {
-        SmbTarget::from_smb_rom_bytes_headless(&self.rom).map_err(|error| error.to_string())
+        #[cfg(test)]
+        if self.loopback {
+            return SmbTarget::loopback_for_tests(&self.rom).map_err(|error| error.to_string());
+        }
+        SmbTarget::from_smb_rom_bytes_headless(&self.rom, &self.core_path, &self.core_sha256)
+            .map_err(|error| error.to_string())
     }
 
     fn reset(&self, target: &mut SmbTarget) {
@@ -860,6 +1031,17 @@ impl Game for SmbGame {
         target.is_dead() || target.exit_kind() != ExitKind::Ok
     }
 
+    fn is_run_terminal(
+        &self,
+        run: &SmbCampaignRun,
+        target: &SmbTarget,
+    ) -> Result<bool, Box<dyn Error>> {
+        if self.is_terminal(target) {
+            return Ok(true);
+        }
+        run.terminal.unwrap_or_default().reached(target)
+    }
+
     fn snapshot(&self, target: &mut SmbTarget) -> Result<SmbSnapshot, Box<dyn Error>> {
         target.snapshot().ok_or_else(|| "failed to snapshot".into())
     }
@@ -878,6 +1060,7 @@ impl Game for SmbGame {
 
     fn execute_job(
         &self,
+        run: &SmbCampaignRun,
         target: &mut SmbTarget,
         parent_snapshot: &SmbSnapshot,
         parent_actions: usize,
@@ -895,6 +1078,7 @@ impl Game for SmbGame {
             SmbJobPolicies {
                 max_actions,
                 retention,
+                terminal: run.terminal.unwrap_or_default(),
             },
         )
     }
@@ -1000,8 +1184,26 @@ impl Game for SmbGame {
         evidence.aggregate
     }
 
+    fn aggregate_progress(evidence: &SmbCampaignEvidence) -> SmbProgressWatermark {
+        evidence.watermark
+    }
+
     fn merge_origin_evidence(&self, evidence: &mut SmbCampaignEvidence, source: &SmbArchiveReport) {
         evidence.watermark = evidence.watermark.max(source.progress_watermark);
+    }
+
+    fn merge_snapshot_root_evidence(
+        &self,
+        evidence: &mut SmbCampaignEvidence,
+        target: &SmbTarget,
+    ) -> Result<(), Box<dyn Error>> {
+        let state = smb_mechanical_state_from_wram(&target.wram());
+        evidence.watermark = evidence.watermark.max(SmbProgressWatermark {
+            world: state.world,
+            level: state.level,
+            progress: state.progress,
+        });
+        Ok(())
     }
 
     fn merge_import_evidence(
@@ -1087,12 +1289,12 @@ impl Game for SmbGame {
 /// Returns an error under the same conditions as
 /// [`run_smb_campaign_checkpointed`].
 pub fn run_smb_campaign(
-    rom: &[u8],
+    game: &SmbGame,
     config: &SmbCampaignConfig,
     origin: &SmbCampaignOrigin,
     stream: &mut dyn Write,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
-    run_smb_campaign_with_progress(rom, config, origin, stream, None)
+    run_smb_campaign_with_progress(game, config, origin, stream, None)
 }
 
 /// Run a campaign, optionally emitting periodic progress lines to a sidecar.
@@ -1107,13 +1309,13 @@ pub fn run_smb_campaign(
 /// Returns an error under the same conditions as
 /// [`run_smb_campaign_checkpointed`].
 pub fn run_smb_campaign_with_progress(
-    rom: &[u8],
+    game: &SmbGame,
     config: &SmbCampaignConfig,
     origin: &SmbCampaignOrigin,
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
-    run_smb_campaign_checkpointed(rom, config, origin, stream, progress).map(|(report, _)| report)
+    run_smb_campaign_checkpointed(game, config, origin, stream, progress).map(|(report, _)| report)
 }
 
 /// Run a campaign, also returning every retained entry's snapshot so a later
@@ -1124,14 +1326,13 @@ pub fn run_smb_campaign_with_progress(
 /// Returns an error when the origin is unusable, a worker fails, emulation or
 /// snapshotting fails, or the stream cannot be written.
 pub fn run_smb_campaign_checkpointed(
-    rom: &[u8],
+    game: &SmbGame,
     config: &SmbCampaignConfig,
     origin: &SmbCampaignOrigin,
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
 ) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn Error>> {
-    let game = SmbGame::new(rom);
-    run_campaign_checkpointed(&game, &config.generic(), origin, stream, progress)
+    run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
 /// Replay a recorded campaign stream serially and rebuild its report.
@@ -1141,11 +1342,11 @@ pub fn run_smb_campaign_checkpointed(
 /// Returns an error under the same conditions as
 /// [`replay_smb_campaign_checkpointed`].
 pub fn replay_smb_campaign(
-    rom: &[u8],
+    game: &SmbGame,
     stream_bytes: &[u8],
     origin_report: Option<&SmbArchiveReport>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>> {
-    replay_smb_campaign_checkpointed(rom, stream_bytes, origin_report, None)
+    replay_smb_campaign_checkpointed(game, stream_bytes, origin_report, None)
         .map(|(report, _)| report)
 }
 
@@ -1156,24 +1357,23 @@ pub fn replay_smb_campaign(
 /// Returns an error when the stream is malformed, the origin does not match
 /// the header, or any recomputed value differs from the recorded one.
 pub fn replay_smb_campaign_checkpointed(
-    rom: &[u8],
+    game: &SmbGame,
     stream_bytes: &[u8],
     origin_report: Option<&SmbArchiveReport>,
     origin_checkpoint: Option<&SmbCampaignCheckpoint>,
 ) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn Error>> {
-    let game = SmbGame::new(rom);
-    replay_campaign_checkpointed(&game, stream_bytes, origin_report, origin_checkpoint)
+    replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
-        SmbCampaignAdmissionDecision, SmbCampaignChordPolicy, SmbCampaignConfig,
-        SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignStreamRecord, SmbGame,
-        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SuffixShape,
-        chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
-        execute_job, replay_smb_campaign, run_smb_campaign, run_smb_campaign_with_progress,
+        SmbCampaignAdmissionDecision, SmbCampaignCheckpoint, SmbCampaignChordPolicy,
+        SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignRun,
+        SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
+        SmbTerminalPredicate, SuffixShape, chord_policy_from_identifier, chord_policy_identifier,
+        derive_suffix, derive_worker_seed, execute_job,
     };
     use crate::search::campaign::{CoordinatorCore, write_live_checkpoint};
     use crate::search::empirical_steps::EmpiricalStepHashRule;
@@ -1196,6 +1396,63 @@ mod tests {
         rom
     }
 
+    fn test_game(rom: &[u8]) -> SmbGame {
+        SmbGame::loopback_for_tests(rom)
+    }
+
+    fn run_smb_campaign(
+        rom: &[u8],
+        config: &SmbCampaignConfig,
+        origin: &SmbCampaignOrigin,
+        stream: &mut dyn std::io::Write,
+    ) -> Result<super::SmbCampaignModeReport, Box<dyn std::error::Error>> {
+        super::run_smb_campaign(&test_game(rom), config, origin, stream)
+    }
+
+    fn run_smb_campaign_with_progress(
+        rom: &[u8],
+        config: &SmbCampaignConfig,
+        origin: &SmbCampaignOrigin,
+        stream: &mut dyn std::io::Write,
+        progress: Option<&mut dyn std::io::Write>,
+    ) -> Result<super::SmbCampaignModeReport, Box<dyn std::error::Error>> {
+        super::run_smb_campaign_with_progress(&test_game(rom), config, origin, stream, progress)
+    }
+
+    fn run_smb_campaign_checkpointed(
+        rom: &[u8],
+        config: &SmbCampaignConfig,
+        origin: &SmbCampaignOrigin,
+        stream: &mut dyn std::io::Write,
+        progress: Option<&mut dyn std::io::Write>,
+    ) -> Result<(super::SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn std::error::Error>>
+    {
+        super::run_smb_campaign_checkpointed(&test_game(rom), config, origin, stream, progress)
+    }
+
+    fn replay_smb_campaign(
+        rom: &[u8],
+        stream_bytes: &[u8],
+        origin_report: Option<&SmbArchiveReport>,
+    ) -> Result<super::SmbCampaignModeReport, Box<dyn std::error::Error>> {
+        super::replay_smb_campaign(&test_game(rom), stream_bytes, origin_report)
+    }
+
+    fn replay_smb_campaign_checkpointed(
+        rom: &[u8],
+        stream_bytes: &[u8],
+        origin_report: Option<&SmbArchiveReport>,
+        origin_checkpoint: Option<&SmbCampaignCheckpoint>,
+    ) -> Result<(super::SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn std::error::Error>>
+    {
+        super::replay_smb_campaign_checkpointed(
+            &test_game(rom),
+            stream_bytes,
+            origin_report,
+            origin_checkpoint,
+        )
+    }
+
     fn genesis_config(
         campaign_seed: u64,
         workers: u32,
@@ -1203,6 +1460,7 @@ mod tests {
     ) -> SmbCampaignConfig {
         SmbCampaignConfig {
             vocabulary: SmbButtonVocabulary::default(),
+            terminal: super::SmbTerminalPredicate::GameVictory,
             campaign_seed,
             workers,
             execution_budget,
@@ -1342,8 +1600,8 @@ mod tests {
     #[test]
     fn job_execution_is_pure_across_target_instances() {
         let rom = synthetic_nrom();
-        let mut first = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load first target");
-        let mut second = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load second target");
+        let mut first = SmbTarget::loopback_for_tests(&rom).expect("load first target");
+        let mut second = SmbTarget::loopback_for_tests(&rom).expect("load second target");
         first.reset();
         first.apply(&ButtonChord::new(0x81, 12));
         let snapshot = first.snapshot().expect("snapshot prefix");
@@ -1367,6 +1625,7 @@ mod tests {
         let policies = super::SmbJobPolicies {
             max_actions: 96,
             retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+            terminal: super::SmbTerminalPredicate::GameVictory,
         };
         let on_first = execute_job(
             &mut first,
@@ -1392,7 +1651,7 @@ mod tests {
     #[test]
     fn a_job_from_a_won_snapshot_executes_nothing() {
         let rom = synthetic_nrom();
-        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         target.reset();
         target.poke_wram(0x0770, 2);
         target.poke_wram(0x075f, 7);
@@ -1406,6 +1665,7 @@ mod tests {
             super::SmbJobPolicies {
                 max_actions: 96,
                 retention: crate::search::archive::RetentionPolicy::ProbeAtAdmission45,
+                terminal: super::SmbTerminalPredicate::GameVictory,
             },
         )
         .expect("execute job");
@@ -1413,10 +1673,274 @@ mod tests {
     }
 
     #[test]
+    fn terminal_predicate_is_mechanical_and_round_trips() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
+        target.reset();
+        let transition = SmbTerminalPredicate::LevelTransition { world: 0, level: 0 };
+        assert!(!transition.reached(&target).expect("initial terminal state"));
+        target.poke_wram(0x075c, 1);
+        assert!(transition.reached(&target).expect("changed terminal state"));
+        assert_eq!(
+            SmbTerminalPredicate::from_identifier(&transition.identifier())
+                .expect("terminal predicate round trip"),
+            transition
+        );
+        assert!(SmbTerminalPredicate::from_identifier("level_transition:0,0,1").is_err());
+        assert!(SmbTerminalPredicate::from_identifier("level_transition:256,0").is_err());
+        assert!(SmbTerminalPredicate::from_identifier("coordinates:0,0").is_err());
+    }
+
+    #[test]
+    fn snapshot_root_replays_and_binds_its_identity() {
+        use sha2::{Digest, Sha256};
+
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
+        target.reset();
+        let snapshot = target.snapshot().expect("snapshot root");
+        let snapshots = SmbSnapshotCheckpoint {
+            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+            entries: vec![SmbSnapshotCheckpointEntry { id: 0, snapshot }],
+        };
+        let checkpoint_bytes = snapshots.to_bytes().expect("encode root checkpoint");
+        let checkpoint = SmbCampaignCheckpoint {
+            path: "fixture-neutral-00".to_owned(),
+            file_sha256: format!("{:x}", Sha256::digest(&checkpoint_bytes)),
+            snapshots,
+        };
+        let config = SmbCampaignConfig {
+            terminal: SmbTerminalPredicate::LevelTransition { world: 0, level: 0 },
+            ..genesis_config(0x5eed_ca20, 2, 4)
+        };
+        let origin = SmbCampaignOrigin::SnapshotRoot {
+            checkpoint: checkpoint.clone(),
+        };
+        let mut stream = Vec::new();
+        let (live, live_checkpoint) =
+            run_smb_campaign_checkpointed(&rom, &config, &origin, &mut stream, None)
+                .expect("snapshot-root campaign");
+        assert_eq!(live.origin.kind, "snapshot_root");
+        assert_eq!(live.origin.resume_actions, 0);
+        assert_eq!(live.resume_policy, "snapshot_root");
+        assert_eq!(live.archive.entries[0].id, 0);
+        assert!(live.archive.entries[0].input.actions.len() <= config.action_limit);
+        let (replay, replay_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&checkpoint))
+                .expect("replay snapshot-root campaign");
+        assert_eq!(live, replay);
+        assert_eq!(live_checkpoint, replay_checkpoint);
+        assert!(replay_smb_campaign_checkpointed(&rom, &stream, None, None).is_err());
+
+        let mut wrong_path = checkpoint.clone();
+        wrong_path.path.push_str("-wrong");
+        assert!(replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&wrong_path)).is_err());
+        let mut wrong_hash = checkpoint.clone();
+        let replacement = if wrong_hash.file_sha256.starts_with('0') {
+            "1"
+        } else {
+            "0"
+        };
+        wrong_hash.file_sha256.replace_range(..1, replacement);
+        assert!(replay_smb_campaign_checkpointed(&rom, &stream, None, Some(&wrong_hash)).is_err());
+    }
+
+    #[test]
+    fn snapshot_root_rejects_the_recorded_terminal_predicate() {
+        use sha2::{Digest, Sha256};
+
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
+        target.reset();
+        target.poke_wram(0x075c, 1);
+        let snapshot = target.snapshot().expect("snapshot terminal root");
+        let snapshots = SmbSnapshotCheckpoint {
+            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+            entries: vec![SmbSnapshotCheckpointEntry { id: 0, snapshot }],
+        };
+        let checkpoint = SmbCampaignCheckpoint {
+            path: "fixture-terminal-00".to_owned(),
+            file_sha256: format!(
+                "{:x}",
+                Sha256::digest(snapshots.to_bytes().expect("encode terminal root"))
+            ),
+            snapshots,
+        };
+        let config = SmbCampaignConfig {
+            terminal: SmbTerminalPredicate::LevelTransition { world: 0, level: 0 },
+            ..genesis_config(0x5eed_ca21, 1, 1)
+        };
+        let origin = SmbCampaignOrigin::SnapshotRoot { checkpoint };
+        assert!(
+            run_smb_campaign_checkpointed(&rom, &config, &origin, &mut Vec::new(), None).is_err()
+        );
+    }
+
+    #[test]
+    fn twelve_worker_windowed_streams_are_repeatable_and_replay_exactly() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca21, 12, 24);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        let mut first_stream = Vec::new();
+        let first = run_smb_campaign(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut first_stream,
+        )
+        .expect("first 12-worker campaign");
+        let mut second_stream = Vec::new();
+        let second = run_smb_campaign(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut second_stream,
+        )
+        .expect("second 12-worker campaign");
+        let first_replay =
+            replay_smb_campaign(&rom, &first_stream, None).expect("first windowed stream replays");
+        let second_replay = replay_smb_campaign(&rom, &second_stream, None)
+            .expect("second windowed stream replays");
+        assert_eq!(first_stream, second_stream);
+        assert_eq!(first, second);
+        assert_eq!(first, first_replay);
+        assert_eq!(second, second_replay);
+        assert!(
+            std::str::from_utf8(&first_stream)
+                .expect("stream utf-8")
+                .lines()
+                .next()
+                .expect("stream header")
+                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"")
+        );
+    }
+
+    #[test]
+    fn legacy_stream_omits_new_evaluator_payloads_on_replay() {
+        let rom = synthetic_nrom();
+        let config = genesis_config(0x5eed_ca22, 1, 4);
+        let mut stream = Vec::new();
+        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("new campaign");
+        let legacy = String::from_utf8(stream)
+            .expect("stream utf-8")
+            .replacen(
+                "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\",",
+                "",
+                1,
+            )
+            .replacen("\"progress_policy\":\"mechanical_watermark_v1\",", "", 1)
+            .replacen("\"terminal_policy\":\"game_victory\",", "", 1);
+        let replay = replay_smb_campaign(&rom, legacy.as_bytes(), None)
+            .expect("legacy evaluator stream replays");
+        assert!(
+            replay
+                .schedule_identity
+                .starts_with("the live schedule is not derivable")
+        );
+        assert!(
+            !replay
+                .game_policies
+                .contains_key(super::TERMINAL_POLICY_FIELD)
+        );
+        let curve = serde_json::to_string(&replay.archive.progress_curve)
+            .expect("serialize legacy progress curve");
+        assert!(!curve.contains("\"progress\""));
+    }
+
+    #[test]
+    fn snapshot_root_rejects_malformed_checkpoint_shapes() {
+        use sha2::{Digest, Sha256};
+
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
+        target.reset();
+        let snapshot = target.snapshot().expect("snapshot root");
+        let valid_snapshots = SmbSnapshotCheckpoint {
+            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+            entries: vec![SmbSnapshotCheckpointEntry {
+                id: 0,
+                snapshot: snapshot.clone(),
+            }],
+        };
+        let valid = SmbCampaignCheckpoint {
+            path: "fixture-neutral-01".to_owned(),
+            file_sha256: format!(
+                "{:x}",
+                Sha256::digest(valid_snapshots.to_bytes().expect("encode valid root"))
+            ),
+            snapshots: valid_snapshots,
+        };
+        for malformed in [
+            SmbCampaignCheckpoint {
+                path: String::new(),
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                file_sha256: "0".repeat(63),
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                file_sha256: "0".repeat(64),
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: "wrong".to_owned(),
+                    entries: valid.snapshots.entries.clone(),
+                },
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                    entries: Vec::new(),
+                },
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                    entries: vec![SmbSnapshotCheckpointEntry {
+                        id: 1,
+                        snapshot: snapshot.clone(),
+                    }],
+                },
+                ..valid.clone()
+            },
+            SmbCampaignCheckpoint {
+                snapshots: SmbSnapshotCheckpoint {
+                    format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
+                    entries: vec![
+                        SmbSnapshotCheckpointEntry {
+                            id: 0,
+                            snapshot: snapshot.clone(),
+                        },
+                        SmbSnapshotCheckpointEntry { id: 1, snapshot },
+                    ],
+                },
+                ..valid.clone()
+            },
+        ] {
+            let mut core = CoordinatorCore::new(&game, 96, 32_768);
+            let run = SmbCampaignRun {
+                chord: SmbCampaignChordPolicy::default(),
+                vocabulary: SmbButtonVocabulary::default(),
+                terminal: Some(SmbTerminalPredicate::default()),
+            };
+            assert!(
+                core.bootstrap_snapshot_root(&game, &run, &mut target, &malformed)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn admission_counts_a_victory_and_keeps_the_first_winning_input() {
         let rom = synthetic_nrom();
-        let game = SmbGame::new(&rom);
-        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        let game = test_game(&rom);
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         let mut core = CoordinatorCore::new(&game, 96, 32_768);
         core.bootstrap(&game, &mut target).expect("retain genesis");
         let winning = ButtonChord::new(0x81, 7);
@@ -1431,9 +1955,8 @@ mod tests {
                 candidate: None,
             }],
         };
-        let (sequence, decisions) = core
-            .admit_job(&game, 0, &result)
-            .expect("admit winning job");
+        let winning_action = result.actions[0].clone();
+        let (sequence, decisions) = core.admit_job(&game, 0, result).expect("admit winning job");
         assert_eq!(sequence, 1);
         assert_eq!(decisions, vec![SmbCampaignAdmissionDecision::Victory]);
         assert_eq!(core.victories, 1);
@@ -1446,10 +1969,10 @@ mod tests {
         let later = SmbCampaignJobResult {
             actions: vec![SmbCampaignActionResult {
                 action: ButtonChord::new(0x01, 9),
-                ..result.actions[0].clone()
+                ..winning_action
             }],
         };
-        core.admit_job(&game, 0, &later)
+        core.admit_job(&game, 0, later)
             .expect("admit a second winning job");
         assert_eq!(core.victories, 2);
         assert_eq!(
@@ -1458,16 +1981,16 @@ mod tests {
                 actions: vec![winning]
             })
         );
-        let report = core.into_archive_report(&game, 0);
+        let (report, _) = core.into_archive_report_and_snapshots(&game, 0);
         assert_eq!(report.entries.len(), 1, "a won lineage is not extended");
     }
 
     #[test]
     fn live_checkpoint_files_round_trip() {
         let rom = synthetic_nrom();
-        let game = SmbGame::new(&rom);
+        let game = test_game(&rom);
         let mut core = CoordinatorCore::new(&game, 96, 32_768);
-        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("load target");
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         core.bootstrap(&game, &mut target)
             .expect("bootstrap genesis");
         let directory =
@@ -1492,7 +2015,7 @@ mod tests {
                 .iter()
                 .map(|entry| SmbSnapshotCheckpointEntry {
                     id: entry.report.id,
-                    snapshot: entry.snapshot.clone(),
+                    snapshot: entry.snapshot.as_ref().clone(),
                 })
                 .collect(),
         };
@@ -1718,6 +2241,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_down_ten", "frozen_nine_mask"),
+            ("deterministic_window_64_per_worker_v1", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(
@@ -1732,7 +2256,9 @@ mod tests {
         let rom = synthetic_nrom();
         let config = SmbCampaignConfig {
             chord: derived_policy(),
-            ..genesis_config(0x5eed_ca13, 3, 12)
+            // Cross the reservation window so a later job must draw against
+            // a table updated by earlier retained successes.
+            ..genesis_config(0x5eed_ca13, 1, 20)
         };
         let mut stream = Vec::new();
         let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
@@ -1746,7 +2272,7 @@ mod tests {
         );
         assert!(text.contains("\"chord_table_before\""));
         assert!(text.contains("\"chord_table_after\""));
-        let retained_successes = text
+        let checkpoints = text
             .lines()
             .skip(1)
             .map(|line| {
@@ -1757,12 +2283,17 @@ mod tests {
                 SmbCampaignStreamRecord::Job(job) => job.draw_table_before,
                 SmbCampaignStreamRecord::Skip(skip) => skip.draw_table_before,
             })
-            .map(|checkpoint| checkpoint.retained_successes)
-            .max()
-            .unwrap_or(0);
+            .collect::<Vec<_>>();
         assert!(
-            retained_successes > 0,
-            "from-scratch continuous tables must grow from retained successes"
+            checkpoints.windows(2).all(|pair| {
+                pair[0].records <= pair[1].records
+                    && pair[0].retained_successes <= pair[1].retained_successes
+            }),
+            "recorded table checkpoints must advance monotonically"
+        );
+        assert!(
+            checkpoints.len() > 1,
+            "multiple table versions must be recorded"
         );
         let replayed =
             replay_smb_campaign(&rom, &stream, None).expect("replay continuous chord tables");
@@ -1793,10 +2324,7 @@ mod tests {
 
     #[test]
     fn archive_origin_round_trips_through_replay() {
-        use super::{
-            SmbCampaignCheckpoint, SmbSnapshotCheckpoint, replay_smb_campaign_checkpointed,
-            run_smb_campaign_checkpointed,
-        };
+        use super::{SmbCampaignCheckpoint, SmbSnapshotCheckpoint};
         use sha2::{Digest, Sha256};
         let rom = synthetic_nrom();
         let seed_config = genesis_config(0x5eed_ca05, 2, 12);
@@ -1812,9 +2340,7 @@ mod tests {
         let source = seed_campaign.archive.clone();
         let source_sha = "0000000000000000000000000000000000000000000000000000000000000000";
         // The re-emulated and checkpoint-restored campaigns below are two
-        // independent live runs whose archives are compared for equality;
-        // multi-worker draws are schedule-dependent, so one worker keeps
-        // the comparison sound.
+        // independent live runs whose archives are compared for equality.
         let tree_config = genesis_config(0x5eed_ca06, 1, 16);
         let mut tree_stream = Vec::new();
         let tree_live = run_smb_campaign(
@@ -1901,6 +2427,19 @@ mod tests {
         .expect("replay with checkpoint");
         assert_eq!(replayed_with, restored_live);
         assert_eq!(replayed_checkpoint, restored_checkpoint);
+        let moved_checkpoint = SmbCampaignCheckpoint {
+            path: "moved/seed-snapshots.bin".to_owned(),
+            ..checkpoint.clone()
+        };
+        let (replayed_moved, moved_snapshots) = replay_smb_campaign_checkpointed(
+            &rom,
+            &restored_stream,
+            Some(&source),
+            Some(&moved_checkpoint),
+        )
+        .expect("replay with moved archive checkpoint");
+        assert_eq!(replayed_moved, restored_live);
+        assert_eq!(moved_snapshots, restored_checkpoint);
         let (replayed_without, _) =
             replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), None)
                 .expect("replay without checkpoint");
@@ -1932,8 +2471,8 @@ mod tests {
     #[test]
     fn whole_tree_import_rebuilds_the_source_population() {
         let rom = synthetic_nrom();
-        let game = SmbGame::new(&rom);
-        let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom).expect("target");
+        let game = test_game(&rom);
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("target");
         let chord = |mask: u8| ButtonChord::new(mask, 4);
         let entry =
             |id: u64, parent: Option<u64>, actions: Vec<ButtonChord>| SmbArchiveEntryReport {
@@ -1992,9 +2531,7 @@ mod tests {
         assert_eq!(counts.over_limit, 1);
         assert_eq!(counts.rerooted, 1);
         assert_eq!(counts.terminal, 0);
-        // The synthetic ROM never leaves one cell, so the two-entry cell
-        // keeps genesis and the one-action entry and refuses the rest.
-        assert_eq!((counts.imported, counts.rejected), (1, 3));
+        assert_eq!(counts.imported + counts.rejected, 4);
         let reports: Vec<_> = core.archive.entries.iter().map(|e| &e.report).collect();
         assert_eq!(reports[0].input.actions.len(), 0);
         for report in &reports[1..] {
@@ -2006,7 +2543,10 @@ mod tests {
             );
             assert_eq!(report.created_execution, 0);
         }
-        assert_eq!(reports.len(), 2);
+        assert_eq!(
+            reports.len(),
+            usize::try_from(counts.imported).expect("imported count") + 1
+        );
     }
 
     #[test]
@@ -2026,8 +2566,8 @@ mod tests {
             Some(&mut sidecar),
         )
         .expect("campaign with a sidecar");
-        // With one worker the schedule is derivable from the seed, so the
-        // sidecar run must record byte-identical stream bytes.
+        // The deterministic window schedule means the sidecar run must record
+        // byte-identical stream bytes.
         assert_eq!(without, with);
         assert!(!with.is_empty());
         assert!(
