@@ -425,13 +425,17 @@ not a controlled same-machine before/after comparison. Raw artifacts are in
 
 ## Follow-up memory and speculative-work experiments
 
-QuickNES states are 12,912 bytes, but adjacent parent/child states differ in
-only 234 bytes on average. The retained in-memory representation splits each
-state into 512-byte reference-counted chunks and reuses byte-identical chunks
-from the restored parent. Its Serde representation remains exactly the same
-byte sequence as the former `Vec<u8>`. Checkpoint and report I/O now streams
-through bounded buffers instead of first allocating a second complete encoded
-artifact.
+QuickNES states are 12,912 bytes, and an early experiment found that adjacent
+parent/child states differed in only 234 bytes on average. That experiment
+split each state into 512-byte reference-counted chunks and reused identical
+chunks from the restored parent. The measurements below preserve its result,
+but the chunk mechanism was later deleted: global population budgeting made
+prompt snapshot release more valuable and avoided per-snapshot chunk metadata
+and reference-count traffic. The current representation keeps one contiguous
+fixed QuickNES state, does not retain a second WRAM copy, stores inputs as
+parent-relative prefix nodes, and releases displaced snapshots after in-flight
+uses finish. Checkpoint and report I/O streams through bounded buffers instead
+of first allocating a second complete encoded artifact.
 
 On the same 24-worker 30K genesis campaign, the flat and shared versions ran at
 3,642.811 and 3,642.712 executions/s respectively, while peak RSS fell from
@@ -467,14 +471,136 @@ The rejected pending-input implementation replayed exactly before removal. No
 transition cache, dependency scheduler, new search policy, or game knowledge
 was retained.
 
+## Globally bounded campaign memory
+
+Long genesis campaigns exposed a separate operational problem: even after the
+worker path became compute-bound, every retained result kept a complete input,
+QuickNES snapshot, and archive record for the campaign lifetime. That made RSS,
+periodic progress reporting, and final artifacts scale with total history. The
+append-only stream now remains the authoritative history while the live archive
+is a deterministic, bounded breeding population and acceleration structure:
+
+- entries use immutable stable stream ids while compact in-memory slots may be
+  repacked;
+- inputs are stored parent-relative in a shared ordered prefix index and full
+  inputs are reconstructed only for rare report or victory paths;
+- one contiguous QuickNES state is retained per selectable entry, with no
+  separately retained WRAM copy, and displaced snapshots are released after
+  their bounded in-flight references finish;
+- `--memory-budget-mib N` records a deterministic logical-byte ceiling in the
+  stream; reaching it evicts the oldest selectable snapshot and continues
+  admitting instead of freezing the archive;
+- compaction repacks live/pinned metadata and the prefix index in deterministic
+  stable-id order, rebuilds selector caches, and forgets novelty/barren keys not
+  represented by the selectable population;
+- progress counters and selector indexes are maintained incrementally, and the
+  report-only progress curve coarsens deterministically when it reaches 1,024
+  points instead of growing with campaign history;
+- the empirical input tables fold exact history into an incremental digest,
+  retain only a bounded deterministic frequency table plus recent window, and
+  reserve their charge inside the global budget; and
+- `--no-final-artifacts` avoids a second multi-gigabyte report/checkpoint write
+  after the search has already stopped.
+
+The logical budget charges six independently reported categories: snapshots,
+entry metadata, shared input-prefix storage, novelty cells, pooled barren
+counters, and the bounded empirical draw state. Allocation/RSS never influences
+a search decision, so replay remains a pure function of the recorded stream.
+Checkpoint format v3 deliberately rejects the previous snapshot layout.
+
+### Bounded-memory acceptance evidence
+
+The authoritative 2 GiB, 24-worker campaign completed 2,000,000 executions
+and 475,720,168 frames in 677.659 seconds. It averaged 2,951.338 executions/s
+and 702,005.57 frames/s. The first stable minute averaged 751,732 frames/s;
+the mature windows remained between 691,668 and 712,091 frames/s, or
+92.0--94.7% of the early rate. Mean process CPU was 2,213% (92.2% of 24
+cores), peak `VmHWM` was 2,888,976 KiB, and the process performed no swap,
+disk reads, or checkpoint writes. The logical archive stayed under its 2 GiB
+budget through three deterministic compactions. It finished at SMB 2-2,
+progress 114, and retained 3,574,190 breeding/history records. Its stream
+SHA-256 is
+`e438430665cdc789302b805b827a9b2185919f61de17a1158cbe5435964bcd47`.
+The evidence is in `results/steady-final-v29-2m-2g-20260901` on `ms02`.
+
+A matching 4 GiB campaign completed 2,000,000 executions and 447,618,639
+frames in 650.789 seconds: 3,073.192 executions/s and 687,808.98 frames/s.
+Mean CPU was 2,214% (92.3% of 24 cores), peak `VmHWM` was 5,445,236 KiB,
+and it also recorded no swap, reads, or checkpoints. It performed one
+compaction, finished at SMB 2-2 progress 141, and retained 4,061,624 records.
+The evidence is in `results/steady-final-v29-2m-4g-20260901`.
+
+The fixed-work comparison below linearly interpolates the adjacent progress
+samples bracketing exactly 400,000,000 emulated frames. Progress is the lower
+record's conservative watermark; other non-integral values are interpolated
+only for comparison.
+
+| Budget | Executions | Retained | Active snapshots | Live metadata | History bytes | Snapshot evictions | Reconstructions | Window frames/s | Window executions/s | Progress |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 2 GiB | 1,645,306 | 3,055,455 | 135,408 | 276,643 | 156,237,547 | 2,231,791 | 73 | 695,955 | 3,146 | 2-2 / 114 |
+| 4 GiB | 1,761,190 | 3,616,430 | 241,124 | 1,681,019 | 853,057,785 | 2,640,042 | 74 | 678,865 | 3,387 | 2-2 / 139 |
+
+The larger population retains more selectable states and reached a somewhat
+deeper watermark in this deterministic trajectory. The smaller budget kept
+far less historical metadata at comparable frame capacity. This is a resource
+policy comparison, not search-policy tuning.
+
+The longer 2 GiB soak completed 5,000,000 executions and 943,623,886 frames
+in 1,337.444 seconds: 3,738.474 executions/s and 705,542.62 frames/s. Its
+first stable minute was 752,139 frames/s and the complete-run rate was 93.8%
+of that value; observed mature windows remained at roughly 697K--722K
+frames/s. Mean CPU was 2,207% (92.0% of 24 cores). The first budget fill
+occurred by execution 228,181, so the run continued for 21.9 times the work
+needed to fill the population. Six full compactions occurred through execution
+4,574,546 while admissions, replacements, and executions continued. Peak
+`VmHWM` plateaued at 2,929,356 KiB, reconstruction count stayed at 73 from
+about the first fill through completion, and the process recorded zero swap,
+reads, or checkpoint files. Its only outputs were the 3.4 GB authoritative
+stream, an 18.5 KB progress sidecar, and a 192-byte throughput summary; it did
+not serialize a whole-population artifact. The stream SHA-256 is
+`746b0ab16cd35c6d0842868204b28b8dd763acf45923e92121b1db0fc64cf1fd`.
+The evidence is in `results/steady-final-v30-5m-2g-20260901`.
+
+A modest 4-worker laptop profile with the same 2 GiB logical budget ran for
+120.829 seconds, completing 79,650 executions and 19,255,567 frames at
+659.194 executions/s and 159,361.62 frames/s. Mean CPU was 399% (essentially
+all four workers), peak `VmHWM` was 2,195,020 KiB, and it recorded zero swap,
+reads, or checkpoints. It reached SMB 2-1 progress 105 while admission and
+snapshot eviction continued. The output directory was 54 MB and contained
+only the stream, progress sidecar, and throughput summary. Its stream SHA-256
+is `7eaef9ccb438a67b5fcd116e31d6f47730e372d0faee974d8b40e2c26063d67f`;
+the evidence is in
+`results/steady-final-v30-laptop-4w-2g-120s-20260901`.
+
+Finally, the hardened final source built the ms02 campaign binary with SHA-256
+`580d1e16a0997737c43eefc6672c8d08698ba02eee21b23d85dbaa0f97c26f09`.
+A 30,000-execution 64 MiB campaign replayed byte-identically from its recorded
+stream under that exact executable. `replay_verified` is true; live and replay
+archive hashes are both
+`c791cbda9dd38bc637dd1f8f5da9c88ac2afbf7ee8bd95c3220fcc64b96c4c92`,
+report hashes are both
+`01878bdd4527d730c934f6c9319b6bdb1955eb1839fa6c0cb0022d42facb02f7`,
+and snapshot hashes are both
+`abf72fb6f633160b19399df0135fe817c5ee2beafd51d839a453ca91c840b8a7`.
+The stream SHA-256 is
+`e8ebed9da9ae88d4753e3ffcc401517163d44ccd0edfa4fd1c25689ccbc6b383`,
+identical to the preserved v30 replay and therefore showing that the final
+bounded-loop hardening did not change execution identity. The evidence is in
+`results/steady-final-v35-exact-30k-64m-20260901`. The `machine` Miri suite
+separately exercises the QuickNES snapshot--restore--snapshot fixpoint.
+
 ## Validation checks
 
-The root workspace passed `cargo build --all-features`, 1,224 nextest tests,
+The root workspace passed `cargo build --all-features`, 1,219 nextest tests,
 clippy with warnings denied, formatting, and `cargo deny check`. The standalone
-Dissonance workspace passed the same five checks with 79 nextest tests. The
+Dissonance workspace passed the same five checks with 112 nextest tests,
+including its locked release-mode CI commands. Source-based region coverage is
+76.99%. The iterative in-diff mutation gate finished with zero missed mutants
+and zero timeouts; the one provisional parallel survivor was rerun in a fresh
+serial target and killed by the exact two-entry admission-bookkeeping test. The
 unsafe `machine` crate passed `cargo +nightly miri test -p machine` (7 tests),
-including the libretro function-table interface, fixed-buffer state, direct-RAM
-access, padding canonicalization, and restore fixpoint.
+including the libretro function-table interface, fixed-buffer state,
+direct-RAM access, padding canonicalization, and restore fixpoint.
 
 ## Backend retirement and distribution check
 
