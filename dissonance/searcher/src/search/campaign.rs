@@ -933,6 +933,11 @@ pub struct CampaignModeReport<A: Ord, R> {
     /// Deterministic history compactions completed by this campaign.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub history_compactions: u64,
+    /// Test-only evidence that bounded liveness reactivated its retained
+    /// executable anchor after displacement.
+    #[cfg(test)]
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub(crate) liveness_anchor_reactivations: u64,
     /// Stream-recorded entries retired from live memory.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub historical_entries_dropped: u64,
@@ -1849,6 +1854,8 @@ fn build_report<G: Game>(
         .saturating_add(draw_state_memory_bytes);
     let live_entries = core.archive.live_entry_count();
     let history_compactions = core.archive.history_compactions();
+    #[cfg(test)]
+    let liveness_anchor_reactivations = core.archive.liveness_anchor_reactivations();
     let historical_entries_dropped = core.archive.historical_entries_dropped();
     let input_reconstructions = core.archive.input_reconstructions();
     let input_index_nodes = core.archive.input_index_nodes();
@@ -1909,6 +1916,8 @@ fn build_report<G: Game>(
         resident_memory_bytes,
         live_entries,
         history_compactions,
+        #[cfg(test)]
+        liveness_anchor_reactivations,
         historical_entries_dropped,
         input_reconstructions,
         input_index_nodes,
@@ -2338,8 +2347,7 @@ where
                 core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
                 loop {
-                    let (parent_index, selector) =
-                        core.archive.select_parent(rand, max_actions)?;
+                    let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
                     let parent_id = core
                         .archive
                         .stable_id(parent_index)
@@ -3135,7 +3143,9 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
-    core.archive.establish_liveness_anchor(header.action_limit);
+    if !legacy_schedule {
+        core.archive.establish_liveness_anchor(header.action_limit);
+    }
 
     let replay_window_depth = admission_window_depth(usize::try_from(header.workers)?);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
@@ -3375,8 +3385,8 @@ where
                             }
                         }
                     }
-                    if let Some(parent_id) = replay_job_parents
-                        .get(replay_job_slot.saturating_add(replay_window_depth))
+                    if let Some(parent_id) =
+                        replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
                     {
                         let next_slot = replay_job_slot.saturating_add(replay_window_depth);
                         let parent_index = core

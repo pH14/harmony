@@ -2150,23 +2150,41 @@ mod tests {
     #[test]
     fn legacy_stream_omits_new_evaluator_payloads_on_replay() {
         let rom = synthetic_nrom();
-        let config = genesis_config(0x5eed_ca22, 1, 4);
+        let mut config = genesis_config(0x5eed_ca22, 1, 4);
+        config.memory_budget_mib = Some(4);
         let mut stream = Vec::new();
-        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("new campaign");
+        let (live, live_checkpoint) = run_smb_campaign_checkpointed(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("new campaign");
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
         let historical = recorded.replacen(
             "\"schedule_policy\":\"deterministic_window_4_per_worker_v1\"",
             "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
             1,
         );
-        let historical_replay = replay_smb_campaign(&rom, historical.as_bytes(), None)
-            .expect("deterministic legacy policy replays");
+        let (historical_replay, historical_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
+                .expect("deterministic legacy policy replays");
+        let (historical_replay_again, historical_checkpoint_again) =
+            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
+                .expect("budgeted legacy policy replays deterministically");
+        assert_eq!(historical_replay, historical_replay_again);
+        assert_eq!(historical_checkpoint, historical_checkpoint_again);
+        // Replacing only the schedule tag changes the stream digest by
+        // design; the budgeted archive and checkpoint must remain identical.
+        assert_eq!(historical_replay.archive, live.archive);
+        assert_eq!(historical_checkpoint, live_checkpoint);
         assert_eq!(
             historical_replay.schedule_identity,
             CAMPAIGN_SCHEDULE_IDENTITY
         );
-        let legacy = recorded.replacen(
+        let legacy = recorded
+            .replacen(
                 "\"schedule_policy\":\"deterministic_window_4_per_worker_v1\",",
                 "",
                 1,
@@ -2426,10 +2444,41 @@ mod tests {
             .iter()
             .find(|entry| entry.id == 0)
             .expect("genesis liveness anchor remains retained");
-        assert!(anchor
-            .selector
-            .as_ref()
-            .is_some_and(|selector| selector.selected > 0 && selector.productive > 0));
+        assert!(
+            anchor
+                .selector
+                .as_ref()
+                .is_some_and(|selector| selector.selected > 0 && selector.productive > 0)
+        );
+    }
+
+    #[test]
+    fn budgeted_single_entry_campaign_reactivates_displaced_anchor() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca32, 1, 128);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.memory_budget_mib = Some(4);
+        config.archive_entry_limit = 1;
+        let mut stream = Vec::new();
+        let (live, checkpoint) = run_smb_campaign_checkpointed(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("single-entry bounded campaign");
+        assert!(live.liveness_anchor_reactivations > 0);
+        let (replay, replay_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, &stream, None, None)
+                .expect("single-entry bounded replay");
+        assert!(live.liveness_anchor_reactivations > 0);
+        let mut live_without_test_evidence = live;
+        let mut replay_without_test_evidence = replay;
+        live_without_test_evidence.liveness_anchor_reactivations = 0;
+        replay_without_test_evidence.liveness_anchor_reactivations = 0;
+        assert_eq!(live_without_test_evidence, replay_without_test_evidence);
+        assert_eq!(checkpoint, replay_checkpoint);
     }
 
     #[test]
