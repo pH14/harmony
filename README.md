@@ -34,22 +34,23 @@ harmony oci run postgres:16-alpine --ram-mib 1024 -- /bin/sh -c "$(cat pg-demo.s
 --- four concurrent writers, 20000 rows ---
   who  | count |    avg_random
 -------+-------+-------------------
- alice |  5000 | 0.504573835338029
+ alice |  5000 | 0.501554706507835
  ...
 --- the server's clock and 'random' draws ---
           server_now           |      lottery
 -------------------------------+-------------------
- 1970-01-01 00:02:52.746498+00 | 28 12 33 31 39 36
+ 1970-01-01 00:02:52.64802+00  | 4 32 33 10 12 48
 
 --- whole-table fingerprint (every timestamp, every random(), every row order) ---
-8caa0163cfaef93d1df63bea25530014
+c947d45be4404b825b145a02db7a95b4
 
-digest      98be55e6850df57475437ca6af2d32025d9207d0cfbaa4e9e245d0dc2902db8b
+digest      7d08ef20919c68543d3a40551dfeffc00f52ac80e022457a881d8c840144fe39
 ```
 
-Run it again: the lottery numbers, every one of the 20,000 random values, the
-server's clock, the writer interleaving, and the final digest come back
-byte-identical. The same script under plain `docker run` produces a different
+Run it again: it finishes in about four seconds (the staged image is cached
+after the first run), and the lottery numbers, every one of the 20,000 random
+values, the server's clock, the writer interleaving, and the final digest come
+back byte-identical. The same script under plain `docker run` produces a different
 fingerprint every time. The digest is a function of the image bytes, the guest
 artifacts, and the seed, and is architecture-scoped (an arm64 run and an x86-64
 run are separate universes).

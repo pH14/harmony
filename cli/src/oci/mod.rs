@@ -9,6 +9,7 @@
 //! ISA-scoped (docs/DETERMINISM.md §4).
 
 mod bundle;
+mod cache;
 mod cpio;
 mod image;
 mod runner;
@@ -78,7 +79,8 @@ struct RunRecord {
     kernel_sha256: String,
     base_initramfs: String,
     base_initramfs_sha256: String,
-    segment_sha256: String,
+    rootfs_segment_sha256: String,
+    control_segment_sha256: String,
     guest_ram_mib: usize,
     steps: u64,
     terminal: String,
@@ -125,12 +127,11 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let kernel = std::fs::read(kernel_path)?;
     let base = std::fs::read(base_path)?;
 
-    let staging = tempfile::tempdir()?;
-    eprintln!("staging {} ...", args.image);
-    let staged = image::stage(&args.image, staging.path())?;
-    let segment = bundle::build_segment(&staged, &args.cmd)?;
+    let (rootfs_segment, config) = rootfs_segment_for(&args.image)?;
+    let control_segment = bundle::build_control_segment(&config, &args.cmd)?;
     let mut initramfs = base.clone();
-    initramfs.extend_from_slice(&segment);
+    initramfs.extend_from_slice(&rootfs_segment);
+    initramfs.extend_from_slice(&control_segment);
 
     let spec = runner::RunSpec {
         kernel: &kernel,
@@ -158,7 +159,8 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         kernel_sha256: hex(&Sha256::digest(&kernel)),
         base_initramfs: base_path.display().to_string(),
         base_initramfs_sha256: hex(&Sha256::digest(&base)),
-        segment_sha256: hex(&Sha256::digest(&segment)),
+        rootfs_segment_sha256: hex(&Sha256::digest(&rootfs_segment)),
+        control_segment_sha256: hex(&Sha256::digest(&control_segment)),
         guest_ram_mib: args.ram_mib,
         steps: outcome.steps,
         terminal: outcome.reason.clone(),
@@ -187,6 +189,34 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Some(0) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     })
+}
+
+/// The cached rootfs segment for `image`, or a fresh stage. Path inputs
+/// (docker-save tarballs, OCI layouts) have no content-addressed ID and are
+/// always staged.
+fn rootfs_segment_for(
+    image: &str,
+) -> Result<(Vec<u8>, image::RuntimeConfig), Box<dyn std::error::Error>> {
+    let key = if std::path::Path::new(image).exists() {
+        None
+    } else {
+        image::ensure_local(image);
+        cache::key(image)
+    };
+    if let Some(key) = &key
+        && let Some((segment, config)) = cache::load(key)
+    {
+        eprintln!("staging {image} (cached segment) ...");
+        return Ok((segment, config));
+    }
+    eprintln!("staging {image} ...");
+    let staging = tempfile::tempdir()?;
+    let staged = image::stage(image, staging.path())?;
+    let segment = bundle::build_rootfs_segment(&staged.rootfs)?;
+    if let Some(key) = &key {
+        cache::store(key, &segment, &staged.config);
+    }
+    Ok((segment, staged.config))
 }
 
 /// The injected init prints `HARMONY_OCI_EXIT rc=<n>` before powering off.

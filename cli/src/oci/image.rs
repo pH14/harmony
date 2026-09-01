@@ -38,7 +38,7 @@ pub enum ImageError {
 }
 
 /// Runtime facts the guest needs to start the container.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 pub struct RuntimeConfig {
     pub entrypoint: Vec<String>,
     pub cmd: Vec<String>,
@@ -50,6 +50,37 @@ pub struct RuntimeConfig {
 pub struct StagedImage {
     pub rootfs: PathBuf,
     pub config: RuntimeConfig,
+}
+
+/// The first installed container tool, used for pull/save and for the
+/// content-addressed image ID the segment cache is keyed by.
+pub fn tool() -> Option<&'static str> {
+    ["docker", "podman"]
+        .into_iter()
+        .find(|tool| Command::new(tool).arg("--version").output().is_ok())
+}
+
+/// The local content-addressed image ID (`sha256:...`), if the image is
+/// present in the tool's store.
+pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
+    let out = Command::new(tool)
+        .args(["image", "inspect", "-f", "{{.Id}}", image])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Pull `image` if no tool has it locally; quiet best-effort (a stage that
+/// still cannot find the image reports the real failure).
+pub fn ensure_local(image: &str) {
+    let Some(tool) = tool() else { return };
+    if local_image_id(tool, image).is_none() {
+        let _ = Command::new(tool).args(["pull", image]).status();
+    }
 }
 
 /// Resolve `image` (path or registry reference) into `stage_dir/rootfs`.
@@ -72,11 +103,7 @@ fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError
         }
         // Pull only when the image is absent so a cached image stages
         // offline and without a registry round trip.
-        let cached = Command::new(tool)
-            .args(["image", "inspect", image])
-            .output()
-            .is_ok_and(|o| o.status.success());
-        if !cached {
+        if local_image_id(tool, image).is_none() {
             let _ = Command::new(tool).args(["pull", image]).status();
         }
         let out = Command::new(tool)

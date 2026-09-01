@@ -10,7 +10,7 @@
 //! fallback gives up.
 
 use super::cpio::{CpioError, Writer};
-use super::image::StagedImage;
+use super::image::RuntimeConfig;
 use serde_json::json;
 use std::process::Command;
 
@@ -28,28 +28,28 @@ pub enum BundleError {
 
 /// The container's argv: the CLI override verbatim when given, else
 /// entrypoint followed by cmd per the OCI image spec.
-fn argv(image: &StagedImage, cmd_override: &[String]) -> Vec<String> {
+fn argv(image: &RuntimeConfig, cmd_override: &[String]) -> Vec<String> {
     if !cmd_override.is_empty() {
         return cmd_override.to_vec();
     }
-    let mut argv = image.config.entrypoint.clone();
-    argv.extend(image.config.cmd.iter().cloned());
+    let mut argv = image.entrypoint.clone();
+    argv.extend(image.cmd.iter().cloned());
     if argv.is_empty() {
         argv.push("/bin/sh".to_string());
     }
     argv
 }
 
-fn env(image: &StagedImage) -> Vec<String> {
-    let mut env = image.config.env.clone();
+fn env(image: &RuntimeConfig) -> Vec<String> {
+    let mut env = image.env.clone();
     if !env.iter().any(|e| e.starts_with("PATH=")) {
         env.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
     }
     env
 }
 
-fn cwd(image: &StagedImage) -> String {
-    match image.config.working_dir.as_deref() {
+fn cwd(image: &RuntimeConfig) -> String {
+    match image.working_dir.as_deref() {
         Some("") | None => "/".to_string(),
         Some(dir) => dir.to_string(),
     }
@@ -57,7 +57,7 @@ fn cwd(image: &StagedImage) -> String {
 
 /// runc spec: single-vCPU guest, allow-all devices, `terminal = false` — the
 /// same shape the proven runc-postgres guest bundle uses.
-fn runc_spec(image: &StagedImage, cmd_override: &[String]) -> serde_json::Value {
+fn runc_spec(image: &RuntimeConfig, cmd_override: &[String]) -> serde_json::Value {
     json!({
         "ociVersion": "1.0.2",
         "process": {
@@ -96,7 +96,7 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// The chroot-fallback start script, written inside the rootfs.
-fn start_script(image: &StagedImage, cmd_override: &[String]) -> String {
+fn start_script(image: &RuntimeConfig, cmd_override: &[String]) -> String {
     let mut script = String::from("#!/bin/sh\n");
     for var in env(image) {
         if let Some((key, value)) = var.split_once('=') {
@@ -207,23 +207,38 @@ poweroff -f
 reboot -f
 "#;
 
-/// Assemble the gzip-compressed initramfs segment for `image`.
-pub fn build_segment(image: &StagedImage, cmd_override: &[String]) -> Result<Vec<u8>, BundleError> {
+/// Assemble the gzip-compressed rootfs initramfs segment: the unpacked image
+/// tree under `harmony-oci/rootfs`. A pure function of the tree, so it is
+/// cacheable by image identity.
+pub fn build_rootfs_segment(rootfs: &std::path::Path) -> Result<Vec<u8>, BundleError> {
+    let mut w = Writer::new();
+    w.dir("harmony-oci", 0o755);
+    w.dir("harmony-oci/rootfs", 0o755);
+    w.tree(rootfs, "harmony-oci/rootfs")?;
+    gzip(&w.finish())
+}
+
+/// Assemble the gzip-compressed control initramfs segment: the injected init,
+/// the runc spec, and the chroot start script. Later cpio entries override
+/// earlier ones, so this segment can add files under the cached rootfs
+/// segment's directories.
+pub fn build_control_segment(
+    config: &RuntimeConfig,
+    cmd_override: &[String],
+) -> Result<Vec<u8>, BundleError> {
     let mut w = Writer::new();
     w.file("harmony-oci-init", 0o755, INIT.as_bytes());
     w.dir("harmony-oci", 0o755);
     w.file(
         "harmony-oci/config.json",
         0o644,
-        &serde_json::to_vec_pretty(&runc_spec(image, cmd_override))?,
+        &serde_json::to_vec_pretty(&runc_spec(config, cmd_override))?,
     );
-    w.dir("harmony-oci/rootfs", 0o755);
     w.file(
         "harmony-oci/rootfs/.harmony-start.sh",
         0o755,
-        start_script(image, cmd_override).as_bytes(),
+        start_script(config, cmd_override).as_bytes(),
     );
-    w.tree(&image.rootfs, "harmony-oci/rootfs")?;
     gzip(&w.finish())
 }
 
