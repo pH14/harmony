@@ -173,19 +173,15 @@ pub fn build_segment(image: &StagedImage, cmd_override: &[String]) -> Result<Vec
 /// `gzip -n` omits name/mtime, keeping the segment bytes a pure function of
 /// its contents.
 fn gzip(data: &[u8]) -> Result<Vec<u8>, BundleError> {
-    use std::io::Write;
-    let mut child = Command::new("gzip")
-        .args(["-n", "-9"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| BundleError::Gzip("no stdin".into()))?
-        .write_all(data)?;
-    let out = child.wait_with_output()?;
+    // Feed gzip from a file, not a stdin pipe: writing a multi-megabyte
+    // segment into a pipe while gzip's stdout pipe is unread deadlocks both
+    // processes at the kernel pipe buffer size.
+    let mut input = tempfile::NamedTempFile::new()?;
+    std::io::Write::write_all(&mut input, data)?;
+    let out = Command::new("gzip")
+        .args(["-n", "-9", "-c"])
+        .arg(input.path())
+        .output()?;
     if out.status.success() {
         Ok(out.stdout)
     } else {

@@ -17,8 +17,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
-vmm-core = { path = "../consonance/vmm-core" }
-vmm-backend = { path = "../consonance/vmm-backend" }
+vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
+vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
 
 [lints]
 workspace = true

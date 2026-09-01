@@ -39,7 +39,7 @@ jobs:
             targets: kernel postgres-image
           - runner: ubuntu-24.04-arm
             isa: arm64
-            targets: arm64-postgres-kernel arm64-postgres-image
+            targets: arm64-kernel arm64-oci-image
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4

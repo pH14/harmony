@@ -52,8 +52,7 @@ pub fn cmdline() -> &'static str {
          nokaslr nosmp maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all \
          rdinit=/harmony-oci-init"
     } else {
-        "console=ttyAMA0 earlycon=pl011,0x09000000 nohlt panic=-1 cgroup_no_v1=all \
-         rdinit=/harmony-oci-init"
+        "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/harmony-oci-init nohlt"
     }
 }
 
@@ -69,7 +68,31 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
         spec.guest_ram_len,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
-    drive(vmm, spec)
+
+    // `hv_vcpu_run` blocks indefinitely on a quiescent guest, so the drive
+    // loop's between-steps budget check cannot fire on its own. A watchdog
+    // thread requests a vCPU exit once the budget expires; the loop then sees
+    // the elapsed time and reports the budget, not the forced-exit error.
+    let exit_handle = vmm.hvf_exit_handle();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog_done = std::sync::Arc::clone(&done);
+    let budget = spec.wall_budget;
+    let watchdog = std::thread::spawn(move || {
+        // Wall clock bounds only how long the host waits; nothing here feeds
+        // guest state.
+        #[allow(clippy::disallowed_methods)]
+        let start = Instant::now();
+        while !watchdog_done.load(std::sync::atomic::Ordering::Acquire) {
+            if start.elapsed() > budget {
+                let _ = exit_handle.request_exit();
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    });
+    let outcome = drive(vmm, spec);
+    done.store(true, std::sync::atomic::Ordering::Release);
+    let _ = watchdog.join();
+    outcome
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -117,11 +140,20 @@ where
             flush_serial(&vmm, &mut printed, spec.stream);
             return Err(RunError::WallBudget(spec.wall_budget.as_secs()));
         }
-        let step = vmm.step().map_err(|e| RunError::Vmm(e.to_string()))?;
+        let step = match vmm.step() {
+            Ok(step) => step,
+            Err(e) => {
+                flush_serial(&vmm, &mut printed, spec.stream);
+                // A forced exit from the budget watchdog surfaces as a step
+                // error; report it as the budget, not a backend fault.
+                if start.elapsed() > spec.wall_budget {
+                    return Err(RunError::WallBudget(spec.wall_budget.as_secs()));
+                }
+                return Err(RunError::Vmm(e.to_string()));
+            }
+        };
         steps += 1;
-        if steps.is_multiple_of(4096) || matches!(step, Step::Terminal(_)) {
-            flush_serial(&vmm, &mut printed, spec.stream);
-        }
+        flush_serial(&vmm, &mut printed, spec.stream);
         match step {
             Step::Continued => {}
             Step::Terminal(reason) => break format!("{reason:?}"),

@@ -37,7 +37,7 @@ pub struct RunArgs {
     pub out: Option<PathBuf>,
 
     /// Guest RAM in MiB.
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 512)]
     pub ram_mib: usize,
 
     /// Wall-clock budget in seconds before the run is abandoned.
@@ -116,7 +116,7 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         .ok_or_else(|| {
             format!(
                 "no container-capable guest initramfs found (looked for {}); build one with \
-                 `make -C consonance/harmony-linux <postgres-image|arm64-postgres-image>`",
+                 `make -C consonance/harmony-linux <arm64-oci-image|docker-image>`",
                 BASE_INITRAMFS.join(", ")
             )
         })?;
