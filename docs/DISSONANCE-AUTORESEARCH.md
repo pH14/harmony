@@ -1,7 +1,5 @@
 # Dissonance autoresearch charter
 
-**Status: governing research and execution plan for Dissonance search work.**
-
 This charter controls work whose purpose is to improve Dissonance's search speed,
 resource efficiency, or generality. It replaces the charter at commit `2d09ea64`;
 ledger entries recorded under that version stay in the ledger. The from-scratch
@@ -38,8 +36,8 @@ time to victory  =  executions to victory  /  executions per second
   determinism bug, never measurement noise.
 - **Executions per second** is a hardware property of a compiled champion. The
   systems lane measures it, and that lane runs only on a dedicated benchmark host
-  with a fixed governor and no co-tenants. Until that host exists the systems lane
-  is parked (section 13); iteration proceeds on the search lane alone.
+  with a fixed governor and no co-tenants. That host is ms02, granted to this
+  program exclusively (sections 5 and 13).
 
 The headline clock starts after the release binary receives the ROM and before it
 constructs its first target. It stops when the search first records an input that a
@@ -84,9 +82,11 @@ stream, identical across hosts:
 - best known input cost to each reached observation cell.
 
 Wall time may be logged as an advisory sidecar. It never enters a search decision,
-a kill rule, a ranking, or a promotion.
+a kill rule, a ranking, or a promotion. It does govern operations: every run leg
+carries a wall-clock deadline projected from its own recorded rate, and a leg that
+exceeds its deadline is killed and recorded as a timeout, never waited on.
 
-### 2.2 Systems performance — parked lane
+### 2.2 Systems performance
 
 Frames per second, jobs per second, snapshot and coordinator costs, worker scaling,
 and heterogeneous-core efficiency are certified per promoted champion binary on the
@@ -194,11 +194,14 @@ candidate and never above micro scale. On a single-host fleet no cross-host
 check of any kind runs.
 
 All ranked runs of a round execute on one primary evaluation host, so candidate
-comparisons never depend on cross-host behavior. The primary host is an operator
-designation recorded in the ledger, never in this charter; changing it requires
-only fresh baselines there. Certification runs, screens, and confirmations run
-at 12 workers or the host's worker sweet spot recorded in the ledger;
-single-worker runs are for diagnosis only.
+comparisons never depend on cross-host behavior. The program has exclusive use of
+the ms02 box: no co-tenant workload runs there while a campaign, screen, or
+benchmark is live, and no campaign waits for or shares the box with another
+program. ms02 also satisfies section 13's dedicated-host requirement. The
+primary-host designation itself stays an operator entry in the ledger; changing
+it requires only fresh baselines there. Certification runs, screens, and
+confirmations run at 12 workers or the host's worker sweet spot recorded in the
+ledger; single-worker runs are for diagnosis only.
 
 An experiment is invalid, not merely unsuccessful, if it changes its evaluator
 after seeing its result, reads a withheld artifact, loses exact replay, or supplies
@@ -304,7 +307,7 @@ every withheld target. Only the action vocabulary, mechanical observations,
 terminal predicates, and resource bounds may differ. Target-specific tuning voids
 the transfer result.
 
-B0 (component costs) and B1 (pipeline scaling) belong to the parked systems lane
+B0 (component costs) and B1 (pipeline scaling) belong to the systems lane
 (section 13).
 
 ## 9. Fixed experiment protocol
@@ -336,6 +339,11 @@ pass rejecting game constants above the observation adapter. A failure is
 be repaired once within a bounded worker budget; a second failure kills the
 candidate.
 
+A run whose purpose is to produce an artifact — a fixture snapshot, a transition
+state, a replay prefix — first passes a static check that the admission and
+retention rules can emit that artifact. Executions spent generating an artifact
+the code cannot record are pure waste.
+
 ### Stage 1 — screen by successive halving
 
 Screening exists to kill cheaply, and its budget is the smallest that
@@ -355,6 +363,11 @@ total screen cost exceeds one working session on the primary host, the director
 cuts screen budget, challenge count, or seed count — recorded in the round
 record, never silently — and never compensates by running fewer candidates.
 
+The reduction script, its vetoes included, is frozen before the first screen and
+dry-run against the champion baseline; a veto the champion itself fails is
+invalid by construction. Survivor counts are bounds, never quotas — a round that
+produces fewer survivors than expected proceeds with the survivors it has.
+
 ### Stage 2 — 100K confirmation
 
 Run only the round's provisional winner (and any survivor within its noise
@@ -362,6 +375,9 @@ band) to 100,000 executions with at least six paired seeds. Confirm only if the
 primary improvement repeats, no challenge regresses catastrophically,
 deterministic memory bytes stay within bound, exact replay passes, and the
 mechanism matches the prediction. Otherwise mark `INCONCLUSIVE` or `REJECT`.
+Exact replay above micro scale is serial and expensive: the round's one
+full-stream replay belongs to the confirmed winner; every other replay check
+runs at micro scale.
 
 ### Stage 3 — chain and simplification
 
@@ -405,6 +421,24 @@ Each round:
    packet. Losing code is discarded; a losing diagnosis that names a mechanism
    feeds the next round's hypothesis list.
 6. **Rebase and repeat.** The next round freezes the new champion.
+
+**Stall rule.** When the worst in-loop column's best progress fails to improve
+for two consecutive rounds, the next round must include the diagnosis lens
+(E08), and at least half its candidates must change a component class untried
+against that column in those rounds — rollout distribution, cell
+representation, archive grouping, retirement, all still generic. A stalled
+column is never answered with a larger budget, more seeds, a rerun, or another
+round of parameter tuning on the same component.
+
+**The loop does not stop.** A blocked experiment, a missing fixture, or a
+protocol contradiction degrades that round: the director records the deviation
+in the round record, proceeds with the work that remains, and queues the
+question for the operator without waiting on the answer. The director pauses
+the program only when the charter itself must change. While runs are in flight
+the director wakes at most every ten minutes and writes one consolidated status
+per wake; heartbeat and watcher text reference ledger rows rather than
+restating derived numbers or rules, so a stale copy can never contradict the
+ledger.
 
 Roles:
 
@@ -469,20 +503,34 @@ Add machinery only when a measured bottleneck or repeated operational error
 requires it. Host attestation machinery — lock choreography, cgroup accounting,
 patched profilers, readiness packets — is out of scope in the search lane.
 
-## 13. Parked systems lane
+## 13. Systems lane
 
-Experiments whose primary metric is wall-clock throughput (the former E01–E04:
-hot-path decomposition, portable-snapshot tax, recording and coordinator tax,
-heterogeneous core scaling) are parked until a dedicated benchmark host exists:
-fixed governor, no co-tenants, homogeneous selected cores or measured per-core
-baselines, controlled thermals.
+Experiments whose primary metric is wall-clock throughput (E01–E04: hot-path
+decomposition, portable-snapshot tax, recording and coordinator tax,
+heterogeneous core scaling) run only on the dedicated benchmark host: fixed
+governor, no co-tenants, homogeneous selected cores or measured per-core
+baselines, controlled thermals. The exclusive ms02 grant satisfies this, so the
+lane is open.
 
-When the host exists, the lane opens by measuring its noise floor first: repeated
-identical runs, warm-up discarded, randomized interleaved ordering, and a minimum
+The lane opens by measuring the host's noise floor first: repeated identical
+runs, warm-up discarded, randomized interleaved ordering, and a minimum
 detectable effect frozen from the measured floor — never chosen a priori. B0 and
 B1 define the lane's measurements. The lane certifies executions-per-second for
 each champion binary; that number converts execution budgets to wall-time claims
-and recalibrates the B4 job budget.
+and recalibrates the B4 job budget. Recalibrating B4 from ms02's certified
+throughput is the lane's first action: the current 110,000-job budget was
+calibrated on the retired backend at roughly 40 jobs per second, and the
+QuickNES backend on `main` runs two orders of magnitude faster.
+
+Champion certification also records two endurance numbers from a soak of at
+least 2,000,000 executions at the host's sweet-spot worker count:
+
+- **throughput endurance:** windowed throughput in the mature phase divided by
+  the early-run median. The merged backend certifies at 0.92–0.95; a champion
+  below 0.90 is a regression veto regardless of search-lane gains.
+- **memory plateau:** peak resident set must plateau within the recorded
+  `--memory-budget-mib` bound, with no swap and no reintroduced synchronous
+  checkpoint rewrites in the admission loop.
 
 ## 14. First batch under this charter
 
@@ -490,8 +538,8 @@ The path to rounds is two steps: E00, then E07. Everything else — boundary
 ratchet, memory bound, energy diagnosis — is a round lens, dispatched as a
 candidate, never a prerequisite. Engineering work for a pending experiment
 proceeds concurrently with any running campaign; only recorded results wait for
-their prerequisites. E-numbers continue the existing ledger; E01–E04 are parked
-per section 13.
+their prerequisites. E-numbers continue the existing ledger; E01–E04 run in the
+systems lane per section 13.
 
 ### E00 — certify deterministic evaluation
 
@@ -505,8 +553,12 @@ workers replays exactly on the primary evaluation host. There is no second-host
 
 Instantiate B2's fixtures (2-2, 7-2, 8-1, 4-2, 4-3, 7-4, 8-4, and the 1-1
 canary). A fixture is certified when its prefix replays once on the primary host
-and its 12-worker baseline screen is recorded. Rounds (section 10) begin when E07
-passes.
+and its 12-worker baseline screen is recorded. A fixture prefix is evaluator
+metadata and may be produced by any evaluator-side means, including chaining
+from an earlier level's exit; a fixture whose generation run comes up empty is
+recorded and backfilled later. Rounds (section 10) begin when the 1-1 canary
+and at least three hard challenges are certified; remaining fixtures join the
+suite at the next evaluator version. A missing fixture never blocks rounds.
 
 ### E09 — selection rounds
 
@@ -522,8 +574,9 @@ every round alongside algorithmic challengers:
   importing SMB; remove the 45-frame probe. Promotes on unchanged default
   streams, exact replay, and a falling complexity score.
 - **memory lens (E06):** byte census at 10K/30K/100K, then one lifetime change
-  at a time (release displaced snapshots, parent-plus-suffix input encoding,
-  minimal live checkpoints). Promotes on at least 30% lower mature
+  at a time. Displaced-snapshot release, parent-relative input encoding, and the
+  recorded memory budget are already the default on `main`; the lens measures
+  from that baseline. Promotes on at least 30% lower mature
   archive-plus-checkpoint bytes with no search-effectiveness regression.
 - **diagnosis lens (E08):** observation-only accounting for selections,
   retentions, new slots, new cells, and cost improvements by generic archive
