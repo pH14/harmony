@@ -34,17 +34,17 @@ harmony oci run postgres:16-alpine --ram-mib 1024 -- /bin/sh -c "$(cat pg-demo.s
 --- four concurrent writers, 20000 rows ---
   who  | count |    avg_random
 -------+-------+-------------------
- alice |  5000 | 0.499175922134935
+ alice |  5000 | 0.504573835338029
  ...
 --- the server's clock and 'random' draws ---
           server_now           |      lottery
 -------------------------------+-------------------
- 1970-01-01 00:02:52.819654+00 | 24 23 15 26 31 25
+ 1970-01-01 00:02:52.746498+00 | 28 12 33 31 39 36
 
 --- whole-table fingerprint (every timestamp, every random(), every row order) ---
-55d8d366ab3f229ca5ec4a01886110fe
+8caa0163cfaef93d1df63bea25530014
 
-digest      6047f6d5dbcf383dd4460843f93b3b9c375385cd56dc889abc20169ca7a0b449
+digest      98be55e6850df57475437ca6af2d32025d9207d0cfbaa4e9e245d0dc2902db8b
 ```
 
 Run it again: the lottery numbers, every one of the 20,000 random values, the

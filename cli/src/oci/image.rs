@@ -70,9 +70,15 @@ fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError
         if Command::new(tool).arg("--version").output().is_err() {
             continue;
         }
-        // Pull first so `save` sees the image; ignore pull failure for
-        // images that are already local.
-        let _ = Command::new(tool).args(["pull", image]).status();
+        // Pull only when the image is absent so a cached image stages
+        // offline and without a registry round trip.
+        let cached = Command::new(tool)
+            .args(["image", "inspect", image])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !cached {
+            let _ = Command::new(tool).args(["pull", image]).status();
+        }
         let out = Command::new(tool)
             .args(["image", "save", "-o"])
             .arg(&tarball)

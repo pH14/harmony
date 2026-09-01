@@ -228,7 +228,9 @@ pub fn build_segment(image: &StagedImage, cmd_override: &[String]) -> Result<Vec
 }
 
 /// `gzip -n` omits name/mtime, keeping the segment bytes a pure function of
-/// its contents.
+/// its contents. Level 1: the segment is decompressed once by the kernel and
+/// thrown away, and level 9 costs ~8x the wall time of the whole guest run
+/// on a container-sized rootfs for ~8% smaller output.
 fn gzip(data: &[u8]) -> Result<Vec<u8>, BundleError> {
     // Feed gzip from a file, not a stdin pipe: writing a multi-megabyte
     // segment into a pipe while gzip's stdout pipe is unread deadlocks both
@@ -236,7 +238,7 @@ fn gzip(data: &[u8]) -> Result<Vec<u8>, BundleError> {
     let mut input = tempfile::NamedTempFile::new()?;
     std::io::Write::write_all(&mut input, data)?;
     let out = Command::new("gzip")
-        .args(["-n", "-9", "-c"])
+        .args(["-n", "-1", "-c"])
         .arg(input.path())
         .output()?;
     if out.status.success() {
