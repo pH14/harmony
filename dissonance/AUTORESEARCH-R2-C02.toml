@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 2
+candidate = "R2-C02"
+hypothesis = "Four age strata inside the incumbent energy-frontier-cheapest selector can retain the 8-4 gain without Round-1 progress and memory regressions."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "63d162463e1c5b216a8d44e040ffabbb9a50a420"
+diff_sha256 = "93a60c08ef638bdf2de6fc7d43af7532232fe89d68cfa119591699a3a4e0ae85"
+patch_sha256 = "d90f539757663637cdd6f6998170108834cd81c927df85b632ff086997135218"
+binary_sha256 = "d72930b44204e701062399f051d670a929180bdac54d0bfaec954edb94cadfd1"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "REJECT"
+failed_stage = "canary"
+stage_1a_executions = 0
+selector = "room_cell_uniform_128_energy_frontier_cheapest_age4:3,6,12,2"
+
+[stage_0]
+fmt = "PASS"
+tests = "PASS (107)"
+clippy = "PASS"
+boundary_review = "PASS with replay-validation and test-strength suggestions"
+micro_replay = "PASS"
+micro_stream_sha256 = "095a3ec1c14136de6b20ada5fe7617f9b5707be8a87f498d5d5a81feb11cdd52"
+review_note = "Age-stratum annotations are serialized but not bounds/membership-validated on replay, and the cheapest-hit test would also pass uniform within-stratum draws."
+
+[canary]
+executions_completed = 15000
+victories = 0
+final_progress = 164
+resident_bytes = 404000257
+resident_snapshot_bytes = 390131983
+history_memory_bytes = 13863800
+live_entries = 28221
+stream_sha256 = "49b3c63ceaf8c7bba77cf335170aa1a2cfd6d0987ebd320b1579f0a658d890bc"
+
+[disposition]
+diagnosis = "Holding the incumbent outer group policy fixed is not sufficient: equal four-way age strata weaken within-cell cost concentration enough to lose the 1-1 completion canary and expand the live snapshot population."

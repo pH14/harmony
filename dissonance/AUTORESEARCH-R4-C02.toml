@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 4
+candidate = "R4-C02"
+hypothesis = "A 16-bucket selection progress band can reduce sparse-group fragmentation without changing retention slots."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "617073ddaa2f23cc49a840fde3649d102e78c04c"
+diff_sha256 = "ae159b9a235def0ba57db6406eabc4639ece72c92831478fe889f2cc5b3ff39a"
+patch_sha256 = "eadf470408bc82731fbd123d09d19effad8b38374c8cb8bb6e10fd3097697e22"
+binary_sha256 = "efec24f9aeacf0410d5b034b55993c36cec007f014809f09103f0fc3c2970e21"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "REJECT"
+failed_stage = "canary"
+stage_1a_executions = 0
+
+[stage_0]
+fmt = "PASS"
+tests = "PASS (7 machine, 106 searcher; 4 targeted on Linux)"
+clippy = "PASS"
+release_build = "PASS"
+micro_replay = "PASS"
+micro_stream_sha256 = "05bdc530675bb9cba7b86a92bf5497bfe3f2a2112e4bf302e13bf9c118463815"
+micro_archive_sha256 = "a0b1dbe431b90e1dbb62f9a5e999f0d1421866b8963101f6a35dccb79457d55b"
+micro_report_sha256 = "129064be658428dfc553969bdb800dc670a9d8319cd16c8dde576b161e59c57c"
+
+[canary]
+executions_completed = 15000
+victories = 0
+resident_bytes = 397407053
+resident_snapshot_bytes = 383821637
+history_memory_bytes = 13580986
+live_entries = 27690
+stream_sha256 = "cbeda59b0dd9a6b370a64561ee2f7feb4592f5ac71b02d765753a503f4c83628"
+
+[disposition]
+diagnosis = "Coarsening only the depth-2 selection band changes the archive walk enough to lose every 1-1 completion. Sparse progress-group fragmentation is not a safe isolated lever at this scale."

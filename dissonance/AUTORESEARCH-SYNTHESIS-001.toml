@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+synthesis = 1
+status = "COMPLETE"
+rounds = [1, 2]
+champion = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+evaluator = "smb-v0001-094a15da-batch3"
+scope = "super-mario-bros"
+worst_column_improved = false
+stall_rule_active = true
+
+[[evidence]]
+claim = "Replacing the incumbent selector wholesale is not supported."
+support = "R1-C02 improved 8-4 Stage-1a AUC from 18100 to 27500, but regressed the worst column by 12000 AUC and expanded deterministic resident bytes from 1.5-4.4M to 63-121M. R2-C01 preserved a dispatch-safe clock but failed the 1-1 canary with zero completions."
+
+[[evidence]]
+claim = "Equal age strata inside the incumbent selector are too diffuse at this budget."
+support = "R2-C02 retained the incumbent outer energy, frontier, cheapest, and exhaustion rules, yet failed the unchanged 15000-execution 1-1 canary and retained 390131983 snapshot bytes."
+
+[[evidence]]
+claim = "The memory claim needs a mature whole-tree census before another lifetime change."
+support = "R1-C03 demonstrated a synthetic 400-to-200-byte release only; the import ancestry path and 10K/30K/100K archive-plus-checkpoint totals remain unmeasured."
+
+deleted_mechanisms = [
+  "admission-clock two-mode phase",
+  "top-level age-only selection",
+  "equal four-way within-cell age strata",
+  "synthetic-only displaced-snapshot lifetime claim",
+]
+remaining_bottleneck = "Retain the incumbent's 1-1 completion competence and low-memory cost concentration while changing the generic reach distribution enough to improve the weakest hard challenge."
+
+next_round_hypotheses = [
+  "A longer generic suffix distribution can improve temporal reach without changing parent selection.",
+  "Earlier generic exhaustion retirement can bound snapshot growth and redirect attempts from barren parents without changing archive keys.",
+  "Existing accounting can distinguish reach starvation from parent-retirement starvation without adding policy.",
+]

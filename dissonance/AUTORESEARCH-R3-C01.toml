@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 3
+candidate = "R3-C01"
+hypothesis = "The existing generic one-to-six suffix shape can improve temporal reach without changing the incumbent selector."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "NO-CODE"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "INVALID"
+failed_stage = "preflight"
+efficacy_executions = 0
+
+[preflight]
+declared_configuration = "--suffix one_to_six"
+champion_configuration = "one_to_six"
+evidence = "Both fresh E00 reports record suffix_policy one_to_six."
+
+[disposition]
+diagnosis = "The candidate was configuration-identical to the frozen champion. The frozen record is preserved and no efficacy budget was spent; the rollout-distribution class remains untried."

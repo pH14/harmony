@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 2
+candidate = "R2-C03"
+lens = "E08 diagnosis"
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "NO CODE CHANGE"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "PROMOTE"
+policy_concepts_added = 0
+
+[accounting_sufficiency]
+verdict = "Existing deterministic reports and streams are sufficient; no new observation code is needed."
+fields = [
+  "parent_scheduler",
+  "selector uniform/cell/productive/skipped/reset/concentration/retirement accounting",
+  "per-entry key, input, selected, and productive counters",
+  "execution-indexed progress_curve",
+  "snapshot/history/draw-state/resident bytes, evictions, and compactions",
+  "stream parent IDs, selector annotations, frames, admissions, and result digests",
+]
+
+[[hypothesis]]
+statement = "Round-1 recency regressions came from replacing incumbent energy/frontier/exhaustion behavior with an age-only top-level policy."
+falsifier = "The candidate stream and accounting show equivalent frontier weighting, retirement/reset behavior, and productive-parent distribution."
+
+[[hypothesis]]
+statement = "Round-1 memory growth is snapshot-dominated rather than history- or draw-state-dominated."
+falsifier = "Paired deterministic memory components show history or draw state explains most of the increase."
+
+[[hypothesis]]
+statement = "The 8-4 gain is geometry-specific and appears as a different key/progress distribution and productive-selection rate under the same policy."
+falsifier = "Grouped entry counters and progress curves are comparable across 8-4, 2-2, and 7-2."
