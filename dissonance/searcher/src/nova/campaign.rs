@@ -101,7 +101,7 @@ enum NovaBackend {
 #[doc(hidden)]
 pub enum NovaCampaignTarget {
     /// Direct pinned QuickNES target.
-    QuickNes(NovaTarget),
+    QuickNes(Box<NovaTarget>),
     /// QuickNES running inside a Consonance Linux guest.
     #[cfg(all(
         feature = "consonance",
@@ -701,6 +701,7 @@ impl Game for NovaGame {
                 &self.core_sha256,
                 self.level,
             )
+            .map(Box::new)
             .map(NovaCampaignTarget::QuickNes)
             .map_err(|error| error.to_string()),
             #[cfg(all(
