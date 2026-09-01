@@ -44,7 +44,8 @@ pub struct RunArgs {
     #[arg(long, default_value_t = 900)]
     pub timeout: u64,
 
-    /// Print the guest serial console while the run executes.
+    /// Stream the full serial console (kernel log included) instead of just
+    /// the container's output.
     #[arg(long)]
     pub console: bool,
 
@@ -138,7 +139,11 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         guest_ram_len: args.ram_mib << 20,
         seed: args.seed,
         wall_budget: Duration::from_secs(args.timeout),
-        stream: args.console,
+        stream: if args.console {
+            runner::StreamMode::Full
+        } else {
+            runner::StreamMode::Container
+        },
     };
     eprintln!("booting ({} MiB RAM, seed {}) ...", args.ram_mib, args.seed);
     let outcome = runner::execute(&spec)?;

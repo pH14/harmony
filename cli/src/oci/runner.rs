@@ -43,8 +43,77 @@ pub struct RunSpec<'a> {
     pub guest_ram_len: usize,
     pub seed: u64,
     pub wall_budget: Duration,
-    /// Stream serial bytes to stdout as they arrive.
-    pub stream: bool,
+    /// What to stream to stdout while the guest runs.
+    pub stream: StreamMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum StreamMode {
+    /// The container's own output: everything between the init's start and
+    /// exit markers, with the marker lines themselves elided.
+    Container,
+    /// The raw serial byte stream from power-on, kernel log included.
+    Full,
+}
+
+/// Incremental filter from the raw serial stream to what `StreamMode`
+/// shows. Holds partial lines until their newline arrives so marker lines
+/// can be elided from a stream that appears in arbitrary-sized chunks.
+struct StreamFilter {
+    mode: StreamMode,
+    consumed: usize,
+    line: Vec<u8>,
+    started: bool,
+    finished: bool,
+}
+
+const MARKER_START: &[u8] = b"HARMONY_OCI: start";
+const MARKER_PREFIX: &[u8] = b"HARMONY_OCI";
+
+impl StreamFilter {
+    fn new(mode: StreamMode) -> Self {
+        StreamFilter {
+            mode,
+            consumed: 0,
+            line: Vec::new(),
+            started: false,
+            finished: false,
+        }
+    }
+
+    fn push(&mut self, serial: &[u8]) {
+        let fresh = &serial[self.consumed..];
+        self.consumed = serial.len();
+        if self.mode == StreamMode::Full {
+            let _ = std::io::stdout().write_all(fresh);
+            let _ = std::io::stdout().flush();
+            return;
+        }
+        for &byte in fresh {
+            if self.finished {
+                return;
+            }
+            self.line.push(byte);
+            if byte != b'\n' {
+                continue;
+            }
+            let line = std::mem::take(&mut self.line);
+            if !self.started {
+                if line.windows(MARKER_START.len()).any(|w| w == MARKER_START) {
+                    self.started = true;
+                }
+                continue;
+            }
+            if line.starts_with(MARKER_PREFIX) {
+                if line.starts_with(b"HARMONY_OCI_EXIT") {
+                    self.finished = true;
+                }
+                continue;
+            }
+            let _ = std::io::stdout().write_all(&line);
+            let _ = std::io::stdout().flush();
+        }
+    }
 }
 
 /// The per-ISA kernel cmdline: the same determinism line the live gates use,
@@ -143,10 +212,10 @@ where
     #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
     let mut steps: u64 = 0;
-    let mut printed = 0usize;
+    let mut filter = StreamFilter::new(spec.stream);
     let reason = loop {
         if start.elapsed() > spec.wall_budget {
-            flush_serial(&vmm, &mut printed, spec.stream);
+            filter.push(vmm.serial_output());
             return Err(RunError::WallBudget {
                 budget_s: spec.wall_budget.as_secs(),
                 steps,
@@ -155,7 +224,7 @@ where
         let step = match vmm.step() {
             Ok(step) => step,
             Err(e) => {
-                flush_serial(&vmm, &mut printed, spec.stream);
+                filter.push(vmm.serial_output());
                 // A forced exit from the budget watchdog surfaces as a step
                 // error; report it as the budget, not a backend fault.
                 if start.elapsed() > spec.wall_budget {
@@ -168,39 +237,17 @@ where
             }
         };
         steps += 1;
-        flush_serial(&vmm, &mut printed, spec.stream);
+        filter.push(vmm.serial_output());
         match step {
             Step::Continued => {}
             Step::Terminal(reason) => break format!("{reason:?}"),
             Step::SdkStop => break "SdkStop".to_string(),
         }
     };
-    flush_serial(&vmm, &mut printed, spec.stream);
+    filter.push(vmm.serial_output());
     Ok(Outcome {
         serial: vmm.serial_output().to_vec(),
         steps,
         reason,
     })
-}
-
-#[cfg(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64"),
-))]
-fn flush_serial<B: vmm_backend::Backend>(
-    vmm: &vmm_core::vmm::Vmm<B>,
-    printed: &mut usize,
-    stream: bool,
-) where
-    B::A: vmm_core::vendor::Vendor,
-{
-    if !stream {
-        return;
-    }
-    let serial = vmm.serial_output();
-    if serial.len() > *printed {
-        let _ = std::io::stdout().write_all(&serial[*printed..]);
-        let _ = std::io::stdout().flush();
-        *printed = serial.len();
-    }
 }

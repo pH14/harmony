@@ -149,6 +149,7 @@ case $rc in
     rc=$?
     ;;
 *)
+    cat /tmp/.runc-stderr
     echo HARMONY_OCI: via runc
     ;;
 esac
@@ -176,7 +177,7 @@ mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
 {
     echo HARMONY_OCI: start
     cd /harmony-oci
-    runc run --bundle /harmony-oci harmony-c1
+    runc run --bundle /harmony-oci harmony-c1 2>/tmp/.runc-stderr
     rc=$?
     case $rc in
     127)
@@ -196,6 +197,7 @@ mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
         rc=$?
         ;;
     *)
+        cat /tmp/.runc-stderr
         echo HARMONY_OCI: via runc
         ;;
     esac
