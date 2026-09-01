@@ -161,3 +161,29 @@ fn print_text(r: &Report) {
     }
     println!("ready       {}", if r.ready { "yes" } else { "no" });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::GuestArtifacts;
+
+    #[test]
+    fn scan_finds_kernel_and_filters_initramfs_names() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "bzImage",
+            "initramfs-oci.cpio.gz",
+            "initramfs-notes.txt",
+            "other.cpio.gz",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let found = GuestArtifacts::scan(dir.path());
+        assert_eq!(found.kernel, Some(dir.path().join("bzImage")));
+        assert_eq!(found.initramfs, [dir.path().join("initramfs-oci.cpio.gz")]);
+
+        // Image-postgres outranks bzImage (the arm64 container kernel).
+        std::fs::write(dir.path().join("Image-postgres"), b"x").unwrap();
+        let found = GuestArtifacts::scan(dir.path());
+        assert_eq!(found.kernel, Some(dir.path().join("Image-postgres")));
+    }
+}

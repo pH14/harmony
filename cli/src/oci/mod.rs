@@ -203,8 +203,9 @@ fn rootfs_segment_for(
         image::ensure_local(image);
         cache::key(image)
     };
-    if let Some(key) = &key
-        && let Some((segment, config)) = cache::load(key)
+    let cache_dir = cache::dir();
+    if let (Some(key), Some(dir)) = (&key, &cache_dir)
+        && let Some((segment, config)) = cache::load(dir, key)
     {
         eprintln!("staging {image} (cached segment) ...");
         return Ok((segment, config));
@@ -213,8 +214,8 @@ fn rootfs_segment_for(
     let staging = tempfile::tempdir()?;
     let staged = image::stage(image, staging.path())?;
     let segment = bundle::build_rootfs_segment(&staged.rootfs)?;
-    if let Some(key) = &key {
-        cache::store(key, &segment, &staged.config);
+    if let (Some(key), Some(dir)) = (&key, &cache_dir) {
+        cache::store(dir, key, &segment, &staged.config);
     }
     Ok((segment, staged.config))
 }
@@ -239,5 +240,10 @@ mod tests {
         let serial = b"noise\nHARMONY_OCI_EXIT rc=3\ntail\nHARMONY_OCI_EXIT rc=0\n";
         assert_eq!(super::parse_container_rc(serial), Some(0));
         assert_eq!(super::parse_container_rc(b"no marker"), None);
+    }
+
+    #[test]
+    fn hex_is_lowercase_zero_padded() {
+        assert_eq!(super::hex(&[0x00, 0x0f, 0xab]), "000fab");
     }
 }

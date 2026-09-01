@@ -19,6 +19,7 @@ pub enum RunError {
     )))]
     #[error("this host is not wired yet ({0}); supported: macOS/arm64 (HVF), Linux/x86-64 (KVM)")]
     UnsupportedHost(&'static str),
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[error("--seed is only wired on Linux/x86-64 today; use --seed 0 on macOS")]
     SeedNotWired,
     #[error("vmm: {0}")]
@@ -81,12 +82,12 @@ impl StreamFilter {
         }
     }
 
-    fn push(&mut self, serial: &[u8]) {
+    fn push(&mut self, serial: &[u8], out: &mut impl Write) {
         let fresh = &serial[self.consumed..];
         self.consumed = serial.len();
         if self.mode == StreamMode::Full {
-            let _ = std::io::stdout().write_all(fresh);
-            let _ = std::io::stdout().flush();
+            let _ = out.write_all(fresh);
+            let _ = out.flush();
             return;
         }
         for &byte in fresh {
@@ -110,8 +111,8 @@ impl StreamFilter {
                 }
                 continue;
             }
-            let _ = std::io::stdout().write_all(&line);
-            let _ = std::io::stdout().flush();
+            let _ = out.write_all(&line);
+            let _ = out.flush();
         }
     }
 }
@@ -213,9 +214,10 @@ where
     let start = Instant::now();
     let mut steps: u64 = 0;
     let mut filter = StreamFilter::new(spec.stream);
+    let mut stdout = std::io::stdout();
     let reason = loop {
         if start.elapsed() > spec.wall_budget {
-            filter.push(vmm.serial_output());
+            filter.push(vmm.serial_output(), &mut stdout);
             return Err(RunError::WallBudget {
                 budget_s: spec.wall_budget.as_secs(),
                 steps,
@@ -224,7 +226,7 @@ where
         let step = match vmm.step() {
             Ok(step) => step,
             Err(e) => {
-                filter.push(vmm.serial_output());
+                filter.push(vmm.serial_output(), &mut stdout);
                 // A forced exit from the budget watchdog surfaces as a step
                 // error; report it as the budget, not a backend fault.
                 if start.elapsed() > spec.wall_budget {
@@ -237,17 +239,80 @@ where
             }
         };
         steps += 1;
-        filter.push(vmm.serial_output());
+        filter.push(vmm.serial_output(), &mut stdout);
         match step {
             Step::Continued => {}
             Step::Terminal(reason) => break format!("{reason:?}"),
             Step::SdkStop => break "SdkStop".to_string(),
         }
     };
-    filter.push(vmm.serial_output());
+    filter.push(vmm.serial_output(), &mut stdout);
     Ok(Outcome {
         serial: vmm.serial_output().to_vec(),
         steps,
         reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StreamFilter, StreamMode, cmdline};
+
+    fn filtered(mode: StreamMode, chunks: &[&[u8]]) -> Vec<u8> {
+        let mut filter = StreamFilter::new(mode);
+        let mut out = Vec::new();
+        let mut serial = Vec::new();
+        for chunk in chunks {
+            serial.extend_from_slice(chunk);
+            filter.push(&serial, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn full_mode_passes_raw_bytes_incrementally() {
+        let out = filtered(
+            StreamMode::Full,
+            &[b"kernel noise\nHARMONY", b"_OCI: start\nhi\n"],
+        );
+        assert_eq!(out, b"kernel noise\nHARMONY_OCI: start\nhi\n");
+    }
+
+    #[test]
+    fn container_mode_shows_only_between_markers() {
+        let out = filtered(
+            StreamMode::Container,
+            &[
+                b"[    0.0] kernel boot chatter, longer than the marker\n[    0.1] HARMONY_OCI: start\nhello\n",
+                b"HARMONY_OCI: via chroot\nworld\nHARMONY_OCI_EXIT rc=0\nreboot noise\n",
+            ],
+        );
+        assert_eq!(out, b"hello\nworld\n");
+    }
+
+    /// Marker lines split across push chunks must still be recognized, and
+    /// re-pushing a longer buffer must not re-emit consumed bytes.
+    #[test]
+    fn container_mode_handles_split_lines_without_duplication() {
+        let out = filtered(
+            StreamMode::Container,
+            &[
+                b"HARMONY_OCI: sta",
+                b"rt\nab",
+                b"c\nHARMONY_OCI_EX",
+                b"IT rc=1\nlate\n",
+            ],
+        );
+        assert_eq!(out, b"abc\n");
+    }
+
+    #[test]
+    fn cmdline_selects_the_injected_init() {
+        assert!(cmdline().contains("rdinit=/harmony-oci-init"));
+        if cfg!(target_arch = "x86_64") {
+            assert!(cmdline().contains("console=ttyS0"));
+        } else {
+            assert!(cmdline().contains("console=ttyAMA0"));
+        }
+    }
 }

@@ -264,3 +264,95 @@ fn gzip(data: &[u8]) -> Result<Vec<u8>, BundleError> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> RuntimeConfig {
+        RuntimeConfig {
+            entrypoint: vec!["docker-entrypoint.sh".into()],
+            cmd: vec!["postgres".into()],
+            env: vec!["PGDATA=/var/lib/postgresql/data".into()],
+            working_dir: Some("/app".into()),
+        }
+    }
+
+    #[test]
+    fn argv_is_entrypoint_then_cmd_unless_overridden() {
+        assert_eq!(
+            argv(&config(), &[]),
+            vec!["docker-entrypoint.sh".to_string(), "postgres".into()]
+        );
+        assert_eq!(
+            argv(&config(), &["echo".to_string(), "hi".into()]),
+            vec!["echo".to_string(), "hi".into()]
+        );
+        assert_eq!(
+            argv(&RuntimeConfig::default(), &[]),
+            vec!["/bin/sh".to_string()]
+        );
+    }
+
+    #[test]
+    fn env_appends_default_path_only_when_absent() {
+        let with_path = RuntimeConfig {
+            env: vec!["PATH=/custom".into()],
+            ..RuntimeConfig::default()
+        };
+        assert_eq!(env(&with_path), vec!["PATH=/custom".to_string()]);
+        let got = env(&config());
+        assert_eq!(got[0], "PGDATA=/var/lib/postgresql/data");
+        assert!(got[1].starts_with("PATH=/usr/local/sbin:"));
+    }
+
+    #[test]
+    fn cwd_defaults_to_root() {
+        assert_eq!(cwd(&RuntimeConfig::default()), "/");
+        let empty = RuntimeConfig {
+            working_dir: Some(String::new()),
+            ..RuntimeConfig::default()
+        };
+        assert_eq!(cwd(&empty), "/");
+        assert_eq!(cwd(&config()), "/app");
+    }
+
+    #[test]
+    fn shell_quote_survives_embedded_quotes() {
+        assert_eq!(shell_quote("plain"), "'plain'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn runc_spec_carries_process_facts() {
+        let spec = runc_spec(&config(), &[]);
+        assert_eq!(spec["process"]["cwd"], "/app");
+        assert_eq!(spec["process"]["args"][0], "docker-entrypoint.sh");
+        assert_eq!(spec["root"]["path"], "rootfs");
+    }
+
+    #[test]
+    fn start_script_exports_env_and_execs_argv() {
+        let script = start_script(&config(), &[]);
+        assert!(script.starts_with("#!/bin/sh\n"));
+        assert!(script.contains("export PGDATA='/var/lib/postgresql/data'\n"));
+        assert!(script.contains("cd '/app' || exit 125\n"));
+        assert!(script.contains("exec 'docker-entrypoint.sh' 'postgres'\n"));
+    }
+
+    /// Both segment builders must produce real gzip members (the kernel
+    /// decompresses concatenated members), stably.
+    #[test]
+    fn segments_are_gzip_members_and_reproducible() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hello"), b"payload").unwrap();
+        let rootfs = build_rootfs_segment(dir.path()).unwrap();
+        let control = build_control_segment(&config(), &[]).unwrap();
+        for segment in [&rootfs, &control] {
+            assert_eq!(&segment[..2], &[0x1f, 0x8b]);
+            assert!(segment.len() > 64);
+        }
+        assert_eq!(rootfs, build_rootfs_segment(dir.path()).unwrap());
+        assert_eq!(control, build_control_segment(&config(), &[]).unwrap());
+    }
+}

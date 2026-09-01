@@ -189,3 +189,49 @@ fn classify(isa: Isa, os: &str, nested: bool) -> MatrixCell {
         _ => MatrixCell::Unsupported,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Hypervisor, Isa, MatrixCell, classify};
+
+    #[test]
+    fn isa_display_names() {
+        assert_eq!(Isa::X86_64.to_string(), "x86-64");
+        assert_eq!(Isa::Arm64.to_string(), "arm64");
+    }
+
+    #[test]
+    fn guest_dir_names() {
+        assert_eq!(Isa::X86_64.guest_dir_name(), "x86_64");
+        assert_eq!(Isa::Arm64.guest_dir_name(), "arm64");
+        assert_eq!(Isa::Other.guest_dir_name(), "unsupported");
+    }
+
+    #[test]
+    fn hypervisor_availability() {
+        assert!(Hypervisor::Kvm.available());
+        assert!(Hypervisor::Hvf.available());
+        assert!(!Hypervisor::Unavailable("x".into()).available());
+        assert!(!Hypervisor::Unsupported("x".into()).available());
+    }
+
+    /// Every cell of the DETERMINISM.md §4 matrix, including the fallthrough.
+    #[test]
+    fn matrix_cells() {
+        let cell = |isa, os, nested| format!("{:?}", classify(isa, os, nested));
+        assert_eq!(cell(Isa::X86_64, "linux", true), "Proven");
+        assert_eq!(cell(Isa::Arm64, "linux", false), "Proven");
+        assert_eq!(cell(Isa::X86_64, "linux", false), "Expected");
+        assert_eq!(cell(Isa::Arm64, "linux", true), "Expected");
+        assert_eq!(cell(Isa::Arm64, "macos", false), "Proven");
+        assert_eq!(cell(Isa::Arm64, "macos", true), "Expected");
+        assert_eq!(cell(Isa::X86_64, "macos", false), "Unsupported");
+        assert_eq!(cell(Isa::Other, "linux", false), "Unsupported");
+    }
+
+    #[test]
+    fn matrix_cell_is_serializable() {
+        let s = serde_json::to_string(&MatrixCell::Proven).unwrap();
+        assert_eq!(s, "\"proven\"");
+    }
+}

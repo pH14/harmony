@@ -24,10 +24,13 @@ fetch_one() {
         return
     fi
     echo "fetching $url"
+    # Every download is sha256-verified below, so retrying on transient
+    # transport errors (kernel.org intermittently resets HTTP/2 streams) is
+    # safe and keeps CI guest builds off the flake.
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$file.part" "$url"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$file.part" "$url"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$file.part" "$url"
+        wget -q --tries=5 --waitretry=5 -O "$file.part" "$url"
     else
         echo "FAIL: need curl or wget to fetch $url" >&2
         exit 1

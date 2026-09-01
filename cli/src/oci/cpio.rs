@@ -138,4 +138,89 @@ mod tests {
         assert!(bytes.len().is_multiple_of(4));
         assert!(bytes.windows(10).any(|win| win == b"TRAILER!!!"));
     }
+
+    /// One parsed newc entry: (name, ino, mode, filesize, data), plus the
+    /// offset just past the entry.
+    fn parse_entry(bytes: &[u8], at: usize) -> (String, u32, u32, usize, Vec<u8>, usize) {
+        let field = |i: usize| {
+            let s = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
+            u32::from_str_radix(s, 16).unwrap()
+        };
+        assert_eq!(&bytes[at..at + 6], b"070701");
+        let (ino, mode, filesize, namesize) = (field(0), field(1), field(6), field(11));
+        let name_at = at + 110;
+        let name = std::str::from_utf8(&bytes[name_at..name_at + namesize as usize - 1])
+            .unwrap()
+            .to_string();
+        assert_eq!(bytes[name_at + namesize as usize - 1], 0);
+        let data_at = (name_at + namesize as usize).next_multiple_of(4);
+        let data = bytes[data_at..data_at + filesize as usize].to_vec();
+        let next = (data_at + filesize as usize).next_multiple_of(4);
+        (name, ino, mode, filesize as usize, data, next)
+    }
+
+    /// The header fields are what the kernel's newc parser reads: exact type
+    /// bits, permission masking, NUL-counted namesize, sequential inodes.
+    #[test]
+    fn header_fields_parse_back_exactly() {
+        let mut w = Writer::new();
+        // High bits beyond 0o7777 must be masked off (tree() passes the raw
+        // st_mode, which carries the file-type bits).
+        w.dir("d", 0o040755);
+        w.file("d/f", 0o100640, b"12345");
+        w.symlink("d/l", b"f");
+        let bytes = w.finish();
+
+        let (name, ino, mode, filesize, _, next) = parse_entry(&bytes, 0);
+        assert_eq!((name.as_str(), ino, mode, filesize), ("d", 1, 0o040755, 0));
+        let (name, ino, mode, filesize, data, next) = parse_entry(&bytes, next);
+        assert_eq!(
+            (name.as_str(), ino, mode, filesize),
+            ("d/f", 2, 0o100640, 5)
+        );
+        assert_eq!(data, b"12345");
+        let (name, ino, mode, filesize, data, next) = parse_entry(&bytes, next);
+        assert_eq!(
+            (name.as_str(), ino, mode, filesize),
+            ("d/l", 3, 0o120777, 1)
+        );
+        assert_eq!(data, b"f");
+        let (name, _, _, _, _, next) = parse_entry(&bytes, next);
+        assert_eq!(name, "TRAILER!!!");
+        assert_eq!(next, bytes.len());
+    }
+
+    /// tree() walks a real directory in sorted order, following the same
+    /// entry encodings; fifos and sockets are skipped, not errors.
+    #[test]
+    fn tree_archives_sorted_recursive_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.txt"), b"bee").unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        std::fs::write(dir.path().join("a/inner"), b"in").unwrap();
+        std::os::unix::fs::symlink("b.txt", dir.path().join("c")).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(dir.path().join("fifo"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let _listener = std::os::unix::net::UnixListener::bind(dir.path().join("sock")).unwrap();
+        let mut w = Writer::new();
+        w.tree(dir.path(), "root").unwrap();
+        let bytes = w.finish();
+
+        let mut names = Vec::new();
+        let mut at = 0;
+        loop {
+            let (name, _, _, _, _, next) = parse_entry(&bytes, at);
+            if name == "TRAILER!!!" {
+                break;
+            }
+            names.push(name);
+            at = next;
+        }
+        assert_eq!(names, ["root/a", "root/a/inner", "root/b.txt", "root/c"]);
+    }
 }

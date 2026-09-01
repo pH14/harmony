@@ -293,3 +293,139 @@ fn apply_layer(layer: &Path, rootfs: &Path) -> Result<(), ImageError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_config_parses_the_config_section() {
+        let blob = br#"{"config":{"Entrypoint":["/e"],"Cmd":["run"],
+            "Env":["A=1"],"WorkingDir":"/w"},"rootfs":{}}"#;
+        let config = parse_runtime_config(blob).unwrap();
+        assert_eq!(config.entrypoint, ["/e"]);
+        assert_eq!(config.cmd, ["run"]);
+        assert_eq!(config.env, ["A=1"]);
+        assert_eq!(config.working_dir.as_deref(), Some("/w"));
+
+        let empty = parse_runtime_config(b"{}").unwrap();
+        assert!(empty.entrypoint.is_empty() && empty.cmd.is_empty());
+    }
+
+    #[test]
+    fn blob_path_splits_the_digest() {
+        assert_eq!(
+            blob_path(Path::new("/l"), "sha256:abc"),
+            Path::new("/l/blobs/sha256/abc")
+        );
+    }
+
+    #[test]
+    fn docker_save_manifest_lists_layers_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            br#"[{"Config":"c.json","Layers":["l1.tar","l2.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("c.json"), b"{\"config\":{}}").unwrap();
+        let (layers, config) = docker_save_layers(dir.path()).unwrap();
+        assert_eq!(
+            layers,
+            [dir.path().join("l1.tar"), dir.path().join("l2.tar")]
+        );
+        assert_eq!(config, b"{\"config\":{}}");
+    }
+
+    #[test]
+    fn oci_layout_resolves_blobs_through_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path().join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            dir.path().join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[{"digest":"sha256:l"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), b"cfg").unwrap();
+        let (layers, config) = oci_layout_layers(dir.path()).unwrap();
+        assert_eq!(layers, [blobs.join("l")]);
+        assert_eq!(config, b"cfg");
+    }
+
+    fn tar_layer(dir: &Path, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+        let stage = dir.join(format!("{name}-stage"));
+        std::fs::create_dir_all(&stage).unwrap();
+        let mut args: Vec<String> = Vec::new();
+        for (path, data) in files {
+            let file = stage.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, data).unwrap();
+            args.push(path.to_string());
+        }
+        let tarball = dir.join(format!("{name}.tar"));
+        let status = Command::new("tar")
+            .arg("-cf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&stage)
+            .args(&args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        tarball
+    }
+
+    #[test]
+    fn untar_extracts_into_dest() {
+        let dir = tempfile::tempdir().unwrap();
+        let tarball = tar_layer(dir.path(), "t", &[("hello.txt", b"hi")]);
+        let dest = dir.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        untar(&tarball, &dest, &[]).unwrap();
+        assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"hi");
+        assert!(untar(Path::new("/nonexistent.tar"), &dest, &[]).is_err());
+    }
+
+    #[test]
+    fn apply_layer_honors_whiteouts() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+
+        let base = tar_layer(
+            dir.path(),
+            "base",
+            &[
+                ("keep.txt", b"keep"),
+                ("gone.txt", b"gone"),
+                ("d/old", b"old"),
+            ],
+        );
+        apply_layer(&base, &rootfs).unwrap();
+        assert!(rootfs.join("keep.txt").is_file());
+        assert!(rootfs.join("d/old").is_file());
+
+        // Upper layer: delete gone.txt, opaque-clear d/, add d/new.
+        let upper = tar_layer(
+            dir.path(),
+            "upper",
+            &[
+                (".wh.gone.txt", b""),
+                ("d/.wh..wh..opq", b""),
+                ("d/new", b"new"),
+            ],
+        );
+        apply_layer(&upper, &rootfs).unwrap();
+        assert!(rootfs.join("keep.txt").is_file());
+        assert!(!rootfs.join("gone.txt").exists());
+        assert!(!rootfs.join("d/old").exists());
+        assert_eq!(std::fs::read(rootfs.join("d/new")).unwrap(), b"new");
+        assert!(!rootfs.join("d/.wh..wh..opq").exists());
+    }
+}
