@@ -65,7 +65,8 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
 const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
      alone; the recorded stream is this campaign's identity; two live runs at one seed may \
      differ, and each replays exactly";
-const CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
+const CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_4_per_worker_v1";
+const LEGACY_CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const LEGACY_CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
 const ORIGIN_GENESIS: &str = "genesis";
@@ -77,6 +78,9 @@ const ORIGIN_ARCHIVE: &str = "archive";
 /// coordinator-owned.
 const EXECUTOR_PREFETCH_JOBS: usize = 8;
 
+/// Reservations held ahead of ordered admission per logical worker.
+const ADMISSION_RESERVATIONS_PER_WORKER: usize = 4;
+
 /// Number of reservations that may be ahead of the ordered admission cursor.
 ///
 /// This is the actual sliding-window depth, not a speculative batch size. The
@@ -85,7 +89,19 @@ const EXECUTOR_PREFETCH_JOBS: usize = 8;
 /// of reservation `k` observes archive state no older than admission
 /// `k - pipeline_depth`, while the physical executors retain their prefetch.
 const fn admission_window_depth(workers: usize) -> usize {
-    workers.saturating_mul(EXECUTOR_PREFETCH_JOBS)
+    workers.saturating_mul(ADMISSION_RESERVATIONS_PER_WORKER)
+}
+
+fn schedule_policy_is_supported(policy: Option<&str>) -> bool {
+    policy.is_none()
+        || matches!(
+            policy,
+            Some(CAMPAIGN_SCHEDULE_POLICY | LEGACY_CAMPAIGN_SCHEDULE_POLICY)
+        )
+}
+
+fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
+    matches!(policy, None | Some(LEGACY_CAMPAIGN_SCHEDULE_POLICY))
 }
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
@@ -2321,7 +2337,8 @@ where
                 let max_actions = core.max_actions;
                 let mut consecutive_skips = 0_u64;
                 loop {
-                    let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
+                    let (parent_index, selector) =
+                        core.archive.select_parent(rand, max_actions)?;
                     let parent_id = core
                         .archive
                         .stable_id(parent_index)
@@ -2940,6 +2957,8 @@ where
     let mut required_draw_versions = BTreeSet::new();
     let mut recorded_snapshot_uses = BTreeMap::<u64, u32>::new();
     let mut recorded_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut replay_job_parents = Vec::<u64>::new();
+    let mut replay_job_metadata = Vec::<Vec<u64>>::new();
     for line in &record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         let before = match record {
@@ -2948,6 +2967,8 @@ where
                 *uses = uses
                     .checked_add(1)
                     .ok_or("recorded parent use count overflow")?;
+                replay_job_parents.push(job.parent_id);
+                let mut metadata_ids = vec![job.parent_id];
                 let metadata = recorded_metadata_uses.entry(job.parent_id).or_default();
                 *metadata = metadata
                     .checked_add(1)
@@ -2959,12 +2980,14 @@ where
                 }) = job.splice.as_ref()
                 {
                     for id in [*donor_id, *leaf_id] {
+                        metadata_ids.push(id);
                         let metadata = recorded_metadata_uses.entry(id).or_default();
                         *metadata = metadata
                             .checked_add(1)
                             .ok_or("recorded splice metadata use count overflow")?;
                     }
                 }
+                replay_job_metadata.push(metadata_ids);
                 job.draw_table_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_table_before,
@@ -2976,11 +2999,8 @@ where
     if header.format != game.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
-    if header
-        .schedule_policy
-        .as_deref()
-        .is_some_and(|policy| policy != CAMPAIGN_SCHEDULE_POLICY)
-    {
+    let legacy_schedule = schedule_policy_is_legacy(header.schedule_policy.as_deref());
+    if !schedule_policy_is_supported(header.schedule_policy.as_deref()) {
         return Err("campaign stream schedule policy is not recognized".into());
     }
     if !progress_policy_is_supported(header.progress_policy.as_deref()) {
@@ -3086,14 +3106,6 @@ where
     core.record_progress = header.progress_policy.is_some();
     core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
     core.archive.selector_policy = replay_selector.clone();
-    // Live window slots own their selected snapshot even if admission replaces
-    // the archive entry before that job completes. Serial replay has no such
-    // in-flight owner, so retain replaced snapshots until every recorded job
-    // has consumed its parent, then release the same inactive set as live.
-    core.archive
-        .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
-    core.archive
-        .preserve_recorded_metadata_uses(recorded_metadata_uses);
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3123,6 +3135,49 @@ where
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
 
+    let replay_window_depth = admission_window_depth(usize::try_from(header.workers)?);
+    let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut replay_job_snapshots = BTreeMap::<usize, Arc<G::Snapshot>>::new();
+    if legacy_schedule {
+        core.archive
+            .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
+        core.archive
+            .preserve_recorded_metadata_uses(recorded_metadata_uses);
+    } else {
+        // Replay models selected-but-not-yet-admitted jobs with explicit Arc
+        // holders below; leave the legacy future-use map empty for this path.
+        core.archive
+            .preserve_recorded_snapshot_uses(BTreeMap::new());
+        core.archive.preserve_inactive_snapshots(false);
+        for (job_slot, parent_id) in replay_job_parents
+            .iter()
+            .take(replay_window_depth)
+            .enumerate()
+        {
+            let parent_index = core
+                .archive
+                .index_of_id(*parent_id)
+                .ok_or("initial replay job names a parent the archive does not hold")?;
+            let snapshot = core
+                .archive
+                .entries
+                .get(parent_index)
+                .and_then(|entry| entry.snapshot.as_ref())
+                .ok_or("recorded job names an entry without a live snapshot")?
+                .clone();
+            replay_job_snapshots.insert(job_slot, snapshot);
+            for metadata_id in &replay_job_metadata[job_slot] {
+                let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                *uses = uses
+                    .checked_add(1)
+                    .ok_or("recorded metadata use count overflow")?;
+            }
+        }
+        core.archive
+            .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+    }
+
+    let mut replay_job_index = 0_usize;
     for line in record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         match record {
@@ -3175,6 +3230,8 @@ where
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
+                let replay_job_slot = replay_job_index;
+                replay_job_index = replay_job_index.saturating_add(1);
                 let parent_index = core
                     .archive
                     .index_of_id(job.parent_id)
@@ -3186,16 +3243,24 @@ where
                         .get(parent_index)
                         .ok_or("recorded job names a parent the archive does not hold")?;
                     (
-                        entry
-                            .snapshot
-                            .as_ref()
-                            .ok_or("recorded job names an entry without a live snapshot")?
-                            .clone(),
+                        if legacy_schedule {
+                            entry
+                                .snapshot
+                                .as_ref()
+                                .ok_or("recorded job names an entry without a live snapshot")?
+                                .clone()
+                        } else {
+                            replay_job_snapshots
+                                .remove(&replay_job_slot)
+                                .ok_or("recorded job has no replayed in-flight snapshot")?
+                        },
                         entry.input_len,
                         entry.milestones,
                     )
                 };
-                core.archive.consume_recorded_snapshot_use(job.parent_id);
+                if legacy_schedule {
+                    core.archive.consume_recorded_snapshot_use(job.parent_id);
+                }
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice(
@@ -3249,6 +3314,7 @@ where
                     )
                     .into());
                 }
+                drop(snapshot);
                 let (sequence, decisions) = core.admit_job(game, job.parent_id, result)?;
                 if sequence != job.sequence {
                     return Err(format!(
@@ -3298,6 +3364,41 @@ where
                     core.archive.unpin_metadata(leaf_id);
                 }
                 core.archive.compact_history_if_needed()?;
+                if !legacy_schedule {
+                    for metadata_id in &replay_job_metadata[replay_job_slot] {
+                        if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
+                            *uses = uses.saturating_sub(1);
+                            if *uses == 0 {
+                                replay_metadata_uses.remove(metadata_id);
+                            }
+                        }
+                    }
+                    if let Some(parent_id) = replay_job_parents
+                        .get(replay_job_slot.saturating_add(replay_window_depth))
+                    {
+                        let next_slot = replay_job_slot.saturating_add(replay_window_depth);
+                        let parent_index = core
+                            .archive
+                            .index_of_id(*parent_id)
+                            .ok_or("next replay job names a parent the archive does not hold")?;
+                        let snapshot = core
+                            .archive
+                            .entries
+                            .get(parent_index)
+                            .and_then(|entry| entry.snapshot.as_ref())
+                            .ok_or("recorded job names an entry without a live snapshot")?
+                            .clone();
+                        replay_job_snapshots.insert(next_slot, snapshot);
+                        for metadata_id in &replay_job_metadata[next_slot] {
+                            let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                            *uses = uses
+                                .checked_add(1)
+                                .ok_or("recorded metadata use count overflow")?;
+                        }
+                    }
+                    core.archive
+                        .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+                }
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {
                     return Err("recorded job names an unknown worker".into());
@@ -3343,7 +3444,8 @@ mod tests {
         archive_entry_limit_is_valid, compact_progress_curve, draw_state_memory_is_within_reserve,
         finish_record, is_zero_usize, live_coordinator_profile, postcard_sha256, profile_elapsed,
         profile_now, progress_policy_is_supported, record_compaction_elapsed, replay_splice,
-        retained_archive_indexes, uses_bounded_progress_curve, worker_queue_is_idle,
+        retained_archive_indexes, schedule_policy_is_legacy, schedule_policy_is_supported,
+        uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3703,7 +3805,7 @@ mod tests {
     fn sliding_window_depth_is_the_only_selection_staleness() {
         let workers = 3;
         let depth = admission_window_depth(workers);
-        assert_eq!(depth, workers * 8);
+        assert_eq!(depth, workers * super::ADMISSION_RESERVATIONS_PER_WORKER);
 
         // Model the coordinator's event order: fill the pipeline, then admit
         // one result and select one replacement. No reservation can be more
@@ -3737,6 +3839,25 @@ mod tests {
     fn sliding_window_depth_saturates_without_overflow() {
         assert_eq!(admission_window_depth(0), 0);
         assert_eq!(admission_window_depth(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn schedule_policy_dispatch_accepts_current_and_legacy_only() {
+        assert!(schedule_policy_is_supported(None));
+        assert!(schedule_policy_is_supported(Some(
+            super::CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_is_supported(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
+        assert!(!schedule_policy_is_legacy(Some(
+            super::CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_is_legacy(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_is_legacy(None));
     }
 
     #[test]

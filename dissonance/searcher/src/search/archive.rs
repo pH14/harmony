@@ -1759,6 +1759,41 @@ where
         }
     }
 
+    /// Reopen the exact action-limit boundary when every shorter active entry
+    /// has been consumed. These entries can execute an empty suffix, but they
+    /// keep the deterministic selector alive until a new retained descendant
+    /// or a terminal campaign stop appears.
+    fn reactivate_action_limit_entries(&mut self, max_actions: usize) -> bool {
+        if !self.active_ids.is_empty() {
+            return false;
+        }
+        let ids = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(id, entry)| {
+                (self.active.get(id).copied().unwrap_or(false)
+                    && self.snapshot_selectable.get(id).copied().unwrap_or(false)
+                    && entry.input_len == max_actions)
+                    .then_some(id)
+            })
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return false;
+        }
+        self.active_ids = ActiveIds::from_ids(ids);
+        self.classes.clear();
+        self.live_children.iter_mut().for_each(BTreeMap::clear);
+        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
+        self.active_skip_groups.clear();
+        self.live_skip_groups.clear();
+        let active = self.active_ids.ids().collect::<Vec<_>>();
+        for id in active {
+            self.insert_active_cell_member(id);
+        }
+        true
+    }
+
     /// Add a fresh entry to the selector index. Ids only grow, so pushes
     /// keep every list ascending.
     fn index_insert(&mut self, id: usize) {
@@ -2305,7 +2340,7 @@ where
         if self.frontier_cap != Some(max_actions) {
             self.rebuild_selector_index(max_actions);
         }
-        if self.active_ids.is_empty() {
+        if self.active_ids.is_empty() && !self.reactivate_action_limit_entries(max_actions) {
             return Err("archive has no expandable entry".into());
         }
         let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
@@ -3299,6 +3334,19 @@ mod tests {
         assert_eq!(archive.resident_snapshot_count(), 0);
         assert_eq!(archive.snapshot_evictions(), 2);
         assert!(!archive.release_oldest_selectable(true));
+    }
+
+    #[test]
+    fn selector_reactivates_selectable_action_limit_entries() {
+        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+        archive.rebuild_selector_index(1);
+        assert!(archive.active_ids.is_empty());
+
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
+        let (selected, _) = archive
+            .select_parent(&mut rand, 1)
+            .expect("action-limit entries keep selection live");
+        assert_eq!(archive.entries[selected].input_len, 1);
     }
 
     fn archive_with_prunable_history() -> Archive<u8, FlatKey<3>, (), ()> {

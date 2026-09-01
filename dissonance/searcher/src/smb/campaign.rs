@@ -2143,7 +2143,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"")
+                .contains("\"schedule_policy\":\"deterministic_window_4_per_worker_v1\"")
         );
     }
 
@@ -2157,7 +2157,7 @@ mod tests {
         let legacy = String::from_utf8(stream)
             .expect("stream utf-8")
             .replacen(
-                "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\",",
+                "\"schedule_policy\":\"deterministic_window_4_per_worker_v1\",",
                 "",
                 1,
             )
@@ -2379,10 +2379,12 @@ mod tests {
     }
 
     #[test]
-    fn budgeted_campaign_keeps_admitting_and_replays_exactly() {
+    fn budgeted_64_entry_campaign_reactivates_at_action_limit_and_replays_exactly() {
         let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca31, 4, 2_048);
+        let mut config = genesis_config(0x5eed_ca31, 4, 8_192);
         config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        // This bounded setup drives the active population to the action limit
+        // while the 64-entry budget continues admitting replacements.
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
         let mut stream = Vec::new();
@@ -2394,7 +2396,7 @@ mod tests {
             None,
         )
         .expect("budgeted live campaign");
-        assert_eq!(live.executions_completed, 2_048);
+        assert_eq!(live.executions_completed, 8_192);
         assert_eq!(live.memory_budget_mib, Some(4));
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
@@ -2621,7 +2623,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_down_ten", "frozen_nine_mask"),
-            ("deterministic_window_64_per_worker_v1", "unknown_order_v9"),
+            ("deterministic_window_4_per_worker_v1", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(
