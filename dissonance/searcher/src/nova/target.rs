@@ -6,7 +6,7 @@
 //! controller actions, opaque keys, observations, and snapshots; every Nova
 //! address and interpretation stays here.
 
-use std::{error::Error, io::Write, path::Path, sync::Arc};
+use std::{error::Error, io::Write, mem::size_of, path::Path, sync::Arc};
 
 use machine::{
     Machine, MachineError, SnapId, StopConditions, nes,
@@ -258,6 +258,25 @@ impl NovaSnapshot {
     #[must_use]
     pub fn state(&self) -> NovaMechanicalState {
         self.observation.decoded
+    }
+
+    pub(crate) fn resident_memory_charge(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(self.emulator_state.0.len)
+            .saturating_add(
+                self.emulator_state
+                    .0
+                    .chunks
+                    .len()
+                    .saturating_mul(size_of::<Arc<[u8; STATE_CHUNK_SIZE]>>()),
+            )
+            .saturating_add(
+                self.observation
+                    .changed_indices
+                    .len()
+                    .saturating_mul(size_of::<u16>()),
+            )
+            .saturating_add(self.observation.log_line.len())
     }
 }
 

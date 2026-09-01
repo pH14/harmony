@@ -128,6 +128,8 @@ mod real {
             host: "github-actions-consonance".to_owned(),
             wall_budget: Some(std::time::Duration::from_secs(args.wall_seconds)),
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
+            memory_budget_mib: Some(512),
+            materialize_final_artifacts: true,
             retention: RetentionPolicy::AdmitAlive,
             selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
                 entry: 3,

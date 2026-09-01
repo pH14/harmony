@@ -247,6 +247,10 @@ pub struct NovaCampaignConfig {
     pub wall_budget: Option<std::time::Duration>,
     /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
+    /// Deterministic logical-memory budget for live search structures.
+    pub memory_budget_mib: Option<usize>,
+    /// Live-only: materialize full archive inputs and snapshots at completion.
+    pub materialize_final_artifacts: bool,
     /// Admission policy.
     pub retention: RetentionPolicy,
     /// Generic parent selector.
@@ -269,6 +273,8 @@ impl NovaCampaignConfig {
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             archive_entry_limit: self.archive_entry_limit,
+            memory_budget_mib: self.memory_budget_mib,
+            materialize_final_artifacts: self.materialize_final_artifacts,
             run: NovaCampaignRun,
             suffix: self.suffix,
             mixture: self.mixture,
@@ -659,6 +665,31 @@ impl Game for NovaGame {
         chord_time
     }
 
+    fn snapshot_memory_charge(snapshot: &NovaCampaignSnapshot) -> usize {
+        match snapshot {
+            NovaCampaignSnapshot::QuickNes(snapshot) => snapshot.resident_memory_charge(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            NovaCampaignSnapshot::Consonance(snapshot) => snapshot.resident_memory_charge(),
+        }
+    }
+
+    fn draw_state_memory_reserve_bytes(
+        &self,
+        _run: &NovaCampaignRun,
+        _max_actions: usize,
+    ) -> usize {
+        0
+    }
+
+    fn draw_state_memory_bytes(&self, _state: &()) -> usize {
+        0
+    }
+
     fn result_sha256(&self, result: &NovaCampaignJobResult) -> Result<String, Box<dyn Error>> {
         postcard_result_sha256(result)
     }
@@ -860,6 +891,10 @@ impl Game for NovaGame {
         Ok(None)
     }
 
+    fn retained_inputs_need_full(&self, _run: &NovaCampaignRun) -> bool {
+        false
+    }
+
     fn remember_draw_version(
         &self,
         _state: &mut (),
@@ -928,29 +963,42 @@ impl Game for NovaGame {
         }
     }
 
-    fn merge_action_evidence(
+    fn merge_action_evidence<F>(
         &self,
         evidence: &mut NovaCampaignEvidence,
         action: &NovaCampaignActionResult,
         sequence: u64,
-        input: &NovaInput,
-    ) {
+        input: F,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<NovaInput, Box<dyn Error>>,
+    {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            action.milestones,
-            sequence,
-            input,
-        );
-        if let Some(key) = action_champion_key(&action.observations)
-            && evidence.champion_key.is_none_or(|current| key > current)
-        {
-            evidence.champion_key = Some(key);
-            evidence.champion_milestones = action.milestones;
-            evidence.champion_input = input.clone();
+        let first_input_needed = (action.milestones.cleared > 0
+            && evidence.first_inputs.first_clear.is_none())
+            || (action.milestones.collectibles > 0
+                && evidence.first_inputs.first_collectible.is_none())
+            || (action.milestones.acquired_ability
+                && evidence.first_inputs.first_ability.is_none());
+        let champion = action_champion_key(&action.observations)
+            .filter(|key| evidence.champion_key.is_none_or(|current| *key > current));
+        if first_input_needed || champion.is_some() {
+            let input = input()?;
+            update_first_inputs(
+                &mut evidence.first_reached,
+                &mut evidence.first_inputs,
+                action.milestones,
+                sequence,
+                &input,
+            );
+            if let Some(key) = champion {
+                evidence.champion_key = Some(key);
+                evidence.champion_milestones = action.milestones;
+                evidence.champion_input = input;
+            }
         }
+        Ok(())
     }
 
     fn source_entries<'a>(

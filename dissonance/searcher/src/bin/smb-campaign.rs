@@ -92,7 +92,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     // Retire thresholds are measured search statistics (99th-percentile
     // picks-before-first-keeper per class) and should be re-measured for a
     // new game rather than treated as universal constants.
-    let chord = chord_policy_from_identifier("chord_draw_recorded_52:all,0,128,3,1,64,1024")?;
+    let chord = chord_policy_from_identifier("chord_draw_recorded_53:all,0,128,3,1,64,1024")?;
     let mut retention = RetentionPolicy::AdmitAlive;
     let mut selector = SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
         entry: 3,
@@ -103,6 +103,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut suffix = SuffixShape::default();
     let mut mixture = DrawMixture::EnergySplice { scale: 6 };
     let mut checkpoint_path = None;
+    let mut write_final_artifacts = true;
+    let mut archive_entry_limit = MAX_ARCHIVE_ENTRIES;
+    let mut memory_budget_mib = None;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -151,6 +154,22 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
             checkpoint_path = Some(PathBuf::from(
                 args.next().ok_or("missing --checkpoint value")?,
             ));
+        } else if flag == "--no-final-artifacts" {
+            write_final_artifacts = false;
+        } else if flag == "--archive-entry-limit" {
+            archive_entry_limit = usize::try_from(parse_u64(
+                &args
+                    .next()
+                    .ok_or("missing --archive-entry-limit value")?
+                    .to_string_lossy(),
+            )?)?;
+        } else if flag == "--memory-budget-mib" {
+            memory_budget_mib = Some(usize::try_from(parse_u64(
+                &args
+                    .next()
+                    .ok_or("missing --memory-budget-mib value")?
+                    .to_string_lossy(),
+            )?)?);
         } else if flag == "--terminal" {
             terminal = SmbTerminalPredicate::from_identifier(
                 &args
@@ -183,7 +202,9 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         action_limit,
         host,
         wall_budget,
-        archive_entry_limit: MAX_ARCHIVE_ENTRIES,
+        archive_entry_limit,
+        memory_budget_mib,
+        materialize_final_artifacts: write_final_artifacts,
         chord,
         retention,
         selector,
@@ -204,13 +225,15 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let wall_seconds = started.elapsed().as_secs_f64();
     drop(stream);
 
-    write_report_files(
-        &output,
-        &report,
-        "archive-live.json",
-        "campaign-report.json",
-    )?;
-    write_snapshot_file(&output.join("snapshots-live.bin"), &checkpoint)?;
+    if write_final_artifacts {
+        write_report_files(
+            &output,
+            &report,
+            "archive-live.json",
+            "campaign-report.json",
+        )?;
+        write_snapshot_file(&output.join("snapshots-live.bin"), &checkpoint)?;
+    }
     let throughput = LiveThroughput {
         wall_seconds,
         executions_completed: report.executions_completed,
@@ -434,7 +457,7 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "execution_budget": report.execution_budget,
         "milestones": report.archive.milestones,
         "progress_watermark": report.archive.progress_watermark,
-        "entries": report.archive.entries.len(),
+        "entries": report.archive.retained,
         "retained": report.archive.retained,
         "rejected": report.archive.rejected,
         "deaths": report.archive.deaths,

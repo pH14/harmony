@@ -121,6 +121,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         host: "github-actions".to_owned(),
         wall_budget: None,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
+        memory_budget_mib: None,
+        materialize_final_artifacts: true,
         retention: RetentionPolicy::AdmitAlive,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
             entry: 3,

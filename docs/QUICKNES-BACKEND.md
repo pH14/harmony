@@ -9,7 +9,7 @@ source-built from its pinned upstream revision, as documented in
 `dissonance/NOVA.md`. Both campaigns load a user-supplied QuickNES core
 directly through the libretro C ABI. SMB streams use
 `smb-quicknes-campaign-stream-v2`, its checkpoints use
-`smb-quicknes-snapshot-checkpoint-v2`, and evaluator-private fixtures use the
+`smb-quicknes-snapshot-checkpoint-v3`, and evaluator-private fixtures use the
 `dissonance-fixture-*-v2` formats. Historical measurements from the retired
 target remain experiment records, not QuickNES execution counts or fixtures.
 
@@ -43,6 +43,34 @@ HARMONY_QUICKNES_CORE=/path/to/quicknes_libretro.so \
 HARMONY_SMB_ROM=/path/to/smb.nes \
 cargo run --release -p searcher --bin smb-bench
 ```
+
+For a bounded campaign, give the search archive an explicit deterministic
+budget. The append-only stream remains authoritative; the in-memory archive is
+a bounded breeding population and rebuildable acceleration structure. Reaching
+the budget evicts the oldest selectable snapshots and compacts dead prefix
+history without freezing admission:
+
+```sh
+HARMONY_QUICKNES_CORE=/path/to/quicknes_libretro.so \
+HARMONY_SMB_ROM=/path/to/smb.nes \
+cargo run --release -p searcher --bin smb-campaign -- \
+  run genesis 6672613057367113729 4 2000000 512 laptop results/smb \
+  --memory-budget-mib 2048 --no-final-artifacts
+```
+
+`--memory-budget-mib` is recorded in the stream, so competition and eviction
+replay deterministically. History compaction also rebuilds remembered novelty
+cells and pooled barren counters from the selectable breeding population, so
+those ordered maps cannot grow with lifetime execution count. The progress
+sidecar breaks the logical charge into snapshot, entry-metadata, shared-input,
+novelty, barren-counter, and empirical draw-state bytes for budget audits. The
+report-only progress curve also coarsens deterministically at 1,024 samples, so
+it does not grow with campaign lifetime. `--no-final-artifacts`
+suppresses only the final whole-population report and snapshot files; it still
+writes the replayable stream, live progress sidecar, and throughput summary.
+Use it for long runs to avoid multi-gigabyte completion writes. Checkpoints
+from the previous snapshot layout are rejected by the v3 format rather than
+interpreted as current state.
 
 QuickNES's libretro wrapper has global emulator and callback state. The adapter
 therefore copies the exact shared object to a unique temporary pathname for

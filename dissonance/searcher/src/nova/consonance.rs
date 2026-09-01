@@ -9,7 +9,9 @@
 //! the guest-published progress markers. The generic search coordinator never
 //! learns Nova rules or memory addresses.
 
-use std::{cell::RefCell, collections::BTreeMap, error::Error, path::Path, sync::Arc};
+use std::{
+    cell::RefCell, collections::BTreeMap, error::Error, mem::size_of, path::Path, sync::Arc,
+};
 
 use control_proto::{
     Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
@@ -66,6 +68,21 @@ pub struct ConsonanceNovaSnapshot {
     observation: NovaObservations,
     work_ram: Vec<u8>,
     failed: bool,
+}
+
+impl ConsonanceNovaSnapshot {
+    pub(crate) fn resident_memory_charge(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(self.actions.len().saturating_mul(size_of::<ButtonChord>()))
+            .saturating_add(
+                self.observation
+                    .changed_indices
+                    .len()
+                    .saturating_mul(size_of::<u16>()),
+            )
+            .saturating_add(self.observation.log_line.len())
+            .saturating_add(self.work_ram.len())
+    }
 }
 
 #[derive(Debug)]
