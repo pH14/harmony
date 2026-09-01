@@ -39,6 +39,7 @@ struct Args {
     executions: u64,
     workers: u32,
     action_limit: usize,
+    wall_seconds: u64,
 }
 
 impl Args {
@@ -52,6 +53,7 @@ impl Args {
         let mut executions = 10_000_u64;
         let mut workers = 1_u32;
         let mut action_limit = 512_usize;
+        let mut wall_seconds = 14_400_u64;
         let mut args = env::args_os().skip(1);
         while let Some(flag) = args.next() {
             let value = args
@@ -67,6 +69,7 @@ impl Args {
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
                 "--action-limit" => action_limit = parse_number("action-limit", value)?,
+                "--wall-seconds" => wall_seconds = parse_number("wall-seconds", value)?,
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -80,6 +83,7 @@ impl Args {
             executions,
             workers,
             action_limit,
+            wall_seconds,
         })
     }
 }
@@ -109,7 +113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         execution_budget: args.executions,
         action_limit: args.action_limit,
         host: "github-actions-consonance".to_owned(),
-        wall_budget: None,
+        wall_budget: Some(std::time::Duration::from_secs(args.wall_seconds)),
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         retention: RetentionPolicy::AdmitAlive,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
