@@ -19,7 +19,7 @@ use searcher::{
             NovaCampaignConfig, NovaCampaignOrigin, NovaGame, replay_nova_campaign_checkpointed,
             run_nova_campaign_checkpointed,
         },
-        target::{NovaInput, NovaMechanicalState, NovaVideoMetadata},
+        target::{NovaInput, NovaLevel, NovaMechanicalState, NovaVideoMetadata},
     },
     search::{
         archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
@@ -39,6 +39,7 @@ struct Args {
     executions: u64,
     workers: u32,
     action_limit: usize,
+    level: NovaLevel,
     marketing_soak: bool,
 }
 
@@ -57,6 +58,7 @@ impl Args {
         let mut executions = 4_000_u64;
         let mut workers = 2_u32;
         let mut action_limit = 512_usize;
+        let mut level_number = 1_u8;
         let mut marketing_soak = false;
         let mut args = env::args_os().skip(1);
         while let Some(flag) = args.next() {
@@ -75,6 +77,7 @@ impl Args {
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
                 "--action-limit" => action_limit = parse_number("action-limit", value)?,
+                "--level" => level_number = parse_number("level", value)?,
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -86,6 +89,7 @@ impl Args {
             executions,
             workers,
             action_limit,
+            level: NovaLevel::from_number(level_number)?,
             marketing_soak,
         })
     }
@@ -108,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
-    let game = NovaGame::new(&rom, &args.core, &core_sha256);
+    let game = NovaGame::new_at_level(&rom, &args.core, &core_sha256, args.level);
     let config = NovaCampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,
@@ -160,6 +164,7 @@ fn run_marketing_soak(
     let campaign = json!({
         "mode": "marketing_soak",
         "verification": "champion_endpoint_only",
+        "level": game.level().number(),
         "campaign_seed": live.campaign_seed,
         "workers": live.workers,
         "execution_budget": live.execution_budget,
@@ -258,6 +263,7 @@ fn run_qualified_campaign(
     }
     let verdict = json!({
         "replay_verified": replay_verified,
+        "level": game.level().number(),
         "stream_sha256": live.stream_sha256,
         "report_sha256": sha256(&report_bytes),
         "checkpoint_sha256": sha256(&checkpoint_bytes),

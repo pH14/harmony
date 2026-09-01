@@ -21,7 +21,8 @@ use crate::{
             merge_milestones, merge_progress_watermark, milestone_key, milestones, sample_chord,
         },
         target::{
-            ButtonChord, NovaInput, NovaObservations, NovaSnapshot, NovaTarget, preference_tuple,
+            ButtonChord, NovaInput, NovaLevel, NovaObservations, NovaSnapshot, NovaTarget,
+            preference_tuple,
         },
     },
     search::{
@@ -67,6 +68,7 @@ pub struct NovaGame {
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
+    level: NovaLevel,
     identity: String,
 }
 
@@ -74,16 +76,25 @@ impl NovaGame {
     /// Build a game context over a pinned QuickNES core.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+        Self::new_at_level(rom, core_path, core_sha256, NovaLevel::default())
+    }
+
+    /// Build a game context whose sealed genesis starts at one independently
+    /// selected Nova campaign level.
+    #[must_use]
+    pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: NovaLevel) -> Self {
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:{};result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
+            level.number(),
         );
         Self {
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
+            level,
             identity,
         }
     }
@@ -102,6 +113,12 @@ impl NovaGame {
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
         &self.identity
+    }
+
+    /// One-based Nova campaign level used to construct target genesis.
+    #[must_use]
+    pub fn level(&self) -> NovaLevel {
+        self.level
     }
 }
 
@@ -388,8 +405,13 @@ impl Game for NovaGame {
     }
 
     fn new_target(&self) -> Result<NovaTarget, String> {
-        NovaTarget::from_rom_bytes_headless(&self.rom, &self.core_path, &self.core_sha256)
-            .map_err(|error| error.to_string())
+        NovaTarget::from_rom_bytes_headless_at_level(
+            &self.rom,
+            &self.core_path,
+            &self.core_sha256,
+            self.level,
+        )
+        .map_err(|error| error.to_string())
     }
 
     fn reset(&self, target: &mut NovaTarget) {
@@ -701,5 +723,16 @@ mod tests {
         let mut foreign = policies;
         foreign.insert("level".to_owned(), "understood-by-search".to_owned());
         assert!(game.resolve_recorded(&foreign).is_err());
+    }
+
+    #[test]
+    fn selected_level_is_part_of_recorded_machine_identity() {
+        let level = NovaLevel::from_number(17).expect("level");
+        let game = NovaGame::new_at_level(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64), level);
+        assert_eq!(game.level(), level);
+        assert!(
+            game.emulator_identity()
+                .contains("genesis=nova-level-prefix-v1:17")
+        );
     }
 }

@@ -36,6 +36,51 @@ const COLLECTIBLE_BITS: usize = 0x7f2f - SAVE_RAM_BASE;
 const PERSISTENT_BITMAP_LEN: usize = 8;
 const STATE_CHUNK_SIZE: usize = 512;
 
+/// Number of ordinary world levels exposed by Nova's source-defined campaign.
+pub const NOVA_CAMPAIGN_LEVEL_COUNT: u8 = 40;
+
+/// A one-based, source-defined Nova campaign level.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct NovaLevel(u8);
+
+impl NovaLevel {
+    /// Validate a one-based level number from `1` through
+    /// [`NOVA_CAMPAIGN_LEVEL_COUNT`].
+    pub fn from_number(number: u8) -> Result<Self, MachineError> {
+        if (1..=NOVA_CAMPAIGN_LEVEL_COUNT).contains(&number) {
+            Ok(Self(number))
+        } else {
+            Err(MachineError::Backend(format!(
+                "Nova campaign level must be 1..={NOVA_CAMPAIGN_LEVEL_COUNT}, got {number}"
+            )))
+        }
+    }
+
+    /// The one-based level number shown to operators.
+    #[must_use]
+    pub fn number(self) -> u8 {
+        self.0
+    }
+
+    fn index(self) -> u8 {
+        self.0 - 1
+    }
+}
+
+impl Default for NovaLevel {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+fn level_prefix_bitmap(count: u8) -> [u8; PERSISTENT_BITMAP_LEN] {
+    let mut bitmap = [0_u8; PERSISTENT_BITMAP_LEN];
+    for index in 0..usize::from(count) {
+        bitmap[index / 8] |= 1 << (index % 8);
+    }
+    bitmap
+}
+
 /// A Nova input replayed from the sealed gameplay genesis.
 pub type NovaInput = crate::search::archive::Input<ButtonChord>;
 
@@ -218,10 +263,10 @@ impl NovaSnapshot {
 
 const JOYPAD_A: u8 = 1 << 0;
 const JOYPAD_START: u8 = 1 << 3;
-const JOYPAD_DOWN: u8 = 1 << 5;
+const JOYPAD_UP: u8 = 1 << 4;
 
-/// Fixed title/menu/pre-level path. Search inputs begin after this prefix.
-const BOOT_WALK: [ButtonChord; 11] = [
+/// Fixed title path ending at the main menu, after save-file initialization.
+const BOOT_TO_MAIN_MENU: [ButtonChord; 3] = [
     ButtonChord {
         buttons: 0,
         hold_frames: 60,
@@ -234,6 +279,10 @@ const BOOT_WALK: [ButtonChord; 11] = [
         buttons: 0,
         hold_frames: 114,
     },
+];
+
+/// Fixed main-menu/level-select/pre-level path. Search inputs begin afterward.
+const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
     ButtonChord {
         buttons: JOYPAD_START,
         hold_frames: 6,
@@ -251,7 +300,23 @@ const BOOT_WALK: [ButtonChord; 11] = [
         hold_frames: 54,
     },
     ButtonChord {
-        buttons: JOYPAD_DOWN,
+        buttons: JOYPAD_UP,
+        hold_frames: 6,
+    },
+    ButtonChord {
+        buttons: 0,
+        hold_frames: 6,
+    },
+    ButtonChord {
+        buttons: JOYPAD_UP,
+        hold_frames: 6,
+    },
+    ButtonChord {
+        buttons: 0,
+        hold_frames: 6,
+    },
+    ButtonChord {
+        buttons: JOYPAD_UP,
         hold_frames: 6,
     },
     ButtonChord {
@@ -281,18 +346,44 @@ pub struct NovaTarget {
 }
 
 impl NovaTarget {
-    fn from_machine(mut machine: QuickNesMachine) -> Result<Self, MachineError> {
+    fn from_machine(
+        mut machine: QuickNesMachine,
+        selected_level: NovaLevel,
+    ) -> Result<Self, MachineError> {
         let power_on = machine.snapshot()?;
-        machine.branch(power_on, &nes::reproducer(&BOOT_WALK))?;
+        machine.branch(power_on, &nes::reproducer(&BOOT_TO_MAIN_MENU))?;
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(power_on)?;
+
+        // Nova initializes and validates its save file before the main menu.
+        // Construct the state a normal sequential playthrough would have at
+        // this boundary: prior levels are cleared and the requested level is
+        // the highest available one. The game's own level-select code then
+        // chooses and launches that level through ordinary controller input.
+        let cleared = level_prefix_bitmap(selected_level.index());
+        let available = level_prefix_bitmap(selected_level.number());
+        machine.write_save_ram(LEVEL_CLEARED, &cleared)?;
+        machine.write_save_ram(LEVEL_AVAILABLE, &available)?;
+
+        let main_menu = machine.snapshot()?;
+        machine.branch(main_menu, &nes::reproducer(&MAIN_MENU_TO_GAMEPLAY))?;
+        machine.run(StopConditions::default(), None)?;
+        machine.drop_snapshot(main_menu)?;
         let genesis = machine.snapshot()?;
         let (wram, save_ram) = read_memory(&machine)?;
         let state = decode_state(&wram, &save_ram)?;
-        if state.health == 0 || state.x == 0 || state.y == 0 {
+        if state.health == 0
+            || state.x == 0
+            || state.y == 0
+            || state.started_level != selected_level.index()
+        {
             return Err(MachineError::Backend(format!(
-                "Nova setup did not reach gameplay: health={} x={} y={} level={}",
-                state.health, state.x, state.y, state.started_level
+                "Nova setup did not reach requested level {}: health={} x={} y={} started_level={}",
+                selected_level.number(),
+                state.health,
+                state.x,
+                state.y,
+                state.started_level,
             )));
         }
         let observation = NovaObservations {
@@ -319,11 +410,21 @@ impl NovaTarget {
         core_path: &Path,
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
-        Self::from_machine(QuickNesMachine::from_rom_bytes(
-            rom,
-            core_path,
-            core_sha256,
-        )?)
+        Self::from_rom_bytes_headless_at_level(rom, core_path, core_sha256, NovaLevel::default())
+    }
+
+    /// Load Nova and seal genesis at one independently selected campaign
+    /// level through the game's normal menus.
+    pub fn from_rom_bytes_headless_at_level(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        selected_level: NovaLevel,
+    ) -> Result<Self, MachineError> {
+        Self::from_machine(
+            QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
+            selected_level,
+        )
     }
 
     /// Current decoded state.
@@ -793,6 +894,20 @@ pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn level_fixture_uses_one_based_campaign_levels() {
+        assert!(NovaLevel::from_number(0).is_err());
+        assert!(NovaLevel::from_number(NOVA_CAMPAIGN_LEVEL_COUNT + 1).is_err());
+        let first = NovaLevel::from_number(1).expect("first level");
+        let last = NovaLevel::from_number(40).expect("last level");
+        assert_eq!((first.number(), first.index()), (1, 0));
+        assert_eq!((last.number(), last.index()), (40, 39));
+        assert_eq!(level_prefix_bitmap(0), [0; PERSISTENT_BITMAP_LEN]);
+        assert_eq!(level_prefix_bitmap(1)[0], 0x01);
+        assert_eq!(&level_prefix_bitmap(9)[..2], &[0xff, 0x01]);
+        assert_eq!(&level_prefix_bitmap(40)[..5], &[0xff; 5]);
+    }
 
     #[test]
     fn decoder_reads_source_mapped_state() {

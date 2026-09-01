@@ -636,6 +636,37 @@ impl QuickNesMachine {
         Ok(unsafe { std::slice::from_raw_parts(memory, length) }.to_vec())
     }
 
+    /// Replace one bounded range of the cartridge-backed save RAM.
+    ///
+    /// This is a workload-setup seam, not a search action. Game adapters use
+    /// it before sealing genesis to construct a source-grounded save-file
+    /// fixture such as an independently selectable campaign level.
+    pub fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
+        self.api.activate();
+        // SAFETY: both calls are synchronous libretro memory queries on this
+        // machine's exclusively owned core image. The reported range is fully
+        // validated before the source bytes are copied into it.
+        let (memory, length) = unsafe {
+            (
+                (self.api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
+                (self.api.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
+            )
+        };
+        let end = offset.checked_add(bytes.len()).ok_or_else(|| {
+            MachineError::Backend("QuickNES save RAM write range overflowed".to_owned())
+        })?;
+        if memory.is_null() || length == 0 || length > MAX_SAVE_RAM_SIZE || end > length {
+            return Err(MachineError::Backend(format!(
+                "QuickNES rejected save RAM write {offset}..{end} for length {length}"
+            )));
+        }
+        // SAFETY: `memory` is non-null and `offset..end` is within the bounded
+        // region reported by the core. `bytes` is a distinct immutable Rust
+        // slice and the copy completes before another core call.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.add(offset), bytes.len()) };
+        Ok(())
+    }
+
     /// Enable or disable bounded frame copying for replay-only rendering.
     pub fn set_video_capture(&mut self, enabled: bool) {
         self.capture_video = enabled;
@@ -1619,6 +1650,15 @@ mod tests {
         assert_eq!(machine.read(0, 1).expect("read"), vec![3]);
         assert_eq!(machine.read_wram().expect("fixed RAM read")[0], 3);
         assert_eq!(machine.read_save_ram().expect("save RAM").len(), 8 * 1024);
+        machine
+            .write_save_ram(7, &[1, 2, 3])
+            .expect("bounded save RAM write");
+        assert_eq!(
+            &machine.read_save_ram().expect("written save RAM")[7..10],
+            &[1, 2, 3]
+        );
+        assert!(machine.write_save_ram(8 * 1024, &[1]).is_err());
+        assert!(machine.write_save_ram(usize::MAX, &[1]).is_err());
         machine.replay(base).expect("restore");
         assert_eq!(machine.read(0, 1).expect("read restored"), vec![0]);
         let fixed = machine.snapshot().expect("fixed snapshot");
