@@ -1087,6 +1087,31 @@ mod live_trace_tests {
     use super::*;
 
     #[test]
+    fn calibration_labels_are_the_frozen_fit_script_vocabulary() {
+        for (class, label) in [
+            (NormalizedEventClass::Doorbell, "doorbell"),
+            (
+                NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController),
+                "ic_mmio",
+            ),
+            (
+                NormalizedEventClass::DeviceMmio(DeviceClass::Serial),
+                "serial_mmio",
+            ),
+            (
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual),
+                "pv_mmio",
+            ),
+            (NormalizedEventClass::TimeRead, "time_read"),
+            (NormalizedEventClass::ArchitecturalControl, "arch_control"),
+            (NormalizedEventClass::Idle, "idle"),
+            (NormalizedEventClass::Terminal, "terminal"),
+        ] {
+            assert_eq!(class.label(), label);
+        }
+    }
+
+    #[test]
     fn frozen_v1_empty_serial_payload_digest_is_stable() {
         assert_eq!(
             digest_payload(NormalizedEventClass::DeviceMmio(DeviceClass::Serial), &[],),
