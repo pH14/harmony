@@ -168,10 +168,14 @@ impl StreamFilter {
 
 /// The per-ISA kernel cmdline: the same determinism line the live gates use,
 /// with `rdinit` selecting the injected init.
+///
+/// x86 adds `printk.time=0`: stock KVM does not intercept RDTSC, so printk's
+/// early sched_clock timestamps measure host time; dropping them keeps the
+/// serial digest over guest-emitted content only.
 pub fn cmdline() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
-         nokaslr nosmp maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all \
+         nokaslr nosmp maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all printk.time=0 \
          rdinit=/harmony-oci-init"
     } else {
         "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/harmony-oci-init nohlt"
