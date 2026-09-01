@@ -35,8 +35,12 @@ fn run() -> Result<(), String> {
     const RAM: usize = 512 * 1024 * 1024;
     const SEED: u64 = 0x4e4f_5641_5f43_4931;
     const DEADLINE: u64 = 2_000_000_000;
+    // Keep the proven stock-x86 virtual-time boot contract from
+    // `x86_kvm_linux_virtual_time`: one CPU, xAPIC, no HPET, and no raw timer
+    // calibration. `rdinit` selects the Nova image's dedicated init.
     const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
-        lpj=1000000 random.trust_cpu=off rdinit=/init harmony_pvclock nohlt";
+        no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
+        nox2apic hpet=disable harmony_pvclock rdinit=/init";
 
     fn drive(server: &mut Server, request: &Request) -> Result<Reply, String> {
         match server.handle(request) {
@@ -62,7 +66,9 @@ fn run() -> Result<(), String> {
             },
             resolve: None,
         };
-        match drive(server, &request)? {
+        let reply = drive(server, &request)
+            .map_err(|error| format!("{error}\n--- guest console ---\n{}", console(server)))?;
+        match reply {
             Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime),
             other => Err(format!(
                 "expected Nova snapshot point, received {other:?}\n--- guest console ---\n{}",
