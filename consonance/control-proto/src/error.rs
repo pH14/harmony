@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The two error categories of the control plane, kept strictly apart
-//! (`docs/DISSONANCE.md`, "Two result categories, fail-loud"):
+//! (git history's `docs/DISSONANCE.md`, "Two result categories, fail-loud"):
 //!
 //! - [`ProtocolError`] — a **wire-framing** failure: the bytes on the socket are
 //!   not a decodable frame (bad magic/version, an over-cap length field, or a
@@ -209,7 +209,7 @@ pub enum ControlError {
     /// [`Exec`](crate::Request::Exec) improvisation, and the request would have
     /// minted a reproducer from it ([`RecordedEnv`](crate::Request::RecordedEnv) or
     /// equivalent). An improvised timeline is off the record by ruling
-    /// (`docs/RESOLUTION.md` §Improvisations) — its execution carries no determinism
+    /// (git history's `docs/RESOLUTION.md` §Improvisations) — its execution carries no determinism
     /// guarantee, so there is no honest [`Reproducer`](crate::Reproducer) that
     /// replays it. Refused **loudly** rather than handing back a reproducer that does
     /// not reproduce; the caller must rewind to an untainted ancestor

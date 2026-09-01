@@ -327,7 +327,7 @@ Three rulings from the integrator; the foreman records them here (decisions the 
    and `EnvCodec::compose` must learn to **express and splice reseed points** so a
    compose-folded materialization/reproducer is bit-identical to its hop-by-hop original even
    when an RDRAND/RDSEED draw lands inside a collapsed interval; the `ControlServer` honors
-   stored reseeds on `branch`. This is queued as `tasks/78-reseed-aware-compose.md`; on
+   stored reseeds on `branch`. This is queued (tasks/78, git history); on
    landing, PR #58's documented-limit pin
    (`sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit`) flips to a
    positive bit-identical gate. The task-93 "Moment-keyed counter-mode entropy" option remains
