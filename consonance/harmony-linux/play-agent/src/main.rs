@@ -420,6 +420,9 @@ mod real {
                 layout.total_len() as u64,
             )
             .map_err(|e| format!("Nova billboard length: {e:?}"))?;
+        agent
+            .emit_state(&mut channel, sealed)
+            .map_err(|e| format!("Nova initial state: {e}"))?;
         channel
             .sdk
             .setup_complete()

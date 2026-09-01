@@ -848,6 +848,56 @@ fn fixed_point_pixels(high: u8, low: u8) -> u16 {
     u16::from(high) * 16 + u16::from(low >> 4)
 }
 
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    target_arch = "x86_64",
+    not(miri)
+))]
+fn prefix_bitmap(count: u8) -> [u8; PERSISTENT_BITMAP_LEN] {
+    let mut bitmap = [0_u8; PERSISTENT_BITMAP_LEN];
+    for index in 0..usize::from(count.min((PERSISTENT_BITMAP_LEN * 8) as u8)) {
+        bitmap[index / 8] |= 1 << (index % 8);
+    }
+    bitmap
+}
+
+/// Decode the guest billboard plus SDK-published persistent counters.
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    target_arch = "x86_64",
+    not(miri)
+))]
+pub(super) fn decode_consonance_state(
+    wram: &[u8],
+    ability: u8,
+    cleared: u8,
+    available: u8,
+    collectibles: u8,
+) -> Result<NovaMechanicalState, MachineError> {
+    Ok(NovaMechanicalState {
+        level: read_byte(wram, LEVEL_NUMBER)?,
+        started_level: read_byte(wram, STARTED_LEVEL_NUMBER)?,
+        x: fixed_point_pixels(
+            read_byte(wram, PLAYER_X_HIGH)?,
+            read_byte(wram, PLAYER_X_LOW)?,
+        ),
+        y: fixed_point_pixels(
+            read_byte(wram, PLAYER_Y_HIGH)?,
+            read_byte(wram, PLAYER_Y_LOW)?,
+        ),
+        health: read_byte(wram, PLAYER_HEALTH)?,
+        chips: read_byte(wram, CHIP_COUNT)?,
+        chips_needed: read_byte(wram, CHIPS_NEEDED)?,
+        ability,
+        level_reload_pending: read_byte(wram, NEED_LEVEL_RELOAD)? != 0,
+        levels_cleared: prefix_bitmap(cleared),
+        levels_available: prefix_bitmap(available),
+        collectibles: prefix_bitmap(collectibles),
+    })
+}
+
 /// Decode Nova's work/save-RAM observations from bounded external slices.
 pub fn decode_state(wram: &[u8], save_ram: &[u8]) -> Result<NovaMechanicalState, MachineError> {
     Ok(NovaMechanicalState {

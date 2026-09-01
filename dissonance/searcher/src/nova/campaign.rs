@@ -39,6 +39,16 @@ use crate::{
     target::{ExitKind, Target},
 };
 
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    target_arch = "x86_64",
+    not(miri)
+))]
+use crate::nova::consonance::{
+    ConsonanceNovaSnapshot, ConsonanceNovaTarget, identity as consonance_identity,
+};
+
 /// Stream format written by Nova campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "nova-quicknes-campaign-stream-v1";
 /// Snapshot checkpoint format written by Nova campaigns.
@@ -70,6 +80,51 @@ pub struct NovaGame {
     core_sha256: String,
     level: NovaLevel,
     identity: String,
+    backend: NovaBackend,
+}
+
+enum NovaBackend {
+    QuickNes,
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        target_arch = "x86_64",
+        not(miri)
+    ))]
+    Consonance {
+        kernel: Vec<u8>,
+        initramfs: Vec<u8>,
+    },
+}
+
+/// Campaign target selected by the recorded Nova emulator backend.
+#[doc(hidden)]
+pub enum NovaCampaignTarget {
+    /// Direct pinned QuickNES target.
+    QuickNes(NovaTarget),
+    /// QuickNES running inside a Consonance Linux guest.
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        target_arch = "x86_64",
+        not(miri)
+    ))]
+    Consonance(ConsonanceNovaTarget),
+}
+
+/// Portable snapshot form used by either Nova campaign backend.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum NovaCampaignSnapshot {
+    /// Serialized direct-QuickNES state.
+    QuickNes(NovaSnapshot),
+    /// Portable prefix mapped to a whole-VM snapshot by each evaluator.
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        target_arch = "x86_64",
+        not(miri)
+    ))]
+    Consonance(ConsonanceNovaSnapshot),
 }
 
 impl NovaGame {
@@ -96,6 +151,29 @@ impl NovaGame {
             core_sha256: core_sha256.to_owned(),
             level,
             identity,
+            backend: NovaBackend::QuickNes,
+        }
+    }
+
+    /// Build a Nova game whose evaluator runs QuickNES inside Consonance.
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        target_arch = "x86_64",
+        not(miri)
+    ))]
+    #[must_use]
+    pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
+        Self {
+            rom: rom.to_vec(),
+            core_path: PathBuf::new(),
+            core_sha256: String::new(),
+            level: NovaLevel::default(),
+            identity: consonance_identity(kernel, initramfs),
+            backend: NovaBackend::Consonance {
+                kernel: kernel.to_vec(),
+                initramfs: initramfs.to_vec(),
+            },
         }
     }
 
@@ -141,9 +219,9 @@ pub struct NovaCampaignEvidence {
 /// Nova campaign origin.
 pub type NovaCampaignOrigin = CampaignOrigin<NovaGame>;
 /// Nova resume checkpoint.
-pub type NovaCampaignCheckpoint = CampaignCheckpoint<NovaSnapshot>;
+pub type NovaCampaignCheckpoint = CampaignCheckpoint<NovaCampaignSnapshot>;
 /// Nova whole-tree snapshot checkpoint.
-pub type NovaSnapshotCheckpoint = SnapshotCheckpoint<NovaSnapshot>;
+pub type NovaSnapshotCheckpoint = SnapshotCheckpoint<NovaCampaignSnapshot>;
 /// Nova stream header.
 pub type NovaCampaignStreamHeader = CampaignStreamHeader<NovaNoTableHeader>;
 /// Nova campaign report.
@@ -210,7 +288,7 @@ fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<
 
 fn merge_action_milestones(
     aggregate: &mut NovaMilestones,
-    target: &NovaTarget,
+    target: &NovaCampaignTarget,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
         return Err("cannot decode Nova milestones from a failed target".into());
@@ -222,8 +300,8 @@ fn merge_action_milestones(
 }
 
 fn admission_is_viable(
-    target: &mut NovaTarget,
-    snapshot: &NovaSnapshot,
+    target: &mut NovaCampaignTarget,
+    snapshot: &NovaCampaignSnapshot,
 ) -> Result<bool, Box<dyn Error>> {
     let mut viable = false;
     for mask in VIABILITY_PROBE_MASKS {
@@ -238,8 +316,8 @@ fn admission_is_viable(
 }
 
 fn execute_job(
-    target: &mut NovaTarget,
-    parent_snapshot: &NovaSnapshot,
+    target: &mut NovaCampaignTarget,
+    parent_snapshot: &NovaCampaignSnapshot,
     parent_actions: usize,
     parent_milestones: NovaMilestones,
     suffix: &[ButtonChord],
@@ -333,13 +411,224 @@ fn action_champion_key(observations: &[NovaObservations]) -> Option<NovaChampion
     })
 }
 
+impl NovaCampaignTarget {
+    fn mechanical_state(&self) -> crate::nova::target::NovaMechanicalState {
+        match self {
+            Self::QuickNes(target) => target.mechanical_state(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.mechanical_state(),
+        }
+    }
+
+    fn is_dead(&self) -> bool {
+        match self {
+            Self::QuickNes(target) => target.is_dead(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.is_dead(),
+        }
+    }
+
+    fn cleared_a_level(&self) -> bool {
+        match self {
+            Self::QuickNes(target) => target.cleared_a_level(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.cleared_a_level(),
+        }
+    }
+
+    fn frames_clocked(&self) -> u64 {
+        match self {
+            Self::QuickNes(target) => target.frames_clocked(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.frames_clocked(),
+        }
+    }
+
+    fn last_action_observations(&self) -> &[NovaObservations] {
+        match self {
+            Self::QuickNes(target) => target.last_action_observations(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.last_action_observations(),
+        }
+    }
+
+    fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
+        match self {
+            Self::QuickNes(target) => target.survives_probe(buttons, frames),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.survives_probe(buttons, frames),
+        }
+    }
+
+    /// Render through direct QuickNES; Consonance campaigns replay their winning
+    /// input through a separately constructed direct game for observer media.
+    pub fn render_input(
+        &mut self,
+        input: &NovaInput,
+        tail_frames: u32,
+        video_output: &mut dyn Write,
+        audio_output: &mut dyn Write,
+    ) -> Result<crate::nova::target::NovaVideoMetadata, Box<dyn Error>> {
+        match self {
+            Self::QuickNes(target) => {
+                target.render_input(input, tail_frames, video_output, audio_output)
+            }
+            #[cfg(all(feature = "consonance", target_os = "linux", target_arch = "x86_64", not(miri)))]
+            Self::Consonance(_) => Err("Consonance search targets are headless; render the winning tape through direct QuickNES".into()),
+        }
+    }
+}
+
+impl Target for NovaCampaignTarget {
+    type Action = ButtonChord;
+    type Observations = NovaObservations;
+    type Snapshot = NovaCampaignSnapshot;
+
+    fn reset(&mut self) {
+        match self {
+            Self::QuickNes(target) => target.reset(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.reset(),
+        }
+    }
+
+    fn apply(&mut self, action: &ButtonChord) {
+        match self {
+            Self::QuickNes(target) => target.apply(action),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.apply(*action),
+        }
+    }
+
+    fn observe(&self) -> NovaObservations {
+        match self {
+            Self::QuickNes(target) => target.observe(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target
+                .last_action_observations()
+                .last()
+                .cloned()
+                .unwrap_or_else(|| NovaObservations {
+                    frame_count: 0,
+                    decoded: target.mechanical_state(),
+                    changed_indices: Vec::new(),
+                    dead: target.is_dead(),
+                    log_line: String::new(),
+                }),
+        }
+    }
+
+    fn fingerprint(&self) -> u64 {
+        let state = self.mechanical_state();
+        (u64::from(state.started_level) << 40)
+            | (u64::from(state.level) << 32)
+            | (u64::from(state.x / 32) << 16)
+            | u64::from(state.y / 32)
+    }
+
+    fn exit_kind(&self) -> ExitKind {
+        match self {
+            Self::QuickNes(target) => target.exit_kind(),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.exit_kind(),
+        }
+    }
+
+    fn snapshot(&mut self) -> Option<NovaCampaignSnapshot> {
+        match self {
+            Self::QuickNes(target) => target.snapshot().map(NovaCampaignSnapshot::QuickNes),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            Self::Consonance(target) => target.snapshot().map(NovaCampaignSnapshot::Consonance),
+        }
+    }
+
+    fn restore(&mut self, snapshot: &NovaCampaignSnapshot) -> Result<(), Box<dyn Error>> {
+        match (self, snapshot) {
+            (Self::QuickNes(target), NovaCampaignSnapshot::QuickNes(snapshot)) => {
+                target.restore(snapshot)
+            }
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            (Self::Consonance(target), NovaCampaignSnapshot::Consonance(snapshot)) => {
+                target.restore(snapshot)
+            }
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            _ => Err("Nova campaign snapshot backend does not match its target".into()),
+        }
+    }
+}
+
 impl Game for NovaGame {
-    type Target = NovaTarget;
+    type Target = NovaCampaignTarget;
     type Action = ButtonChord;
     type Key = NovaArchiveKey;
     type Milestones = NovaMilestones;
     type Progress = NovaProgressWatermark;
-    type Snapshot = NovaSnapshot;
+    type Snapshot = NovaCampaignSnapshot;
     type Observations = NovaObservations;
     type Evidence = NovaCampaignEvidence;
     type ArchiveReport = NovaArchiveReport;
@@ -404,35 +693,47 @@ impl Game for NovaGame {
         Ok(NovaCampaignRun)
     }
 
-    fn new_target(&self) -> Result<NovaTarget, String> {
-        NovaTarget::from_rom_bytes_headless_at_level(
-            &self.rom,
-            &self.core_path,
-            &self.core_sha256,
-            self.level,
-        )
-        .map_err(|error| error.to_string())
+    fn new_target(&self) -> Result<NovaCampaignTarget, String> {
+        match &self.backend {
+            NovaBackend::QuickNes => NovaTarget::from_rom_bytes_headless_at_level(
+                &self.rom,
+                &self.core_path,
+                &self.core_sha256,
+                self.level,
+            )
+            .map(NovaCampaignTarget::QuickNes)
+            .map_err(|error| error.to_string()),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                target_arch = "x86_64",
+                not(miri)
+            ))]
+            NovaBackend::Consonance { kernel, initramfs } => {
+                ConsonanceNovaTarget::new(kernel, initramfs).map(NovaCampaignTarget::Consonance)
+            }
+        }
     }
 
-    fn reset(&self, target: &mut NovaTarget) {
+    fn reset(&self, target: &mut NovaCampaignTarget) {
         target.reset();
     }
 
     fn restore(
         &self,
-        target: &mut NovaTarget,
-        snapshot: &NovaSnapshot,
+        target: &mut NovaCampaignTarget,
+        snapshot: &NovaCampaignSnapshot,
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &NovaTarget) -> u64 {
+    fn frames_clocked(&self, target: &NovaCampaignTarget) -> u64 {
         target.frames_clocked()
     }
 
     fn apply_action(
         &self,
-        target: &mut NovaTarget,
+        target: &mut NovaCampaignTarget,
         action: &ButtonChord,
         aggregate: &mut NovaMilestones,
     ) -> Result<(), Box<dyn Error>> {
@@ -440,14 +741,14 @@ impl Game for NovaGame {
         merge_action_milestones(aggregate, target)
     }
 
-    fn is_terminal(&self, target: &NovaTarget) -> bool {
+    fn is_terminal(&self, target: &NovaCampaignTarget) -> bool {
         target.is_dead() || target.exit_kind() != ExitKind::Ok
     }
 
     fn is_run_terminal(
         &self,
         _run: &NovaCampaignRun,
-        target: &NovaTarget,
+        target: &NovaCampaignTarget,
     ) -> Result<bool, Box<dyn Error>> {
         if target.exit_kind() != ExitKind::Ok {
             return Err("Nova terminal predicate cannot inspect a failed emulator".into());
@@ -455,20 +756,23 @@ impl Game for NovaGame {
         Ok(target.is_dead() || target.cleared_a_level())
     }
 
-    fn snapshot(&self, target: &mut NovaTarget) -> Result<NovaSnapshot, Box<dyn Error>> {
+    fn snapshot(
+        &self,
+        target: &mut NovaCampaignTarget,
+    ) -> Result<NovaCampaignSnapshot, Box<dyn Error>> {
         target
             .snapshot()
             .ok_or_else(|| "failed to snapshot Nova".into())
     }
 
-    fn current_key(&self, target: &NovaTarget) -> Result<NovaArchiveKey, Box<dyn Error>> {
+    fn current_key(&self, target: &NovaCampaignTarget) -> Result<NovaArchiveKey, Box<dyn Error>> {
         Ok(archive_key(target.mechanical_state()))
     }
 
     fn complete_candidate_key(
         &self,
         key: NovaArchiveKey,
-        _snapshot: &NovaSnapshot,
+        _snapshot: &NovaCampaignSnapshot,
     ) -> Result<NovaArchiveKey, Box<dyn Error>> {
         Ok(key)
     }
@@ -476,8 +780,8 @@ impl Game for NovaGame {
     fn execute_job(
         &self,
         _run: &NovaCampaignRun,
-        target: &mut NovaTarget,
-        parent_snapshot: &NovaSnapshot,
+        target: &mut NovaCampaignTarget,
+        parent_snapshot: &NovaCampaignSnapshot,
         parent_actions: usize,
         parent_milestones: NovaMilestones,
         suffix: &[ButtonChord],
@@ -587,7 +891,7 @@ impl Game for NovaGame {
     fn merge_snapshot_root_evidence(
         &self,
         evidence: &mut NovaCampaignEvidence,
-        target: &NovaTarget,
+        target: &NovaCampaignTarget,
     ) -> Result<(), Box<dyn Error>> {
         let observation = NovaObservations {
             frame_count: 0,

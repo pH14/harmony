@@ -88,6 +88,16 @@ pub mod regs {
     pub const REG_BILLBOARD_GPA: u32 = 11;
     /// Byte length of the QuickNES billboard.
     pub const REG_BILLBOARD_LEN: u32 = 12;
+    /// Exact player X coordinate in whole pixels.
+    pub const REG_X: u32 = 13;
+    /// Exact player Y coordinate in whole pixels.
+    pub const REG_Y: u32 = 14;
+    /// Puzzle chips currently carried.
+    pub const REG_CHIPS: u32 = 15;
+    /// Puzzle chips required by the current map.
+    pub const REG_CHIPS_NEEDED: u32 = 16;
+    /// Whether the game requested an internal map reload.
+    pub const REG_LEVEL_RELOAD: u32 = 17;
 
     /// First durable level clear beyond guest genesis.
     pub const POINT_LEVEL_CLEARED: u32 = 1;
@@ -110,6 +120,11 @@ pub mod regs {
         Point::state(REG_FRAME, "nova_frame"),
         Point::state(REG_BILLBOARD_GPA, "nova_billboard_gpa"),
         Point::state(REG_BILLBOARD_LEN, "nova_billboard_len"),
+        Point::state(REG_X, "nova_x"),
+        Point::state(REG_Y, "nova_y"),
+        Point::state(REG_CHIPS, "nova_chips"),
+        Point::state(REG_CHIPS_NEEDED, "nova_chips_needed"),
+        Point::state(REG_LEVEL_RELOAD, "nova_level_reload"),
         Point::reachable(POINT_LEVEL_CLEARED, "nova_level_cleared"),
         Point::reachable(POINT_COLLECTIBLE, "nova_collectible"),
         Point::reachable(POINT_ABILITY, "nova_ability_acquired"),
@@ -307,7 +322,8 @@ impl<C: Core> NovaAgent<C> {
         Ok(())
     }
 
-    fn emit_state<H: NovaChannel>(
+    /// Publish the current source-derived state through the SDK register catalog.
+    pub fn emit_state<H: NovaChannel>(
         &mut self,
         channel: &mut H,
         state: NovaState,
@@ -320,6 +336,11 @@ impl<C: Core> NovaAgent<C> {
             (regs::REG_HEALTH, u64::from(state.health)),
             (regs::REG_ABILITY, u64::from(state.ability)),
             (regs::REG_FRAME, self.frame_count),
+            (regs::REG_X, u64::from(state.x)),
+            (regs::REG_Y, u64::from(state.y)),
+            (regs::REG_CHIPS, u64::from(state.chips)),
+            (regs::REG_CHIPS_NEEDED, u64::from(state.chips_needed)),
+            (regs::REG_LEVEL_RELOAD, 0),
         ] {
             channel.state_set(reg, value).map_err(NovaError::Channel)?;
         }
@@ -474,7 +495,7 @@ mod tests {
 
     #[test]
     fn register_catalog_fits_the_host_feature_packing_bound() {
-        for reg in 1..=regs::REG_BILLBOARD_LEN {
+        for reg in 1..=regs::REG_LEVEL_RELOAD {
             assert!(reg < (1 << 16));
         }
     }
