@@ -111,9 +111,13 @@ jobs:
         run: ./target/release/harmony preflight
       - name: Determinism smoke
         run: |
+          # The workload reads guest randomness so the digest depends on the
+          # seed: same seed must reproduce it, a different seed must not.
           run() {
             ./target/release/harmony oci run alpine:3 --seed "$1" --timeout 600 \
-              --out "run-$2" -- /bin/echo oci-smoke | tee "run-$2/console.txt"
+              --out "run-$2" -- /bin/sh -c \
+              'echo oci-smoke; head -c 16 /dev/urandom | od -An -tx1' \
+              | tee "run-$2/console.txt"
           }
           mkdir -p run-a run-b run-c
           run 0 a
