@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: oci-smoke
+
+# End-to-end `harmony oci run` on a GitHub-hosted x86-64 runner: standard
+# Linux runners expose /dev/kvm through nested virtualization, a proven
+# support-matrix cell (docs/DETERMINISM.md §4). Asserts the product claim
+# directly: same seed, same digest; different seed, different digest.
+#
+# The guest kernel + initramfs build takes ~30 minutes cold, so it is cached
+# across runs keyed by its build inputs; a cache hit makes the whole job a
+# CLI build plus three guest runs.
+on:
+  pull_request:
+    paths:
+      - "cli/**"
+      - "consonance/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/oci-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cli/**"
+      - "consonance/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/oci-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: oci-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+      - name: Grant /dev/kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Restore guest artifacts
+        id: guest
+        uses: actions/cache@v4
+        with:
+          path: |
+            consonance/harmony-linux/build/bzImage
+            consonance/harmony-linux/build/initramfs-postgres.cpio.gz
+          key: oci-smoke-guest-${{ hashFiles('consonance/harmony-linux/linux/**', 'consonance/harmony-linux/Makefile', 'consonance/harmony-linux/scripts/**') }}
+      - name: Build guest artifacts
+        if: steps.guest.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget
+          make -C consonance/harmony-linux fetch
+          make -C consonance/harmony-linux kernel
+          sudo make -C consonance/harmony-linux postgres-image
+      - name: Stage guest artifacts
+        run: |
+          mkdir -p consonance/harmony-linux/build/x86_64
+          cp consonance/harmony-linux/build/bzImage \
+             consonance/harmony-linux/build/initramfs-postgres.cpio.gz \
+             consonance/harmony-linux/build/x86_64/
+
+      - name: Build CLI
+        run: cargo build --release -p harmony-cli
+      - name: Preflight
+        run: ./target/release/harmony preflight
+      - name: Determinism smoke
+        run: |
+          run() {
+            ./target/release/harmony oci run alpine:3 --seed "$1" --timeout 600 \
+              --out "run-$2" -- /bin/echo oci-smoke | tee "run-$2/console.txt"
+          }
+          mkdir -p run-a run-b run-c
+          run 0 a
+          run 0 b
+          run 7 c
+          digest() { awk '/^digest/{print $2}' "run-$1/console.txt"; }
+          grep -q oci-smoke run-a/console.txt
+          [ "$(digest a)" = "$(digest b)" ]
+          [ "$(digest a)" != "$(digest c)" ]
+          cmp run-a/serial.log run-b/serial.log
+          echo "same seed reproduced $(digest a); seed 7 diverged as required"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: oci-smoke-runs
+          path: run-*
