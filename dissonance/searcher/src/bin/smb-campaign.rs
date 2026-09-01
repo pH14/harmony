@@ -190,7 +190,6 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         suffix,
         mixture,
         victory_input_path: Some(output.join("victory-input.json")),
-        checkpoint_dir: Some(output.clone()),
     };
 
     let stream_path = output.join("stream.jsonl");

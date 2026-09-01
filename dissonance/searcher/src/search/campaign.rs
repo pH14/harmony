@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
-    io::{BufWriter, Write},
+    io::Write,
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -88,9 +88,6 @@ const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 
 /// Curve sampling interval in admitted executions.
 const CURVE_INTERVAL: u64 = 100;
-
-/// Executions between live whole-tree checkpoint writes.
-pub const LIVE_CHECKPOINT_INTERVAL: u64 = 25_000;
 
 /// Seconds between sidecar observations.
 const PROGRESS_INTERVAL_SECONDS: u64 = 60;
@@ -521,10 +518,6 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<PathBuf>,
-    /// Live-only: directory receiving a whole-tree checkpoint every
-    /// [`LIVE_CHECKPOINT_INTERVAL`] executions, so an interrupted run of this
-    /// binary can be resumed instead of restarted. Never recorded.
-    pub checkpoint_dir: Option<PathBuf>,
 }
 
 /// First line of the stream: everything a replay needs to know about the run.
@@ -1406,24 +1399,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         true
     }
 
-    /// Clone the archive into a report without ending the run, for the live
-    /// whole-tree checkpoint.
-    fn archive_report_snapshot(&self, game: &G, campaign_seed: u64) -> G::ArchiveReport {
-        game.archive_report(
-            &self.evidence,
-            ArchiveReportState {
-                seed: campaign_seed,
-                executions: self.sequence,
-                entries: self.archive.entry_reports_snapshot(),
-                progress_curve: self.curve.clone(),
-                retained: self.archive.retained,
-                rejected: self.archive.rejected,
-                deaths: self.deaths,
-                selector: self.archive.selector_report(),
-            },
-        )
-    }
-
     pub(crate) fn into_archive_report_and_snapshots(
         mut self,
         game: &G,
@@ -1595,63 +1570,6 @@ impl CampaignCounters {
             skips_per_worker: vec![0; workers as usize],
         }
     }
-}
-
-/// Write the whole retained tree beside the run so an interruption of this
-/// binary loses at most one interval. Both files land under temporary names
-/// first, then rename over the previous checkpoint generation.
-pub(crate) fn write_live_checkpoint<G: Game>(
-    game: &G,
-    core: &CoordinatorCore<G>,
-    campaign_seed: u64,
-    directory: &std::path::Path,
-) -> Result<(), Box<dyn Error>>
-where
-    G::ArchiveReport: Serialize,
-{
-    /// Borrowed mirror of [`SnapshotCheckpointEntry`]; postcard encodes both
-    /// identically, so the multi-gigabyte snapshot set is serialized without
-    /// cloning it.
-    #[derive(Serialize)]
-    struct EntryRef<'a, S> {
-        id: u64,
-        snapshot: &'a S,
-    }
-    /// Borrowed mirror of [`SnapshotCheckpoint`].
-    #[derive(Serialize)]
-    struct CheckpointRef<'a, S> {
-        format: &'a str,
-        entries: Vec<EntryRef<'a, S>>,
-    }
-    let archive_tmp = directory.join("checkpoint-archive.json.tmp");
-    let report = core.archive_report_snapshot(game, campaign_seed);
-    {
-        let mut archive_writer = BufWriter::new(std::fs::File::create(&archive_tmp)?);
-        serde_json::to_writer(&mut archive_writer, &report)?;
-        archive_writer.flush()?;
-    }
-    let entries = core
-        .archive
-        .entries
-        .iter()
-        .map(|entry| EntryRef {
-            id: entry.report.id,
-            snapshot: entry.snapshot.as_ref(),
-        })
-        .collect();
-    let checkpoint = CheckpointRef {
-        format: game.checkpoint_format(),
-        entries,
-    };
-    let snapshots_tmp = directory.join("checkpoint-snapshots.bin.tmp");
-    {
-        let mut snapshots_writer = BufWriter::new(std::fs::File::create(&snapshots_tmp)?);
-        postcard::to_io(&checkpoint, &mut snapshots_writer)?;
-        snapshots_writer.flush()?;
-    }
-    std::fs::rename(&archive_tmp, directory.join("checkpoint-archive.json"))?;
-    std::fs::rename(&snapshots_tmp, directory.join("checkpoint-snapshots.bin"))?;
-    Ok(())
 }
 
 fn build_report<G: Game>(
@@ -1829,6 +1747,9 @@ pub struct CampaignProgressRecord<K> {
     pub unix_time: u64,
     /// Executions admitted so far.
     pub executions: u64,
+    /// Emulator frames completed so far, including bootstrap work.
+    #[serde(default)]
+    pub frames_emulated: u64,
     /// Deepest retained key so far, absent while the archive is empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deepest_key: Option<K>,
@@ -2291,12 +2212,6 @@ where
                     counters.jobs_per_worker[worker_index] =
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
-                    if let Some(directory) = &config.checkpoint_dir
-                        && sequence > 0
-                        && sequence.is_multiple_of(LIVE_CHECKPOINT_INTERVAL)
-                    {
-                        write_live_checkpoint(game, &core, config.campaign_seed, directory)?;
-                    }
                     if let Some(sink) = progress.as_deref_mut() {
                         // Wall-clock controls the sidecar only. It selects nothing and
                         // enters no recorded artifact, so its nondeterminism cannot
@@ -2319,6 +2234,9 @@ where
                             let line = serde_json::to_string(&CampaignProgressRecord {
                                 unix_time,
                                 executions: sequence,
+                                frames_emulated: counters
+                                    .bootstrap_frames
+                                    .saturating_add(counters.job_frames),
                                 deepest_key,
                                 cheapest_time_in_group: cheapest,
                                 retained,

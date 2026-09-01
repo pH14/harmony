@@ -35,6 +35,9 @@ use sha2::{Digest, Sha256};
 /// Exact QuickNES revision supported by this adapter.
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
 
+/// Exact libretro version string emitted by the pinned QuickNES build.
+const QUICKNES_LIBRARY_VERSION: &str = "1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32";
+
 macro_rules! define_quicknes_options {
     ($(($key:literal, $value:literal, $identity:literal)),+ $(,)?) => {
         const QUICKNES_OPTION_TABLE: &[(&[u8], &[u8])] = &[
@@ -414,9 +417,9 @@ fn validate_core_revision(api: CoreApi) -> Result<(), MachineError> {
     // SAFETY: libretro requires library_version to name a NUL-terminated
     // string that remains live until the core is unloaded.
     let actual = unsafe { CStr::from_ptr(info.library_version) };
-    if actual.to_bytes() != QUICKNES_REVISION.as_bytes() {
+    if actual.to_bytes() != QUICKNES_LIBRARY_VERSION.as_bytes() {
         return Err(MachineError::Backend(format!(
-            "QuickNES core revision mismatch: expected {QUICKNES_REVISION}, found {}",
+            "QuickNES core revision mismatch: expected {QUICKNES_LIBRARY_VERSION}, found {}",
             actual.to_string_lossy()
         )));
     }
@@ -1055,7 +1058,7 @@ mod loopback {
             unsafe {
                 *info = RetroSystemInfo {
                     library_name: c"QuickNES".as_ptr(),
-                    library_version: c"26bb785c9deddb66a17717b21bb4e328f03ade32".as_ptr(),
+                    library_version: c"1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32".as_ptr(),
                     valid_extensions: c"nes".as_ptr(),
                     need_fullpath: false,
                     block_extract: false,
@@ -1164,8 +1167,9 @@ mod loopback {
 #[cfg(test)]
 mod tests {
     use super::{
-        QUICKNES_OPTION_TABLE, QUICKNES_OPTIONS, QUICKNES_REVISION, QuickNesMachine,
-        STATE_HEADER_LEN, loopback, nes_to_libretro, option_value, validate_sha256,
+        QUICKNES_LIBRARY_VERSION, QUICKNES_OPTION_TABLE, QUICKNES_OPTIONS, QUICKNES_REVISION,
+        QuickNesMachine, STATE_HEADER_LEN, loopback, nes_to_libretro, option_value,
+        validate_sha256,
     };
     use crate::{Machine, Moment, StopConditions, StopReason, nes};
 
@@ -1182,6 +1186,10 @@ mod tests {
         assert!(validate_sha256(&"A".repeat(64)).is_err());
         assert!(validate_sha256("short").is_err());
         assert_eq!(QUICKNES_REVISION.len(), 40);
+        assert_eq!(
+            QUICKNES_LIBRARY_VERSION,
+            "1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32"
+        );
     }
 
     #[test]
