@@ -10,8 +10,15 @@ fn main() {
     }
 
     let Some(archive) = env::var_os("HARMONY_QUICKNES_STATIC_LIB") else {
-        eprintln!("static-quicknes requires HARMONY_QUICKNES_STATIC_LIB");
-        process::exit(1);
+        // `cargo clippy/test --all-features` exercises this crate without the
+        // external, pinned Nova build products. Those targets do not link the
+        // production agent executable, so leave the static symbols unresolved
+        // and let the explicit guest build supply and validate the archive.
+        println!(
+            "cargo:warning=static-quicknes executable builds require \
+             HARMONY_QUICKNES_STATIC_LIB"
+        );
+        return;
     };
     let archive = Path::new(&archive);
     let Some(parent) = archive.parent() else {
