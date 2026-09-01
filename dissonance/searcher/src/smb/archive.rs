@@ -14,6 +14,7 @@ use crate::search::archive::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
+pub use crate::smb::target::ROOM_IDENTITY_BYTES;
 
 /// The parent selector a recorded identifier names, resolved under the SMB
 /// key's pooled depths.
@@ -66,10 +67,6 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// player's 16-pixel on-screen x bucket joins the key across the full frame
 /// width, computed by [`screen_x_bucket`].
 pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16";
-
-/// Work RAM addresses whose byte pair identifies the current area (area type
-/// and area data offset).
-pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
 
 /// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
 /// the level page the lineage arrived in that area at. The arrival page is
@@ -236,7 +233,7 @@ pub struct SmbArchiveReport {
     /// still load.
     #[serde(with = "entries_by_suffix")]
     pub entries: Vec<SmbArchiveEntryReport>,
-    /// Fixed-interval deterministic progress curve.
+    /// Deterministic multi-resolution progress curve.
     pub progress_curve: Vec<SmbArchiveProgressPoint>,
     /// Candidate snapshots admitted to the active archive.
     pub retained: u64,
@@ -313,7 +310,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
 /// Returns an error when the work RAM is too short to hold the identity
 /// bytes.
 pub(crate) fn stamp_arrival_room(
-    mut key: SmbArchiveKey,
+    key: SmbArchiveKey,
     wram: &[u8],
 ) -> Result<SmbArchiveKey, Box<dyn Error>> {
     let mut area = [0_u8; 2];
@@ -322,6 +319,13 @@ pub(crate) fn stamp_arrival_room(
             .get(offset)
             .ok_or("room identity byte outside work RAM")?;
     }
+    stamp_arrival_room_identity(key, area)
+}
+
+pub(crate) fn stamp_arrival_room_identity(
+    mut key: SmbArchiveKey,
+    area: [u8; 2],
+) -> Result<SmbArchiveKey, Box<dyn Error>> {
     key.room = [area[0], area[1], u8::try_from(key.progress / 16)?];
     Ok(key)
 }
@@ -443,7 +447,7 @@ pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16
 #[cfg(test)]
 mod tests {
     use super::{SmbArchiveKey, SmbRoomIdentity};
-    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey, Input};
+    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
 
     #[test]
@@ -488,35 +492,36 @@ mod tests {
     #[test]
     fn frozen_area_span_lands_same_area_warps_in_the_room_that_covers_the_page() {
         let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
-        let insert =
-            |archive: &mut Archive<u8, SmbArchiveKey, (), ()>, parent, actions: usize, key| {
-                archive
-                    .insert(
-                        parent,
-                        0,
-                        ArchiveCandidate {
-                            input: Input {
-                                actions: vec![1_u8; actions],
-                            },
-                            key,
-                            milestones: (),
-                        },
-                        (),
-                    )
-                    .expect("insert")
-            };
+        let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
+                      parent: Option<usize>,
+                      actions: usize,
+                      key| {
+            let suffix_len = parent.map_or(actions, |_| 1);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![1_u8; suffix_len],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+        };
         let root = insert(&mut archive, None, 1, key(10, [3, 5])).expect("root");
         let deep = insert(&mut archive, Some(root), 2, key(230, [3, 5])).expect("deep");
         let water = insert(&mut archive, Some(deep), 3, key(20, [0, 2])).expect("water");
         let back = insert(&mut archive, Some(water), 4, key(260, [3, 5])).expect("back");
-        assert_eq!(archive.entries[back].report.key.room, [3, 5, 16]);
+        assert_eq!(archive.entries[back].key.room, [3, 5, 16]);
         let tip = insert(&mut archive, Some(back), 5, key(304, [3, 5])).expect("tip");
         // The page-19 loop returns to page 16: the after-water room covers it.
         let looped = insert(&mut archive, Some(tip), 6, key(258, [3, 5])).expect("loop");
-        assert_eq!(archive.entries[looped].report.key.room, [3, 5, 16]);
+        assert_eq!(archive.entries[looped].key.room, [3, 5, 16]);
         // A pipe back to page 1 lands in the start room, which covers page 1.
         let restart = insert(&mut archive, Some(looped), 7, key(20, [3, 5])).expect("restart");
-        assert_eq!(archive.entries[restart].report.key.room, [3, 5, 0]);
+        assert_eq!(archive.entries[restart].key.room, [3, 5, 0]);
         let rooms: &Vec<SmbRoomIdentity> = archive.lineage(restart).expect("lineage");
         assert_eq!(rooms, &vec![[0, 2, 1], [3, 5, 0], [3, 5, 16]]);
     }
