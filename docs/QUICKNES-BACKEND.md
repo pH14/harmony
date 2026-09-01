@@ -1,11 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# Running the SMB workload with QuickNES
+# Running NES workloads with QuickNES
 
-QuickNES and the SMB ROM are external workload inputs. Harmony carries only
-the libretro adapter and a reproducible build helper; it does not vendor the
-emulator or ROM. The SMB campaign loads a user-supplied QuickNES core directly
-through the libretro C ABI. Its streams use
+QuickNES and game ROMs are external workload inputs. Harmony carries only the
+libretro adapter and reproducible build helpers; it does not vendor the
+emulator or ROMs. SMB loads a user-supplied ROM. Nova the Squirrel is
+source-built from its pinned upstream revision, as documented in
+`dissonance/NOVA.md`. Both campaigns load a user-supplied QuickNES core
+directly through the libretro C ABI. SMB streams use
 `smb-quicknes-campaign-stream-v2`, its checkpoints use
 `smb-quicknes-snapshot-checkpoint-v2`, and evaluator-private fixtures use the
 `dissonance-fixture-*-v2` formats. Historical measurements from the retired

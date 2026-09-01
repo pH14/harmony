@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Nova 500K adventure
+
+on:
+  schedule:
+    - cron: "30 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  nova:
+    name: Search Nova headlessly and film the champion
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      NOVA_BUILD: dissonance/nova-build
+      NOVA_ARTIFACT: dissonance/nova-artifact
+      NOVA_EXECUTIONS: "500000"
+      NOVA_SEED: "1"
+      NOVA_WORKERS: "4"
+      NOVA_ACTION_LIMIT: "512"
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NES build and video tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cc65 ffmpeg jq
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dissonance -> target
+      - name: Reproduce pinned Nova and QuickNES
+        run: |
+          dissonance/scripts/build-nova-rom.sh "${NOVA_BUILD}"
+          scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
+      - name: Run the headless soak and film its champion with music
+        run: |
+          cargo run --locked --release --manifest-path dissonance/Cargo.toml \
+            --bin nova-campaign -- \
+            --core "${NOVA_BUILD}/quicknes_libretro.so" \
+            --rom "${NOVA_BUILD}/nova.nes" \
+            --output "${NOVA_ARTIFACT}" \
+            --seed "${NOVA_SEED}" \
+            --executions "${NOVA_EXECUTIONS}" \
+            --workers "${NOVA_WORKERS}" \
+            --action-limit "${NOVA_ACTION_LIMIT}" \
+            --marketing-soak
+      - name: Verify and describe the public artifact
+        run: |
+          test "$(jq -r '.champion_endpoint_verified' "${NOVA_ARTIFACT}/run-summary.json")" = true
+          test "$(jq -r '.campaign.executions' "${NOVA_ARTIFACT}/run-summary.json")" = "${NOVA_EXECUTIONS}"
+          test -s "${NOVA_ARTIFACT}/best.mp4"
+          test "$(ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_type -of csv=p=0 \
+            "${NOVA_ARTIFACT}/best.mp4")" = audio
+          test -s "${NOVA_ARTIFACT}/progress.jsonl"
+          cp dissonance/NOVA-ARTIFACT-LICENSE.md \
+            "${NOVA_ARTIFACT}/ARTIFACT-LICENSE.md"
+          if find "${NOVA_ARTIFACT}" -type f \( -name '*.nes' -o -name '*.so' \) | grep -q .; then
+            echo "ROM or emulator binary entered the public artifact" >&2
+            exit 1
+          fi
+          sha256sum \
+            "${NOVA_ARTIFACT}/best.mp4" \
+            "${NOVA_ARTIFACT}/run-summary.json" \
+            "${NOVA_ARTIFACT}/progress.jsonl" \
+            "${NOVA_ARTIFACT}/best-input.json" \
+            "${NOVA_ARTIFACT}/best-observation.json" \
+            "${NOVA_ARTIFACT}/video.json" \
+            "${NOVA_ARTIFACT}/ARTIFACT-LICENSE.md" \
+            >"${NOVA_ARTIFACT}/SHA256SUMS"
+          {
+            echo "## Nova benchmark"
+            echo
+            echo "500,000-execution headless adventure; seed ${NOVA_SEED}; ${NOVA_WORKERS} workers."
+            echo "Champion endpoint verified: $(jq -r '.champion_endpoint_verified' "${NOVA_ARTIFACT}/run-summary.json")."
+            echo "Archive entries explored: $(jq -r '.campaign.archive_entries' "${NOVA_ARTIFACT}/run-summary.json")."
+            echo "Progress: $(jq -c '.campaign.progress' "${NOVA_ARTIFACT}/run-summary.json")."
+            echo "Milestones: $(jq -c '.campaign.milestones' "${NOVA_ARTIFACT}/run-summary.json")."
+            echo "Video with music: $(jq -c '.video' "${NOVA_ARTIFACT}/run-summary.json")."
+            echo "Audio PCM SHA-256: $(jq -r '.audio_pcm_sha256' "${NOVA_ARTIFACT}/run-summary.json")."
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nova-500k-adventure-${{ github.run_id }}
+          path: |
+            dissonance/nova-artifact/best.mp4
+            dissonance/nova-artifact/run-summary.json
+            dissonance/nova-artifact/progress.jsonl
+            dissonance/nova-artifact/best-input.json
+            dissonance/nova-artifact/best-observation.json
+            dissonance/nova-artifact/video.json
+            dissonance/nova-artifact/ARTIFACT-LICENSE.md
+            dissonance/nova-artifact/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30

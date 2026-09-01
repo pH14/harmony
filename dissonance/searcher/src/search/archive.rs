@@ -9,7 +9,7 @@
 //! list).
 
 use std::{
-    cmp::Reverse,
+    cmp::{Ordering, Reverse},
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt::Debug,
@@ -41,6 +41,20 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     /// The key's pooled identity at `depth`; depth 0 is the retention slot.
     /// Only depths below [`groups`](Self::groups) are ever passed.
     fn group(self, depth: usize) -> Self::Group;
+    /// Maximum active representatives retained in one depth-0 slot.
+    ///
+    /// The default preserves the established two-route archive. A game may
+    /// choose one when its key supplies a deterministic per-location state
+    /// preference and superseded representatives should stop receiving work.
+    fn slot_capacity() -> usize {
+        MAX_ENTRIES_PER_KEY
+    }
+    /// Compare two keys that map to the same depth-0 slot by game-owned state
+    /// preference. The archive treats the result as opaque and falls back to
+    /// its route-cost replacement rule on equality.
+    fn preference_cmp(self, _other: Self) -> Ordering {
+        Ordering::Equal
+    }
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
     /// Complete a freshly decoded key against its parent's key and lineage.
@@ -1143,12 +1157,24 @@ where
         // breaks ties so the choice stays a total order over the slot.
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
-        let slot_full = slot.len() >= MAX_ENTRIES_PER_KEY;
+        let slot_full = slot.len() >= K::slot_capacity().max(1);
         let replace = if slot_full {
-            slot.iter()
-                .copied()
-                .max_by_key(|id| (self.time_in_group[*id], self.entries[*id].report.id))
-                .filter(|id| candidate_time_in_group < self.time_in_group[*id])
+            let worst = slot.iter().copied().min_by(|left, right| {
+                let left_entry = &self.entries[*left].report;
+                let right_entry = &self.entries[*right].report;
+                left_entry
+                    .key
+                    .preference_cmp(right_entry.key)
+                    .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
+                    .then_with(|| right_entry.id.cmp(&left_entry.id))
+            });
+            worst.filter(
+                |id| match key.preference_cmp(self.entries[*id].report.key) {
+                    Ordering::Greater => true,
+                    Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+                    Ordering::Less => false,
+                },
+            )
         } else {
             None
         };
@@ -1911,6 +1937,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
+
     use super::{
         Archive, ArchiveCandidate, ArchiveKey, Input, RetireThresholds,
         SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
@@ -1970,6 +1998,69 @@ mod tests {
         }
 
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct PreferredKey {
+        slot: u8,
+        quality: u8,
+    }
+
+    impl ArchiveKey for PreferredKey {
+        type Group = u8;
+
+        fn groups() -> usize {
+            1
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            assert_eq!(depth, 0);
+            self.slot
+        }
+
+        fn slot_capacity() -> usize {
+            1
+        }
+
+        fn preference_cmp(self, other: Self) -> Ordering {
+            self.quality.cmp(&other.quality)
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn opaque_preference_displaces_only_a_weaker_same_slot_representative() {
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, PreferredKey, (), ()>, input, quality| {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        input: Input {
+                            actions: vec![input],
+                        },
+                        key: PreferredKey { slot: 7, quality },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert preferred entry")
+        };
+
+        assert_eq!(insert(&mut archive, 1, 2), Some(0));
+        assert_eq!(insert(&mut archive, 2, 5), Some(1));
+        assert_eq!(archive.active, vec![false, true]);
+        assert_eq!(archive.slots.get(&7), Some(&vec![1]));
+        assert_eq!(insert(&mut archive, 3, 1), None);
+        assert_eq!(archive.active, vec![false, true]);
     }
 
     fn flat_archive<const DEPTHS: usize>(
