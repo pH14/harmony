@@ -84,7 +84,7 @@ stream, identical across hosts:
 Wall time may be logged as an advisory sidecar. It never enters a search decision,
 a kill rule, a ranking, or a promotion. It does govern operations: every run leg
 carries a wall-clock deadline projected from its own recorded rate, and a leg that
-exceeds its deadline is killed and recorded as a timeout, never waited on.
+exceeds its deadline is killed and recorded as a timeout.
 
 ### 2.2 Systems performance
 
@@ -195,9 +195,9 @@ check of any kind runs.
 
 All ranked runs of a round execute on one primary evaluation host, so candidate
 comparisons never depend on cross-host behavior. The program has exclusive use of
-the ms02 box: no co-tenant workload runs there while a campaign, screen, or
-benchmark is live, and no campaign waits for or shares the box with another
-program. ms02 also satisfies section 13's dedicated-host requirement. The
+the ms02 box: it is the sole tenant, and campaigns, screens, and benchmarks
+schedule as owners of the whole machine. ms02 also satisfies section 13's
+dedicated-host requirement. The
 primary-host designation itself stays an operator entry in the ledger; changing
 it requires only fresh baselines there. Certification runs, screens, and
 confirmations run at 12 workers or the host's worker sweet spot recorded in the
@@ -341,8 +341,7 @@ candidate.
 
 A run whose purpose is to produce an artifact — a fixture snapshot, a transition
 state, a replay prefix — first passes a static check that the admission and
-retention rules can emit that artifact. Executions spent generating an artifact
-the code cannot record are pure waste.
+retention rules can emit that artifact.
 
 ### Stage 1 — screen by successive halving
 
@@ -364,20 +363,24 @@ cuts screen budget, challenge count, or seed count — recorded in the round
 record, never silently — and never compensates by running fewer candidates.
 
 The reduction script, its vetoes included, is frozen before the first screen and
-dry-run against the champion baseline; a veto the champion itself fails is
-invalid by construction. Survivor counts are bounds, never quotas — a round that
-produces fewer survivors than expected proceeds with the survivors it has.
+dry-run against the champion baseline; every veto must pass the champion to be
+valid. Survivor counts are upper bounds, and a round proceeds with the survivors
+it has.
 
 ### Stage 2 — 100K confirmation
 
 Run only the round's provisional winner (and any survivor within its noise
 band) to 100,000 executions with at least six paired seeds. Confirm only if the
 primary improvement repeats, no challenge regresses catastrophically,
-deterministic memory bytes stay within bound, exact replay passes, and the
-mechanism matches the prediction. Otherwise mark `INCONCLUSIVE` or `REJECT`.
-Exact replay above micro scale is serial and expensive: the round's one
-full-stream replay belongs to the confirmed winner; every other replay check
-runs at micro scale.
+deterministic memory bytes stay within bound, the determinism check passes, and
+the mechanism matches the prediction. Otherwise mark `INCONCLUSIVE` or `REJECT`.
+The determinism check at this stage is a paired duplicate run: one seed's
+campaign runs twice on the same commit, and both recorded streams must hash
+identically. It runs at full parallelism and costs one extra campaign.
+Full-stream replay — reconstruction of the run from its recorded stream —
+belongs to promotion (section 11) and victory verification, where
+reconstruction is itself the claim; candidate stages use the micro replay of
+Stage 0 and the duplicate-run check here.
 
 ### Stage 3 — chain and simplification
 
@@ -426,19 +429,18 @@ Each round:
 for two consecutive rounds, the next round must include the diagnosis lens
 (E08), and at least half its candidates must change a component class untried
 against that column in those rounds — rollout distribution, cell
-representation, archive grouping, retirement, all still generic. A stalled
-column is never answered with a larger budget, more seeds, a rerun, or another
-round of parameter tuning on the same component.
+representation, archive grouping, retirement, all still generic. The answer to
+a stalled column is a changed mechanism; its budgets, seed counts, and recorded
+runs stay as they are.
 
-**The loop does not stop.** A blocked experiment, a missing fixture, or a
+**The loop keeps running.** A blocked experiment, a missing fixture, or a
 protocol contradiction degrades that round: the director records the deviation
 in the round record, proceeds with the work that remains, and queues the
-question for the operator without waiting on the answer. The director pauses
-the program only when the charter itself must change. While runs are in flight
-the director wakes at most every ten minutes and writes one consolidated status
-per wake; heartbeat and watcher text reference ledger rows rather than
-restating derived numbers or rules, so a stale copy can never contradict the
-ledger.
+question for the operator while continuing. The director pauses the program
+only when the charter itself must change. While runs are in flight the director
+wakes at most every ten minutes and writes one consolidated status per wake;
+heartbeat and watcher text reference ledger rows, keeping the ledger the single
+authority.
 
 Roles:
 
@@ -470,7 +472,9 @@ current champion.
 A challenger may replace the champion when all of the following hold:
 
 - its predeclared primary metric improves at the required stage;
-- exact replay, the cross-host identity check, and repository checks pass;
+- full-stream exact replay, the cross-host identity check, and repository
+  checks pass — this is where reconstruction from the recorded stream is
+  verified, once per promotion rather than per candidate;
 - no protected scorecard suffers an unexplained material regression;
 - the result repeats across seeds;
 - the claimed mechanism is supported by the measurements;
@@ -529,8 +533,8 @@ least 2,000,000 executions at the host's sweet-spot worker count:
   the early-run median. The merged backend certifies at 0.92–0.95; a champion
   below 0.90 is a regression veto regardless of search-lane gains.
 - **memory plateau:** peak resident set must plateau within the recorded
-  `--memory-budget-mib` bound, with no swap and no reintroduced synchronous
-  checkpoint rewrites in the admission loop.
+  `--memory-budget-mib` bound, the host must stay out of swap, and the
+  admission loop must stay free of synchronous checkpoint rewrites.
 
 ## 14. First batch under this charter
 
@@ -555,10 +559,9 @@ Instantiate B2's fixtures (2-2, 7-2, 8-1, 4-2, 4-3, 7-4, 8-4, and the 1-1
 canary). A fixture is certified when its prefix replays once on the primary host
 and its 12-worker baseline screen is recorded. A fixture prefix is evaluator
 metadata and may be produced by any evaluator-side means, including chaining
-from an earlier level's exit; a fixture whose generation run comes up empty is
-recorded and backfilled later. Rounds (section 10) begin when the 1-1 canary
-and at least three hard challenges are certified; remaining fixtures join the
-suite at the next evaluator version. A missing fixture never blocks rounds.
+from an earlier level's exit. Rounds (section 10) begin when the 1-1 canary
+and at least three hard challenges are certified; the remaining fixtures are
+backfilled in parallel and join the suite at the next evaluator version.
 
 ### E09 — selection rounds
 
