@@ -5,7 +5,7 @@ belongs to, and what obligation that plane carries. It records a ruled *directio
 as well — but **this document changes no bytes**. Executing the collapse described under "Ruled
 direction" is a separate PR, gated on the protocol tests that landed alongside this doc.
 Companion docs: `docs/TESTING.md` (rung 4 is where these obligations become tests),
-`docs/GLOSSARY.md` (the naming authority), `docs/LAYERS.md` (the capability layering).
+`docs/GLOSSARY.md` (the naming authority).
 
 ## What the control protocol is
 
