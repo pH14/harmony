@@ -81,6 +81,14 @@ stream, identical across hosts:
 - executions spent revisiting, replacing, or extending nonproductive states;
 - best known input cost to each reached observation cell.
 
+**Progress record.** The evaluator record stores, per evaluator seed and worker
+count, the fewest executions to each progress milestone ever observed on that seed
+by any commit, with the commit that set it. A champion that misses the record on
+any milestone by more than the paired-seed spread is a regressed champion; the
+round then opens with the Stage-0 bisect (section 9) and the repair is candidate
+one. Screen and confirmation budgets are calibrated from the record, never from a
+champion that misses it.
+
 Wall time may be logged as an advisory sidecar. It never enters a search decision,
 a kill rule, a ranking, or a promotion. It does govern operations: every run leg
 carries a wall-clock deadline projected from its own recorded rate, and a leg that
@@ -92,6 +100,12 @@ Frames per second, jobs per second, snapshot and coordinator costs, worker scali
 and heterogeneous-core efficiency are certified per promoted champion binary on the
 dedicated benchmark host, using the lane protocol in section 13. No per-candidate
 decision in the search lane depends on any of them.
+
+Coordination parameters that decide which archive state a selection sees —
+admission batch size, prefetch depth, reservation order, checkpoint cadence that
+defers admission — are search components under scorecard 2.1 first. Their
+throughput is certified second, and only for a change whose fixed-seed progress
+trace is unchanged or judged as a search candidate.
 
 ### 2.3 Architecture and simplicity
 
@@ -228,9 +242,17 @@ implemented. The working spine is deliberately small:
 5. **Separate discovery from optimization.** Exploration discovers observation
    cells and transitions. Optimization maintains best known transition or route
    costs and propagates improvements without quadratic rescanning.
-6. **Keep policy off the throughput ceiling.** Snapshot transport, execution, and
-   coordination must keep all usable cores occupied. A smarter selector that
-   starves the executor is a regression.
+6. **Keep policy off the throughput ceiling, and keep the coordinator out of the
+   search.** Snapshot transport, execution, and coordination must keep all usable
+   cores occupied, and every selection must see the freshest archive the pipeline
+   allows. A smarter selector that starves the executor is a regression; a
+   coordinator change that moves executions-to-milestone on a fixed seed is a
+   search regression regardless of throughput gained. The reference shape is a
+   sliding admission window: selecting job k waits only for the admission of
+   result k minus the pipeline depth, so cores stay saturated while selection
+   staleness is bounded by the depth. A batch that selects all its jobs from one
+   frozen archive state and admits them together fails this rule once the batch
+   exceeds the depth needed to saturate the cores.
 7. **Learn only through a narrow optional interface.** Learned representations or
    model proposals may later compete as plugins under the same evaluator. They may
    not make the core unreplayable or target-specific.
@@ -343,6 +365,16 @@ A run whose purpose is to produce an artifact — a fixture snapshot, a transiti
 state, a replay prefix — first passes a static check that the admission and
 retention rules can emit that artifact.
 
+**Regression bisect.** When E00 or a round freeze finds the champion below the
+progress record, Stage 0 of that round is a bisect: one genesis run per commit
+between the record-setting commit and the champion, same seed, same worker
+count, a fixed 45,000-execution budget, milestones read from the recorded
+archive summary. Each run takes about one minute on ms02 with the current
+backend; the retired backend runs in under 25 minutes. Documented before/after
+progress tables in the commits under suspicion are read first and count as
+evidence. The commit that moves the milestones is named in the round record and
+its repair is candidate one of the round.
+
 ### Stage 1 — screen by successive halving
 
 Screening exists to kill cheaply, and its budget is the smallest that
@@ -432,6 +464,12 @@ against that column in those rounds — rollout distribution, cell
 representation, archive grouping, retirement, all still generic. The answer to
 a stalled column is a changed mechanism; its budgets, seed counts, and recorded
 runs stay as they are.
+
+**Suspect the baseline first.** When every candidate in a round jams at the same
+milestone as the champion, or the champion's own screen sits far below the
+progress record, the director checks the champion against the record and runs
+the Stage-0 regression bisect before generating hypotheses. A shared jam is
+evidence about the baseline before it is evidence about the algorithm.
 
 **The loop keeps running.** A blocked experiment, a missing fixture, or a
 protocol contradiction degrades that round: the director records the deviation
@@ -526,6 +564,13 @@ throughput is the lane's first action: the current 110,000-job budget was
 calibrated on the retired backend at roughly 40 jobs per second, and the
 QuickNES backend on `main` runs two orders of magnitude faster.
 
+A systems-lane acceptance is valid only with an unchanged fixed-seed progress
+trace: the candidate binary's executions-to-each-milestone on the evaluator
+seeds equal the champion's, or the change is re-filed as a search candidate and
+judged under scorecard 2.1 with wall time to the deepest milestone recorded
+beside it. Throughput thresholds are never met by enlarging admission batches or
+deferring admission.
+
 Champion certification also records two endurance numbers from a soak of at
 least 2,000,000 executions at the host's sweet-spot worker count:
 
@@ -556,9 +601,22 @@ systems lane per section 13.
 
 **Hypothesis:** the current searcher head can serve as a champion.
 
-Exit: the micro-campaign cross-host smoke test passes, and one 30K run at 12
-workers replays exactly on the primary evaluation host. There is no second-host
-30K leg and no noise-floor requirement.
+Exit: the micro-campaign cross-host smoke test passes, one 30K run at 12
+workers replays exactly on the primary evaluation host, and the champion's
+executions-to-each-milestone on the evaluator seeds are compared with the
+progress record. A miss starts the Stage-0 regression bisect before any
+challenger. There is no second-host 30K leg and no noise-floor requirement.
+
+Initial progress record, seed 20260905, 8 workers, genesis, set by the retired
+backend before the QuickNES migration: 1-2 by 2,584 executions, 1-3 by 11,211,
+1-4 by 32,689, 2-1 by 40,104, 2-2 by 46,486. The champion on `main` misses it:
+the admission batch of 64 jobs per worker introduced with the QuickNES migration
+selects 512 jobs per batch from one frozen archive state at 8 workers, and the
+champion does not leave 1-2 within 45,000 executions. The same source with the
+batch reduced to 4 jobs per worker reaches 2-2 within 45,000 executions at 2.3x
+the wall time per execution. Batch 4 opens with the rule-6 repair as candidate
+one, evaluated under scorecard 2.1 on three seeds with wall time to 2-2 recorded,
+and recalibrates every budget from the repaired champion.
 
 ### E07 — build the visible challenge suite
 
