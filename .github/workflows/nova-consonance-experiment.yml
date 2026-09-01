@@ -3,6 +3,13 @@ name: Nova inside Consonance experiment
 
 on:
   workflow_dispatch: {}
+  pull_request:
+    paths:
+      - .github/workflows/nova-consonance-experiment.yml
+      - consonance/harmony-linux/linux/build-nova-game-image.sh
+      - consonance/harmony-linux/linux/nova-game-init.sh
+      - consonance/harmony-linux/play-agent/**
+      - consonance/vmm-core/src/bin/kvm_x86_nova_probe.rs
 
 permissions:
   contents: read
