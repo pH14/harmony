@@ -10,10 +10,10 @@ fn main() {
     }
 
     let Some(archive) = env::var_os("HARMONY_QUICKNES_STATIC_LIB") else {
-        // The quality gate checks the portable library/integration targets
-        // with all features but runs the binary tests through the dynamic-core
-        // profile. Leave the static symbols unresolved here; the explicit Nova
-        // guest build supplies and validates the pinned archive.
+        // The quality gate checks the portable library with all features but
+        // runs integration and binary tests through the dynamic-core profile.
+        // Leave the static symbols unresolved here; the explicit Nova guest
+        // build supplies and validates the pinned archive.
         println!(
             "cargo:warning=static-quicknes executable builds require \
              HARMONY_QUICKNES_STATIC_LIB"
