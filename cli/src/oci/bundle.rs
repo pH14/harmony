@@ -117,6 +117,7 @@ fn start_script(image: &StagedImage, cmd_override: &[String]) -> String {
 /// status on the serial console, and power off. `panic=-1` + forced reboot in
 /// the kernel cmdline turn any failure here into a terminal exit, never a
 /// hang.
+#[cfg(target_arch = "x86_64")]
 const INIT: &str = r#"#!/bin/sh
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 mount -t proc proc /proc 2>/dev/null
@@ -148,6 +149,46 @@ echo HARMONY_OCI_EXIT rc=$rc
 poweroff -f
 reboot -f
 echo o > /proc/sysrq-trigger
+"#;
+
+/// arm64: the harness DTB's pl011 node is frozen without the primecell/clock
+/// properties the console driver needs to probe, so there is no /dev/console
+/// tty. All run output goes through /bin/mmio-console (shipped in
+/// initramfs-oci), which writes the PL011 data register directly via
+/// /dev/mem — the transport the postgres guest image proved.
+#[cfg(not(target_arch = "x86_64"))]
+const INIT: &str = r#"#!/bin/sh
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm /run /tmp
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
+mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
+{
+    echo HARMONY_OCI: start
+    cd /harmony-oci
+    runc run --bundle /harmony-oci harmony-c1
+    rc=$?
+    case $rc in
+    127)
+        # No runc in this guest image: chroot start (same determinism, thinner
+        # isolation). The minimal ash has no `test`/`command` builtins, so
+        # runc's absence is detected by its 127 exit status.
+        echo HARMONY_OCI: via chroot
+        mount -t proc proc /harmony-oci/rootfs/proc 2>/dev/null
+        chroot /harmony-oci/rootfs /bin/sh /.harmony-start.sh
+        rc=$?
+        ;;
+    *)
+        echo HARMONY_OCI: via runc
+        ;;
+    esac
+    echo HARMONY_OCI_EXIT rc=$rc
+} 2>&1 | /bin/mmio-console
+poweroff -f
+reboot -f
 "#;
 
 /// Assemble the gzip-compressed initramfs segment for `image`.

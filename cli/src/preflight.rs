@@ -54,7 +54,9 @@ impl GuestArtifacts {
     }
 
     fn scan(dir: &std::path::Path) -> Self {
-        let kernel = ["Image", "bzImage"]
+        // arm64 uses the container-capable postgres-profile kernel; the
+        // minimal Image lacks BINFMT_SCRIPT and namespaces.
+        let kernel = ["Image-postgres", "bzImage"]
             .iter()
             .map(|n| dir.join(n))
             .find(|p| p.is_file());

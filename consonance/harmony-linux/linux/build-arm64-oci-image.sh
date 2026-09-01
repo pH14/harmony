@@ -111,6 +111,17 @@ for applet in sh mount mkdir mknod chmod chroot cat echo grep halt poweroff rebo
 done
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$oci_root/etc/passwd"
 printf 'root:x:0:\n' >"$oci_root/etc/group"
+# The harness DTB's pl011 node is frozen without the primecell/clock
+# properties the kernel driver needs to probe, so there is no /dev/console
+# tty. The injected init routes all run output through this direct-MMIO
+# writer instead (the same transport the postgres image proved).
+"$musl_cc" -static -Os -march=armv8.1-a+lse -mno-outline-atomics \
+    -Wall -Wextra -Werror \
+    "$LINUX_DIR/arm64-mmio-console.c" -o "$oci_root/bin/mmio-console"
+# The kernel opens /dev/console for PID 1's stdio before init can mount
+# devtmpfs, so the node must exist in the cpio itself.
+mknod -m 0600 "$oci_root/dev/console" c 5 1
+mknod -m 0666 "$oci_root/dev/null" c 1 3
 
 # The shipped userspace (busybox only) stays inside the LSE-only / no-live-
 # counter contract; the injected container rootfs is the user's and is outside

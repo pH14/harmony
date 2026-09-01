@@ -39,12 +39,20 @@ jobs:
             targets: kernel postgres-image
           - runner: ubuntu-24.04-arm
             isa: arm64
-            targets: arm64-kernel arm64-oci-image
+            targets: arm64-postgres-kernel arm64-oci-image
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - run: make -C consonance/harmony-linux fetch
       - run: make -C consonance/harmony-linux ${{ matrix.targets }}
+      # The x86 build writes bzImage + initramfs at build/ top level; the
+      # tarball layout is build/<isa>/ (the CLI's share/harmony/guest/<isa>).
+      - if: matrix.isa == 'x86_64'
+        run: |
+          mkdir -p consonance/harmony-linux/build/x86_64
+          cp consonance/harmony-linux/build/bzImage \
+             consonance/harmony-linux/build/initramfs-postgres.cpio.gz \
+             consonance/harmony-linux/build/x86_64/
       - run: tar -C consonance/harmony-linux/build -czf harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
       - uses: actions/upload-artifact@v4
         with:

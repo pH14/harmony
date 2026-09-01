@@ -23,8 +23,11 @@ pub enum RunError {
     SeedNotWired,
     #[error("vmm: {0}")]
     Vmm(String),
-    #[error("wall budget of {0}s exhausted before the guest reached a terminal state")]
-    WallBudget(u64),
+    #[error(
+        "wall budget of {budget_s}s exhausted before the guest reached a terminal state \
+         ({steps} exits serviced)"
+    )]
+    WallBudget { budget_s: u64, steps: u64 },
 }
 
 pub struct Outcome {
@@ -61,13 +64,17 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     if spec.seed != 0 {
         return Err(RunError::SeedNotWired);
     }
-    let vmm = vmm_core::vendor::arm64::bringup::boot_hvf(
+    let mut vmm = vmm_core::vendor::arm64::bringup::boot_hvf(
         spec.kernel,
         spec.initramfs,
         spec.cmdline,
         spec.guest_ram_len,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
+    // The run digest is the serial stream; checkpoint hashes are unused
+    // evidence here and cost a full-RAM hash per interval on the step path.
+    vmm.defer_virtual_time_checkpoint_hashes()
+        .map_err(|e| RunError::Vmm(e.to_string()))?;
 
     // `hv_vcpu_run` blocks indefinitely on a quiescent guest, so the drive
     // loop's between-steps budget check cannot fire on its own. A watchdog
@@ -97,7 +104,7 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
-    let vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
+    let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
         spec.kernel,
         spec.initramfs,
         spec.guest_ram_len,
@@ -105,6 +112,8 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
         spec.seed,
     )
     .map_err(|e| RunError::Vmm(e.to_string()))?;
+    vmm.defer_virtual_time_checkpoint_hashes()
+        .map_err(|e| RunError::Vmm(e.to_string()))?;
     drive(vmm, spec)
 }
 
@@ -138,7 +147,10 @@ where
     let reason = loop {
         if start.elapsed() > spec.wall_budget {
             flush_serial(&vmm, &mut printed, spec.stream);
-            return Err(RunError::WallBudget(spec.wall_budget.as_secs()));
+            return Err(RunError::WallBudget {
+                budget_s: spec.wall_budget.as_secs(),
+                steps,
+            });
         }
         let step = match vmm.step() {
             Ok(step) => step,
@@ -147,7 +159,10 @@ where
                 // A forced exit from the budget watchdog surfaces as a step
                 // error; report it as the budget, not a backend fault.
                 if start.elapsed() > spec.wall_budget {
-                    return Err(RunError::WallBudget(spec.wall_budget.as_secs()));
+                    return Err(RunError::WallBudget {
+                        budget_s: spec.wall_budget.as_secs(),
+                        steps,
+                    });
                 }
                 return Err(RunError::Vmm(e.to_string()));
             }
