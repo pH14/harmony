@@ -2,6 +2,9 @@
 name: Nova 500K adventure
 
 on:
+  push:
+    branches:
+      - codex/nova-new-searcher
   schedule:
     - cron: "30 6 * * *"
   workflow_dispatch: {}
