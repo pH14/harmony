@@ -291,7 +291,10 @@ fn merge_action_milestones(
     target: &NovaCampaignTarget,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
-        return Err("cannot decode Nova milestones from a failed target".into());
+        // A target failure is an ordinary terminal search result. Its action
+        // may not have produced a complete observation, so retain the
+        // parent's milestones and let the generic campaign record `failed`.
+        return Ok(());
     }
     for observation in target.last_action_observations() {
         merge_milestones(aggregate, milestones(observation.decoded));
