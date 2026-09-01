@@ -17,8 +17,9 @@ The adapter pins QuickNES revision
 records those choices and the exact shared object's SHA-256. Every persisted
 state carries the revision, binary hash, and fixed state length and rejects
 cross-core or cross-build restore. Loading also requires
-`retro_get_system_info().library_version` to equal the pinned revision, so a
-binary built from another revision is rejected even when its hash is supplied.
+`retro_get_system_info().library_version` to equal QuickNES's pinned
+`CORE_VERSION` concatenated with the full revision, so a binary built from
+another revision is rejected even when its hash is supplied.
 
 QuickNES leaves the three bytes named `ppu_state_t::unused2` uninitialized but
 includes them in every libretro state. The adapter parses the core's block

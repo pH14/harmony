@@ -1880,23 +1880,6 @@ where
         accounting
     }
 
-    /// Clone the entry reports, stamping per-entry selection counters.
-    #[must_use]
-    pub fn entry_reports_snapshot(&self) -> Vec<ArchiveEntryReport<A, K, M>> {
-        self.entries
-            .iter()
-            .enumerate()
-            .map(|(id, entry)| {
-                let mut report = entry.report.clone();
-                report.selector = Some(EntrySelectorCounters {
-                    selected: self.selected[id],
-                    productive: self.productive[id],
-                });
-                report
-            })
-            .collect()
-    }
-
     /// Extract entry reports and snapshots together, stamping per-entry
     /// selection counters without cloning the snapshot set.
     #[allow(clippy::type_complexity)] // The paired vectors preserve one-pass entry ownership.

@@ -54,7 +54,7 @@ pub use crate::search::campaign::{
     CampaignAdmissionDecision as SmbCampaignAdmissionDecision,
     CampaignConfig as GenericCampaignConfig, CampaignJobRecord as SmbCampaignJobRecord,
     CampaignOriginRecord as SmbCampaignOriginRecord, CampaignSkipRecord as SmbCampaignSkipRecord,
-    CampaignStreamRecord as SmbCampaignStreamRecord, LIVE_CHECKPOINT_INTERVAL, RESUME_IDENTIFIER,
+    CampaignStreamRecord as SmbCampaignStreamRecord, RESUME_IDENTIFIER,
     TreeImportCounts as SmbTreeImportCounts, derive_worker_seed,
 };
 
@@ -257,9 +257,6 @@ pub struct SmbCampaignConfig {
     /// Live-only: where the first winning input is written the moment it is
     /// admitted, before the in-flight jobs drain. Never recorded.
     pub victory_input_path: Option<std::path::PathBuf>,
-    /// Live-only: directory receiving a whole-tree checkpoint every
-    /// [`LIVE_CHECKPOINT_INTERVAL`] executions. Never recorded.
-    pub checkpoint_dir: Option<std::path::PathBuf>,
 }
 
 impl SmbCampaignConfig {
@@ -282,7 +279,6 @@ impl SmbCampaignConfig {
             retention: self.retention,
             selector: self.selector.clone(),
             victory_input_path: self.victory_input_path.clone(),
-            checkpoint_dir: self.checkpoint_dir.clone(),
         }
     }
 }
@@ -1370,12 +1366,13 @@ mod tests {
     use super::{
         DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
         SmbCampaignAdmissionDecision, SmbCampaignCheckpoint, SmbCampaignChordPolicy,
-        SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignRun,
-        SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
-        SmbTerminalPredicate, SuffixShape, chord_policy_from_identifier, chord_policy_identifier,
-        derive_suffix, derive_worker_seed, execute_job,
+        SmbCampaignConfig, SmbCampaignJobResult, SmbCampaignOrigin, SmbCampaignProgressRecord,
+        SmbCampaignRun, SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint,
+        SmbSnapshotCheckpointEntry, SmbTerminalPredicate, SuffixShape,
+        chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
+        execute_job,
     };
-    use crate::search::campaign::{CoordinatorCore, write_live_checkpoint};
+    use crate::search::campaign::CoordinatorCore;
     use crate::search::empirical_steps::EmpiricalStepHashRule;
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
@@ -1474,7 +1471,6 @@ mod tests {
             suffix: SuffixShape::default(),
             mixture: DrawMixture::BiasedHalf,
             victory_input_path: None,
-            checkpoint_dir: None,
         }
     }
 
@@ -1986,44 +1982,6 @@ mod tests {
     }
 
     #[test]
-    fn live_checkpoint_files_round_trip() {
-        let rom = synthetic_nrom();
-        let game = test_game(&rom);
-        let mut core = CoordinatorCore::new(&game, 96, 32_768);
-        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
-        core.bootstrap(&game, &mut target)
-            .expect("bootstrap genesis");
-        let directory =
-            std::env::temp_dir().join(format!("smb-live-checkpoint-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).expect("create checkpoint directory");
-        write_live_checkpoint(&game, &core, 7, &directory).expect("write live checkpoint");
-        let report: SmbArchiveReport = serde_json::from_slice(
-            &std::fs::read(directory.join("checkpoint-archive.json")).expect("read archive"),
-        )
-        .expect("parse archive report");
-        assert_eq!(report.entries.len(), core.archive.entries.len());
-        let decoded = SmbSnapshotCheckpoint::from_bytes(
-            &std::fs::read(directory.join("checkpoint-snapshots.bin")).expect("read snapshots"),
-            SNAPSHOT_CHECKPOINT_FORMAT,
-        )
-        .expect("decode snapshot checkpoint");
-        let owned = SmbSnapshotCheckpoint {
-            format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),
-            entries: core
-                .archive
-                .entries
-                .iter()
-                .map(|entry| SmbSnapshotCheckpointEntry {
-                    id: entry.report.id,
-                    snapshot: entry.snapshot.as_ref().clone(),
-                })
-                .collect(),
-        };
-        assert_eq!(decoded, owned, "borrowed encoding matches the owned one");
-        std::fs::remove_dir_all(&directory).ok();
-    }
-
-    #[test]
     fn live_campaign_replays_byte_identically() {
         let rom = synthetic_nrom();
         let config = genesis_config(0x5eed_ca03, 4, 32);
@@ -2073,6 +2031,39 @@ mod tests {
             accounting.concentration.window_draws,
             accounting.cell_selections
         );
+    }
+
+    #[test]
+    fn recorded_prefix_rebuilds_without_a_live_checkpoint() {
+        let rom = synthetic_nrom();
+        let config = genesis_config(0x5eed_ca04, 4, 32);
+        let mut stream = Vec::new();
+        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("live campaign");
+        let text = std::str::from_utf8(&stream).expect("stream is utf-8");
+        let prefix_lines = text.lines().take(9).collect::<Vec<_>>();
+        let expected_executions = u64::try_from(
+            prefix_lines
+                .iter()
+                .skip(1)
+                .filter(|line| {
+                    matches!(
+                        serde_json::from_str::<SmbCampaignStreamRecord>(line)
+                            .expect("decode prefix record"),
+                        SmbCampaignStreamRecord::Job(_)
+                    )
+                })
+                .count(),
+        )
+        .expect("short prefix count fits u64");
+        let prefix = format!("{}\n", prefix_lines.join("\n"));
+        let (rebuilt, checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, prefix.as_bytes(), None, None)
+                .expect("rebuild recorded prefix");
+        assert!(expected_executions > 0);
+        assert_eq!(rebuilt.executions_completed, expected_executions);
+        assert!(rebuilt.executions_completed < 32);
+        assert_eq!(rebuilt.archive.entries.len(), checkpoint.entries.len());
     }
 
     #[test]
@@ -2577,6 +2568,10 @@ mod tests {
                 .all(|line| !line.contains("unix_time")),
             "no sidecar field reaches the recorded stream"
         );
+        let progress: SmbCampaignProgressRecord =
+            serde_json::from_slice(&sidecar).expect("the short run emits one progress record");
+        assert_eq!(progress.executions, 1);
+        assert!(progress.frames_emulated > 0);
         let replayed =
             replay_smb_campaign(&rom, &with, None).expect("sidecar run replays byte-exact");
         assert_eq!(replayed.stream_sha256, observed.stream_sha256);

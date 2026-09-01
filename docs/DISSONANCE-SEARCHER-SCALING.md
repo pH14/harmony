@@ -258,6 +258,50 @@ replayed the preserved pre-cleanup 1-worker and 24-worker QuickNES check
 streams, proving that removal of the retired backend did not change the
 QuickNES target identity. The mature-archive stream also replayed exactly.
 
+## Long-campaign persistence correction
+
+The original campaign driver synchronously rewrote a whole-tree recovery
+checkpoint every 25,000 executions. This cost is negligible in the 30K scaling
+curve but grows with every retained state. A 1,625,000-execution exploratory
+run retained 3,335,873 states; its latest recovery generation occupied 51 GiB
+for snapshots and 1.3 GiB for archive metadata. Rewriting each preceding
+generation had issued 1.81 TB of writes in 51 minutes. During a rewrite the
+coordinator blocked in disk I/O, about 90% of the CPUs were idle, and no worker
+work was admitted.
+
+The live whole-tree checkpoint path was removed rather than moved to a
+background thread: background serialization would still consume unbounded
+memory and I/O bandwidth, and could never catch a sufficiently fast campaign.
+The hot path now writes only the append-only exact stream and the small progress
+sidecar. Complete archive and snapshot artifacts are serialized once, after
+the execution phase. The newline-complete portion of an interrupted stream
+remains the deterministic record of its completed prefix and can be replayed
+to rebuild that prefix; recovery does not justify repeatedly serializing the
+live tree. Progress-sidecar records now include cumulative emulated frames so
+operators can distinguish capacity from variable work per execution.
+
+A 300,000-execution validation on `ms02` crossed twelve former checkpoint
+boundaries with no checkpoint file, no stop-the-world pause, and 200.8 MB of
+process writes when execution completed. It ran in 111.482 seconds at
+2,691.012 executions/s and 678,199 frames/s. The final one-time artifacts were
+then written: a 192 MB stream, 445 MB archive, 488 MB report, and 9.3 GiB
+snapshot checkpoint.
+
+A fresh fixed 30K campaign ran at 3,775.978 executions/s and 766,748
+frames/s. Its stream SHA-256 is
+`40d7d0e0c87af93e9c0eb1895294cc488e68181d5b6a23d69bac6eb91b408891`;
+single-target replay rebuilt the report, archive, and snapshots byte-for-byte
+and recorded `replay_verified: true`.
+
+Raw executions/s still varies with the deterministic search trajectory because
+one execution is not a fixed amount of emulator work. Across externally
+sampled windows of the validation run, frames per execution rose from about
+193 to 376 while emulator throughput remained between 638K and 716K frames/s.
+The corresponding executions/s decline is therefore longer suffix execution,
+not archive-age overhead. Frames/s is the capacity invariant; making raw
+executions/s invariant would require changing search behavior or redefining an
+execution.
+
 ## QuickNES-visible search behavior
 
 Window size changes when a batch observes admitted archive state, so it is
