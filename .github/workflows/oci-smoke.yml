@@ -91,6 +91,11 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends \
               build-essential bzip2 gzip cpio kmod e2fsprogs util-linux locales
+            # The image build extracts the pinned debs and copies their
+            # shared-library closure from the host /lib; installing the same
+            # debs pulls that closure (libicu and friends) into the container.
+            apt-get install -y --no-install-recommends \
+              ./consonance/harmony-linux/dl/*.deb
             echo "en_US.UTF-8 UTF-8" >/etc/locale.gen && locale-gen
             make -C consonance/harmony-linux postgres-image'
       - name: Stage guest artifacts
