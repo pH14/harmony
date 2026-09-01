@@ -33,13 +33,16 @@ the vendor axis is byte-identical for this column (§6). The AMD column's shape 
 mandates it be authored before any vmm-core code (§7): vmm-core implements it, it does
 not negotiate with it. Where implementation and contract disagree, the implementation is
 wrong. The contract changes only by editing this document and bumping the version per §6
-— never by implementation drift. It is subordinate to INTEGRATION.md §1–§7 and docs/PLAN.md's
-trap table; any contradiction discovered later is raised as a `[question]`, not resolved
+— never by implementation drift. It is subordinate to INTEGRATION.md §1–§7 and
+`docs/DETERMINISM.md` (whose instruction table supersedes the historical `docs/PLAN.md`
+trap table); any contradiction discovered later is raised as a `[question]`, not resolved
 by a silent local choice.
 
 **How to read the tables.** The tables — not the prose — are the normative surface; the
-prose explains and motivates but binds nothing. Column grammar, uniform across the
-document:
+prose explains and motivates but binds nothing. Citation entries naming `docs/PLAN.md`,
+`docs/ROADMAP.md`, or `docs/DISSONANCE.md` cite deleted historical docs (git history); they
+stay verbatim because the assembled tables are hash-serialized (§6). Column grammar,
+uniform across the document:
 
 - **MSR tables**: `| MSR | Index | Read | Write | Rationale | Citation |`. `MSR` is the
   `arch/x86/include/asm/msr-index.h` name at v6.18.35 (or the architectural name where
@@ -430,7 +433,7 @@ form and `contract_hash` are byte-identical through the vendor-axis restructure 
 > pinned to `1/1`) describes the **v1 contract**: an SMP-*built* kernel with exactly one
 > *online* vCPU (task 56 shipped `CONFIG_SMP=y` + `maxcpus=1`; the kernel config is SMP-capable,
 > the running topology is not). Real multi-vCPU is out of scope until explicitly re-ruled —
-> deferred, not foreclosed. See `docs/DISSONANCE.md`'s matching ruling and `docs/ROADMAP.md`.
+> deferred, not foreclosed (matching rulings in git history).
 
 Baseline name: **`det-cfl-v1`** — a synthetic single-socket, single-core, single-thread
 client CPU modeled on Coffee Lake-S (GenuineIntel, family 6, model 0x9E, stepping 0xC — the

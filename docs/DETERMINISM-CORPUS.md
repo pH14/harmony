@@ -5,10 +5,9 @@ gated on it, but nothing yet **systematically attacks** it. This document is the
 component that does: a growing corpus of workloads, run through a small set of oracles, that
 together answer "is the deterministic engine itself correct?"
 
-It is a design doc in the mold of `R-BACKEND.md` / `R1-DEVICE-MODEL.md`: it fixes the frame
-and the dependency gates, and sequences a backlog. Tasks 17–18 are specced now
-(`tasks/17-acceptance-suite-harness.md`, `tasks/18-instruction-sweep.md`); 19–20 and the
-Linux-guest workloads are outlined here with their gates and will be specced when unblocked.
+It fixes the frame and the dependency gates, and sequences a backlog. References to task
+files, `docs/ROADMAP.md`, `docs/DISSONANCE.md`, and the retired `R-*.md` design docs
+resolve in git history.
 
 ## The frame: two orthogonal axes
 

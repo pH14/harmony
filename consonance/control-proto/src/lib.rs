@@ -10,7 +10,7 @@
 //! verb→backend binding, and the stage-and-re-enter run suspension are frontier
 //! (vmm-core), built later against these types.
 //!
-//! Two design rules from `docs/DISSONANCE.md` are load-bearing here:
+//! Two design rules from git history's `docs/DISSONANCE.md` are load-bearing here:
 //!
 //! - **No bare `restore`.** Every restore is [`Replay`](Request::Replay)
 //!   (verbatim — the determinism-gate / repro path) or [`Branch`](Request::Branch)

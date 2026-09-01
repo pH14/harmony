@@ -1911,7 +1911,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// caller may deliberately sacrifice a timeline; fork-first is a usage
     /// discipline, not a server rule.
     ///
-    /// **Off the record by ruling** (`docs/RESOLUTION.md` §Improvisations): the
+    /// **Off the record by ruling** (git history's `docs/RESOLUTION.md` §Improvisations): the
     /// serial channel is deliberately crude, there is **no determinism guarantee**
     /// on this path, and nothing here is recorded into the reproducer
     /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. See the

@@ -10,7 +10,7 @@
 //! entry; see [`HostFault`](crate::HostFault) and `tasks/45-host-control-plane.md`.
 //!
 //! **Guest, namespaced, layerable (D7).** Per the dissonance ruling
-//! (`docs/DISSONANCE.md`, "The guest control planes"), guest decision classes are
+//! (git history's `docs/DISSONANCE.md`, "The guest control planes"), guest decision classes are
 //! *namespaced per `harmony-<env>` layer* (`linux.net.drop`, `kube.net.partition`,
 //! …) and they **layer**: a higher guest environment may *add* or *constrain* a
 //! lower layer's classes but never silently reinterpret them. The proper division

@@ -1149,7 +1149,7 @@ where
     /// consumed FIFO by the guest's serial shell as it reads the RBR; while any are
     /// queued, the COM1 receive line asserts (so an interrupt-driven console picks
     /// them up). **No determinism guarantee**: `exec` taints its timeline by ruling
-    /// (`docs/RESOLUTION.md`), so this input is never recorded, hashed, or
+    /// (git history's `docs/RESOLUTION.md`), so this input is never recorded, hashed, or
     /// snapshotted. Inert for every run that never calls it.
     pub fn inject_serial_input(&mut self, bytes: &[u8]) {
         <B::A as Vendor>::inject_serial_input(&mut self.devices, bytes);

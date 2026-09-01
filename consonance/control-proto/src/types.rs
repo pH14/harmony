@@ -237,7 +237,7 @@ pub enum Request {
     /// **Observation** (task 80): read `len` bytes of guest **physical** memory at
     /// `gpa` → [`Bytes`](Reply::Bytes). A pure observation — it never mutates guest
     /// state, V-time, or any hash, and is never recorded into an
-    /// [`Reproducer`] (the `docs/RESOLUTION.md` search-surface criterion:
+    /// [`Reproducer`] (the git history's `docs/RESOLUTION.md` search-surface criterion:
     /// observation, not a move). `len` is bounded by the backend's read cap
     /// ([`READ_CAP`](crate::READ_CAP)); an over-cap `len` is a loud
     /// [`ReadTooLarge`](crate::ControlError::ReadTooLarge) and a `[gpa, gpa+len)`
@@ -259,7 +259,7 @@ pub enum Request {
     /// typed at the serial shell), run until a completion sentinel or the V-time
     /// `deadline`, and capture the serial output → [`ExecResult`](Reply::ExecResult).
     ///
-    /// **Off the record, by ruling** (`docs/RESOLUTION.md` §Improvisations). `exec`
+    /// **Off the record, by ruling** (git history's `docs/RESOLUTION.md` §Improvisations). `exec`
     /// is a one-off *improvisation*: it is **never recorded into any [`Reproducer`]**
     /// and carries **no determinism guarantee** — the serial byte channel is
     /// deliberately crude. What is airtight is the **taint guard** the server
@@ -346,7 +346,7 @@ pub enum Reply {
     /// seal's **evidence cut** over the ordered SDK capture — the included
     /// SDK-event count. The stamp is the **sole authority** for the cut: a
     /// client never reconstructs it from a second read
-    /// (`docs/DISSONANCE-STRATEGY.md`, "The cut is captured with the seal").
+    /// (git history's `docs/DISSONANCE-STRATEGY.md`, "The cut is captured with the seal").
     ///
     /// **The cut is half-open, by prefix length — never by `Moment`
     /// comparison.** Persisted SDK-capture vector positions `< sdk_events` are
@@ -387,7 +387,7 @@ pub enum Reply {
 }
 
 /// A **versioned** register view (task 80) — the observation surface for
-/// `docs/RESOLUTION.md`. It is a *view*, not the save/restore format
+/// git history's `docs/RESOLUTION.md`. It is a *view*, not the save/restore format
 /// ([`VcpuState`]-equivalent): additive evolution only, no round-trip obligation,
 /// so [`version`](RegsView::VERSION) may gain fields without breaking a reader
 /// that pins the older shape. Carries the general-purpose registers, `rip`,
