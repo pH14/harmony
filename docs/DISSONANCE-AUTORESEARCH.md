@@ -530,11 +530,18 @@ Champion certification also records two endurance numbers from a soak of at
 least 2,000,000 executions at the host's sweet-spot worker count:
 
 - **throughput endurance:** windowed throughput in the mature phase divided by
-  the early-run median. The merged backend certifies at 0.92–0.95; a champion
-  below 0.90 is a regression veto regardless of search-lane gains.
-- **memory plateau:** peak resident set must plateau within the recorded
-  `--memory-budget-mib` bound, the host must stay out of swap, and the
-  admission loop must stay free of synchronous checkpoint rewrites.
+  the early median, with both windows taken after the archive population first
+  fills and the window definitions frozen in the evaluator record. The merged
+  backend certifies at 0.92–0.95; a champion below 0.90 is a regression veto
+  regardless of search-lane gains.
+- **memory plateau:** the recorded `--memory-budget-mib` bounds deterministic
+  archive bytes; resident set sits above it by a fixed process overhead. The
+  veto conditions are: deterministic memory bytes exceed the recorded budget,
+  resident set keeps growing instead of reaching a plateau, resident set
+  exceeds the reigning champion's certified plateau (2,929,356 KiB at a 2 GiB
+  budget), the host swaps, or synchronous checkpoint rewrites reappear in the
+  admission loop. A challenger that lowers the plateau re-certifies the
+  envelope at promotion.
 
 ## 14. First batch under this charter
 
