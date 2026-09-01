@@ -7,7 +7,8 @@
 use std::{env, error::Error, fs, time::Instant};
 
 use searcher::{
-    smb::target::{ButtonChord, SmbTarget},
+    search::campaign::Game,
+    smb::{campaign::SmbGame, target::ButtonChord},
     target::Target,
 };
 use sha2::{Digest, Sha256};
@@ -16,15 +17,30 @@ use sha2::{Digest, Sha256};
 fn main() -> Result<(), Box<dyn Error>> {
     let rom =
         fs::read(env::var_os("HARMONY_SMB_ROM").ok_or("HARMONY_SMB_ROM must name the SMB ROM")?)?;
-    let mut target = SmbTarget::from_smb_rom_bytes_headless(&rom)?;
+    let mut target = selected_target(&rom)?;
     let rounds: u32 = env::args()
         .nth(1)
         .map(|value| value.parse())
         .transpose()?
         .unwrap_or(200);
+    let state_rounds = rounds.saturating_mul(100).max(10_000);
 
     let base = target.snapshot().ok_or("snapshot")?;
-    println!("snapshot bytes: {}", serde_json::to_vec(&base)?.len());
+    println!("emulator state bytes: {}", base.emulator_state_bytes_len());
+    println!(
+        "complete snapshot JSON bytes: {}",
+        serde_json::to_vec(&base)?.len()
+    );
+
+    target.restore(&base)?;
+    let fixed = target.snapshot().ok_or("fixpoint snapshot")?;
+    target.restore(&fixed)?;
+    let fixed_again = target.snapshot().ok_or("second fixpoint snapshot")?;
+    let restore_fixpoint = fixed == fixed_again;
+    println!("snapshot restore fixpoint: {restore_fixpoint}");
+    if !restore_fixpoint {
+        return Err("snapshot restore did not reach a fixpoint".into());
+    }
 
     let started = Instant::now();
     let mut frames = 0_u64;
@@ -41,19 +57,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let started = Instant::now();
-    for _ in 0..rounds {
+    for _ in 0..state_rounds {
         target.restore(&base)?;
     }
-    let restore_ms = started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds);
-    println!("restore: {restore_ms:.3} ms");
+    let restore_secs = started.elapsed().as_secs_f64();
+    println!(
+        "restore: {:.3} us, {:.0} states/s",
+        restore_secs * 1_000_000.0 / f64::from(state_rounds),
+        f64::from(state_rounds) / restore_secs
+    );
 
     let started = Instant::now();
-    for _ in 0..rounds {
+    for _ in 0..state_rounds {
         let _ = target.snapshot().ok_or("snapshot")?;
     }
+    let snapshot_secs = started.elapsed().as_secs_f64();
     println!(
-        "snapshot: {:.3} ms",
-        started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds)
+        "snapshot: {:.3} us, {:.0} states/s",
+        snapshot_secs * 1_000_000.0 / f64::from(state_rounds),
+        f64::from(state_rounds) / snapshot_secs
     );
 
     let started = Instant::now();
@@ -100,4 +122,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds)
     );
     Ok(())
+}
+
+fn selected_target(rom: &[u8]) -> Result<searcher::smb::target::SmbTarget, Box<dyn Error>> {
+    SmbGame::from_environment(rom)?
+        .new_target()
+        .map_err(Into::into)
 }

@@ -244,11 +244,13 @@ experiment runs on this target: {null, scripted, cheap-LLM triage} × {base,
 generated detectors, detectors + generated mutators}. Exit: metric curves per
 configuration. This phase carries the science; phase 4b is the showpiece.
 
-**Phase 4b — NES demo (completed).** The deterministic SMB executor uses
-`tetanes-core` for per-frame stepping, joypad input, RAM access, and in-memory
-save states. Its ROM is supplied externally through `HARMONY_SMB_ROM`; no ROM
-is copied into or committed to the repository. Current NES work is specified
-only in `docs/MODEL-IN-THE-LOOP-PLAN.md`.
+**Phase 4b — NES demo (completed).** The deterministic SMB executor uses the
+pinned native QuickNES/libretro adapter for per-frame stepping, joypad input,
+direct RAM access, and fixed-buffer in-memory save states. Its ROM and core
+binary are supplied externally through `HARMONY_SMB_ROM` and
+`HARMONY_QUICKNES_CORE`; neither is copied into or committed to the
+repository. Current NES work is specified only in
+`docs/MODEL-IN-THE-LOOP-PLAN.md`.
 
 **Phase 5 — the real executor (later, a separate decision).** Consonance
 slots in behind the same one-method `Executor` trait; fault schedules become

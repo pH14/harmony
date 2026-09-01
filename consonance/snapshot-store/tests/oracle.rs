@@ -45,8 +45,8 @@ impl Model {
         let zero = [0u8; PAGE_SIZE];
         let mut set = std::collections::BTreeSet::new();
         for i in self.live_indices() {
-            for chunk in self.snaps[i].image.chunks_exact(PAGE_SIZE) {
-                if chunk != zero {
+            for chunk in self.snaps[i].image.as_chunks::<PAGE_SIZE>().0 {
+                if *chunk != zero {
                     set.insert(chunk.to_vec());
                 }
             }

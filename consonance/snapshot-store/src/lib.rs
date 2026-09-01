@@ -127,18 +127,13 @@ struct PageHashHasher(u64);
 
 impl std::hash::Hasher for PageHashHasher {
     fn write(&mut self, bytes: &[u8]) {
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            // `chunks_exact(8)` yields exactly 8 bytes; the conversion cannot fail.
-            let word: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
-            self.0 ^= u64::from_le_bytes(word);
+        let (chunks, rest) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            self.0 ^= u64::from_le_bytes(*chunk);
         }
-        let rest = chunks.remainder();
-        if !rest.is_empty() {
-            let mut word = [0u8; 8];
-            word[..rest.len()].copy_from_slice(rest);
-            self.0 ^= u64::from_le_bytes(word);
-        }
+        let mut word = [0u8; 8];
+        word[..rest.len()].copy_from_slice(rest);
+        self.0 ^= u64::from_le_bytes(word);
     }
 
     fn finish(&self) -> u64 {
@@ -702,6 +697,14 @@ mod tests {
         raw.write(&zero);
         assert_eq!(raw.finish(), 0);
         assert_ne!(fold(&zero), 0);
+
+        // The `Hasher` contract permits partial writes even though PageHash keys
+        // use only complete words. Pin the zero-padded tail and its XOR behavior.
+        let mut partial = PageHashHasher::default();
+        partial.write(&[1]);
+        assert_eq!(partial.finish(), 1);
+        partial.write(&[1]);
+        assert_eq!(partial.finish(), 0);
 
         // XOR-folding is not a mixer: two keys whose four 8-byte words cancel to the
         // same value fold identically — [0xFF; 32] and [0; 32] both cancel to 0. That

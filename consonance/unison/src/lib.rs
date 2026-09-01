@@ -389,7 +389,9 @@ mod hex32 {
             return Err(D::Error::custom("expected 64 hex characters"));
         }
         let mut out = [0u8; 32];
-        for (i, pair) in raw.chunks_exact(2).enumerate() {
+        let (pairs, remainder) = raw.as_chunks::<2>();
+        debug_assert!(remainder.is_empty());
+        for (i, pair) in pairs.iter().enumerate() {
             let hi = nibble(pair[0]).ok_or_else(|| D::Error::custom("invalid hex digit"))?;
             let lo = nibble(pair[1]).ok_or_else(|| D::Error::custom("invalid hex digit"))?;
             out[i] = (hi << 4) | lo;
