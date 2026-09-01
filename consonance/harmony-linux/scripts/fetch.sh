@@ -71,7 +71,9 @@ fetch_postgres_image() {
         echo "ok: $out (cached; integrity anchored by the pinned registry digest)"
         return
     fi
-    if ! command -v ctr >/dev/null 2>&1; then
+    # `ctr version` also proves the containerd socket is reachable — CI
+    # runners ship a ctr binary the runner user cannot talk to.
+    if ! ctr version >/dev/null 2>&1; then
         echo "skip: $out — needs 'ctr' (containerd). Run 'make -C consonance/harmony-linux fetch' on the" >&2
         echo "      Linux box where the task-38 image is built; the digest is pinned in" >&2
         echo "      versions.lock so the pull is content-verified there." >&2
@@ -122,7 +124,7 @@ fetch_k3s_pause_image() {
         echo "ok: $out (cached; extracted from the digest-pinned air-gap tarball)"
         return
     fi
-    if ! command -v ctr >/dev/null 2>&1; then
+    if ! ctr version >/dev/null 2>&1; then
         echo "skip: $out — needs 'ctr' (containerd). Run 'make -C consonance/harmony-linux fetch' on the" >&2
         echo "      Linux box; the air-gap tarball is sha256-pinned so the pause image" >&2
         echo "      is content-verified there." >&2
