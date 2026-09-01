@@ -2606,13 +2606,17 @@ where
                 continue;
             }
             for depth in (2..Self::coarsest_depth()).rev() {
-                let mut groups = cells
-                    .iter()
-                    .map(|(key, _)| key.group(depth))
-                    .collect::<Vec<_>>();
-                groups.sort_unstable();
-                groups.dedup();
-                let index = self.draw_group_index(rand, depth, &groups)?;
+                let mut deepest = BTreeMap::<K::Group, K::Group>::new();
+                for (key, _) in &cells {
+                    let band = key.group(Self::frontier_depth());
+                    deepest
+                        .entry(key.group(depth))
+                        .and_modify(|frontier| *frontier = (*frontier).max(band))
+                        .or_insert(band);
+                }
+                let mut groups = deepest.keys().copied().collect::<Vec<_>>();
+                let frontier = deepest.values().copied().collect::<Vec<_>>();
+                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier))?;
                 let chosen = groups.swap_remove(index);
                 cells.retain(|(key, _)| key.group(depth) == chosen);
             }
@@ -2626,7 +2630,7 @@ where
                     .iter()
                     .map(|(key, _)| key.group(1))
                     .collect::<Vec<_>>();
-                self.draw_group_index(rand, 1, &cell_groups)?
+                self.draw_group_index(rand, 1, &cell_groups, None)?
             } else {
                 let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
                 rand.below(count)
@@ -2675,7 +2679,11 @@ where
                     .iter()
                     .copied()
                     .collect::<Vec<_>>();
-                let index = self.draw_group_index(rand, depth, &groups)?;
+                let frontier = groups
+                    .iter()
+                    .map(|group| self.deepest_live_band(class, depth, *group))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier))?;
                 parent = groups[index];
             }
 
@@ -2689,7 +2697,7 @@ where
                     .copied()
                     .collect::<Vec<_>>();
                 if class_depth >= 1 {
-                    groups[self.draw_group_index(rand, cell_depth, &groups)?]
+                    groups[self.draw_group_index(rand, cell_depth, &groups, None)?]
                 } else {
                     groups[rand
                         .below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
@@ -2697,7 +2705,7 @@ where
             } else {
                 let only = [class];
                 if class_depth >= 1 {
-                    let _ = self.draw_group_index(rand, cell_depth, &only)?;
+                    let _ = self.draw_group_index(rand, cell_depth, &only, None)?;
                 } else {
                     let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
                 }
@@ -2719,18 +2727,51 @@ where
         Ok(None)
     }
 
-    /// Draw one index into `groups` at `depth`. Under the energy selector
-    /// each group's weight halves every `scale` barren selections and floors
-    /// at 1/256 of a fresh group; every other selector draws uniformly, so
-    /// their recorded rand streams keep their exact bytes.
+    /// The depth whose groups order the walk's frontier rank: the pooled
+    /// threshold depth, which for a key with a progress band is the band.
+    fn frontier_depth() -> usize {
+        2.min(Self::class_depth())
+    }
+
+    /// The deepest live frontier-depth group under `group` at `depth`
+    /// within `class`. A group's own key orders by whatever its pooled
+    /// fields leave, which for a room is its identity bytes, so the walk
+    /// ranks groups above the frontier depth by their frontier instead.
+    fn deepest_live_band(
+        &self,
+        class: K::Group,
+        depth: usize,
+        group: K::Group,
+    ) -> Result<K::Group, Box<dyn Error>> {
+        let mut current = group;
+        for level in (Self::frontier_depth()..depth).rev() {
+            current = *self
+                .live_children
+                .get(level)
+                .and_then(|children| children.get(&(class, current)))
+                .and_then(BTreeSet::last)
+                .ok_or("live selector hierarchy is missing a pooled group's frontier")?;
+        }
+        Ok(current)
+    }
+
+    /// Draw one index into `groups` at `depth`, where `frontier[i]` is the
+    /// deepest live frontier-depth group under `groups[i]`, or `None` below
+    /// the frontier depth where every group shares one. Under the energy
+    /// selector each group's weight halves every `scale` barren selections
+    /// and floors at 1/256 of a fresh group, then halves again for every
+    /// distinct deeper frontier, so the rank order survives the energy
+    /// floor; every other selector draws uniformly, so their recorded rand
+    /// streams keep their exact bytes.
     fn draw_group_index(
         &self,
         rand: &mut RomuDuoJrRand,
         depth: usize,
         groups: &[K::Group],
+        frontier: Option<&[K::Group]>,
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
-        let (scales, frontier) = match &self.selector_policy {
+        let (scales, ranked_by_frontier) = match &self.selector_policy {
             SelectorPolicy::Energy(scales) => (scales, false),
             SelectorPolicy::EnergyFrontier(scales)
             | SelectorPolicy::EnergyFrontierCheapest(scales) => (scales, true),
@@ -2741,19 +2782,20 @@ where
         let Some(scale) = scales.groups.get(depth - 1).copied() else {
             return Ok(rand.below(count));
         };
-        // Frontier rank depends only on the set of distinct groups. Build
+        // Frontier rank depends only on the set of distinct frontiers. Build
         // that ordering once instead of filtering, allocating, sorting, and
-        // deduplicating the complete group list once per candidate group.
-        let ranked = if frontier {
-            let mut ranked = groups.to_vec();
-            ranked.sort_unstable();
-            ranked.dedup();
-            ranked
-        } else {
-            Vec::new()
+        // deduplicating the complete list once per candidate group.
+        let ranked = match frontier {
+            Some(frontier) if ranked_by_frontier => {
+                let mut ranked = frontier.to_vec();
+                ranked.sort_unstable();
+                ranked.dedup();
+                ranked
+            }
+            _ => Vec::new(),
         };
         let mut weights = Vec::with_capacity(groups.len());
-        for group in groups {
+        for (index, group) in groups.iter().enumerate() {
             let barren = self
                 .group_barren
                 .get(depth - 1)
@@ -2762,17 +2804,20 @@ where
                 .unwrap_or(0);
             let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
             let energy = 256_usize >> halvings;
-            if !frontier {
+            if !ranked_by_frontier {
                 weights.push(energy);
                 continue;
             }
-            // Rank from the deepest distinct group value at this depth; the
-            // deepest group keeps its full energy weight.
-            let position = ranked
-                .binary_search(group)
-                .map_err(|_| "energy frontier group is missing from its own rank table")?;
-            let rank = ranked.len().saturating_sub(position.saturating_add(1));
-            weights.push((energy >> rank.min(8)).max(1));
+            let rank = match frontier {
+                Some(frontier) => {
+                    let position = ranked
+                        .binary_search(&frontier[index])
+                        .map_err(|_| "energy frontier group is missing from its own rank table")?;
+                    ranked.len().saturating_sub(position.saturating_add(1))
+                }
+                None => 0,
+            };
+            weights.push((energy << 8) >> rank.min(8));
         }
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
         let mut draw = rand.below(total);
