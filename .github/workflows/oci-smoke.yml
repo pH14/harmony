@@ -69,6 +69,11 @@ jobs:
           key: oci-smoke-guest-${{ hashFiles('consonance/harmony-linux/linux/**', 'consonance/harmony-linux/Makefile', 'consonance/harmony-linux/scripts/**') }}
       - name: Build guest artifacts
         if: steps.guest.outputs.cache-hit != 'true'
+        # The counter-opcode scan baselines are per-toolchain; select the
+        # runner-toolchain (gcc 13) lists instead of the box defaults.
+        env:
+          HARMONY_RDTSC_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt
+          HARMONY_RDRAND_ALLOWLIST: ${{ github.workspace }}/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
