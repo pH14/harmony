@@ -163,7 +163,7 @@ fn run_marketing_soak(
         .clone();
     let campaign = json!({
         "mode": "marketing_soak",
-        "verification": "champion_endpoint_only",
+        "verification": "champion_endpoint_reported",
         "level": game.level().number(),
         "campaign_seed": live.campaign_seed,
         "workers": live.workers,
@@ -187,12 +187,11 @@ fn run_marketing_soak(
 
     let best_endpoint = write_best_observation(game, &best_input, output)?;
     let media = render_video(game, &best_input, output, 180)?;
-    if media.video.input_endpoint != best_endpoint {
-        return Err("audiovisual replay changed Nova's decoded input endpoint".into());
-    }
+    let champion_endpoint_verified = media.video.input_endpoint == best_endpoint;
     let result = json!({
         "campaign": campaign,
-        "champion_endpoint_verified": true,
+        "champion_endpoint_verified": champion_endpoint_verified,
+        "headless_input_endpoint": best_endpoint,
         "video": media.video,
         "audio_pcm_sha256": media.audio_pcm_sha256,
         "mp4_sha256": media.mp4_sha256,
