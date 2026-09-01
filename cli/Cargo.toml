@@ -1,0 +1,24 @@
+[package]
+name = "harmony-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The `harmony` product CLI: host preflight and deterministic OCI workload runs"
+
+[[bin]]
+name = "harmony"
+path = "src/main.rs"
+
+[dependencies]
+# CLI dispatch (whitelist: clap is bins-only; this crate is a binary).
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+vmm-core = { path = "../consonance/vmm-core" }
+vmm-backend = { path = "../consonance/vmm-backend" }
+
+[lints]
+workspace = true
