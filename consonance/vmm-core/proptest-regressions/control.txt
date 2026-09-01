@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8ab92673f8c5fbb7ff70f56b766080b7d57220c5f8f6986d411b45df7949c7bc # shrinks to schedule = {1: CorruptMemory { gpa: 0, mask: BitMask(0) }}
+cc 6aae2fdfa4def753da62f68d9d9cee374661789de80973cc9620ad4104154400 # shrinks to ops = [Run]

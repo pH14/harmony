@@ -5,7 +5,6 @@ pub vm_state::MpState::Runnable
 pub enum vm_state::VmStateError
 pub vm_state::VmStateError::BadMagic(u32)
 pub vm_state::VmStateError::DuplicateTag(u16)
-pub vm_state::VmStateError::FractionalRatio
 pub vm_state::VmStateError::InvalidField
 pub vm_state::VmStateError::MissingSection(u16)
 pub vm_state::VmStateError::SectionOrder(u16)
@@ -14,6 +13,17 @@ pub vm_state::VmStateError::Truncated
 pub vm_state::VmStateError::UnknownTag(u16)
 pub vm_state::VmStateError::UnsupportedArch(u16)
 pub vm_state::VmStateError::UnsupportedVersion(u16)
+pub struct vm_state::Arm64Debug
+pub vm_state::Arm64Debug::breakpoint_control: [u64; 16]
+pub vm_state::Arm64Debug::breakpoint_value: [u64; 16]
+pub vm_state::Arm64Debug::mdscr_el1: u64
+pub vm_state::Arm64Debug::trap_debug_exceptions: bool
+pub vm_state::Arm64Debug::trap_debug_reg_accesses: bool
+pub vm_state::Arm64Debug::watchpoint_control: [u64; 16]
+pub vm_state::Arm64Debug::watchpoint_value: [u64; 16]
+pub struct vm_state::Arm64Interrupts
+pub vm_state::Arm64Interrupts::fiq: bool
+pub vm_state::Arm64Interrupts::irq: bool
 pub struct vm_state::Arm64Regs
 pub vm_state::Arm64Regs::elr_el1: u64
 pub vm_state::Arm64Regs::pc: u64
@@ -22,6 +32,10 @@ pub vm_state::Arm64Regs::sp: u64
 pub vm_state::Arm64Regs::sp_el1: u64
 pub vm_state::Arm64Regs::spsr_el1: u64
 pub vm_state::Arm64Regs::x: [u64; 31]
+pub struct vm_state::Arm64SimdFp
+pub vm_state::Arm64SimdFp::fpcr: u64
+pub vm_state::Arm64SimdFp::fpsr: u64
+pub vm_state::Arm64SimdFp::q: [[u8; 16]; 32]
 pub struct vm_state::Arm64Sysregs
 pub vm_state::Arm64Sysregs::cntkctl_el1: u64
 pub vm_state::Arm64Sysregs::cpacr_el1: u64
@@ -37,13 +51,17 @@ pub vm_state::Arm64Sysregs::ttbr1_el1: u64
 pub vm_state::Arm64Sysregs::vbar_el1: u64
 pub struct vm_state::Arm64VmState
 pub vm_state::Arm64VmState::contract_hash: [u8; 32]
+pub vm_state::Arm64VmState::debug: vm_state::Arm64Debug
 pub vm_state::Arm64VmState::devices: vm_state::DeviceBlob
 pub vm_state::Arm64VmState::hypercall: alloc::vec::Vec<u8>
+pub vm_state::Arm64VmState::interrupts: vm_state::Arm64Interrupts
 pub vm_state::Arm64VmState::mp_state: vm_state::MpState
 pub vm_state::Arm64VmState::regs: vm_state::Arm64Regs
+pub vm_state::Arm64VmState::simd_fp: vm_state::Arm64SimdFp
 pub vm_state::Arm64VmState::sysregs: vm_state::Arm64Sysregs
 pub vm_state::Arm64VmState::timers: vm_state::TimerQueueState
 pub vm_state::Arm64VmState::vtime: vm_state::VtimeState
+pub vm_state::Arm64VmState::vtimer: vm_state::Arm64Vtimer
 impl vm_state::Arm64VmState
 pub fn vm_state::Arm64VmState::decode(&[u8]) -> core::result::Result<vm_state::Arm64VmState, vm_state::VmStateError>
 pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
@@ -54,6 +72,11 @@ pub fn vm_state::Arm64VmState::encode(&self) -> core::result::Result<alloc::vec:
 pub fn vm_state::Arm64VmState::entropy_bytes(&self) -> &[u8]
 pub fn vm_state::Arm64VmState::timers(&self) -> &vm_state::TimerQueueState
 pub fn vm_state::Arm64VmState::vtime(&self) -> &vm_state::VtimeState
+pub struct vm_state::Arm64Vtimer
+pub vm_state::Arm64Vtimer::cntv_ctl_el0: u64
+pub vm_state::Arm64Vtimer::cntv_cval_el0: u64
+pub vm_state::Arm64Vtimer::masked: bool
+pub vm_state::Arm64Vtimer::offset: u64
 pub struct vm_state::DebugRegs
 pub vm_state::DebugRegs::db: [u64; 4]
 pub vm_state::DebugRegs::dr6: u64
@@ -149,8 +172,6 @@ pub fn vm_state::VmState::vtime(&self) -> &vm_state::VtimeState
 pub struct vm_state::VtimeState
 pub vm_state::VtimeState::guest_base: u64
 pub vm_state::VtimeState::guest_hz: u64
-pub vm_state::VtimeState::ratio_den: u64
-pub vm_state::VtimeState::ratio_num: u64
 pub vm_state::VtimeState::snapshot_vns: u64
 pub struct vm_state::Xcrs
 pub vm_state::Xcrs::xcr0: u64

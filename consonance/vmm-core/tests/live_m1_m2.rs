@@ -172,7 +172,7 @@ fn m1_hello_boots_and_prints() {
 
 // --- M2 -------------------------------------------------------------------
 
-/// A `unison::Subject` over a live `Vmm<KvmBackend>`. Work-counting /
+/// A `unison::Subject` over a live `Vmm<KvmBackend>`. Exit-counting /
 /// `run_to(target)` bisection is a later-phase concern (V-time): this milestone
 /// runs the payload to terminal on the first `run_to`, then reports `Halted`.
 struct VmmMachine {
@@ -194,7 +194,7 @@ impl Subject for VmmMachine {
     }
 
     fn work(&self) -> u64 {
-        // 0 before the run, 1 at terminal (no intra-run work counter yet).
+        // 0 before the run, 1 at terminal (no intra-run exit-count clock yet).
         u64::from(self.ran)
     }
 

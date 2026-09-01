@@ -17,6 +17,17 @@
 
 use super::board::{CNTFRQ_HZ, GICD, GICR, PL011, PL011_SPI, RAM_BASE, VIRT_TIMER_INTID};
 
+/// The fixed 64-byte AA-5/M1 bootloader seed, supplied unchanged to the M4
+/// guest. The owned kernel credits all 512 bits before it can enter the
+/// wall-time jitter harvester. Keeping the established M1 value is also part
+/// of running the M1 guest-input oracle verbatim on the KVM substrate.
+const BOOT_RNG_SEED: [u8; 64] = [
+    0x48, 0x61, 0x72, 0x6d, 0x6f, 0x6e, 0x79, 0x2d, 0x41, 0x41, 0x35, 0x2d, 0x72, 0x6e, 0x67, 0x2d,
+    0x73, 0x65, 0x65, 0x64, 0x2d, 0x76, 0x31, 0x2d, 0x64, 0x65, 0x74, 0x65, 0x72, 0x6d, 0x69, 0x6e,
+    0x69, 0x73, 0x74, 0x69, 0x63, 0x2d, 0x66, 0x69, 0x78, 0x65, 0x64, 0x2d, 0x62, 0x79, 0x2d, 0x63,
+    0x6f, 0x6e, 0x73, 0x74, 0x72, 0x75, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x2d, 0x30, 0x30, 0x30, 0x31,
+];
+
 /// FDT header magic (`0xd00dfeed`), stored big-endian at offset 0.
 pub const FDT_MAGIC: u32 = 0xd00d_feed;
 /// FDT format version this writer emits.
@@ -153,6 +164,32 @@ fn u64_cells(v: u64) -> [u32; 2] {
 /// `bootargs` is the guest kernel command line (empty is fine for the
 /// skeleton). The returned bytes are a complete, aligned FDT.
 pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
+    build_inner(ram_len, pvclock_gpa, bootargs, None)
+}
+
+/// Build the Linux DTB variant with an external initramfs range. The end is
+/// exclusive, matching Linux's `linux,initrd-end` binding.
+pub(crate) fn build_with_initrd(
+    ram_len: u64,
+    pvclock_gpa: u64,
+    bootargs: &str,
+    initrd_start: u64,
+    initrd_end: u64,
+) -> Vec<u8> {
+    build_inner(
+        ram_len,
+        pvclock_gpa,
+        bootargs,
+        Some((initrd_start, initrd_end)),
+    )
+}
+
+fn build_inner(
+    ram_len: u64,
+    pvclock_gpa: u64,
+    bootargs: &str,
+    initrd: Option<(u64, u64)>,
+) -> Vec<u8> {
     let mut f = Fdt::new();
 
     // --- root ---------------------------------------------------------------
@@ -166,6 +203,11 @@ pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
     f.begin_node("chosen");
     f.prop_str("stdout-path", "/pl011@9000000");
     f.prop_str("bootargs", bootargs);
+    f.prop_bytes("rng-seed", &BOOT_RNG_SEED);
+    if let Some((start, end)) = initrd {
+        f.prop_bytes("linux,initrd-start", &start.to_be_bytes());
+        f.prop_bytes("linux,initrd-end", &end.to_be_bytes());
+    }
     f.end_node();
 
     // /psci — power state coordination (HVC method; the arm64 doorbell/PSCI seam).
@@ -197,14 +239,16 @@ pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
     }
     f.end_node();
 
-    // /reserved-memory — the paravirt clock page (reserved, NOT populated: the
-    // hm-rk5 seam). no-map keeps the guest kernel from mapping it as normal RAM.
+    // /reserved-memory — the paravirt clock page. It is excluded from the
+    // allocator but deliberately retained in arm64's normal linear map: the
+    // host writes ordinary RAM while the sole vCPU is stopped, so the guest
+    // must not create a second device-memory alias for the same physical page.
     f.begin_node("reserved-memory");
     f.prop_u32("#address-cells", 2);
     f.prop_u32("#size-cells", 2);
     // An **empty `ranges`** is required by the /reserved-memory binding: it
     // signals a 1:1 child↔parent address mapping, without which OF consumers
-    // (Linux `of_reserved_mem`) do not honor a child's `reg`/`no-map`.
+    // (Linux `of_reserved_mem`) do not honor a child's `reg` reservation.
     f.prop_empty("ranges");
     // The child's **unit-address MUST equal its first `reg` address** (FDT node
     // naming rule) — `pvclock@<hex(pvclock_gpa)>`, not `@0`, or FDT validators
@@ -217,7 +261,6 @@ pub fn build(ram_len: u64, pvclock_gpa: u64, bootargs: &str) -> Vec<u8> {
         reg.extend_from_slice(&u64_cells(0x1000).map(u32::to_be_bytes).concat());
         f.prop_bytes("reg", &reg);
     }
-    f.prop_empty("no-map");
     f.end_node();
     f.end_node();
 
@@ -517,6 +560,11 @@ mod tests {
             p.prop("chosen", "stdout-path").unwrap(),
             b"/pl011@9000000\0"
         );
+        assert_eq!(
+            p.prop("chosen", "rng-seed").unwrap(),
+            BOOT_RNG_SEED,
+            "the guest CRNG must receive the fixed seed the owned kernel contract requires"
+        );
         assert_eq!(p.prop("psci", "method").unwrap(), b"hvc\0");
         assert_eq!(
             p.prop("intc@8000000", "compatible").unwrap(),
@@ -528,8 +576,9 @@ mod tests {
         );
         // The GIC reg carries both frames (dist + redist), 4 cells each × 2.
         assert_eq!(p.prop("intc@8000000", "reg").unwrap().len(), 2 * 4 * 4);
-        // The reserved pvclock page is present and no-map.
-        assert!(p.prop(&pvclock_node, "no-map").is_some());
+        // The page is reserved from the allocator but stays in the normal
+        // linear map. `no-map` would force an incoherent device-memory alias.
+        assert!(p.prop(&pvclock_node, "no-map").is_none());
         assert_eq!(
             p.prop(&pvclock_node, "compatible").unwrap(),
             b"harmony,pvclock-page\0"
@@ -542,7 +591,7 @@ mod tests {
         assert_eq!(pvclock_node, format!("pvclock@{reg_addr:x}"));
         // Finding 4 (review r1): the /reserved-memory node MUST carry an empty
         // `ranges` (plus #address-cells/#size-cells) or OF consumers
-        // (`of_reserved_mem`) ignore the child's `reg`/`no-map`. Assert the
+        // (`of_reserved_mem`) ignore the child's `reg`. Assert the
         // full trio, `ranges` empty.
         assert_eq!(p.prop("reserved-memory", "ranges").unwrap(), b"");
         assert_eq!(
@@ -555,6 +604,28 @@ mod tests {
     #[test]
     fn build_is_deterministic() {
         assert_eq!(sample(), sample());
+    }
+
+    #[test]
+    fn linux_initramfs_range_round_trips_as_two_address_cells() {
+        let start = RAM_BASE + 0x0200_0000;
+        let end = start + 0x0012_3456;
+        let dtb = build_with_initrd(
+            0x2000_0000,
+            SAMPLE_PVCLOCK_GPA,
+            "console=ttyAMA0",
+            start,
+            end,
+        );
+        let parsed = parse(&dtb).unwrap();
+        assert_eq!(
+            parsed.prop("chosen", "linux,initrd-start").unwrap(),
+            start.to_be_bytes()
+        );
+        assert_eq!(
+            parsed.prop("chosen", "linux,initrd-end").unwrap(),
+            end.to_be_bytes()
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ name: box
 # The HARDWARE lane (docs/TESTING.md, "the runner-label scheme for hardware
 # lanes"). Everything in `quality.yml` is a CONTENT check that a hosted runner
 # can answer; the gates here need bare metal — a real /dev/kvm, the patched KVM
-# modules, hardware performance counters, and quiet pinned cores.
+# modules and quiet pinned cores.
 #
 # Every job here must have a REGISTERED runner. A job whose label set matches
 # no registered runner does not skip — GitHub leaves it queued (for about a
@@ -48,6 +48,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
   # The arm64 box: the CPU-qualification lane (docs/TESTING.md, rung 1).
@@ -71,8 +72,7 @@ jobs:
           echo "What rung 1 must answer on this chip, once built:"
           echo "  * classify every advertised instruction/feature as"
           echo "    deterministically-pure / must-trap / forbidden"
-          echo "  * per-chip exactness: does a retired-branch deadline land where"
-          echo "    the machinery says it lands, with this chip's real skid"
+          echo "  * exit normalization and virtual-time constants for this chip"
           echo "  * per-chip save/restore fixpoint over the full vCPU state"
           echo "  * FIRST QUESTION for this box: is FEAT_ECV present? The"
           echo "    paravirtualized-clock design (docs/PARAVIRT-CLOCK.md) exists"
@@ -84,8 +84,8 @@ jobs:
           (grep -m1 -E 'CPU implementer|CPU part|Features' /proc/cpuinfo || true)
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
         with:

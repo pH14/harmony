@@ -30,7 +30,6 @@ use vmm_backend::{
 use vmm_core::control::{ControlServer, server_caps};
 use vmm_core::vendor::x86::contract_vclock_config;
 use vmm_core::vmm::{GuestRam, Vmm, VtimeWiring};
-use vmm_core::work::ScriptedWork;
 
 /// 16 KiB = 4 pages. Small enough that the state hash is cheap, large enough
 /// that the memory chunk is a real part of it.
@@ -41,7 +40,7 @@ const SEED: u64 = 0xBA5E;
 /// A configured, V-time-wired `Vmm<MockBackend>` with a distinctive memory image
 /// loaded, advanced past one `Rdtsc` so it sits at a synchronized (sealable)
 /// boundary — the same shape the box composition roots produce.
-fn vmm_at_sync(exits: Vec<Exit<X86>>, work: u64) -> Vmm<MockBackend> {
+fn vmm_at_sync(exits: Vec<Exit<X86>>, _work: u64) -> Vmm<MockBackend> {
     let mut m = MockBackend::new();
     let mut scripted = vec![Exit::Arch(X86Exit::Rdtsc)];
     scripted.extend(exits);
@@ -54,12 +53,7 @@ fn vmm_at_sync(exits: Vec<Exit<X86>>, work: u64) -> Vmm<MockBackend> {
 
     let mut v = Vmm::new(m, GuestRam::new(RAM).expect("guest ram"));
     v.wire_vtime(
-        VtimeWiring::new(
-            contract_vclock_config(),
-            Box::new(ScriptedWork::at(work)),
-            SEED,
-        )
-        .expect("vtime wiring"),
+        VtimeWiring::new_virtual_time(contract_vclock_config(), SEED).expect("vtime wiring"),
     );
     v.wire_snapshot_hashing();
     let mut image = vec![0u8; RAM];
@@ -86,12 +80,7 @@ fn server(exits: Vec<Exit<X86>>) -> ControlServer<MockBackend> {
         .expect("set_policy");
         let mut v = Vmm::new(m, GuestRam::new(RAM).expect("guest ram"));
         v.wire_vtime(
-            VtimeWiring::new(
-                contract_vclock_config(),
-                Box::new(ScriptedWork::at(9_999)),
-                0,
-            )
-            .expect("vtime wiring"),
+            VtimeWiring::new_virtual_time(contract_vclock_config(), 0).expect("vtime wiring"),
         );
         v.wire_snapshot_hashing();
         Ok(v)

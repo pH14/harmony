@@ -45,7 +45,7 @@ pub trait SnapshotRecords: Sized {
     ///
     /// # Errors
     /// The implementor's codec errors — e.g.
-    /// [`VmStateError::FractionalRatio`] or [`VmStateError::InvalidField`].
+    /// [`VmStateError::InvalidField`].
     fn encode(&self) -> Result<Vec<u8>, VmStateError>;
 
     /// Decode a blob produced by [`encode`](SnapshotRecords::encode). Total
@@ -113,7 +113,6 @@ mod tests {
             hypercall: vec![1, 2, 3],
             ..Default::default()
         };
-        s.vtime.ratio_den = 1;
         s.vtime.snapshot_vns = 42;
 
         let via_trait = <VmState as SnapshotRecords>::encode(&s).unwrap();
@@ -125,17 +124,5 @@ mod tests {
         assert_eq!(s.vtime(), &s.vtime);
         assert_eq!(s.timers(), &s.timers);
         assert_eq!(s.entropy_bytes(), &s.hypercall[..]);
-    }
-
-    /// A fractional ratio is refused through the trait exactly as through the
-    /// inherent codec (the engine relies on encode-side fail-closed).
-    #[test]
-    fn trait_encode_rejects_fractional_ratio() {
-        let mut s = VmState::default();
-        s.vtime.ratio_den = 2;
-        assert_eq!(
-            <VmState as SnapshotRecords>::encode(&s),
-            Err(VmStateError::FractionalRatio)
-        );
     }
 }

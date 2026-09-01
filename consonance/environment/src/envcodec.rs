@@ -61,6 +61,7 @@ impl EnvCodec {
         // (like guest overrides — removing or moving one would desync every
         // draw after it, minting a reproducer that does not reproduce).
         let reseeds = env.reseeds().clone();
+        let payloads = env.payloads().map(<[Vec<u8>]>::to_vec);
         let mut rng = Prng::new(salt ^ MUTATE_DOMAIN);
 
         // Only host actions are legal move/remove victims. With none present, the
@@ -104,6 +105,7 @@ impl EnvCodec {
             overrides,
             standing,
             reseeds,
+            payloads,
         }
     }
 
@@ -145,7 +147,11 @@ impl EnvCodec {
     /// and rejects the statically-detectable seeded inputs (the `Seeded` variant).
     pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> Result<EnvSpec, EnvError> {
         // Fail closed on the multi-axis / seeded cases deferred to task 93.
-        if !standing_of(base).is_empty() || !standing_of(tail).is_empty() {
+        if !standing_of(base).is_empty()
+            || !standing_of(tail).is_empty()
+            || base.payloads().is_some()
+            || tail.payloads().is_some()
+        {
             return Err(EnvError::UnsupportedComposition);
         }
         if matches!(base, EnvSpec::Seeded { .. }) || matches!(tail, EnvSpec::Seeded { .. }) {
@@ -188,6 +194,7 @@ impl EnvCodec {
             overrides,
             standing: Vec::new(),
             reseeds,
+            payloads: None,
         })
     }
 }
@@ -437,6 +444,7 @@ mod tests {
             overrides: BTreeMap::from([(k, action)]),
             standing: vec![],
             reseeds: std::collections::BTreeMap::new(),
+            payloads: None,
         }
     }
 

@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# N6 planted negative: retain the pvclock but expose EL0 CNTPCT/CNTVCT.
+# CONFIG_HARMONY_ARM_USER_COUNTER_TRAPS is not set

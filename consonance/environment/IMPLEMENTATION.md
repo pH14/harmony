@@ -139,7 +139,9 @@ The public types as the spec's Public API lists them: the catalog
 (`CATALOG_VERSION`, `MAX_SUPPLY_LEN`); `FaultPolicy`
 (`none`/`set_class`/`from_bytes`/`to_bytes`); `SeededEnv`; the reproducer
 (`EnvSpec` with `BLOB_VERSION`/`encode`/`decode`/`materialize`/`record`/`perturb`/
-`host_faults`/`overrides`/`seed`/`policy`, `RecordedEnv`+`set_moment`,
+`host_faults`/`overrides`/`seed`/`policy`/`payloads`/`set_payloads`,
+`RecordedEnv`+`set_moment`/`payload_configured`/`pull_payload`/
+`remaining_payloads`/`restore_payloads`,
 `StandingFault`, `EnvError`); and the proposal seam `EnvCodec`
 (`seeded`/`mutate`/`compose`).
 
@@ -805,3 +807,34 @@ re-run before any novel case, permanently.
 - **Touching `compose`/`rekey_moment`** — rejected; `compose` was correct. Per the
   spec's surface rule, source is touched only on a proven compose bug, and there was
   none. No change to `src/`.
+
+---
+
+# IMPLEMENTATION — virtual_time V-time M2 ordered payload tape
+
+`EnvSpec::Recorded` now carries an optional ordered tape of opaque payload entries.
+This is deliberately separate from the sparse `Moment` override map: one guest
+input chord consumes one entry in execution order, without predicting the V-time at
+which the request will surface. `None` means service 8 is unavailable; `Some([])`
+means it is available and deterministically exhausted.
+
+- **Blob version 6 → 7.** The recorded layout gained one trailing availability tag
+  and, when present, a length-prefixed entry vector. The decoder rejects unknown
+  tags, truncation, trailing bytes, and old versions before materialization.
+- **Canonical live state is the remaining suffix.** `RecordedEnv` owns a cursor but
+  exposes snapshots as an owned suffix. Restoring that suffix resets the cursor to
+  zero. Thus no consumed prefix or incidental cursor representation reaches a
+  snapshot, reproducer, or state hash.
+- **Exact consumption is fail-closed.** A request consumes only when its expected
+  `u32` length equals the next entry's length. Mismatch returns the actual length
+  and leaves the cursor unchanged; exhaustion returns `None` without falling back
+  to seeded supply bytes.
+- **Mutation preserves; composition refuses.** `EnvCodec::mutate` copies the tape
+  verbatim because it is timeline fact, not a host-fault proposal. `compose` returns
+  `UnsupportedComposition` if either input offers a tape: a Moment splice cannot
+  infer how many sequential entries the retained prefix consumed.
+
+The codec tests pin the version-7 golden, exact consume/mismatch/restore behavior,
+absent-versus-exhausted distinction, truncation at every byte, invalid tag, and
+trailing-byte rejection. The generated arbitrary specs include absent, empty, and
+non-empty tapes so the determinism and round-trip properties cover the new state.

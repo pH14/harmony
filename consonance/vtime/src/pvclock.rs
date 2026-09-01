@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The paravirt **work-derived clock page** — layout and stamping functions
+//! The paravirt **exit-count-derived clock page** — layout and stamping functions
 //! (`docs/PARAVIRT-CLOCK.md` §1, ABI v1).
 //!
 //! One 4 KiB guest page carries **materialized** V-time: the already-computed
@@ -70,19 +70,19 @@ pub const PVCLOCK_PAGE_LEN: usize = 4096;
 /// interpolate against a live counter). Always set for ABI v1.
 pub const PVCLOCK_FLAG_MATERIALIZED: u32 = 1;
 
-/// `flags` bit 1: the values are **work-derived** — computed from the
-/// deterministic work counter by a real stamping path, never a placeholder.
+/// `flags` bit 1: the values are **exit-count-derived** — computed by the
+/// deterministic virtual-time clock, never a placeholder.
 /// Set by every stamp this module writes; the ARM vendor spike's *static
 /// placeholder page* deliberately leaves it clear, so the AA-5 gate (and any
 /// consumer that requires it) fails closed against a page nothing is
 /// actually deriving. (Ruled at the PR #108 r9 / PR #110 coordination,
 /// 2026-07-14.)
-pub const PVCLOCK_FLAG_WORK_DERIVED: u32 = 1 << 1;
+pub const PVCLOCK_FLAG_EXIT_COUNT_DERIVED: u32 = 1 << 1;
 
 /// The full ABI-v1 flags word every real stamp publishes
-/// ([`PVCLOCK_FLAG_MATERIALIZED`] | [`PVCLOCK_FLAG_WORK_DERIVED`]); remaining
+/// ([`PVCLOCK_FLAG_MATERIALIZED`] | [`PVCLOCK_FLAG_EXIT_COUNT_DERIVED`]); remaining
 /// bits reserved-zero.
-pub const PVCLOCK_FLAGS_V1: u32 = PVCLOCK_FLAG_MATERIALIZED | PVCLOCK_FLAG_WORK_DERIVED;
+pub const PVCLOCK_FLAGS_V1: u32 = PVCLOCK_FLAG_MATERIALIZED | PVCLOCK_FLAG_EXIT_COUNT_DERIVED;
 
 /// Byte offset of `abi_version: u32` (little-endian, like every field).
 pub const ABI_VERSION_OFF: usize = 0x00;
@@ -117,7 +117,7 @@ pub struct PvclockFields {
     pub guest_clock: u64,
     /// Counter frequency in Hz.
     pub guest_clock_hz: u64,
-    /// Flag bits ([`PVCLOCK_FLAG_MATERIALIZED`] | [`PVCLOCK_FLAG_WORK_DERIVED`]).
+    /// Flag bits ([`PVCLOCK_FLAG_MATERIALIZED`] | [`PVCLOCK_FLAG_EXIT_COUNT_DERIVED`]).
     pub flags: u32,
     /// vCPU index (pinned 0 for ABI v1).
     pub vcpu_index: u32,

@@ -2,11 +2,10 @@
 //! The telemetry schema and its NDJSON wire.
 //!
 //! An [`Event`] is one unit of out-of-band observation: a per-run monotonic
-//! `seq`, the retired-branch `work` counter read at the exit, the V-time `vns`
-//! that `VClock::vns(work)` maps it to, and an [`EventKind`] payload describing
-//! what the guest did. The `work`/`vns` pair is the load-bearing field: it is a
-//! pure function of the run, so a recorded stream re-renders on an identical
-//! timeline (the console keys everything on `vns`).
+//! `seq`, the VM-exit count at the observation, the V-time `vns`, and an
+//! [`EventKind`] payload describing what the guest did. The exit-count/V-time
+//! pair is a pure function of the run, so a recorded stream re-renders on an
+//! identical timeline (the console keys everything on `vns`).
 //!
 //! Nothing here is ever hashed, folded into `observable_digest`, or fed back to
 //! the guest — telemetry is for the human operator; the hashes remain the source
@@ -17,16 +16,16 @@ use serde::{Deserialize, Serialize};
 /// One unit of telemetry: a V-time-stamped observation of a serviced exit.
 ///
 /// `seq` is a per-run monotonic counter (so a consumer can detect a gap even on
-/// the lossy live lane); `work` is the retired-branch work counter at the exit;
-/// `vns` is `VClock::vns(work)` — the deterministic virtual-time stamp the
-/// console renders against. `kind` carries the per-exit detail.
+/// the lossy live lane); `exit_count` is the number of VM exits observed;
+/// `vns` is the deterministic virtual-time stamp the console renders against.
+/// `kind` carries the per-exit detail.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// Per-run monotonic event counter (gap-detectable on the lossy live lane).
     pub seq: u64,
-    /// Retired-branch work counter read at the exit (the V-time domain).
-    pub work: u64,
-    /// `VClock::vns(work)` — the deterministic virtual-time stamp (ns).
+    /// VM-exit count at this observation.
+    pub exit_count: u64,
+    /// Deterministic virtual-time stamp (ns).
     pub vns: u64,
     /// What the guest did at this exit.
     pub kind: EventKind,
@@ -35,10 +34,10 @@ pub struct Event {
 impl Event {
     /// Builds an event from its parts. A convenience for the frontier wiring and
     /// for tests; the fields are public, so this is purely ergonomic.
-    pub fn new(seq: u64, work: u64, vns: u64, kind: EventKind) -> Event {
+    pub fn new(seq: u64, exit_count: u64, vns: u64, kind: EventKind) -> Event {
         Event {
             seq,
-            work,
+            exit_count,
             vns,
             kind,
         }
@@ -129,7 +128,7 @@ pub enum EventKind {
         /// CPUID subleaf (`ECX`).
         subleaf: u32,
     },
-    /// An interrupt the `InjectionPlanner` delivered at this V-time.
+    /// An interrupt delivered at this V-time.
     Inject {
         /// The 8-bit vector injected.
         vector: u8,
@@ -191,8 +190,6 @@ pub struct ExitCounts {
     pub hlt: u64,
     /// Shutdown exits.
     pub shutdown: u64,
-    /// `run_until` deadline exits.
-    pub deadline: u64,
 }
 
 impl ExitCounts {
@@ -213,7 +210,6 @@ impl ExitCounts {
             self.rdseed,
             self.hlt,
             self.shutdown,
-            self.deadline,
         ]
         .into_iter()
         .fold(0u64, u64::saturating_add)

@@ -272,28 +272,6 @@ fn decode_terminal_and_control_exits() {
 }
 
 #[test]
-fn decode_stale_force_exit_and_det_step_are_swallowed() {
-    // Defense-in-depth (both patched one-shots): a stale KVM_EXIT_PREEMPT (0004) or
-    // KVM_EXIT_DET_STEP (0005) reaching `decode_exit` on a plain `run()` must be a
-    // transparent re-entry (Ok(None)), NOT a loud "unhandled" abort. This is the fix
-    // for the 0004 disarm asymmetry: 0004's one-shot arm persists in the kernel until
-    // an NMI fires it, so an arm set for a `run_until` free-run can outlive an early
-    // guest exit and later surface as KVM_EXIT_PREEMPT on any host NMI. Aborting there
-    // would make run completion depend on host-NMI timing (a determinism defect); the
-    // kernel has already cleared the flag by the time it reaches userspace, so the
-    // swallow self-heals with guest state and the work counter untouched.
-    for reason in [KVM_EXIT_PREEMPT, KVM_EXIT_DET_STEP] {
-        let s = SynRun::new();
-        set_reason(&s, reason);
-        assert_eq!(
-            decode_exit(s.page()).unwrap(),
-            None,
-            "stale one-shot reason {reason} must swallow to a transparent re-entry"
-        );
-    }
-}
-
-#[test]
 fn decode_error_and_unknown_exits_fail_closed() {
     // Each fail-closed reason carries its own distinct message (so each match arm
     // is load-bearing, not collapsible into the `_` arm).
@@ -894,57 +872,4 @@ fn interrupt_fields_round_trip_through_vcpu_events() {
     assert_eq!(back.interrupt_nr, 0x40);
     assert_eq!(back.interrupt_shadow, 1);
     assert_eq!(back, e);
-}
-
-// ---------------------------------------------------------------------------
-// run_until exit classification (task 47): the overflow-early / single-step path
-// must distinguish the single-step debug trap and the signal kick from a genuine
-// guest exit, since `decode_exit` rejects the former two as "unhandled".
-// ---------------------------------------------------------------------------
-
-#[test]
-fn classify_single_step_trap() {
-    let s = SynRun::new();
-    set_reason(&s, kvm_bindings::KVM_EXIT_DEBUG);
-    assert_eq!(classify_step_exit(s.page()), StepStop::SingleStepTrap);
-}
-
-#[test]
-fn classify_overflow_signal() {
-    let s = SynRun::new();
-    set_reason(&s, kvm_bindings::KVM_EXIT_INTR);
-    assert_eq!(classify_step_exit(s.page()), StepStop::Interrupted);
-}
-
-#[test]
-fn classify_in_kernel_force_exit_is_preempt() {
-    // KVM_EXIT_PREEMPT (patch 0004) — the in-kernel bounded-skid force-exit kick
-    // (task 55). Classified as its own `Preempt` stop, handled like the signal kick:
-    // read the PMU, stop iff the overflow crossed the armed point.
-    let s = SynRun::new();
-    set_reason(&s, KVM_EXIT_PREEMPT);
-    assert_eq!(classify_step_exit(s.page()), StepStop::Preempt);
-    // And it is NOT a guest exit (decode_exit must never be asked to map it).
-    assert_ne!(classify_step_exit(s.page()), StepStop::GuestExit);
-}
-
-#[test]
-fn classify_irq_window_is_reenter() {
-    let s = SynRun::new();
-    set_reason(&s, KVM_EXIT_IRQ_WINDOW_OPEN);
-    assert_eq!(classify_step_exit(s.page()), StepStop::Reenter);
-}
-
-#[test]
-fn classify_genuine_guest_exits() {
-    // A real guest exit before the deadline must be routed to `decode_exit`.
-    for reason in [KVM_EXIT_IO, KVM_EXIT_MMIO, KVM_EXIT_HLT, KVM_EXIT_X86_RDMSR] {
-        let s = SynRun::new();
-        set_reason(&s, reason);
-        assert_eq!(
-            classify_step_exit(s.page()),
-            StepStop::GuestExit,
-            "reason {reason} must classify as a guest exit"
-        );
-    }
 }

@@ -2,8 +2,8 @@
 //! **Task-95 M2 box gates (a0)/(a)/(b) + the (d) numbers** — `#![cfg(target_os =
 //! "linux")]` **and `#[ignore]`**: needs real + LOADED patched KVM, the
 //! det-cfl-v1 host, and the built Postgres image. Gate (c) — nothing regresses —
-//! is the existing `seal_rate_sweep.rs` and campaign-runner `live_materialization.rs`
-//! suites, run unchanged alongside this file.
+//! keeps the 2 GiB production guest shape and campaign-runner
+//! `live_materialization.rs` coverage unchanged alongside this file.
 //!
 //! - **(a0) tracking is inert** — same seed, dirty logging enabled (the new
 //!   default) vs a `flags: 0` backend (`set_dirty_log_enabled(false)`), no seal
@@ -34,10 +34,10 @@
 //!
 //! **Images are pinned by content hash** (hm-xdp): the harness refuses to run
 //! on a bzImage/initramfs whose sha256 differs from the pinned task-78-proven
-//! pair — stage that build (e.g. from the box's `/root/harmony-pr44/harmony-linux/build`)
+//! pair — stage that build (e.g. from the box's `/root/harmony-pr44/consonance/harmony-linux/build`)
 //! or deliberately override with `INITRAMFS=<name> INITRAMFS_SHA256=<hex>`
 //! (+ `BZIMAGE_SHA256=<hex>`). Verify before staging:
-//! `sha256sum harmony-linux/build/{bzImage,initramfs-postgres.cpio.gz}` against the
+//! `sha256sum consonance/harmony-linux/build/{bzImage,initramfs-postgres.cpio.gz}` against the
 //! `PINNED_*` constants below.
 //!
 //! Knobs: `DR_RUN_VNS` (V-time the guest runs before the first seal, default
@@ -96,16 +96,20 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
-         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it first on the \
+         box: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image`."
     );
 }
 
@@ -221,7 +225,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_with_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -283,7 +287,7 @@ fn seal_with_retry<B: Backend<A = X86>>(
             Ok(Reply::Snapshot { id, .. }) => return (id, vt, t0.elapsed()),
             Ok(other) => panic!("snapshot answered {other:?}"),
             Err(control_proto::ControlError::NotQuiescent) => {
-                match run_until(s, vt.saturating_add(step)) {
+                match run_with_deadline(s, vt.saturating_add(step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -327,12 +331,12 @@ fn capture_arm(
     let delta = env_u64("DR_DELTA_VNS", 5_000_000);
     let step = env_u64("DR_SNAP_STEP", 1_000_000);
 
-    let vt0 = match run_until(&mut s, run_vns) {
+    let vt0 = match run_with_deadline(&mut s, run_vns) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to the first seal point ended early: {other:?}"),
     };
     let (first, vt1, d1) = seal_with_retry(&mut s, vt0, step);
-    let vt1b = match run_until(&mut s, vt1.saturating_add(delta)) {
+    let vt1b = match run_with_deadline(&mut s, vt1.saturating_add(delta)) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run between seals ended early: {other:?}"),
     };
@@ -362,7 +366,7 @@ fn a0_dirty_logging_is_guest_inert() {
     let (kernel, initramfs) = guest_images();
     let deadline = env_u64("DR_RUN_VNS", 20_000_000);
 
-    // Sequential arms: the box allows one open perf work counter at a time.
+    // Sequential arms: the box allows one open perf exit-count clock at a time.
     let run_arm = |vmm: DynVmm| -> (u64, [u8; 32]) {
         let factory: VmmFactory<Box<dyn Backend<A = X86>>> =
             Box::new(|| panic!("a0 never restores; the factory must not be called"));
@@ -371,7 +375,7 @@ fn a0_dirty_logging_is_guest_inert() {
             expect_ok(&mut s, &Request::Hello(server_caps())),
             Reply::Hello(server_caps())
         );
-        let vt = match run_until(&mut s, deadline) {
+        let vt = match run_with_deadline(&mut s, deadline) {
             StopReason::Deadline { vtime } => vtime.0,
             other => panic!("a0 run ended before the deadline: {other:?}"),
         };
@@ -455,8 +459,10 @@ fn b_remap_and_memcpy_restores_agree() {
     let remap: RemapVmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move |mapping| {
         let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::PatchedKvmBackend::new()?);
         let mut v = compose_restore_target(backend, mapping, true)?;
-        let work = Box::new(vmm_core::vendor::x86::work_perf::PerfWorkCounter::open()?);
-        v.wire_vtime(VtimeWiring::new(contract_vclock_config(), work, BASE_SEED)?);
+        v.wire_vtime(VtimeWiring::new_virtual_time(
+            contract_vclock_config(),
+            BASE_SEED,
+        )?);
         Ok(v)
     });
     s.set_remap_factory(remap);
@@ -468,7 +474,7 @@ fn b_remap_and_memcpy_restores_agree() {
     let run_vns = env_u64("DR_RUN_VNS", 20_000_000);
     let delta = env_u64("DR_DELTA_VNS", 5_000_000);
     let step = env_u64("DR_SNAP_STEP", 1_000_000);
-    let vt0 = match run_until(&mut s, run_vns) {
+    let vt0 = match run_with_deadline(&mut s, run_vns) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to the seal point ended early: {other:?}"),
     };
@@ -496,7 +502,7 @@ fn b_remap_and_memcpy_restores_agree() {
             .vmm()
             .expect("live after branch")
             .ram_backing_is_snapshot();
-        let stop = run_until(s, vt1.saturating_add(delta));
+        let stop = run_with_deadline(s, vt1.saturating_add(delta));
         (mapping_backed, stop, hash_whole(s), branch_wall)
     };
 

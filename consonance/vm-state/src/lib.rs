@@ -57,7 +57,9 @@ mod records;
 mod types;
 mod wire;
 
-pub use arm64::{Arm64Regs, Arm64Sysregs, Arm64VmState};
+pub use arm64::{
+    Arm64Debug, Arm64Interrupts, Arm64Regs, Arm64SimdFp, Arm64Sysregs, Arm64VmState, Arm64Vtimer,
+};
 pub use error::VmStateError;
 pub use records::SnapshotRecords;
 pub use types::{
@@ -71,6 +73,8 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
 /// The format version this build writes and is the only version it decodes.
 ///
+/// **v3** removes the retired instruction-count conversion ratio from the
+/// virtual-time section; virtual time is now accumulated directly from VM exits.
 /// **v2** (`docs/ARCH-BOUNDARY.md` step 4) added the container header's **arch
 /// tag**: the register/sysreg record set a blob carries is per-architecture, and
 /// the record *tags* alone cannot tell an x86 `REGS` section from an arm64 one —
@@ -78,7 +82,7 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 /// that a loud [`VmStateError::UnsupportedArch`] instead of a silent
 /// reinterpretation. A v1 blob (no tag) is rejected at the version gate, never
 /// parsed with the v2 reader.
-pub const VM_STATE_VERSION: u16 = 2;
+pub const VM_STATE_VERSION: u16 = 3;
 
 /// The **arch tag** of the x86-64 record set ([`VmState`])
 /// (`docs/ARCH-BOUNDARY.md` §B — "arm64 record set; same TLV container;

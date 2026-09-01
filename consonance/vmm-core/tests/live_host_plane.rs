@@ -15,7 +15,7 @@
 //! Run on `ssh <det-box>` with the LOADED patched KVM modules + the built Postgres
 //! image, CPU-pinned per `docs/BOX-PINNING.md` (lease a core via `box-window.sh`):
 //! ```text
-//! make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image     # or copy a prebuilt image
+//! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image     # or copy a prebuilt image
 //! taskset -c <core> cargo test -p vmm-core --release --test live_host_plane -- --ignored --nocapture
 //! ```
 //! Tunable via env (defaults below): `HP_M1_OFF` / `HP_M2_OFF` (V-time ns past the
@@ -50,16 +50,20 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
-         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it first on the \
+         box: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image`."
     );
 }
 
@@ -133,7 +137,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_with_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -210,7 +214,7 @@ fn host_plane_record_replay_closure() {
     // 1. Seal the base snapshot, nudging past non-snapshottable boundaries (the
     //    task-58 retry: a NotQuiescent refusal ⇒ run a little further and retry).
     let retry_step = env_u64("HP_SNAP_STEP", 1_000_000);
-    let mut vt = match run_until(&mut s, 0) {
+    let mut vt = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("vtime probe stopped non-Deadline: {other:?}"),
     };
@@ -225,7 +229,7 @@ fn host_plane_record_replay_closure() {
                     attempts < 100_000,
                     "no snapshottable boundary within budget"
                 );
-                match run_until(&mut s, vt.saturating_add(retry_step)) {
+                match run_with_deadline(&mut s, vt.saturating_add(retry_step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -286,7 +290,7 @@ fn host_plane_record_replay_closure() {
                 Reply::Unit
             );
         }
-        let stop = run_until(s, deadline);
+        let stop = run_with_deadline(s, deadline);
         let h = hash_whole(s);
         let recorded = s.recorded_env().encode();
         (stop, h, recorded)
@@ -311,7 +315,7 @@ fn host_plane_record_replay_closure() {
         ),
         Reply::Unit
     );
-    let stop_b = run_until(&mut s, deadline);
+    let stop_b = run_with_deadline(&mut s, deadline);
     let h_b = hash_whole(&mut s);
 
     // (c) schedule-absent control ⇒ differs.

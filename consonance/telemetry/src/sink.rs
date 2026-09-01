@@ -31,7 +31,7 @@ struct Ring {
     capacity: usize,
     /// Events dropped since the last [`LiveSink::drain`] surfaced a notice.
     dropped: u64,
-    /// `(seq, work, vns)` of the most recent `emit` (dropped or not), used to
+    /// `(seq, exit_count, vns)` of the most recent `emit` (dropped or not), used to
     /// V-time-stamp a synthetic [`EventKind::Dropped`] so it lands on the
     /// timeline near where the loss happened.
     last_stamp: (u64, u64, u64),
@@ -120,7 +120,7 @@ impl LiveSink {
 impl Observer for LiveSink {
     fn emit(&mut self, ev: &Event) {
         let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        ring.last_stamp = (ev.seq, ev.work, ev.vns);
+        ring.last_stamp = (ev.seq, ev.exit_count, ev.vns);
         if ring.queue.len() >= ring.capacity {
             // Full: drop and count rather than block the run.
             ring.dropped = ring.dropped.saturating_add(1);

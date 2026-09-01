@@ -27,6 +27,7 @@ fn one_guest_override(seed: u64, policy: FaultPolicy, at: Moment, ans: Answer) -
         overrides: BTreeMap::from([(at, Action::Guest(ans))]),
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
+        payloads: None,
     }
     .materialize()
 }
@@ -62,7 +63,7 @@ proptest! {
             policy: policy.clone(),
             overrides: overrides.clone(),
             standing: vec![],
-            reseeds: std::collections::BTreeMap::new(),
+            reseeds: std::collections::BTreeMap::new(), payloads: None,
         };
         let mut env = spec.materialize();
         // The reference base advances only when the base actually answers.
@@ -276,6 +277,7 @@ fn host_action_at_a_decision_moment_is_ignored_by_decide() {
         overrides: BTreeMap::from([(at, Action::Host(HostFault::InjectInterrupt { vector: 9 }))]),
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
+        payloads: None,
     }
     .materialize();
     env.set_moment(at);

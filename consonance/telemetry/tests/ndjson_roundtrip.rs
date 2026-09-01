@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use telemetry::{Event, EventKind, ExitCounts, from_ndjson, to_ndjson};
 
 fn exit_counts() -> impl Strategy<Value = ExitCounts> {
-    proptest::collection::vec(any::<u64>(), 13).prop_map(|v| ExitCounts {
+    proptest::collection::vec(any::<u64>(), 12).prop_map(|v| ExitCounts {
         io: v[0],
         mmio: v[1],
         rdmsr: v[2],
@@ -23,7 +23,6 @@ fn exit_counts() -> impl Strategy<Value = ExitCounts> {
         rdseed: v[9],
         hlt: v[10],
         shutdown: v[11],
-        deadline: v[12],
     })
 }
 
@@ -78,7 +77,7 @@ fn event_kind() -> impl Strategy<Value = EventKind> {
 
 fn event() -> impl Strategy<Value = Event> {
     (any::<u64>(), any::<u64>(), any::<u64>(), event_kind())
-        .prop_map(|(seq, work, vns, kind)| Event::new(seq, work, vns, kind))
+        .prop_map(|(seq, exit_count, vns, kind)| Event::new(seq, exit_count, vns, kind))
 }
 
 proptest! {

@@ -1,16 +1,16 @@
 //! `irq-landing`: the hard core. A LAPIC one-shot timer is armed in V-time and
 //! the guest spins until the interrupt lands; the box oracle measures
 //! "instructions retired before the first IRQ" and pins it across runs (O1) and
-//! against a golden (O2), sweeping deadlines on and around `skid_margin = 128`
+//! against a golden (O2), sweeping representative virtual-time deadlines
 //! (task 07) — the case most likely to expose a determinism bug in the
 //! injection path.
 //!
-//! The retired-count is a box fact (it needs the V-time work counter). In-guest,
+//! The exit-count is a box fact (it needs the V-time exit-count clock). In-guest,
 //! the environment-independent shape is that arming the xAPIC timer at each
 //! deadline produces exactly one delivered interrupt — exercised here against
 //! the real xAPIC MMIO (mapped by the boot shim; QEMU emulates the LAPIC timer).
 //! Each armed deadline is reported so the box correlates it with the measured
-//! retired-count. O3 tag: pure.
+//! exit-count. O3 tag: pure.
 #![no_std]
 #![no_main]
 
@@ -25,7 +25,7 @@ const NAME: &str = "irq-landing";
 const VEC: u8 = 0x40;
 /// Spurious-interrupt vector.
 const SPURIOUS: u8 = 0xFF;
-/// One-shot deadlines (initial-count values), bracketing skid_margin = 128 ±1.
+/// Representative one-shot deadlines (initial-count values).
 const DEADLINES: [u32; 8] = [64, 127, 128, 129, 256, 1024, 4096, 16384];
 /// Spin bound: a failsafe so a never-firing timer fails cleanly instead of
 /// hanging. The IRQ normally lands within a few counts, far below this.

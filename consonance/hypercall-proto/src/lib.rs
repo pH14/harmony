@@ -14,13 +14,15 @@
 //! | [`Block`](ServiceId::Block)     | 3 | `1` = capacity, `2` = read sectors |
 //! | [`Event`](ServiceId::Event)     | 4 | `1` = emit `(event_id, bytes)` (fire-and-forget) |
 //! | [`Net`](ServiceId::Net)         | 5 | `1` = `net_decide` (round-trips a per-flow policy answer) |
-//! | [`Sdk`](ServiceId::Sdk)         | 6 | `1` = `buggify_decide` (round-trips a one-byte fire / no-fire answer) |
+//! | [`Sdk`](ServiceId::Sdk)         | 6 | `1` = `buggify_decide`; `2` = `coverage_yield` (round-trips the next coverage threshold and runnable selection) |
 //! | [`Pvclock`](ServiceId::Pvclock) | 7 | `1` = `pvclock_register` (publishes the guest clock-page GPA) |
+//! | [`Payload`](ServiceId::Payload) | 8 | `1` = consume one exact-length staged payload entry |
 //!
 //! Id **5** is the task-61 `Net` vertical (the first guest-plane fault path); the
 //! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
-//! task-110 paravirt work-derived clock registration ([`Pvclock`](ServiceId::Pvclock))
-//! takes id **7**. An
+//! task-110 paravirt virtual-time clock registration ([`Pvclock`](ServiceId::Pvclock))
+//! takes id **7**; the ordered cooperating-workload payload service takes id
+//! **8**. An
 //! unregistered service id or an opcode a service does not implement is a
 //! [`Status::UnknownService`] / [`Status::UnknownOpcode`], never a silent drop.
 //!
@@ -57,6 +59,7 @@ extern crate std;
 #[cfg(feature = "host")]
 use std::{boxed::Box, collections::BTreeMap, vec::Vec};
 
+#[cfg(any(feature = "guest", not(feature = "host")))]
 use core::fmt;
 
 /// Maximum bytes in a hypercall frame, including the header.
@@ -75,6 +78,16 @@ const BLOCK_READ_MAX_SECTORS: usize = 7;
 /// 18-byte little-endian `NetFlow { src:u32, dst:u32, conn:u64, event:u16 }`
 /// decision point (see the crate-level `Net` service docs).
 pub const NET_REQUEST_LEN: usize = 18;
+/// Wire length of an SDK `coverage_yield` request: `thread:u32`,
+/// `observed:u64`, then `ready:u32`, all little-endian.
+pub const SDK_COVERAGE_REQUEST_LEN: usize = 16;
+/// Wire length of an SDK `coverage_yield` response: `next_threshold:u64`, then
+/// `selected:u32`, both little-endian.
+pub const SDK_COVERAGE_RESPONSE_LEN: usize = 12;
+/// Initial per-thread basic-block threshold and the fixed distance between
+/// thresholds. A thread's first callback exits at count one; every successful
+/// exit prescribes the next threshold before the guest resumes.
+pub const SDK_COVERAGE_QUANTUM: u64 = 1;
 #[cfg(feature = "host")]
 const ENTROPY_FALLBACK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 #[cfg(feature = "host")]
@@ -101,13 +114,14 @@ pub enum ServiceId {
     /// surfacing `Moment`. One decision per flow/connection, never per frame.
     Net = 5,
     /// SDK control service (task 73): the guest asks the host to resolve a
-    /// buggify decision (op 1, `buggify_decide`). Service id **5** is the task-61
-    /// `Net` vertical, so the SDK takes **6**. Unlike the fire-and-forget
-    /// [`Event`](ServiceId::Event) service, this one round-trips a one-byte answer
-    /// (fire / don't fire); the host resolves it through its `Environment::decide`
-    /// seam and records it at the surfacing `Moment`.
+    /// buggify decision (op 1, `buggify_decide`) or reaches an instrumented
+    /// coverage threshold (op 2, `coverage_yield`). Service id **5** is the
+    /// task-61 `Net` vertical, so the SDK takes **6**. Unlike the
+    /// fire-and-forget [`Event`](ServiceId::Event) service, these operations
+    /// round-trip a deterministic answer; the host resolves scheduling through
+    /// its `Environment::decide` seam at the surfacing `Moment`.
     Sdk = 6,
-    /// Paravirt work-derived clock registration (task 110,
+    /// Paravirt virtual-time clock registration (task 110,
     /// `docs/PARAVIRT-CLOCK.md` §3.1): the guest publishes the guest-physical
     /// address of its 4 KiB clock page (op 1, `pvclock_register` — an 8-byte
     /// little-endian GPA). The host validates the GPA (page-aligned, inside
@@ -119,17 +133,23 @@ pub enum ServiceId {
     /// response.** The doorbell `OUT` is a plain PIO exit, not a V-time
     /// intercept, so the host lays down the first page stamp and arms its
     /// staleness refresh only at the guest's **required** post-response counter
-    /// read (an `RDTSC`/`RDTSCP` — a genuine skid-free intercept). A conforming
+    /// read (an `RDTSC`/`RDTSCP` — a genuine exit-boundary variability-free intercept). A conforming
     /// guest MUST execute that read before reading the page: reading the page
     /// immediately after the response would observe stale bytes (ABI version
     /// zero / no `MATERIALIZED` flag). A guest that omits the handshake is out of
     /// contract — its page is never stamped and never refreshed.
     ///
     /// A host not composed with the clock page — or one whose backend has no
-    /// deterministic work counter to derive the stamps from — answers
+    /// deterministic exit-count clock to derive the stamps from — answers
     /// [`Status::UnknownService`], and the guest keeps its trap-backstopped time
     /// paths (the page is pure opt-in on both sides).
     Pvclock = 7,
+    /// Ordered cooperating-workload input service (virtual_time V-time M2).
+    /// Opcode 1 carries a 4-byte little-endian requested length and consumes
+    /// exactly one entry from the branch's recorded payload tape. The response
+    /// is that entry verbatim. Exhaustion is [`Status::OutOfRange`]; a length
+    /// mismatch is [`Status::BadRequest`] and consumes nothing.
+    Payload = 8,
 }
 
 impl ServiceId {
@@ -157,6 +177,7 @@ pub enum Status {
 }
 
 impl Status {
+    #[cfg(feature = "guest")]
     fn from_u16(value: u16) -> Option<Self> {
         match value {
             0 => Some(Self::Ok),
@@ -438,17 +459,20 @@ fn put_u64(dst: &mut [u8], value: u64) {
 }
 
 fn read_u16(buf: &[u8], offset: usize) -> Result<u16, ProtoError> {
-    let bytes = buf.get(offset..offset + 2).ok_or(ProtoError::Truncated)?;
+    let end = offset.checked_add(2).ok_or(ProtoError::Truncated)?;
+    let bytes = buf.get(offset..end).ok_or(ProtoError::Truncated)?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
 fn read_u32(buf: &[u8], offset: usize) -> Result<u32, ProtoError> {
-    let bytes = buf.get(offset..offset + 4).ok_or(ProtoError::Truncated)?;
+    let end = offset.checked_add(4).ok_or(ProtoError::Truncated)?;
+    let bytes = buf.get(offset..end).ok_or(ProtoError::Truncated)?;
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn read_u64(buf: &[u8], offset: usize) -> Result<u64, ProtoError> {
-    let bytes = buf.get(offset..offset + 8).ok_or(ProtoError::Truncated)?;
+    let end = offset.checked_add(8).ok_or(ProtoError::Truncated)?;
+    let bytes = buf.get(offset..end).ok_or(ProtoError::Truncated)?;
     Ok(u64::from_le_bytes([
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ]))
@@ -597,6 +621,24 @@ mod guest {
             self.call_expect_empty(ServiceId::Event, 1, &payload[..4 + data.len()])
         }
 
+        /// Consume one exact-length entry from the host's staged payload tape.
+        /// The request carries only `out.len()` as a little-endian `u32`; on
+        /// success the response must fill `out` exactly. Empty or over-frame
+        /// requests are rejected locally. Tape exhaustion surfaces as
+        /// [`ClientError::Status`]`(`[`Status::OutOfRange`]`)`.
+        pub fn payload_fetch(&mut self, out: &mut [u8]) -> Result<(), ClientError<T::Error>> {
+            if out.is_empty() || out.len() > MAX_PAYLOAD {
+                return Err(ClientError::InvalidLength);
+            }
+            let mut payload = [0_u8; 4];
+            put_u32(&mut payload, out.len() as u32);
+            let copied = self.call_copy(ServiceId::Payload, 1, &payload, out)?;
+            if copied != out.len() {
+                return Err(ClientError::Protocol(ProtoError::BadPayload));
+            }
+            Ok(())
+        }
+
         /// Ask the host to resolve a **buggify** decision for `point` (task 73's
         /// SDK control service, [`ServiceId::Sdk`], op 1). Returns whether the
         /// host decided to **fire** the deliberate perturbation. One request
@@ -612,6 +654,41 @@ mod guest {
                 return Err(ClientError::Protocol(ProtoError::BadPayload));
             }
             Ok(out[0] != 0)
+        }
+
+        /// Surface one crossed instrumented-coverage threshold (SDK op 2).
+        ///
+        /// `thread` is the payload's stable logical-thread id, `observed` is
+        /// that thread's exact basic-block count, and `ready` is the number of
+        /// runnable logical threads. The host validates that `observed` equals
+        /// the threshold it prescribed at this thread's preceding exit, then
+        /// returns `(next_threshold, selected)`. `selected` is an index in
+        /// `0..ready`; the cooperating runtime dispatches that runnable thread.
+        /// The initial prescribed threshold is [`SDK_COVERAGE_QUANTUM`].
+        pub fn coverage_yield(
+            &mut self,
+            thread: u32,
+            observed: u64,
+            ready: u32,
+        ) -> Result<(u64, u32), ClientError<T::Error>> {
+            if ready == 0 || observed == 0 {
+                return Err(ClientError::InvalidLength);
+            }
+            let mut payload = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+            put_u32(&mut payload[0..4], thread);
+            put_u64(&mut payload[4..12], observed);
+            put_u32(&mut payload[12..16], ready);
+            let mut out = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+            let copied = self.call_copy(ServiceId::Sdk, 2, &payload, &mut out)?;
+            if copied != out.len() {
+                return Err(ClientError::Protocol(ProtoError::BadPayload));
+            }
+            let next = read_u64(&out, 0).map_err(ClientError::Protocol)?;
+            let selected = read_u32(&out, 8).map_err(ClientError::Protocol)?;
+            if next <= observed || selected >= ready {
+                return Err(ClientError::Protocol(ProtoError::BadPayload));
+            }
+            Ok((next, selected))
         }
 
         /// Ask the host what to do with a flow (task 61's `Net` service,
@@ -1230,8 +1307,9 @@ mod host {
         }
     }
 
-    /// Reference SDK control service (task 73, [`ServiceId::Sdk`]): resolves a
-    /// guest `buggify_decide(point)` (op 1) to a one-byte fire/don't-fire answer.
+    /// Reference SDK control service ([`ServiceId::Sdk`]): resolves a guest
+    /// `buggify_decide(point)` (op 1) and the M6 `coverage_yield` threshold
+    /// handshake (op 2).
     ///
     /// This is the deterministic **reference** answerer used by loopback tests —
     /// it maps a point to a fixed decision from a per-point table plus a default,
@@ -1244,6 +1322,8 @@ mod host {
         default_fire: bool,
         decisions: BTreeMap<u32, bool>,
         asked: Vec<u32>,
+        coverage_thresholds: BTreeMap<u32, u64>,
+        coverage_asked: Vec<(u32, u64, u32, u32)>,
     }
 
     impl SdkBuggify {
@@ -1254,6 +1334,8 @@ mod host {
                 default_fire,
                 decisions: BTreeMap::new(),
                 asked: Vec::new(),
+                coverage_thresholds: BTreeMap::new(),
+                coverage_asked: Vec::new(),
             }
         }
 
@@ -1267,12 +1349,52 @@ mod host {
             &self.asked
         }
 
+        /// Coverage asks in call order as `(thread, observed, ready, selected)`.
+        pub fn coverage_asked(&self) -> &[(u32, u64, u32, u32)] {
+            &self.coverage_asked
+        }
+
         /// The decision in force for `point` (its override, else the default).
         fn decide(&self, point: u32) -> bool {
             self.decisions
                 .get(&point)
                 .copied()
                 .unwrap_or(self.default_fire)
+        }
+
+        fn handle_coverage(&mut self, payload: &[u8], resp_payload: &mut [u8]) -> (Status, usize) {
+            if payload.len() != SDK_COVERAGE_REQUEST_LEN
+                || resp_payload.len() < SDK_COVERAGE_RESPONSE_LEN
+            {
+                return (Status::BadRequest, 0);
+            }
+            let Ok(thread) = read_u32(payload, 0) else {
+                return (Status::BadRequest, 0);
+            };
+            let Ok(observed) = read_u64(payload, 4) else {
+                return (Status::BadRequest, 0);
+            };
+            let Ok(ready) = read_u32(payload, 12) else {
+                return (Status::BadRequest, 0);
+            };
+            let expected = self
+                .coverage_thresholds
+                .get(&thread)
+                .copied()
+                .unwrap_or(SDK_COVERAGE_QUANTUM);
+            let Some(next) = observed.checked_add(SDK_COVERAGE_QUANTUM) else {
+                return (Status::OutOfRange, 0);
+            };
+            if ready == 0 || observed != expected {
+                return (Status::BadRequest, 0);
+            }
+            let selected = ((u64::from(thread) ^ observed) % u64::from(ready)) as u32;
+            self.coverage_thresholds.insert(thread, next);
+            self.coverage_asked
+                .push((thread, observed, ready, selected));
+            put_u64(&mut resp_payload[0..8], next);
+            put_u32(&mut resp_payload[8..12], selected);
+            (Status::Ok, SDK_COVERAGE_RESPONSE_LEN)
         }
     }
 
@@ -1283,6 +1405,9 @@ mod host {
             payload: &[u8],
             resp_payload: &mut [u8],
         ) -> (Status, usize) {
+            if opcode == 2 {
+                return self.handle_coverage(payload, resp_payload);
+            }
             if opcode != 1 {
                 return (Status::UnknownOpcode, 0);
             }
@@ -1312,6 +1437,21 @@ mod host {
             out.extend_from_slice(&(self.asked.len() as u32).to_le_bytes());
             for point in &self.asked {
                 out.extend_from_slice(&point.to_le_bytes());
+            }
+            if !self.coverage_thresholds.is_empty() || !self.coverage_asked.is_empty() {
+                out.extend_from_slice(b"COVR");
+                out.extend_from_slice(&(self.coverage_thresholds.len() as u32).to_le_bytes());
+                for (thread, threshold) in &self.coverage_thresholds {
+                    out.extend_from_slice(&thread.to_le_bytes());
+                    out.extend_from_slice(&threshold.to_le_bytes());
+                }
+                out.extend_from_slice(&(self.coverage_asked.len() as u32).to_le_bytes());
+                for (thread, observed, ready, selected) in &self.coverage_asked {
+                    out.extend_from_slice(&thread.to_le_bytes());
+                    out.extend_from_slice(&observed.to_le_bytes());
+                    out.extend_from_slice(&ready.to_le_bytes());
+                    out.extend_from_slice(&selected.to_le_bytes());
+                }
             }
             out
         }
@@ -1345,12 +1485,49 @@ mod host {
                 asked.push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
                 offset += 4;
             }
+            let mut coverage_thresholds = BTreeMap::new();
+            let mut coverage_asked = Vec::new();
+            if offset != state.len() {
+                if state.get(offset..).and_then(|tail| tail.get(..4)) != Some(b"COVR") {
+                    return Err(ProtoError::BadState);
+                }
+                offset += 4;
+                let count = read_u32(state, offset)? as usize;
+                offset += 4;
+                for _ in 0..count {
+                    let thread = read_u32(state, offset)?;
+                    offset += 4;
+                    let threshold = read_u64(state, offset)?;
+                    offset += 8;
+                    if threshold == 0 || coverage_thresholds.insert(thread, threshold).is_some() {
+                        return Err(ProtoError::BadState);
+                    }
+                }
+                let count = read_u32(state, offset)? as usize;
+                offset += 4;
+                for _ in 0..count {
+                    let thread = read_u32(state, offset)?;
+                    offset += 4;
+                    let observed = read_u64(state, offset)?;
+                    offset += 8;
+                    let ready = read_u32(state, offset)?;
+                    offset += 4;
+                    let selected = read_u32(state, offset)?;
+                    offset += 4;
+                    if ready == 0 || selected >= ready {
+                        return Err(ProtoError::BadState);
+                    }
+                    coverage_asked.push((thread, observed, ready, selected));
+                }
+            }
             if offset != state.len() {
                 return Err(ProtoError::BadState);
             }
             self.default_fire = default_fire;
             self.decisions = decisions;
             self.asked = asked;
+            self.coverage_thresholds = coverage_thresholds;
+            self.coverage_asked = coverage_asked;
             Ok(())
         }
     }

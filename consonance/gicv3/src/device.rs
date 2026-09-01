@@ -40,6 +40,8 @@ pub struct GicConfig {
 const GICD_CTLR: u64 = 0x0000;
 const GICD_TYPER: u64 = 0x0004;
 const GICD_IIDR: u64 = 0x0008;
+/// Peripheral ID register 2. `ArchRev=3` identifies a GICv3 distributor.
+const GICD_PIDR2: u64 = 0xFFE8;
 const IGROUPR_BASE: u64 = 0x0080;
 const ISENABLER_BASE: u64 = 0x0100;
 const ICENABLER_BASE: u64 = 0x0180;
@@ -56,17 +58,30 @@ const GICD_CTLR_ENABLE_GRP1: u32 = 1 << 1;
 /// `GICD_CTLR.ARE` — affinity routing enable. The model *is* an ARE=1 GICv3;
 /// the bit reads as one and writes to it are dropped.
 const GICD_CTLR_ARE: u32 = 1 << 4;
-/// The writable `GICD_CTLR` bits (the two group enables; everything else is
-/// RO/RES0 here).
-const GICD_CTLR_WRITE_MASK: u32 = 0b11;
+/// `GICD_CTLR.DS` — the single-security-state view exposed by stock KVM's
+/// in-kernel vGICv3. It is fixed rather than retained mutable state.
+const GICD_CTLR_DS: u32 = 1 << 6;
+/// The sole writable `GICD_CTLR` bit. Group 0/FIQ is not modeled, so retaining
+/// its enable bit would create state with no architectural effect and would
+/// disagree with stock KVM's single-security-state Group-1 view.
+const GICD_CTLR_WRITE_MASK: u32 = GICD_CTLR_ENABLE_GRP1;
 
 /// `GICR_TYPER.Last` (bit 4) — this is the last (only) redistributor.
 const GICR_TYPER_LAST: u32 = 1 << 4;
+/// `GICR_CTLR.IR` — stock KVM's fixed way to advertise DirectLPI support.
+/// The equivalent `GICR_TYPER.DirectLPIS` bit stays clear: publishing the
+/// aggregate feature through the same register matters because raw register
+/// values can remain in guest RAM after discovery.
+const GICR_CTLR_IR: u32 = 1 << 2;
 const GICR_CTLR: u64 = 0x0000;
 const GICR_IIDR: u64 = 0x0004;
 const GICR_TYPER_LO: u64 = 0x0008;
 const GICR_TYPER_HI: u64 = 0x000C;
 const GICR_WAKER: u64 = 0x0014;
+/// Peripheral ID register 2 in the redistributor RD frame.
+const GICR_PIDR2: u64 = 0xFFE8;
+/// `GIC_PIDR2_ARCH_GICv3`: bits [7:4] carry architectural revision 3.
+const GIC_PIDR2_ARCH_GICV3: u32 = 3 << 4;
 /// The SGI frame starts one 64 KiB frame above the RD frame.
 const SGI_FRAME_BASE: u64 = 0x1_0000;
 
@@ -87,8 +102,10 @@ pub struct Gicv3 {
     enable: [u32; BITMAP_WORDS],
     pending: [u32; BITMAP_WORDS],
     active: [u32; BITMAP_WORDS],
+    line_level: [u32; BITMAP_WORDS],
     priority: [u8; PRIORITY_BYTES],
     pmr: u8,
+    igrpen1: bool,
     cntv_ctl: u64,
     cntv_cval: u64,
     timer_fired: bool,
@@ -110,17 +127,34 @@ impl Gicv3 {
         if !(16..SGI_PPI_COUNT).contains(&cfg.timer_intid) {
             return Err(GicError::InvalidState);
         }
+        // Match the stock KVM GICv3 reset state that M4 measured and the
+        // kernel initializes in `kvm_vgic_dist_init` /
+        // `vgic_allocate_private_irqs_locked`: every implemented interrupt is
+        // Group 1, and SGIs 0..15 start enabled. These are architecturally
+        // observable register-file values, so they belong in the canonical
+        // model rather than in a cross-host hash mask.
+        let mut group = [0; BITMAP_WORDS];
+        for word in group
+            .iter_mut()
+            .take((SGI_PPI_COUNT + cfg.impl_spis) as usize / 32)
+        {
+            *word = u32::MAX;
+        }
+        let mut enable = [0; BITMAP_WORDS];
+        enable[0] = u32::from(u16::MAX);
         Ok(Gicv3 {
             impl_spis: cfg.impl_spis,
             timer_hz: cfg.timer_hz,
             timer_intid: cfg.timer_intid,
             gicd_ctlr: 0,
-            group: [0; BITMAP_WORDS],
-            enable: [0; BITMAP_WORDS],
+            group,
+            enable,
             pending: [0; BITMAP_WORDS],
             active: [0; BITMAP_WORDS],
+            line_level: [0; BITMAP_WORDS],
             priority: [0; PRIORITY_BYTES],
             pmr: 0,
+            igrpen1: false,
             cntv_ctl: 0,
             cntv_cval: 0,
             timer_fired: false,
@@ -209,9 +243,10 @@ impl Gicv3 {
 
     fn dist_read(&self, offset: u64) -> u32 {
         match offset {
-            GICD_CTLR => self.gicd_ctlr | GICD_CTLR_ARE,
+            GICD_CTLR => self.gicd_ctlr | GICD_CTLR_ARE | GICD_CTLR_DS,
             GICD_TYPER => self.gicd_typer(),
             GICD_IIDR => 0,
+            GICD_PIDR2 => GIC_PIDR2_ARCH_GICV3,
             _ => {
                 // The banked-per-INTID files: the distributor owns SPIs only
                 // (word index ≥ 1 / priority byte ≥ 32); the SGI/PPI bank is
@@ -311,10 +346,12 @@ impl Gicv3 {
         if offset < SGI_FRAME_BASE {
             // The RD frame.
             return match offset {
-                GICR_CTLR | GICR_IIDR => 0,
+                GICR_CTLR => GICR_CTLR_IR,
+                GICR_IIDR => 0,
                 GICR_TYPER_LO => GICR_TYPER_LAST,
                 GICR_TYPER_HI => 0,
                 GICR_WAKER => 0, // awake: ProcessorSleep=0, ChildrenAsleep=0
+                GICR_PIDR2 => GIC_PIDR2_ARCH_GICV3,
                 _ => 0,
             };
         }
@@ -409,8 +446,7 @@ impl Gicv3 {
 
     // --- interrupt file ------------------------------------------------------
 
-    /// Raise `intid` pending (the host-injection / device-line entry point;
-    /// normal arbitration then delivers it).
+    /// Latch `intid` pending (the edge/software-injection entry point).
     ///
     /// # Errors
     /// [`GicError::BadIntId`] outside the implemented identity space.
@@ -419,6 +455,46 @@ impl Gicv3 {
             return Err(GicError::BadIntId(intid));
         }
         self.pending[(intid / 32) as usize] |= 1 << (intid % 32);
+        Ok(())
+    }
+
+    /// Clear an unaccepted latched pending event. An already-active interrupt
+    /// remains active until EOI.
+    ///
+    /// # Errors
+    /// [`GicError::BadIntId`] outside the implemented identity space.
+    pub fn lower(&mut self, intid: u32) -> Result<(), GicError> {
+        if !self.implemented(intid) {
+            return Err(GicError::BadIntId(intid));
+        }
+        self.pending[(intid / 32) as usize] &= !(1 << (intid % 32));
+        Ok(())
+    }
+
+    /// Latch one edge/software-pending event without holding an external line.
+    ///
+    /// # Errors
+    /// [`GicError::BadIntId`] outside the implemented identity space.
+    pub fn pulse(&mut self, intid: u32) -> Result<(), GicError> {
+        self.raise(intid)
+    }
+
+    /// Drive a level-triggered device input high.
+    pub fn assert_line(&mut self, intid: u32) -> Result<(), GicError> {
+        if !self.implemented(intid) {
+            return Err(GicError::BadIntId(intid));
+        }
+        self.line_level[(intid / 32) as usize] |= 1 << (intid % 32);
+        Ok(())
+    }
+
+    /// Drive a level-triggered device input low without changing its pending
+    /// latch or active state.
+    pub fn deassert_line(&mut self, intid: u32) -> Result<(), GicError> {
+        if !self.implemented(intid) {
+            return Err(GicError::BadIntId(intid));
+        }
+        self.line_level[(intid / 32) as usize] &= !(1 << (intid % 32));
         Ok(())
     }
 
@@ -445,14 +521,17 @@ impl Gicv3 {
     /// ∧ priority strictly higher (value strictly lower) than both `PMR` and
     /// the running priority. Ties resolve to the lowest INTID (deterministic).
     pub fn peek_interrupt(&self) -> Option<u32> {
-        if self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 {
+        if self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1 {
             return None;
         }
         let running = self.running_priority();
         let pmr = u16::from(self.pmr);
         let mut best: Option<(u16, u32)> = None;
         for w in 0..BITMAP_WORDS {
-            let mut bits = self.pending[w] & self.enable[w] & self.group[w] & !self.active[w];
+            let mut bits = (self.pending[w] | self.line_level[w])
+                & self.enable[w]
+                & self.group[w]
+                & !self.active[w];
             while bits != 0 {
                 let bit = bits.trailing_zeros();
                 bits &= bits - 1;
@@ -478,6 +557,28 @@ impl Gicv3 {
         self.peek_interrupt().is_some()
     }
 
+    /// Whether asserting `intid` as a device input would make it deliverable.
+    ///
+    /// This is the future-line counterpart to [`Self::peek_interrupt`]: it
+    /// checks the same Group-1, enable, forwarding, PMR, running-priority, and
+    /// active-state gates without mutating the pending bitmap. Unimplemented
+    /// identities are simply not deliverable.
+    pub fn input_deliverable(&self, intid: u32) -> bool {
+        if !self.implemented(intid) || self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 || !self.igrpen1
+        {
+            return false;
+        }
+        let (w, b) = ((intid / 32) as usize, intid % 32);
+        if self.enable[w] & (1 << b) == 0
+            || self.group[w] & (1 << b) == 0
+            || bitmap_contains(&self.active, intid)
+        {
+            return false;
+        }
+        let priority = u16::from(self.priority[intid as usize]);
+        priority < u16::from(self.pmr) && priority < self.running_priority()
+    }
+
     /// Acknowledge the arbitrated INTID: the pending→active transition (the
     /// `ICC_IAR1_EL1` read on real hardware). vmm-core calls this only once
     /// the backend confirms acceptance, so a snapshot taken while the INTID
@@ -488,6 +589,29 @@ impl Gicv3 {
         self.pending[w] &= !(1 << b);
         self.active[w] |= 1 << b;
         Some(intid)
+    }
+
+    /// The highest-priority active INTID, with deterministic lowest-INTID tie
+    /// breaking. This is the value a userspace CPU-interface emulation returns
+    /// for the interrupt already accepted on exception entry.
+    pub fn active_interrupt(&self) -> Option<u32> {
+        let mut best: Option<(u16, u32)> = None;
+        for word in 0..BITMAP_WORDS {
+            for bit in 0..32 {
+                if self.active[word] & (1 << bit) == 0 {
+                    continue;
+                }
+                let intid = word as u32 * 32 + bit;
+                if !self.implemented(intid) {
+                    continue;
+                }
+                let key = (u16::from(self.priority[intid as usize]), intid);
+                if best.is_none_or(|current| key.cmp(&current).is_lt()) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map(|(_, intid)| intid)
     }
 
     /// End of interrupt for `intid`: clear its active bit (the combined
@@ -513,6 +637,16 @@ impl Gicv3 {
     /// The current priority mask.
     pub fn pmr(&self) -> u8 {
         self.pmr
+    }
+
+    /// Set the CPU interface's Group-1 enable (`ICC_IGRPEN1_EL1`).
+    pub fn set_group1_enabled(&mut self, enabled: bool) {
+        self.igrpen1 = enabled;
+    }
+
+    /// Current `ICC_IGRPEN1_EL1` value.
+    pub fn group1_enabled(&self) -> bool {
+        self.igrpen1
     }
 
     // --- the virtual timer ----------------------------------------------------
@@ -577,16 +711,7 @@ impl Gicv3 {
     /// (the idle path's discriminator, exactly as `lapic`'s
     /// `armed_timer_deliverable`).
     pub fn armed_timer_deliverable(&self) -> bool {
-        if self.next_timer_deadline().is_none() {
-            return false;
-        }
-        let intid = self.timer_intid;
-        let (w, b) = ((intid / 32) as usize, intid % 32);
-        let wired = self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 != 0
-            && self.enable[w] & (1 << b) != 0
-            && self.group[w] & (1 << b) != 0;
-        let prio = u16::from(self.priority[intid as usize]);
-        wired && prio < u16::from(self.pmr) && prio < self.running_priority()
+        self.next_timer_deadline().is_some() && self.input_deliverable(self.timer_intid)
     }
 
     /// Advance the fabric to `now_vns`: latch the virtual timer's PPI pending
@@ -619,8 +744,10 @@ impl Gicv3 {
             enable: self.enable,
             pending: self.pending,
             active: self.active,
+            line_level: self.line_level,
             priority: self.priority,
             pmr: self.pmr,
+            igrpen1: self.igrpen1,
             cntv_ctl: self.cntv_ctl,
             cntv_cval: self.cntv_cval,
             timer_fired: self.timer_fired,
@@ -657,7 +784,13 @@ impl Gicv3 {
         }
         for w in 0..BITMAP_WORDS {
             let mask = g.word_mask(w);
-            for file in [&state.group, &state.enable, &state.pending, &state.active] {
+            for file in [
+                &state.group,
+                &state.enable,
+                &state.pending,
+                &state.active,
+                &state.line_level,
+            ] {
                 if file[w] & !mask != 0 {
                     return Err(GicError::InvalidState);
                 }
@@ -672,8 +805,10 @@ impl Gicv3 {
         g.enable = state.enable;
         g.pending = state.pending;
         g.active = state.active;
+        g.line_level = state.line_level;
         g.priority = state.priority;
         g.pmr = state.pmr;
+        g.igrpen1 = state.igrpen1;
         g.cntv_ctl = state.cntv_ctl;
         g.cntv_cval = state.cntv_cval;
         g.timer_fired = state.timer_fired;
@@ -707,6 +842,11 @@ fn word_index(offset: u64, base: u64) -> Option<usize> {
     }
 }
 
+/// Testable one-bit lookup shared by delivery gates.
+fn bitmap_contains(bitmap: &[u32; BITMAP_WORDS], intid: u32) -> bool {
+    bitmap[(intid / 32) as usize] & (1 << (intid % 32)) != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,6 +865,7 @@ mod tests {
     fn arm(g: &mut Gicv3, intid: u32, prio: u8) {
         g.mmio_write(GicFrame::Dist, GICD_CTLR, GICD_CTLR_ENABLE_GRP1, 0)
             .unwrap();
+        g.set_group1_enabled(true);
         g.set_pmr(0xFF);
         let (w, b) = (intid / 32, intid % 32);
         // A 32-bit IPRIORITYR store writes all four priority bytes, so the
@@ -761,8 +902,159 @@ mod tests {
     fn reset_state_delivers_nothing() {
         let mut g = gic();
         g.raise(40).unwrap();
-        // Group 0, disabled, PMR 0, forwarding off: nothing deliverable.
+        // Although KVM's GICv3 reset state places every implemented INTID in
+        // Group 1 and enables SGIs, this SPI is disabled and both forwarding
+        // gates plus PMR remain closed: nothing is deliverable.
         assert_eq!(g.peek_interrupt(), None);
+    }
+
+    #[test]
+    fn reset_register_files_match_the_stock_kvm_vgicv3() {
+        let g = gic();
+        let state = g.snapshot();
+        assert_eq!(state.group[..3], [u32::MAX; 3]);
+        assert!(state.group[3..].iter().all(|&word| word == 0));
+        assert_eq!(state.enable[0], u32::from(u16::MAX));
+        assert!(state.enable[1..].iter().all(|&word| word == 0));
+    }
+
+    #[test]
+    fn fixed_register_surface_matches_the_stock_kvm_vgicv3() {
+        let mut g = gic();
+        // Live M5 measurement: KVM fixes single-security state and affinity
+        // routing on, while retaining only the modeled Group-1 enable bit.
+        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_CTLR, 0).unwrap(), 0x50);
+        g.mmio_write(GicFrame::Dist, GICD_CTLR, u32::MAX, 0)
+            .unwrap();
+        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_CTLR, 0).unwrap(), 0x52);
+        assert_eq!(g.snapshot().gicd_ctlr, 0x02);
+
+        let mut invalid = g.snapshot();
+        invalid.gicd_ctlr |= 1;
+        assert!(matches!(
+            Gicv3::restore(&invalid, 0),
+            Err(GicError::InvalidState)
+        ));
+
+        // KVM's one-redistributor topology publishes Last in TYPER and the
+        // aggregate DirectLPI feature through CTLR.IR. Planting DirectLPIS in
+        // TYPER preserves Linux's feature decision but changes a raw byte that
+        // remains checkpoint-visible on its early boot stack.
+        let ctlr = g.mmio_read(GicFrame::Redist, GICR_CTLR, 0).unwrap();
+        let typer = g.mmio_read(GicFrame::Redist, GICR_TYPER_LO, 0).unwrap();
+        let planted_typer = GICR_TYPER_LAST | (1 << 3);
+        assert_eq!(ctlr, GICR_CTLR_IR);
+        assert_eq!(typer, GICR_TYPER_LAST);
+        assert_ne!(typer, planted_typer);
+        assert!(ctlr & GICR_CTLR_IR != 0 || typer & (1 << 3) != 0);
+        assert_eq!(g.mmio_read(GicFrame::Redist, GICR_TYPER_HI, 0).unwrap(), 0);
+        assert_eq!(g.mmio_read(GicFrame::Dist, GICD_PIDR2, 0).unwrap(), 0x30);
+        assert_eq!(g.mmio_read(GicFrame::Redist, GICR_IIDR, 0).unwrap(), 0);
+        assert_eq!(g.mmio_read(GicFrame::Redist, GICR_PIDR2, 0).unwrap(), 0x30);
+    }
+
+    #[test]
+    fn line_inputs_and_pulses_preserve_exact_bitmap_identity() {
+        let mut g = gic();
+        arm(&mut g, 65, 0x20);
+
+        g.assert_line(65).unwrap();
+        assert_eq!(g.snapshot().line_level[..3], [0, 0, 2]);
+        assert_eq!(g.peek_interrupt(), Some(65));
+        g.deassert_line(65).unwrap();
+        assert_eq!(g.snapshot().line_level[..3], [0, 0, 0]);
+        assert_eq!(g.peek_interrupt(), None);
+
+        g.pulse(65).unwrap();
+        assert_eq!(g.snapshot().pending[..3], [0, 0, 2]);
+        assert_eq!(g.peek_interrupt(), Some(65));
+        assert_eq!(g.assert_line(96), Err(GicError::BadIntId(96)));
+        assert_eq!(g.deassert_line(96), Err(GicError::BadIntId(96)));
+        assert_eq!(g.pulse(96), Err(GicError::BadIntId(96)));
+    }
+
+    #[test]
+    fn pending_and_level_inputs_are_combined_without_cancellation() {
+        let mut g = gic();
+        arm(&mut g, 40, 0x20);
+        g.raise(40).unwrap();
+        g.assert_line(40).unwrap();
+        assert_eq!(g.peek_interrupt(), Some(40));
+    }
+
+    #[test]
+    fn every_input_delivery_gate_is_independently_observable() {
+        let mut g = gic();
+        assert!(!g.group1_enabled());
+        arm(&mut g, 40, 0x40);
+        assert!(g.group1_enabled());
+        assert!(g.input_deliverable(40));
+
+        g.set_group1_enabled(false);
+        assert!(!g.group1_enabled());
+        assert!(!g.input_deliverable(40));
+        g.raise(40).unwrap();
+        assert_eq!(g.peek_interrupt(), None);
+        g.set_group1_enabled(true);
+        assert_eq!(g.peek_interrupt(), Some(40));
+        g.lower(40).unwrap();
+
+        g.mmio_write(GicFrame::Dist, GICD_CTLR, 0, 0).unwrap();
+        assert!(!g.input_deliverable(40));
+        g.raise(40).unwrap();
+        assert_eq!(g.peek_interrupt(), None);
+        g.mmio_write(GicFrame::Dist, GICD_CTLR, GICD_CTLR_ENABLE_GRP1, 0)
+            .unwrap();
+        assert_eq!(g.peek_interrupt(), Some(40));
+        g.lower(40).unwrap();
+
+        g.mmio_write(GicFrame::Dist, ICENABLER_BASE + 4, 1 << 8, 0)
+            .unwrap();
+        assert!(!g.input_deliverable(40));
+        g.mmio_write(GicFrame::Dist, ISENABLER_BASE + 4, 1 << 8, 0)
+            .unwrap();
+
+        g.mmio_write(GicFrame::Dist, IGROUPR_BASE + 4, 0, 0)
+            .unwrap();
+        assert!(!g.input_deliverable(40));
+        g.mmio_write(GicFrame::Dist, IGROUPR_BASE + 4, 1 << 8, 0)
+            .unwrap();
+
+        g.set_pmr(0x40);
+        assert!(!g.input_deliverable(40));
+        g.set_pmr(0x41);
+        assert!(g.input_deliverable(40));
+
+        // A currently active equal-priority interrupt closes only the strict
+        // running-priority gate for 40; a still-higher priority reprogramming
+        // reopens it.
+        arm(&mut g, 41, 0x20);
+        g.raise(41).unwrap();
+        assert_eq!(g.take_interrupt(), Some(41));
+        arm(&mut g, 40, 0x20);
+        assert!(!g.input_deliverable(40));
+        arm(&mut g, 40, 0x10);
+        assert!(g.input_deliverable(40));
+
+        let mut bitmap = [0_u32; BITMAP_WORDS];
+        bitmap[2] = 1 << 1;
+        assert!(bitmap_contains(&bitmap, 65));
+        assert!(!bitmap_contains(&bitmap, 64));
+        assert!(!bitmap_contains(&bitmap, 66));
+    }
+
+    #[test]
+    fn active_interrupt_scans_every_bitmap_word_and_breaks_ties() {
+        let mut g = gic();
+        arm(&mut g, 64, 0x40);
+        g.raise(64).unwrap();
+        assert_eq!(g.take_interrupt(), Some(64));
+        arm(&mut g, 65, 0x20);
+        g.raise(65).unwrap();
+        assert_eq!(g.take_interrupt(), Some(65));
+        assert_eq!(g.active_interrupt(), Some(65));
+        g.eoi(65).unwrap();
+        assert_eq!(g.active_interrupt(), Some(64));
     }
 
     #[test]
@@ -791,6 +1083,24 @@ mod tests {
         assert_eq!(g.take_interrupt(), Some(42));
         g.eoi(42).unwrap();
         assert_eq!(g.take_interrupt(), Some(40));
+    }
+
+    #[test]
+    fn lowering_a_level_clears_pending_but_not_active() {
+        let mut g = gic();
+        arm(&mut g, 20, 0x40);
+        g.raise(20).unwrap();
+        assert_eq!(g.peek_interrupt(), Some(20));
+        g.lower(20).unwrap();
+        assert_eq!(g.peek_interrupt(), None);
+
+        g.raise(20).unwrap();
+        assert_eq!(g.take_interrupt(), Some(20));
+        g.lower(20).unwrap();
+        assert_eq!(g.active_interrupt(), Some(20));
+        g.eoi(20).unwrap();
+        assert_eq!(g.active_interrupt(), None);
+        assert_eq!(g.lower(96), Err(GicError::BadIntId(96)));
     }
 
     #[test]
@@ -829,14 +1139,46 @@ mod tests {
         g.write_cntv_ctl(CNTV_CTL_ENABLE);
         assert_eq!(g.next_timer_deadline(), Some(2000));
         assert!(g.armed_timer_deliverable());
+        assert!(g.input_deliverable(27));
         assert!(!g.advance_to(1999));
         assert!(g.advance_to(2000));
         assert_eq!(g.peek_interrupt(), Some(27));
+        assert!(g.input_deliverable(27));
         // The edge latched once; the deadline is consumed until re-armed.
         assert_eq!(g.next_timer_deadline(), None);
         assert!(!g.advance_to(3000));
         g.write_cntv_cval(250); // re-arm
         assert_eq!(g.next_timer_deadline(), Some(4000));
+    }
+
+    #[test]
+    fn timer_delivery_requires_both_a_deadline_and_an_open_input() {
+        let mut g = gic();
+        g.write_cntv_cval(125);
+        g.write_cntv_ctl(CNTV_CTL_ENABLE);
+        assert_eq!(g.next_timer_deadline(), Some(2000));
+        assert!(!g.armed_timer_deliverable());
+
+        arm(&mut g, 27, 0x20);
+        assert!(g.armed_timer_deliverable());
+        g.write_cntv_ctl(0);
+        assert!(g.input_deliverable(27));
+        assert!(!g.armed_timer_deliverable());
+    }
+
+    #[test]
+    fn input_deliverability_observes_active_and_priority_state() {
+        let mut g = gic();
+        assert!(!g.input_deliverable(40));
+        assert!(!g.input_deliverable(96));
+        arm(&mut g, 40, 0x80);
+        assert!(g.input_deliverable(40));
+        g.set_pmr(0x80);
+        assert!(!g.input_deliverable(40));
+        g.set_pmr(0x81);
+        g.raise(40).unwrap();
+        assert_eq!(g.take_interrupt(), Some(40));
+        assert!(!g.input_deliverable(40));
     }
 
     #[test]
@@ -974,6 +1316,16 @@ mod tests {
         // TYPER encodes the configured limit: (32+64)/32 - 1 = 2.
         let typer = g.mmio_read(GicFrame::Dist, GICD_TYPER, 0).unwrap();
         assert_eq!(typer & 0x1F, 2);
+        // Linux validates both frames by reading PIDR2.ArchRev before it
+        // touches their operational register files.
+        assert_eq!(
+            g.mmio_read(GicFrame::Dist, GICD_PIDR2, 0).unwrap(),
+            GIC_PIDR2_ARCH_GICV3
+        );
+        assert_eq!(
+            g.mmio_read(GicFrame::Redist, GICR_PIDR2, 0).unwrap(),
+            GIC_PIDR2_ARCH_GICV3
+        );
     }
 
     #[test]

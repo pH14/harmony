@@ -5,8 +5,8 @@
 //! Task 01 (`hypercall-proto`) defined the wire protocol and a `Client<T: Transport>` but left
 //! the `Transport` abstract. This crate implements that `Transport` over the **INTEGRATION.md §1
 //! hypercall-doorbell ABI**: it marshals a request frame into a shared, page-aligned
-//! guest-physical request page, rings a magic **port-I/O doorbell** ([`DOORBELL_PORT`]) with a
-//! single `OUT`, and reads the host's response frame back out of the response page — its length
+//! guest-physical request page, rings the architecture's one-exit doorbell (x86 port I/O or
+//! arm64 MMIO) through [`IoDoorbell`], and reads the host's response frame back out of the response page — its length
 //! taken from the frame header and bounded so a hostile host can never make the shim read past a
 //! page, write past the caller's buffer, or panic. A `Client<VmcallTransport>` is then a complete
 //! guest hypercall client that composes with the task-01 `Client` unchanged.
@@ -54,7 +54,7 @@
 //! > avoid churn (the spec defers the `io-transport` rename); despite the name, the mechanism is
 //! > now the port-I/O doorbell described above, **not** `VMCALL`.
 
-use core::ptr;
+use core::{mem::size_of, ptr};
 
 use hypercall_proto::HEADER_LEN;
 
@@ -98,6 +98,77 @@ const _: () = assert!(REQ_GPA.is_multiple_of(PAGE_SIZE as u64));
 const _: () = assert!(RESP_GPA.is_multiple_of(PAGE_SIZE as u64));
 const _: () = assert!(REQ_GPA != RESP_GPA);
 
+/// Copy ordinary memory into a shared page through single volatile scalar
+/// accesses. Linux maps the arm64 low-GPA control slot through `/dev/mem` as
+/// device memory; ordinary `memcpy` may use paired/vector accesses that are not
+/// valid for that mapping and raise `SIGBUS` inside the guest.
+///
+/// # Safety
+/// `dst` must be aligned for `u64`, valid for `len` initialized writable bytes,
+/// and not overlap the `len` readable bytes at `src`.
+unsafe fn copy_to_shared_page(dst: *mut u8, src: *const u8, len: usize) {
+    let mut offset = 0;
+    while offset + size_of::<u64>() <= len {
+        // SAFETY: the caller grants both ranges for `len` bytes. `src` need not
+        // be aligned, while `dst + offset` is u64-aligned because the page base
+        // is aligned and `offset` advances by whole u64 words.
+        let word = unsafe { ptr::read_unaligned(src.add(offset).cast::<u64>()) };
+        // SAFETY: same range/alignment grant; volatile keeps this as a single
+        // shared-page access rather than a libc/vectorized memory operation.
+        unsafe { ptr::write_volatile(dst.add(offset).cast::<u64>(), word) };
+        offset += size_of::<u64>();
+    }
+    while offset < len {
+        // SAFETY: the remaining byte lies inside both caller-granted ranges.
+        let byte = unsafe { ptr::read(src.add(offset)) };
+        // SAFETY: the destination byte is in-range; volatile is required for
+        // an arm64 `/dev/mem` device mapping.
+        unsafe { ptr::write_volatile(dst.add(offset), byte) };
+        offset += 1;
+    }
+}
+
+/// Copy a shared page into ordinary memory through single volatile scalar
+/// accesses.
+///
+/// # Safety
+/// `src` must be aligned for `u64`, valid for `len` initialized readable bytes,
+/// and not overlap the `len` writable bytes at `dst`.
+unsafe fn copy_from_shared_page(dst: *mut u8, src: *const u8, len: usize) {
+    let mut offset = 0;
+    while offset + size_of::<u64>() <= len {
+        // SAFETY: the source word is aligned and inside the caller-granted
+        // shared-page range. Volatile prevents paired/vectorized device reads.
+        let word = unsafe { ptr::read_volatile(src.add(offset).cast::<u64>()) };
+        // SAFETY: the destination has `len` writable bytes but need not be
+        // aligned, hence the explicit unaligned ordinary-memory store.
+        unsafe { ptr::write_unaligned(dst.add(offset).cast::<u64>(), word) };
+        offset += size_of::<u64>();
+    }
+    while offset < len {
+        // SAFETY: the remaining source byte is inside the granted shared page.
+        let byte = unsafe { ptr::read_volatile(src.add(offset)) };
+        // SAFETY: the corresponding ordinary-memory destination byte is live.
+        unsafe { ptr::write(dst.add(offset), byte) };
+        offset += 1;
+    }
+}
+
+/// Zero one complete shared page through single volatile scalar stores.
+///
+/// # Safety
+/// `page` must be `u64`-aligned and valid for `PAGE_SIZE` initialized writable
+/// bytes.
+unsafe fn zero_shared_page(page: *mut u8) {
+    let mut offset = 0;
+    while offset < PAGE_SIZE {
+        // SAFETY: PAGE_SIZE is a multiple of u64 and the caller grants an
+        // aligned complete page, so every word is aligned and in-range.
+        unsafe { ptr::write_volatile(page.add(offset).cast::<u64>(), 0) };
+        offset += size_of::<u64>();
+    }
+}
+
 /// The privileged hypercall-doorbell primitive, abstracted so the page-marshalling logic can be
 /// driven by a host-side loopback in tests without a hypervisor.
 ///
@@ -125,6 +196,47 @@ impl RealIoDoorbell {
     /// Construct the production doorbell primitive.
     pub const fn new() -> Self {
         Self
+    }
+}
+
+/// Production doorbell primitive for architectures whose VMM exposes the
+/// hypercall doorbell as a 32-bit MMIO register (arm64 in particular).
+///
+/// The caller maps the board's reserved doorbell frame into its address space
+/// and constructs this value from that mapping. [`IoDoorbell::ring`] then makes
+/// one volatile 32-bit store of the request-frame length. The transport's
+/// request/response shared pages remain unchanged; only the trap instruction
+/// differs from x86 port I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MmioDoorbell {
+    register: *mut u32,
+}
+
+impl MmioDoorbell {
+    /// Construct an MMIO doorbell over a mapped 32-bit register.
+    ///
+    /// # Safety
+    /// `register` must be non-null, naturally aligned, mapped read/write as a
+    /// device register, and valid for every later [`IoDoorbell::ring`] call.
+    /// The mapping must name the VMM's hypercall doorbell and be exclusively
+    /// owned for volatile stores by this transport.
+    pub unsafe fn new(register: *mut u32) -> Self {
+        Self { register }
+    }
+}
+
+impl IoDoorbell for MmioDoorbell {
+    unsafe fn ring(&mut self, port: u16, req_len: u32) {
+        // `VmcallTransport` names the abstract doorbell with the frozen x86
+        // port constant on every architecture. Refuse a mismatched identity
+        // consistently instead of writing an unrelated device register.
+        if port != DOORBELL_PORT {
+            return;
+        }
+        // SAFETY: the constructor requires a valid, aligned device mapping for
+        // this register and the IoDoorbell caller guarantees it remains live
+        // across this single atomic exchange. Volatile is required for MMIO.
+        unsafe { ptr::write_volatile(self.register, req_len) };
     }
 }
 
@@ -244,12 +356,15 @@ impl VmcallTransport<RealIoDoorbell> {
     /// dereferences these values directly (it accesses the pages by address), **each GPA must also
     /// equal the page's linear/virtual address** — i.e. the pages are identity-mapped, as under
     /// the task-04 payload map; a GPA that is not a valid linear address is UB. The pages must be
-    /// **initialized byte storage** (real memory, not `MaybeUninit` — e.g. zeroed at reservation:
-    /// the host may write a response shorter than the page, and step 3 zeroes the page so the
-    /// untouched tail and a rejected page read as zeros) and **exclusively owned** by this
-    /// transport for its lifetime — no other live reference may alias them (the `req` and `resp`
-    /// slices passed to `exchange` must not overlap them), since the host writes the response page
-    /// out-of-band.
+    /// **initialized byte storage** (real memory or a device-typed `/dev/mem`
+    /// mapping, not `MaybeUninit` — e.g. zeroed at reservation: the host may
+    /// write a response shorter than the page, and step 3 zeroes the page so
+    /// the untouched tail and a rejected page read as zeros) and **exclusively
+    /// owned** by this transport for its lifetime — no other live reference may
+    /// alias them (the `req` and `resp` slices passed to `exchange` must not
+    /// overlap them), since the host writes the response page out-of-band. Page
+    /// access uses aligned volatile scalar words so this contract is valid for
+    /// either memory type.
     pub unsafe fn from_gpas(req_gpa: u64, resp_gpa: u64) -> Self {
         // SAFETY: forwarded to `with_doorbell`; `RealIoDoorbell` carries no invariants of its own
         // and is consistent with any GPAs (it only executes the `OUT` doorbell).
@@ -289,8 +404,11 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
             return Err(TransportError::RequestTooLarge);
         }
 
-        // Steps 2 & 3: stage the request and clear both pages. Raw-pointer ops only — no `&`/`&mut`
-        // to either page is created here, and none is live across the doorbell below.
+        // Steps 2 & 3: clear both pages and stage the request. Raw-pointer ops
+        // only — no `&`/`&mut` to either page is created here, and none is live
+        // across the doorbell below. The volatile scalar helpers are required
+        // for arm64, where `/dev/mem` gives the reserved low-GPA slot device
+        // attributes and an ordinary optimized `memcpy` can SIGBUS.
         //
         // Step 2 clears the request-page tail (`req.len()..PAGE_SIZE`) so a direct `exchange`
         // caller passing a `req` shorter than its header-encoded length exposes only zeros to the
@@ -299,13 +417,14 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
         // that writes nothing (a rejection) leaves the magic field zero, which step 5 maps to
         // `HostRejected` instead of decoding a stale prior frame.
         //
-        // SAFETY: `req_page`/`resp_page` name distinct, page-aligned, `PAGE_SIZE`, exclusively
-        // owned pages (constructor contract); `req` does not overlap them (same contract), so the
-        // copy is non-overlapping. All offsets stay within `PAGE_SIZE`.
+        // SAFETY: `req_page`/`resp_page` name distinct, page-aligned,
+        // `PAGE_SIZE`, exclusively owned pages (constructor contract); `req`
+        // does not overlap them (same contract), so the copy is
+        // non-overlapping. `req.len() <= PAGE_SIZE`, checked above.
         unsafe {
-            ptr::copy_nonoverlapping(req.as_ptr(), self.req_page, req.len());
-            ptr::write_bytes(self.req_page.add(req.len()), 0, PAGE_SIZE - req.len());
-            ptr::write_bytes(self.resp_page, 0, PAGE_SIZE);
+            zero_shared_page(self.req_page);
+            zero_shared_page(self.resp_page);
+            copy_to_shared_page(self.req_page, req.as_ptr(), req.len());
         }
 
         // Step 4: ring the doorbell (single `OUT`). No reference to either page is live across this
@@ -329,7 +448,7 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
         // PAGE_SIZE`, so the read stays in-page; no `&`/`&mut` to the page outlives this block.
         let mut header = [0_u8; HEADER_LEN];
         unsafe {
-            ptr::copy_nonoverlapping(self.resp_page, header.as_mut_ptr(), HEADER_LEN);
+            copy_from_shared_page(header.as_mut_ptr(), self.resp_page, HEADER_LEN);
         }
 
         // Step 6: transport-level rejection. A response page that does not begin with the frame
@@ -361,8 +480,30 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
         // (constructor contract), so the copy is non-overlapping. No `&`/`&mut` to the page
         // outlives this block.
         unsafe {
-            ptr::copy_nonoverlapping(self.resp_page, resp.as_mut_ptr(), len);
+            copy_from_shared_page(resp.as_mut_ptr(), self.resp_page, len);
         }
         Ok(len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DOORBELL_PORT, IoDoorbell, MmioDoorbell};
+
+    #[test]
+    fn mmio_doorbell_writes_only_the_frozen_identity() {
+        let mut register = 0_u32;
+        // SAFETY: `register` is an aligned live u32 exclusively used by this
+        // test for the lifetime of the primitive.
+        let mut doorbell = unsafe { MmioDoorbell::new(core::ptr::addr_of_mut!(register)) };
+
+        // SAFETY: the test-owned register satisfies the constructor and ring
+        // contracts; no alias is accessed while either call is in progress.
+        unsafe { doorbell.ring(DOORBELL_PORT ^ 1, 7) };
+        assert_eq!(register, 0, "a foreign doorbell identity must be inert");
+
+        // SAFETY: same live, exclusively-owned register.
+        unsafe { doorbell.ring(DOORBELL_PORT, 0x1234_5678) };
+        assert_eq!(register, 0x1234_5678);
     }
 }

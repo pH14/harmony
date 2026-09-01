@@ -7,8 +7,7 @@
 //! pre-arm64 prefix). Portable; no mock needed.
 
 use vmm_backend::{
-    Arm64, Arm64Exit, CommonExit, Exit, ExitCounts, ExitReason, Gpa, HypercallFrame, Moment, X86,
-    X86Exit,
+    Arm64, Arm64Exit, CommonExit, Exit, ExitCounts, ExitReason, Gpa, HypercallFrame, X86, X86Exit,
 };
 
 /// Classify every `Exit<X86>` with a wildcard-free `match`. If a variant is ever added
@@ -27,7 +26,6 @@ fn classify(exit: &Exit<X86>) -> ExitReason {
         Exit::Arch(X86Exit::Rdseed { .. }) => ExitReason::Rdseed,
         Exit::Common(CommonExit::Idle) => ExitReason::Idle,
         Exit::Common(CommonExit::Shutdown) => ExitReason::Shutdown,
-        Exit::Common(CommonExit::Deadline { .. }) => ExitReason::Deadline,
     }
 }
 
@@ -39,14 +37,13 @@ fn classify_arm64(exit: &Exit<Arm64>) -> ExitReason {
         Exit::Common(CommonExit::Hypercall(_)) => ExitReason::Hypercall,
         Exit::Common(CommonExit::Idle) => ExitReason::Idle,
         Exit::Common(CommonExit::Shutdown) => ExitReason::Shutdown,
-        Exit::Common(CommonExit::Deadline { .. }) => ExitReason::Deadline,
         Exit::Arch(Arm64Exit::Sysreg { .. }) => ExitReason::Sysreg,
     }
 }
 
 /// One value of every `Exit<X86>` variant — the closed set the x86 contract
 /// enumerates, in `ExitCounts` field order (the pre-arm64 roster prefix).
-fn one_of_each() -> [Exit<X86>; 13] {
+fn one_of_each() -> [Exit<X86>; 12] {
     [
         Exit::Arch(X86Exit::Io {
             port: 0x80,
@@ -74,7 +71,6 @@ fn one_of_each() -> [Exit<X86>; 13] {
         Exit::Arch(X86Exit::Rdseed { width: 8 }),
         Exit::Common(CommonExit::Idle),
         Exit::Common(CommonExit::Shutdown),
-        Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
     ]
 }
 
@@ -101,14 +97,14 @@ fn classify_agrees_with_reason_for_every_variant() {
 #[test]
 fn exit_counts_entries_cover_every_reason_once() {
     let entries = ExitCounts::default().entries();
-    assert_eq!(entries.len(), 14);
+    assert_eq!(entries.len(), 13);
 
     let mut reasons: Vec<ExitReason> = entries.iter().map(|(r, _)| *r).collect();
     reasons.sort();
     reasons.dedup();
     assert_eq!(
         reasons.len(),
-        14,
+        13,
         "every ExitReason must appear exactly once"
     );
 

@@ -46,18 +46,6 @@ mod region;
 )]
 mod run_buf;
 
-// The portable `Backend::run_until` orchestration (§2 inversion seam): drives the
-// pure `vtime` planner over a guest-exit-aware `PreemptCpu` and maps the outcome to
-// an `Exit`. Compiled on every platform (its determinism contract is property-tested
-// against `vtime::sim::SimCpu` on macOS); the live `PreemptCpu` it serves is the
-// box-only `KvmBackend` adapter. Dead on a non-test, non-Linux build (only the live
-// adapter calls it), hence the conditional allow.
-#[cfg_attr(
-    not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
-    allow(dead_code)
-)]
-mod run_until;
-
 #[cfg(feature = "mock")]
 mod mock;
 #[cfg(feature = "mock")]
@@ -70,6 +58,11 @@ mod mock_arm64;
 // dependency, so it compiles + unit/Miri-tests on macOS against the recording
 // `FakeKvm` (portable mechanism attestation — no `/dev/kvm`).
 mod arm64_kvm;
+// Apple Silicon bring-up backend over Hypervisor.framework. The framework and
+// AArch64 ABI are both target-specific, so no part of this module is compiled
+// on Linux or Intel macOS.
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
+mod hvf;
 // The box-only syscall half (`LiveKvm`, real ioctls), gated on the arch it
 // traps as well as the OS — `kvm_bindings` exposes a different register ABI per
 // arch, so this is aarch64-linux-only, exactly as the x86 `kvm_sys` is
@@ -94,21 +87,6 @@ mod arm64_kvm_sys;
 mod kvm;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
-// `pmu` is the **pure** `perf_event` config for the run_until branch counter (the
-// `PerfEventAttr` builder + exact bit constants): no syscall, no `libc`, so it
-// compiles everywhere and STAYS in the coverage + mutation gates (exact-value
-// tested). `pmu_sys` is the box-only syscall orchestration (`PmuBranchCounter` +
-// the raw `perf_event`/`fcntl`/`mmap` seams) that opens that config — like `kvm_sys`
-// it cannot run without perf and is excluded from coverage + mutation, behind
-// `#[cfg(not(miri))]` seams. Dead on a non-test, non-Linux build (only `pmu_sys`
-// uses `pmu`), hence the conditional allow.
-#[cfg_attr(
-    not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
-    allow(dead_code)
-)]
-mod pmu;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod pmu_sys;
 // `patched_kvm` is the box-only syscall orchestration for the determinism
 // backend (the `KVM_EXIT_DETERMINISM` decode/complete logic it drives is the
 // pure, unit-tested `kvm` module); like `kvm_sys` it is excluded from the
@@ -117,8 +95,10 @@ mod pmu_sys;
 mod patched_kvm;
 
 pub use arch::arm64::{
-    Arm64, Arm64Caps, Arm64Completion, Arm64CoreRegs, Arm64Exit, Arm64Injection, Arm64Policy,
-    Arm64SysregFile, Arm64VcpuState, GicIntId, IdRegModel, RAW_BR_RETIRED, SysregTrapPolicy,
+    ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64, Arm64Caps, Arm64Completion,
+    Arm64CoreRegs, Arm64DebugState, Arm64Exit, Arm64GicState, Arm64Injection, Arm64InterruptState,
+    Arm64Policy, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState, Arm64VtimerState, GicIntId,
+    IdRegModel, SysregTrapPolicy,
 };
 pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
@@ -128,10 +108,7 @@ pub use arch::{Arch, ArchCaps, ArchExit};
 pub use backend::Backend;
 pub use error::{BackendError, Result};
 pub use exit::{Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame};
-// The nested-x86 re-certification's per-record PMI accounting surface (PR #98):
-// kept across the tasks/108 arch restructure — `pmu` is portable/arch-neutral.
-pub use pmu::PmuOverflowStats;
-pub use types::{Gpa, Moment, MpState};
+pub use types::{Gpa, MpState};
 
 #[cfg(feature = "mock")]
 pub use mock::{Completion, MockBackend, MockCaps};
@@ -141,6 +118,9 @@ pub use mock_arm64::{Arm64MockCompletion, MockArm64Backend, MockArm64Caps};
 #[cfg(feature = "mock")]
 pub use arm64_kvm::FakeKvm;
 pub use arm64_kvm::{Arm64Kvm, Arm64KvmBackend, KvmRunView, MmioView};
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri), not(kani)))]
+pub use hvf::{HvfBackend, HvfExitHandle};
 
 // The box-only stock KVM/arm64 constructor — the concrete `(Arm64KvmBackend,
 // Arm64)` pair's syscall seam, named only on the aarch64-linux leg.

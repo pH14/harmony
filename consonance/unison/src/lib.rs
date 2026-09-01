@@ -8,7 +8,7 @@
 //! divergence by hashing state at periodic checkpoints, and
 //! [`bisect_divergence`] binary-searches re-executions from scratch to pin
 //! down the first divergent work count. "Work" is an abstract monotonic
-//! counter (retired branches for the real VM, instructions executed for the
+//! counter (VM exits for the real VM, instructions executed for the
 //! bundled [`toy`] machine); all harness logic treats it as opaque ticks. The
 //! [`toy`] interpreter plus the divergence-injecting [`flaky`] wrapper let the
 //! harness be developed and fully tested before the real VMM exists.

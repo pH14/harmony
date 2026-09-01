@@ -121,6 +121,7 @@ fn truncations_of_a_valid_blob_never_panic() {
             window: (10, 20),
         }],
         reseeds: BTreeMap::from([(3, 0xFEED_5EED), (7, 42)]),
+        payloads: None,
     };
     let bytes = spec.encode();
     for n in 0..bytes.len() {
@@ -203,6 +204,7 @@ fn decode_rejects_non_ascending_moments() {
         ]),
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
+        payloads: None,
     };
     let mut bytes = spec.encode();
     let pat = sentinel.to_le_bytes();
@@ -239,4 +241,52 @@ fn dev1_magic_is_rejected() {
     // Overwrite the 4-byte magic with "DEV1".
     bytes[0..4].copy_from_slice(b"DEV1");
     assert_eq!(EnvSpec::decode(&bytes), Err(EnvError::Malformed));
+}
+
+#[test]
+fn payload_tape_round_trips_consumes_exactly_and_restores_the_suffix() {
+    let mut spec = EnvSpec::Seeded {
+        seed: 7,
+        policy: environment::FaultPolicy::none(),
+    };
+    spec.set_payloads(Some(vec![vec![0x81, 4], vec![0, 2]]));
+    assert_eq!(spec.payloads(), Some(&[vec![0x81, 4], vec![0, 2]][..]));
+    let decoded = EnvSpec::decode(&spec.encode()).expect("payload reproducer round-trips");
+    assert_eq!(decoded, spec);
+
+    let mut env = decoded.materialize();
+    assert!(env.payload_configured());
+    assert_eq!(env.pull_payload(2), Ok(Some(vec![0x81, 4])));
+    assert_eq!(env.remaining_payloads(), Some(vec![vec![0, 2]]));
+
+    // Wrong-size fetches are fail-closed and do not advance the tape.
+    assert_eq!(env.pull_payload(1), Err(2));
+    assert_eq!(env.remaining_payloads(), Some(vec![vec![0, 2]]));
+    assert_eq!(env.pull_payload(2), Ok(Some(vec![0, 2])));
+    assert_eq!(env.pull_payload(2), Ok(None), "offered tape is exhausted");
+    assert_eq!(env.remaining_payloads(), Some(Vec::new()));
+
+    env.restore_payloads(Some(vec![vec![7, 9]]));
+    assert_eq!(env.pull_payload(2), Ok(Some(vec![7, 9])));
+    env.restore_payloads(None);
+    assert!(!env.payload_configured());
+}
+
+#[test]
+fn payload_option_tag_and_truncation_are_rejected() {
+    let mut spec = EnvSpec::Seeded {
+        seed: 1,
+        policy: environment::FaultPolicy::none(),
+    };
+    spec.set_payloads(Some(vec![vec![1, 2, 3]]));
+    let bytes = spec.encode();
+    for end in 0..bytes.len() {
+        assert!(EnvSpec::decode(&bytes[..end]).is_err());
+    }
+
+    let mut malformed = bytes;
+    // The payload option tag is the byte before the entry count at the tail.
+    let tag = malformed.len() - (1 + 4 + 4 + 3);
+    malformed[tag] = 2;
+    assert_eq!(EnvSpec::decode(&malformed), Err(EnvError::Malformed));
 }

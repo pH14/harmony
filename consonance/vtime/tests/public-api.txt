@@ -14,8 +14,8 @@ pub const vtime::pvclock::GUEST_CLOCK_HZ_OFF: usize
 pub const vtime::pvclock::GUEST_CLOCK_OFF: usize
 pub const vtime::pvclock::PVCLOCK_ABI_VERSION: u32
 pub const vtime::pvclock::PVCLOCK_FLAGS_V1: u32
+pub const vtime::pvclock::PVCLOCK_FLAG_EXIT_COUNT_DERIVED: u32
 pub const vtime::pvclock::PVCLOCK_FLAG_MATERIALIZED: u32
-pub const vtime::pvclock::PVCLOCK_FLAG_WORK_DERIVED: u32
 pub const vtime::pvclock::PVCLOCK_PAGE_LEN: usize
 pub const vtime::pvclock::RESERVED_OFF: usize
 pub const vtime::pvclock::SEQ_OFF: usize
@@ -25,61 +25,8 @@ pub fn vtime::pvclock::published(&[u8], u64, u64, u64) -> bool
 pub fn vtime::pvclock::read(&[u8]) -> core::option::Option<vtime::pvclock::PvclockFields>
 pub fn vtime::pvclock::stamp(&mut [u8], u64, u64, u64) -> bool
 pub fn vtime::pvclock::stamp_canonical(&mut [u8], u64, u64, u64) -> bool
-pub mod vtime::sim
-pub enum vtime::sim::SimEvent
-pub vtime::sim::SimEvent::Armed
-pub vtime::sim::SimEvent::Armed::armed_at: u64
-pub vtime::sim::SimEvent::Stepped
-pub vtime::sim::SimEvent::Stepped::counted: bool
-pub vtime::sim::SimEvent::Stepped::work_after: u64
-pub vtime::sim::SimEvent::Stopped
-pub vtime::sim::SimEvent::Stopped::armed_at: u64
-pub vtime::sim::SimEvent::Stopped::skid: u64
-pub vtime::sim::SimEvent::Stopped::stopped_at: u64
-pub struct vtime::sim::SimCpu
-impl vtime::sim::SimCpu
-pub fn vtime::sim::SimCpu::instructions_retired(&self) -> u64
-pub fn vtime::sim::SimCpu::log(&self) -> &[vtime::sim::SimEvent]
-pub fn vtime::sim::SimCpu::new(vtime::sim::SimCpuConfig) -> core::result::Result<vtime::sim::SimCpu, vtime::VtimeError>
-pub fn vtime::sim::SimCpu::reset_work_counter(&mut self)
-impl vtime::CpuBackend for vtime::sim::SimCpu
-pub fn vtime::sim::SimCpu::run_until_overflow(&mut self, u64) -> core::result::Result<u64, vtime::BackendError>
-pub fn vtime::sim::SimCpu::single_step(&mut self) -> core::result::Result<u64, vtime::BackendError>
-pub fn vtime::sim::SimCpu::work(&self) -> u64
-pub struct vtime::sim::SimCpuConfig
-pub vtime::sim::SimCpuConfig::density_den: u64
-pub vtime::sim::SimCpuConfig::density_num: u64
-pub vtime::sim::SimCpuConfig::initial_work: u64
-pub vtime::sim::SimCpuConfig::max_skid: u64
-pub vtime::sim::SimCpuConfig::seed: u64
-pub enum vtime::PlanOutcome
-pub vtime::PlanOutcome::ReadyToInject
-pub vtime::PlanOutcome::ReadyToInject::single_steps_used: u64
-pub vtime::PlanOutcome::ReadyToInject::stopped_at: u64
-pub vtime::PlanOutcome::ReadyToInject::target: u64
-pub vtime::PlanOutcome::TargetInPast
-pub vtime::PlanOutcome::TargetInPast::now: u64
-pub vtime::PlanOutcome::TargetInPast::target: u64
 pub enum vtime::VtimeError
-pub vtime::VtimeError::Backend(vtime::BackendError)
-pub vtime::VtimeError::ImmediateSaturation
-pub vtime::VtimeError::ImmediateSaturation::step_vns: u64
-pub vtime::VtimeError::ImmediateSaturation::vns_base: u64
-pub vtime::VtimeError::InvalidSimConfig(&'static str)
-pub vtime::VtimeError::SkidExceeded
-pub vtime::VtimeError::SkidExceeded::armed_at: u64
-pub vtime::VtimeError::SkidExceeded::stopped_at: u64
-pub vtime::VtimeError::SkidExceeded::target: u64
-pub vtime::VtimeError::StepBudgetExceeded
-pub vtime::VtimeError::StepBudgetExceeded::last_work: u64
-pub vtime::VtimeError::StepBudgetExceeded::stall_steps: u64
-pub vtime::VtimeError::StepBudgetExceeded::target: u64
 pub vtime::VtimeError::ZeroPeriod
-pub vtime::VtimeError::ZeroRatioDen
-pub vtime::VtimeError::ZeroRatioNum
-pub struct vtime::BackendError(_)
-impl vtime::BackendError
-pub fn vtime::BackendError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct vtime::IdleAdvance
 pub vtime::IdleAdvance::advance_vns: u64
 pub vtime::IdleAdvance::already_due: bool
@@ -88,13 +35,6 @@ pub struct vtime::IdlePlanner
 impl vtime::IdlePlanner
 pub fn vtime::IdlePlanner::new() -> Self
 pub fn vtime::IdlePlanner::plan(&self, u64, u64) -> vtime::IdleAdvance
-pub struct vtime::InjectionPlanner
-impl vtime::InjectionPlanner
-pub fn vtime::InjectionPlanner::new(vtime::PlannerConfig) -> Self
-pub fn vtime::InjectionPlanner::stop_at(&self, &mut dyn vtime::CpuBackend, u64) -> core::result::Result<vtime::PlanOutcome, vtime::VtimeError>
-pub fn vtime::InjectionPlanner::with_max_stall_steps(self, u64) -> Self
-pub struct vtime::PlannerConfig
-pub vtime::PlannerConfig::skid_margin: u64
 pub struct vtime::TimerQueue
 impl vtime::TimerQueue
 pub fn vtime::TimerQueue::cancel(&mut self, vtime::TimerToken) -> bool
@@ -106,23 +46,11 @@ pub fn vtime::TimerQueue::schedule_periodic(&mut self, u64, u64, vtime::TimerTok
 pub struct vtime::TimerToken(pub u64)
 pub struct vtime::VClock
 impl vtime::VClock
-pub fn vtime::VClock::advance_idle(&mut self, u64)
-pub fn vtime::VClock::guest_ticks(&self, u64) -> u64
-pub fn vtime::VClock::new(vtime::VClockConfig) -> core::result::Result<vtime::VClock, vtime::VtimeError>
-pub fn vtime::VClock::snapshot_vns(&self, u64) -> u64
-pub fn vtime::VClock::vns(&self, u64) -> u64
-pub fn vtime::VClock::work_for_vns(&self, u64) -> u64
+pub fn vtime::VClock::advance(&mut self, u64)
+pub fn vtime::VClock::guest_ticks(&self) -> u64
+pub fn vtime::VClock::new(vtime::VClockConfig) -> core::result::Result<Self, vtime::VtimeError>
+pub fn vtime::VClock::vns(&self) -> u64
 pub struct vtime::VClockConfig
 pub vtime::VClockConfig::guest_base: u64
 pub vtime::VClockConfig::guest_hz: u64
-pub vtime::VClockConfig::ratio_den: u64
-pub vtime::VClockConfig::ratio_num: u64
 pub vtime::VClockConfig::vns_base: u64
-pub trait vtime::CpuBackend
-pub fn vtime::CpuBackend::run_until_overflow(&mut self, u64) -> core::result::Result<u64, vtime::BackendError>
-pub fn vtime::CpuBackend::single_step(&mut self) -> core::result::Result<u64, vtime::BackendError>
-pub fn vtime::CpuBackend::work(&self) -> u64
-impl vtime::CpuBackend for vtime::sim::SimCpu
-pub fn vtime::sim::SimCpu::run_until_overflow(&mut self, u64) -> core::result::Result<u64, vtime::BackendError>
-pub fn vtime::sim::SimCpu::single_step(&mut self) -> core::result::Result<u64, vtime::BackendError>
-pub fn vtime::sim::SimCpu::work(&self) -> u64

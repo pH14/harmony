@@ -15,7 +15,7 @@ apt-get install -y \
     qemu-system-x86 \
     flex bison libelf-dev libssl-dev bc cpio kmod \
     shellcheck \
-    linux-perf msr-tools cpuid \
+    msr-tools cpuid \
     docker.io
 
 echo "== rust (rustup, stable)"
@@ -27,15 +27,6 @@ source "$HOME/.cargo/env"
 grep -q 'cargo/env' "$HOME/.bashrc" || echo 'source "$HOME/.cargo/env"' >> "$HOME/.bashrc"
 rustup toolchain install stable --component rustfmt,clippy
 rustup target add x86_64-unknown-none
-
-echo "== PMU / perf access for the precise-count work"
-cat > /etc/sysctl.d/90-harmony.conf <<'EOF'
-# Full perf_event access (PMU counting of guest execution needs it)
-kernel.perf_event_paranoid = -1
-# Don't lose PMU samples to the throttler during calibration
-kernel.perf_event_max_sample_rate = 100000
-EOF
-sysctl --system >/dev/null
 
 echo "== sanity checks"
 fail=0

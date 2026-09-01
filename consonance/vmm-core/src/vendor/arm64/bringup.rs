@@ -12,12 +12,9 @@
 //! `(Arm64KvmBackend, Arm64)` pair is named is the M4 `boot_selected`
 //! (Linux+aarch64-gated) — not here.
 //!
-//! **The interrupt fabric is left unwired** (`docs/ARCH-BOUNDARY.md` §D / M2
-//! §Delivery): the stock `Arm64KvmBackend`'s `set_pending_irq` is `Unsupported`
-//! and guest delivery is AA-6-gated (the vGICv3 round-trip verdict), so a
-//! stock-safe boot root never wires the userspace GICv3. The DTB still
-//! advertises the GICv3 so a guest can program it; wiring its delivery is a
-//! later bead.
+//! HVF composes the userspace GICv3. KVM/arm64 instead owns an in-kernel
+//! GICv3, so its boot root leaves the userspace model unwired and drives the
+//! clockevent PPI through the backend's level-input seam.
 
 use vmm_backend::{Arm64, Backend, Gpa};
 
@@ -52,10 +49,26 @@ pub fn boot<B: Backend<A = Arm64>>(
 /// malformed image or one that does not fit alongside the DTB), or a
 /// [`VmmError::Backend`] from policy install / map / restore.
 pub(crate) fn compose<B: Backend<A = Arm64>>(
-    mut backend: B,
+    backend: B,
     image: &[u8],
     bootargs: &str,
     guest_ram_len: usize,
+) -> Result<Vmm<B>, VmmError> {
+    compose_inner(backend, image, None, bootargs, guest_ram_len, true)
+}
+
+/// Shared arm64 composition with an explicit control-channel mapping choice.
+/// The control mapping is a canonical 16-KiB low-GPA region, matching Apple
+/// HVF's measured mapping granule while retaining the fixed request/response
+/// page GPAs in its upper half. The M1 boot omits it because that milestone has
+/// no SDK control channel; M2 opts in through [`boot_hvf_control`].
+fn compose_inner<B: Backend<A = Arm64>>(
+    mut backend: B,
+    image: &[u8],
+    initramfs: Option<&[u8]>,
+    bootargs: &str,
+    guest_ram_len: usize,
+    map_doorbell: bool,
 ) -> Result<Vmm<B>, VmmError> {
     // 1. Install the contract policy skeleton through the trait, before the
     //    first run (the arm64 `ID_AA64*` freeze + trapped-sysreg table; rows
@@ -66,31 +79,75 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     let mut ram = GuestRam::new(guest_ram_len)?;
     let loaded = image_loader::load(image, ram.as_mut_bytes()).map_err(VmmError::vendor_boot)?;
 
-    // 3. Lay out RAM above the loaded image, page-aligned: the **reserved
-    //    pvclock page first** (the hm-rk5 seam), then the DTB above it. Placing
+    // 3. Lay out RAM above the loaded image, page-aligned: an optional external
+    //    initramfs, the **reserved pvclock page** (the hm-rk5 seam), then the
+    //    DTB. Placing
     //    pvclock before the DTB makes its GPA depend only on the kernel extent —
     //    not the DTB length — so the DTB (whose `/reserved-memory` child's
     //    node name is `pvclock@<hex(gpa)>`, a variable-length unit-address) is
     //    built **once**, with no circular size↔name dependency.
-    let pvclock_off = align_up(loaded.end_off, PAGE);
-    let pvclock_gpa = RAM_BASE + pvclock_off;
-    let dtb_off = align_up(pvclock_off + PAGE, PAGE);
-    let dtb_gpa = RAM_BASE + dtb_off;
-    let dtb_bytes = dtb::build(guest_ram_len as u64, pvclock_gpa, bootargs);
+    let ram_len = u64::try_from(guest_ram_len)
+        .map_err(|_| VmmError::ContractViolation("arm64 guest RAM length exceeds u64".into()))?;
+    let (initrd_layout, post_initrd_off) = if let Some(bytes) = initramfs {
+        let start_off = align_up(loaded.end_off, PAGE);
+        let byte_len = u64::try_from(bytes.len()).map_err(|_| {
+            VmmError::ContractViolation("arm64 initramfs length exceeds u64".into())
+        })?;
+        let end_off = start_off.checked_add(byte_len).ok_or_else(|| {
+            VmmError::ContractViolation("arm64 initramfs extent wraps address space".into())
+        })?;
+        let start_gpa = RAM_BASE.checked_add(start_off).ok_or_else(|| {
+            VmmError::ContractViolation("arm64 initramfs start GPA wraps address space".into())
+        })?;
+        let end_gpa = RAM_BASE.checked_add(end_off).ok_or_else(|| {
+            VmmError::ContractViolation("arm64 initramfs end GPA wraps address space".into())
+        })?;
+        (Some((start_off, end_off, start_gpa, end_gpa)), end_off)
+    } else {
+        (None, loaded.end_off)
+    };
+    let pvclock_off = align_up(post_initrd_off, PAGE);
+    let pvclock_gpa = RAM_BASE.checked_add(pvclock_off).ok_or_else(|| {
+        VmmError::ContractViolation("arm64 pvclock GPA wraps address space".into())
+    })?;
+    let pvclock_end = pvclock_off.checked_add(PAGE).ok_or_else(|| {
+        VmmError::ContractViolation("arm64 pvclock extent wraps address space".into())
+    })?;
+    let dtb_off = align_up(pvclock_end, PAGE);
+    let dtb_gpa = RAM_BASE
+        .checked_add(dtb_off)
+        .ok_or_else(|| VmmError::ContractViolation("arm64 DTB GPA wraps address space".into()))?;
+    let dtb_bytes = if let Some((_, _, start_gpa, end_gpa)) = initrd_layout {
+        dtb::build_with_initrd(ram_len, pvclock_gpa, bootargs, start_gpa, end_gpa)
+    } else {
+        dtb::build(ram_len, pvclock_gpa, bootargs)
+    };
 
-    let dtb_end = dtb_off as usize + dtb_bytes.len();
+    let dtb_start = usize::try_from(dtb_off)
+        .map_err(|_| VmmError::ContractViolation("arm64 DTB offset exceeds host usize".into()))?;
+    let dtb_end = dtb_start.checked_add(dtb_bytes.len()).ok_or_else(|| {
+        VmmError::ContractViolation("arm64 DTB extent wraps host address space".into())
+    })?;
     let ram_bytes = ram.as_mut_bytes();
-    if dtb_end > ram_bytes.len()
-        || (pvclock_gpa - RAM_BASE) as usize + PAGE as usize > ram_bytes.len()
-    {
+    let initrd_end = initrd_layout.map(|(_, end, _, _)| end);
+    if !layout_fits(dtb_end, pvclock_end, initrd_end, ram_bytes.len(), ram_len) {
         return Err(VmmError::ContractViolation(format!(
-            "arm64 boot: image + DTB + reserved pvclock page do not fit in {guest_ram_len:#x} \
+            "arm64 boot: image + initramfs + DTB + reserved pvclock page do not fit in {guest_ram_len:#x} \
              bytes of guest RAM (DTB ends at {dtb_end:#x}, pvclock page at \
              {:#x})",
             pvclock_gpa - RAM_BASE
         )));
     }
-    ram_bytes[dtb_off as usize..dtb_end].copy_from_slice(&dtb_bytes);
+    if let (Some(bytes), Some((start, end, _, _))) = (initramfs, initrd_layout) {
+        let start = usize::try_from(start).map_err(|_| {
+            VmmError::ContractViolation("arm64 initramfs offset exceeds host usize".into())
+        })?;
+        let end = usize::try_from(end).map_err(|_| {
+            VmmError::ContractViolation("arm64 initramfs end exceeds host usize".into())
+        })?;
+        ram_bytes[start..end].copy_from_slice(bytes);
+    }
+    ram_bytes[dtb_start..dtb_end].copy_from_slice(&dtb_bytes);
 
     // 4. Map the RAM into the backend; it retains a pointer into `ram`.
     // SAFETY (granted purpose 2, mirroring x86 `compose`): `ram` is moved into
@@ -120,7 +177,98 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
     //    absolute pages over per-arch GPA translation (see Vmm::map_doorbell_pages).
     let mut vmm = Vmm::new(backend, ram);
     vmm.ram_base_gpa = RAM_BASE;
-    vmm.map_doorbell_pages()?;
+    if map_doorbell {
+        vmm.map_doorbell_pages()?;
+    }
+    Ok(vmm)
+}
+
+fn layout_fits(
+    dtb_end: usize,
+    pvclock_end: u64,
+    initrd_end: Option<u64>,
+    ram_bytes_len: usize,
+    ram_len: u64,
+) -> bool {
+    dtb_end <= ram_bytes_len
+        && pvclock_end <= ram_len
+        && initrd_end.is_none_or(|end| end <= ram_len)
+}
+
+/// Compose the measured macOS/arm64 Hypervisor.framework backend for the M1
+/// Linux boot. The userspace GICv3 is wired because HVF surfaces its CPU
+/// interface sysregs and accepts pending IRQ injection at the vCPU boundary.
+/// The legacy 8-KiB doorbell mapping is intentionally absent; M1 has no SDK
+/// control channel and HVF requires 16-KiB guest mappings on this host.
+///
+/// # Errors
+/// Returns the host-baseline, HVF construction, image, mapping, state, or GIC
+/// composition error without falling back to a different execution path.
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+pub fn boot_hvf(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<vmm_backend::HvfBackend>, VmmError> {
+    hostassert::enforce()?;
+    let backend = vmm_backend::HvfBackend::new()?;
+    let mut vmm = compose_inner(
+        backend,
+        image,
+        Some(initramfs),
+        bootargs,
+        guest_ram_len,
+        false,
+    )?;
+    vmm.wire_gic(super::board::new_gic());
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
+        vtime::VClockConfig {
+            guest_hz: super::board::CNTFRQ_HZ,
+            guest_base: 0,
+            vns_base: 0,
+        },
+        0,
+    )?);
+    // Virtual-time mode stamps the page at serviced exits.
+    vmm.enable_pvclock();
+    Ok(vmm)
+}
+
+/// Compose the measured macOS/arm64 backend with the canonical 16-KiB control
+/// memslot required by the M2 cooperating payload. All other wiring is exactly
+/// [`boot_hvf`]'s: userspace GICv3, assigned-at-exit V-time, and pvclock.
+///
+/// # Errors
+/// Returns the same fail-closed composition errors as [`boot_hvf`], including
+/// any HVF rejection of the measured control mapping.
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+pub fn boot_hvf_control(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<vmm_backend::HvfBackend>, VmmError> {
+    hostassert::enforce()?;
+    let backend = vmm_backend::HvfBackend::new()?;
+    let mut vmm = compose_inner(
+        backend,
+        image,
+        Some(initramfs),
+        bootargs,
+        guest_ram_len,
+        true,
+    )?;
+    vmm.wire_gic(super::board::new_gic());
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
+        vtime::VClockConfig {
+            guest_hz: super::board::CNTFRQ_HZ,
+            guest_base: 0,
+            vns_base: 0,
+        },
+        0,
+    )?);
+    vmm.enable_pvclock();
     Ok(vmm)
 }
 
@@ -128,25 +276,15 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
 /// `(Arm64KvmBackend, Arm64)` pair is named — Linux+aarch64-gated, mirroring
 /// x86's `boot_selected`. Constructs the stock KVM/arm64 backend
 /// (`KVM_CREATE_VM` → `KVM_CREATE_VCPU` → `KVM_ARM_VCPU_INIT` in
-/// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, and [`boot`]s the
-/// `Image`+DTB. No V-time is wired: the stock backend claims no determinism
-/// (its `capabilities()` are honestly false), so the determinism path is a
-/// later bead (the AA-3 patched backend + the paravirt clock, `hm-rk5`).
+/// `LiveKvm::new`), boxes it as `Box<dyn Backend<A = Arm64>>`, composes the
+/// same Image + initramfs bytes as the HVF oracle, and wires exit-assigned
+/// V-time plus the paravirtual clock. The in-kernel GICv3 owns guest GIC MMIO
+/// and ICC system registers; no userspace GIC model is composed.
 ///
 /// The real `KVM_RUN` boot to a console marker and the same-seed `state_hash`
-/// determinism gate over this pair are **arrival-day**, edged to `hm-7pb` (the
-/// Altra); there is no local KVM loop (`hm-8l3` REFUSE), so this root has no
+/// determinism gate over this pair run natively on msr1 during M4; there is no
+/// local KVM loop (`hm-8l3` REFUSE), so this root has no
 /// local oracle — only the aarch64-linux cross-check compiles it.
-///
-/// **No interrupt-driven guest boot is claimed here** (`tasks/112` M2 §Delivery).
-/// The stock backend wires **no** delivery fabric — `set_pending_irq`/inject are
-/// `Unsupported`, and this root never creates an in-kernel
-/// `KVM_DEV_TYPE_ARM_VGIC_V3`: guest interrupt delivery is `TODO(AA-6)` (the
-/// vGICv3 round-trip verdict). So a guest that programs the GICv3 (the DTB
-/// advertises it) and blocks on a device interrupt does **not** boot to
-/// completion on this path — an interrupt-driven Linux is **deferred to AA-6**,
-/// not offered by the skeleton. What this boots is the polled / PSCI-`SYSTEM_OFF`
-/// console path (the M3 TCG smoke's shape).
 ///
 /// # Errors
 /// [`VmmError::Backend`] if `/dev/kvm` is unavailable or an init ioctl fails;
@@ -154,12 +292,60 @@ pub(crate) fn compose<B: Backend<A = Arm64>>(
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub fn boot_selected(
     image: &[u8],
+    initramfs: &[u8],
     bootargs: &str,
     guest_ram_len: usize,
 ) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, false)
+}
+
+/// Compose the Linux/aarch64 KVM backend with the canonical retained control
+/// slot used by the cooperating NES payload. The in-kernel GICv3, assigned
+/// V-time, pvclock, image, initramfs, and entry state are otherwise identical
+/// to [`boot_selected`].
+///
+/// # Errors
+/// Returns the same fail-closed construction and composition errors as
+/// [`boot_selected`], including any KVM rejection of the control memslot.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub fn boot_selected_control(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    boot_selected_inner(image, initramfs, bootargs, guest_ram_len, true)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn boot_selected_inner(
+    image: &[u8],
+    initramfs: &[u8],
+    bootargs: &str,
+    guest_ram_len: usize,
+    map_doorbell: bool,
+) -> Result<Vmm<Box<dyn Backend<A = Arm64>>>, VmmError> {
+    hostassert::enforce()?;
     let live = vmm_backend::LiveKvm::new()?;
     let backend: Box<dyn Backend<A = Arm64>> = Box::new(vmm_backend::Arm64KvmBackend::new(live));
-    boot(backend, image, bootargs, guest_ram_len)
+    let mut vmm = compose_inner(
+        backend,
+        image,
+        Some(initramfs),
+        bootargs,
+        guest_ram_len,
+        map_doorbell,
+    )?;
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
+        vtime::VClockConfig {
+            guest_hz: super::board::CNTFRQ_HZ,
+            guest_base: 0,
+            vns_base: 0,
+        },
+        0,
+    )?);
+    vmm.enable_pvclock();
+    Ok(vmm)
 }
 
 #[cfg(test)]
@@ -209,9 +395,69 @@ mod tests {
     }
 
     #[test]
+    fn compose_linux_places_external_initramfs_and_describes_exact_range() {
+        let ram_len = 16 * 1024 * 1024;
+        let initramfs = vec![0xC3; 0x2345];
+        let vmm = compose_inner(
+            MockArm64Backend::new(),
+            &tiny_image(),
+            Some(&initramfs),
+            "console=ttyAMA0",
+            ram_len,
+            true,
+        )
+        .unwrap();
+
+        let dtb_gpa = vmm.inspect_vcpu().core.x[0];
+        let dtb_off = usize::try_from(dtb_gpa - RAM_BASE).unwrap();
+        let memory = vmm.guest_memory();
+        let parsed = dtb::parse(&memory[dtb_off..]).unwrap();
+        let start = u64::from_be_bytes(
+            parsed.prop("chosen", "linux,initrd-start").unwrap()[..8]
+                .try_into()
+                .unwrap(),
+        );
+        let end = u64::from_be_bytes(
+            parsed.prop("chosen", "linux,initrd-end").unwrap()[..8]
+                .try_into()
+                .unwrap(),
+        );
+        assert!(start.is_multiple_of(PAGE));
+        assert_eq!(end - start, initramfs.len() as u64);
+        assert!(end < dtb_gpa);
+        let start_off = usize::try_from(start - RAM_BASE).unwrap();
+        let end_off = usize::try_from(end - RAM_BASE).unwrap();
+        assert_eq!(&memory[start_off..end_off], initramfs);
+    }
+
+    #[test]
+    fn compose_linux_rejects_initramfs_that_does_not_fit() {
+        let ram_len = 0x20_000;
+        let initramfs = vec![0; ram_len];
+        let result = compose_inner(
+            MockArm64Backend::new(),
+            &tiny_image(),
+            Some(&initramfs),
+            "",
+            ram_len,
+            true,
+        );
+        assert!(matches!(result, Err(VmmError::ContractViolation(_))));
+    }
+
+    #[test]
     fn compose_rejects_an_image_that_does_not_fit() {
         // 4 KiB RAM cannot hold even the header + a DTB.
         let backend = MockArm64Backend::new();
         assert!(compose(backend, &tiny_image(), "", 0x1000).is_err());
+    }
+
+    #[test]
+    fn layout_fit_checks_each_extent_and_accepts_exact_boundaries() {
+        assert!(layout_fits(10, 10, None, 10, 10));
+        assert!(layout_fits(10, 10, Some(10), 10, 10));
+        assert!(!layout_fits(11, 10, None, 10, 10));
+        assert!(!layout_fits(10, 11, None, 10, 10));
+        assert!(!layout_fits(10, 10, Some(11), 10, 10));
     }
 }

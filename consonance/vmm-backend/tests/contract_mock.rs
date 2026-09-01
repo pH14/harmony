@@ -13,9 +13,9 @@ use vmm_backend::contract::{
     BackendFixture, ContractReport, Decline, DeclineReason, Scenario, run_all,
 };
 use vmm_backend::{
-    Backend, BackendError, Capabilities, CommonExit, CpuidModel, Exit, ExitCounts, Gpa,
-    HypercallFrame, Injection, MockBackend, MockCaps, Moment, MsrFilter, Result, VcpuState, X86,
-    X86Caps, X86Completion, X86Exit, X86Policy,
+    Backend, Capabilities, CommonExit, CpuidModel, Exit, ExitCounts, Gpa, HypercallFrame,
+    Injection, MockBackend, MockCaps, MsrFilter, Result, VcpuState, X86, X86Caps, X86Completion,
+    X86Exit, X86Policy,
 };
 
 /// How many `Idle` exits every script ends with. The exam resumes a backend
@@ -56,16 +56,6 @@ fn script(scenario: Scenario) -> Vec<Exit<X86>> {
         }))],
         Scenario::Rdtsc => vec![Exit::Arch(X86Exit::Rdtsc)],
         Scenario::Rdrand => vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
-        // `run_until` folds a scripted `Deadline` with the requested deadline by
-        // taking the max, so a scripted `reached: 0` always lands EXACTLY on
-        // whatever the exam asks for — the late-only-stop contract made
-        // unrepresentable-if-violated in the double.
-        Scenario::BusyLoop => vec![
-            Exit::Common(CommonExit::Deadline {
-                reached: vmm_backend::Moment(0),
-            });
-            IDLE_TAIL
-        ],
     };
     let mut exits = head;
     exits.extend(idle_tail());
@@ -97,10 +87,6 @@ impl BackendFixture for MockFixture {
         }
     }
 
-    fn implements_run_until(&self) -> bool {
-        true
-    }
-
     fn dirty_pages(&mut self, backend: &mut MockBackend) -> Option<Vec<u64>> {
         // Deliberately unsorted and duplicated: the trait requires the backend
         // to answer sorted-and-deduplicated whatever the writes looked like.
@@ -114,10 +100,6 @@ impl BackendFixture for MockFixture {
 const REQUIRED: &[&str] = &[
     "ordering/not_configured",
     "ordering/completion_grid",
-    "exactness/deadline_is_late_only",
-    "exactness/guest_exit_preempts_the_deadline",
-    "exactness/deadline_monotonicity",
-    "exactness/deadline_is_repeatable",
     "exactness/dirty_log",
     "exactness/deterministic_tsc_traps",
     "exactness/deterministic_rng_traps",
@@ -172,19 +154,13 @@ impl BackendFixture for BrokenFixture {
             msr_filter: MsrFilter::default(),
         }
     }
-
-    fn implements_run_until(&self) -> bool {
-        true
-    }
 }
 
 // ---------------------------------------------------------------------------
 // The declining backend — the honest-"no" half of the exam.
 // ---------------------------------------------------------------------------
 
-/// A `MockBackend` that does **not** implement `run_until`, forwarding every
-/// other method verbatim. Stock KVM is exactly this shape, so the exam's
-/// decline path is exercised portably instead of waiting for the box.
+/// A limited backend that forwards the common surface but has no dirty log.
 struct NoDeadlineBackend(MockBackend);
 
 impl Backend for NoDeadlineBackend {
@@ -204,11 +180,6 @@ impl Backend for NoDeadlineBackend {
     // `Unsupported`.
     fn run(&mut self) -> Result<Exit<X86>> {
         self.0.run()
-    }
-    fn run_until(&mut self, _deadline: Moment) -> Result<Exit<X86>> {
-        // The declared decline the exam checks for: loud and documented, never
-        // a silently different stop.
-        Err(BackendError::Unsupported { what: "run_until" })
     }
     fn inject(&mut self, event: Injection) -> Result<()> {
         self.0.inject(event)
@@ -251,8 +222,8 @@ impl Backend for NoDeadlineBackend {
     }
 }
 
-/// A fixture shaped like stock KVM: no `run_until`, no dirty log, no
-/// determinism capabilities, and no way to surface a hypercall or CPUID exit.
+/// A fixture shaped like stock KVM: no dirty log, no determinism capabilities,
+/// and no way to surface a hypercall or CPUID exit.
 /// Everything it cannot do, it must decline **in the report** — and the
 /// capability-keyed exams additionally require that it does not *claim* to trap
 /// what it cannot trap.
@@ -298,10 +269,6 @@ impl BackendFixture for LimitedFixture {
         }
     }
 
-    fn implements_run_until(&self) -> bool {
-        false
-    }
-
     // `dirty_pages` deliberately left at its default `None`: this backend has no
     // dirty log, which must show up as a recorded decline.
 }
@@ -324,16 +291,11 @@ fn a_limited_backend_declines_honestly_and_the_declines_are_recorded() {
     // A backend that cannot do something must say so with the documented error.
     // The exam checks the decline itself, for both capabilities this fixture
     // lacks.
-    assert!(report.did_run("exactness/run_until_declines_loudly"));
     assert!(report.did_run("exactness/dirty_log_declines_loudly"));
 
     // Every decline is named, with its reason. This is the assertion that stops
     // a shrinking exam from reading as a passing one.
     let expect_declined = [
-        Decline {
-            exam: "exactness/deadline",
-            why: DeclineReason::NoRunUntil,
-        },
         Decline {
             exam: "exactness/dirty_log",
             why: DeclineReason::NoDirtyLog,

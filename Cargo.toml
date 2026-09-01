@@ -9,12 +9,12 @@ resolver = "2"
 # consonance is their only consumer). The v1 dissonance searcher was removed;
 # its rebuild lives in the standalone `dissonance/` workspace.
 members = ["consonance/*"]
-# harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
+# consonance/harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
 # payloads use custom targets/linker flags. Neither belongs to this workspace.
 # dissonance/ is a standalone workspace root by design (the searcher rebuild,
 # docs/DISSONANCE-FROM-SCRATCH.md); it must not share this build graph.
 exclude = [
-  "harmony-linux",
+  "consonance/harmony-linux",
   "dissonance",
 ]
 

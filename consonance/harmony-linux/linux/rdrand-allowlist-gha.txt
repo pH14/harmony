@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Hardware-RNG (rdrand/rdseed) per-site allowlist for the guest kernel as built
+# by the GitHub-hosted ubuntu-24.04 runner toolchain (default gcc 13) — the
+# runner counterpart of rdrand-allowlist.txt, per-toolchain for the same reason
+# as the rdtsc lists (offsets and inlining are toolchain-dependent).
+# Every entry is a site the review confirmed sits behind an
+# X86_FEATURE_RDRAND / X86_FEATURE_RDSEED check: the frozen CPUID (stock
+# virtual_time composition) hides both features, so a checked site is dead code
+# in the image; an unchecked site would execute natively (SVM cannot intercept
+# the instruction) and feed true entropy no contract can replay.
+# Selected by the x86-vtime workflow via HARMONY_RDRAND_ALLOWLIST.
+
+# extract_entropy's block loop tries arch_get_random_seed_longs (rdseed) then
+# arch_get_random_longs (rdrand); both inlines gate the instruction on
+# static_cpu_has(X86_FEATURE_RDSEED / X86_FEATURE_RDRAND).
+vmlinux:extract_entropy.constprop.0+0xa2
+vmlinux:extract_entropy.constprop.0+0xb5
+
+# random_init_early's seeding loop, same seed-then-random inline pair, same
+# static_cpu_has gating.
+vmlinux:random_init_early+0x55
+vmlinux:random_init_early+0x69
+
+# The RDRAND self-test; its first statement returns unless
+# cpu_has(c, X86_FEATURE_RDRAND).
+vmlinux:x86_init_rdrand+0x1b

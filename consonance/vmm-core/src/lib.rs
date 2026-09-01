@@ -26,7 +26,7 @@
 //!   entry state (Multiboot v1 + the direct 64-bit Linux bzImage protocol), the
 //!   interrupt fabric and platform device models (the userspace xAPIC per ruling R1,
 //!   the 8259/PIT/PCI shims, the 8250 UART), the host-homogeneity probe, the
-//!   retired-branch work-counter event, and the `vm_state` record set.
+//!   VM-exit exit-count-clock event, and the `vm_state` record set.
 //!
 //! An ARM vendor is a sibling module under [`vendor`], not an edit to the engine.
 //!
@@ -49,19 +49,21 @@ pub mod corpus;
 // type at the serial shell + how to detect completion/status). Portable and
 // off-record by ruling; the real serial wiring lives in `vmm`/`control`.
 pub mod exec;
-// Task 63 — the pure-logic half of the arbitrary-V-time seal-rate measurement (the
-// Wave-5 go/no-go): the V-time sampling schedule and the seal-rate / `sealable`-predicate
-// bookkeeping the box harness (`tests/seal_rate_sweep.rs`) feeds live measurements into.
-// Pure and portable (macOS + Linux); no `/dev/kvm`, no wall clock, no RNG.
-pub mod seal_rate;
+/// M3's pure real-payload acceptance, V-time-gap, and throughput oracles.
+pub mod m3_report;
+/// Complete host-neutral snapshot artifacts for cross-host continuation.
+pub mod portable_snapshot;
+/// Restore-aware accumulation and comparison of control-session traces.
+pub mod session_trace;
 pub mod snapshot;
+/// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
+pub mod virtual_time;
 // The engine/vendor seam (`docs/ARCH-BOUNDARY.md` §B): every module OUTSIDE
 // `vendor` is the arch-neutral engine; everything x86 lives under `vendor::x86`
 // (the CPU contract, exit dispatch + dispositions, the boot loaders + entry
 // state, the interrupt fabric + platform devices, the host-homogeneity probe,
-// the work-counter event, and the `vm_state` record set). A module split, not a
+// the exit-count-clock event, and the `vm_state` record set). A module split, not a
 // crate split — the reserved engine/vendor crate names activate with the ARM
 // window.
 pub mod vendor;
 pub mod vmm;
-pub mod work;

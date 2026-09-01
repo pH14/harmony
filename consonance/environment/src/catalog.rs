@@ -275,7 +275,7 @@ impl DecisionPoint {
 
 /// The fault catalog, grouped by the class it applies to. The vocabulary is
 /// convergent across FoundationDB / Antithesis; delays are in [`Span`]
-/// branch-count units. The byte form (see [`Answer::encode`]) uses stable
+/// virtual-time units. The byte form (see [`Answer::encode`]) uses stable
 /// discriminants that a recorded [`EnvSpec`](crate::EnvSpec) replay depends on.
 ///
 /// **Network faults are per-flow policies (task 50).** The host *decides* a

@@ -644,29 +644,6 @@ fn err_schedule_unsatisfiable() {
 }
 
 #[test]
-fn err_schedule_moment_unreachable() {
-    // RESULT_ERR (0x01), CE_SCHEDULE_MOMENT_UNREACHABLE (0x14), moment (u64 LE),
-    // landing (u64 LE) — the arm-site refusal's prospective (unreached) landing.
-    check_reply(
-        61,
-        Err(ControlError::ScheduleMomentUnreachable {
-            moment: 0x64,
-            landing: 0xC8,
-        }),
-        &[
-            0x01, 0x14, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ],
-    );
-}
-
-#[test]
-fn err_not_synchronized() {
-    // RESULT_ERR (0x01), CE_NOT_SYNCHRONIZED (0x0F), no payload.
-    check_reply(47, Err(ControlError::NotSynchronized), &[0x01, 0x0F]);
-}
-
-#[test]
 fn err_perturb_reserved_vector() {
     // RESULT_ERR (0x01), CE_PERTURB_RESERVED_VECTOR (0x10), vector (u8).
     check_reply(

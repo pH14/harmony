@@ -66,6 +66,7 @@ pub environment::EnvError::UnsupportedComposition
 pub enum environment::EnvSpec
 pub environment::EnvSpec::Recorded
 pub environment::EnvSpec::Recorded::overrides: alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
+pub environment::EnvSpec::Recorded::payloads: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
 pub environment::EnvSpec::Recorded::policy: environment::FaultPolicy
 pub environment::EnvSpec::Recorded::reseeds: alloc::collections::btree::map::BTreeMap<environment::Moment, u64>
 pub environment::EnvSpec::Recorded::seed: u64
@@ -80,12 +81,14 @@ pub fn environment::EnvSpec::encode(&self) -> alloc::vec::Vec<u8>
 pub fn environment::EnvSpec::host_faults(&self) -> impl core::iter::traits::iterator::Iterator<Item = (environment::Moment, environment::HostFault)> + '_
 pub fn environment::EnvSpec::materialize(&self) -> environment::RecordedEnv
 pub fn environment::EnvSpec::overrides(&self) -> &alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
+pub fn environment::EnvSpec::payloads(&self) -> core::option::Option<&[alloc::vec::Vec<u8>]>
 pub fn environment::EnvSpec::perturb(&mut self, environment::HostFault, environment::Moment)
 pub fn environment::EnvSpec::policy(&self) -> &environment::FaultPolicy
 pub fn environment::EnvSpec::record(&mut self, environment::Moment, environment::Action)
 pub fn environment::EnvSpec::record_reseed(&mut self, environment::Moment, u64)
 pub fn environment::EnvSpec::reseeds(&self) -> &alloc::collections::btree::map::BTreeMap<environment::Moment, u64>
 pub fn environment::EnvSpec::seed(&self) -> u64
+pub fn environment::EnvSpec::set_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>)
 pub enum environment::Fault
 pub environment::Fault::BlockEio
 pub environment::Fault::BlockLatency(environment::Span)
@@ -148,6 +151,10 @@ pub fn environment::Ratio::num(self) -> u64
 pub struct environment::RecordedEnv
 impl environment::RecordedEnv
 pub fn environment::RecordedEnv::moment(&self) -> environment::Moment
+pub fn environment::RecordedEnv::payload_configured(&self) -> bool
+pub fn environment::RecordedEnv::pull_payload(&mut self, u32) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, u32>
+pub fn environment::RecordedEnv::remaining_payloads(&self) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn environment::RecordedEnv::restore_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>)
 pub fn environment::RecordedEnv::restore_stream_state(&mut self, &[u8; 16])
 pub fn environment::RecordedEnv::set_moment(&mut self, environment::Moment)
 pub fn environment::RecordedEnv::stream_state(&self) -> [u8; 16]

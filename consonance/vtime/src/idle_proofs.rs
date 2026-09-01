@@ -48,25 +48,18 @@ fn plan_matches_saturating_spec() {
 fn advance_lands_clock_at_deadline_or_clamps() {
     let vns_base: u64 = kani::any();
     let deadline: u64 = kani::any();
-    // `VClock::new` rejects a 1:1 config with `vns_base == u64::MAX`
-    // (`ImmediateSaturation`: `vns(1)` would exceed `u64::MAX`), so exclude that
-    // single value — the saturation/no-wrap behavior of the *planner* itself is
-    // already proven over all of `u64` by `plan_matches_saturating_spec`.
-    kani::assume(vns_base < u64::MAX);
-    // The pre-jump effective V-time at work 0 is exactly `vns_base` (1:1 clock).
+    // The pre-jump virtual time is exactly `vns_base`.
     let now = vns_base;
 
     let a = IdlePlanner::new().plan(now, deadline);
     let mut clk = VClock::new(VClockConfig {
-        ratio_num: 1,
-        ratio_den: 1,
         guest_hz: 1,
         guest_base: 0,
         vns_base,
     })
-    .expect("1:1 config is always valid");
-    clk.advance_idle(a.advance_vns);
-    let landed = clk.vns(0);
+    .expect("all clock configurations are valid");
+    clk.advance(a.advance_vns);
+    let landed = clk.vns();
 
     // The clock lands at the planner's reported `landed_vns` (== max(now,
     // deadline)); never below `now`; equals `deadline` exactly whenever the

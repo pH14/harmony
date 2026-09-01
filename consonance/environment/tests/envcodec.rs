@@ -36,6 +36,7 @@ fn recorded_with(overrides: BTreeMap<Moment, Action>, standing: Vec<StandingFaul
         overrides,
         standing,
         reseeds: Default::default(),
+        payloads: None,
     }
 }
 
@@ -80,10 +81,10 @@ proptest! {
         at in 0u64..BOUND,
     ) {
         let base = EnvSpec::Recorded {
-            seed, policy: policy.clone(), overrides: base_ov.clone(), standing: vec![], reseeds: Default::default(),
+            seed, policy: policy.clone(), overrides: base_ov.clone(), standing: vec![], reseeds: Default::default(), payloads: None,
         };
         let tail = EnvSpec::Recorded {
-            seed, policy: policy.clone(), overrides: tail_ov.clone(), standing: vec![], reseeds: Default::default(),
+            seed, policy: policy.clone(), overrides: tail_ov.clone(), standing: vec![], reseeds: Default::default(), payloads: None,
         };
         let composed = EnvCodec::compose(&base, &tail, at).expect("override-only, same seed/policy");
         let out = composed.overrides();
@@ -134,10 +135,10 @@ proptest! {
         let tail_ov: BTreeMap<Moment, Action> =
             moments.iter().map(|m| (*m, Action::Guest(Answer::Nominal))).collect();
         let tail = EnvSpec::Recorded {
-            seed, policy: FaultPolicy::none(), overrides: tail_ov, standing: vec![], reseeds: Default::default(),
+            seed, policy: FaultPolicy::none(), overrides: tail_ov, standing: vec![], reseeds: Default::default(), payloads: None,
         };
         let base = EnvSpec::Recorded {
-            seed, policy: FaultPolicy::none(), overrides: BTreeMap::new(), standing: vec![], reseeds: Default::default(),
+            seed, policy: FaultPolicy::none(), overrides: BTreeMap::new(), standing: vec![], reseeds: Default::default(), payloads: None,
         };
         let composed = EnvCodec::compose(&base, &tail, at).expect("override-only");
 
@@ -229,6 +230,7 @@ fn compose_rekeys_at_nonzero_concrete() {
         ]),
         standing: vec![],
         reseeds: Default::default(),
+        payloads: None,
     };
     let tail = EnvSpec::Recorded {
         seed: 0xABCD,
@@ -242,6 +244,7 @@ fn compose_rekeys_at_nonzero_concrete() {
         ]),
         standing: vec![],
         reseeds: Default::default(),
+        payloads: None,
     };
     let composed = EnvCodec::compose(&base, &tail, 10).unwrap();
     let out = composed.overrides();
@@ -372,6 +375,23 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
         "standing in tail is rejected"
     );
 
+    // Payload tapes are a second, independent non-composable axis. Exercise
+    // each side alone so weakening either `||` guard cannot pass.
+    let mut base_payloads = plain.clone();
+    base_payloads.set_payloads(Some(vec![vec![1, 2, 3]]));
+    assert_eq!(
+        EnvCodec::compose(&base_payloads, &plain, 0),
+        Err(EnvError::UnsupportedComposition),
+        "payload tape in base is rejected"
+    );
+    let mut tail_payloads = plain.clone();
+    tail_payloads.set_payloads(Some(vec![vec![4, 5]]));
+    assert_eq!(
+        EnvCodec::compose(&plain, &tail_payloads, 0),
+        Err(EnvError::UnsupportedComposition),
+        "payload tape in tail is rejected"
+    );
+
     // Seed mismatch — two Recorded envs (so the Seeded check passes) with
     // different seeds. One EnvSpec cannot carry a piecewise stream.
     let rec = |seed, policy| EnvSpec::Recorded {
@@ -380,6 +400,7 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
         overrides: BTreeMap::new(),
         standing: vec![],
         reseeds: Default::default(),
+        payloads: None,
     };
     assert_eq!(
         EnvCodec::compose(
@@ -558,6 +579,7 @@ fn reseed_spec(seed: u64, reseeds: &[(Moment, u64)]) -> EnvSpec {
         overrides: BTreeMap::new(),
         standing: vec![],
         reseeds: reseeds.iter().copied().collect(),
+        payloads: None,
     }
 }
 

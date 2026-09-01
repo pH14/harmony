@@ -4,9 +4,9 @@
 //! CPU-pinned per `docs/BOX-PINNING.md`). Task 37 — consonance workload stream,
 //! step 2 of 3.
 //!
-//! These boot the **Postgres workload image** (`harmony-linux/build/bzImage` — the task-36
-//! container-class kernel, unchanged — plus `harmony-linux/build/initramfs-postgres.cpio.gz`,
-//! built by `harmony-linux/linux/build-postgres-image.sh`) via
+//! These boot the **Postgres workload image** (`consonance/harmony-linux/build/bzImage` — the task-36
+//! container-class kernel, unchanged — plus `consonance/harmony-linux/build/initramfs-postgres.cpio.gz`,
+//! built by `consonance/harmony-linux/linux/build-postgres-image.sh`) via
 //! [`vmm_core::vendor::x86::bringup::boot_linux_selected`]. The guest `/init` (`pg-init.sh`)
 //! loop-mounts a RAM-backed ext4 holding a pre-`initdb`'d cluster, starts a real
 //! PostgreSQL 17 server, and drives a fixed insert/select workload loop whose
@@ -39,7 +39,7 @@
 //! `pg_strong_random` cancel keys, *random UUIDs and wall-clock timestamps* — runs
 //! bit-for-bit identically because every nondeterminism source (TSC, RNG, fork
 //! order, timers, the clock) is determinized from below by the patched backend +
-//! V-time. See `harmony-linux/linux/IMPLEMENTATION.md` for the determinism closure.
+//! V-time. See `consonance/harmony-linux/linux/IMPLEMENTATION.md` for the determinism closure.
 //!
 //! **Gate 3 — seed-sensitivity ([`p3_postgres_seed_sensitivity_patched`]).** A run
 //! at a *different* seed produces *different* UUIDs — proving they are genuinely
@@ -60,7 +60,7 @@
 //! the patched modules loaded, CPU-pinned and wall-clock-bounded — e.g.:
 //!
 //! ```sh
-//! make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image    # build the image
+//! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image    # build the image
 //! # load patched kvm.ko/kvm-intel.ko, then:
 //! taskset -c 2 timeout 1500 cargo test -p vmm-core --test live_postgres \
 //!     -- --ignored --nocapture --test-threads=1 p2_postgres_deterministic_twice_patched
@@ -133,21 +133,25 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `harmony-linux/build/<name>` then `harmony-linux/linux/<name>`.
+/// Read a built guest artifact, trying `consonance/harmony-linux/build/<name>` then `consonance/harmony-linux/linux/<name>`.
 /// Panics loudly (with the build command) if absent — these `#[ignore]`d gates run
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
-         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it first on the \
+         box: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image`."
     );
 }
 
@@ -360,11 +364,11 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
 
 /// Boot the Postgres image on the patched backend at `seed`, run it to a terminal,
 /// and return (serial capture, `state_hash`, outcome). The [`Vmm`] — and with it
-/// the `perf_event` work counter that drives V-time — is **dropped before
+/// the exit-count clock that drives V-time — is **dropped before
 /// returning**. That matters for the deterministic-twice gate: keeping the first
 /// run's `Vmm` alive while a second boots in the same process leaves two pinned PMU
-/// counters open, which multiplex and perturb the branch count → a few-step V-time
-/// skid → a divergent printk timestamp. One counter at a time keeps it exact.
+/// counters open, which multiplex and perturb the exit count → a few-step V-time
+/// exit-boundary variability → a divergent printk timestamp. One counter at a time keeps it exact.
 fn boot_pg(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-postgres.cpio.gz");

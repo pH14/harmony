@@ -11,16 +11,13 @@
 //! `Self`-by-value returns. The composition root is the one place a concrete
 //! `(Backend impl, Arch vendor)` pair is named.
 //!
-//! **Designed, NOT frozen.** This trait's shape (and `run_until`'s
-//! late-only-stop contract, which stays exactly as-is) is the ruled §A design;
-//! the AA-3 trait-freeze memo (the ARM spike) owns the freeze decision — ARM's
-//! PMU-overflow-to-exit path may pressure `run_until` before the trait may be
-//! declared frozen. Do not treat compiles-for-x86 as frozen-for-every-vendor.
+//! **Designed, NOT frozen.** This trait's shape is the ruled §A design. Do not
+//! treat compiles-for-x86 as frozen-for-every-vendor.
 
 use crate::arch::Arch;
 use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
-use crate::types::{Gpa, Moment};
+use crate::types::Gpa;
 
 /// The trap apparatus, decoupled from the deterministic VMM above it.
 ///
@@ -40,7 +37,7 @@ pub trait Backend {
     /// `FILTER | UNKNOWN | INVAL`, then `KVM_X86_SET_MSR_FILTER`), so a
     /// denied/unknown/invalid MSR access surfaces as an exit (loud) instead of
     /// a silent in-kernel `#GP`. MUST be called before the first
-    /// `run`/`run_until`; otherwise the guest would see the host-derived
+    /// `run`; otherwise the guest would see the host-derived
     /// defaults (boot- and determinism-breaking).
     fn set_policy(&mut self, policy: &<Self::A as Arch>::Policy) -> Result<()>;
 
@@ -55,7 +52,7 @@ pub trait Backend {
     /// The caller MUST guarantee that `host`'s backing (a) stays live at a fixed
     /// address — pinned, never reallocated or moved — until the backend is
     /// dropped or the region is replaced; (b) is not aliased by any other live
-    /// `&`/`&mut` while a `run`/`run_until` is in flight; and (c) starts at a
+    /// `&`/`&mut` while a `run` is in flight; and (c) starts at a
     /// **4 KiB-aligned host address** (`host.as_ptr() as usize % 4096 == 0`).
     /// `KVM_SET_USER_MEMORY_REGION` requires the *userspace address itself* to be
     /// page-aligned, which a plain `Vec<u8>`/slice does NOT guarantee (KVM
@@ -105,15 +102,6 @@ pub trait Backend {
     /// Returns [`NotConfigured`](crate::BackendError::NotConfigured) if called
     /// before `set_policy` has succeeded.
     fn run(&mut self) -> Result<Exit<Self::A>>;
-
-    /// Run until an exact V-time (retired-branch) deadline, then exit with
-    /// `CommonExit::Deadline` — the §2 inversion seam (PMU overflow-early +
-    /// single-step under the hood; task 07 supplies the skid margin). A guest
-    /// exit before the deadline returns that exit instead, short of `deadline`.
-    /// The **late-only-stop contract stays exactly as ruled** (see the trait
-    /// docs' freeze note). **Bring-up `KvmBackend` returns
-    /// [`Unsupported`](crate::BackendError::Unsupported)`{ what: "run_until" }`.**
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit<Self::A>>;
 
     /// Inject an event immediately (x86: an **NMI** via `KVM_NMI`), or set the
     /// pending maskable-IRQ identity (equivalent to
@@ -252,10 +240,6 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn run(&mut self) -> Result<Exit<Self::A>> {
         (**self).run()
-    }
-
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit<Self::A>> {
-        (**self).run_until(deadline)
     }
 
     fn inject(&mut self, event: <Self::A as Arch>::Injection) -> Result<()> {

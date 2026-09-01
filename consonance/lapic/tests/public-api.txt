@@ -18,6 +18,7 @@ pub fn lapic::Lapic::raise(&mut self, u8) -> core::result::Result<(), lapic::Lap
 pub fn lapic::Lapic::restore(&lapic::LapicState) -> core::result::Result<lapic::Lapic, lapic::LapicError>
 pub fn lapic::Lapic::snapshot(&self) -> lapic::LapicState
 pub fn lapic::Lapic::take_interrupt(&mut self) -> core::option::Option<u8>
+pub fn lapic::Lapic::timer_vector(&self) -> u8
 pub struct lapic::LapicConfig
 pub lapic::LapicConfig::apic_id: u32
 pub lapic::LapicConfig::timer_hz: u64

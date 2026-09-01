@@ -15,8 +15,8 @@ generic.
   to the seeded stream), unseeded RNG, `HashMap`/`HashSet` iteration order reaching
   output/hashes/encoded bytes, floating point in state-affecting code, host identity
   (CPU/microcode/topology), async host events (interrupts, PMU) leaking into guest-visible
-  state. The V-time clock is **retired branches** (count-based, frequency-independent) — not
-  wall time.
+  state. The V-time clock is **VM exit counts** (count-based,
+  frequency-independent) — not wall time.
 - **Library code must never panic on untrusted input.** Every length, index, or enum that
   arrives from the transport, the host, or a decoded frame is untrusted: unchecked slicing
   or arithmetic on it is a panic reachable from untrusted input, and a bug, even when the
@@ -147,8 +147,8 @@ Harmony is licensed **AGPL-3.0-or-later** (see `LICENSE`); every crate carries
 `license = "AGPL-3.0-or-later"` and every first-party source file carries an
 `SPDX-License-Identifier: AGPL-3.0-or-later` header — `//` for Rust, `#` (after the
 shebang) for shell and Python. New first-party files must carry it. The lone exception
-is `harmony-linux/linux/init.sh`, which is baked verbatim into the determinism-hashed initramfs
-(`harmony-linux/linux/MANIFEST.sha256`); a header line would change that golden, so it carries
+is `consonance/harmony-linux/linux/init.sh`, which is baked verbatim into the determinism-hashed initramfs
+(`consonance/harmony-linux/linux/MANIFEST.sha256`); a header line would change that golden, so it carries
 no inline header and is covered by the repo `LICENSE`. The patch series under
 `consonance/vmm-backend/kvm-patches/patches/` are GPLv2 Linux-kernel diffs and keep their
 own headers. `cargo deny check licenses` gates dependency compatibility (only

@@ -32,8 +32,8 @@
 //! ## `run_to` granularity (a deliberate, documented limitation)
 //!
 //! A C1 payload is a short bare-metal program that always runs to a terminal
-//! (`isa-debug-exit` / `HLT`); intra-run V-time work-targeting (stopping the vCPU
-//! at an arbitrary work count) needs the `run_until` deadline path, a later phase.
+//! (`isa-debug-exit` / `HLT`); exit-count virtual time has no instruction-level
+//! intra-run stop, so [`CorpusMachine::run_to`] cannot target an arbitrary point.
 //! So [`CorpusMachine::run_to`] runs the payload to terminal on its first call and
 //! then reports [`RunOutcome::Halted`] — the same shape as the M2 adapter
 //! (`tests/live_m1_m2.rs`). This is exactly what the determinism oracle needs: two
@@ -170,7 +170,7 @@ mod tests {
     use crate::vendor::x86::devices::{ISA_DEBUG_EXIT_PORT, REPORT_PORT, UART_PORT_BASE};
     use crate::vmm::GuestRam;
     use unison::{SubjectFactory, Verdict, compare_runs};
-    use vmm_backend::{CommonExit, Exit, MockBackend, X86, X86Exit, X86Policy};
+    use vmm_backend::{Exit, MockBackend, X86, X86Exit, X86Policy};
 
     /// A scripted exit sequence: emit `name`'s serial banner over the UART, report
     /// `values` (each as two report-port dwords, low then high), then a clean
@@ -349,149 +349,6 @@ mod tests {
             report.halted_at,
             Some(1),
             "both halt at the terminal checkpoint"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Coexistence regression (PR #51 box O1). `acceptance_suite::check_determinism` →
-    // `unison::compare_runs` spawns BOTH machines and THEN runs each in turn, while
-    // the box `perf_event` work counter is a shared vCPU-thread resource — so the
-    // second-spawned VM's counter accumulated the first VM's guest branches,
-    // inflating its work-derived V-time (`last_intercept_work` → the hashed
-    // `vtim:eff-vns`) and diverging two same-seed runs that differ only in spawn/run
-    // ordering. `Vmm::run` now resets the work counter at the first guest entry
-    // (`WorkSource::start_run`), making each run self-contained. Modelled here on the
-    // mock with a shared-thread work source, driven through the real `compare_runs`.
-    // -----------------------------------------------------------------------
-
-    use crate::vendor::x86::contract_vclock_config;
-    use crate::vmm::VtimeWiring;
-    use crate::work::{WorkError, WorkSource};
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    /// A `WorkSource` modelling the box `perf_event` counter's shared-thread
-    /// semantics: one process-shared "thread guest-branch tally" that every live
-    /// counter observes, each with a baseline captured at open. A `work()` read
-    /// advances the shared tally (one retired guest branch), so a counter opened
-    /// before another VM runs sees that VM's branches too — exactly
-    /// `PerfWorkCounter`'s coexistence contamination — unless `start_run`
-    /// re-baselines it at run-start (`reset_on_start`, the fix under test; with it
-    /// `false` the test models the pre-fix counter).
-    struct SharedThreadWork {
-        thread: Rc<Cell<u64>>,
-        base: u64,
-        reset_on_start: bool,
-    }
-    impl SharedThreadWork {
-        fn open(thread: Rc<Cell<u64>>, reset_on_start: bool) -> Self {
-            let base = thread.get();
-            Self {
-                thread,
-                base,
-                reset_on_start,
-            }
-        }
-    }
-    impl WorkSource for SharedThreadWork {
-        fn work(&self) -> Result<u64, WorkError> {
-            // Reading models one retired guest branch on the shared thread.
-            let raw = self.thread.get();
-            self.thread.set(raw.saturating_add(1));
-            Ok(raw.saturating_sub(self.base))
-        }
-        fn reset(&mut self) -> Result<(), WorkError> {
-            self.base = self.thread.get();
-            Ok(())
-        }
-        fn start_run(&mut self) -> Result<(), WorkError> {
-            // The fix: re-baseline so work() counts only from here — the faithful
-            // mock of `PerfWorkCounter`'s `IOC_RESET` at run start.
-            if self.reset_on_start {
-                self.base = self.thread.get();
-            }
-            Ok(())
-        }
-    }
-
-    /// A factory whose spawned `CorpusMachine`s SHARE one thread work counter — the
-    /// box reality `compare_runs` exposes (two coexisting patched VMs on one pinned
-    /// vCPU thread). Each spawn is otherwise determinism-identical (same seed, fresh
-    /// entropy via `VtimeWiring::new`); only the work counter's thread tally is shared.
-    struct SharedWorkFactory {
-        thread: Rc<Cell<u64>>,
-        exits: Vec<Exit<X86>>,
-        reset_on_start: bool,
-    }
-    impl SubjectFactory for SharedWorkFactory {
-        type M = CorpusMachine<MockBackend>;
-        fn spawn(&self, seed: u64) -> Self::M {
-            let mut backend = MockBackend::with_exits(self.exits.clone());
-            backend
-                .set_policy(&X86Policy::default())
-                .expect("set_policy");
-            let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
-            vmm.wire_vtime(
-                VtimeWiring::new(
-                    contract_vclock_config(),
-                    Box::new(SharedThreadWork::open(
-                        self.thread.clone(),
-                        self.reset_on_start,
-                    )),
-                    seed,
-                )
-                .unwrap(),
-            );
-            CorpusMachine::new(vmm)
-        }
-    }
-
-    /// An entropy-/V-time-consuming script: RDRAND/RDSEED + RDTSC are V-time
-    /// intercepts that read the work counter and set the hashed `last_intercept_work`.
-    fn vtime_consuming_script() -> Vec<Exit<X86>> {
-        vec![
-            Exit::Arch(X86Exit::Rdrand { width: 8 }),
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Arch(X86Exit::Rdseed { width: 8 }),
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Common(CommonExit::Idle),
-        ]
-    }
-
-    #[test]
-    fn coexisting_spawns_are_determinism_identical_despite_a_shared_work_counter() {
-        // WITH the run-start reset (`Vmm::run` → `WorkSource::start_run`): two
-        // coexisting CorpusMachines sharing the thread work counter are
-        // determinism-identical under the real `compare_runs` (spawn both, run both).
-        let f = SharedWorkFactory {
-            thread: Rc::new(Cell::new(0u64)),
-            exits: vtime_consuming_script(),
-            reset_on_start: true,
-        };
-        let report = compare_runs(&f, &f, 0x0028_C0FF_EE5E_EDC0, 4096, 1_000_000).unwrap();
-        assert_eq!(
-            report.verdict,
-            Verdict::Identical,
-            "coexisting VMs must be determinism-identical once run() re-baselines the \
-             shared work counter at run-start: {report:?}"
-        );
-    }
-
-    #[test]
-    fn shared_work_counter_without_run_start_reset_diverges() {
-        // Non-vacuity guard: WITHOUT the run-start reset (the pre-fix counter), the
-        // SAME setup diverges — the second run's counter carries the first's branches.
-        // This proves the positive test above actually exercises the contamination.
-        let g = SharedWorkFactory {
-            thread: Rc::new(Cell::new(0u64)),
-            exits: vtime_consuming_script(),
-            reset_on_start: false,
-        };
-        let report = compare_runs(&g, &g, 0x0028_C0FF_EE5E_EDC0, 4096, 1_000_000).unwrap();
-        assert!(
-            matches!(report.verdict, Verdict::Diverged { .. }),
-            "without a run-start reset the shared counter must contaminate the second \
-             run (else the regression test is vacuous): {report:?}"
         );
     }
 }

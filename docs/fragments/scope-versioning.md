@@ -8,7 +8,7 @@
 | Field | Value |
 |---|---|
 | contract-version | 1 |
-| reference kernel | Linux **v6.18.35** — equals `harmony-linux/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
+| reference kernel | Linux **v6.18.35** — equals `consonance/harmony-linux/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
 | baseline microarchitecture | the named baseline of the frozen CPUID model (§2) |
 | contract hash | `contract_hash` = SHA-256 of the canonical serialized form, computed per §4 from the assembled tables — never hand-written into this document |
 
@@ -101,7 +101,7 @@ configured before the first `KVM_RUN` and never changed while a vCPU runs:
 **Loud-event logging policy (normative).** Every userspace MSR exit is logged *before*
 any architectural effect is committed, with at minimum: access direction (RDMSR/WRMSR),
 MSR index (`kvm_run.msr.index`), the written data for WRMSR (`kvm_run.msr.data`), the
-guest RIP at the faulting instruction, the exit reason, the current work counter /
+guest RIP at the faulting instruction, the exit reason, the current virtual time /
 V-time, and the disposition applied. Logging is host-side output only and cannot perturb
 guest-visible state. Then, by disposition: `deny-gp` sets `kvm_run.msr.error = 1` so KVM
 injects #GP on re-entry (api.rst §5, `kvm_run.msr`); `deny-ignore-write` logs, leaves

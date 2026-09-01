@@ -15,24 +15,182 @@
 //! those absences **fails closed**, never silently succeeds — default-deny is
 //! the posture the contract will fill in, not a stub to be papered over.
 
-use hypercall_proto::Service;
+use hypercall_proto::{Service, Status};
 use vm_state::Arm64VmState;
-use vmm_backend::{Arm64, Arm64VcpuState, Backend, Gpa};
+use vmm_backend::{Arm64, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
 use crate::snapshot::SnapshotError;
 use crate::vendor::InterruptReject;
 use crate::vendor::arm64::contract;
 use crate::vendor::arm64::devices::Pl011;
-use crate::vendor::arm64::records::{self, Arm64DeviceState};
+use crate::vendor::arm64::records::{
+    self, Arm64ClockeventState, Arm64DeviceState, Arm64PvclockState,
+};
+use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, Vmm, VmmError};
 
 /// `PSTATE.I` (IRQ mask, bit 7): set ⇒ maskable interrupts are masked — the
 /// arm64 mirror of x86's `RFLAGS_IF` (inverted sense: masked vs enabled).
 pub(crate) const PSTATE_I: u64 = 1 << 7;
 
+// Canonical HVF trapped-system-register ISS identities: architectural op
+// fields with Rt and direction cleared (`vmm-backend::hvf`). These are pinned
+// by the signed M1 probe and are independent of the instruction's source/dest
+// register.
+const ICC_PMR_EL1: u32 = 0x0030_100c;
+const ICC_IAR1_EL1: u32 = 0x0030_3018;
+const ICC_EOIR1_EL1: u32 = 0x0032_3018;
+const ICC_IGRPEN1_EL1: u32 = 0x003e_3018;
+const ICC_BPR1_EL1: u32 = 0x0036_3018;
+const ICC_CTLR_EL1: u32 = 0x0038_3018;
+const ICC_RPR_EL1: u32 = 0x0036_3016;
+const ICC_HPPIR1_EL1: u32 = 0x0034_3018;
+// OSDLR_EL1 (S2_0_C1_C3_4). Linux writes zero during debug-monitors boot
+// initialization. HVF traps that access even though it is not a GIC sysreg.
+const OSDLR_EL1: u32 = 0x0028_0406;
+// OSLAR_EL1 (S2_0_C1_C0_4), the companion OS lock access register.
+const OSLAR_EL1: u32 = 0x0028_0400;
+
+/// Whether a canonical HVF ISS names one of N6's frozen PMU registers.
+///
+/// The frozen machine exposes no PMU. HVF nevertheless surfaces EL0 PMU
+/// accesses to userspace, so every listed read/write is completed as UNDEF;
+/// stock KVM reaches the same guest-visible SIGILL result in-kernel. Keep this
+/// predicate exact: neighboring implementation registers remain default-deny.
+fn is_frozen_pmu_sysreg(sysreg: u32) -> bool {
+    let op0 = (sysreg >> 20) & 0x3;
+    let op2 = (sysreg >> 17) & 0x7;
+    let op1 = (sysreg >> 14) & 0x7;
+    let crn = (sysreg >> 10) & 0xf;
+    let crm = (sysreg >> 1) & 0xf;
+
+    if op0 != 3 || op1 != 3 {
+        return false;
+    }
+    matches!(
+        (crn, crm, op2),
+        // PMCR, PMCNTENSET/CLR, PMOVSCLR, PMSWINC, PMSELR.
+        (9, 12, 0..=5)
+            // PMCCNTR, PMXEVTYPER, PMXEVCNTR.
+            | (9, 13, 0..=2)
+            // PMUSERENR and PMOVSSET.
+            | (9, 14, 0 | 3)
+            // PMEVCNTR0..30.
+            | (14, 8..=10, 0..=7)
+            | (14, 11, 0..=6)
+            // PMEVTYPER0..30 plus PMCCFILTR at the final encoding.
+            | (14, 12..=14, 0..=7)
+            | (14, 15, 0..=7)
+    )
+}
+
 /// `true` iff `addr` lies inside the `(base, len)` device frame.
 fn in_frame(addr: u64, frame: (u64, u64)) -> bool {
     addr >= frame.0 && addr < frame.0 + frame.1
+}
+
+fn pvclock_registration_accepted(status: Status, abi: Option<u32>) -> bool {
+    status == Status::Ok && abi == Some(vtime::pvclock::PVCLOCK_ABI_VERSION)
+}
+
+fn is_64_bit_gic_read(size: u8) -> bool {
+    size == 8
+}
+
+fn join_u32_halves(lo: u32, hi: u32) -> u64 {
+    u64::from(lo) | (u64::from(hi) << 32)
+}
+
+fn no_userspace_or_kernel_gic(userspace_wired: bool, in_kernel_gic: bool) -> bool {
+    !userspace_wired && !in_kernel_gic
+}
+
+fn kernel_gic_only(userspace_wired: bool, in_kernel_gic: bool) -> bool {
+    !userspace_wired && in_kernel_gic
+}
+
+fn gic_config_mismatch(snapshot: (u32, u64, u32), target: (u32, u64, u32)) -> bool {
+    snapshot != target
+}
+
+fn clockevent_present_in_gic(pending: u32, active: u32, line_level: u32, mask: u32) -> bool {
+    (pending | active | line_level) & mask != 0
+}
+
+fn should_reassert_clockevent(intid: u32, line_asserted: bool) -> bool {
+    intid == super::board::PVCLOCK_PPI && line_asserted
+}
+
+/// Whether `addr` is an implemented SPI's 64-bit `GICD_IROUTERn` register.
+/// The uniprocessor model has one fixed affinity target (Aff0..3 = 0), so the
+/// register is stateless and its only supported value is zero.
+fn is_gicd_irouter(addr: u64) -> bool {
+    use super::board::{GICD, IMPL_SPIS};
+
+    const IROUTER_BASE: u64 = 0x6000;
+    let first_spi = GICD.0 + IROUTER_BASE + 32 * 8;
+    let end = first_spi + u64::from(IMPL_SPIS) * 8;
+    (first_spi..end).contains(&addr) && addr.is_multiple_of(8)
+}
+
+/// Convert an ARM backend exit to the substrate-independent M1 log shape.
+/// Payloads are fixed-order little-endian encodings of every field that can
+/// affect dispatch; no backend debug string or host address enters this log.
+///
+/// GIC distributor/redistributor MMIO and CPU-interface sysregs are deliberately
+/// raw-only. HVF surfaces those transactions so the userspace GIC can service
+/// them, while stock KVM consumes the same architectural operations inside its
+/// in-kernel vGIC. Counting them would bind the portable clock and normalized
+/// log to the substrate's implementation boundary.
+pub(crate) fn normalize_virtual_time_exit_arm64(
+    exit: &Exit<Arm64>,
+) -> Option<(NormalizedEventClass, Vec<u8>)> {
+    use super::board::{DOORBELL, GICD, GICR, PL011, PVCLOCK};
+
+    match exit {
+        Exit::Common(CommonExit::Mmio { gpa, size, write }) => {
+            let mut payload = gpa.0.to_le_bytes().to_vec();
+            payload.push(*size);
+            match write {
+                Some(value) => {
+                    payload.push(1);
+                    payload.extend_from_slice(&value.to_le_bytes());
+                }
+                None => payload.push(0),
+            }
+            let class = if in_frame(gpa.0, PL011) {
+                NormalizedEventClass::DeviceMmio(DeviceClass::Serial)
+            } else if in_frame(gpa.0, GICD) || in_frame(gpa.0, GICR) {
+                return None;
+            } else if in_frame(gpa.0, PVCLOCK) {
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
+            } else if in_frame(gpa.0, DOORBELL) {
+                NormalizedEventClass::Doorbell
+            } else {
+                // Dispatch will fail closed. Retain a stable class in the raw
+                // failure trace without pretending it was a modeled device.
+                NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual)
+            };
+            Some((class, payload))
+        }
+        Exit::Arch(vmm_backend::Arm64Exit::Sysreg { sysreg, write }) => {
+            let _ = (sysreg, write);
+            // Stock KVM services the ruled GIC CPU-interface and OS debug-lock
+            // accesses without returning to userspace. HVF surfaces them only
+            // because its trap surface requires userspace emulation. They are
+            // substrate-private diagnostics, not portable event ordinals.
+            None
+        }
+        Exit::Common(CommonExit::Idle) => Some((NormalizedEventClass::Idle, Vec::new())),
+        Exit::Common(CommonExit::Shutdown) => Some((NormalizedEventClass::Terminal, Vec::new())),
+        Exit::Common(CommonExit::Hypercall(frame)) => {
+            let mut payload = Vec::new();
+            for arg in frame.args {
+                payload.extend_from_slice(&arg.to_le_bytes());
+            }
+            Some((NormalizedEventClass::Doorbell, payload))
+        }
+    }
 }
 
 /// The arm64 per-VM device state
@@ -48,6 +206,8 @@ pub struct Arm64Devices {
     /// `TODO(AA-6)`, the vGICv3 round-trip verdict), so wiring it is a
     /// test/mock composition today, never a silicon claim.
     pub(crate) gic: Option<gicv3::Gicv3>,
+    /// Paravirtual clockevent deadline and its virtual-timer PPI input level.
+    pub(crate) clockevent: Arm64ClockeventState,
 }
 
 impl Arm64Devices {
@@ -56,11 +216,45 @@ impl Arm64Devices {
         Self {
             uart: Pl011::new(),
             gic: None,
+            clockevent: Arm64ClockeventState::default(),
         }
     }
 }
 
 impl<B: Backend<A = Arm64>> Vmm<B> {
+    /// Capture live vCPU + GIC state directly for the independent M5
+    /// architectural comparator. This path does not call `save_vm_state`,
+    /// encode a vendor snapshot, or compute a state hash.
+    pub fn arm64_architectural_state(&self) -> Result<super::Arm64ArchitecturalState, VmmError> {
+        let mut vcpu = self.backend.save()?;
+        let backend_gic = vcpu.gic.take().map(|gic| records::gic_from_backend(&gic));
+        let userspace_gic = self.devices.gic.as_ref().map(gicv3::Gicv3::snapshot);
+        let gic = match (backend_gic, userspace_gic) {
+            (Some(_), Some(_)) => {
+                return Err(VmmError::ContractViolation(
+                    "both in-kernel and userspace GICv3 fabrics are wired".to_string(),
+                ));
+            }
+            (Some(gic), None) | (None, Some(gic)) => Some(gic),
+            (None, None) => None,
+        };
+        Ok(super::Arm64ArchitecturalState { vcpu, gic })
+    }
+
+    /// Read the live interrupt controller in the canonical architectural form
+    /// shared by the KVM in-kernel vGIC and the HVF userspace model.
+    pub fn canonical_arm64_gic_state(&self) -> Result<Option<gicv3::GicState>, VmmError> {
+        let vcpu = self.backend.save()?;
+        match (vcpu.gic.as_ref(), self.devices.gic.as_ref()) {
+            (Some(_), Some(_)) => Err(VmmError::ContractViolation(
+                "both in-kernel and userspace GICv3 fabrics are wired".to_string(),
+            )),
+            (Some(gic), None) => Ok(Some(records::gic_from_backend(gic))),
+            (None, Some(gic)) => Ok(Some(gic.snapshot())),
+            (None, None) => Ok(None),
+        }
+    }
+
     /// Service a trapped sysreg access ([`Arm64Exit::Sysreg`]
     /// (`vmm_backend::Arm64Exit::Sysreg`)). **Fails closed:** the sysreg
     /// dispositions are the ARM CPU contract's rows (`TODO(AA-6)`, the
@@ -73,12 +267,132 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         sysreg: u32,
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
-        let dir = if write.is_some() { "write" } else { "read" };
-        Err(VmmError::ContractViolation(format!(
-            "trapped sysreg {dir} ({sysreg:#010x}) has no ruled disposition: the arm64 \
-             contract's sysreg rows are the AA-6 truth table's (and the trap surface is the \
-             AA-3 patched backend's) — the skeleton fails closed"
-        )))
+        if is_frozen_pmu_sysreg(sysreg) {
+            self.backend.complete_fault()?;
+            return Ok(Step::Continued);
+        }
+        let ruled = matches!(
+            sysreg,
+            ICC_PMR_EL1
+                | ICC_IAR1_EL1
+                | ICC_EOIR1_EL1
+                | ICC_IGRPEN1_EL1
+                | ICC_BPR1_EL1
+                | ICC_CTLR_EL1
+                | ICC_RPR_EL1
+                | ICC_HPPIR1_EL1
+                | OSDLR_EL1
+                | OSLAR_EL1
+        );
+        if !ruled {
+            let dir = if write.is_some() { "write" } else { "read" };
+            return Err(VmmError::ContractViolation(format!(
+                "trapped sysreg {dir} ({sysreg:#010x}) has no ruled disposition for HVF"
+            )));
+        }
+        if matches!(sysreg, OSDLR_EL1 | OSLAR_EL1) {
+            return match write {
+                Some(0) => {
+                    // The deterministic zero write only clears the OS debug
+                    // lock. The retained debug register file remains the sole
+                    // guest-visible debug state and already rides snapshots.
+                    self.backend.complete_ok()?;
+                    Ok(Step::Continued)
+                }
+                Some(value) => Err(VmmError::ContractViolation(format!(
+                    "OS debug-lock register {sysreg:#010x} supports only Linux's deterministic \
+                     zero unlock, got {value:#x}"
+                ))),
+                None => Err(VmmError::ContractViolation(format!(
+                    "OS debug-lock register {sysreg:#010x} read has no ruled disposition"
+                ))),
+            };
+        }
+        if self.devices.gic.is_none() {
+            return Err(VmmError::ContractViolation(format!(
+                "trapped GIC CPU-interface sysreg {sysreg:#010x} with no userspace GIC wired"
+            )));
+        }
+        let gic = self.devices.gic.as_mut().expect("is_none checked above");
+        match (sysreg, write) {
+            (ICC_IAR1_EL1, None) => {
+                let intid = gic
+                    .active_interrupt()
+                    .unwrap_or(vmm_backend::GicIntId::SPURIOUS.0);
+                self.backend.complete_read(u64::from(intid))?;
+                Ok(Step::Continued)
+            }
+            (ICC_EOIR1_EL1, Some(intid)) => {
+                let intid = u32::try_from(intid).map_err(|_| {
+                    VmmError::ContractViolation("ICC_EOIR1_EL1 INTID exceeds u32".to_string())
+                })?;
+                gic.eoi(intid).map_err(|e| {
+                    VmmError::ContractViolation(format!("ICC_EOIR1_EL1 rejected: {e}"))
+                })?;
+                // The clockevent PPI is a level input. If a broken guest EOIs without first
+                // ACKing the device, the still-high line becomes pending again.
+                if should_reassert_clockevent(intid, self.devices.clockevent.line_asserted) {
+                    gic.assert_line(intid).map_err(|e| {
+                        VmmError::ContractViolation(format!(
+                            "clockevent PPI level reassertion after EOI failed: {e}"
+                        ))
+                    })?;
+                }
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            (ICC_PMR_EL1, None) => {
+                self.backend.complete_read(u64::from(gic.pmr()))?;
+                Ok(Step::Continued)
+            }
+            (ICC_PMR_EL1, Some(value)) => {
+                let pmr = u8::try_from(value).map_err(|_| {
+                    VmmError::ContractViolation("ICC_PMR_EL1 value exceeds u8".to_string())
+                })?;
+                gic.set_pmr(pmr);
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            // The model is single-security-state Group-1-only. The binary
+            // point/priority controls Linux writes are accepted at their only
+            // supported values; reads return that fixed interface shape.
+            (ICC_IGRPEN1_EL1, Some(value)) if value <= 1 => {
+                gic.set_group1_enabled(value != 0);
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            (ICC_BPR1_EL1 | ICC_CTLR_EL1, Some(0)) => {
+                self.backend.complete_ok()?;
+                Ok(Step::Continued)
+            }
+            (ICC_IGRPEN1_EL1, None) => {
+                self.backend
+                    .complete_read(u64::from(gic.group1_enabled()))?;
+                Ok(Step::Continued)
+            }
+            (ICC_BPR1_EL1 | ICC_CTLR_EL1, None) => {
+                self.backend.complete_read(0)?;
+                Ok(Step::Continued)
+            }
+            (ICC_RPR_EL1, None) => {
+                self.backend.complete_read(0xff)?;
+                Ok(Step::Continued)
+            }
+            (ICC_HPPIR1_EL1, None) => {
+                let intid = gic
+                    .peek_interrupt()
+                    .unwrap_or(vmm_backend::GicIntId::SPURIOUS.0);
+                self.backend.complete_read(u64::from(intid))?;
+                Ok(Step::Continued)
+            }
+            _ => {
+                let dir = if write.is_some() { "write" } else { "read" };
+                Err(VmmError::ContractViolation(format!(
+                    "trapped GIC CPU-interface sysreg {dir} ({sysreg:#010x}, value={write:?}) \
+                     has no ruled value"
+                )))
+            }
+        }
     }
 
     /// Route an MMIO access over the [`board`](super::board) memory map: the
@@ -94,36 +408,31 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         size: u8,
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
-        use super::board::{DOORBELL, GICD, GICR, PL011};
+        use super::board::{DOORBELL, GICD, GICR, PL011, PVCLOCK};
 
         let addr = gpa.0;
 
         // Validate any access whose START lands in a modeled device frame
         // **fully**, before touching device state — a start-in-frame predicate
         // alone is unsafe (`in_frame` checks the start only). Every modeled
-        // arm64 device (the PL011 register block, the GICv3 register files, the
-        // hypercall-doorbell magic word) is a 32-bit-register/word-ABI, so the
-        // access must be (1) 4-byte **aligned** (register-addressed), (2) fully
-        // **within** the frame — its end must not straddle the boundary — and
-        // (3) exactly 4 bytes **wide**. Anything else fails closed (never a
-        // silent `v as u32` truncation, an under-filled load, or a cross-frame
-        // access). Checked in that order so a straddling access is reported as a
-        // straddle even when its width is also wrong.
+        // arm64 device is range-checked before touching state. GIC and the
+        // doorbell are strict 32-bit word ABIs. PL011 registers remain
+        // word-addressed but architecturally admit 8/16/32-bit transfers at the
+        // register base; Linux earlycon uses an 8-bit UARTDR store. The one
+        // 64-bit GIC access modeled here is GICR_TYPER at offset 0x8, whose
+        // architectural width Linux uses while discovering redistributors.
+        // Anything else fails closed (never a silent truncation or cross-frame
+        // access).
         if let Some((frame_name, frame)) = [
             ("PL011", PL011),
             ("doorbell", DOORBELL),
+            ("pvclock", PVCLOCK),
             ("GICD", GICD),
             ("GICR", GICR),
         ]
         .into_iter()
         .find(|(_, f)| in_frame(addr, *f))
         {
-            if !addr.is_multiple_of(4) {
-                return Err(VmmError::ContractViolation(format!(
-                    "arm64 {frame_name} MMIO at {addr:#x} is not 4-byte aligned — the modeled \
-                     registers are word-addressed; a misaligned access is unmodeled (fail closed)"
-                )));
-            }
             let end = addr.checked_add(u64::from(size));
             if end.is_none_or(|e| e > frame.0 + frame.1) {
                 return Err(VmmError::ContractViolation(format!(
@@ -133,26 +442,50 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     frame.0 + frame.1
                 )));
             }
-            if size != 4 {
+            if !addr.is_multiple_of(4) {
                 return Err(VmmError::ContractViolation(format!(
-                    "arm64 {frame_name} MMIO at {addr:#x} with size {size} != 4 — the modeled \
-                     registers are 32-bit-accessed; a different width is unmodeled (fail closed, \
-                     not a truncation)"
+                    "arm64 {frame_name} MMIO at {addr:#x} is not 4-byte aligned — the modeled \
+                     registers are word-addressed; a misaligned access is unmodeled (fail closed)"
+                )));
+            }
+            let valid_width = match frame_name {
+                "PL011" => matches!(size, 1 | 2 | 4),
+                "GICR" => size == 4 || (size == 8 && addr - frame.0 == 0x8),
+                "GICD" => size == 4 || (size == 8 && is_gicd_irouter(addr)),
+                "pvclock" => matches!(size, 4 | 8),
+                _ => size == 4,
+            };
+            if !valid_width {
+                return Err(VmmError::ContractViolation(format!(
+                    "arm64 {frame_name} MMIO at {addr:#x} has unmodeled size {size} \
+                     (fail closed)"
                 )));
             }
         }
 
-        // The PL011 console (4 KiB frame). 32-bit register accesses.
+        // The PL011 console (4 KiB frame). Values occupy the low transfer
+        // bytes; mask explicitly so synthetic backends cannot smuggle high
+        // bits that real HVF already truncates at the MMIO exit.
         if in_frame(addr, PL011) {
+            if self.virtual_time_vtime_enabled() {
+                self.advance_virtual_time_vtime(contract::SERIAL_EXIT_VNS)?;
+            }
             let offset = addr - PL011.0;
+            let mask = match size {
+                1 => u32::from(u8::MAX),
+                2 => u32::from(u16::MAX),
+                4 => u32::MAX,
+                // The modeled-frame validation above accepts only 1/2/4.
+                _ => unreachable!("validated PL011 access width"),
+            };
             return match write {
                 None => {
-                    let v = self.devices.uart.read(offset);
+                    let v = self.devices.uart.read(offset) & mask;
                     self.backend.complete_read(u64::from(v))?;
                     Ok(Step::Continued)
                 }
                 Some(v) => {
-                    self.devices.uart.write(offset, v as u32);
+                    self.devices.uart.write(offset, v as u32 & mask);
                     Ok(Step::Continued)
                 }
             };
@@ -170,9 +503,79 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return self.service_doorbell(v as u32);
         }
 
+        // The dedicated ARM pvclock + clockevent frame. Every tuple is exact:
+        // offset, width, and direction are one protocol surface, not three
+        // independently permissive checks.
+        if in_frame(addr, PVCLOCK) {
+            let offset = addr - PVCLOCK.0;
+            let exact = matches!(
+                (offset, size, write),
+                (0x000, 8, Some(_))
+                    | (0x008, 4, None)
+                    | (0x010, 8, Some(_))
+                    | (0x018, 4, Some(_))
+                    | (0x020, 4, Some(1))
+                    | (0x024, 4, Some(1))
+            );
+            if !exact {
+                return Err(VmmError::ContractViolation(format!(
+                    "arm64 pvclock MMIO protocol fault at offset {offset:#x}, size {size}, \
+                     direction {}",
+                    if write.is_some() { "write" } else { "read" }
+                )));
+            }
+            if self.virtual_time_vtime_enabled() {
+                let advance = if offset == 0x020 {
+                    contract::EXECUTION_TICK_VNS
+                } else {
+                    contract::PARAVIRTUAL_EXIT_VNS
+                };
+                self.advance_virtual_time_vtime(advance)?;
+            }
+            return match (offset, write) {
+                (0x000, Some(gpa)) => {
+                    let (status, abi) = self.pvclock_register(gpa);
+                    if !pvclock_registration_accepted(status, abi) {
+                        return Err(VmmError::ContractViolation(format!(
+                            "arm64 pvclock registration rejected GPA {gpa:#x}: status \
+                             {status:?}, abi {abi:?}"
+                        )));
+                    }
+                    Ok(Step::Continued)
+                }
+                (0x008, None) => {
+                    let abi = if self.pvclock_registration().is_some() {
+                        vtime::pvclock::PVCLOCK_ABI_VERSION
+                    } else {
+                        0
+                    };
+                    self.backend.complete_read(u64::from(abi))?;
+                    Ok(Step::Continued)
+                }
+                (0x010, Some(deadline)) => {
+                    self.arm_clockevent_program(deadline)?;
+                    Ok(Step::Continued)
+                }
+                (0x018, Some(control)) => {
+                    let control = u32::try_from(control).map_err(|_| {
+                        VmmError::ContractViolation(
+                            "arm64 pvclock control value exceeds u32".to_string(),
+                        )
+                    })?;
+                    self.arm_clockevent_control(control)?;
+                    Ok(Step::Continued)
+                }
+                (0x020, Some(1)) => Ok(Step::Continued),
+                (0x024, Some(1)) => Ok(Step::Continued),
+                _ => Err(VmmError::ContractViolation(
+                    "arm64 pvclock exact-shape validation disagreed with dispatch".to_string(),
+                )),
+            };
+        }
+
         // The GICv3 distributor / redistributor frames (width already checked
-        // above — the modeled register files are 32-bit-accessed; 64-bit GIC
-        // registers like IROUTERn/GICR_TYPER are unmodeled, `TODO(AA-6)`).
+        // above). GICR_TYPER is composed from its two 32-bit halves so the
+        // device model retains one canonical register-access primitive.
         if in_frame(addr, GICD) || in_frame(addr, GICR) {
             let (frame, base) = if in_frame(addr, GICD) {
                 (gicv3::GicFrame::Dist, GICD.0)
@@ -186,18 +589,53 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                      stock-backend boot never wires it"
                 )));
             }
+            // GICD_IROUTERn is 64-bit. This uniprocessor machine exposes only
+            // affinity zero, so it reads zero and accepts exactly zero. A
+            // nonzero affinity would promise routing the model cannot perform.
+            if size == 8 && is_gicd_irouter(addr) {
+                return match write {
+                    None => {
+                        self.backend.complete_read(0)?;
+                        Ok(Step::Continued)
+                    }
+                    Some(0) => Ok(Step::Continued),
+                    Some(value) => Err(VmmError::ContractViolation(format!(
+                        "GICD_IROUTER at {addr:#x} requests unsupported affinity {value:#x}; \
+                         the single-vCPU machine routes only to affinity zero"
+                    ))),
+                };
+            }
             let now_vns = self.now_vns()?;
             let offset = addr - base;
             let gic = self.devices.gic.as_mut().expect("is_none checked above");
             return match write {
                 None => {
-                    let v = gic.mmio_read(frame, offset, now_vns).map_err(|e| {
+                    let lo = gic.mmio_read(frame, offset, now_vns).map_err(|e| {
                         VmmError::ContractViolation(format!("GICv3 read {offset:#x}: {e}"))
                     })?;
-                    self.backend.complete_read(u64::from(v))?;
+                    let value = if is_64_bit_gic_read(size) {
+                        let hi_offset = offset.checked_add(4).ok_or_else(|| {
+                            VmmError::ContractViolation(
+                                "GICv3 64-bit read offset overflow".to_string(),
+                            )
+                        })?;
+                        let hi = gic.mmio_read(frame, hi_offset, now_vns).map_err(|e| {
+                            VmmError::ContractViolation(format!("GICv3 read {hi_offset:#x}: {e}"))
+                        })?;
+                        join_u32_halves(lo, hi)
+                    } else {
+                        u64::from(lo)
+                    };
+                    self.backend.complete_read(value)?;
                     Ok(Step::Continued)
                 }
                 Some(v) => {
+                    if size == 8 {
+                        return Err(VmmError::ContractViolation(format!(
+                            "arm64 GICR MMIO write at {addr:#x} has unmodeled 64-bit direction \
+                             (GICR_TYPER is read-only; fail closed)"
+                        )));
+                    }
                     gic.mmio_write(frame, offset, v as u32, now_vns)
                         .map_err(|e| {
                             VmmError::ContractViolation(format!("GICv3 write {offset:#x}: {e}"))
@@ -209,8 +647,138 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
 
         Err(VmmError::ContractViolation(format!(
             "unmodeled MMIO at {addr:#x} (size {size}); only the PL011 console, the GICv3 \
-             frames, and the hypercall doorbell are modeled on the arm64 board"
+             frames, the pvclock frame, and the hypercall doorbell are modeled on the arm64 board"
         )))
+    }
+
+    /// Replace the pending absolute clockevent deadline. Programming while the
+    /// clockevent-PPI device input is high is a protocol fault; the guest must ACK or
+    /// DISARM first.
+    fn arm_clockevent_program(&mut self, deadline: u64) -> Result<(), VmmError> {
+        use super::board::PVCLOCK_PPI;
+
+        if self.devices.clockevent.line_asserted {
+            return Err(VmmError::ContractViolation(
+                "arm64 clockevent deadline write while its PPI is asserted".to_string(),
+            ));
+        }
+        self.trace_arm_clockevent_schedule(deadline, PVCLOCK_PPI)?;
+        self.devices.clockevent.deadline = Some(deadline);
+        Ok(())
+    }
+
+    /// Apply the exact clockevent control protocol (`1 = DISARM`, `2 = ACK`).
+    fn arm_clockevent_control(&mut self, control: u32) -> Result<(), VmmError> {
+        use super::board::PVCLOCK_PPI;
+
+        match control {
+            1 => {
+                if self.devices.clockevent.deadline.is_some() {
+                    self.trace_clockevent_cancel()?;
+                }
+                self.devices.clockevent.deadline = None;
+                if self.devices.clockevent.line_asserted {
+                    if let Some(gic) = self.devices.gic.as_mut() {
+                        gic.deassert_line(PVCLOCK_PPI).map_err(|e| {
+                            VmmError::ContractViolation(format!(
+                                "arm64 clockevent DISARM could not lower its PPI: {e}"
+                            ))
+                        })?;
+                    } else if self.backend.capabilities().arch.in_kernel_gic {
+                        self.backend.set_pending_irq(None)?;
+                    } else {
+                        return Err(VmmError::ContractViolation(
+                            "arm64 clockevent DISARM with no interrupt controller".to_string(),
+                        ));
+                    }
+                    self.devices.clockevent.line_asserted = false;
+                }
+                Ok(())
+            }
+            2 if self.devices.clockevent.line_asserted => {
+                if let Some(gic) = self.devices.gic.as_mut() {
+                    gic.deassert_line(PVCLOCK_PPI).map_err(|e| {
+                        VmmError::ContractViolation(format!(
+                            "arm64 clockevent ACK could not lower its PPI: {e}"
+                        ))
+                    })?;
+                } else if self.backend.capabilities().arch.in_kernel_gic {
+                    self.backend.set_pending_irq(None)?;
+                } else {
+                    return Err(VmmError::ContractViolation(
+                        "arm64 clockevent ACK with no interrupt controller".to_string(),
+                    ));
+                }
+                self.devices.clockevent.line_asserted = false;
+                self.devices.clockevent.acknowledgements =
+                    self.devices.clockevent.acknowledgements.saturating_add(1);
+                Ok(())
+            }
+            2 => Err(VmmError::ContractViolation(
+                "arm64 clockevent ACK while its PPI is not asserted".to_string(),
+            )),
+            value => Err(VmmError::ContractViolation(format!(
+                "arm64 clockevent control value {value} is not DISARM(1) or ACK(2)"
+            ))),
+        }
+    }
+
+    /// After the exit's page publication, assert the clockevent PPI iff the registered
+    /// guest-clock value has reached the one pending absolute deadline.
+    pub(crate) fn service_arm_clockevent_due(&mut self) -> Result<(), VmmError> {
+        use super::board::PVCLOCK_PPI;
+
+        let Some(deadline) = self.devices.clockevent.deadline else {
+            return Ok(());
+        };
+        // Deadlines may be programmed before page registration, but the device
+        // cannot evaluate or deliver them until the one-shot page is active.
+        if self.pvclock_registration().is_none() {
+            return Ok(());
+        }
+        let Some(vt) = self.vtime.as_ref() else {
+            return Err(VmmError::ContractViolation(
+                "arm64 clockevent deadline without V-time wiring".to_string(),
+            ));
+        };
+        let guest_clock = vt.guest_clock();
+        if guest_clock < deadline {
+            return Ok(());
+        }
+        // A due level may only become architecturally visible at a guest-declared
+        // interruptible boundary. Otherwise HVF and KVM are free to recognize the
+        // already-pending IRQ at different instructions after a later DAIF unmask.
+        // The cooperative guest exits immediately after every IRQ enable/restore,
+        // making this PSTATE.I-clear exit the substrate-neutral delivery point.
+        if self.backend.save()?.core.pstate & PSTATE_I != 0 {
+            self.trace_arm_clockevent_defer()?;
+            return Ok(());
+        }
+        if self.devices.clockevent.line_asserted {
+            return Err(VmmError::ContractViolation(
+                "arm64 clockevent retained a deadline while its PPI was already asserted"
+                    .to_string(),
+            ));
+        }
+        if let Some(gic) = self.devices.gic.as_mut() {
+            gic.assert_line(PVCLOCK_PPI).map_err(|e| {
+                VmmError::ContractViolation(format!(
+                    "arm64 clockevent could not assert its PPI: {e}"
+                ))
+            })?;
+        } else if self.backend.capabilities().arch.in_kernel_gic {
+            self.backend
+                .set_pending_irq(Some(vmm_backend::GicIntId(PVCLOCK_PPI)))?;
+        } else {
+            return Err(VmmError::ContractViolation(
+                "arm64 clockevent became due with no interrupt controller".to_string(),
+            ));
+        }
+        self.trace_clockevent_delivery()?;
+        self.devices.clockevent.deadline = None;
+        self.devices.clockevent.line_asserted = true;
+        self.devices.clockevent.assertions = self.devices.clockevent.assertions.saturating_add(1);
+        Ok(())
     }
 
     /// Wire the userspace GICv3 + generic-timer fabric. **Arbitration and
@@ -239,7 +807,19 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// the fabric is unwired (the x86 unwired-LAPIC posture: the backend's
     /// inject seam is never touched and `state_hash` carries no fabric chunk).
     pub(crate) fn service_pending_irqs_arm64(&mut self) -> Result<(), VmmError> {
+        if no_userspace_or_kernel_gic(
+            self.devices.gic.is_some(),
+            self.backend.capabilities().arch.in_kernel_gic,
+        ) {
+            return Ok(());
+        }
         if self.devices.gic.is_none() {
+            let intid = self
+                .devices
+                .clockevent
+                .line_asserted
+                .then_some(vmm_backend::GicIntId(super::board::PVCLOCK_PPI));
+            self.backend.set_pending_irq(intid)?;
             return Ok(());
         }
         let now_vns = self.now_vns()?;
@@ -269,6 +849,12 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// Peeks without advancing (the run loop advances before every entry, so
     /// at an idle exit the fabric is already current). No fabric ⇒ never.
     pub(crate) fn pending_deliverable_interrupt_arm64(&mut self) -> Result<bool, VmmError> {
+        if kernel_gic_only(
+            self.devices.gic.is_some(),
+            self.backend.capabilities().arch.in_kernel_gic,
+        ) {
+            return Ok(self.devices.clockevent.line_asserted);
+        }
         Ok(self
             .devices
             .gic
@@ -279,15 +865,45 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// The next armed generic-timer deadline in V-time ns (the pure
     /// deadlines-out half of the fabric). No fabric ⇒ none.
     pub(crate) fn next_timer_deadline_vns_arm64(&self) -> Option<u64> {
-        self.devices.gic.as_ref()?.next_timer_deadline()
+        let generic = self
+            .devices
+            .gic
+            .as_ref()
+            .and_then(gicv3::Gicv3::next_timer_deadline);
+        let clockevent = self
+            .devices
+            .clockevent
+            .deadline
+            .and_then(|deadline| self.guest_clock_deadline_vns(deadline).ok());
+        match (generic, clockevent) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (only, None) | (None, only) => only,
+        }
     }
 
     /// [`Self::next_timer_deadline_vns_arm64`], filtered to timers whose fire
     /// would actually deliver — an armed-but-undeliverable timer is no wake.
     pub(crate) fn deliverable_timer_deadline_vns_arm64(&self) -> Option<u64> {
-        let gic = self.devices.gic.as_ref()?;
-        gic.next_timer_deadline()
-            .filter(|_| gic.armed_timer_deliverable())
+        let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
+        let generic = self.devices.gic.as_ref().and_then(|gic| {
+            gic.next_timer_deadline()
+                .filter(|_| gic.armed_timer_deliverable())
+        });
+        let clockevent = self
+            .devices
+            .clockevent
+            .deadline
+            .filter(|_| self.pvclock_registration().is_some())
+            .filter(|_| {
+                self.devices.gic.as_ref().map_or(in_kernel_gic, |gic| {
+                    gic.input_deliverable(super::board::PVCLOCK_PPI)
+                })
+            })
+            .and_then(|deadline| self.guest_clock_deadline_vns(deadline).ok());
+        match (generic, clockevent) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (only, None) | (None, only) => only,
+        }
     }
 
     /// Stage-time validation of a wire-format interrupt identity against the
@@ -318,7 +934,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                  AA-6-gated (the in-kernel vGICv3 round-trip verdict)"
             )));
         };
-        gic.raise(vector).map_err(|e| {
+        gic.pulse(vector).map_err(|e| {
             VmmError::ContractViolation(format!("InjectInterrupt INTID {vector:#x} rejected: {e}"))
         })
     }
@@ -343,7 +959,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
     /// (PL011 residuals, the report stream, the guest clock offset). The
     /// `contract_hash` is stamped so a restore can reject a blob taken under a
     /// different policy skeleton. Infallible and byte-deterministic — the
-    /// V-time block anchors to the deterministic `last_intercept_work`,
+    /// V-time block anchors to the deterministic `assigned_clock`,
     /// exactly like the x86 builder.
     pub(crate) fn build_vm_state_arm64(&self, vcpu: &Arm64VcpuState) -> Arm64VmState {
         let mut s = Arm64VmState::default();
@@ -351,29 +967,26 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         let clock_offset = match &self.vtime {
             Some(vt) => {
                 s.vtime = vm_state::VtimeState {
-                    ratio_num: vt.cfg.ratio_num,
-                    // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so
-                    // the blob is encodable.
-                    ratio_den: 1,
                     guest_hz: vt.cfg.guest_hz,
                     guest_base: vt.cfg.guest_base,
-                    snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),
+                    snapshot_vns: vt.clock.vns(),
                 };
                 s.hypercall = vt.entropy.save_state();
                 vt.guest_clock_offset
             }
             None => {
                 // Unwired: a sentinel encodable V-time block, no entropy.
-                s.vtime.ratio_den = 1;
                 0
             }
         };
+        debug_assert!(vcpu.gic.is_none() || self.devices.gic.is_none());
+        let backend_gic = vcpu.gic.as_ref().map(records::gic_from_backend);
         let dev = Arm64DeviceState {
             clock_offset,
             report_stream: self.report_stream.clone(),
             uart_capture: self.devices.uart.capture().to_vec(),
             uart_regs: *self.devices.uart.shadow_regs(),
-            gic: self.devices.gic.as_ref().map(|g| g.snapshot()),
+            gic: backend_gic.or_else(|| self.devices.gic.as_ref().map(gicv3::Gicv3::snapshot)),
             // The dedicated hypercall-transport ABI pages ride the blob so
             // save/restore/branch preserve them (they are a separate memslot, not
             // in the main-RAM snapshot). Empty when the VM never mapped them.
@@ -382,6 +995,12 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 .as_ref()
                 .map(|db| db.as_bytes().to_vec())
                 .unwrap_or_default(),
+            pvclock: self.pvclock_snapshot().map(|pv| Arm64PvclockState {
+                gpa: pv.gpa,
+                registrable: pv.registrable,
+                virtual_time: self.virtual_time_vtime_enabled(),
+                clockevent: self.devices.clockevent,
+            }),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -408,8 +1027,9 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // (the x86 LAPIC wiring-mismatch discipline): one side having a fabric
         // the other lacks would silently change which interrupts can ever
         // deliver — rejected, never skipped.
-        let new_gic = match (&dev.gic, self.devices.gic.as_ref()) {
-            (Some(gs), Some(target)) => {
+        let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
+        let new_gic = match (&dev.gic, in_kernel_gic, self.devices.gic.as_ref()) {
+            (Some(gs), false, Some(target)) => {
                 // The snapshot's GIC **config** (impl_spis / timer_hz /
                 // timer_intid) must match the already-wired target's — these
                 // drive `GICD_TYPER.ITLinesNumber` and the tick→ns deadline
@@ -418,9 +1038,10 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 // guest sees. Reject a mismatch (the LAPIC wiring-mismatch
                 // posture), never a silent adoption.
                 let have = target.config();
-                if (gs.impl_spis, gs.timer_hz, gs.timer_intid)
-                    != (have.impl_spis, have.timer_hz, have.timer_intid)
-                {
+                if gic_config_mismatch(
+                    (gs.impl_spis, gs.timer_hz, gs.timer_intid),
+                    (have.impl_spis, have.timer_hz, have.timer_intid),
+                ) {
                     return Err(VmmError::ContractViolation(format!(
                         "restore_vm_state: GICv3 config mismatch (snapshot impl_spis={} timer_hz={} \
                          timer_intid={} vs this VM's {}/{}/{}) — the distributor bound and the \
@@ -443,14 +1064,45 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     })?,
                 )
             }
-            (Some(_), None) | (None, Some(_)) => {
+            (Some(gs), true, None) => {
+                let have = super::board::gic_config();
+                if gic_config_mismatch(
+                    (gs.impl_spis, gs.timer_hz, gs.timer_intid),
+                    (have.impl_spis, have.timer_hz, have.timer_intid),
+                ) {
+                    return Err(VmmError::ContractViolation(format!(
+                        "restore_vm_state: GICv3 config mismatch (snapshot impl_spis={} timer_hz={} \
+                         timer_intid={} vs this VM's {}/{}/{}) — restore into a VM composed like \
+                         the snapshot source.",
+                        gs.impl_spis,
+                        gs.timer_hz,
+                        gs.timer_intid,
+                        have.impl_spis,
+                        have.timer_hz,
+                        have.timer_intid
+                    )));
+                }
+                // Run the same independent userspace-model validator over the
+                // canonical record even though KVM will own the restored fabric.
+                let _ = gicv3::Gicv3::restore(gs, s.vtime.snapshot_vns).map_err(|_| {
+                    SnapshotError::DeviceRestore("incoherent GicState in device blob")
+                })?;
+                None
+            }
+            (Some(_), true, Some(_)) => {
+                return Err(VmmError::ContractViolation(
+                    "restore_vm_state: target composes both in-kernel and userspace GICv3 fabrics"
+                        .to_string(),
+                ));
+            }
+            (Some(_), false, None) | (None, _, Some(_)) | (None, true, None) => {
                 return Err(VmmError::ContractViolation(
                     "restore_vm_state: snapshot/VM GICv3 wiring mismatch (one has the fabric, \
                      the other does not) — restore into a VM composed like the snapshot source."
                         .to_string(),
                 ));
             }
-            (None, None) => None,
+            (None, false, None) => None,
         };
         // The dedicated hypercall-transport ABI pages must match this VM's wiring
         // (the GIC wiring-mismatch discipline): a snapshot that carries them
@@ -478,13 +1130,45 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 ));
             }
         }
-        // The arm64 skeleton blob carries **no pvclock channel record** (the
-        // arm64 clock-page protocol is `hm-rk5`'s; this skeleton only reserves
-        // the seam). Validate that symmetrically against this VM's
-        // composition: a pvclock-wired restore target fails loud rather than
-        // silently forking the sealed timeline.
-        self.pvclock_validate_restore(None)?;
-        let vcpu = records::vcpu_state_from(s);
+        let pvclock_record = dev.pvclock.map(|pv| (pv.gpa, pv.registrable));
+        self.pvclock_validate_restore(pvclock_record.as_ref())?;
+        if let Some(pv) = dev.pvclock {
+            if pv.virtual_time != self.virtual_time_vtime_enabled() {
+                return Err(VmmError::ContractViolation(
+                    "restore_vm_state: ARM V-time mode mismatch (snapshot and target disagree on \
+                     assigned-at-exit/virtual_time mode) — restore into a VM composed like the \
+                     snapshot source."
+                        .to_string(),
+                ));
+            }
+            if pv.clockevent.acknowledgements > pv.clockevent.assertions {
+                return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                    "clockevent ACK count exceeds assertion count",
+                )));
+            }
+            if pv.clockevent.line_asserted {
+                if pv.gpa.is_none() {
+                    return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                        "asserted clockevent line without a registered pvclock page",
+                    )));
+                }
+                let Some(gs) = dev.gic.as_ref() else {
+                    return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                        "asserted clockevent line without a GIC record",
+                    )));
+                };
+                let mask = 1u32 << super::board::PVCLOCK_PPI;
+                if !clockevent_present_in_gic(gs.pending[0], gs.active[0], gs.line_level[0], mask) {
+                    return Err(VmmError::Snapshot(SnapshotError::DeviceRestore(
+                        "asserted clockevent line absent from GIC pending/active state",
+                    )));
+                }
+            }
+        }
+        let mut vcpu = records::vcpu_state_from(s);
+        if in_kernel_gic {
+            vcpu.gic = dev.gic.as_ref().map(records::gic_to_backend);
+        }
         let clock_offset = dev.clock_offset;
         Ok((vcpu, clock_offset, Arm64RestorePrep { gic: new_gic, dev }))
     }
@@ -507,7 +1191,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         {
             db.as_mut_bytes().copy_from_slice(&dev.doorbell);
         }
-        self.pvclock_commit_restore(None);
+        let pvclock_record = dev.pvclock.map(|pv| (pv.gpa, pv.registrable));
+        self.devices.clockevent = dev
+            .pvclock
+            .map_or_else(Arm64ClockeventState::default, |pv| pv.clockevent);
+        self.pvclock_commit_restore(pvclock_record.as_ref());
         self.report_stream = dev.report_stream;
     }
 }
@@ -556,6 +1244,30 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
     ] {
         v.extend_from_slice(&x.to_le_bytes());
     }
+    for q in s.simd_fp.q {
+        v.extend_from_slice(&q);
+    }
+    v.extend_from_slice(&s.simd_fp.fpcr.to_le_bytes());
+    v.extend_from_slice(&s.simd_fp.fpsr.to_le_bytes());
+    for file in [
+        s.debug.breakpoint_value,
+        s.debug.breakpoint_control,
+        s.debug.watchpoint_value,
+        s.debug.watchpoint_control,
+    ] {
+        for value in file {
+            v.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    v.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
+    v.push(u8::from(s.debug.trap_debug_exceptions));
+    v.push(u8::from(s.debug.trap_debug_reg_accesses));
+    v.extend_from_slice(&s.vtimer.cntv_ctl_el0.to_le_bytes());
+    v.extend_from_slice(&s.vtimer.cntv_cval_el0.to_le_bytes());
+    v.push(u8::from(s.vtimer.masked));
+    v.extend_from_slice(&s.vtimer.offset.to_le_bytes());
+    v.push(u8::from(s.interrupts.irq));
+    v.push(u8::from(s.interrupts.fiq));
     v.push(match s.mp_state {
         vmm_backend::MpState::Runnable => 0,
         vmm_backend::MpState::Halted => 1,
@@ -576,11 +1288,22 @@ fn dig(bytes: &[u8]) -> [u8; 32] {
 /// the `GICV` hash chunk hashes ([`Arm64::hash_device_chunks`](crate::vendor::Vendor::hash_device_chunks)),
 /// so a GIC-only `state_hash` divergence localizes here. Present only when the
 /// fabric is wired (an unwired VM has no `GICV` chunk either).
-pub(crate) fn device_components(devices: &Arm64Devices, out: &mut Vec<(&'static str, [u8; 32])>) {
-    if let Some(gic) = &devices.gic {
+pub(crate) fn device_components(
+    vcpu: &Arm64VcpuState,
+    devices: &Arm64Devices,
+    out: &mut Vec<(&'static str, [u8; 32])>,
+) {
+    let backend_gic = vcpu.gic.as_ref().map(records::gic_from_backend);
+    let userspace_gic = devices.gic.as_ref().map(gicv3::Gicv3::snapshot);
+    if let Some(gic) = backend_gic.as_ref().or(userspace_gic.as_ref()) {
         let mut bytes = Vec::new();
-        records::encode_gic_state(&mut bytes, &gic.snapshot());
+        records::encode_gic_state(&mut bytes, gic);
         out.push(("gic", dig(&bytes)));
+    }
+    if devices.clockevent != Arm64ClockeventState::default() {
+        let mut bytes = Vec::new();
+        records::encode_clockevent_state(&mut bytes, devices.clockevent);
+        out.push(("arm-clockevent", dig(&bytes)));
     }
 }
 
@@ -625,9 +1348,380 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
     }
     out.push(("sysregs", dig(&sys)));
 
+    let mut simd_fp = Vec::new();
+    for q in s.simd_fp.q {
+        simd_fp.extend_from_slice(&q);
+    }
+    simd_fp.extend_from_slice(&s.simd_fp.fpcr.to_le_bytes());
+    simd_fp.extend_from_slice(&s.simd_fp.fpsr.to_le_bytes());
+    out.push(("simd-fp", dig(&simd_fp)));
+
+    let mut debug = Vec::new();
+    for file in [
+        s.debug.breakpoint_value,
+        s.debug.breakpoint_control,
+        s.debug.watchpoint_value,
+        s.debug.watchpoint_control,
+    ] {
+        for value in file {
+            debug.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    debug.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
+    debug.push(u8::from(s.debug.trap_debug_exceptions));
+    debug.push(u8::from(s.debug.trap_debug_reg_accesses));
+    out.push(("debug", dig(&debug)));
+
+    let mut vtimer = Vec::new();
+    vtimer.extend_from_slice(&s.vtimer.cntv_ctl_el0.to_le_bytes());
+    vtimer.extend_from_slice(&s.vtimer.cntv_cval_el0.to_le_bytes());
+    vtimer.push(u8::from(s.vtimer.masked));
+    vtimer.extend_from_slice(&s.vtimer.offset.to_le_bytes());
+    out.push(("vtimer", dig(&vtimer)));
+
+    out.push((
+        "interrupts",
+        dig(&[u8::from(s.interrupts.irq), u8::from(s.interrupts.fiq)]),
+    ));
+
     let mp = match s.mp_state {
         vmm_backend::MpState::Runnable => 0u8,
         vmm_backend::MpState::Halted => 1,
     };
     out.push(("mp_state", dig(&[mp])));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vendor::arm64::board::{
+        CNTFRQ_HZ, GICD, GICR, IMPL_SPIS, PL011, PVCLOCK_PPI, new_gic,
+    };
+    use crate::vmm::GuestRam;
+    use vmm_backend::{Arm64Exit, Arm64MockCompletion, Arm64Policy, MockArm64Backend};
+
+    fn mock_vmm(exits: Vec<Exit<Arm64>>) -> Vmm<MockArm64Backend> {
+        let mut backend = MockArm64Backend::with_exits(exits);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+    }
+
+    #[test]
+    fn dispatch_boundary_predicates_have_complete_truth_tables() {
+        let abi = vtime::pvclock::PVCLOCK_ABI_VERSION;
+        assert!(pvclock_registration_accepted(Status::Ok, Some(abi)));
+        assert!(!pvclock_registration_accepted(Status::Ok, None));
+        assert!(!pvclock_registration_accepted(
+            Status::BadRequest,
+            Some(abi)
+        ));
+        assert!(!pvclock_registration_accepted(Status::BadRequest, None));
+
+        assert!(!is_64_bit_gic_read(4));
+        assert!(is_64_bit_gic_read(8));
+        assert_eq!(
+            join_u32_halves(0x89ab_cdef, 0x0123_4567),
+            0x0123_4567_89ab_cdef
+        );
+
+        assert!(no_userspace_or_kernel_gic(false, false));
+        assert!(!no_userspace_or_kernel_gic(false, true));
+        assert!(!no_userspace_or_kernel_gic(true, false));
+        assert!(!no_userspace_or_kernel_gic(true, true));
+        assert!(!kernel_gic_only(false, false));
+        assert!(kernel_gic_only(false, true));
+        assert!(!kernel_gic_only(true, false));
+        assert!(!kernel_gic_only(true, true));
+
+        let config = (32, 1_000_000_000, 27);
+        assert!(!gic_config_mismatch(config, config));
+        assert!(gic_config_mismatch(config, (64, config.1, config.2)));
+        assert!(gic_config_mismatch(config, (config.0, 999, config.2)));
+        assert!(gic_config_mismatch(config, (config.0, config.1, 30)));
+
+        let mask = 1 << 5;
+        assert!(!clockevent_present_in_gic(0, 0, 0, mask));
+        assert!(clockevent_present_in_gic(mask, 0, 0, mask));
+        assert!(clockevent_present_in_gic(0, mask, 0, mask));
+        assert!(clockevent_present_in_gic(0, 0, mask, mask));
+        assert!(!clockevent_present_in_gic(1, 2, 4, mask));
+
+        assert!(!should_reassert_clockevent(PVCLOCK_PPI, false));
+        assert!(should_reassert_clockevent(PVCLOCK_PPI, true));
+        assert!(!should_reassert_clockevent(PVCLOCK_PPI - 1, true));
+        assert!(!should_reassert_clockevent(PVCLOCK_PPI + 1, true));
+    }
+
+    #[test]
+    fn next_timer_deadline_distinguishes_none_from_an_armed_clockevent() {
+        use crate::vmm::VtimeWiring;
+
+        let mut vmm = mock_vmm(Vec::new());
+        assert_eq!(vmm.next_timer_deadline_vns_arm64(), None);
+        vmm.wire_vtime(
+            VtimeWiring::new_virtual_time(
+                vtime::VClockConfig {
+                    guest_hz: CNTFRQ_HZ,
+                    guest_base: 0,
+                    vns_base: 0,
+                },
+                7,
+            )
+            .unwrap(),
+        );
+        vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+        assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
+    }
+
+    /// The N6 PMU listing is a deny surface: every trapped access becomes
+    /// guest-visible UNDEF, while an adjacent non-table encoding stays loud.
+    #[test]
+    fn frozen_pmu_surface_is_exactly_denied_as_undef() {
+        const fn sysreg(op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
+            (op0 << 20) | (op2 << 17) | (op1 << 14) | (crn << 10) | (crm << 1)
+        }
+
+        let mut frozen = vec![
+            sysreg(3, 3, 9, 12, 0),
+            sysreg(3, 3, 9, 12, 1),
+            sysreg(3, 3, 9, 12, 2),
+            sysreg(3, 3, 9, 12, 3),
+            sysreg(3, 3, 9, 12, 4),
+            sysreg(3, 3, 9, 12, 5),
+            sysreg(3, 3, 9, 13, 0),
+            sysreg(3, 3, 9, 13, 1),
+            sysreg(3, 3, 9, 13, 2),
+            sysreg(3, 3, 9, 14, 0),
+            sysreg(3, 3, 9, 14, 3),
+            sysreg(3, 3, 14, 15, 7),
+        ];
+        for index in 0..31 {
+            frozen.push(sysreg(3, 3, 14, 8 + index / 8, index % 8));
+            frozen.push(sysreg(3, 3, 14, 12 + index / 8, index % 8));
+        }
+        frozen.sort_unstable();
+        frozen.dedup();
+        assert_eq!(frozen.len(), 74);
+
+        for sysreg in frozen {
+            for write in [None, Some(0)] {
+                let mut denied = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg { sysreg, write })]);
+                assert_eq!(denied.step().unwrap(), Step::Continued);
+                assert_eq!(
+                    denied.backend().completions(),
+                    &[Arm64MockCompletion::Fault],
+                    "PMU sysreg {sysreg:#010x} write={write:?}"
+                );
+            }
+        }
+
+        // PMEVCNTR31 is outside the frozen 0..30 range. PMEVTYPER31's
+        // encoding is separately PMCCFILTR and is intentionally ruled above.
+        let adjacent = sysreg(3, 3, 14, 11, 7);
+        for adjacent in [
+            adjacent,
+            sysreg(2, 3, 9, 12, 0),
+            sysreg(3, 2, 9, 12, 0),
+            sysreg(3, 3, 9, 14, 1),
+        ] {
+            let mut unruled = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
+                sysreg: adjacent,
+                write: None,
+            })]);
+            let error = unruled.step().unwrap_err();
+            assert!(format!("{error}").contains("no ruled disposition"));
+        }
+    }
+
+    #[test]
+    fn irouter_range_is_exactly_the_implemented_aligned_spi_window() {
+        let first = GICD.0 + 0x6000 + 32 * 8;
+        let last = first + (u64::from(IMPL_SPIS) - 1) * 8;
+        assert!(is_gicd_irouter(first));
+        assert!(is_gicd_irouter(last));
+        assert!(!is_gicd_irouter(first - 8));
+        assert!(!is_gicd_irouter(first + 4));
+        assert!(!is_gicd_irouter(last + 8));
+    }
+
+    #[test]
+    fn canonical_gic_state_reports_the_userspace_fabric() {
+        let mut vmm = mock_vmm(Vec::new());
+        assert_eq!(vmm.canonical_arm64_gic_state().unwrap(), None);
+        let expected = new_gic().snapshot();
+        vmm.wire_gic(new_gic());
+        assert_eq!(vmm.canonical_arm64_gic_state().unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn pending_irq_service_preserves_the_arbitrated_identity() {
+        const INTID: u32 = 40;
+        let mut vmm = mock_vmm(Vec::new());
+        assert!(!vmm.pending_deliverable_interrupt_arm64().unwrap());
+        vmm.service_pending_irqs_arm64().unwrap();
+        assert_eq!(vmm.backend().pending_irq(), None);
+
+        let mut gic = new_gic();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0, 2, 0).unwrap();
+        gic.set_group1_enabled(true);
+        gic.set_pmr(u8::MAX);
+        gic.mmio_write(gicv3::GicFrame::Dist, 0x84, 1 << 8, 0)
+            .unwrap();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0x104, 1 << 8, 0)
+            .unwrap();
+        gic.assert_line(INTID).unwrap();
+        vmm.wire_gic(gic);
+
+        assert!(vmm.pending_deliverable_interrupt_arm64().unwrap());
+        vmm.service_pending_irqs_arm64().unwrap();
+        assert_eq!(
+            vmm.backend().pending_irq(),
+            Some(vmm_backend::GicIntId(INTID))
+        );
+    }
+
+    #[test]
+    fn mmio_width_masks_and_64_bit_gic_registers_are_exact() {
+        let irouter = GICD.0 + 0x6000 + 32 * 8;
+        let exits = vec![
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(PL011.0),
+                size: 1,
+                write: Some(0x1_41),
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(PL011.0),
+                size: 1,
+                write: None,
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(GICR.0 + 8),
+                size: 8,
+                write: None,
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(irouter),
+                size: 8,
+                write: None,
+            }),
+        ];
+        let mut vmm = mock_vmm(exits);
+        vmm.wire_gic(new_gic());
+        for _ in 0..4 {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+        assert_eq!(vmm.devices.uart.capture(), b"A");
+        assert_eq!(
+            vmm.backend().completions(),
+            &[
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Read(16),
+                Arm64MockCompletion::Read(0),
+            ]
+        );
+
+        assert_eq!(
+            vmm.dispatch_mmio_arm64(Gpa(irouter), 8, Some(0)).unwrap(),
+            Step::Continued
+        );
+        assert!(vmm.dispatch_mmio_arm64(Gpa(irouter), 8, Some(1)).is_err());
+    }
+
+    #[test]
+    fn every_ruled_gic_cpu_interface_access_has_an_exact_completion() {
+        let accesses = [
+            (ICC_PMR_EL1, None),
+            (ICC_PMR_EL1, Some(0x42)),
+            (ICC_PMR_EL1, None),
+            (ICC_IGRPEN1_EL1, Some(0)),
+            (ICC_IGRPEN1_EL1, None),
+            (ICC_IGRPEN1_EL1, Some(1)),
+            (ICC_IGRPEN1_EL1, None),
+            (ICC_BPR1_EL1, Some(0)),
+            (ICC_BPR1_EL1, None),
+            (ICC_CTLR_EL1, Some(0)),
+            (ICC_CTLR_EL1, None),
+            (ICC_RPR_EL1, None),
+            (ICC_HPPIR1_EL1, None),
+        ];
+        let exits = accesses
+            .into_iter()
+            .map(|(sysreg, write)| Exit::Arch(Arm64Exit::Sysreg { sysreg, write }))
+            .collect();
+        let mut vmm = mock_vmm(exits);
+        vmm.wire_gic(new_gic());
+        for _ in accesses {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+
+        assert_eq!(
+            vmm.backend().completions(),
+            &[
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0x42),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(1),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Ok,
+                Arm64MockCompletion::Read(0),
+                Arm64MockCompletion::Read(0xff),
+                Arm64MockCompletion::Read(u64::from(vmm_backend::GicIntId::SPURIOUS.0)),
+            ]
+        );
+
+        for (sysreg, value) in [(ICC_IGRPEN1_EL1, 2), (ICC_BPR1_EL1, 1)] {
+            let mut invalid = mock_vmm(vec![Exit::Arch(Arm64Exit::Sysreg {
+                sysreg,
+                write: Some(value),
+            })]);
+            invalid.wire_gic(new_gic());
+            assert!(invalid.step().is_err());
+            assert!(invalid.backend().completions().is_empty());
+        }
+    }
+
+    #[test]
+    fn substrate_private_gic_transactions_are_raw_only() {
+        for gpa in [GICD.0, GICR.0] {
+            let exit = Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(gpa),
+                size: 4,
+                write: None,
+            });
+            assert_eq!(normalize_virtual_time_exit_arm64(&exit), None);
+        }
+
+        let cpu_interface = Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
+            sysreg: ICC_IAR1_EL1,
+            write: None,
+        });
+        assert_eq!(normalize_virtual_time_exit_arm64(&cpu_interface), None);
+
+        for sysreg in [OSDLR_EL1, OSLAR_EL1] {
+            let debug_unlock = Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
+                sysreg,
+                write: Some(0),
+            });
+            assert_eq!(normalize_virtual_time_exit_arm64(&debug_unlock), None);
+
+            // Planted negative: treating an HVF-only trap as a portable event
+            // would consume an ordinal and diverge from stock KVM.
+            let leaked = Some((
+                NormalizedEventClass::ArchitecturalControl,
+                sysreg.to_le_bytes().to_vec(),
+            ));
+            assert_ne!(normalize_virtual_time_exit_arm64(&debug_unlock), leaked);
+        }
+
+        let serial = Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PL011.0),
+            size: 4,
+            write: None,
+        });
+        assert!(normalize_virtual_time_exit_arm64(&serial).is_some());
+    }
 }

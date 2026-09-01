@@ -5,15 +5,15 @@ name: quality
 # jobs used to run on the self-hosted determinism box (private-repo minutes were
 # exhausted, "not to be paid for") is gone. Every job here is a CONTENT check: fmt,
 # clippy -D warnings, cargo-deny, nextest, coverage, mutation, Kani, public-api, and
-# the arm-altra pre-build apparatus incl. its Miri gate. None of them need bare metal
+# the ARM64 pre-build apparatus incl. its Miri gate. None of them need bare metal
 # — a cache-thrashed slower run produces the same artifact and the same hash, so the
 # runner's microarchitecture and contention do not affect the verdict
 # (docs/BOX-PINNING.md, "CI runner isolation": "Correctness gates are contention-
 # immune").
 #
 # What STAYS on the box (NOT in this workflow, and never was): the ~23
-# live_*/determinism/seal-rate/PMU gates that need a real /dev/kvm, the patched KVM
-# module, hardware perf counters, and quiet pinned cores. Those run out-of-band
+# live determinism gates that need a real /dev/kvm, the patched KVM module, and
+# quiet pinned cores. Those run out-of-band
 # through the box run-window tooling (now in the harmony-development repo).
 # Formalizing them as a dispatchable `runs-on: [self-hosted, kvm]` job is a documented
 # follow-up (see the migration PR description); until then the box's role is unchanged.
@@ -41,6 +41,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  HARMONY_KANI_VERSION: 0.67.0
+  HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
   # Gating: fmt, clippy (enforces clippy.toml), cargo-deny, and the test suite.
@@ -49,10 +51,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The out-of-workspace Dissonance gate below scopes itself to the
+          # first-parent diff (base -> PR merge, or previous -> pushed commit).
+          fetch-depth: 2
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component rustfmt,clippy
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
@@ -74,6 +80,13 @@ jobs:
           cargo deny --manifest-path consonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
+      - name: N6 instruction-defense generators and planted negatives
+        run: |
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
+          python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
+          cmp /tmp/n6-listing.tsv docs/determinism-instructions.generated.tsv
+          python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
+          python3 consonance/vmm-backend/kvm-patches/n6-tripwire-audit.py
       # The ARCH-BOUNDARY seam gate (tasks/108). The whole point of the `Arch` trait
       # + engine/vendor split is that a NON-x86 vendor can be added additively — but
       # nothing else in CI would ever notice if that stopped being true, because this
@@ -95,60 +108,77 @@ jobs:
           rustup target add aarch64-unknown-linux-gnu
           CARGO_FEATURE_NO_NEON=1 cargo clippy --target aarch64-unknown-linux-gnu \
             --all-features --all-targets -- -D warnings
-      # harmony-linux/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
+      # consonance/harmony-linux/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
       # root fmt/clippy/nextest above never see it. Gate it explicitly on its own
       # manifest — its host-side loopback tests (duplicate-coordinate rejection,
       # emission dispositions, determinism) must stay green like any other crate.
-      - name: harmony-linux/sdk gates (out-of-workspace manifest)
+      - name: consonance/harmony-linux/sdk gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path harmony-linux/sdk/Cargo.toml --all -- --check
-          cargo clippy --manifest-path harmony-linux/sdk/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path harmony-linux/sdk/Cargo.toml --all-features
+          cargo fmt --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all -- --check
+          cargo clippy --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path consonance/harmony-linux/sdk/Cargo.toml --all-features
           # License-check its deps against the same allow-list (like the guest/fuzz
           # manifests above) — the root `cargo deny` never sees this manifest.
-          cargo deny --manifest-path harmony-linux/sdk/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path consonance/harmony-linux/sdk/Cargo.toml check --config deny.toml licenses
           # no_std build proof: the crate and its deps must compile for the bare
           # metal target the guest actually runs in (host-only tests can't catch a
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
-          cargo build --manifest-path harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
+          cargo build --manifest-path consonance/harmony-linux/sdk/Cargo.toml --lib --target x86_64-unknown-none
       # Actually LINK the SDK-instrumented demo guest for bare metal — from its own
       # dir, so consonance/acceptance-suite/payloads/.cargo/config.toml (target + linker) applies. The
-      # harmony-linux/sdk `--lib` proof above compiles the library, but only a full payload
+      # consonance/harmony-linux/sdk `--lib` proof above compiles the library, but only a full payload
       # link exercises the SDK end-to-end against the boot shim; a regression that
       # breaks the demo (the box gate's guest) would otherwise surface only on the box.
       - name: consonance/acceptance-suite/payloads sdk-demo build (bare metal, from its dir)
         working-directory: consonance/acceptance-suite/payloads
         run: cargo build -p sdk-demo
-      # harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest).
+      # consonance/harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
       # doorbell glue, which the macOS dev host skips. Dynamic glibc build (it
       # dlopens the pinned core at runtime), so the native build IS the ship
       # target here — no musl step.
-      - name: harmony-linux/play-agent gates (out-of-workspace manifest)
+      - name: consonance/harmony-linux/play-agent gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path harmony-linux/play-agent/Cargo.toml --all -- --check
-          cargo clippy --manifest-path harmony-linux/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path harmony-linux/play-agent/Cargo.toml --all-features
-          cargo deny --manifest-path harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
-          cargo build --manifest-path harmony-linux/play-agent/Cargo.toml --bin play-agent
-      # harmony-linux/libvoidstar (task 43) is a C subtree with its own Makefile — the
+          cargo fmt --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all -- --check
+          cargo clippy --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features
+          cargo deny --manifest-path consonance/harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
+          cargo build --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --bin play-agent
+      # M2's arm64 TetaNES agent is another standalone guest workspace. Its
+      # portable loop tests prove exact chord consumption, frame reports, WRAM
+      # mirrors, and an independent TetaNES deck differential. The cross-target
+      # check compiles the live /dev/mem + MMIO composition without executing it.
+      - name: consonance/harmony-linux/tetanes-agent gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml
+          cargo deny --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml check --config deny.toml licenses
+          rustup target add aarch64-unknown-linux-gnu
+          cargo check --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --target aarch64-unknown-linux-gnu
+      # consonance/harmony-linux/libvoidstar (task 43) is a C subtree with its own Makefile — the
       # root cargo gates never see it, and nothing else in CI builds it, so a change
       # that broke the clean-room ABI shim would merge green. `make test-libvoidstar`
       # builds the .so under the strict warning set (-Werror -Wconversion -Wpedantic),
       # runs the ABI mock test (tests/abi_test.c), and asserts the exported symbol set
       # (check-symbols.sh). Runs on any host — no Linux/KVM needed — so the C shim is
       # gated here even though the guest-image repro that installs the .so is box-only.
-      - name: harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
-        run: make -C harmony-linux test-libvoidstar
+      - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
+        run: make -C consonance/harmony-linux test-libvoidstar
       # dissonance/ is a standalone workspace root, so the root gates above never
-      # see it — gate it explicitly or its test suite rots green. --locked: the
-      # committed Cargo.lock pins the emulator and serialization stack. Release
-      # profile: the searcher's own gate set is release-only (dissonance/CLAUDE.md).
-      - name: dissonance gates (out-of-workspace manifest)
+      # see it. Run its full gate whenever that workspace changes; unrelated PRs
+      # must not inherit failures from its independently pinned dependency graph.
+      # --locked: the committed Cargo.lock pins the emulator and serialization
+      # stack. Release profile: its own gate set is release-only.
+      - name: dissonance gates when changed (out-of-workspace manifest)
         run: |
+          if git diff --quiet HEAD^1 HEAD -- dissonance; then
+            echo "Dissonance is unchanged; its standalone workspace gate is out of scope."
+            exit 0
+          fi
           cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
           cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
@@ -178,8 +208,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component llvm-tools-preview
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --component llvm-tools-preview
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
@@ -188,16 +218,19 @@ jobs:
       # `--ignore-filename-regex` drops the box-only `cfg(linux)` substrate paths
       # from the coverage denominator: the stock-KVM path
       # (`consonance/vmm-backend/src/kvm.rs`, `…/src/kvm/`, `…/src/kvm_sys.rs`), the
-      # task-21 determinism backend (`…/src/patched_kvm.rs`), the task-47 run_until
-      # PMU syscall orchestration (`…/src/pmu_sys.rs` — its PURE config `pmu.rs`
-      # stays covered), vmm-core's `perf_event` work counter
-      # (`consonance/vmm-core/src/work_perf.rs`). This
+      # task-21 determinism backend (`…/src/patched_kvm.rs`) and the live ARM
+      # substrate entrypoints. The latter are the Hypervisor.framework FFI module
+      # and its probe/oracle binaries plus the HVF/KVM boot and control-server
+      # composition binaries; they require entitlements or `/dev/kvm` and built
+      # guest images. Their portable mechanisms remain coverage-counted in
+      # `arm64_kvm.rs`, the ARM value/state modules, `mock_arm64.rs`, and vmm-core's
+      # ARM dispatch/snapshot/oracle logic. This
       # coverage job runs **without `--ignored`** (and on every crate's matrix), so
       # the box-only `#[ignore]` integration tests that exercise the FFI / perf
       # orchestration end-to-end never run here — counting those paths would only
       # drag the floor, and running live KVM/perf in this job is impossible on a
       # hosted runner (no /dev/kvm, no patched module). They are verified instead by
-      # those `#[ignore]` box tests and by Miri (which still *executes* `kvm.rs`'s
+      # those `#[ignore]` live tests and by Miri (which still *executes* `kvm.rs`'s
       # synthetic-`kvm_run` unit tests — incl. the KVM_EXIT_DETERMINISM decode — so a
       # logic regression still fails the suite, just not coverage-*counted*).
       # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds:
@@ -206,12 +239,12 @@ jobs:
       # reach it. The
       # coverage-gated set is the portable, platform-agnostic logic the splits
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
-      # (`mock`/`run_loop`), and vmm-core's `work::WorkSource`/`ScriptedWork` + V-time
+      # (`mock`/`run_loop`) and vmm-core's V-time
       # completion. See the crates' IMPLEMENTATION.md.
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/vendor/x86/work_perf\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
@@ -225,10 +258,9 @@ jobs:
   # timeouts, main.rs exclusion) lives in mutants.toml. Skipped on pushes to
   # main, where there is no diff to compare against.
   #
-  # Sharded 4-way: a single-job run was killed by hosted-runner preemption at
-  # ~59 min twice in a row on a 274-mutant diff (hm-4w7q) — each shard tests a
-  # deterministic quarter of the mutant list so every leg finishes well inside
-  # the preemption window.
+  # Sharded 16-way: large consolidation PRs can contain thousands of mutants;
+  # each shard tests a deterministic sixteenth of the list so every mutant is
+  # retained while each hosted-runner leg stays inside the timeout.
   #
   # Runner survivability (hm-y53x). The ~59-min kills were diagnosed as genuine
   # hosted-runner preemption: the killed steps logged "The runner has received a
@@ -258,17 +290,17 @@ jobs:
   # survive it; that residual is covered by the sharding above plus the
   # self-hosted option in the task-139 write-up.
   mutants:
-    name: mutants (${{ matrix.shard }}/4)
+    name: mutants (${{ matrix.shard }}/16)
     runs-on: ubuntu-latest
     # Comfortably above the observed ~59-min preemption window and far below the
-    # 6h hosted-runner job ceiling; calibrated for the 4-way-sharded job (typical
-    # shard ~30-40 min). See the header comment (hm-y53x).
+    # 6h hosted-runner job ceiling; the 16-way split keeps even large diffs well
+    # below this tripwire. See the header comment (hm-y53x).
     timeout-minutes: 90
     if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -276,8 +308,8 @@ jobs:
           fetch-depth: 0
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
@@ -290,7 +322,11 @@ jobs:
         # comment. Exit 2/3 (real surviving/timed-out mutants) is never retried.
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            # Stop the oracle as soon as one test kills a mutant. Besides
+            # avoiding wasted runner time, this ensures a later test that
+            # loops only because the mutant already violated a prerequisite
+            # cannot turn an immediate assertion failure into TIMEOUT.
+            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 --cargo-test-arg=--profile --cargo-test-arg=mutants; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
@@ -298,18 +334,18 @@ jobs:
             echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
           done
           echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
-      # harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
+      # consonance/harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
       # never mutates it even when the PR diff touches its files — leaving the SDK
       # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
       # diffed lines on their own manifest, mirroring the fmt/clippy/test/public-api
-      # split the `gates` job already applies to harmony-linux/sdk. `--in-diff` filters to
-      # the PR's changed harmony-linux/sdk lines; its own `.cargo/mutants.toml` (if any)
-      # auto-discovers, else the run is config-free.
-      - name: cargo mutants --in-diff (harmony-linux/sdk, out-of-workspace manifest)
+      # split the `gates` job already applies to consonance/harmony-linux/sdk. `--in-diff` filters to
+      # the PR's changed consonance/harmony-linux/sdk lines. The SDK has no local
+      # nextest mutant profile, so cargo-mutants drives its default cargo test.
+      - name: cargo mutants --in-diff (consonance/harmony-linux/sdk, out-of-workspace manifest)
         # Infra-only retry (same contract as the root step above).
         run: |
           for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/4; rc=$?; set -e
+            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
@@ -336,8 +372,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install stable toolchain
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
       - uses: Swatinem/rust-cache@v2
       # Kani downloads CBMC + its solver backends on `cargo kani setup` (minutes).
       # Cache the verifier binary + the setup dir so nightly reruns skip the download;
@@ -349,10 +385,12 @@ jobs:
             ~/.cargo/bin/cargo-kani
             ~/.cargo/bin/kani
             ~/.kani
-          key: kani-${{ runner.os }}-v1
+          key: kani-${{ runner.os }}-${{ env.HARMONY_KANI_VERSION }}
       - name: Install Kani
         run: |
-          cargo install --locked kani-verifier
+          if ! cargo kani --version 2>/dev/null | grep -Fq "${HARMONY_KANI_VERSION}"; then
+            cargo install --locked --force --version "${HARMONY_KANI_VERSION}" kani-verifier
+          fi
           cargo kani setup
       - name: cargo kani (vtime + lapic + vmm-backend + environment)
         run: |
@@ -378,8 +416,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install toolchains (stable default + pinned nightly)
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
           rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
       - uses: Swatinem/rust-cache@v2
       # The `public_api` snapshot tests shell out to `cargo public-api`; without
@@ -402,7 +440,7 @@ jobs:
           cargo test \
             -p hypercall-proto -p hypercall-doorbell -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p gicv3 -p telemetry -p environment -p control-proto -p acceptance-suite \
             --test public_api -- --ignored --nocapture
-          # harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
+          # consonance/harmony-linux/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.
-          cargo test --manifest-path harmony-linux/sdk/Cargo.toml \
+          cargo test --manifest-path consonance/harmony-linux/sdk/Cargo.toml \
             --test public_api -- --ignored --nocapture

@@ -21,7 +21,7 @@ use crate::arch::arm64::{
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
-use crate::types::{Gpa, Moment};
+use crate::types::Gpa;
 
 /// The arm64 mock's capability type — the arm64 vendor's arch flags.
 pub type MockArm64Caps = Capabilities<crate::arch::arm64::Arm64Caps>;
@@ -64,10 +64,9 @@ fn pending_for(exit: &Exit<Arm64>) -> Pending {
         Exit::Common(c) => match c {
             CommonExit::Mmio { write: None, .. } => Pending::Read,
             CommonExit::Hypercall(_) => Pending::Hypercall,
-            CommonExit::Mmio { write: Some(_), .. }
-            | CommonExit::Idle
-            | CommonExit::Shutdown
-            | CommonExit::Deadline { .. } => Pending::None,
+            CommonExit::Mmio { write: Some(_), .. } | CommonExit::Idle | CommonExit::Shutdown => {
+                Pending::None
+            }
         },
         Exit::Arch(e) => match e {
             Arm64Exit::Sysreg { write: None, .. } => Pending::SysregRead,
@@ -84,6 +83,7 @@ const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
     name: "mock-arm64",
     deterministic_rng: true,
     arch: crate::arch::arm64::Arm64Caps {
+        in_kernel_gic: false,
         deterministic_cntvct: true,
         enforces_cntv_cval: true,
     },
@@ -106,7 +106,7 @@ pub struct MockArm64Backend {
     /// INTIDs the mock has "accepted" into the guest (drained by
     /// [`Backend::take_accepted_interrupt`]).
     accepted_irq: VecDeque<GicIntId>,
-    /// When `true`, `run`/`run_until` do **not** accept the pending IRQ —
+    /// When `true`, `run` does **not** accept the pending IRQ —
     /// modelling an injection-window wait.
     defer_accept: bool,
     completions: Vec<Arm64MockCompletion>,
@@ -147,14 +147,14 @@ impl MockArm64Backend {
     }
 
     /// A fresh mock pre-loaded with a script of exits to return from successive
-    /// `run`/`run_until` calls.
+    /// `run` calls.
     pub fn with_exits(exits: impl IntoIterator<Item = Exit<Arm64>>) -> Self {
         let mut m = Self::new();
         m.extend_exits(exits);
         m
     }
 
-    /// Enqueue one exit to be returned by a future `run`/`run_until`.
+    /// Enqueue one exit to be returned by a future `run`.
     pub fn push_exit(&mut self, exit: Exit<Arm64>) -> &mut Self {
         self.script.push_back(exit);
         self
@@ -210,14 +210,14 @@ impl MockArm64Backend {
     }
 
     /// When `true`, queued maskable IRQs are **not** accepted at
-    /// `run`/`run_until` (they stay pending) — modelling an injection-window
+    /// `run` (they stay pending) — modelling an injection-window
     /// wait so a test can observe an identity held pending before acceptance.
     pub fn set_defer_accept(&mut self, defer: bool) -> &mut Self {
         self.defer_accept = defer;
         self
     }
 
-    /// Fail-closed config + completion-discipline gate shared by `run`/`run_until`.
+    /// Fail-closed config + completion-discipline gate for `run`.
     fn ensure_runnable(&self) -> Result<()> {
         if !self.is_configured() {
             return Err(BackendError::NotConfigured);
@@ -300,18 +300,6 @@ impl Backend for MockArm64Backend {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = self.next_scripted()?;
-        Ok(self.deliver(exit))
-    }
-
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit<Arm64>> {
-        self.ensure_runnable()?;
-        self.accept_pending_irqs();
-        let exit = match self.next_scripted()? {
-            Exit::Common(CommonExit::Deadline { .. }) => {
-                Exit::Common(CommonExit::Deadline { reached: deadline })
-            }
-            other => other,
-        };
         Ok(self.deliver(exit))
     }
 

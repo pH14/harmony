@@ -110,6 +110,7 @@ fn recorded_with_override(seed: u64, at: Moment, ans: Answer) -> environment::Re
         overrides: BTreeMap::from([(at, Action::Guest(ans))]),
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
+        payloads: None,
     }
     .materialize()
 }

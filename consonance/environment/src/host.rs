@@ -32,7 +32,7 @@ use crate::error::EnvError;
 /// `EnvCodec`'s re-keying are plain integer arithmetic.
 pub type Moment = u64;
 
-/// An exact, **float-free** rational — the `SetClockRate` knob (retired-branches
+/// An exact, **float-free** rational — the `SetClockRate` knob (VM-exites
 /// → V-time slope) and any other fixed-point ratio the host plane needs. The
 /// denominator is always `≥ 1` (a constructor and the decoder both reject zero),
 /// so a consumer can divide by it without a panic and no float ever reaches
@@ -82,7 +82,7 @@ pub struct BitMask(pub u64);
 pub enum HostFault {
     /// Jitter virtual time by the given [`Span`] delta.
     SkewTime(Span),
-    /// CPU modulation: reset the retired-branches → V-time slope to `Ratio`.
+    /// CPU modulation: reset the VM-exites → V-time slope to `Ratio`.
     SetClockRate(Ratio),
     /// Single-event-upset: XOR the word at guest-physical address `gpa` with
     /// `mask`.

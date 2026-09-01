@@ -69,6 +69,15 @@ pub enum StoreError {
         /// The offending buffer length.
         len: usize,
     },
+    /// Resident bytes no longer match the content address sealed for a page.
+    #[error("snapshot page integrity check failed at gfn {gfn}")]
+    PageIntegrity {
+        /// The corrupted guest frame number.
+        gfn: u64,
+    },
+    /// The opaque vCPU/device blob no longer matches its seal-time digest.
+    #[error("snapshot vCPU/device state integrity check failed")]
+    VmStateIntegrity,
     /// A builder was used in an unsupported way.
     ///
     /// Single use of builders is enforced at compile time (`seal` consumes the builder
@@ -172,6 +181,8 @@ struct Layer {
     pages: BTreeMap<u64, PageRef>,
     /// Opaque vCPU/device state recorded at seal time.
     vm_state: Vec<u8>,
+    /// Seal-time digest checked before the opaque state is decoded.
+    vm_state_hash: [u8; 32],
     /// Live references; 0 means released (observable only as an ancestor).
     refcount: u64,
     /// Layers from here to the root, inclusive.
@@ -270,13 +281,10 @@ impl Store {
         match self.resolve(snap.0, gfn) {
             PageRef::Zero => out.fill(0),
             PageRef::Data(hash) => match self.pages.get(&hash) {
-                Some(entry) => out.copy_from_slice(&entry.data),
-                None => {
-                    // Unreachable: every PageRef::Data held by a resident layer keeps
-                    // its entry's refcount >= 1. Degrade to zeros rather than panic.
-                    debug_assert!(false, "dangling page ref");
-                    out.fill(0);
+                Some(entry) if blake3::hash(&entry.data).as_bytes() == &hash => {
+                    out.copy_from_slice(&entry.data);
                 }
+                Some(_) | None => return Err(StoreError::PageIntegrity { gfn }),
             },
         }
         Ok(())
@@ -284,7 +292,11 @@ impl Store {
 
     /// The opaque vCPU/device blob recorded at seal time.
     pub fn vm_state(&self, snap: SnapshotId) -> Result<&[u8], StoreError> {
-        Ok(&self.live_layer(snap)?.vm_state)
+        let layer = self.live_layer(snap)?;
+        if blake3::hash(&layer.vm_state).as_bytes() != &layer.vm_state_hash {
+            return Err(StoreError::VmStateIntegrity);
+        }
+        Ok(&layer.vm_state)
     }
 
     /// Materialize the full logical image as a private copy-on-write mapping.
@@ -322,28 +334,26 @@ impl Store {
             cur = layer.parent;
         }
 
+        let mut verified_pages = Vec::with_capacity(resolved.len());
+        for (&gfn, &pref) in &resolved {
+            let PageRef::Data(hash) = pref else {
+                continue;
+            };
+            let Some(entry) = self.pages.get(&hash) else {
+                return Err(StoreError::PageIntegrity { gfn });
+            };
+            if blake3::hash(&entry.data).as_bytes() != &hash {
+                return Err(StoreError::PageIntegrity { gfn });
+            }
+            verified_pages.push((gfn, &*entry.data));
+        }
+
         let file = tempfile::tempfile()?;
         file.set_len(len)?;
         // One write mapping, one memcpy per resolved non-zero page — not a `seek` +
         // `write_all` pair of syscalls each. Zero/absent pages are skipped entirely, so
         // the file stays sparse.
-        Mapping::populate(
-            &file,
-            len,
-            resolved.iter().filter_map(|(&gfn, &pref)| match pref {
-                PageRef::Zero => None,
-                PageRef::Data(hash) => match self.pages.get(&hash) {
-                    Some(entry) => Some((gfn, &*entry.data)),
-                    None => {
-                        // Unreachable: every PageRef::Data held by a resident layer
-                        // keeps its entry's refcount >= 1. Leave the page a hole (i.e.
-                        // zeros) rather than panic, as `read_page` does.
-                        debug_assert!(false, "dangling page ref");
-                        None
-                    }
-                },
-            }),
-        )?;
+        Mapping::populate(&file, len, verified_pages.into_iter())?;
         Ok(Mapping::new(file, len)?)
     }
 
@@ -423,6 +433,57 @@ impl Store {
             bytes_resident: (self.pages.len() as u64).saturating_mul(PAGE_SIZE as u64)
                 + vm_state_bytes,
         }
+    }
+
+    /// Deliberately corrupt one resident page byte for an integrity negative.
+    #[cfg(feature = "test-utils")]
+    pub fn corrupt_page_for_test(
+        &mut self,
+        snap: SnapshotId,
+        gfn: u64,
+        byte: usize,
+        mask: u8,
+    ) -> Result<(), StoreError> {
+        self.live_layer(snap)?;
+        if gfn >= self.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn,
+                mem_pages: self.cfg.mem_pages,
+            });
+        }
+        let PageRef::Data(hash) = self.resolve(snap.0, gfn) else {
+            return Err(StoreError::BuilderMisuse(
+                "cannot corrupt an implicit zero page",
+            ));
+        };
+        let target = self
+            .pages
+            .get_mut(&hash)
+            .and_then(|entry| entry.data.get_mut(byte))
+            .ok_or(StoreError::BuilderMisuse(
+                "corruption byte lies outside a resident page",
+            ))?;
+        *target ^= mask;
+        Ok(())
+    }
+
+    /// Deliberately corrupt one opaque state byte for an integrity negative.
+    #[cfg(feature = "test-utils")]
+    pub fn corrupt_vm_state_for_test(
+        &mut self,
+        snap: SnapshotId,
+        byte: usize,
+        mask: u8,
+    ) -> Result<(), StoreError> {
+        let target =
+            self.live_layer_mut(snap)?
+                .vm_state
+                .get_mut(byte)
+                .ok_or(StoreError::BuilderMisuse(
+                    "corruption byte lies outside vCPU/device state",
+                ))?;
+        *target ^= mask;
+        Ok(())
     }
 
     /// Look up a snapshot that is still live (refcount > 0). Released snapshots are
@@ -563,6 +624,7 @@ impl BuilderCore<'_> {
     }
 
     fn seal(mut self, vm_state: Vec<u8>) -> SnapshotId {
+        let vm_state_hash = *blake3::hash(&vm_state).as_bytes();
         let pages = std::mem::take(&mut self.pages); // leaves Drop nothing to undo
         let mut kept: BTreeMap<u64, PageRef> = BTreeMap::new();
         for (gfn, pref) in pages {
@@ -598,6 +660,7 @@ impl BuilderCore<'_> {
                 parent: self.parent,
                 pages: kept,
                 vm_state,
+                vm_state_hash,
                 refcount: 1,
                 chain_len,
                 // not order-observable: lookup-only memo, never iterated.
@@ -697,6 +760,12 @@ mod tests {
         raw.write(&zero);
         assert_eq!(raw.finish(), 0);
         assert_ne!(fold(&zero), 0);
+
+        // A non-word-sized write must fold its padded tail. Full 32-byte page
+        // hashes never take this branch, so pin it independently.
+        let mut tail = PageHashHasher::default();
+        tail.write(&[0x12, 0x34, 0x56]);
+        assert_eq!(tail.finish(), 0x56_3412);
 
         // The `Hasher` contract permits partial writes even though PageHash keys
         // use only complete words. Pin the zero-padded tail and its XOR behavior.
@@ -919,6 +988,36 @@ mod tests {
         assert!(matches!(
             store.read_page(base, 0, &mut out),
             Err(StoreError::GfnOutOfRange { .. })
+        ));
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn sealed_page_and_vm_state_corruption_are_detected() {
+        let mut store = Store::new(StoreConfig { mem_pages: 2 });
+        let mut builder = store.begin_base();
+        builder.write_page(1, &[0x5a; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(b"vcpu-device-state".to_vec());
+
+        // The mask equals the source byte: XOR clears it while OR and AND both
+        // leave it untouched, making the integrity negative mutation-sensitive.
+        store.corrupt_page_for_test(snap, 1, 7, 0x5a).unwrap();
+        let mut out = [0_u8; PAGE_SIZE];
+        assert!(matches!(
+            store.read_page(snap, 1, &mut out),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            store.materialize(snap),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+
+        let mut clean = Store::new(StoreConfig { mem_pages: 1 });
+        let snap = clean.begin_base().seal(b"vcpu-device-state".to_vec());
+        clean.corrupt_vm_state_for_test(snap, 5, b'd').unwrap();
+        assert!(matches!(
+            clean.vm_state(snap),
+            Err(StoreError::VmStateIntegrity)
         ));
     }
 }

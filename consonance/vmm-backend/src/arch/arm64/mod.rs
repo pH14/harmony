@@ -8,25 +8,23 @@
 //!
 //! This is the `docs/ARCH-BOUNDARY.md` §D pre-build skeleton (`hm-cbt`): built
 //! against the *unfrozen* trait (designed-not-frozen — AA-3's trait-freeze memo
-//! owns the freeze), trusted only once the Altra spike (`docs/ARM-ALTRA.md`)
-//! returns GO. Every constant the spike measures is a named `TODO(AA-N)`,
+//! owns the freeze), trusted only once M4's native msr1 validation returns GO.
+//! Every measured constant is a named `TODO(AA-N)`,
 //! never a default; the one number stated here as fact — `BR_RETIRED` raw
 //! event `0x21` — is a documented hardware fact (Arm ARM PMU event
 //! enumeration), not a measurement.
 
 mod state;
 
-pub use state::{Arm64CoreRegs, Arm64SysregFile, Arm64VcpuState};
+pub use state::{
+    ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64CoreRegs, Arm64DebugState,
+    Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState,
+    Arm64VtimerState,
+};
+pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;
-
-/// `BR_RETIRED` (raw PMU event `0x21`, retired **taken** branches) — the arm64
-/// work-counter event (`docs/ARM-PORT.md` §2: a *different* event than x86's
-/// retired conditional branches `0x1c4`). The event *number* is a documented
-/// hardware fact; every count offset, density, and `skid_margin` derived from
-/// it is the spike's — `TODO(AA-1)`: measured constants pack.
-pub const RAW_BR_RETIRED: u64 = 0x21;
 
 /// The arm64 vendor (a zero-sized type; `docs/ARCH-BOUNDARY.md` §A/§D).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -188,8 +186,15 @@ pub struct SysregTrapPolicy {
 /// own registers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Arm64Caps {
+    /// The backend owns an in-kernel GICv3 whose guest MMIO and ICC system
+    /// register interface do not exit to the userspace `gicv3` model. In that
+    /// composition the VMM drives level inputs through
+    /// [`Backend::set_pending_irq`](crate::Backend::set_pending_irq), and the
+    /// backend carries the controller's canonical migration state in its vCPU
+    /// snapshot. `false` means interrupt state is userspace-owned or absent.
+    pub in_kernel_gic: bool,
     /// Guest reads of the virtual counter resolve to V-time — on arm64 via the
-    /// paravirt work-derived clock page (`docs/PARAVIRT-CLOCK.md` §4.2: no
+    /// paravirt virtual-time clock page (`docs/PARAVIRT-CLOCK.md` §4.2: no
     /// `CNTVCT` trap exists on reachable silicon, so closure is contract-level,
     /// never interception). `TODO(AA-5)`: validated on silicon; **honestly
     /// `false` for the stock backend.**
@@ -254,11 +259,13 @@ mod tests {
     #[test]
     fn arm64_caps_answer_the_neutral_clock_question() {
         let stock = Arm64Caps {
+            in_kernel_gic: false,
             deterministic_cntvct: false,
             enforces_cntv_cval: false,
         };
         assert!(!stock.deterministic_clock());
         let det = Arm64Caps {
+            in_kernel_gic: false,
             deterministic_cntvct: true,
             enforces_cntv_cval: false,
         };

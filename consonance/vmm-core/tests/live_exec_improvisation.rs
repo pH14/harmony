@@ -25,7 +25,7 @@
 //! by a sentinel `echo`. That needs a **root shell reading ttyS0** in the guest at
 //! the snapshot point. The stock Postgres workload image drives postgres and does
 //! not read the serial, so gate 2's *output* half needs the **exec-capable** image
-//! variant (`harmony-linux/linux/exec-init.sh`; build `make -C harmony-linux/linux exec-image`,
+//! variant (`consonance/harmony-linux/linux/exec-init.sh`; build `make -C consonance/harmony-linux/linux exec-image`,
 //! `INITRAMFS=initramfs-exec.cpio.gz`). The **determinism** half of gate 2 (the
 //! original timeline is unaffected) and *all* of gate 3 (the taint guard) hold
 //! against **any** image — `exec` taints and the guard fires regardless of whether
@@ -44,11 +44,11 @@
 //! stock **1396736** + verify after any patched run.
 //! ```text
 //! # Full gate 2 + gate 3 (the exec-capable image — strict is forced):
-//! make -C harmony-linux fetch && make -C harmony-linux/linux exec-image
+//! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux exec-image
 //! INITRAMFS=initramfs-exec.cpio.gz taskset -c <core> \
 //!   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 //! # Guard half only, against the real Postgres workload (does NOT satisfy gate 2):
-//! make -C harmony-linux/linux postgres-image
+//! make -C consonance/harmony-linux/linux postgres-image
 //! EXEC_TAINT_ONLY=1 taskset -c <core> \
 //!   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 //! ```
@@ -90,16 +90,20 @@ fn repo_root() -> std::path::PathBuf {
 
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
-         box: `make -C harmony-linux fetch && make -C harmony-linux/linux postgres-image` (or `exec-image`)."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it first on the \
+         box: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image` (or `exec-image`)."
     );
 }
 
@@ -171,7 +175,7 @@ fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Re
     }
 }
 
-fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_with_deadline<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -228,7 +232,7 @@ fn seal<B: Backend<A = X86>>(
                     attempts < 100_000,
                     "no snapshottable boundary within budget"
                 );
-                match run_until(s, vt.saturating_add(retry_step)) {
+                match run_with_deadline(s, vt.saturating_add(retry_step)) {
                     StopReason::Deadline { vtime } => vt = vtime.0,
                     other => panic!("guest ended before a sealable boundary: {other:?}"),
                 }
@@ -255,7 +259,7 @@ fn replay_to_late<B: Backend<A = X86>>(
         Reply::Unit,
         "replay(original snapshot)"
     );
-    match run_until(s, late) {
+    match run_with_deadline(s, late) {
         StopReason::Deadline { .. } => {}
         other => panic!("continuing the original to `late` stopped non-Deadline: {other:?}"),
     }
@@ -295,7 +299,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     // 1. Seal genesis, then run to a mid-workload point and seal the ORIGINAL
     //    snapshot `mid_snap` — the timeline the improvisation forks off (untainted).
     let retry_step = env_u64("EI_GENESIS_STEP", 1_000_000);
-    let vt0 = match run_until(&mut s, 0) {
+    let vt0 = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("vtime probe stopped non-Deadline: {other:?}"),
     };
@@ -314,7 +318,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
         Reply::Unit
     );
     let mid_target = genesis_vt + env_u64("EI_MID", 8_000_000);
-    let vt_mid = match run_until(&mut s, mid_target) {
+    let vt_mid = match run_with_deadline(&mut s, mid_target) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to mid stopped non-Deadline: {other:?}"),
     };
@@ -379,7 +383,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
             !output.is_empty() && ok,
             "gate 2: exec `{cmd}` produced no output / did not complete against image \
              `{initramfs_name}` — a root shell must be reading ttyS0 (build the exec-capable image: \
-             `make -C harmony-linux/linux exec-image`, INITRAMFS=initramfs-exec.cpio.gz). To run ONLY the \
+             `make -C consonance/harmony-linux/linux exec-image`, INITRAMFS=initramfs-exec.cpio.gz). To run ONLY the \
              taint-guard half against a shell-less image, set EXEC_TAINT_ONLY=1 (this does NOT \
              satisfy gate 2's 'capture non-empty output')."
         );
@@ -402,7 +406,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     //      snapshottable point FIRST — staying on the (still-tainted) timeline;
     //      running forward never clears taint. A Quiescent stop (the shell going
     //      idle after the command) is itself a sealable boundary, so tolerate it.
-    let mut vt_fork = match run_until(&mut s, 0) {
+    let mut vt_fork = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("post-exec position probe stopped non-Deadline: {other:?}"),
     };
@@ -417,7 +421,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
                     tries < 100_000,
                     "exec'd fork never reached a snapshottable boundary"
                 );
-                match run_until(&mut s, vt_fork.saturating_add(retry_step)) {
+                match run_with_deadline(&mut s, vt_fork.saturating_add(retry_step)) {
                     StopReason::Deadline { vtime } | StopReason::Quiescent { vtime } => {
                         vt_fork = vtime.0
                     }
@@ -511,7 +515,7 @@ fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
 
     // Seal genesis, run to a mid point, seal it, branch a fork.
     let retry_step = env_u64("EI_GENESIS_STEP", 1_000_000);
-    let vt0 = match run_until(&mut s, 0) {
+    let vt0 = match run_with_deadline(&mut s, 0) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("vtime probe stopped non-Deadline: {other:?}"),
     };
@@ -528,7 +532,7 @@ fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
         Reply::Unit
     );
     let mid_target = genesis_vt + env_u64("EI_MID", 8_000_000);
-    let vt_mid = match run_until(&mut s, mid_target) {
+    let vt_mid = match run_with_deadline(&mut s, mid_target) {
         StopReason::Deadline { vtime } => vtime.0,
         other => panic!("run to mid stopped non-Deadline: {other:?}"),
     };

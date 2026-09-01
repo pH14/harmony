@@ -7,9 +7,9 @@
 //! the task-42 `gen_random_uuid()`/`clock_timestamp()` workload runs against it, and
 //! it comes out **bit-identical across two same-seed runs**.
 //!
-//! These boot the **same Postgres-in-Docker image** task 38 built (`harmony-linux/build/bzImage`
+//! These boot the **same Postgres-in-Docker image** task 38 built (`consonance/harmony-linux/build/bzImage`
 //! — the task-36 container-class kernel, unchanged — plus
-//! `harmony-linux/build/initramfs-docker.cpio.gz`, built by `harmony-linux/linux/build-docker-image.sh`)
+//! `consonance/harmony-linux/build/initramfs-docker.cpio.gz`, built by `consonance/harmony-linux/linux/build-docker-image.sh`)
 //! via [`vmm_core::vendor::x86::bringup::boot_linux_selected`], but select the **runc** `/init`
 //! with the kernel `rdinit=/runc-init` cmdline param (`runc-init.sh`). That init
 //! brings up cgroup-v2 and runs the **official postgres OCI image** with
@@ -19,16 +19,16 @@
 //! the loop's stdout/stderr stream to `ttyS0`.
 //!
 //! **The unlock (vs task 38's `unshare` workaround — see
-//! `harmony-linux/linux/IMPLEMENTATION.md` + `tasks/47-deterministic-preemption-timer.md`).**
+//! `consonance/harmony-linux/linux/IMPLEMENTATION.md` + `tasks/47-deterministic-preemption-timer.md`).**
 //! Under task 38's single-vCPU / V-time model, V-time advanced only at natural
 //! VM-exits; `runc`/its Go container-init busy-spin (`procyield`/`osyield`) with no
 //! exit → V-time froze → the LAPIC tick never fired → the Go scheduler never ran →
 //! the container reached "created" but its init never execed the command (a deadlock,
 //! which is *why* task 38 fell back to `unshare`). Task 47 made the V-time LAPIC timer
 //! **preempt** a busy-spinning thread at the seed-deterministic V-time deadline
-//! (`run_until` = PMU overflow + single-step to the exact retired-branch count), and
+//! (`run_with_deadline` = exit-count advancement to the next VM-exit boundary), and
 //! the VMM run-loop drives it automatically on the patched Linux boot
-//! ([`Vmm::step`] → `preemption_deadline()` → `Backend::run_until`). So the Go runtime
+//! ([`Vmm::step`] → `idle event` → `Backend::run_with_deadline`). So the Go runtime
 //! is preempted on time, the scheduler runs, the create→exec handshake completes, and
 //! the **real `runc`** runs the container — deterministically, because the preemption
 //! instant is a pure function of the seed.
@@ -69,7 +69,7 @@
 //!
 //! **Why patched, not stock.** As for task 37/38: the workload needs the live periodic
 //! V-time tick and the 8250 TX must drain to stream output — both ride the V-time LAPIC
-//! timer, which only advances (and only **preempts**, via `run_until`) on the patched
+//! timer, which only advances (and only **preempts**, via `run_with_deadline`) on the patched
 //! backend. On stock KVM the timer never calibrates and `runc` deadlocks (task 38), so
 //! all gates run patched.
 //!
@@ -81,7 +81,7 @@
 //! — e.g.:
 //!
 //! ```sh
-//! make -C harmony-linux fetch && make -C harmony-linux/linux docker-image    # build the image
+//! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux docker-image    # build the image
 //! # load patched kvm.ko/kvm-intel.ko, then:
 //! taskset -c 4 timeout 4200 cargo test -p vmm-core --test live_runc_postgres \
 //!     -- --ignored --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched
@@ -118,7 +118,7 @@ const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliabl
 /// bring-up + workload is bounded by the wall budget + the external `timeout`).
 const MAX_STEPS: u64 = 200_000_000_000;
 /// Wall-clock budget inside the test. The real `runc`/Go path (multi-goroutine
-/// container-init driven forward by V-time preemption single-stepping) is heavier
+/// container-init driven forward by V-time preemption exit-driven) is heavier
 /// than task 38's `unshare` shim; this is a deliberate milestone gate, run with a
 /// matching (larger) external `timeout`. Overridable via `WALL_BUDGET_SECS`.
 const WALL_BUDGET_SECS_DEFAULT: u64 = 3600;
@@ -160,21 +160,25 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `harmony-linux/build/<name>` then `harmony-linux/linux/<name>`.
+/// Read a built guest artifact, trying `consonance/harmony-linux/build/<name>` then `consonance/harmony-linux/linux/<name>`.
 /// Panics loudly (with the build command) if absent — these `#[ignore]`d gates run
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
-         box: `make -C harmony-linux fetch && make -C harmony-linux/linux docker-image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it first on the \
+         box: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux docker-image`."
     );
 }
 
@@ -412,10 +416,10 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
 
 /// Boot the Docker image with the **runc** init on the patched backend at `seed`, run
 /// it to a terminal, and return (serial capture, `state_hash`, outcome). As in
-/// `live_postgres_docker.rs` the [`Vmm`] — and with it the `perf_event` work counter
+/// `live_postgres_docker.rs` the [`Vmm`] — and with it the exit-count clock
 /// that drives V-time — is **dropped before returning**, so two same-seed runs in one
 /// process don't keep two pinned PMU counters open at once (which would multiplex and
-/// perturb the branch count → a divergent V-time). One counter at a time is exact.
+/// perturb the exit count → a divergent V-time). One counter at a time is exact.
 fn boot_runc(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-docker.cpio.gz");

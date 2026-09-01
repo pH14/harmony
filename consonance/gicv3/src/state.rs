@@ -28,9 +28,10 @@ pub const CNTV_CTL_ENABLE: u64 = 1;
 /// `CNTV_CTL_EL0.IMASK` — the virtual timer's interrupt output is masked.
 pub const CNTV_CTL_IMASK: u64 = 1 << 1;
 
-/// The [`GicState`] layout version. v1: the skeleton model (`tasks/112` M2) —
-/// register files, PMR, and the one-shot-latched virtual timer.
-pub const GIC_STATE_VERSION: u32 = 1;
+/// The [`GicState`] layout version. v2 separated external input-line levels
+/// from the pending latch; v3 additionally canonicalizes the unimplemented
+/// Group-0 enable bit out of the single-security-state Group-1 model.
+pub const GIC_STATE_VERSION: u32 = 3;
 
 /// The complete GICv3 model snapshot. Plain data, deterministic field order,
 /// no map, no float (rule #4); the firing **deadline is derived, never
@@ -55,20 +56,27 @@ pub struct GicState {
     /// `GICD_CTLR` (Group-1 forwarding enable in bit 1; ARE modeled always-on).
     pub gicd_ctlr: u32,
     /// Group membership, one bit per INTID (`1` = Group 1, the deliverable
-    /// IRQ group; reset `0` = Group 0, not deliverable — the guest programs
-    /// `IGROUPR` before expecting delivery, as Linux does).
+    /// IRQ group). The single-security-state GICv3 reset has every implemented
+    /// INTID in Group 1, matching stock KVM's architectural register file.
     pub group: [u32; BITMAP_WORDS],
-    /// Enable bits, one per INTID.
+    /// Enable bits, one per INTID. SGIs `0..16` start enabled; all PPIs and
+    /// SPIs start disabled, matching stock KVM's GICv3 reset state.
     pub enable: [u32; BITMAP_WORDS],
     /// Pending bits, one per INTID.
     pub pending: [u32; BITMAP_WORDS],
     /// Active bits, one per INTID.
     pub active: [u32; BITMAP_WORDS],
+    /// External input-line levels, one per INTID. This is deliberately separate
+    /// from `pending`: a level-triggered interrupt's pending value is the OR of
+    /// its input level and its software latch, and migration requires both.
+    pub line_level: [u32; BITMAP_WORDS],
     /// Priority bytes, one per INTID (lower value = higher priority).
     pub priority: [u8; PRIORITY_BYTES],
     /// The CPU interface's priority mask (`ICC_PMR_EL1`; reset `0` masks
     /// everything — the guest raises it before expecting delivery).
     pub pmr: u8,
+    /// `ICC_IGRPEN1_EL1`, the CPU-interface Group-1 enable.
+    pub igrpen1: bool,
     /// `CNTV_CTL_EL0` (`ENABLE` | `IMASK`).
     pub cntv_ctl: u64,
     /// `CNTV_CVAL_EL0` — the absolute compare value in timer ticks.

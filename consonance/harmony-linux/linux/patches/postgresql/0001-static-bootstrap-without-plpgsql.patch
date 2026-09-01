@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+diff --git a/src/bin/initdb/initdb.c b/src/bin/initdb/initdb.c
+--- a/src/bin/initdb/initdb.c
++++ b/src/bin/initdb/initdb.c
+@@ -1974,6 +1974,9 @@ static void
+ load_plpgsql(FILE *cmdfd)
+ {
+-	PG_CMD_PUTS("CREATE EXTENSION plpgsql;\n\n");
++	/* The Harmony M3 guest is fully static.  musl cannot dlopen plpgsql.so,
++	 * and the acceptance workload does not use PL/pgSQL.  Keep initdb's
++	 * command stream explicit instead of failing in an optional module. */
++	PG_CMD_PUTS("-- static Harmony guest omits PL/pgSQL\n\n");
+ }
+ 
+ /*

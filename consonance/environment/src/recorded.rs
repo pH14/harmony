@@ -105,6 +105,11 @@ pub enum EnvSpec {
         /// floats) so the table is inherently canonical and no insertion
         /// order can reach an encoded byte.
         reseeds: BTreeMap<Moment, u64>,
+        /// Optional ordered payload tape for cooperating workloads. `None`
+        /// means the payload service is not offered; `Some([])` offers it but
+        /// is already exhausted. Each `Payload` decision consumes exactly one
+        /// entry, independent of the `Moment`-keyed sparse override map.
+        payloads: Option<Vec<Vec<u8>>>,
     },
 }
 
@@ -128,8 +133,10 @@ impl EnvSpec {
     /// Bumped to `6` by the ARCH-BOUNDARY §C interrupt-identity widening:
     /// [`HostFault::InjectInterrupt`](crate::HostFault::InjectInterrupt)'s
     /// `vector` payload widened `u8 → u32` (GIC INTIDs exceed 8 bits), so a v5
-    /// action table carrying one no longer parses under the v6 reader.
-    pub const BLOB_VERSION: u16 = 6;
+    /// action table carrying one no longer parses under the v6 reader. Bumped
+    /// to `7` for the [`Recorded`](EnvSpec::Recorded) variant's trailing,
+    /// optional ordered payload tape.
+    pub const BLOB_VERSION: u16 = 7;
 
     /// The seed every backing draws from.
     pub fn seed(&self) -> u64 {
@@ -173,6 +180,28 @@ impl EnvSpec {
                 static EMPTY: BTreeMap<Moment, u64> = BTreeMap::new();
                 &EMPTY
             }
+        }
+    }
+
+    /// The ordered payload tape, when this reproducer offers one. `Some([])`
+    /// deliberately differs from `None`: the former is an offered but
+    /// exhausted input source, while the latter does not offer the service.
+    pub fn payloads(&self) -> Option<&[Vec<u8>]> {
+        match self {
+            Self::Recorded { payloads, .. } => payloads.as_deref(),
+            Self::Seeded { .. } => None,
+        }
+    }
+
+    /// Replace the ordered payload tape. Supplying `Some` promotes a seeded
+    /// spec to its recorded form; `None` clears a tape without otherwise
+    /// changing an already-recorded reproducer.
+    pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) {
+        if payloads.is_some() {
+            self.promote();
+        }
+        if let Self::Recorded { payloads: p, .. } = self {
+            *p = payloads;
         }
     }
 
@@ -231,6 +260,7 @@ impl EnvSpec {
                 overrides: BTreeMap::new(),
                 standing: Vec::new(),
                 reseeds: BTreeMap::new(),
+                payloads: None,
             };
         }
     }
@@ -266,6 +296,7 @@ impl EnvSpec {
                 overrides,
                 standing,
                 reseeds,
+                payloads,
             } => {
                 w.push(1);
                 codec::put_u64(&mut w, *seed);
@@ -300,6 +331,17 @@ impl EnvSpec {
                 for (m, seed) in reseeds {
                     codec::put_u64(&mut w, *m);
                     codec::put_u64(&mut w, *seed);
+                }
+
+                match payloads {
+                    None => w.push(0),
+                    Some(entries) => {
+                        w.push(1);
+                        codec::put_len(&mut w, entries.len());
+                        for entry in entries {
+                            codec::put_bytes(&mut w, entry);
+                        }
+                    }
                 }
             }
         }
@@ -336,6 +378,18 @@ impl EnvSpec {
                 let overrides = read_overrides(&mut r)?;
                 let standing = read_standing(&mut r)?;
                 let reseeds = read_reseeds(&mut r)?;
+                let payloads = match r.u8()? {
+                    0 => None,
+                    1 => {
+                        let count = r.u32()?;
+                        let mut entries = Vec::new();
+                        for _ in 0..count {
+                            entries.push(r.bytes()?.to_vec());
+                        }
+                        Some(entries)
+                    }
+                    _ => return Err(EnvError::Malformed),
+                };
                 if !r.at_end() {
                     return Err(EnvError::Malformed);
                 }
@@ -345,6 +399,7 @@ impl EnvSpec {
                     overrides,
                     standing,
                     reseeds,
+                    payloads,
                 })
             }
             _ => Err(EnvError::Malformed),
@@ -364,7 +419,12 @@ impl EnvSpec {
                 guest.insert(*m, ans.clone());
             }
         }
-        RecordedEnv::new(self.seed(), self.policy().clone(), guest)
+        RecordedEnv::new(
+            self.seed(),
+            self.policy().clone(),
+            guest,
+            self.payloads().map(<[Vec<u8>]>::to_vec),
+        )
     }
 }
 
@@ -460,16 +520,71 @@ pub struct RecordedEnv {
     base: SeededEnv,
     overrides: BTreeMap<Moment, Answer>,
     moment: Moment,
+    payloads: Option<Vec<Vec<u8>>>,
+    payload_cursor: usize,
 }
 
 impl RecordedEnv {
     /// Build from a seeded base and a guest-override map keyed by [`Moment`].
-    fn new(seed: u64, policy: FaultPolicy, overrides: BTreeMap<Moment, Answer>) -> Self {
+    fn new(
+        seed: u64,
+        policy: FaultPolicy,
+        overrides: BTreeMap<Moment, Answer>,
+        payloads: Option<Vec<Vec<u8>>>,
+    ) -> Self {
         Self {
             base: SeededEnv::new(seed, policy),
             overrides,
             moment: 0,
+            payloads,
+            payload_cursor: 0,
         }
+    }
+
+    /// Whether this environment offers an ordered payload tape. An exhausted
+    /// tape remains configured so the guest receives deterministic exhaustion,
+    /// not a seeded fallback.
+    pub fn payload_configured(&self) -> bool {
+        self.payloads.is_some()
+    }
+
+    /// Consume one exact-length entry from the ordered payload tape.
+    ///
+    /// `None` means the configured tape is exhausted. A length mismatch returns
+    /// the next entry's length and consumes nothing. Calling this when no tape
+    /// is configured also returns `None`; callers that distinguish unavailable
+    /// from exhausted check [`payload_configured`](Self::payload_configured)
+    /// first.
+    pub fn pull_payload(&mut self, bytes: u32) -> Result<Option<Vec<u8>>, u32> {
+        let Some(entries) = self.payloads.as_ref() else {
+            return Ok(None);
+        };
+        let Some(entry) = entries.get(self.payload_cursor) else {
+            return Ok(None);
+        };
+        let actual = u32::try_from(entry.len()).unwrap_or(u32::MAX);
+        if actual != bytes {
+            return Err(actual);
+        }
+        let value = entry.clone();
+        self.payload_cursor += 1;
+        Ok(Some(value))
+    }
+
+    /// Clone the canonical live tape state: only the unconsumed suffix. `None`
+    /// preserves the distinction between an unavailable service and an offered,
+    /// exhausted one (`Some([])`).
+    pub fn remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
+        self.payloads
+            .as_ref()
+            .map(|entries| entries[self.payload_cursor..].to_vec())
+    }
+
+    /// Restore a canonical live tape state captured by
+    /// [`remaining_payloads`](Self::remaining_payloads).
+    pub fn restore_payloads(&mut self, remaining: Option<Vec<Vec<u8>>>) {
+        self.payloads = remaining;
+        self.payload_cursor = 0;
     }
 
     /// Set the current [`Moment`] the next [`decide`](Environment::decide) is

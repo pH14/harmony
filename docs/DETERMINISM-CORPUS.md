@@ -24,7 +24,7 @@ them, and a single JSON report says what passed. Adding an instruction payload, 
 or SQLite is the *same operation* — register a corpus item, point it at oracles.
 
 Crucially, **the hardest oracle already exists.** `unison` is a generic divergence
-bisector over a `Machine` trait (`compare_runs` / `bisect_divergence`, work-count localized).
+bisector over a `Machine` trait (`compare_runs` / `bisect_divergence`, exit-count localized).
 This component is the *domain layer* on top of it: it knows about CPU instructions, the frozen
 contract, goldens, and the real VMM. `unison` stays domain-free (its non-goals forbid VMM
 integration); `acceptance-suite` is where that knowledge lives.
@@ -55,14 +55,12 @@ contract, R1):
 - `RDRAND` / `RDSEED` — contract PRNG stream, CF semantics
 - `CPUID` — every frozen leaf/subleaf in `docs/fragments/cpuid-model.md`, exact regs
 - `RDPMC` — trapped/denied per contract
-- `HLT` — idle-skip: work count freezes, V-time warps to next deadline (`VClock::advance_idle`)
+- `HLT` — idle-skip: V-time warps to the next deterministic deadline (`VClock::advance_idle`)
 - `MONITOR`/`MWAIT`, `PAUSE` — exit behavior per contract
 - MSR read/write — the allowed set returns contract values; **everything else #GP** (default-deny)
-- **LAPIC timer interrupt landing** — the hard core (docs/RESEARCH.md §3.4): a timer armed in
-  V-time must be injected at the **exact same instruction** across runs. Payload reports
-  "instructions retired before first IRQ" via hypercall; O1 compares it across runs, O2 vs
-  golden. Sweep deadlines on/around `skid_margin=128` (task 07). This is where determinism is
-  *most* likely to break; it gets the most corpus attention.
+- **LAPIC timer interrupt landing** — a timer armed in V-time must be injected
+  at the same deterministic exit boundary across runs. The payload reports its
+  observation through the hypercall channel; O1 compares runs and O2 compares the golden.
 - PIT / PIC deterministic boot stubs (R1)
 
 These are pure Part-A payloads (no OS) — cheapest to build, highest signal per byte.
@@ -227,7 +225,7 @@ guest; external/fault-injected networking is deliberately deferred.
   "no sibling deps" rule of wave-1 parallel crates doesn't apply — it's the layer that *binds*).
 - **`consonance/acceptance-suite/payloads/`** *(task 18)* — the C1 micro-payloads, via the documented "add a payload"
   flow; goldens in `consonance/acceptance-suite/golden/`.
-- **`harmony-linux/linux/` Postgres + k3s tier** *(tasks 36–38, 48, 49 — delivered)* — the C3a
+- **`consonance/harmony-linux/linux/` Postgres + k3s tier** *(tasks 36–38, 48, 49 — delivered)* — the C3a
   real workload: bare Postgres escalating through runc to a single-node k3s cluster, all against
   guest-RAM-backed ext4. Supersedes the struck task 20 (SQLite-over-`Block`).
 - **Tasks 22 and 20 are struck** (host `BLOCK_WRITE` device + the SQLite-over-`Block` workload

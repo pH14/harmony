@@ -1,5 +1,4 @@
 [toolchain]
-# Foreman note: pin to an exact stable version once the CI box exists,
-# so all workers build with identical toolchains.
-channel = "stable"
+# Pinned so local workers and CI enforce the same language and Clippy surface.
+channel = "1.97.0"
 components = ["rustfmt", "clippy"]

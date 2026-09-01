@@ -62,15 +62,14 @@ pub telemetry::Mode::Replay
 pub enum telemetry::WireError
 pub telemetry::WireError::Decode(serde_json::error::Error)
 pub struct telemetry::Event
+pub telemetry::Event::exit_count: u64
 pub telemetry::Event::kind: telemetry::EventKind
 pub telemetry::Event::seq: u64
 pub telemetry::Event::vns: u64
-pub telemetry::Event::work: u64
 impl telemetry::Event
 pub fn telemetry::Event::new(u64, u64, u64, telemetry::EventKind) -> telemetry::Event
 pub struct telemetry::ExitCounts
 pub telemetry::ExitCounts::cpuid: u64
-pub telemetry::ExitCounts::deadline: u64
 pub telemetry::ExitCounts::hlt: u64
 pub telemetry::ExitCounts::hypercall: u64
 pub telemetry::ExitCounts::io: u64

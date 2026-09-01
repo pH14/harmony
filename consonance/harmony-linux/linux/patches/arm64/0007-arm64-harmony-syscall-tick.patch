@@ -1,0 +1,111 @@
+arm64: ring the virtual_time tick at execution-density boundaries
+
+VirtualTime execution cannot stop an exit-free userspace stretch or idle-poll
+loop at a timer deadline. Give the cooperative M3 Linux guest a deterministic
+exit at every native syscall entry, context switch, and idle-poll iteration
+(all contract intervals are N=1): a write to the owned pvclock MMIO frame.
+Userspace assigns that exact tick one 100 Hz period, making an armed clockevent
+due even after the runnable task blocks and the sole vCPU enters idle polling.
+
+The tick depends only on guest execution boundaries. It reads no counter and no
+host time, and the exact offset, width, direction, and value are default-denied
+by the userspace device model.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/clocksource/harmony_arm_pvclock.c
++++ b/drivers/clocksource/harmony_arm_pvclock.c
+@@ -31,6 +31,7 @@
+ #define HARMONY_CLOCKEVENT_CONTROL	0x18
+ #define HARMONY_CLOCKEVENT_DISARM	1U
+ #define HARMONY_CLOCKEVENT_ACK		2U
++#define HARMONY_VIRTUAL_TIME_TICK	0x20
+ #define HARMONY_PVCLOCK_REGISTER_SPINS	(1U << 28) /* bounded deterministic handshake */
+ #define HARMONY_PVCLOCK_ABI		1U
+ #define HARMONY_FLAG_MATERIALIZED	(1U << 0)
+@@ -203,3 +204,14 @@ void harmony_arm_clockevent_ack(void)
+ 	writel(HARMONY_CLOCKEVENT_ACK,
+ 	       harmony_registers + HARMONY_CLOCKEVENT_CONTROL);
+ }
++
++/*
++ * N=1 is the virtual_time execution-tick contract. The MMIO write is the exit;
++ * userspace assigns it one complete 100 Hz tick before re-entering the guest.
++ */
++void harmony_arm_virtual_time_tick(void)
++{
++	if (!harmony_registers)
++		return;
++	writel(1, harmony_registers + HARMONY_VIRTUAL_TIME_TICK);
++}
+--- a/arch/arm64/include/asm/arch_timer.h
++++ b/arch/arm64/include/asm/arch_timer.h
+@@ -173,6 +173,7 @@ void __init harmony_arm_pvclock_register(void);
+ int harmony_arm_clockevent_set_next(unsigned long delta);
+ void harmony_arm_clockevent_disarm(void);
+ void harmony_arm_clockevent_ack(void);
++void harmony_arm_virtual_time_tick(void);
+ 
+ static __always_inline u64 __arch_counter_get_cntpct_stable(void)
+ {
+--- a/arch/arm64/kernel/syscall.c
++++ b/arch/arm64/kernel/syscall.c
+@@ -8,6 +8,7 @@
+ #include <linux/randomize_kstack.h>
+ #include <linux/syscalls.h>
+ 
++#include <asm/arch_timer.h>
+ #include <asm/debug-monitors.h>
+ #include <asm/exception.h>
+ #include <asm/fpsimd.h>
+@@ -73,6 +74,10 @@ static void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
+ 			   const syscall_fn_t syscall_table[])
+ {
+ 	unsigned long flags = read_thread_flags();
++
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	harmony_arm_virtual_time_tick();
++#endif
+
+	regs->orig_x0 = regs->regs[0];
+	regs->syscallno = scno;
+--- a/arch/arm64/kernel/process.c
++++ b/arch/arm64/kernel/process.c
+@@ -775,6 +775,10 @@ struct task_struct *__switch_to(struct task_struct *prev,
+ 	if (prev->thread.sctlr_user != next->thread.sctlr_user)
+ 		update_sctlr_el1(next->thread.sctlr_user);
+ 
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++	harmony_arm_virtual_time_tick();
++#endif
++
+	/* the actual thread switch */
+	last = cpu_switch_to(prev, next);
+
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -10,6 +10,10 @@
+ #include "sched.h"
+ #include "smp.h"
+ 
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++#include <asm/arch_timer.h>
++#endif
++
+ /* Linker adds these: start and end of __cpuidle functions */
+ extern char __cpuidle_text_start[], __cpuidle_text_end[];
+ 
+@@ -57,7 +61,11 @@ static noinline int __cpuidle cpu_idle_poll(void)
+ 	raw_local_irq_enable();
+ 	while (!tif_need_resched() &&
+ 	       (cpu_idle_force_poll || tick_check_broadcast_expired()))
++#ifdef CONFIG_HARMONY_ARM_PVCLOCK
++		harmony_arm_virtual_time_tick();
++#else
+ 		cpu_relax();
++#endif
+ 	raw_local_irq_disable();
+ 
+ 	ct_cpuidle_exit();

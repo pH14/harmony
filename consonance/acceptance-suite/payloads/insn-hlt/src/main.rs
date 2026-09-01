@@ -1,8 +1,8 @@
 //! `insn-hlt`: HLT idle-skip. The contract intercepts HLT (hlt-exiting →
-//! idle-skip): on the box the work counter freezes across the halt and V-time
+//! idle-skip): on the box the exit-count clock freezes across the halt and V-time
 //! warps to the next armed deadline, so the guest wakes at exactly that deadline
 //! with no instructions retired in between. That is a box fact (it needs the
-//! V-time work counter). In-guest, the environment-independent shape is that HLT
+//! V-time exit-count clock). In-guest, the environment-independent shape is that HLT
 //! halts and is woken by the armed timer — exercised here against the legacy PIT
 //! (mapped in the first GiB, fires under QEMU). The pre-halt work markers are
 //! reported for the box to confirm idle-skip. O3 tag: pure.
@@ -32,7 +32,7 @@ extern "C" fn payload_main() -> ! {
 
     for _ in 0..CYCLES {
         let before = idt::TIMER_TICKS.load(SeqCst);
-        report(before); // box: work counter at the halt; must equal the wake value
+        report(before); // box: exit-count clock at the halt; must equal the wake value
         // Halt until the next PIT tick arrives. On the box this is idle-skip to
         // the armed deadline; under QEMU it is a real halt woken by the IRQ.
         while idt::TIMER_TICKS.load(SeqCst) == before {

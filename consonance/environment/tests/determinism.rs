@@ -27,6 +27,7 @@ fn standing_reversed(spec: &EnvSpec) -> EnvSpec {
             overrides,
             mut standing,
             reseeds,
+            payloads,
         } => {
             standing.reverse();
             EnvSpec::Recorded {
@@ -35,6 +36,7 @@ fn standing_reversed(spec: &EnvSpec) -> EnvSpec {
                 overrides,
                 standing,
                 reseeds,
+                payloads,
             }
         }
         s => s,
@@ -65,7 +67,7 @@ proptest! {
             policy: FaultPolicy::none(),
             overrides: ov,
             standing: vec![],
-            reseeds: std::collections::BTreeMap::new(),
+            reseeds: std::collections::BTreeMap::new(), payloads: None,
         };
         prop_assert_eq!(mk(forward).encode(), mk(backward).encode());
     }
@@ -92,7 +94,7 @@ proptest! {
             policy: policy.clone(),
             overrides: ov,
             standing: vec![],
-            reseeds: std::collections::BTreeMap::new(),
+            reseeds: std::collections::BTreeMap::new(), payloads: None,
         };
 
         let a = run_guest_schedule(&mut mk(forward).materialize(), &sched);
@@ -109,6 +111,7 @@ fn override_map_permutation_is_byte_identical() {
         overrides,
         standing: vec![],
         reseeds: std::collections::BTreeMap::new(),
+        payloads: None,
     };
 
     let entries = [
@@ -135,6 +138,7 @@ fn standing_vec_permutation_is_byte_identical() {
         overrides: BTreeMap::new(),
         standing,
         reseeds: Default::default(),
+        payloads: None,
     };
     let a = mk(vec![
         sf(DecisionClass::NetFlow, vec![0, 1], 0, 10),

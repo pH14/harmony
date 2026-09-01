@@ -210,6 +210,29 @@ pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
 }
 
 // ---------------------------------------------------------------------------
+// VirtualTime (assigned-at-exit) V-time durations.
+// ---------------------------------------------------------------------------
+// The values are the arm64 row set (`vendor::arm64::contract`), carried over
+// unchanged pending an x86-specific ruling; only their assignment structure —
+// one constant per event class, applied exactly once per classified exit — is
+// contractual today.
+
+/// Assigned duration of one interrupt-controller access: the xAPIC MMIO page,
+/// the 8259 PIC data ports, and the ELCR ports.
+pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of one 8250 UART port access.
+pub const SERIAL_EXIT_VNS: u64 = 2_000;
+/// Assigned duration of one access to any other modeled platform device (the
+/// report channel and the accepted legacy ISA/PCI ports).
+pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
+/// Assigned duration of a trapped time read (the `emulate-vtime` TSC MSRs).
+pub const TRAPPED_TIME_READ_VNS: u64 = 1;
+/// Assigned duration of a deterministic architectural-control trap that is
+/// neither a device access nor a time read (a non-vtime MSR disposition, a
+/// surfaced CPUID).
+pub const ARCH_CONTROL_EXIT_VNS: u64 = 1_000;
+
+// ---------------------------------------------------------------------------
 // CPUID model (CPU-MSR-CONTRACT §2).
 // ---------------------------------------------------------------------------
 
@@ -249,6 +272,29 @@ pub fn cpuid_model() -> CpuidModel {
         });
     }
     CpuidModel { entries }
+}
+
+/// [`cpuid_model`] with the hardware-RNG bits — CPUID.1:ECX[30] (`RDRAND`) and
+/// CPUID.7.0:EBX[18] (`RDSEED`) — cleared, for the stock-backend virtual_time
+/// composition. §2 exposes both bits as exposed-but-trapped, a justification
+/// that requires the VMX RDRAND/RDSEED-exiting controls; stock KVM never
+/// surfaces that exit (§2's own caveat), so left exposed the instructions
+/// execute natively and feed true hardware entropy into the guest CRNG —
+/// measured as the X2 userspace-ASLR divergence. The pinned kernel reaches
+/// both instructions only through `cpu_feature_enabled` checks on these bits,
+/// so hiding them keeps the guest on its deterministic fallbacks; the X2
+/// determinism gates measure the closure.
+pub fn cpuid_model_hw_rng_hidden() -> CpuidModel {
+    let mut m = cpuid_model();
+    for e in &mut m.entries {
+        if e.leaf == 0x1 && e.subleaf == 0 {
+            e.ecx &= !(1 << 30);
+        }
+        if e.leaf == 0x7 && e.subleaf == 0 {
+            e.ebx &= !(1 << 18);
+        }
+    }
+    m
 }
 
 /// Overlay the three dynamic CPUID cells (see [`cpuid_model`]) onto the frozen
@@ -426,6 +472,32 @@ mod tests {
             .find(|e| e.leaf == 0x4000_0000)
             .expect("PV leaf");
         assert_eq!((pv.eax, pv.ebx, pv.ecx, pv.edx), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn cpuid_model_hw_rng_hidden_clears_exactly_the_rng_bits() {
+        let base = cpuid_model();
+        let hidden = cpuid_model_hw_rng_hidden();
+        assert_eq!(base.entries.len(), hidden.entries.len());
+        for (b, h) in base.entries.iter().zip(&hidden.entries) {
+            match (b.leaf, b.subleaf) {
+                (0x1, 0) => {
+                    // The base exposes RDRAND; the variant clears only ECX[30].
+                    assert_ne!(b.ecx & (1 << 30), 0, "base exposes RDRAND");
+                    let mut want = *b;
+                    want.ecx &= !(1 << 30);
+                    assert_eq!(*h, want);
+                }
+                (0x7, 0) => {
+                    // The base exposes RDSEED; the variant clears only EBX[18].
+                    assert_ne!(b.ebx & (1 << 18), 0, "base exposes RDSEED");
+                    let mut want = *b;
+                    want.ebx &= !(1 << 18);
+                    assert_eq!(*h, want);
+                }
+                _ => assert_eq!(b, h),
+            }
+        }
     }
 
     #[test]

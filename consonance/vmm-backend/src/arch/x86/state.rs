@@ -233,3 +233,320 @@ pub struct VcpuEvents {
     /// it a snapshot taken with a queued triple fault restores as if none occurred.
     pub triple_fault_pending: u8,
 }
+
+/// `RFLAGS.RF` (resume flag).
+const RFLAGS_RF: u64 = 1 << 16;
+
+/// Canonicalize exit-mechanics residue in the general registers, in place.
+///
+/// At an exit taken mid-instruction (an MMIO access the host emulates), VMX
+/// saves `RFLAGS` with `RF` set — the fault-restart semantics of SDM vol. 3,
+/// "Saving RFLAGS" — while SVM reports it clear. The instruction is completed by the
+/// emulator either way, and `RF` self-clears at the next instruction boundary,
+/// so the bit carries no guest-visible state at a serviced exit. Cleared so
+/// equal guest state hashes equally across vendors.
+pub fn canonicalize_regs(regs: &mut VcpuRegs) {
+    regs.rflags &= !RFLAGS_RF;
+}
+
+/// Canonicalize the architecturally-ignored fields of unusable segments, in
+/// place.
+///
+/// For a segment KVM marks unusable, the cached limit and attribute bits carry
+/// no guest-visible state, and the two vendors report different residue there
+/// (SVM returns zeros; VMX returns the stale cached descriptor — limit
+/// `0xFFFFFFFF`, `type`/`D/B`/`G` set — for the null-loaded data segments and
+/// LDT). Base and selector stay: a null selector is readable with `MOV` from
+/// the register, and the FS/GS bases are live state through the base MSRs.
+pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
+    for seg in [
+        &mut sregs.cs,
+        &mut sregs.ds,
+        &mut sregs.es,
+        &mut sregs.fs,
+        &mut sregs.gs,
+        &mut sregs.ss,
+        &mut sregs.tr,
+        &mut sregs.ldt,
+    ] {
+        if seg.unusable != 0 {
+            *seg = Segment {
+                base: seg.base,
+                selector: seg.selector,
+                unusable: 1,
+                ..Segment::default()
+            };
+        }
+    }
+}
+
+/// `XSTATE_BV` in the XSAVE header (Intel SDM vol. 1, XSAVE area layout).
+const XSTATE_BV: usize = 512;
+/// `XCOMP_BV` in the XSAVE header; nonzero selects the compacted format.
+const XCOMP_BV: usize = 520;
+/// x87 control/status/tag/opcode/instruction/operand words in the legacy area.
+const X87_CONTROL: std::ops::Range<usize> = 0..24;
+/// ST0–ST7 in the legacy area.
+const X87_ST: std::ops::Range<usize> = 32..160;
+/// MXCSR in the legacy area (SSE component).
+const SSE_MXCSR: std::ops::Range<usize> = 24..28;
+/// `MXCSR_MASK` in the legacy area: a host capability constant `FXSAVE`/`XSAVE`
+/// write into the image, not guest state, and the restore path ignores it.
+const MXCSR_MASK: std::ops::Range<usize> = 28..32;
+/// The frozen contract's pinned `MXCSR_MASK` (`docs/CPU-MSR-CONTRACT.md` §2,
+/// "FPU/XSAVE save-image determinism"). Intel parts report this value; AMD
+/// parts report `0x0002FFFF` (bit 17, misaligned-SSE), so an un-pinned image
+/// diverges across vendors.
+const MXCSR_MASK_PINNED: [u8; 4] = 0x0000FFFFu32.to_le_bytes();
+/// XMM0–XMM15 in the legacy area.
+const SSE_XMM: std::ops::Range<usize> = 160..416;
+/// x87 init state: `FCW = 0x037F`, every other control word and ST register 0.
+const X87_INIT_FCW: [u8; 2] = 0x037Fu16.to_le_bytes();
+/// SSE init state: `MXCSR = 0x1F80`, every XMM register 0.
+const SSE_INIT_MXCSR: [u8; 4] = 0x1F80u32.to_le_bytes();
+/// The legacy area's reserved padding plus software-available tail. Hardware
+/// never writes it; the exporting host kernel stamps its own template there
+/// (`xstate_fx_sw_bytes`: the host's supported-feature mask at byte 464), and
+/// the restore path reads none of it.
+const LEGACY_TAIL: std::ops::Range<usize> = 416..512;
+
+/// Canonicalize the x87 and SSE components of a standard-format XSAVE image to
+/// init-compressed form, in place.
+///
+/// XSAVE's init optimization gives one guest-visible state two encodings: a
+/// component can be recorded present (`XSTATE_BV` bit set, area holding the
+/// init values) or absent (bit clear, area architecturally ignored), and which
+/// one hardware writes varies with host scheduling rather than guest behavior
+/// (observed on Xeon Platinum 8573C: the x87 bit flips across same-seed boots
+/// while every state byte matches). Determinism rule #4 forbids host-derived
+/// bytes in `VcpuState`, so both encodings must collapse to one: a component
+/// whose area holds the init values gets its bit cleared, and a component
+/// whose bit is clear gets the init values written into its ignored area.
+/// `MXCSR_MASK` — a host capability constant the save instruction writes, which
+/// differs across vendors — is pinned to the contract value for the same
+/// reason: it is not guest state, and restore ignores it; the legacy tail —
+/// the exporting host kernel's own template — is zeroed likewise.
+/// Compacted-format images (nonzero `XCOMP_BV`) have a different layout and
+/// are left untouched.
+pub fn canonicalize_xsave(image: &mut [u8]) {
+    if image.len() < XCOMP_BV + 8 || image[XCOMP_BV..XCOMP_BV + 8] != [0u8; 8] {
+        return;
+    }
+
+    image[MXCSR_MASK].copy_from_slice(&MXCSR_MASK_PINNED);
+    image[LEGACY_TAIL].fill(0);
+
+    let is_zero = |r: std::ops::Range<usize>, image: &[u8]| image[r].iter().all(|&b| b == 0);
+    let x87_init = |image: &[u8]| {
+        image[X87_CONTROL.start..X87_CONTROL.start + 2] == X87_INIT_FCW
+            && is_zero(X87_CONTROL.start + 2..X87_CONTROL.end, image)
+            && is_zero(X87_ST, image)
+    };
+    let sse_init = |image: &[u8]| image[SSE_MXCSR] == SSE_INIT_MXCSR && is_zero(SSE_XMM, image);
+
+    let mut bv = u64::from_le_bytes(image[XSTATE_BV..XSTATE_BV + 8].try_into().expect("8 bytes"));
+    if bv & 1 == 0 {
+        image[X87_CONTROL.start..X87_CONTROL.start + 2].copy_from_slice(&X87_INIT_FCW);
+        image[X87_CONTROL.start + 2..X87_CONTROL.end].fill(0);
+        image[X87_ST].fill(0);
+    } else if x87_init(image) {
+        bv &= !1;
+    }
+    if bv & 2 == 0 {
+        image[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        image[SSE_XMM].fill(0);
+    } else if sse_init(image) {
+        bv &= !2;
+    }
+    image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&bv.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A standard-format image holding the x87+SSE init values with the given
+    /// `XSTATE_BV` — the shape KVM returns for an early-boot guest.
+    fn init_image(xstate_bv: u64) -> Vec<u8> {
+        let mut image = vec![0u8; 4096];
+        image[0..2].copy_from_slice(&X87_INIT_FCW);
+        image[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        image[28..32].copy_from_slice(&0xFFFFu32.to_le_bytes());
+        image[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&xstate_bv.to_le_bytes());
+        image
+    }
+
+    #[test]
+    fn init_state_encodings_collapse_to_one_image() {
+        // The measured Xeon 8573C flip: same bytes, XSTATE_BV 0x3 vs 0x2.
+        let mut a = init_image(0x3);
+        let mut b = init_image(0x2);
+        canonicalize_xsave(&mut a);
+        canonicalize_xsave(&mut b);
+        assert_eq!(a, b);
+        assert_eq!(a[XSTATE_BV..XSTATE_BV + 8], 0u64.to_le_bytes());
+    }
+
+    #[test]
+    fn live_state_is_untouched() {
+        let mut image = init_image(0x3);
+        image[0..2].copy_from_slice(&0x027Fu16.to_le_bytes());
+        image[SSE_XMM.start] = 0x5A;
+        let before = image.clone();
+        canonicalize_xsave(&mut image);
+        assert_eq!(image, before);
+    }
+
+    #[test]
+    fn ignored_area_bytes_become_the_init_values() {
+        // Bit clear ⇒ the area is architecturally ignored; residue there must
+        // not reach the state hash.
+        let mut image = init_image(0x0);
+        image[X87_ST.start] = 0xEE;
+        image[SSE_XMM.start + 7] = 0xEE;
+        canonicalize_xsave(&mut image);
+        assert_eq!(image, init_image(0x0));
+    }
+
+    #[test]
+    fn mxcsr_mask_is_pinned_to_the_contract_value() {
+        // The measured cross-vendor divergence: AMD writes 0x2FFFF, Intel 0xFFFF.
+        let mut image = init_image(0x2);
+        image[MXCSR_MASK].copy_from_slice(&0x0002FFFFu32.to_le_bytes());
+        canonicalize_xsave(&mut image);
+        assert_eq!(image[MXCSR_MASK], MXCSR_MASK_PINNED);
+    }
+
+    #[test]
+    fn legacy_tail_host_template_is_zeroed() {
+        // The measured pair: the exporting kernel stamps its host feature mask
+        // at byte 464 (0x7 on Zen 3, 0x600e7 on Granite Rapids).
+        let mut a = init_image(0x2);
+        let mut b = init_image(0x2);
+        a[464..472].copy_from_slice(&0x7u64.to_le_bytes());
+        b[464..472].copy_from_slice(&0x600e7u64.to_le_bytes());
+        canonicalize_xsave(&mut a);
+        canonicalize_xsave(&mut b);
+        assert_eq!(a, b);
+        assert!(a[LEGACY_TAIL].iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn rf_exit_residue_collapses_across_vendors() {
+        // The measured cross-vendor pair at an MMIO exit (run 33127863719):
+        // VMX reports RF set in the exit-time RFLAGS, SVM reports it clear.
+        let mut intel = VcpuRegs {
+            rflags: 0x10282,
+            ..VcpuRegs::default()
+        };
+        let mut amd = VcpuRegs {
+            rflags: 0x282,
+            ..VcpuRegs::default()
+        };
+        canonicalize_regs(&mut intel);
+        canonicalize_regs(&mut amd);
+        assert_eq!(intel, amd);
+        assert_eq!(intel.rflags, 0x282);
+    }
+
+    #[test]
+    fn regs_other_than_rf_are_untouched() {
+        let mut regs = VcpuRegs {
+            rax: 0x1234,
+            rsp: 0xffff_ffff_8260_3e98,
+            rip: 0xffff_ffff_8125_6a62,
+            rflags: 0x10ac6,
+            ..VcpuRegs::default()
+        };
+        canonicalize_regs(&mut regs);
+        assert_eq!(regs.rax, 0x1234);
+        assert_eq!(regs.rsp, 0xffff_ffff_8260_3e98);
+        assert_eq!(regs.rip, 0xffff_ffff_8125_6a62);
+        assert_eq!(regs.rflags, 0xac6);
+    }
+
+    #[test]
+    fn unusable_segment_residue_collapses_to_the_zeroed_form() {
+        // The measured cross-vendor pair: VMX reports the stale cached
+        // descriptor for a null-loaded segment, SVM reports zeros.
+        let intel = Segment {
+            base: 726582208,
+            selector: 0x23,
+            limit: 0xFFFF_FFFF,
+            type_: 1,
+            db: 1,
+            g: 1,
+            unusable: 1,
+            ..Segment::default()
+        };
+        let amd = Segment {
+            base: 726582208,
+            selector: 0x23,
+            unusable: 1,
+            ..Segment::default()
+        };
+        let mut a = VcpuSregs {
+            fs: intel,
+            ..VcpuSregs::default()
+        };
+        let mut b = VcpuSregs {
+            fs: amd,
+            ..VcpuSregs::default()
+        };
+        canonicalize_sregs(&mut a);
+        canonicalize_sregs(&mut b);
+        assert_eq!(a, b);
+        assert_eq!(a.fs.base, 726582208);
+        assert_eq!(a.fs.selector, 0x23);
+        assert_eq!(a.fs.unusable, 1);
+    }
+
+    #[test]
+    fn usable_segments_are_untouched() {
+        let cs = Segment {
+            limit: 0xFFFF_FFFF,
+            selector: 0x10,
+            type_: 11,
+            present: 1,
+            s: 1,
+            l: 1,
+            g: 1,
+            ..Segment::default()
+        };
+        let mut sregs = VcpuSregs {
+            cs,
+            ..VcpuSregs::default()
+        };
+        let before = sregs;
+        canonicalize_sregs(&mut sregs);
+        assert_eq!(sregs, before);
+    }
+
+    #[test]
+    fn compacted_images_are_untouched() {
+        let mut image = init_image(0x3);
+        image[XCOMP_BV..XCOMP_BV + 8].copy_from_slice(&(1u64 << 63 | 0x3).to_le_bytes());
+        let before = image.clone();
+        canonicalize_xsave(&mut image);
+        assert_eq!(image, before);
+    }
+
+    #[test]
+    fn xsave_header_length_boundary_is_fail_closed_and_inclusive() {
+        // One byte short cannot contain XCOMP_BV and must return without an
+        // index panic. Exactly 528 bytes does contain the complete header and
+        // must be canonicalized rather than mistaken for a short image.
+        let mut short = vec![0xa5; XCOMP_BV + 7];
+        let before = short.clone();
+        canonicalize_xsave(&mut short);
+        assert_eq!(short, before);
+
+        let mut exact = init_image(0x2);
+        exact.truncate(XCOMP_BV + 8);
+        exact[MXCSR_MASK].copy_from_slice(&0x0002_FFFFu32.to_le_bytes());
+        exact[LEGACY_TAIL].fill(0xa5);
+        canonicalize_xsave(&mut exact);
+        assert_eq!(exact[MXCSR_MASK], MXCSR_MASK_PINNED);
+        assert!(exact[LEGACY_TAIL].iter().all(|&byte| byte == 0));
+    }
+}

@@ -5,10 +5,10 @@
 //! step 3 of 3, the credibility money-shot: an off-the-shelf `docker run
 //! --network none postgres` runs **deterministically** in the guest.
 //!
-//! These boot the **Postgres-in-Docker workload image** (`harmony-linux/build/bzImage` —
+//! These boot the **Postgres-in-Docker workload image** (`consonance/harmony-linux/build/bzImage` —
 //! the task-36 container-class kernel, unchanged — plus
-//! `harmony-linux/build/initramfs-docker.cpio.gz`, built by
-//! `harmony-linux/linux/build-docker-image.sh`) via
+//! `consonance/harmony-linux/build/initramfs-docker.cpio.gz`, built by
+//! `consonance/harmony-linux/linux/build-docker-image.sh`) via
 //! [`vmm_core::vendor::x86::bringup::boot_linux_selected`]. The guest `/init`
 //! (`docker-init.sh`) brings up cgroup-v2 and runs the **official postgres OCI
 //! image** as a real container — `unshare`d mount/uts/ipc/net/pid namespaces +
@@ -18,7 +18,7 @@
 //! + the loop's stdout/stderr stream to `ttyS0`.
 //!
 //! **Why unshare, not runc/dockerd (the load-bearing finding — see
-//! `harmony-linux/linux/IMPLEMENTATION.md`).** Under consonance's single-vCPU / V-time
+//! `consonance/harmony-linux/linux/IMPLEMENTATION.md`).** Under consonance's single-vCPU / V-time
 //! model, V-time advances only when the guest executes RDTSC/RDMSR(IA32_TSC); any
 //! busy-wait without RDTSC freezes V-time → the tick never fires → deadlock.
 //! **dockerd** busy-spins on gRPC (frozen at "containerd successfully booted");
@@ -84,7 +84,7 @@
 //! wall-clock-bounded — e.g.:
 //!
 //! ```sh
-//! make -C harmony-linux fetch && make -C harmony-linux/linux docker-image    # build the image
+//! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux docker-image    # build the image
 //! # load patched kvm.ko/kvm-intel.ko, then:
 //! taskset -c 2 timeout 3000 cargo test -p vmm-core --test live_postgres_docker \
 //!     -- --ignored --nocapture --test-threads=1 p2_docker_postgres_deterministic_twice_patched
@@ -158,21 +158,25 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `harmony-linux/build/<name>` then `harmony-linux/linux/<name>`.
+/// Read a built guest artifact, trying `consonance/harmony-linux/build/<name>` then `consonance/harmony-linux/linux/<name>`.
 /// Panics loudly (with the build command) if absent — these `#[ignore]`d gates run
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
-         box: `make -C harmony-linux fetch && make -C harmony-linux/linux docker-image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it first on the \
+         box: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux docker-image`."
     );
 }
 
@@ -307,6 +311,8 @@ struct BootOutcome {
     row_uuids: Vec<String>,
     guest_ready: bool,
     step_error: Option<String>,
+    /// Host diagnostic duration from first entry through terminal.
+    wall: Duration,
 }
 
 impl BootOutcome {
@@ -368,6 +374,7 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
         }
     }
     let serial = vmm.serial();
+    let wall = start.elapsed();
     BootOutcome {
         reason,
         steps,
@@ -379,15 +386,16 @@ fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) 
         row_uuids: all_row_uuids(serial),
         guest_ready: find(serial, GUEST_READY),
         step_error,
+        wall,
     }
 }
 
 /// Boot the Docker image on the patched backend at `seed`, run it to a terminal,
 /// and return (serial capture, `state_hash`, outcome). As in `live_postgres.rs`
-/// the [`Vmm`] — and with it the `perf_event` work counter that drives V-time —
+/// the [`Vmm`] — and with it the exit-count clock that drives V-time —
 /// is **dropped before returning**, so two same-seed runs in one process don't
 /// keep two pinned PMU counters open at once (which would multiplex and perturb
-/// the branch count → a divergent V-time). One counter at a time is exact.
+/// the exit count → a divergent V-time). One counter at a time is exact.
 fn boot_docker(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-docker.cpio.gz");
@@ -407,9 +415,10 @@ fn boot_docker(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
 
 fn report(tag: &str, out: &BootOutcome) {
     eprintln!(
-        "\n[{tag}] steps={} terminal={:?} container_up={} pg_ready={} workload_done={} \
+        "\n[{tag}] steps={} wall_ns={} terminal={:?} container_up={} pg_ready={} workload_done={} \
          final_row={} uuids={} GUEST_READY={} step_error={:?}",
         out.steps,
+        out.wall.as_nanos(),
         out.reason,
         out.container_up,
         out.pg_ready,
@@ -422,6 +431,26 @@ fn report(tag: &str, out: &BootOutcome) {
     if let Some((uuid, t)) = &out.sample_uuid_ts {
         eprintln!("[{tag}] final-row sample: uuid={uuid} t={t}");
     }
+}
+
+/// Write an optional descriptive-x86 diagnostic beside M3's intrinsic ARM report.
+fn write_m3_x86_diagnostic(path: &std::path::Path, out: &BootOutcome) -> std::io::Result<()> {
+    let wall_ns = u64::try_from(out.wall.as_nanos()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "descriptive-x86 diagnostic duration does not fit u64 nanoseconds",
+        )
+    })?;
+    std::fs::write(
+        path,
+        format!(
+            "format consonance.m3-x86-diagnostic.v1\n\
+             payload postgres-container-task38\n\
+             mode descriptive-x86\n\
+             rows {WORKLOAD_N}\n\
+             wall_ns {wall_ns}\n"
+        ),
+    )
 }
 
 /// Assert the workload's UUID/time columns are *well-formed* in `out`: the final row
@@ -514,6 +543,12 @@ fn p1_docker_postgres_runs_and_streams_patched() {
         out.terminated_cleanly(),
         "Gate 1: the guest must power off cleanly within budget"
     );
+    if let Some(path) = std::env::var_os("M3_X86_DIAGNOSTIC_REPORT") {
+        let path = std::path::PathBuf::from(path);
+        write_m3_x86_diagnostic(&path, &out)
+            .unwrap_or_else(|error| panic!("cannot write M3 x86 diagnostic {path:?}: {error}"));
+        eprintln!("[p1] wrote optional M3 descriptive-x86 diagnostic to {path:?}");
+    }
 }
 
 // --- Gate 2: deterministic twice (the milestone) ---------------------------

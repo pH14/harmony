@@ -6,8 +6,7 @@
 //! backend seam (tasks/15 §"Mock-backend testing").
 
 use vmm_backend::{
-    Backend, CommonExit, Exit, Gpa, MockBackend, Moment, MpState, VcpuState, X86, X86Exit,
-    X86Policy,
+    Backend, CommonExit, Exit, Gpa, MockBackend, MpState, VcpuState, X86, X86Exit, X86Policy,
 };
 use vmm_core::vendor::x86::contract::{cpuid_model, msr_filter_allow};
 use vmm_core::vmm::{GuestRam, Step, TerminalReason, Vmm, VmmError};
@@ -399,17 +398,6 @@ fn step_after_terminal_is_idempotent() {
     assert_eq!(vmm.run().unwrap().reason, TerminalReason::Idle);
     // A further step() returns the latched terminal without re-running the backend.
     assert_eq!(vmm.step().unwrap(), Step::Terminal(TerminalReason::Idle));
-}
-
-#[test]
-fn deadline_exit_fails_closed() {
-    // A `Deadline` only ever answers `run_until`, which the VMM issues solely on the
-    // V-time-wired determinism path (task 47). One arriving with **no V-time wired**
-    // (this bring-up VMM) is a backend contract violation → loud, never absorbed.
-    let mut vmm = vmm_with(vec![Exit::Common(CommonExit::Deadline {
-        reached: Moment(0),
-    })]);
-    assert!(matches!(vmm.run(), Err(VmmError::ContractViolation(_))));
 }
 
 #[test]

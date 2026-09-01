@@ -8,7 +8,7 @@
 //! **inside** a vendor submodule is that architecture's own: the CPU contract
 //! and its installed policy, the exit dispatch and dispositions, the boot
 //! loaders and entry state, the interrupt fabric and platform device models, the
-//! host-homogeneity probe, the work-counter event, and the state records.
+//! host-homogeneity probe, the exit-count-clock event, and the state records.
 //!
 //! [`Vendor`] is how the engine reaches the vendor half without naming it: the
 //! engine's [`Vmm`] holds `<B::A as Vendor>::Devices` and dispatches arch exits
@@ -25,8 +25,9 @@
 //! trait-freeze memo (the ARM spike) owns the freeze decision.
 
 use control_proto::RegsView;
-use vmm_backend::{Arch, Backend, Gpa};
+use vmm_backend::{Arch, Backend, Exit, Gpa};
 
+use crate::virtual_time::NormalizedEventClass;
 use crate::vmm::{Step, Vmm, VmmError};
 
 pub mod arm64;
@@ -118,6 +119,21 @@ pub trait Vendor: Arch + Sized {
         size: u8,
         write: Option<u64>,
     ) -> Result<Step, VmmError>;
+
+    /// Vendor-specific work after the engine has published the exit's pvclock
+    /// frame and before the next entry. ARM uses this to compare the published
+    /// guest clock with its paravirtual clockevent deadline.
+    fn post_exit<B: Backend<A = Self>>(_vmm: &mut Vmm<B>) -> Result<(), VmmError> {
+        Ok(())
+    }
+
+    /// Normalize one backend exit for the production virtual_time trace. A
+    /// descriptive-only vendor may return `None`; a virtual_time composition
+    /// that returns `Some` records the complete payload before dispatch mutates
+    /// device state.
+    fn normalize_virtual_time_exit(_exit: &Exit<Self>) -> Option<(NormalizedEventClass, Vec<u8>)> {
+        None
+    }
 
     // --- interrupt fabric ----------------------------------------------------
 
@@ -213,7 +229,7 @@ pub trait Vendor: Arch + Sized {
 
     /// Append the vendor's own device hash chunks (x86: `LAPC` + `LEGY`), in the
     /// vendor's fixed order, at the engine's fixed position in the blob.
-    fn hash_device_chunks(devices: &Self::Devices, out: &mut Vec<u8>);
+    fn hash_device_chunks(vcpu: &Self::VcpuState, devices: &Self::Devices, out: &mut Vec<u8>);
 
     /// The wire register view for the `regs` observation verb (task 80): which
     /// registers a machine *has* is per-arch, so the vendor fills the view. The
@@ -234,7 +250,12 @@ pub trait Vendor: Arch + Sized {
     /// diagnostic component matches, defeating localization. **Additive only**:
     /// a vendor appends *new* labels; it never renames an existing one (the O1
     /// box localizer pins `regs`/`desc-tables`). The default appends nothing.
-    fn device_components(_devices: &Self::Devices, _out: &mut Vec<(&'static str, [u8; 32])>) {}
+    fn device_components(
+        _vcpu: &Self::VcpuState,
+        _devices: &Self::Devices,
+        _out: &mut Vec<(&'static str, [u8; 32])>,
+    ) {
+    }
 
     /// Whether the vCPU carries an event-injection record a quiescent-only codec
     /// would reject (the full task-39 set, inert residuals included).

@@ -1,39 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The idle-resume planner: [`IdlePlanner`], [`IdleAdvance`].
 //!
-//! The dual of [`InjectionPlanner`](crate::InjectionPlanner). Where the
-//! injection planner reaches a scheduled event **by executing** (single-stepping
-//! the retired-branch counter to an exact work count), the idle planner reaches
-//! it **by jumping**: when the guest goes idle (`HLT`) waiting for a timer that
-//! will come, the run loop warps the virtual clock forward to the armed timer's
-//! deadline `D` and resumes — *without executing a single instruction*. The two
-//! together make the run loop a discrete-event clock: always advance V-time to
-//! the next event, by executing when there is runnable work and by jumping when
-//! there is not.
+//! When the guest goes idle (`HLT`) waiting for a timer that will come, the run
+//! loop advances the virtual clock to the armed timer's deadline `D` and
+//! resumes. This is the idle case of the same discrete-event clock used for VM
+//! exits: runnable guests advance by the configured exit duration; idle guests
+//! advance by the deterministic gap to the next timer.
 //!
 //! ## Mechanism: where the jump lands in the clock model
 //!
-//! V-time is modelled as
-//! `guest_vtime = execution_vtime(real_retired_branches) + accumulated_idle`,
-//! which is exactly [`VClock`](crate::VClock):
-//! `vns(work) = vns_base + work·ratio`, with `work·ratio` the execution
-//! component and `vns_base` the idle accumulator (idle-skip + snapshot restore;
-//! see the crate docs). An idle jump adds `D − now` to **`vns_base` only**
-//! ([`VClock::advance_idle`](crate::VClock::advance_idle)) — it **never** touches
-//! the retired-branch `work`. That is the load-bearing invariant: a jump
-//! executes no instructions, so it must fabricate **zero** retired branches, and
-//! the execution-derived clock (and the `B ≡ A` counter equality the injection
-//! path relies on) stays true over the execution component.
+//! [`VClock`](crate::VClock) is a saturating virtual-nanosecond accumulator. An
+//! idle jump applies `D − now` through [`VClock::advance`](crate::VClock::advance),
+//! exactly like any other deterministic clock increment. It does not consult a
+//! host clock, hardware counter, instruction count, or execution frequency.
 //!
 //! ## Policy: land exactly at `D` (the deterministic base — and the fault seam)
 //!
 //! [`IdlePlanner::plan`] is the single point that *decides* how far to advance.
 //! The base, deterministic clock always lands **exactly at the deadline** `D`
 //! (`advance = D − now`, saturating), and **zero** when `D` is already due — the
-//! overdue/at-deadline fast path (fire immediately, no jump), the HLT analogue
-//! of the injection planner's [`PlanOutcome::TargetInPast`](crate::PlanOutcome).
+//! overdue/at-deadline fast path (fire immediately, no jump).
 //! Every input is a pure function of the seed (`D` from the guest's own timer
-//! programming, `now` from the work-derived clock), so two same-seed runs idle
+//! programming, `now` from the exit-count-derived clock), so two same-seed runs idle
 //! at the same point and jump the same amount — the idle period is a
 //! deterministic constant, never a nondeterminism source.
 //!
@@ -47,7 +35,7 @@
 /// The planned idle advance produced by [`IdlePlanner::plan`].
 ///
 /// Pure data: the caller applies it to the clock
-/// ([`VClock::advance_idle`](crate::VClock::advance_idle)`(advance_vns)`), then
+/// ([`VClock::advance`](crate::VClock::advance)`(advance_vns)`), then
 /// arms/injects the timer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleAdvance {
@@ -62,21 +50,17 @@ pub struct IdleAdvance {
     pub landed_vns: u64,
     /// `true` iff the deadline was already due (`deadline_vns <= now_vns`), so
     /// [`Self::advance_vns`] is `0`. The idle resume should then inject the
-    /// timer immediately — the HLT analogue of
-    /// [`PlanOutcome::TargetInPast`](crate::PlanOutcome::TargetInPast).
+    /// timer immediately.
     pub already_due: bool,
 }
 
 /// Decides how far to warp the virtual clock forward on an idle (`HLT`) resume —
-/// the idle-jump dual of [`InjectionPlanner`](crate::InjectionPlanner). See the
-/// module docs for the mechanism (jump only the idle accumulator, never the
-/// retired-branch count) and the policy/fault seam.
+/// See the module docs for the deterministic clock mechanism and policy seam.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IdlePlanner {
     // A zero-sized seam: the planner is stateless today (the only policy is
     // "land exactly at D"), but constructing it through `new()` keeps a future
-    // fault-overlay policy a private, non-breaking field addition — mirroring
-    // `InjectionPlanner`'s `PlannerConfig`-carrying shape.
+    // fault-overlay policy a private, non-breaking field addition.
     _seam: (),
 }
 
@@ -94,8 +78,8 @@ impl IdlePlanner {
     ///   deadline is already due (overdue/at-deadline ⇒ zero jump, fire now);
     /// - `landed_vns = max(now_vns, deadline_vns)` — the clock never moves
     ///   backward, and a far-future `deadline_vns` simply yields a large
-    ///   advance that [`VClock::advance_idle`](crate::VClock::advance_idle)
-    ///   saturates into `vns_base` (no wrap).
+    ///   advance that [`VClock::advance`](crate::VClock::advance) saturates (no
+    ///   wrap).
     ///
     /// By construction `landed_vns == now_vns + advance_vns` and
     /// `already_due == (advance_vns == 0)`.
@@ -122,11 +106,9 @@ mod tests {
     use super::*;
     use crate::{VClock, VClockConfig};
 
-    /// A 1:1 clock (so `vns(work) == vns_base + work`, exact), with `vns_base`.
+    /// A clock starting at `vns_base`.
     fn clock(vns_base: u64) -> VClock {
         VClock::new(VClockConfig {
-            ratio_num: 1,
-            ratio_den: 1,
             guest_hz: 2_000_000_000,
             guest_base: 0,
             vns_base,
@@ -146,9 +128,9 @@ mod tests {
             }
         );
         // landed == now + advance, and the clock lands at D when applied.
-        let mut clk = clock(100); // vns(0) == 100 == now
-        clk.advance_idle(advance.advance_vns);
-        assert_eq!(clk.vns(0), 250, "the jump lands the clock exactly at D");
+        let mut clk = clock(100);
+        clk.advance(advance.advance_vns);
+        assert_eq!(clk.vns(), 250, "the jump lands the clock exactly at D");
     }
 
     #[test]
@@ -189,9 +171,13 @@ mod tests {
         assert!(!advance.already_due);
 
         let mut clk = clock(10);
-        clk.advance_idle(advance.advance_vns);
-        assert_eq!(clk.vns(0), u64::MAX, "clock clamps at the saturation point");
-        assert_eq!(clk.vns(5), u64::MAX, "still monotone after saturation");
+        clk.advance(advance.advance_vns);
+        assert_eq!(clk.vns(), u64::MAX, "clock clamps at the saturation point");
+        assert_eq!(
+            clk.vns(),
+            u64::MAX,
+            "still saturated after another observation"
+        );
     }
 
     #[test]

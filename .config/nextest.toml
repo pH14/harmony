@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[profile.mutants]
+fail-fast = true
+
+[[profile.mutants.overrides]]
+filter = 'test(control::tests::idle_hlt_before_fault_recorded_env_reproduces)'
+# The unmutated property test completes in about 20 seconds locally, but can
+# exceed 45 seconds on a hosted runner while all 16 mutation shards compile in
+# parallel. A prerequisite-destroying mutant can otherwise leave its control
+# loop unbounded after another test has already killed that mutant.
+slow-timeout = { period = "120s", terminate-after = 1 }
+
+[[profile.mutants.overrides]]
+filter = 'test(control::tests::arbitrary_schedule_applied_twice_is_identical) | test(control::tests::verb_sequence_recorded_env_reproduces_live_hash)'
+# These normally complete in about 5s and 20s locally (the latter has reached
+# 55s under full hosted-shard load). Checkpoint mutants can otherwise leave
+# both loops running after a direct truth-table test has already killed them.
+slow-timeout = { period = "75s", terminate-after = 1 }

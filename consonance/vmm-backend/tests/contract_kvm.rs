@@ -115,9 +115,6 @@ fn stub(scenario: Scenario, patched: bool) -> Option<Vec<u8>> {
         // rdrand ax — only the determinism backend traps it.
         Scenario::Rdrand if patched => vec![0x0F, 0xC7, 0xF0],
         Scenario::Rdrand => return None,
-        // dec cx ; jnz -3 ; jmp -5 — a conditional-branch-retiring loop that
-        // never exits on its own, so only a `run_until` deadline stops it.
-        Scenario::BusyLoop => return Some(vec![0x49, 0x75, 0xFD, 0xEB, 0xFB]),
     };
     let mut code = head;
     code.extend_from_slice(&HALT_LOOP);
@@ -269,12 +266,6 @@ impl<B: LiveBackend> BackendFixture for KvmFixture<B> {
         policy()
     }
 
-    fn implements_run_until(&self) -> bool {
-        // Bring-up stock `KvmBackend` answers `Unsupported`; the determinism
-        // backend implements the overflow-arm + exact-landing path.
-        self.patched
-    }
-
     fn dirty_pages(&mut self, backend: &mut B) -> Option<Vec<u64>> {
         backend.load(Gpa(DIRTY_ENTRY), DIRTY_STUB);
         enter_real_mode_at(backend, DIRTY_ENTRY);
@@ -283,8 +274,8 @@ impl<B: LiveBackend> BackendFixture for KvmFixture<B> {
     }
 }
 
-/// The exams that must run on **any** live backend. `run_until`, the trapped
-/// clock/RNG reads, and the CPUID/hypercall cells are backend-dependent and are
+/// The exams that must run on **any** live backend. Trapped clock/RNG reads and
+/// the CPUID/hypercall cells are backend-dependent and are
 /// asserted per backend below.
 const REQUIRED_EVERYWHERE: &[&str] = &[
     "ordering/not_configured",
@@ -314,9 +305,6 @@ fn stock_kvm_backend_passes_the_contract_exam() {
     println!("[CONTRACT] {report:#?}");
 
     assert_ran(&report, REQUIRED_EVERYWHERE);
-    // Stock KVM declines `run_until` — and the exam checks that it declines
-    // *loudly*, with the documented `Unsupported`, rather than misbehaving.
-    assert_ran(&report, &["exactness/run_until_declines_loudly"]);
     // Its determinism capabilities are all false, so the capability-keyed
     // exactness exams are declined by design and recorded as such.
     assert!(
@@ -339,15 +327,11 @@ fn patched_kvm_backend_passes_the_contract_exam() {
     println!("[CONTRACT] {report:#?}");
 
     assert_ran(&report, REQUIRED_EVERYWHERE);
-    // The determinism backend implements the deadline path and advertises the
-    // trapped clock and RNG, so those exams must actually run.
+    // The determinism backend advertises trapped clock and RNG, so those exams
+    // must actually run.
     assert_ran(
         &report,
         &[
-            "exactness/deadline_is_late_only",
-            "exactness/guest_exit_preempts_the_deadline",
-            "exactness/deadline_monotonicity",
-            "exactness/deadline_is_repeatable",
             "exactness/deterministic_tsc_traps",
             "exactness/deterministic_rng_traps",
         ],

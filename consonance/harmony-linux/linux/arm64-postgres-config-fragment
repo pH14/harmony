@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# M3 real-payload additions layered on the frozen arm64 base. This includes
+# only the kernel facilities used by the namespace/chroot PostgreSQL container
+# and its Unix-socket acceptance workload.
+
+CONFIG_BINFMT_SCRIPT=y
+CONFIG_PROC_FS=y
+CONFIG_FUTEX=y
+CONFIG_MMU=y
+CONFIG_SHMEM=y
+CONFIG_TMPFS=y
+CONFIG_FILE_LOCKING=y
+CONFIG_MULTIUSER=y
+CONFIG_ADVISE_SYSCALLS=y
+
+# The acceptance payload runs in fresh mount/UTS/IPC/network/PID namespaces.
+CONFIG_NAMESPACES=y
+CONFIG_UTS_NS=y
+CONFIG_IPC_NS=y
+CONFIG_PID_NS=y
+CONFIG_NET_NS=y
+CONFIG_NET=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+
+# PostgreSQL's normal Linux event and synchronization surfaces.
+CONFIG_EPOLL=y
+CONFIG_EVENTFD=y
+CONFIG_SIGNALFD=y
+CONFIG_TIMERFD=y
+CONFIG_INOTIFY_USER=y
+CONFIG_SECCOMP=y
+
+# A private cgroup hierarchy is mounted by the acceptance init. No controller
+# is required for correctness; the namespace is the isolation boundary.
+CONFIG_CGROUPS=y
+
+# Early userspace creates the console/null/kmsg nodes and mounts devtmpfs.
+CONFIG_DEVMEM=y
+# CONFIG_STRICT_DEVMEM is not set

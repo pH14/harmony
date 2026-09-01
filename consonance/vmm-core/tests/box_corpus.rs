@@ -34,7 +34,7 @@
 //! leaking into the saved architectural state; this breakdown localizes it.
 //!
 //! Box-only because it needs the LOADED patched `/dev/kvm`
-//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), `perf_event`, and the `det-cfl-v1`
+//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
 //! host; `#[ignore]`d out of the default lane (like `live_determinism.rs`) so a
 //! plain `cargo nextest` shows it **not-run**, never a vacuous green. Run on the
 //! box (patched modules loaded, then reverted to stock afterwards), CPU-pinned:
@@ -495,15 +495,15 @@ fn c1_corpus_o1_diagnostic() {
 
 /// Box-only **N-run O1 localizer for the two payloads PR #51 still fails**
 /// (`#[ignore]`d, non-asserting). After task 27 (#53) made `Vmm::state_hash`'s `VTIM`
-/// chunk skid-free, `insn-rdtsc` / `insn-rng` still report O1=FAIL with the telling
+/// chunk deterministic, `insn-rdtsc` / `insn-rng` still report O1=FAIL with the telling
 /// `acceptance-suite` detail "diverged in (0, 1] but bisection could not localize it: state
 /// hashes are equal at hi = 1: no divergence to bisect". That message is dispositive:
 /// `check_determinism` → `compare_runs` reached the `(Halted, Halted)` branch with
 /// **equal `work()`** (else it would be a `HaltMismatch`, not "diverged"), so the
 /// divergence signal is the terminal `CorpusMachine::state_hash` — and the bisector's
 /// *next* re-spawn found it equal, i.e. the inequality is **intermittent**, not the
-/// deterministic work counter. The four passing items never hit a V-time intercept (so
-/// their `VTIM` is trivially constant); only these two advance `last_intercept_work` /
+/// deterministic virtual-time clock. The four passing items never hit a V-time intercept (so
+/// their `VTIM` is trivially constant); only these two advance `assigned_clock` /
 /// the entropy stream, which is why the residual shows up only here.
 ///
 /// This test repeats the exact O1 comparison `N` times for **just those two payloads**
@@ -513,12 +513,12 @@ fn c1_corpus_o1_diagnostic() {
 /// - `CorpusMachine::state_hash` is **always MATCH** across all `N` direct pairs yet
 ///   `check_determinism` still FAILs ⇒ the failure is in the oracle's *detection* (a
 ///   flake the single-shot diagnostic missed but `compare_runs`' separate spawns hit) —
-///   make the O1 comparison skid-robust; or
+///   make the O1 comparison exit-boundary variability-robust; or
 /// - it is **intermittently DIVERGE** ⇒ residual run-to-run non-determinism, and the
 ///   per-component histogram names the culprit (`vtim:eff-vns` ⇒ the V-time anchor
-///   `last_intercept_work`; `xsave-*` ⇒ an FPU init/host-leak; a `RAM:*` region ⇒ guest
+///   `assigned_clock`; `xsave-*` ⇒ an FPU init/host-leak; a `RAM:*` region ⇒ guest
 ///   scratch). `vtim:work-raw` / `vtim:last-intercept` are diagnostic-only (NOT hashed);
-///   `vtim:work-raw` DIVERGE *without* a hashed component is the post-intercept skid #53
+///   `vtim:work-raw` DIVERGE *without* a hashed component is the post-intercept exit-boundary variability #53
 ///   excludes by design — not a failure.
 ///
 /// Per run it prints both machines' run outcome + `work()` (the work/run_to comparison
@@ -633,7 +633,7 @@ fn c1_corpus_o1_repeat_diagnostic() {
     }
     eprintln!(
         "[repeat] done. READ-OFF: machine.state_hash DIVERGE == 0 but check_determinism FAIL > 0 \
-         ⇒ ORACLE DETECTION issue (make the O1 comparison skid-robust). machine.state_hash DIVERGE \
+         ⇒ ORACLE DETECTION issue (make the O1 comparison exit-boundary variability-robust). machine.state_hash DIVERGE \
          > 0 ⇒ RESIDUAL NON-DETERMINISM — the histogram names the hashed component (vtim:eff-vns ⇒ \
          V-time anchor; xsave-* ⇒ FPU host-leak; RAM:* ⇒ guest scratch). vtim:work-raw / \
          vtim:last-intercept are diagnostic-only (NOT in the hash)."

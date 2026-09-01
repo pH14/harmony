@@ -10,9 +10,9 @@
 //! `gen_random_uuid()`/`clock_timestamp()` workload, and it comes out
 //! **bit-identical across two same-seed runs**.
 //!
-//! These boot `harmony-linux/build/bzImage` (the *unchanged* task-36 container-class
-//! kernel) + `harmony-linux/build/initramfs-k3s.cpio.gz` (built by
-//! `harmony-linux/linux/build-k3s-image.sh`) via [`vmm_core::vendor::x86::bringup::boot_linux_selected`],
+//! These boot `consonance/harmony-linux/build/bzImage` (the *unchanged* task-36 container-class
+//! kernel) + `consonance/harmony-linux/build/initramfs-k3s.cpio.gz` (built by
+//! `consonance/harmony-linux/linux/build-k3s-image.sh`) via [`vmm_core::vendor::x86::bringup::boot_linux_selected`],
 //! selecting the k3s `/init` with `rdinit=/k3s-init` (`k3s-init.sh`). That init
 //! brings up the cluster, waits for the postgres pod Ready, applies the client pod,
 //! and streams the client's workload output to `ttyS0`.
@@ -20,7 +20,7 @@
 //! **The unlock (tasks 47/52/54).** kubelet + containerd + apiserver + scheduler +
 //! controller-manager + kube-proxy + flannel are all Go/multi-goroutine services
 //! that busy-spin and depend on preemption. The V-time LAPIC timer **preempts** a
-//! busy-spinning thread at the seed-deterministic V-time deadline (`run_until`), the
+//! busy-spinning thread at the seed-deterministic V-time deadline (`run_with_deadline`), the
 //! idle-HLT resume warps to the next deadline (task 52), and the xAPIC MMIO is routed
 //! to the deterministic LAPIC model (task 54). So the Go schedulers run, the cluster
 //! converges, and the whole interleaving is a pure function of the seed.
@@ -56,7 +56,7 @@
 //! (build the image first), patched modules loaded, CPU-pinned, wall-clock-bounded:
 //!
 //! ```sh
-//! make -C harmony-linux fetch && make -C harmony-linux/linux k3s-image     # build the image
+//! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux k3s-image     # build the image
 //! # load patched kvm.ko/kvm-intel.ko (the ORIGINAL stable module), then:
 //! taskset -c 2 timeout 14400 cargo test -p vmm-core --test live_k3s_postgres \
 //!     -- --ignored --nocapture --test-threads=1 k2_k3s_postgres_deterministic_twice_patched
@@ -117,7 +117,7 @@ const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliabl
 /// bring-up is bounded by the wall budget + the external `timeout`).
 const MAX_STEPS: u64 = 2_000_000_000_000;
 /// Wall-clock budget inside the test. k3s is FAR heavier than bare runc (the whole
-/// Go control plane + agent, driven forward by V-time preemption single-stepping);
+/// Go control plane + agent, driven forward by V-time preemption exit-driven);
 /// this is a deliberate milestone gate, run with a matching (larger) external
 /// `timeout`. Overridable via `WALL_BUDGET_SECS`.
 const WALL_BUDGET_SECS_DEFAULT: u64 = 14_400;
@@ -157,21 +157,25 @@ fn repo_root() -> PathBuf {
         .join("..")
 }
 
-/// Read a built guest artifact, trying `harmony-linux/build/<name>` then `harmony-linux/linux/<name>`.
+/// Read a built guest artifact, trying `consonance/harmony-linux/build/<name>` then `consonance/harmony-linux/linux/<name>`.
 /// Panics loudly (with the build command) if absent — these `#[ignore]`d gates run
 /// only on the box, where the image is built first.
 fn require_artifact(name: &str) -> Vec<u8> {
     for p in [
-        repo_root().join("harmony-linux/build").join(name),
-        repo_root().join("harmony-linux/linux").join(name),
+        repo_root()
+            .join("consonance/harmony-linux/build")
+            .join(name),
+        repo_root()
+            .join("consonance/harmony-linux/linux")
+            .join(name),
     ] {
         if let Ok(bytes) = std::fs::read(&p) {
             return bytes;
         }
     }
     panic!(
-        "guest artifact `{name}` not found in harmony-linux/build or harmony-linux/linux — build it first on the \
-         box: `make -C harmony-linux fetch && make -C harmony-linux/linux k3s-image`."
+        "guest artifact `{name}` not found in consonance/harmony-linux/build or consonance/harmony-linux/linux — build it first on the \
+         box: `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux k3s-image`."
     );
 }
 
@@ -490,7 +494,6 @@ fn map_counts(c: &vmm_backend::ExitCounts) -> telemetry::ExitCounts {
         rdseed: c.rdseed,
         hlt: c.idle,
         shutdown: c.shutdown,
-        deadline: c.deadline,
     }
 }
 
@@ -520,7 +523,7 @@ fn open_recorder(tag: &str) -> Option<Recorder> {
 /// Boot the k3s image on the patched backend at `seed`, run it to a terminal, and
 /// return (serial capture, `state_hash`, outcome). `tag` names the per-boot
 /// telemetry recording (a viewer artifact; see [`open_recorder`]). As in
-/// `live_runc_postgres.rs` the [`Vmm`] — and its `perf_event` work counter — is
+/// `live_runc_postgres.rs` the [`Vmm`] — and its exit-count clock — is
 /// **dropped before returning**, so two same-seed runs in one process don't keep two
 /// pinned PMU counters open at once (which would multiplex and perturb the branch
 /// count). One counter at a time is exact.

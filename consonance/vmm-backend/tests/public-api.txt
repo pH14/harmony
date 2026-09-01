@@ -24,6 +24,7 @@ pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuStat
 pub struct vmm_backend::arch::arm64::Arm64Caps
 pub vmm_backend::arch::arm64::Arm64Caps::deterministic_cntvct: bool
 pub vmm_backend::arch::arm64::Arm64Caps::enforces_cntv_cval: bool
+pub vmm_backend::arch::arm64::Arm64Caps::in_kernel_gic: bool
 impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps
 pub fn vmm_backend::arch::arm64::Arm64Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::arch::arm64::Arm64CoreRegs
@@ -34,9 +35,43 @@ pub vmm_backend::arch::arm64::Arm64CoreRegs::sp: u64
 pub vmm_backend::arch::arm64::Arm64CoreRegs::sp_el1: u64
 pub vmm_backend::arch::arm64::Arm64CoreRegs::spsr_el1: u64
 pub vmm_backend::arch::arm64::Arm64CoreRegs::x: [u64; 31]
+pub struct vmm_backend::arch::arm64::Arm64DebugState
+pub vmm_backend::arch::arm64::Arm64DebugState::breakpoint_control: [u64; 16]
+pub vmm_backend::arch::arm64::Arm64DebugState::breakpoint_value: [u64; 16]
+pub vmm_backend::arch::arm64::Arm64DebugState::mdscr_el1: u64
+pub vmm_backend::arch::arm64::Arm64DebugState::trap_debug_exceptions: bool
+pub vmm_backend::arch::arm64::Arm64DebugState::trap_debug_reg_accesses: bool
+pub vmm_backend::arch::arm64::Arm64DebugState::watchpoint_control: [u64; 16]
+pub vmm_backend::arch::arm64::Arm64DebugState::watchpoint_value: [u64; 16]
+pub struct vmm_backend::arch::arm64::Arm64GicState
+pub vmm_backend::arch::arm64::Arm64GicState::active: [u32; 32]
+pub vmm_backend::arch::arm64::Arm64GicState::cntv_ctl: u64
+pub vmm_backend::arch::arm64::Arm64GicState::cntv_cval: u64
+pub vmm_backend::arch::arm64::Arm64GicState::enable: [u32; 32]
+pub vmm_backend::arch::arm64::Arm64GicState::gicd_ctlr: u32
+pub vmm_backend::arch::arm64::Arm64GicState::group: [u32; 32]
+pub vmm_backend::arch::arm64::Arm64GicState::igrpen1: bool
+pub vmm_backend::arch::arm64::Arm64GicState::impl_spis: u32
+pub vmm_backend::arch::arm64::Arm64GicState::line_level: [u32; 32]
+pub vmm_backend::arch::arm64::Arm64GicState::pending: [u32; 32]
+pub vmm_backend::arch::arm64::Arm64GicState::pmr: u8
+pub vmm_backend::arch::arm64::Arm64GicState::priority: [u8; 1020]
+pub vmm_backend::arch::arm64::Arm64GicState::timer_fired: bool
+pub vmm_backend::arch::arm64::Arm64GicState::timer_hz: u64
+pub vmm_backend::arch::arm64::Arm64GicState::timer_intid: u32
+pub vmm_backend::arch::arm64::Arm64GicState::version: u32
+impl core::default::Default for vmm_backend::Arm64GicState
+pub fn vmm_backend::Arm64GicState::default() -> Self
+pub struct vmm_backend::arch::arm64::Arm64InterruptState
+pub vmm_backend::arch::arm64::Arm64InterruptState::fiq: bool
+pub vmm_backend::arch::arm64::Arm64InterruptState::irq: bool
 pub struct vmm_backend::arch::arm64::Arm64Policy
 pub vmm_backend::arch::arm64::Arm64Policy::id_regs: vmm_backend::arch::arm64::IdRegModel
 pub vmm_backend::arch::arm64::Arm64Policy::sysreg_traps: vmm_backend::arch::arm64::SysregTrapPolicy
+pub struct vmm_backend::arch::arm64::Arm64SimdFpState
+pub vmm_backend::arch::arm64::Arm64SimdFpState::fpcr: u64
+pub vmm_backend::arch::arm64::Arm64SimdFpState::fpsr: u64
+pub vmm_backend::arch::arm64::Arm64SimdFpState::q: [[u8; 16]; 32]
 pub struct vmm_backend::arch::arm64::Arm64SysregFile
 pub vmm_backend::arch::arm64::Arm64SysregFile::cntkctl_el1: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::cpacr_el1: u64
@@ -52,8 +87,20 @@ pub vmm_backend::arch::arm64::Arm64SysregFile::ttbr1_el1: u64
 pub vmm_backend::arch::arm64::Arm64SysregFile::vbar_el1: u64
 pub struct vmm_backend::arch::arm64::Arm64VcpuState
 pub vmm_backend::arch::arm64::Arm64VcpuState::core: vmm_backend::Arm64CoreRegs
+pub vmm_backend::arch::arm64::Arm64VcpuState::debug: vmm_backend::Arm64DebugState
+pub vmm_backend::arch::arm64::Arm64VcpuState::gic: core::option::Option<vmm_backend::Arm64GicState>
+pub vmm_backend::arch::arm64::Arm64VcpuState::interrupts: vmm_backend::Arm64InterruptState
 pub vmm_backend::arch::arm64::Arm64VcpuState::mp_state: vmm_backend::MpState
+pub vmm_backend::arch::arm64::Arm64VcpuState::simd_fp: vmm_backend::Arm64SimdFpState
 pub vmm_backend::arch::arm64::Arm64VcpuState::sysregs: vmm_backend::Arm64SysregFile
+pub vmm_backend::arch::arm64::Arm64VcpuState::vtimer: vmm_backend::Arm64VtimerState
+pub struct vmm_backend::arch::arm64::Arm64VtimerState
+pub vmm_backend::arch::arm64::Arm64VtimerState::cntv_ctl_el0: u64
+pub vmm_backend::arch::arm64::Arm64VtimerState::cntv_cval_el0: u64
+pub vmm_backend::arch::arm64::Arm64VtimerState::masked: bool
+pub vmm_backend::arch::arm64::Arm64VtimerState::offset: u64
+impl core::default::Default for vmm_backend::Arm64VtimerState
+pub fn vmm_backend::Arm64VtimerState::default() -> Self
 #[repr(transparent)] pub struct vmm_backend::arch::arm64::GicIntId(pub u32)
 impl vmm_backend::arch::arm64::GicIntId
 pub const vmm_backend::arch::arm64::GicIntId::MAX_SPI: u32
@@ -65,7 +112,8 @@ pub struct vmm_backend::arch::arm64::IdRegModel
 pub vmm_backend::arch::arm64::IdRegModel::regs: alloc::collections::btree::map::BTreeMap<u32, u64>
 pub struct vmm_backend::arch::arm64::SysregTrapPolicy
 pub vmm_backend::arch::arm64::SysregTrapPolicy::trapped: alloc::collections::btree::set::BTreeSet<u32>
-pub const vmm_backend::arch::arm64::RAW_BR_RETIRED: u64
+pub const vmm_backend::arch::arm64::ARM64_GIC_BITMAP_WORDS: usize
+pub const vmm_backend::arch::arm64::ARM64_GIC_PRIORITY_BYTES: usize
 pub mod vmm_backend::arch::x86
 pub enum vmm_backend::arch::x86::Injection
 pub vmm_backend::arch::x86::Injection::Interrupt
@@ -224,6 +272,9 @@ pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::arch::x86::X86Policy
 pub vmm_backend::arch::x86::X86Policy::cpuid: vmm_backend::CpuidModel
 pub vmm_backend::arch::x86::X86Policy::msr_filter: vmm_backend::MsrFilter
+pub fn vmm_backend::arch::x86::canonicalize_regs(&mut vmm_backend::VcpuRegs)
+pub fn vmm_backend::arch::x86::canonicalize_sregs(&mut vmm_backend::VcpuSregs)
+pub fn vmm_backend::arch::x86::canonicalize_xsave(&mut [u8])
 pub trait vmm_backend::arch::Arch
 pub type vmm_backend::arch::Arch::Caps: vmm_backend::arch::ArchCaps
 pub type vmm_backend::arch::Arch::Completion: core::fmt::Debug
@@ -267,7 +318,6 @@ pub mod vmm_backend::contract
 pub enum vmm_backend::contract::DeclineReason
 pub vmm_backend::contract::DeclineReason::CapabilityAbsent(&'static str)
 pub vmm_backend::contract::DeclineReason::NoDirtyLog
-pub vmm_backend::contract::DeclineReason::NoRunUntil
 pub vmm_backend::contract::DeclineReason::ScenarioUnavailable(vmm_backend::contract::Scenario)
 pub enum vmm_backend::contract::PendingKind
 pub vmm_backend::contract::PendingKind::Cpuid
@@ -276,7 +326,6 @@ pub vmm_backend::contract::PendingKind::Rdmsr
 pub vmm_backend::contract::PendingKind::Read
 pub vmm_backend::contract::PendingKind::Wrmsr
 pub enum vmm_backend::contract::Scenario
-pub vmm_backend::contract::Scenario::BusyLoop
 pub vmm_backend::contract::Scenario::Cpuid
 pub vmm_backend::contract::Scenario::Hypercall
 pub vmm_backend::contract::Scenario::Idle
@@ -298,12 +347,10 @@ pub vmm_backend::contract::Decline::why: vmm_backend::contract::DeclineReason
 pub trait vmm_backend::contract::BackendFixture
 pub type vmm_backend::contract::BackendFixture::B: vmm_backend::Backend<A = vmm_backend::arch::x86::X86>
 pub fn vmm_backend::contract::BackendFixture::dirty_pages(&mut self, &mut Self::B) -> core::option::Option<alloc::vec::Vec<u64>>
-pub fn vmm_backend::contract::BackendFixture::implements_run_until(&self) -> bool
 pub fn vmm_backend::contract::BackendFixture::name(&self) -> &'static str
 pub fn vmm_backend::contract::BackendFixture::policy(&self) -> vmm_backend::arch::x86::X86Policy
 pub fn vmm_backend::contract::BackendFixture::spawn(&mut self, vmm_backend::contract::Scenario) -> core::option::Option<Self::B>
 pub fn vmm_backend::contract::capability_keyed_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
-pub fn vmm_backend::contract::deadline_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::dirty_log_exactness_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::fixpoint_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
 pub fn vmm_backend::contract::interrupt_delivery_exam<F: vmm_backend::contract::BackendFixture>(&mut F, &mut vmm_backend::contract::ContractReport)
@@ -339,8 +386,6 @@ pub vmm_backend::BackendError::PendingCompletion
 pub vmm_backend::BackendError::Unsupported
 pub vmm_backend::BackendError::Unsupported::what: &'static str
 pub enum vmm_backend::CommonExit
-pub vmm_backend::CommonExit::Deadline
-pub vmm_backend::CommonExit::Deadline::reached: vmm_backend::Moment
 pub vmm_backend::CommonExit::Hypercall(vmm_backend::HypercallFrame)
 pub vmm_backend::CommonExit::Idle
 pub vmm_backend::CommonExit::Mmio
@@ -373,7 +418,6 @@ impl<A: vmm_backend::arch::Arch> core::convert::From<vmm_backend::CommonExit> fo
 pub fn vmm_backend::Exit<A>::from(vmm_backend::CommonExit) -> Self
 pub enum vmm_backend::ExitReason
 pub vmm_backend::ExitReason::Cpuid
-pub vmm_backend::ExitReason::Deadline
 pub vmm_backend::ExitReason::Hypercall
 pub vmm_backend::ExitReason::Idle
 pub vmm_backend::ExitReason::Io
@@ -433,6 +477,7 @@ pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuStat
 pub struct vmm_backend::Arm64Caps
 pub vmm_backend::Arm64Caps::deterministic_cntvct: bool
 pub vmm_backend::Arm64Caps::enforces_cntv_cval: bool
+pub vmm_backend::Arm64Caps::in_kernel_gic: bool
 impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps
 pub fn vmm_backend::arch::arm64::Arm64Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::Arm64CoreRegs
@@ -443,6 +488,36 @@ pub vmm_backend::Arm64CoreRegs::sp: u64
 pub vmm_backend::Arm64CoreRegs::sp_el1: u64
 pub vmm_backend::Arm64CoreRegs::spsr_el1: u64
 pub vmm_backend::Arm64CoreRegs::x: [u64; 31]
+pub struct vmm_backend::Arm64DebugState
+pub vmm_backend::Arm64DebugState::breakpoint_control: [u64; 16]
+pub vmm_backend::Arm64DebugState::breakpoint_value: [u64; 16]
+pub vmm_backend::Arm64DebugState::mdscr_el1: u64
+pub vmm_backend::Arm64DebugState::trap_debug_exceptions: bool
+pub vmm_backend::Arm64DebugState::trap_debug_reg_accesses: bool
+pub vmm_backend::Arm64DebugState::watchpoint_control: [u64; 16]
+pub vmm_backend::Arm64DebugState::watchpoint_value: [u64; 16]
+pub struct vmm_backend::Arm64GicState
+pub vmm_backend::Arm64GicState::active: [u32; 32]
+pub vmm_backend::Arm64GicState::cntv_ctl: u64
+pub vmm_backend::Arm64GicState::cntv_cval: u64
+pub vmm_backend::Arm64GicState::enable: [u32; 32]
+pub vmm_backend::Arm64GicState::gicd_ctlr: u32
+pub vmm_backend::Arm64GicState::group: [u32; 32]
+pub vmm_backend::Arm64GicState::igrpen1: bool
+pub vmm_backend::Arm64GicState::impl_spis: u32
+pub vmm_backend::Arm64GicState::line_level: [u32; 32]
+pub vmm_backend::Arm64GicState::pending: [u32; 32]
+pub vmm_backend::Arm64GicState::pmr: u8
+pub vmm_backend::Arm64GicState::priority: [u8; 1020]
+pub vmm_backend::Arm64GicState::timer_fired: bool
+pub vmm_backend::Arm64GicState::timer_hz: u64
+pub vmm_backend::Arm64GicState::timer_intid: u32
+pub vmm_backend::Arm64GicState::version: u32
+impl core::default::Default for vmm_backend::Arm64GicState
+pub fn vmm_backend::Arm64GicState::default() -> Self
+pub struct vmm_backend::Arm64InterruptState
+pub vmm_backend::Arm64InterruptState::fiq: bool
+pub vmm_backend::Arm64InterruptState::irq: bool
 pub struct vmm_backend::Arm64KvmBackend<K: vmm_backend::Arm64Kvm>
 impl<K: vmm_backend::Arm64Kvm> vmm_backend::Arm64KvmBackend<K>
 pub fn vmm_backend::Arm64KvmBackend<K>::kvm(&self) -> &K
@@ -462,7 +537,6 @@ pub unsafe fn vmm_backend::Arm64KvmBackend<K>::map_memory(&mut self, vmm_backend
 pub fn vmm_backend::Arm64KvmBackend<K>::reset_exit_counts(&mut self)
 pub fn vmm_backend::Arm64KvmBackend<K>::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
-pub fn vmm_backend::Arm64KvmBackend<K>::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
 pub fn vmm_backend::Arm64KvmBackend<K>::save(&self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
@@ -470,6 +544,10 @@ pub fn vmm_backend::Arm64KvmBackend<K>::take_accepted_interrupt(&mut self) -> co
 pub struct vmm_backend::Arm64Policy
 pub vmm_backend::Arm64Policy::id_regs: vmm_backend::arch::arm64::IdRegModel
 pub vmm_backend::Arm64Policy::sysreg_traps: vmm_backend::arch::arm64::SysregTrapPolicy
+pub struct vmm_backend::Arm64SimdFpState
+pub vmm_backend::Arm64SimdFpState::fpcr: u64
+pub vmm_backend::Arm64SimdFpState::fpsr: u64
+pub vmm_backend::Arm64SimdFpState::q: [[u8; 16]; 32]
 pub struct vmm_backend::Arm64SysregFile
 pub vmm_backend::Arm64SysregFile::cntkctl_el1: u64
 pub vmm_backend::Arm64SysregFile::cpacr_el1: u64
@@ -485,8 +563,20 @@ pub vmm_backend::Arm64SysregFile::ttbr1_el1: u64
 pub vmm_backend::Arm64SysregFile::vbar_el1: u64
 pub struct vmm_backend::Arm64VcpuState
 pub vmm_backend::Arm64VcpuState::core: vmm_backend::Arm64CoreRegs
+pub vmm_backend::Arm64VcpuState::debug: vmm_backend::Arm64DebugState
+pub vmm_backend::Arm64VcpuState::gic: core::option::Option<vmm_backend::Arm64GicState>
+pub vmm_backend::Arm64VcpuState::interrupts: vmm_backend::Arm64InterruptState
 pub vmm_backend::Arm64VcpuState::mp_state: vmm_backend::MpState
+pub vmm_backend::Arm64VcpuState::simd_fp: vmm_backend::Arm64SimdFpState
 pub vmm_backend::Arm64VcpuState::sysregs: vmm_backend::Arm64SysregFile
+pub vmm_backend::Arm64VcpuState::vtimer: vmm_backend::Arm64VtimerState
+pub struct vmm_backend::Arm64VtimerState
+pub vmm_backend::Arm64VtimerState::cntv_ctl_el0: u64
+pub vmm_backend::Arm64VtimerState::cntv_cval_el0: u64
+pub vmm_backend::Arm64VtimerState::masked: bool
+pub vmm_backend::Arm64VtimerState::offset: u64
+impl core::default::Default for vmm_backend::Arm64VtimerState
+pub fn vmm_backend::Arm64VtimerState::default() -> Self
 pub struct vmm_backend::Capabilities<C>
 pub vmm_backend::Capabilities::arch: C
 pub vmm_backend::Capabilities::deterministic_rng: bool
@@ -511,7 +601,6 @@ pub vmm_backend::DescriptorTable::base: u64
 pub vmm_backend::DescriptorTable::limit: u16
 pub struct vmm_backend::ExitCounts
 pub vmm_backend::ExitCounts::cpuid: u64
-pub vmm_backend::ExitCounts::deadline: u64
 pub vmm_backend::ExitCounts::hypercall: u64
 pub vmm_backend::ExitCounts::idle: u64
 pub vmm_backend::ExitCounts::io: u64
@@ -525,7 +614,7 @@ pub vmm_backend::ExitCounts::shutdown: u64
 pub vmm_backend::ExitCounts::sysreg: u64
 pub vmm_backend::ExitCounts::wrmsr: u64
 impl vmm_backend::ExitCounts
-pub fn vmm_backend::ExitCounts::entries(&self) -> [(vmm_backend::ExitReason, u64); 14]
+pub fn vmm_backend::ExitCounts::entries(&self) -> [(vmm_backend::ExitReason, u64); 13]
 pub fn vmm_backend::ExitCounts::total(&self) -> u64
 pub struct vmm_backend::FakeKvm
 pub vmm_backend::FakeKvm::calls: alloc::vec::Vec<&'static str>
@@ -535,13 +624,22 @@ impl vmm_backend::FakeKvm
 pub fn vmm_backend::FakeKvm::new() -> Self
 pub fn vmm_backend::FakeKvm::push_run(&mut self, vmm_backend::KvmRunView) -> &mut Self
 pub fn vmm_backend::FakeKvm::reg(&self, u64) -> core::option::Option<u64>
+pub fn vmm_backend::FakeKvm::set_accept_irqs(&mut self, bool) -> &mut Self
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
+pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
 pub fn vmm_backend::FakeKvm::get_one_reg(&self, u64) -> vmm_backend::Result<u64>
+pub fn vmm_backend::FakeKvm::get_one_reg128(&self, u64) -> vmm_backend::Result<[u8; 16]>
+pub fn vmm_backend::FakeKvm::get_one_reg32(&self, u64) -> vmm_backend::Result<u32>
+pub fn vmm_backend::FakeKvm::get_vgic_attr(&self, u32, u64, bool) -> vmm_backend::Result<u64>
 pub fn vmm_backend::FakeKvm::run(&mut self) -> vmm_backend::Result<vmm_backend::KvmRunView>
+pub fn vmm_backend::FakeKvm::set_irq_line(&mut self, vmm_backend::arch::arm64::GicIntId, bool) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::set_mp_state(&mut self, vmm_backend::MpState) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::set_one_reg(&mut self, u64, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::set_one_reg128(&mut self, u64, [u8; 16]) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::set_one_reg32(&mut self, u64, u32) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::FakeKvm::set_user_memory_region(&mut self, u32, u64, *mut u8, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::set_vgic_attr(&mut self, u32, u64, bool, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::vcpu_init(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::write_mmio_data(&mut self, [u8; 8]) -> vmm_backend::Result<()>
 #[repr(transparent)] pub struct vmm_backend::GicIntId(pub u32)
@@ -559,7 +657,6 @@ pub vmm_backend::IdRegModel::regs: alloc::collections::btree::map::BTreeMap<u32,
 pub struct vmm_backend::KvmBackend
 impl vmm_backend::KvmBackend
 pub fn vmm_backend::KvmBackend::new() -> vmm_backend::Result<vmm_backend::KvmBackend>
-pub fn vmm_backend::KvmBackend::pmu_overflow_stats(&self) -> core::option::Option<vmm_backend::PmuOverflowStats>
 pub fn vmm_backend::KvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_dirty_log_enabled(&mut self, bool)
 pub fn vmm_backend::KvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
@@ -580,7 +677,6 @@ pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::KvmBackend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
 pub fn vmm_backend::KvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::KvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
@@ -629,7 +725,6 @@ pub unsafe fn vmm_backend::MockArm64Backend::map_memory(&mut self, vmm_backend::
 pub fn vmm_backend::MockArm64Backend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockArm64Backend::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
-pub fn vmm_backend::MockArm64Backend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
 pub fn vmm_backend::MockArm64Backend::save(&self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::MockArm64Backend::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
@@ -670,12 +765,10 @@ pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, 
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::MockBackend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
 pub fn vmm_backend::MockBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::MockBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
-#[repr(transparent)] pub struct vmm_backend::Moment(pub u64)
 pub struct vmm_backend::MsrFilter
 pub vmm_backend::MsrFilter::allow_inkernel: alloc::vec::Vec<vmm_backend::MsrRange>
 impl vmm_backend::MsrFilter
@@ -686,7 +779,6 @@ pub vmm_backend::MsrRange::count: u32
 pub struct vmm_backend::PatchedKvmBackend
 impl vmm_backend::PatchedKvmBackend
 pub fn vmm_backend::PatchedKvmBackend::new() -> vmm_backend::Result<vmm_backend::PatchedKvmBackend>
-pub fn vmm_backend::PatchedKvmBackend::pmu_overflow_stats(&self) -> core::option::Option<vmm_backend::PmuOverflowStats>
 pub fn vmm_backend::PatchedKvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::set_dirty_log_enabled(&mut self, bool)
 pub fn vmm_backend::PatchedKvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
@@ -705,16 +797,10 @@ pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend:
 pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::PatchedKvmBackend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
 pub fn vmm_backend::PatchedKvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::PatchedKvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
-pub struct vmm_backend::PmuOverflowStats
-pub vmm_backend::PmuOverflowStats::lost: u64
-pub vmm_backend::PmuOverflowStats::other: u64
-pub vmm_backend::PmuOverflowStats::samples: u64
-pub vmm_backend::PmuOverflowStats::throttle: u64
 pub struct vmm_backend::Segment
 pub vmm_backend::Segment::avl: u8
 pub vmm_backend::Segment::base: u64
@@ -817,7 +903,8 @@ pub fn vmm_backend::arch::x86::X86Caps::deterministic_clock(&self) -> bool
 pub struct vmm_backend::X86Policy
 pub vmm_backend::X86Policy::cpuid: vmm_backend::CpuidModel
 pub vmm_backend::X86Policy::msr_filter: vmm_backend::MsrFilter
-pub const vmm_backend::RAW_BR_RETIRED: u64
+pub const vmm_backend::ARM64_GIC_BITMAP_WORDS: usize
+pub const vmm_backend::ARM64_GIC_PRIORITY_BYTES: usize
 pub trait vmm_backend::Arch
 pub type vmm_backend::Arch::Caps: vmm_backend::arch::ArchCaps
 pub type vmm_backend::Arch::Completion: core::fmt::Debug
@@ -858,21 +945,37 @@ impl vmm_backend::arch::ArchExit for vmm_backend::arch::x86::X86Exit
 pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub trait vmm_backend::Arm64Kvm
+pub fn vmm_backend::Arm64Kvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
 pub fn vmm_backend::Arm64Kvm::get_one_reg(&self, u64) -> vmm_backend::Result<u64>
+pub fn vmm_backend::Arm64Kvm::get_one_reg128(&self, u64) -> vmm_backend::Result<[u8; 16]>
+pub fn vmm_backend::Arm64Kvm::get_one_reg32(&self, u64) -> vmm_backend::Result<u32>
+pub fn vmm_backend::Arm64Kvm::get_vgic_attr(&self, u32, u64, bool) -> vmm_backend::Result<u64>
 pub fn vmm_backend::Arm64Kvm::run(&mut self) -> vmm_backend::Result<vmm_backend::KvmRunView>
+pub fn vmm_backend::Arm64Kvm::set_irq_line(&mut self, vmm_backend::arch::arm64::GicIntId, bool) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::set_mp_state(&mut self, vmm_backend::MpState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::set_one_reg(&mut self, u64, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64Kvm::set_one_reg128(&mut self, u64, [u8; 16]) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64Kvm::set_one_reg32(&mut self, u64, u32) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Arm64Kvm::set_user_memory_region(&mut self, u32, u64, *mut u8, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64Kvm::set_vgic_attr(&mut self, u32, u64, bool, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::vcpu_init(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::write_mmio_data(&mut self, [u8; 8]) -> vmm_backend::Result<()>
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
+pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
 pub fn vmm_backend::FakeKvm::get_one_reg(&self, u64) -> vmm_backend::Result<u64>
+pub fn vmm_backend::FakeKvm::get_one_reg128(&self, u64) -> vmm_backend::Result<[u8; 16]>
+pub fn vmm_backend::FakeKvm::get_one_reg32(&self, u64) -> vmm_backend::Result<u32>
+pub fn vmm_backend::FakeKvm::get_vgic_attr(&self, u32, u64, bool) -> vmm_backend::Result<u64>
 pub fn vmm_backend::FakeKvm::run(&mut self) -> vmm_backend::Result<vmm_backend::KvmRunView>
+pub fn vmm_backend::FakeKvm::set_irq_line(&mut self, vmm_backend::arch::arm64::GicIntId, bool) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::set_mp_state(&mut self, vmm_backend::MpState) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::set_one_reg(&mut self, u64, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::set_one_reg128(&mut self, u64, [u8; 16]) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::set_one_reg32(&mut self, u64, u32) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::FakeKvm::set_user_memory_region(&mut self, u32, u64, *mut u8, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::set_vgic_attr(&mut self, u32, u64, bool, u64) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::vcpu_init(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::FakeKvm::write_mmio_data(&mut self, [u8; 8]) -> vmm_backend::Result<()>
 pub trait vmm_backend::Backend
@@ -890,7 +993,6 @@ pub unsafe fn vmm_backend::Backend::map_memory(&mut self, vmm_backend::Gpa, &mut
 pub fn vmm_backend::Backend::reset_exit_counts(&mut self)
 pub fn vmm_backend::Backend::restore(&mut self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<Self::A>>
-pub fn vmm_backend::Backend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<Self::A>>
 pub fn vmm_backend::Backend::save(&self) -> vmm_backend::Result<<Self::A as vmm_backend::arch::Arch>::VcpuState>
 pub fn vmm_backend::Backend::set_pending_irq(&mut self, core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::set_policy(&mut self, &<Self::A as vmm_backend::arch::Arch>::Policy) -> vmm_backend::Result<()>
@@ -910,7 +1012,6 @@ pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::KvmBackend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
 pub fn vmm_backend::KvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::KvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
@@ -930,7 +1031,6 @@ pub unsafe fn vmm_backend::MockArm64Backend::map_memory(&mut self, vmm_backend::
 pub fn vmm_backend::MockArm64Backend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockArm64Backend::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
-pub fn vmm_backend::MockArm64Backend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
 pub fn vmm_backend::MockArm64Backend::save(&self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::MockArm64Backend::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockArm64Backend::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>
@@ -950,7 +1050,6 @@ pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, 
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::MockBackend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
 pub fn vmm_backend::MockBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::MockBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
@@ -970,7 +1069,6 @@ pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend:
 pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
-pub fn vmm_backend::PatchedKvmBackend::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::x86::X86>>
 pub fn vmm_backend::PatchedKvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
 pub fn vmm_backend::PatchedKvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::set_policy(&mut self, &vmm_backend::arch::x86::X86Policy) -> vmm_backend::Result<()>
@@ -990,7 +1088,6 @@ pub unsafe fn alloc::boxed::Box<B>::map_memory(&mut self, vmm_backend::Gpa, &mut
 pub fn alloc::boxed::Box<B>::reset_exit_counts(&mut self)
 pub fn alloc::boxed::Box<B>::restore(&mut self, &<Self::A as vmm_backend::arch::Arch>::VcpuState) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<Self::A>>
-pub fn alloc::boxed::Box<B>::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<Self::A>>
 pub fn alloc::boxed::Box<B>::save(&self) -> vmm_backend::Result<<Self::A as vmm_backend::arch::Arch>::VcpuState>
 pub fn alloc::boxed::Box<B>::set_pending_irq(&mut self, core::option::Option<<Self::A as vmm_backend::arch::Arch>::IntId>) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::set_policy(&mut self, &<Self::A as vmm_backend::arch::Arch>::Policy) -> vmm_backend::Result<()>
@@ -1010,7 +1107,6 @@ pub unsafe fn vmm_backend::Arm64KvmBackend<K>::map_memory(&mut self, vmm_backend
 pub fn vmm_backend::Arm64KvmBackend<K>::reset_exit_counts(&mut self)
 pub fn vmm_backend::Arm64KvmBackend<K>::restore(&mut self, &vmm_backend::Arm64VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
-pub fn vmm_backend::Arm64KvmBackend<K>::run_until(&mut self, vmm_backend::Moment) -> vmm_backend::Result<vmm_backend::Exit<vmm_backend::arch::arm64::Arm64>>
 pub fn vmm_backend::Arm64KvmBackend<K>::save(&self) -> vmm_backend::Result<vmm_backend::Arm64VcpuState>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_pending_irq(&mut self, core::option::Option<vmm_backend::arch::arm64::GicIntId>) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64KvmBackend<K>::set_policy(&mut self, &vmm_backend::arch::arm64::Arm64Policy) -> vmm_backend::Result<()>

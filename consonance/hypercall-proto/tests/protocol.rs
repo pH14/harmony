@@ -83,6 +83,30 @@ fn golden_request_bytes_for_every_service_opcode() {
     sdk.extend_from_slice(&le32(0)); // reserved
     sdk.extend_from_slice(&le32(50)); // point 50
     assert_eq!(enc_req(ServiceId::Sdk, 1, 12, &le32(50)), sdk);
+
+    let mut coverage_payload = Vec::new();
+    coverage_payload.extend_from_slice(&le32(7));
+    coverage_payload.extend_from_slice(&le64(1));
+    coverage_payload.extend_from_slice(&le32(3));
+    let mut coverage = b"HCP1".to_vec();
+    coverage.extend_from_slice(&[1, 0, 6, 0, 2, 0, 0, 0]);
+    coverage.extend_from_slice(&le32(13));
+    coverage.extend_from_slice(&le32(SDK_COVERAGE_REQUEST_LEN as u32));
+    coverage.extend_from_slice(&le32(0));
+    coverage.extend_from_slice(&coverage_payload);
+    assert_eq!(enc_req(ServiceId::Sdk, 2, 13, &coverage_payload), coverage);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(b"HCP1");
+    payload.extend_from_slice(&1_u16.to_le_bytes());
+    payload.extend_from_slice(&(ServiceId::Payload as u16).to_le_bytes());
+    payload.extend_from_slice(&1_u16.to_le_bytes());
+    payload.extend_from_slice(&0_u16.to_le_bytes());
+    payload.extend_from_slice(&14_u32.to_le_bytes());
+    payload.extend_from_slice(&le32(4));
+    payload.extend_from_slice(&0_u32.to_le_bytes());
+    payload.extend_from_slice(&le32(2));
+    assert_eq!(enc_req(ServiceId::Payload, 1, 14, &le32(2)), payload);
 }
 
 #[test]
@@ -95,6 +119,14 @@ fn golden_response_bytes_for_every_service_opcode() {
         (ServiceId::Event, 1, 5, Status::Ok, Vec::new()),
         // SDK `buggify_decide` reply: one byte, fire = 1 (task 73).
         (ServiceId::Sdk, 1, 6, Status::Ok, vec![1]),
+        // SDK `coverage_yield`: next threshold 2, runnable index 1.
+        (
+            ServiceId::Sdk,
+            2,
+            7,
+            Status::Ok,
+            [le64(2).as_slice(), le32(1).as_slice()].concat(),
+        ),
     ];
     for (service, opcode, seq, status, payload) in cases {
         let got = enc_resp(service, opcode, seq, status, &payload);
@@ -245,6 +277,91 @@ impl Transport for DispatcherLoopback {
     }
 }
 
+/// Host response seam for pinning each half of the coverage response guard.
+struct CoverageResponseTransport {
+    next: u64,
+    selected: u32,
+}
+
+impl Transport for CoverageResponseTransport {
+    type Error = ();
+
+    fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {
+        let (header, _) = decode(req).map_err(|_| ())?;
+        let mut payload = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+        payload[0..8].copy_from_slice(&self.next.to_le_bytes());
+        payload[8..12].copy_from_slice(&self.selected.to_le_bytes());
+        encode_response(ServiceId::Sdk, 2, header.seq, Status::Ok, &payload, resp).map_err(|_| ())
+    }
+}
+
+#[derive(Clone)]
+struct OnePayload(Option<Vec<u8>>);
+
+impl Service for OnePayload {
+    fn handle(&mut self, opcode: u16, payload: &[u8], resp_payload: &mut [u8]) -> (Status, usize) {
+        if opcode != 1 || payload.len() != 4 {
+            return (Status::BadRequest, 0);
+        }
+        let requested = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let Some(entry) = self.0.as_ref() else {
+            return (Status::OutOfRange, 0);
+        };
+        if entry.len() as u64 != u64::from(requested) || resp_payload.len() < entry.len() {
+            return (Status::BadRequest, 0);
+        }
+        resp_payload[..entry.len()].copy_from_slice(entry);
+        let len = entry.len();
+        self.0 = None;
+        (Status::Ok, len)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        self.0.clone().unwrap_or_default()
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
+        self.0 = (!state.is_empty()).then(|| state.to_vec());
+        Ok(())
+    }
+}
+
+#[test]
+fn payload_fetch_is_exact_and_exhaustion_is_a_clean_status() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(
+        ServiceId::Payload,
+        Box::new(OnePayload(Some(vec![0x81, 4]))),
+    );
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    let mut chord = [0_u8; 2];
+    client.payload_fetch(&mut chord).unwrap();
+    assert_eq!(chord, [0x81, 4]);
+    assert_eq!(
+        client.payload_fetch(&mut chord),
+        Err(ClientError::Status(Status::OutOfRange))
+    );
+    assert_eq!(
+        client.payload_fetch(&mut []),
+        Err(ClientError::InvalidLength)
+    );
+    let mut oversized = vec![0_u8; MAX_PAYLOAD + 1];
+    assert_eq!(
+        client.payload_fetch(&mut oversized),
+        Err(ClientError::InvalidLength)
+    );
+
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(
+        ServiceId::Payload,
+        Box::new(OnePayload(Some(vec![0xa5; MAX_PAYLOAD]))),
+    );
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    let mut maximum = vec![0_u8; MAX_PAYLOAD];
+    client.payload_fetch(&mut maximum).unwrap();
+    assert!(maximum.iter().all(|&byte| byte == 0xa5));
+}
+
 /// The task-73 SDK buggify round-trip: the guest `buggify_decide(point)` reaches
 /// the [`SdkBuggify`] service (id 6, op 1), which answers a one-byte fire flag
 /// from its per-point table (default otherwise), and records every asked point.
@@ -283,6 +400,77 @@ fn buggify_decide_without_sdk_service_is_a_clean_status() {
     );
 }
 
+/// M6 threshold handshake: the first per-thread threshold is one, each exit
+/// prescribes the next exact count, and the selected runnable is in range.
+#[test]
+fn coverage_yield_round_trips_threshold_and_scheduler_selection() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    assert_eq!(client.coverage_yield(7, 1, 3).unwrap(), (2, 0));
+    assert_eq!(client.coverage_yield(7, 2, 3).unwrap(), (3, 2));
+    assert_eq!(client.coverage_yield(9, 1, 2).unwrap(), (2, 0));
+}
+
+/// A wrong counter is the planted protocol negative: it must fail before a
+/// scheduling answer is minted, proving the previous-exit threshold is
+/// load-bearing rather than advisory.
+#[test]
+fn coverage_yield_rejects_skipped_stale_and_invalid_thresholds() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    assert_eq!(
+        client.coverage_yield(7, 2, 3),
+        Err(ClientError::Status(Status::BadRequest))
+    );
+    assert_eq!(client.coverage_yield(7, 1, 3).unwrap(), (2, 0));
+    assert_eq!(
+        client.coverage_yield(7, 1, 3),
+        Err(ClientError::Status(Status::BadRequest))
+    );
+    assert_eq!(
+        client.coverage_yield(7, 2, 0),
+        Err(ClientError::InvalidLength)
+    );
+}
+
+/// Each response invariant is independently load-bearing: a host cannot hide
+/// one malformed field behind a valid value in the other field.
+#[test]
+fn coverage_yield_rejects_each_malformed_response_field_independently() {
+    for (next, selected) in [(7, 0), (8, 2)] {
+        let mut client = Client::new(CoverageResponseTransport { next, selected });
+        assert_eq!(
+            client.coverage_yield(4, 7, 2),
+            Err(ClientError::Protocol(ProtoError::BadPayload))
+        );
+    }
+}
+
+/// Request and response buffer lengths are separate protocol invariants.
+#[test]
+fn sdk_coverage_rejects_each_bad_buffer_length_independently() {
+    let mut svc = SdkBuggify::new(false);
+    let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+    request[0..4].copy_from_slice(&7_u32.to_le_bytes());
+    request[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
+    request[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    let mut response = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+
+    assert_eq!(
+        svc.handle(2, &request[..request.len() - 1], &mut response),
+        (Status::BadRequest, 0)
+    );
+    assert_eq!(
+        svc.handle(2, &request, &mut response[..SDK_COVERAGE_RESPONSE_LEN - 1]),
+        (Status::BadRequest, 0)
+    );
+    assert!(svc.coverage_asked().is_empty());
+}
+
 /// `SdkBuggify` snapshots and restores its table + asked log, so a buggify
 /// service survives a corpus snapshot exactly like the other reference services.
 #[test]
@@ -296,7 +484,17 @@ fn sdk_buggify_state_round_trips() {
         assert_eq!(status, Status::Ok);
         assert_eq!(n, 1);
     }
+    let mut coverage = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+    coverage[0..4].copy_from_slice(&11_u32.to_le_bytes());
+    coverage[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
+    coverage[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    let mut coverage_out = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+    assert_eq!(
+        svc.handle(2, &coverage, &mut coverage_out),
+        (Status::Ok, SDK_COVERAGE_RESPONSE_LEN)
+    );
     assert_eq!(svc.asked(), [3, 7]);
+    assert_eq!(svc.coverage_asked(), [(11, SDK_COVERAGE_QUANTUM, 2, 0)]);
     let saved = svc.save_state();
     let mut restored = SdkBuggify::new(false);
     restored.restore_state(&saved).unwrap();
@@ -305,6 +503,43 @@ fn sdk_buggify_state_round_trips() {
         restored.save_state(),
         saved,
         "bytes are stable across restore"
+    );
+}
+
+/// The optional coverage-state extension is absent only when both collections
+/// are empty, and remains present when exactly one collection is populated.
+#[test]
+fn sdk_coverage_state_extension_presence_is_exact() {
+    let empty = SdkBuggify::new(false);
+    let empty_state = vec![0_u8; 9];
+    assert_eq!(empty.save_state(), empty_state);
+
+    let mut thresholds_only = empty_state;
+    thresholds_only.extend_from_slice(b"COVR");
+    thresholds_only.extend_from_slice(&1_u32.to_le_bytes());
+    thresholds_only.extend_from_slice(&4_u32.to_le_bytes());
+    thresholds_only.extend_from_slice(&7_u64.to_le_bytes());
+    thresholds_only.extend_from_slice(&0_u32.to_le_bytes());
+    let mut restored = SdkBuggify::new(true);
+    restored.restore_state(&thresholds_only).unwrap();
+    assert_eq!(restored.save_state(), thresholds_only);
+}
+
+/// A persisted runnable selection is checked even when `ready` itself is
+/// nonzero; `selected == ready` is out of range and must fail closed.
+#[test]
+fn sdk_coverage_restore_rejects_out_of_range_selection() {
+    let mut state = vec![0_u8; 9];
+    state.extend_from_slice(b"COVR");
+    state.extend_from_slice(&0_u32.to_le_bytes());
+    state.extend_from_slice(&1_u32.to_le_bytes());
+    state.extend_from_slice(&3_u32.to_le_bytes());
+    state.extend_from_slice(&5_u64.to_le_bytes());
+    state.extend_from_slice(&2_u32.to_le_bytes());
+    state.extend_from_slice(&2_u32.to_le_bytes());
+    assert_eq!(
+        SdkBuggify::new(false).restore_state(&state),
+        Err(ProtoError::BadState)
     );
 }
 
@@ -622,6 +857,8 @@ fn service_ids_are_a_stable_additive_registry() {
     assert_eq!(ServiceId::Event as u16, 4);
     assert_eq!(ServiceId::Net as u16, 5);
     assert_eq!(ServiceId::Sdk as u16, 6);
+    assert_eq!(ServiceId::Pvclock as u16, 7);
+    assert_eq!(ServiceId::Payload as u16, 8);
 }
 
 proptest! {

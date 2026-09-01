@@ -13,7 +13,7 @@
 # Run the nextest suite (process-isolated, faster) as the mutation oracle and
 # build/test with all features so the `cli`-gated code is included.
 test_tool = "nextest"
-additional_cargo_test_args = ["--all-features"]
+all_features = true
 
 # A handful of mutants flip a loop condition or its index arithmetic (the
 # `while` in compare_runs / bisect_divergence) into a non-terminating loop;
@@ -50,6 +50,13 @@ timeout_multiplier = 3.0
 # (`region`/`run_buf`, the value types, the `MockBackend` run-loop contract).
 exclude_globs = [
     "**/main.rs",
+    # Cargo also treats every file under `src/bin/` as a binary entry point;
+    # most of this repository's hardware probes use descriptive filenames
+    # rather than `main.rs`. They are the same demo/debug/box-only composition
+    # glue described above, and the hosted mutation oracle cannot execute their
+    # HVF or `/dev/kvm` paths. Keep their portable library seams mutation-gated,
+    # but do not count unentered probe mains as surviving library mutants.
+    "**/src/bin/*.rs",
     # `dissonance/campaign-runner`'s box composition root (issue #69 coverage
     # recovery): split out of `main.rs` into its own file so the portable CLI
     # dispatch logic around it stays mutation-gated. Same rationale as the
@@ -92,20 +99,16 @@ exclude_globs = [
     "**/kvm.rs",
     "**/kvm/**",
     "**/kvm_sys.rs",
-    # task-21 box-only substrate, same rationale as the `kvm` path above: the
-    # `PatchedKvmBackend` syscall orchestration and vmm-core's `perf_event` work
-    # counter cannot run without the patched `/dev/kvm` + perf on bare-metal
-    # Intel, so the no-`--ignored` mutation oracle never runs them (unkillable
-    # "missed" mutants). Their logic lives in the gated pure modules
-    # (`kvm.rs`'s KVM_EXIT_DETERMINISM decode/complete; `work::WorkSource`).
+    # Target-specific substrate implementations that the Ubuntu mutation
+    # runner does not compile: Hypervisor.framework exists only on Apple
+    # Silicon, and the KVM/arm64 syscall ABI exists only on Linux/aarch64.
+    # Their portable policy/exit/state logic remains in `arm64_kvm.rs`; these
+    # concrete FFI halves are verified by the exact HVF/KVM hardware lanes.
+    "consonance/vmm-backend/src/hvf.rs",
+    "consonance/vmm-backend/src/arm64_kvm_sys.rs",
+    # The patched backend syscall orchestration cannot run without its patched
+    # `/dev/kvm`, so the portable mutation oracle cannot exercise it.
     "**/patched_kvm.rs",
-    "**/work_perf.rs",
-    # task-47 box-only substrate, same rationale: `pmu_sys.rs` is the
-    # `PmuBranchCounter` syscall orchestration (perf_event/fcntl/mmap + the SIGIO
-    # overflow seam) for `run_until`; it cannot run without perf on the box. Its
-    # PURE config — the `PerfEventAttr` builder + bit constants — lives in `pmu.rs`,
-    # which is NOT excluded and is exact-value mutation-tested.
-    "**/pmu_sys.rs",
 ]
 
 # Structurally-unkillable mutants in `consonance/vmm-core`, by category. The
@@ -129,6 +132,22 @@ exclude_re = [
     #     and byte-merge; CR0 = PE|NE). No test distinguishes OR from XOR for
     #     disjoint operands. Scoped to vmm-core so sibling crates' `|` stays gated.
     "consonance/vmm-core/src/.*replace \\| with \\^",
+    # KVM's ARM64 one-register IDs and vGIC sysreg IDs are concatenations of
+    # non-overlapping ABI bitfields. For these exact expressions `|` and `^`
+    # are mathematically identical; the neighboring `|`→`&`, shift, class,
+    # index, and return-value mutants remain gated by the exact-value tests.
+    "consonance/vmm-backend/src/arm64_kvm\\.rs:(110|434|446|448|450|452|466|501|751):.*replace \\| with \\^",
+    # GICD_CTLR's retained Group-1 bit and the fixed ARE/DS bits occupy
+    # disjoint positions, so OR and XOR return the same register value for all
+    # reachable states. The writable-bit and exact-value mutants stay gated.
+    "replace \\| with \\^ in Gicv3::dist_read",
+    # GICR_IIDR is architecturally zero, and the RD-frame fallback is also
+    # RES0. Removing this explicit documentary arm cannot change any result.
+    "delete match arm GICR_IIDR in Gicv3::redist_read",
+    # TCO and BTYPE occupy disjoint PSTATE bit positions, so OR and XOR are
+    # identical for this constant mask. The clearing and detection operations
+    # that consume the mask remain mutation-gated.
+    "consonance/vmm-backend/src/arch/arm64/state\\.rs.*replace \\| with \\^",
     # (c) Observability-/structurally-unkillable helpers in vmm-core/vmm.rs: the §1
     #     MSR loud-log (`loud_msr`) and the best-effort guest RIP it logs
     #     (`guest_rip`) have no architectural effect and no test-observable return —
@@ -137,6 +156,10 @@ exclude_re = [
     #     `current_work` (task 21) is the V-time count fed only to the `loud_msr`
     #     log — same observability-only category (no test-observable return).
     "consonance/vmm-core/src/vmm\\.rs.*(loud_msr|guest_rip|GuestRam::is_empty|current_work)",
+    # The x86 vendor split moved the same mandated host-only loud MSR event out
+    # of vmm.rs. It is deliberately emitted before architectural effects and
+    # has no state or return value for a portable test oracle to observe.
+    "consonance/vmm-core/src/vendor/x86/dispatch\\.rs.*replace loud_msr with \\(\\)",
     # (d) `msr_filter_allow`'s `read == stateful && write == stateful`: every
     #     `allow-stateful` row in the frozen contract is bidirectional (verified: 14
     #     bidirectional, 0 one-directional), so `&&` ≡ `||` on this contract.
@@ -149,6 +172,15 @@ exclude_re = [
     #     tests do); same precedent as the `kvm`/`probe::` paths. The `compose_*`
     #     helpers and `apply_*` overlays they call are mock-tested and stay gated.
     "boot(_linux)?_selected",
+    # The Apple-Silicon HVF boot roots are the arm64 counterparts of the
+    # Linux/KVM composition roots above. They open Hypervisor.framework and
+    # cannot be entered by the Ubuntu mutation oracle; portable `compose*`
+    # image/DTB policy remains mutation-gated and mock-tested.
+    "boot_hvf(_control)?",
+    # Host-only HVF liveness handle forwarding is compiled only on Apple
+    # Silicon and cannot be entered by the Ubuntu mutation oracle. The handle
+    # itself is exercised by the exact HVF hardware lanes.
+    "hvf_exit_handle",
     # (f) `draw_rng` (task 21): the fail-closed `status != Ok || got != n` guard is
     #     unreachable for the in-tree infallible `SeededEntropy` with a validated
     #     `n ∈ 1..=8` count + `n`-byte buffer, so the `||`→`&&` mutant is provably
@@ -156,12 +188,19 @@ exclude_re = [
     #     width-range guard stay mutation-gated (killed by the RNG draw / width
     #     unit tests); only this one equivalent mutant is excluded.
     "replace \\|\\| with && in .*draw_rng",
+    # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
+    # OR and XOR are identical for this compile-time constant expression.
+    "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",
+    # `FLAG_SDK` is `1 << 0`; shifting either direction by zero is exactly the
+    # identity operation. The neighboring NET/TAINTED shifts remain gated and
+    # are caught by the exact wire-value and round-trip tests.
+    "consonance/vmm-core/src/portable_snapshot\\.rs:24:25: replace << with >>",
     # (g) `impl Backend for Box<B>`'s `inject` forward (task 21): `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
     #     be distinguished through a `Box<dyn Backend>`. Every *other* `Box<B>`
     #     forward IS killed by `tests/dyn_backend.rs` (config→NotConfigured,
-    #     completion→PendingCompletion, map_memory→Err, run/run_until/save/counts
+    #     completion→PendingCompletion, map_memory→Err, run/save/counts
     #     →observable return). Scoped to backend.rs's blanket impl.
     "consonance/vmm-backend/src/backend\\.rs.*inject",
     # (h) [retired] `pv_net::Switch::route_one` skip — `dissonance/pv-net` was
@@ -179,17 +218,7 @@ exclude_re = [
     #     asserts a dropped server stops accepting); only this one Drop-shadowed
     #     mutant is excluded. See consonance/telemetry/IMPLEMENTATION.md.
     "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
-    # (j) `Vmm::on_deadline`'s diagnostic-trace cap `self.preemption_landings.len() <
-    #     PREEMPTION_TRACE_CAP` → `<=` (task 47 round-13): provably equivalent. The two
-    #     differ ONLY at exactly `len == PREEMPTION_TRACE_CAP` (4096), where `<=` records ONE
-    #     extra landing (4097 total) before stopping — a harmless off-by-one on a trace that
-    #     is OBSERVABILITY ONLY (not hashed, not determinism-affecting; the seed-gate reads
-    #     the first few). Killing it would require a 4097-preemption unit test (impractical),
-    #     and the behavior is identical for every realistic run. The `<`→`==`/`>` siblings
-    #     (which would empty the trace) ARE killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
-    #     `preemption_landings() == &[reached]` assertion. Scoped to vmm.rs's on_deadline.
-    "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*on_deadline",
-    # (k) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
+    # (j) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
     #     PREEMPTION_TRACE_CAP` → `<=` (task 52): the idle-resume dual of (j), identical
     #     rationale. The two differ ONLY at `len == PREEMPTION_TRACE_CAP` (4096), where `<=`
     #     records ONE extra idle landing before stopping — a harmless off-by-one on the
@@ -200,4 +229,8 @@ exclude_re = [
     #     / `periodic_timer_idle_loop_advances_vtime_each_tick`'s `idle_landings() == &[..]`
     #     assertions. Scoped to vmm.rs's resume_idle.
     "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*resume_idle",
+    # The pvclock refresh vector is likewise bounded diagnostic evidence only.
+    # `< CAP`→`<= CAP` changes only whether the saturated log contains 4096 or
+    # 4097 entries; it cannot affect page bytes, guest state, or any hash.
+    "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*pvclock_stamp",
 ]

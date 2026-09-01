@@ -571,8 +571,10 @@ impl Lapic {
         (self.lvt[LVT_TIMER] >> 17) & 0b11
     }
 
-    /// LVT-timer interrupt vector (bits 7:0).
-    fn timer_vector(&self) -> u8 {
+    /// LVT-timer interrupt vector (bits 7:0) — the vector [`Lapic::advance_to`]
+    /// fires into IRR. Public so `vmm-core` can label the timer's deadlines in
+    /// the virtual_time interrupt schedule.
+    pub fn timer_vector(&self) -> u8 {
         (self.lvt[LVT_TIMER] & 0xFF) as u8
     }
 

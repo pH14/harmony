@@ -9,9 +9,9 @@
 //! including the ioctl *ordering* (`KVM_ARM_VCPU_INIT` before the first
 //! `KVM_SET_ONE_REG`, policy-before-run, map-before-restore) — is asserted
 //! portably against a recording fake ([`FakeKvm`]) on the Mac and under Miri,
-//! with no `/dev/kvm` (`docs/ARM-ALTRA.md` §Evidence-integrity: mechanism
-//! attestation without the hardware). The real ioctl path against `/dev/kvm` has
-//! **no local oracle** — it is arrival-day only, on the Altra (`hm-7pb`; the
+//! with no `/dev/kvm` (`docs/VM-EXIT-COUNT-VTIME.md`: mechanism attestation
+//! without the hardware). The real ioctl path against `/dev/kvm` has
+//! **no local oracle** — it runs natively on msr1 during M4 (`hm-7pb`; the
 //! Mac has no local KVM loop, `hm-8l3` REFUSE).
 //!
 //! **The stock/patched split is load-bearing and honest** (mirroring x86, where
@@ -19,11 +19,14 @@
 //! are patched-only). On the **stock** backend `run` returns **only**
 //! `Mmio`/`Shutdown`; every other decode arm is patched-ABI
 //! (`// TODO(patched-abi)`, for the AA-3 backend) and the stock hardware never
-//! reaches it. Interrupt injection, `run_until`, and the trap-group *enforcement*
+//! reaches it. Interrupt injection and the trap-group *enforcement*
 //! of the policy are all `Unsupported`/AA-gated — the skeleton claims no
 //! determinism (`capabilities()` reports every field honestly `false`).
 
-use crate::arch::arm64::{Arm64, Arm64VcpuState, GicIntId};
+use crate::arch::arm64::{
+    Arm64, Arm64GicState, Arm64VcpuState, GicIntId, canonicalize_core_regs,
+    has_noncanonical_core_regs,
+};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
@@ -50,7 +53,7 @@ pub(crate) const KVM_EXIT_INTERNAL_ERROR: u32 = 17;
 /// stock KVM/arm64 services guest `HVC`/PSCI in-kernel and never surfaces this.
 pub(crate) const KVM_EXIT_HYPERCALL: u32 = 3;
 
-/// A **patched-ABI** exit reason for a work-counter WFx / deterministic idle
+/// A **patched-ABI** exit reason for a deterministic WFx / idle
 /// (the arm64 mirror of the x86 `KVM_EXIT_HLT`→`Idle` path). Stock KVM/arm64
 /// blocks WFI **in-kernel** and never surfaces it, so this arm is unreachable on
 /// the stock backend. `// TODO(patched-abi)`: the concrete reason value is the
@@ -78,6 +81,37 @@ pub(crate) const KVM_SYSTEM_EVENT_CRASH: u32 = 3;
 /// Unlike the vGIC **delivery** fabric there is no AA-6 deferral rationale for
 /// it — a guest that cannot `SYSTEM_OFF` cannot end a run.
 pub(crate) const KVM_ARM_VCPU_PSCI_0_2: u32 = 2;
+
+// The in-kernel vGICv3 migration/injection groups used by both the portable
+// orchestration and the Linux+aarch64 syscall half. Values are pinned against
+// `kvm-bindings` in `arm64_kvm_sys`.
+pub(crate) const KVM_DEV_ARM_VGIC_GRP_DIST_REGS: u32 = 1;
+pub(crate) const KVM_DEV_ARM_VGIC_GRP_REDIST_REGS: u32 = 5;
+pub(crate) const KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
+pub(crate) const KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: u32 = 7;
+const GICR_SGI_BASE: u64 = 0x1_0000;
+const GICD_CTLR: u64 = 0x0000;
+const GIC_IGROUPR: u64 = 0x0080;
+const GIC_ISENABLER: u64 = 0x0100;
+const GIC_ICENABLER: u64 = 0x0180;
+const GIC_ISPENDR: u64 = 0x0200;
+const GIC_ISACTIVER: u64 = 0x0300;
+const GIC_ICACTIVER: u64 = 0x0380;
+const GIC_IPRIORITYR: u64 = 0x0400;
+const GICR_ISACTIVER0: u64 = GICR_SGI_BASE + 0x0300;
+const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
+const HARMONY_GIC_IMPL_SPIS: u32 = 64;
+pub(crate) const HARMONY_GIC_NR_IRQS: u32 = 32 + HARMONY_GIC_IMPL_SPIS;
+const HARMONY_TIMER_HZ: u64 = 62_500_000;
+const HARMONY_TIMER_INTID: u32 = 27;
+const GIC_STATE_VERSION: u32 = 3;
+
+const fn vgic_sysreg(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
+    op0 << 14 | op1 << 11 | crn << 7 | crm << 3 | op2
+}
+
+const ICC_PMR_EL1: u64 = vgic_sysreg(3, 0, 4, 6, 0);
+const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
 
 /// The `kvm_vcpu_init.features` bitmap the backend requests at
 /// `KVM_ARM_VCPU_INIT`: **PSCI 0.2 selected** (see [`KVM_ARM_VCPU_PSCI_0_2`]),
@@ -383,7 +417,9 @@ impl RunPage {
 /// (`ARM_CORE`, `ARM64_SYSREG`) lives at bits 16..28, **not** the high bits.
 const KVM_REG_ARM_COPROC_SHIFT: u64 = 16;
 pub(crate) const KVM_REG_ARM64: u64 = 0x6000_0000_0000_0000;
+const KVM_REG_SIZE_U32: u64 = 0x0020_0000_0000_0000;
 pub(crate) const KVM_REG_SIZE_U64: u64 = 0x0030_0000_0000_0000;
+const KVM_REG_SIZE_U128: u64 = 0x0040_0000_0000_0000;
 /// `KVM_REG_ARM_CORE = 0x0010 << KVM_REG_ARM_COPROC_SHIFT` (= `0x10_0000`), the
 /// class of `struct kvm_regs` fields (uapi/linux `.../asm/kvm.h`). At bits 16+,
 /// so it never collides with the field index in bits 0..15.
@@ -392,10 +428,42 @@ pub(crate) const KVM_REG_ARM_CORE: u64 = 0x0010 << KVM_REG_ARM_COPROC_SHIFT;
 /// the class of EL1 system registers; the `op0:op1:CRn:CRm:op2` encoding fills
 /// bits 0..15 below it.
 pub(crate) const KVM_REG_ARM64_SYSREG: u64 = 0x0013 << KVM_REG_ARM_COPROC_SHIFT;
+/// KVM-as-firmware pseudo-register class (`uapi/asm/kvm.h`).
+pub(crate) const KVM_REG_ARM_FW: u64 = 0x0014 << KVM_REG_ARM_COPROC_SHIFT;
+/// Writable PSCI-version pseudo-register. This must be set before first entry.
+const KVM_REG_ARM_PSCI_VERSION: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_FW;
+/// PSCI 1.0, encoded by the architectural `PSCI_VERSION(1, 0)` macro.
+const KVM_ARM_PSCI_1_0: u64 = 0x0001_0000;
+/// Firmware-feature bitmap pseudo-register class (`uapi/asm/kvm.h`).
+const KVM_REG_ARM_FW_FEAT_BMAP: u64 = 0x0016 << KVM_REG_ARM_COPROC_SHIFT;
+/// Optional Standard Secure Service bitmap: bit 0 is SMCCC TRNG v1.0.
+///
+/// Stock KVM enables this bit by default and services `TRNG_RND64` from the
+/// host kernel's live RNG. The owned Linux guest probes it before
+/// `random_init_early()` and would mix those bytes into full-RAM state before
+/// `/chosen/rng-seed` makes the CRNG ready. The deterministic baseline writes
+/// zero before first entry.
+const KVM_REG_ARM_STD_BMAP: u64 = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_FW_FEAT_BMAP;
+/// Optional Standard Hypervisor Service bitmap (PV time).
+const KVM_REG_ARM_STD_HYP_BMAP: u64 = KVM_REG_ARM_STD_BMAP | 1;
+/// Optional KVM vendor-hypercall bitmap (including host PTP).
+const KVM_REG_ARM_VENDOR_HYP_BMAP: u64 = KVM_REG_ARM_STD_BMAP | 2;
+/// Second optional KVM vendor-hypercall bitmap.
+const KVM_REG_ARM_VENDOR_HYP_BMAP_2: u64 = KVM_REG_ARM_STD_BMAP | 3;
+const OPTIONAL_FIRMWARE_BITMAPS: [u64; 4] = [
+    KVM_REG_ARM_STD_BMAP,
+    KVM_REG_ARM_STD_HYP_BMAP,
+    KVM_REG_ARM_VENDOR_HYP_BMAP,
+    KVM_REG_ARM_VENDOR_HYP_BMAP_2,
+];
 
 /// A **core** register ID: `struct kvm_regs` field offset ÷ 4.
 const fn core_reg(index: u64) -> u64 {
     KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE | index
+}
+
+const fn core_reg_sized(size: u64, index: u64) -> u64 {
+    KVM_REG_ARM64 | size | KVM_REG_ARM_CORE | index
 }
 
 /// An EL1 **system** register ID from its `op0:op1:CRn:CRm:op2` encoding.
@@ -414,6 +482,41 @@ const CORE_PSTATE: u64 = 66;
 const CORE_SP_EL1: u64 = 68;
 const CORE_ELR_EL1: u64 = 70;
 const CORE_SPSR_EL1: u64 = 72;
+const CORE_FP_BASE: u64 = 84;
+const CORE_FPSR: u64 = 212;
+const CORE_FPCR: u64 = 213;
+
+const CNTV_CTL_EL0: u64 = sysreg_id(3, 3, 14, 3, 1);
+// Linux's stable KVM one-register ABI accidentally swapped the IDs for
+// CNTV_CVAL_EL0 and CNTVCT_EL0. The UAPI explicitly requires callers to use
+// the historical ID below (the CNTVCT architectural encoding) for CVAL.
+const CNTV_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 0, 2);
+const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
+
+// The admitted ID-register baseline makes EPAN and ITFSB architecturally
+// unsupported, but stock KVM retains Linux's writes to those SCTLR bits while
+// HVF reads them as RES0. Likewise, KVM retains TCR.AS while this HVF substrate
+// exposes only the common 8-bit-ASID behavior. Strip those substrate residues
+// from the portable boundary; restore refuses a non-canonical snapshot.
+const KVM_SCTLR_NONPORTABLE_BITS: u64 = (1 << 57) | (1 << 37);
+const KVM_TCR_NONPORTABLE_BITS: u64 = 1 << 36;
+const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
+
+const fn dbgbvr(index: u64) -> u64 {
+    sysreg_id(2, 0, 0, index, 4)
+}
+
+const fn dbgbcr(index: u64) -> u64 {
+    sysreg_id(2, 0, 0, index, 5)
+}
+
+const fn dbgwvr(index: u64) -> u64 {
+    sysreg_id(2, 0, 0, index, 6)
+}
+
+const fn dbgwcr(index: u64) -> u64 {
+    sysreg_id(2, 0, 0, index, 7)
+}
 
 /// The EL1 sysreg IDs of the skeleton [`Arm64SysregFile`](crate::Arm64SysregFile),
 /// paired with a selector so save/restore is one table walk. Full record set is
@@ -483,6 +586,173 @@ fn sys_value(f: &crate::arch::arm64::Arm64SysregFile, sel: SysSel) -> u64 {
     }
 }
 
+fn vgic_bitmap_attr(word: usize, base: u64) -> (u32, u64) {
+    if word == 0 {
+        (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_SGI_BASE + base)
+    } else {
+        (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, base + (word as u64) * 4)
+    }
+}
+
+fn vgic_priority_attr(word: usize) -> (u32, u64) {
+    if word < 8 {
+        (
+            KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+            GICR_SGI_BASE + GIC_IPRIORITYR + (word as u64) * 4,
+        )
+    } else {
+        (
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GIC_IPRIORITYR + (word as u64) * 4,
+        )
+    }
+}
+
+fn vgic_level_attr(block: u32) -> u64 {
+    VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
+}
+
+/// Capture the in-kernel vGIC through KVM's migration API and normalize it to
+/// the same architectural record used by the userspace model.
+fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
+    let mut s = Arm64GicState {
+        impl_spis: HARMONY_GIC_IMPL_SPIS,
+        timer_hz: HARMONY_TIMER_HZ,
+        timer_intid: HARMONY_TIMER_INTID,
+        ..Arm64GicState::default()
+    };
+    s.gicd_ctlr =
+        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)? & 0b10)
+            .map_err(|_| BackendError::InvalidState)?;
+
+    let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
+    for word in 0..words {
+        for (base, file) in [
+            (GIC_IGROUPR, &mut s.group),
+            (GIC_ISENABLER, &mut s.enable),
+            (GIC_ISPENDR, &mut s.pending),
+            (GIC_ISACTIVER, &mut s.active),
+        ] {
+            let (group, attr) = vgic_bitmap_attr(word, base);
+            file[word] = u32::try_from(k.get_vgic_attr(group, attr, false)?)
+                .map_err(|_| BackendError::InvalidState)?;
+        }
+        s.line_level[word] = u32::try_from(k.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+            vgic_level_attr(word as u32 * 32),
+            false,
+        )?)
+        .map_err(|_| BackendError::InvalidState)?;
+    }
+    for word in 0..(HARMONY_GIC_NR_IRQS as usize / 4) {
+        let (group, attr) = vgic_priority_attr(word);
+        let bytes = u32::try_from(k.get_vgic_attr(group, attr, false)?)
+            .map_err(|_| BackendError::InvalidState)?
+            .to_le_bytes();
+        s.priority[word * 4..word * 4 + 4].copy_from_slice(&bytes);
+    }
+    s.pmr = u8::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_PMR_EL1, true)?)
+        .map_err(|_| BackendError::InvalidState)?;
+    s.igrpen1 = match k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_IGRPEN1_EL1, true)? {
+        0 => false,
+        1 => true,
+        _ => return Err(BackendError::InvalidState),
+    };
+    Ok(s)
+}
+
+fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
+    if s.version != GIC_STATE_VERSION
+        || s.impl_spis != HARMONY_GIC_IMPL_SPIS
+        || s.timer_hz != HARMONY_TIMER_HZ
+        || s.timer_intid != HARMONY_TIMER_INTID
+        || s.gicd_ctlr & !0b10 != 0
+        || s.cntv_ctl != 0
+        || s.cntv_cval != 0
+        || s.timer_fired
+    {
+        return Err(BackendError::InvalidState);
+    }
+    let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
+    for file in [&s.group, &s.enable, &s.pending, &s.active, &s.line_level] {
+        if file[words..].iter().any(|&word| word != 0) {
+            return Err(BackendError::InvalidState);
+        }
+    }
+    if s.priority[HARMONY_GIC_NR_IRQS as usize..]
+        .iter()
+        .any(|&byte| byte != 0)
+    {
+        return Err(BackendError::InvalidState);
+    }
+    Ok(())
+}
+
+/// Restore a canonical record through KVM's vGIC migration API. Mutable files
+/// are replaced (clear-before-set where the architectural register is
+/// write-one-to-modify), and forwarding is enabled last. The implementation
+/// IIDR handshake happens before vGIC initialization in the syscall layer.
+fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
+    validate_vgic_state(s)?;
+    let words = (HARMONY_GIC_NR_IRQS / 32) as usize;
+    for word in 0..words {
+        let (group, attr) = vgic_bitmap_attr(word, GIC_IGROUPR);
+        k.set_vgic_attr(group, attr, false, u64::from(s.group[word]))?;
+
+        let (group, clear) = vgic_bitmap_attr(word, GIC_ICENABLER);
+        k.set_vgic_attr(group, clear, false, u64::from(u32::MAX))?;
+        let (group, set) = vgic_bitmap_attr(word, GIC_ISENABLER);
+        k.set_vgic_attr(group, set, false, u64::from(s.enable[word]))?;
+
+        let (group, attr) = vgic_bitmap_attr(word, GIC_ISPENDR);
+        k.set_vgic_attr(group, attr, false, u64::from(s.pending[word]))?;
+
+        let (group, clear) = vgic_bitmap_attr(word, GIC_ICACTIVER);
+        k.set_vgic_attr(group, clear, false, u64::from(u32::MAX))?;
+        let (group, set) = vgic_bitmap_attr(word, GIC_ISACTIVER);
+        k.set_vgic_attr(group, set, false, u64::from(s.active[word]))?;
+
+        k.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+            vgic_level_attr(word as u32 * 32),
+            false,
+            u64::from(s.line_level[word]),
+        )?;
+    }
+    for word in 0..(HARMONY_GIC_NR_IRQS as usize / 4) {
+        let (group, attr) = vgic_priority_attr(word);
+        let first = word * 4;
+        let value = u32::from_le_bytes([
+            s.priority[first],
+            s.priority[first + 1],
+            s.priority[first + 2],
+            s.priority[first + 3],
+        ]);
+        k.set_vgic_attr(group, attr, false, u64::from(value))?;
+    }
+    k.set_vgic_attr(
+        KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        ICC_PMR_EL1,
+        true,
+        u64::from(s.pmr),
+    )?;
+    k.set_vgic_attr(
+        KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS,
+        ICC_IGRPEN1_EL1,
+        true,
+        u64::from(s.igrpen1),
+    )?;
+    // The userspace model stores only the writable Group-1 enable bits and
+    // models ARE as permanently enabled. Reconstitute that fixed bit here.
+    k.set_vgic_attr(
+        KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+        GICD_CTLR,
+        false,
+        u64::from(s.gicd_ctlr | (1 << 4)),
+    )?;
+    Ok(())
+}
+
 /// Read the full skeleton vCPU state over the reg-ID table (pure; drives the
 /// [`Arm64Kvm`] seam).
 pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
@@ -496,15 +766,52 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     s.core.sp_el1 = k.get_one_reg(core_reg(CORE_SP_EL1))?;
     s.core.elr_el1 = k.get_one_reg(core_reg(CORE_ELR_EL1))?;
     s.core.spsr_el1 = k.get_one_reg(core_reg(CORE_SPSR_EL1))?;
+    canonicalize_core_regs(&mut s.core);
     for &(id, sel) in SYSREGS {
         *sys_field(&mut s.sysregs, sel) = k.get_one_reg(id)?;
     }
+    s.sysregs.sctlr_el1 &= !KVM_SCTLR_NONPORTABLE_BITS;
+    s.sysregs.tcr_el1 &= !KVM_TCR_NONPORTABLE_BITS;
+    for (index, q) in s.simd_fp.q.iter_mut().enumerate() {
+        *q = k.get_one_reg128(core_reg_sized(
+            KVM_REG_SIZE_U128,
+            CORE_FP_BASE + (index as u64) * 4,
+        ))?;
+    }
+    s.simd_fp.fpsr = u64::from(k.get_one_reg32(core_reg_sized(KVM_REG_SIZE_U32, CORE_FPSR))?);
+    s.simd_fp.fpcr = u64::from(k.get_one_reg32(core_reg_sized(KVM_REG_SIZE_U32, CORE_FPCR))?);
+    for index in 0..16u64 {
+        s.debug.breakpoint_value[index as usize] = k.get_one_reg(dbgbvr(index))?;
+        s.debug.breakpoint_control[index as usize] = k.get_one_reg(dbgbcr(index))?;
+        s.debug.watchpoint_value[index as usize] = k.get_one_reg(dbgwvr(index))?;
+        s.debug.watchpoint_control[index as usize] = k.get_one_reg(dbgwcr(index))?;
+    }
+    s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
+    s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)? & CNTV_CTL_WRITABLE_BITS;
+    s.vtimer.cntv_cval_el0 = k.get_one_reg(CNTV_CVAL_EL0)?;
+    // KVM quarantines this host-backed timer by routing it to unused PPI20;
+    // the canonical bit records the invariant, not a KVM mask ioctl.
+    s.vtimer.masked = true;
     s.mp_state = k.get_mp_state()?;
+    s.gic = Some(save_vgic(k)?);
     Ok(s)
 }
 
 /// Restore the full skeleton vCPU state over the reg-ID table.
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
+    if has_noncanonical_core_regs(&s.core)
+        || s.debug.trap_debug_exceptions
+        || s.debug.trap_debug_reg_accesses
+        || !s.vtimer.masked
+        || s.vtimer.offset != 0
+        || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
+        || s.sysregs.sctlr_el1 & KVM_SCTLR_NONPORTABLE_BITS != 0
+        || s.sysregs.tcr_el1 & KVM_TCR_NONPORTABLE_BITS != 0
+        || s.interrupts.irq
+        || s.interrupts.fiq
+    {
+        return Err(BackendError::InvalidState);
+    }
     for i in 0..31u64 {
         k.set_one_reg(core_reg(i * 2), s.core.x[i as usize])?;
     }
@@ -517,7 +824,34 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
     for &(id, sel) in SYSREGS {
         k.set_one_reg(id, sys_value(&s.sysregs, sel))?;
     }
+    for (index, q) in s.simd_fp.q.iter().enumerate() {
+        k.set_one_reg128(
+            core_reg_sized(KVM_REG_SIZE_U128, CORE_FP_BASE + (index as u64) * 4),
+            *q,
+        )?;
+    }
+    k.set_one_reg32(
+        core_reg_sized(KVM_REG_SIZE_U32, CORE_FPSR),
+        u32::try_from(s.simd_fp.fpsr).map_err(|_| BackendError::InvalidState)?,
+    )?;
+    k.set_one_reg32(
+        core_reg_sized(KVM_REG_SIZE_U32, CORE_FPCR),
+        u32::try_from(s.simd_fp.fpcr).map_err(|_| BackendError::InvalidState)?,
+    )?;
+    for index in 0..16u64 {
+        k.set_one_reg(dbgbvr(index), s.debug.breakpoint_value[index as usize])?;
+        k.set_one_reg(dbgbcr(index), s.debug.breakpoint_control[index as usize])?;
+        k.set_one_reg(dbgwvr(index), s.debug.watchpoint_value[index as usize])?;
+        k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
+    }
+    k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
+    k.set_one_reg(CNTV_CVAL_EL0, s.vtimer.cntv_cval_el0)?;
+    // Arm the timer only after its compare value is restored. Writing CTL
+    // first can transiently assert the virtual-timer PPI against the old CVAL.
+    k.set_one_reg(CNTV_CTL_EL0, s.vtimer.cntv_ctl_el0)?;
     k.set_mp_state(s.mp_state)?;
+    let gic = s.gic.as_ref().ok_or(BackendError::InvalidState)?;
+    restore_vgic(k, gic)?;
     Ok(())
 }
 
@@ -551,16 +885,46 @@ pub trait Arm64Kvm {
     /// `KVM_SET_ONE_REG` (u64). Also the config-time `ID_AA64*` freeze write
     /// (the ID registers are writable sysregs before the first run).
     fn set_one_reg(&mut self, id: u64, value: u64) -> Result<()>;
+    /// `KVM_GET_ONE_REG` for a 32-bit core field.
+    fn get_one_reg32(&self, id: u64) -> Result<u32>;
+    /// `KVM_SET_ONE_REG` for a 32-bit core field.
+    fn set_one_reg32(&mut self, id: u64, value: u32) -> Result<()>;
+    /// `KVM_GET_ONE_REG` for a 128-bit SIMD register, in architectural byte
+    /// order.
+    fn get_one_reg128(&self, id: u64) -> Result<[u8; 16]>;
+    /// `KVM_SET_ONE_REG` for a 128-bit SIMD register.
+    fn set_one_reg128(&mut self, id: u64, value: [u8; 16]) -> Result<()>;
 
     /// `KVM_GET_MP_STATE`.
     fn get_mp_state(&self) -> Result<MpState>;
     /// `KVM_SET_MP_STATE`.
     fn set_mp_state(&mut self, mp: MpState) -> Result<()>;
 
+    /// Drive one in-kernel vGICv3 input line through `KVM_IRQ_LINE`.
+    fn set_irq_line(&mut self, id: GicIntId, level: bool) -> Result<()>;
+
+    /// Read a vGICv3 migration attribute. `width64` selects the 64-bit
+    /// CPU-interface groups; distributor, redistributor, and level groups are
+    /// 32-bit and return a zero-extended value.
+    fn get_vgic_attr(&self, group: u32, attr: u64, width64: bool) -> Result<u64>;
+
+    /// Write a vGICv3 migration attribute using the same width rule as
+    /// [`Self::get_vgic_attr`].
+    fn set_vgic_attr(&mut self, group: u32, attr: u64, width64: bool, value: u64) -> Result<()>;
+
     /// Stage the data an MMIO **load** completes with, written into the mmap'd
     /// `kvm_run.mmio.data` before the next `run` (the x86 `complete_read`
     /// equivalent, below the trait).
     fn write_mmio_data(&mut self, data: [u8; 8]) -> Result<()>;
+
+    /// Re-enter only far enough for KVM to retire the pending MMIO instruction.
+    ///
+    /// The live implementation sets `kvm_run.immediate_exit` before
+    /// `KVM_RUN`. KVM consumes the prior MMIO completion, updates the target
+    /// register/PC, then returns `EINTR` without executing the next guest
+    /// instruction. This turns the substrate-local in-flight exit into the
+    /// fully serviced architectural boundary the VMM hashes and snapshots.
+    fn complete_mmio_exit(&mut self) -> Result<()>;
 
     /// `KVM_RUN`, returning the plain-data view [`decode_exit`] consumes.
     fn run(&mut self) -> Result<KvmRunView>;
@@ -579,6 +943,17 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     /// [`Backend::map_memory`] contract), rather than silently registering a
     /// duplicate `slot 0` that replaces the first.
     regions: Vec<(u64, u64)>,
+    /// The one level input requested for the next entry. The userspace
+    /// interrupt controller remains the queue; this is only its current
+    /// arbitrated output (or the in-kernel clockevent line).
+    pending_irq: Option<GicIntId>,
+    /// The line currently driven into the in-kernel vGIC.
+    applied_irq: Option<GicIntId>,
+    /// One acceptance report awaiting the VMM's drain.
+    accepted_irq: Option<GicIntId>,
+    /// The active identity already reported, preventing duplicate reports
+    /// while the guest remains in the handler.
+    reported_active_irq: Option<GicIntId>,
     counts: ExitCounts,
 }
 
@@ -594,6 +969,10 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             pending: Pending::None,
             staged_read: None,
             regions: Vec::new(),
+            pending_irq: None,
+            applied_irq: None,
+            accepted_irq: None,
+            reported_active_irq: None,
             counts: ExitCounts::default(),
         }
     }
@@ -613,15 +992,71 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         Ok(())
     }
 
+    /// Apply the latest one-slot level request. A replacement is ordered
+    /// low-before-high so two identities are never asserted by this backend
+    /// simultaneously. `set_pending_irq` calls this at the serviced-exit
+    /// boundary, making the canonical vGIC line state observable before a
+    /// snapshot; the entry call is an idempotent safety net.
+    fn apply_pending_irq(&mut self) -> Result<()> {
+        if self.applied_irq == self.pending_irq {
+            return Ok(());
+        }
+        if let Some(old) = self.applied_irq {
+            self.kvm.set_irq_line(old, false)?;
+        }
+        if let Some(new) = self.pending_irq {
+            self.kvm.set_irq_line(new, true)?;
+        }
+        self.applied_irq = self.pending_irq;
+        Ok(())
+    }
+
+    /// Observe the in-kernel pending→active transition after an exit. The
+    /// owned Linux clockevent ACKs through MMIO before EOI, so the first exit
+    /// from its handler exposes the active bit and cannot be missed.
+    fn observe_irq_acceptance(&mut self) -> Result<()> {
+        let Some(id) = self.applied_irq else {
+            self.reported_active_irq = None;
+            return Ok(());
+        };
+        let (group, attr, bit) = if id.is_ppi() {
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_ISACTIVER0, id.0)
+        } else if id.is_spi() {
+            let word = id.0 / 32;
+            (
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                0x0300 + u64::from(word) * 4,
+                id.0 % 32,
+            )
+        } else {
+            return Err(BackendError::InvalidState);
+        };
+        let active = self.kvm.get_vgic_attr(group, attr, false)? & (1u64 << bit) != 0;
+        if active {
+            if self.reported_active_irq != Some(id) {
+                self.accepted_irq = Some(id);
+                self.reported_active_irq = Some(id);
+            }
+        } else if self.reported_active_irq == Some(id) {
+            self.reported_active_irq = None;
+        }
+        Ok(())
+    }
+
     /// Enter the guest: apply any staged read completion, then `KVM_RUN`, then
     /// decode. Re-enters on control exits (`None`).
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
+            self.apply_pending_irq()?;
             if let Some(data) = self.staged_read.take() {
                 self.kvm.write_mmio_data(data)?;
             }
             let view = self.kvm.run()?;
+            self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
+                if view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write {
+                    self.kvm.complete_mmio_exit()?;
+                }
                 self.counts.bump(exit.reason());
                 self.pending = pending;
                 return Ok(exit);
@@ -634,6 +1069,24 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     type A = Arm64;
 
     fn set_policy(&mut self, policy: &crate::arch::arm64::Arm64Policy) -> Result<()> {
+        // KVM otherwise exposes the host kernel's latest implemented PSCI
+        // version. PSCI 1.1 adds SYSTEM_RESET2, which Linux probes and records
+        // in guest RAM, so that default leaks the substrate into canonical
+        // state. Pin the VM firmware to the DTB's `arm,psci-1.0` contract
+        // before first entry; HVF reports the same version and service set.
+        self.kvm
+            .set_one_reg(KVM_REG_ARM_PSCI_VERSION, KVM_ARM_PSCI_1_0)?;
+        // Stock KVM enables optional SMCCC services by default. In particular,
+        // its TRNG service returns `get_random_long()` from the host kernel,
+        // which the owned Linux guest consumes during `random_init_early()`.
+        // Disable every optional firmware bitmap before first entry. PSCI is a
+        // default-allowed service outside these bitmaps and remains available.
+        // HVF already answers unknown non-PSCI HVCs with NOT_SUPPORTED, so this
+        // makes the two substrates expose the same deterministic firmware
+        // surface without changing the guest image or frozen contract hash.
+        for id in OPTIONAL_FIRMWARE_BITMAPS {
+            self.kvm.set_one_reg(id, 0)?;
+        }
         // What actually works on stock: the `ID_AA64*` freeze — a config-time
         // `KVM_SET_ONE_REG` on the writable ID registers before the first run.
         // The IdRegModel is keyed by the packed sysreg encoding; write each
@@ -699,38 +1152,31 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.enter_guest()
     }
 
-    fn run_until(&mut self, _deadline: crate::types::Moment) -> Result<Exit<Arm64>> {
-        // The deterministic force-exit + single-step landing is the arm64
-        // 0004/0005-analogue kernel patch (AA-3) plus the patched backend — a
-        // later bead, not this one. designed-not-frozen (AA-3): arm64's
-        // PMU-overflow-to-exit physics may pressure `run_until`'s late-only-stop
-        // contract before the trait may be declared frozen.
-        Err(BackendError::Unsupported { what: "run_until" })
+    fn inject(&mut self, event: crate::arch::arm64::Arm64Injection) -> Result<()> {
+        match event {
+            crate::arch::arm64::Arm64Injection::Interrupt { intid } => {
+                self.set_pending_irq(Some(intid))
+            }
+        }
     }
 
-    fn inject(&mut self, _event: crate::arch::arm64::Arm64Injection) -> Result<()> {
-        // The stock backend has no delivery path into the guest for a userspace
-        // GIC (the CPU interface + timer PPI couple to the in-kernel vGICv3);
-        // real delivery is AA-6-gated (the vGICv3 round-trip verdict). Mirrors
-        // stock x86 `KvmBackend::inject` at bring-up.
-        Err(BackendError::Unsupported { what: "inject" })
-    }
-
-    fn set_pending_irq(&mut self, _id: Option<GicIntId>) -> Result<()> {
-        Err(BackendError::Unsupported {
-            what: "set_pending_irq",
-        })
+    fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
+        if id.is_some_and(|id| !(id.is_ppi() || id.is_spi())) {
+            return Err(BackendError::InvalidState);
+        }
+        self.pending_irq = id;
+        self.apply_pending_irq()
     }
 
     fn take_accepted_interrupt(&mut self) -> Option<GicIntId> {
-        // No maskable IRQ is ever accepted (no delivery path).
-        None
+        self.accepted_irq.take()
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
         match self.pending {
             Pending::MmioLoad { len } => {
-                self.staged_read = Some(le_data(value, len));
+                self.kvm.write_mmio_data(le_data(value, len))?;
+                self.kvm.complete_mmio_exit()?;
                 self.pending = Pending::None;
                 Ok(())
             }
@@ -782,7 +1228,12 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
-        restore_vcpu(&mut self.kvm, state)
+        restore_vcpu(&mut self.kvm, state)?;
+        self.pending_irq = None;
+        self.applied_irq = None;
+        self.accepted_irq = None;
+        self.reported_active_irq = None;
+        Ok(())
     }
 
     fn exit_counts(&self) -> ExitCounts {
@@ -798,9 +1249,10 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         // work clock, the exact-landing, and the paravirt clock are all patched/
         // AA-gated. Every field honestly false.
         Capabilities {
-            name: "kvm-arm64-stock",
+            name: "kvm-arm64-vgicv3",
             deterministic_rng: false,
             arch: crate::arch::arm64::Arm64Caps {
+                in_kernel_gic: true,
                 deterministic_cntvct: false,
                 enforces_cntv_cval: false,
             },
@@ -810,9 +1262,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
 // ---------------------------------------------------------------------------
 // A recording fake syscall seam — the portable + Miri test double that asserts
-// ioctl *shape* (ordering, the reg-ID set) with no `/dev/kvm` (`docs/ARM-ALTRA`
-// §Evidence-integrity: mechanism attestation). Behind `cfg(any(test, ...))` so
-// it never ships in a non-test build.
+// ioctl *shape* (ordering, the reg-ID set) with no `/dev/kvm`
+// (`docs/VM-EXIT-COUNT-VTIME.md`: mechanism attestation). Behind
+// `cfg(any(test, ...))` so it never ships in a non-test build.
 // ---------------------------------------------------------------------------
 
 /// A recording fake [`Arm64Kvm`]: it holds a register map, a scripted queue of
@@ -822,6 +1274,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 #[derive(Debug, Default)]
 pub struct FakeKvm {
     regs: std::collections::BTreeMap<u64, u64>,
+    regs32: std::collections::BTreeMap<u64, u32>,
+    regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
     run_queue: std::collections::VecDeque<KvmRunView>,
     /// The ordered ioctl log — e.g. `"vcpu_init"`, `"set_one_reg"`, `"run"`.
@@ -830,6 +1284,10 @@ pub struct FakeKvm {
     pub last_mmio_data: Option<[u8; 8]>,
     /// Recorded `(slot, gpa, len)` memslots.
     pub memslots: Vec<(u32, u64, u64)>,
+    /// Portable model of the vGIC device-attribute register file.
+    vgic_attrs: std::collections::BTreeMap<(u32, u64, bool), u64>,
+    /// Whether a scripted entry models the guest accepting an asserted IRQ.
+    accept_irqs: bool,
     /// The `kvm_vcpu_init.features` bitmap `vcpu_init` requested (via the shared
     /// [`vcpu_init_features`], the same one `LiveKvm` sends) — so a test pins
     /// that PSCI 0.2 is advertised. Test-only observability.
@@ -854,6 +1312,12 @@ impl FakeKvm {
     /// The recorded register value (for test assertions).
     pub fn reg(&self, id: u64) -> Option<u64> {
         self.regs.get(&id).copied()
+    }
+
+    /// Select whether the next scripted guest entry accepts an asserted line.
+    pub fn set_accept_irqs(&mut self, accept: bool) -> &mut Self {
+        self.accept_irqs = accept;
+        self
     }
 }
 
@@ -896,6 +1360,36 @@ impl Arm64Kvm for FakeKvm {
         Ok(())
     }
 
+    fn get_one_reg32(&self, id: u64) -> Result<u32> {
+        Ok(self.regs32.get(&id).copied().unwrap_or(0))
+    }
+
+    fn set_one_reg32(&mut self, id: u64, value: u32) -> Result<()> {
+        if !self.initialized {
+            return Err(BackendError::Internal(
+                "set_one_reg32 before vcpu_init (KVM rejects register access on an un-init'd vCPU)",
+            ));
+        }
+        self.calls.push("set_one_reg32");
+        self.regs32.insert(id, value);
+        Ok(())
+    }
+
+    fn get_one_reg128(&self, id: u64) -> Result<[u8; 16]> {
+        Ok(self.regs128.get(&id).copied().unwrap_or([0; 16]))
+    }
+
+    fn set_one_reg128(&mut self, id: u64, value: [u8; 16]) -> Result<()> {
+        if !self.initialized {
+            return Err(BackendError::Internal(
+                "set_one_reg128 before vcpu_init (KVM rejects register access on an un-init'd vCPU)",
+            ));
+        }
+        self.calls.push("set_one_reg128");
+        self.regs128.insert(id, value);
+        Ok(())
+    }
+
     fn get_mp_state(&self) -> Result<MpState> {
         Ok(self.mp_state)
     }
@@ -906,14 +1400,82 @@ impl Arm64Kvm for FakeKvm {
         Ok(())
     }
 
+    fn set_irq_line(&mut self, id: GicIntId, level: bool) -> Result<()> {
+        self.calls.push(if level {
+            "set_irq_line_high"
+        } else {
+            "set_irq_line_low"
+        });
+        let block = id.0 / 32 * 32;
+        let key = (
+            KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+            vgic_level_attr(block),
+            false,
+        );
+        let bit = 1u64 << (id.0 % 32);
+        let value = self.vgic_attrs.get(&key).copied().unwrap_or(0);
+        self.vgic_attrs
+            .insert(key, if level { value | bit } else { value & !bit });
+        Ok(())
+    }
+
+    fn get_vgic_attr(&self, group: u32, attr: u64, width64: bool) -> Result<u64> {
+        Ok(self
+            .vgic_attrs
+            .get(&(group, attr, width64))
+            .copied()
+            .unwrap_or(0))
+    }
+
+    fn set_vgic_attr(&mut self, group: u32, attr: u64, width64: bool, value: u64) -> Result<()> {
+        self.vgic_attrs.insert((group, attr, width64), value);
+        Ok(())
+    }
+
     fn write_mmio_data(&mut self, data: [u8; 8]) -> Result<()> {
         self.calls.push("write_mmio_data");
         self.last_mmio_data = Some(data);
         Ok(())
     }
 
+    fn complete_mmio_exit(&mut self) -> Result<()> {
+        self.calls.push("complete_mmio_exit");
+        Ok(())
+    }
+
     fn run(&mut self) -> Result<KvmRunView> {
         self.calls.push("run");
+        if self.accept_irqs {
+            let levels = self
+                .vgic_attrs
+                .get(&(KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(0), false))
+                .copied()
+                .unwrap_or(0);
+            let private = levels & 0xffff_0000;
+            self.vgic_attrs.insert(
+                (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_ISACTIVER0, false),
+                private,
+            );
+            for block in [32, 64] {
+                let levels = self
+                    .vgic_attrs
+                    .get(&(
+                        KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+                        vgic_level_attr(block),
+                        false,
+                    ))
+                    .copied()
+                    .unwrap_or(0);
+                self.vgic_attrs.insert(
+                    (
+                        KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                        GIC_ISACTIVER + u64::from(block / 32) * 4,
+                        false,
+                    ),
+                    levels,
+                );
+            }
+        }
         self.run_queue
             .pop_front()
             .ok_or(BackendError::Internal("fake KVM run-queue empty"))
@@ -1046,6 +1608,10 @@ mod tests {
         // The register-class selectors live at bits 16..28, not 48+.
         assert_eq!(KVM_REG_ARM_CORE, 0x10_0000, "0x0010 << 16");
         assert_eq!(KVM_REG_ARM64_SYSREG, 0x13_0000, "0x0013 << 16");
+        assert_eq!(KVM_REG_ARM_FW, 0x14_0000, "0x0014 << 16");
+        assert_eq!(KVM_REG_ARM_FW_FEAT_BMAP, 0x16_0000, "0x0016 << 16");
+        assert_eq!(HARMONY_GIC_NR_IRQS, 96);
+        assert_eq!(Arm64GicState::default().version, GIC_STATE_VERSION);
 
         // Full IDs vs the canonical KVM values (the strongest, non-circular
         // pin — verifies the whole encoding: class shift + field layout):
@@ -1055,10 +1621,186 @@ mod tests {
         assert_eq!(core_reg(0), 0x6030_0000_0010_0000, "x0");
         assert_eq!(core_reg(CORE_PC), 0x6030_0000_0010_0040, "pc");
         assert_eq!(
+            KVM_REG_ARM_PSCI_VERSION, 0x6030_0000_0014_0000,
+            "KVM firmware pseudo-register 0"
+        );
+        assert_eq!(KVM_ARM_PSCI_1_0, 0x0001_0000);
+        assert_eq!(KVM_REG_ARM_STD_BMAP, 0x6030_0000_0016_0000);
+        assert_eq!(KVM_REG_ARM_STD_HYP_BMAP, 0x6030_0000_0016_0001);
+        assert_eq!(KVM_REG_ARM_VENDOR_HYP_BMAP, 0x6030_0000_0016_0002);
+        assert_eq!(KVM_REG_ARM_VENDOR_HYP_BMAP_2, 0x6030_0000_0016_0003);
+        assert_eq!(
+            core_reg_sized(KVM_REG_SIZE_U32, 0x155),
+            0x6020_0000_0010_0155
+        );
+        assert_eq!(
+            core_reg_sized(KVM_REG_SIZE_U128, 0x2aa),
+            0x6040_0000_0010_02aa
+        );
+        assert_eq!(vgic_sysreg(3, 2, 11, 5, 6), 0xd5ae);
+        assert_eq!(
             sysreg_id(3, 0, 1, 0, 0),
             0x6030_0000_0013_c080,
             "SCTLR_EL1 (S3_0_C1_C0_0)"
         );
+        assert_eq!(
+            CNTV_CVAL_EL0, 0x6030_0000_0013_df02,
+            "KVM_REG_ARM_TIMER_CVAL uses the stable swapped UAPI ID"
+        );
+        assert_ne!(
+            CNTV_CVAL_EL0,
+            sysreg_id(3, 3, 14, 3, 2),
+            "the architectural CVAL encoding is KVM_REG_ARM_TIMER_CNT"
+        );
+        assert_eq!(KVM_SCTLR_NONPORTABLE_BITS, 0x0200_0020_0000_0000);
+        assert_eq!(KVM_TCR_NONPORTABLE_BITS, 0x0000_0010_0000_0000);
+        assert_eq!(GICR_ISACTIVER0, 0x1_0300);
+
+        // Pin both sides of each redistributor/distributor boundary. These
+        // helpers feed the migration ABI directly, so zero-filled round trips
+        // alone are not a sufficient oracle for their address arithmetic.
+        assert_eq!(
+            vgic_bitmap_attr(0, GIC_ISENABLER),
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, 0x1_0100)
+        );
+        assert_eq!(
+            vgic_bitmap_attr(1, GIC_ISENABLER),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x0104)
+        );
+        assert_eq!(
+            vgic_bitmap_attr(17, GIC_ISPENDR),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x0244)
+        );
+        assert_eq!(
+            vgic_priority_attr(0),
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, 0x1_0400)
+        );
+        assert_eq!(
+            vgic_priority_attr(7),
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, 0x1_041c)
+        );
+        assert_eq!(
+            vgic_priority_attr(8),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x0420)
+        );
+        assert_eq!(
+            vgic_priority_attr(23),
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, 0x045c)
+        );
+
+        let mut fake = FakeKvm::new();
+        // KVM_IRQ_LINE is level-triggered: asserting an already-high line is
+        // idempotent, and lowering an already-low line stays low. This also
+        // distinguishes the required bitmap OR from a toggling XOR.
+        let test_irq = GicIntId(65);
+        fake.set_irq_line(test_irq, true).unwrap();
+        fake.set_irq_line(test_irq, true).unwrap();
+        assert_eq!(
+            fake.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(64), false,)
+                .unwrap(),
+            1 << 1,
+        );
+        fake.set_irq_line(test_irq, false).unwrap();
+        fake.set_irq_line(test_irq, false).unwrap();
+        assert_eq!(
+            fake.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(64), false,)
+                .unwrap(),
+            0,
+        );
+
+        fake.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+            vgic_level_attr(32),
+            false,
+            0xa5a5_5a5a,
+        )
+        .unwrap();
+        let (priority_group, priority_attr) = vgic_priority_attr(8);
+        fake.set_vgic_attr(
+            priority_group,
+            priority_attr,
+            false,
+            u64::from(0x4433_2211_u32),
+        )
+        .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_PMR_EL1, true, 0x7f)
+            .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_IGRPEN1_EL1, true, 1)
+            .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false, 0b10)
+            .unwrap();
+        let saved = save_vgic(&fake).unwrap();
+        assert_eq!(saved.gicd_ctlr, 0b10);
+        assert_eq!(saved.line_level[0], 0);
+        assert_eq!(saved.line_level[1], 0xa5a5_5a5a);
+        assert_eq!(saved.priority[32..36], [0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(saved.pmr, 0x7f);
+        assert!(saved.igrpen1);
+        validate_vgic_state(&saved).unwrap();
+
+        let mut restored = FakeKvm::new();
+        restore_vgic(&mut restored, &saved).unwrap();
+        assert_eq!(
+            restored
+                .get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)
+                .unwrap(),
+            0b1_0010,
+            "restore must reconstitute the fixed ARE bit without losing Group-1 enable"
+        );
+        assert_eq!(save_vgic(&restored).unwrap(), saved);
+
+        for invalid in [
+            Arm64GicState {
+                version: saved.version + 1,
+                ..saved
+            },
+            Arm64GicState {
+                impl_spis: saved.impl_spis + 1,
+                ..saved
+            },
+            Arm64GicState {
+                timer_hz: saved.timer_hz + 1,
+                ..saved
+            },
+            Arm64GicState {
+                timer_intid: saved.timer_intid + 1,
+                ..saved
+            },
+            Arm64GicState {
+                gicd_ctlr: 1,
+                ..saved
+            },
+            Arm64GicState {
+                cntv_ctl: 1,
+                ..saved
+            },
+            Arm64GicState {
+                cntv_cval: 1,
+                ..saved
+            },
+            Arm64GicState {
+                timer_fired: true,
+                ..saved
+            },
+        ] {
+            assert!(matches!(
+                validate_vgic_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+        }
+
+        let mut invalid_bitmap = saved;
+        invalid_bitmap.pending[3] = 1;
+        assert!(matches!(
+            validate_vgic_state(&invalid_bitmap),
+            Err(BackendError::InvalidState)
+        ));
+        let mut invalid_priority = saved;
+        invalid_priority.priority[96] = 1;
+        assert!(matches!(
+            validate_vgic_state(&invalid_priority),
+            Err(BackendError::InvalidState)
+        ));
     }
 
     /// Finding 1 (review r1): a non-architectural MMIO access width is a
@@ -1182,7 +1924,7 @@ mod tests {
     /// and answers `SYSTEM_OFF` (which the boot path relies on for a clean
     /// poweroff) `NOT_SUPPORTED`. Pin the requested bitmap against the fake —
     /// which records exactly what `LiveKvm` sends (the shared
-    /// [`vcpu_init_features`]). Live PSCI conformance is M4/Altra-verified (the
+    /// [`vcpu_init_features`]). Live PSCI conformance is an M4/msr1 gate (the
     /// Mac has no `/dev/kvm` oracle; `hm-8l3` REFUSE).
     #[test]
     fn vcpu_init_advertises_psci_0_2() {
@@ -1219,7 +1961,8 @@ mod tests {
         // Not configured yet: run fails closed.
         assert!(matches!(b.run(), Err(BackendError::NotConfigured)));
 
-        // A policy with one ID-reg freeze row → one config-time set_one_reg.
+        // A policy with one ID-reg freeze row. Firmware and identity are all
+        // installed through config-time set_one_reg calls.
         let mut policy = Arm64Policy {
             id_regs: IdRegModel::default(),
             ..Default::default()
@@ -1241,6 +1984,31 @@ mod tests {
         // The frozen ID value was written through the seam.
         let id = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG | u64::from(enc);
         assert_eq!(b.kvm().reg(id), Some(0x1122_3344));
+        assert_eq!(
+            b.kvm().reg(KVM_REG_ARM_PSCI_VERSION),
+            Some(KVM_ARM_PSCI_1_0),
+            "PSCI must be pinned to the portable 1.0 firmware contract"
+        );
+        for fw_id in OPTIONAL_FIRMWARE_BITMAPS {
+            assert_eq!(
+                b.kvm().reg(fw_id),
+                Some(0),
+                "optional SMCCC firmware bitmap {fw_id:#x} must be denied"
+            );
+        }
+    }
+
+    #[test]
+    fn default_policy_denies_host_rng_time_and_vendor_firmware_services() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+
+        for id in OPTIONAL_FIRMWARE_BITMAPS {
+            assert_eq!(backend.kvm().reg(id), Some(0));
+        }
     }
 
     /// A save→restore round-trip over the reg-ID table reproduces the vCPU
@@ -1260,15 +2028,106 @@ mod tests {
         s.core.sp_el1 = 0x8_0000;
         s.sysregs.sctlr_el1 = 0x30d0_0800;
         s.sysregs.cntkctl_el1 = 3;
+        s.simd_fp.q[0] = [0xA5; 16];
+        s.simd_fp.q[31] = [0x5A; 16];
+        s.simd_fp.fpcr = 0x0040_0000;
+        s.simd_fp.fpsr = 0x0800_0000;
+        s.debug.breakpoint_value[0] = 0x1234;
+        s.debug.breakpoint_control[0] = 1;
+        s.debug.watchpoint_value[15] = 0x5678;
+        s.debug.watchpoint_control[15] = 1;
+        s.debug.mdscr_el1 = 0x8000;
+        s.vtimer.cntv_ctl_el0 = 2;
+        s.vtimer.cntv_cval_el0 = 0x1234_5678;
+        s.vtimer.masked = true;
         s.mp_state = MpState::Halted;
+        s.gic = Some(save_vgic(b.kvm()).unwrap());
 
         b.restore(&s).unwrap();
         assert_eq!(b.save().unwrap(), s);
     }
 
+    #[test]
+    fn save_strips_and_restore_rejects_host_pstate_residue() {
+        const TCO: u64 = 1 << 25;
+        const BTYPE: u64 = 0b11 << 10;
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_one_reg(core_reg(CORE_PSTATE), 0xc5 | TCO | BTYPE)
+            .unwrap();
+        fake.set_one_reg(core_reg(CORE_SPSR_EL1), 0x6000_0005 | TCO | BTYPE)
+            .unwrap();
+        fake.set_one_reg(SYSREGS[0].0, 0x1234 | KVM_SCTLR_NONPORTABLE_BITS)
+            .unwrap();
+        fake.set_one_reg(SYSREGS[3].0, 0x5678 | KVM_TCR_NONPORTABLE_BITS)
+            .unwrap();
+
+        let saved = save_vcpu(&fake).unwrap();
+        assert_eq!(saved.core.pstate, 0xc5);
+        assert_eq!(saved.core.spsr_el1, 0x6000_0005);
+        assert_eq!(saved.sysregs.sctlr_el1, 0x1234);
+        assert_eq!(saved.sysregs.tcr_el1, 0x5678);
+
+        let mut noncanonical = saved;
+        noncanonical.core.pstate |= TCO | BTYPE;
+        assert!(matches!(
+            restore_vcpu(&mut fake, &noncanonical),
+            Err(BackendError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn restore_vcpu_rejects_each_noncanonical_field_independently() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+
+        let mut trap_debug_exceptions = valid;
+        trap_debug_exceptions.debug.trap_debug_exceptions = true;
+        let mut trap_debug_reg_accesses = valid;
+        trap_debug_reg_accesses.debug.trap_debug_reg_accesses = true;
+        let mut timer_unmasked = valid;
+        timer_unmasked.vtimer.masked = false;
+        let mut timer_offset = valid;
+        timer_offset.vtimer.offset = 1;
+        let mut timer_ctl_reserved = valid;
+        timer_ctl_reserved.vtimer.cntv_ctl_el0 = 1 << 2;
+        let mut sctlr_residue = valid;
+        sctlr_residue.sysregs.sctlr_el1 = KVM_SCTLR_NONPORTABLE_BITS;
+        let mut tcr_residue = valid;
+        tcr_residue.sysregs.tcr_el1 = KVM_TCR_NONPORTABLE_BITS;
+        let mut irq = valid;
+        irq.interrupts.irq = true;
+        let mut fiq = valid;
+        fiq.interrupts.fiq = true;
+
+        for (name, invalid) in [
+            ("trap-debug-exceptions", trap_debug_exceptions),
+            ("trap-debug-register-accesses", trap_debug_reg_accesses),
+            ("host-timer-unmasked", timer_unmasked),
+            ("host-timer-offset", timer_offset),
+            ("host-timer-control-reserved", timer_ctl_reserved),
+            ("SCTLR substrate residue", sctlr_residue),
+            ("TCR substrate residue", tcr_residue),
+            ("pending IRQ", irq),
+            ("pending FIQ", fiq),
+        ] {
+            let mut target = FakeKvm::new();
+            target.vcpu_init().unwrap();
+            assert!(
+                matches!(
+                    restore_vcpu(&mut target, &invalid),
+                    Err(BackendError::InvalidState)
+                ),
+                "restore accepted noncanonical {name}"
+            );
+        }
+    }
+
     /// The MMIO read/completion round-trip: a load stays pending until
-    /// `complete_read`, which stages the little-endian data the next `run`
-    /// writes back.
+    /// `complete_read`, which writes the little-endian data and performs a
+    /// completion-only reentry before the backend exposes a sealable boundary.
     #[test]
     fn mmio_load_completion_stages_data_for_the_next_run() {
         let mut fake = FakeKvm::new();
@@ -1289,11 +2148,71 @@ mod tests {
         ));
         // Resuming without completing is fail-closed.
         assert!(matches!(b.run(), Err(BackendError::PendingCompletion)));
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            0,
+            "an MMIO read is completed only after complete_read supplies data"
+        );
         b.complete_read(0x90).unwrap();
-        // The next run stages the LE data and reaches shutdown.
+        assert!(
+            b.kvm()
+                .calls
+                .windows(2)
+                .any(|calls| calls == ["write_mmio_data", "complete_mmio_exit"])
+        );
+        // The next ordinary run reaches shutdown; no completion remains.
         let exit = b.run().unwrap();
         assert_eq!(exit, CommonExit::Shutdown.into());
         assert_eq!(b.kvm().last_mmio_data, Some(le_data(0x90, 4)));
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn only_mmio_writes_are_completed_during_exit_decode() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        fake.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_SYSTEM_EVENT,
+            system_event_type: KVM_SYSTEM_EVENT_SHUTDOWN,
+            ..Default::default()
+        });
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        assert!(matches!(
+            b.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { write: Some(_), .. })
+        ));
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            1
+        );
+        assert_eq!(b.run().unwrap(), CommonExit::Shutdown.into());
+        assert_eq!(
+            b.kvm()
+                .calls
+                .iter()
+                .filter(|&&call| call == "complete_mmio_exit")
+                .count(),
+            1,
+            "non-MMIO exits must not complete a stale MMIO transaction"
+        );
     }
 
     /// `map_memory` forwards the (validated, page-aligned) region through the
@@ -1351,31 +2270,125 @@ mod tests {
     }
 
     #[test]
-    fn stock_is_unsupported_where_it_must_be_and_honestly_undeterministic() {
+    fn vgic_irq_acceptance_positive_and_planted_negative() {
+        // Meaningful positive: a level driven into PPI 27 becomes active on
+        // guest entry, so the backend reports exactly one acceptance.
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_accept_irqs(true);
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        b.set_pending_irq(Some(GicIntId(27))).unwrap();
+        let asserted = b.save().unwrap().gic.unwrap();
+        assert_ne!(
+            asserted.line_level[0] & (1 << 27),
+            0,
+            "the serviced-exit boundary must expose the asserted architectural line; \
+             a one-entry-late application is the planted negative"
+        );
+        assert!(matches!(
+            b.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(b.take_accepted_interrupt(), Some(GicIntId(27)));
+        assert_eq!(b.take_accepted_interrupt(), None);
+        assert_eq!(
+            b.save().unwrap().gic.unwrap().active[0],
+            1 << 27,
+            "the fake kernel must promote only the asserted private line"
+        );
+
+        // While the same line remains asserted, observe one inactive exit and
+        // then a new active transition. The second transition is reportable
+        // only if the inactive observation cleared the edge detector.
+        b.kvm.accept_irqs = false;
+        b.kvm.vgic_attrs.insert(
+            (KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_ISACTIVER0, false),
+            0,
+        );
+        b.kvm.push_run(mmio_store(0x0900_0000, u64::from(b'-'), 1));
+        assert!(matches!(
+            b.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(b.take_accepted_interrupt(), None);
+        b.kvm.accept_irqs = true;
+        b.kvm.push_run(mmio_store(0x0900_0000, u64::from(b'+'), 1));
+        assert!(matches!(
+            b.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(b.take_accepted_interrupt(), Some(GicIntId(27)));
+
+        b.set_pending_irq(None).unwrap();
+        let lowered = b.save().unwrap().gic.unwrap();
+        assert_eq!(lowered.line_level[0] & (1 << 27), 0);
+
+        // An SPI in the third bitmap word pins the distributor attribute and
+        // bit arithmetic used by acceptance observation.
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_accept_irqs(true);
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'S'), 1));
+        let mut spi = Arm64KvmBackend::new(fake);
+        spi.set_policy(&Arm64Policy::default()).unwrap();
+        spi.set_pending_irq(Some(GicIntId(65))).unwrap();
+        assert!(matches!(
+            spi.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(spi.take_accepted_interrupt(), Some(GicIntId(65)));
+        assert_eq!(spi.save().unwrap().gic.unwrap().active[2], 1 << 1);
+
+        // Planted negative: the same asserted line and exit script cannot pass
+        // the oracle when the fake kernel deliberately withholds the
+        // pending→active transition.
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_accept_irqs(false);
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut mutant = Arm64KvmBackend::new(fake);
+        mutant.set_policy(&Arm64Policy::default()).unwrap();
+        mutant.set_pending_irq(Some(GicIntId(27))).unwrap();
+        assert!(matches!(
+            mutant.run().unwrap(),
+            Exit::Common(CommonExit::Mmio { .. })
+        ));
+        assert_eq!(mutant.take_accepted_interrupt(), None);
+    }
+
+    #[test]
+    fn stock_vgic_rejects_invalid_interrupts() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
         let mut b = Arm64KvmBackend::new(fake);
         b.set_policy(&Arm64Policy::default()).unwrap();
 
+        b.inject(crate::arch::arm64::Arm64Injection::Interrupt {
+            intid: GicIntId(30),
+        })
+        .unwrap();
+        assert_ne!(
+            b.save().unwrap().gic.unwrap().line_level[0] & (1 << 30),
+            0,
+            "inject must route through the same level-setting contract"
+        );
         assert!(matches!(
-            b.run_until(crate::types::Moment(0)),
-            Err(BackendError::Unsupported { what: "run_until" })
+            b.inject(crate::arch::arm64::Arm64Injection::Interrupt { intid: GicIntId(1) }),
+            Err(BackendError::InvalidState)
         ));
+        b.set_pending_irq(Some(GicIntId(27))).unwrap();
         assert!(matches!(
-            b.inject(crate::arch::arm64::Arm64Injection::Interrupt {
-                intid: GicIntId(30)
-            }),
-            Err(BackendError::Unsupported { what: "inject" })
-        ));
-        assert!(matches!(
-            b.set_pending_irq(Some(GicIntId(30))),
-            Err(BackendError::Unsupported { .. })
+            b.set_pending_irq(Some(GicIntId(1))),
+            Err(BackendError::InvalidState)
         ));
         assert_eq!(b.take_accepted_interrupt(), None);
 
         let caps = b.capabilities();
-        assert_eq!(caps.name, "kvm-arm64-stock");
+        assert_eq!(caps.name, "kvm-arm64-vgicv3");
         assert!(!caps.deterministic_rng);
+        assert!(caps.arch.in_kernel_gic);
         assert!(!caps.arch.deterministic_cntvct);
         assert!(!caps.arch.enforces_cntv_cval);
     }
