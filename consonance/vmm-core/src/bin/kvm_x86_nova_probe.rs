@@ -46,6 +46,14 @@ fn run() -> Result<(), String> {
         }
     }
 
+    fn console(server: &mut Server) -> String {
+        match drive(server, &Request::Console { offset: 0 }) {
+            Ok(Reply::Console { chunk, .. }) => String::from_utf8_lossy(&chunk).into_owned(),
+            Ok(other) => format!("<unexpected console reply {other:?}>"),
+            Err(error) => format!("<console unavailable: {error}>"),
+        }
+    }
+
     fn run_to_snapshot(server: &mut Server) -> Result<Moment, String> {
         let request = Request::Run {
             until: StopConditions {
@@ -56,7 +64,10 @@ fn run() -> Result<(), String> {
         };
         match drive(server, &request)? {
             Reply::Stop(StopReason::SnapshotPoint { vtime }) => Ok(vtime),
-            other => Err(format!("expected Nova snapshot point, received {other:?}")),
+            other => Err(format!(
+                "expected Nova snapshot point, received {other:?}\n--- guest console ---\n{}",
+                console(server)
+            )),
         }
     }
 
