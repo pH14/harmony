@@ -80,7 +80,19 @@ jobs:
             build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget
           make -C consonance/harmony-linux fetch
           make -C consonance/harmony-linux kernel
-          sudo make -C consonance/harmony-linux postgres-image
+      # The postgres image copies the runtime shared-library closure from the
+      # build host, and the pinned build environment is Debian trixie (the
+      # trixie debs need its libicu). Build it in a trixie container as
+      # docs/BUILDING.md prescribes for non-box hosts.
+      - name: Build postgres image (trixie container)
+        if: steps.guest.outputs.cache-hit != 'true'
+        run: |
+          sudo docker run --rm -v "$PWD:/work" -w /work debian:trixie bash -euc '
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              build-essential bzip2 gzip cpio kmod e2fsprogs util-linux locales
+            echo "en_US.UTF-8 UTF-8" >/etc/locale.gen && locale-gen
+            make -C consonance/harmony-linux postgres-image'
       - name: Stage guest artifacts
         run: |
           mkdir -p consonance/harmony-linux/build/x86_64

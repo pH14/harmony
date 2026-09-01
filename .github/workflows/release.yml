@@ -48,14 +48,25 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget
       - run: make -C consonance/harmony-linux fetch
-      # Root: the image builds mknod device nodes and bake rootfs ownership.
-      # The counter-opcode scan baselines are per-toolchain; select the
-      # runner-toolchain (gcc 13) lists instead of the box defaults.
-      - run: |
-          sudo \
-            HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \
-            HARMONY_RDRAND_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt" \
-            make -C consonance/harmony-linux ${{ matrix.targets }}
+      # arm64: from-source musl-static payloads; build directly on the runner.
+      - if: matrix.isa == 'arm64'
+        run: sudo make -C consonance/harmony-linux ${{ matrix.targets }}
+      # x86: the kernel builds on the runner (the counter-opcode scan
+      # baselines are per-toolchain — select the runner-toolchain gcc 13
+      # lists), and the postgres image builds in a Debian trixie container,
+      # the pinned build environment its deb shared-library closure needs
+      # (docs/BUILDING.md).
+      - if: matrix.isa == 'x86_64'
+        run: |
+          HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \
+          HARMONY_RDRAND_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt" \
+          make -C consonance/harmony-linux kernel
+          sudo docker run --rm -v "$PWD:/work" -w /work debian:trixie bash -euc '
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              build-essential bzip2 gzip cpio kmod e2fsprogs util-linux locales
+            echo "en_US.UTF-8 UTF-8" >/etc/locale.gen && locale-gen
+            make -C consonance/harmony-linux postgres-image'
       # The x86 build writes bzImage + initramfs at build/ top level; the
       # tarball layout is build/<isa>/ (the CLI's share/harmony/guest/<isa>).
       - if: matrix.isa == 'x86_64'
