@@ -77,9 +77,9 @@ k3s-image:
 game-image:
 	./build-game-image.sh
 
-# Experimental FOSS Nova workload: QuickNES + Nova + the SDK payload agent in
-# an x86 Linux guest. The caller provides HARMONY_NOVA_ROM and
-# HARMONY_NOVA_CORE, normally from dissonance's pinned source builders.
+# Experimental FOSS Nova workload: static QuickNES + Nova + the SDK payload
+# agent in an x86 Linux guest. The caller provides HARMONY_NOVA_ROM and
+# HARMONY_NOVA_CORE_STATIC, normally from dissonance's pinned source builders.
 nova-game-image:
 	./build-nova-game-image.sh
 

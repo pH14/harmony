@@ -36,7 +36,7 @@ jobs:
       - name: Install Nova and initramfs build tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cc65 cpio g++ shellcheck
+          sudo apt-get install --yes --no-install-recommends binutils cc65 cpio g++ shellcheck
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -45,7 +45,8 @@ jobs:
       - name: Reproduce pinned Nova and QuickNES
         run: |
           dissonance/scripts/build-nova-rom.sh "${NOVA_BUILD}"
-          scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
+          HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
+            scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
       - name: Build the locked Harmony guest kernel
         run: |
           mkdir -p nix-guest-output
@@ -62,7 +63,7 @@ jobs:
       - name: Build Nova, QuickNES, and the SDK agent into the guest
         env:
           HARMONY_NOVA_ROM: ${{ github.workspace }}/dissonance/nova-build/nova.nes
-          HARMONY_NOVA_CORE: ${{ github.workspace }}/dissonance/nova-build/quicknes_libretro.so
+          HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/dissonance/nova-build/libquicknes_libretro.a
         run: consonance/harmony-linux/linux/build-nova-game-image.sh
       - name: Build the whole-VM snapshot probe
         run: cargo build --locked --release -p vmm-core --bin kvm_x86_nova_probe
@@ -86,7 +87,7 @@ jobs:
           sha256sum \
             consonance/harmony-linux/build/initramfs-nova.cpio.gz \
             "${NOVA_BUILD}/nova.nes" \
-            "${NOVA_BUILD}/quicknes_libretro.so" \
+            "${NOVA_BUILD}/libquicknes_libretro.a" \
             >nova-consonance-report/workload.sha256
           {
             echo "## Nova inside Consonance"

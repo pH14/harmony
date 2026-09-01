@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the experimental x86 Nova-in-Consonance initramfs. The caller supplies
-# the pinned FOSS ROM and QuickNES artifacts built by dissonance's verified
-# scripts; this builder adds the guest play-agent and its dynamic-library
-# closure, then packs a reproducible initramfs.
+# the pinned FOSS ROM and static QuickNES archive built by dissonance's verified
+# scripts; this builder links both into one static guest agent, then packs a
+# reproducible initramfs.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -12,12 +12,12 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 require_linux_amd64
-require_tools cc make gzip cpio ldd cargo
+require_tools cc make gzip cpio readelf cargo
 
 : "${HARMONY_NOVA_ROM:?set HARMONY_NOVA_ROM to the pinned built nova.nes}"
-: "${HARMONY_NOVA_CORE:?set HARMONY_NOVA_CORE to the pinned QuickNES libretro core}"
+: "${HARMONY_NOVA_CORE_STATIC:?set HARMONY_NOVA_CORE_STATIC to the pinned QuickNES archive}"
 [ -f "$HARMONY_NOVA_ROM" ] || { echo "FAIL: Nova ROM missing: $HARMONY_NOVA_ROM" >&2; exit 1; }
-[ -f "$HARMONY_NOVA_CORE" ] || { echo "FAIL: QuickNES core missing: $HARMONY_NOVA_CORE" >&2; exit 1; }
+[ -f "$HARMONY_NOVA_CORE_STATIC" ] || { echo "FAIL: QuickNES archive missing: $HARMONY_NOVA_CORE_STATIC" >&2; exit 1; }
 
 NOVA_ROOT=$BUILD_ROOT/nova-game-root
 
@@ -38,16 +38,19 @@ make -C "$BBSRC" O="$BBOBJ" -j"$(nproc)" busybox >/dev/null
 if [ -n "${PLAY_AGENT_BIN:-}" ]; then
     AGENT_BIN=$PLAY_AGENT_BIN
 else
-    echo "== Nova game image: building guest play-agent"
-    AGENT_BIN=$(bash "$GUEST_DIR/play-agent/build.sh" | tail -1)
+    echo "== Nova game image: building static QuickNES guest play-agent"
+    AGENT_BIN=$(HARMONY_QUICKNES_STATIC_LIB="$HARMONY_NOVA_CORE_STATIC" \
+        bash "$GUEST_DIR/play-agent/build.sh" | tail -1)
 fi
 [ -x "$AGENT_BIN" ] || { echo "FAIL: play-agent binary missing: $AGENT_BIN" >&2; exit 1; }
+if readelf -l "$AGENT_BIN" | grep -q ' INTERP '; then
+    echo "FAIL: Nova play-agent has a dynamic loader" >&2
+    exit 1
+fi
 
 echo "== Nova game image: assembling rootfs"
 rm -rf "$NOVA_ROOT"
-mkdir -p "$NOVA_ROOT"/{bin,lib,lib64,etc,proc,sys,dev,tmp,opt/harmony}
-mkdir -p "$NOVA_ROOT/lib/x86_64-linux-gnu"
-install_libvoidstar "$NOVA_ROOT"
+mkdir -p "$NOVA_ROOT"/{bin,etc,proc,sys,dev,tmp,opt/harmony}
 cp "$BBOBJ/busybox" "$NOVA_ROOT/bin/busybox"
 for applet in sh mount umount mkdir chmod cat echo ls grep head tee printf \
     reboot halt true false test sync; do
@@ -55,16 +58,7 @@ for applet in sh mount umount mkdir chmod cat echo ls grep head tee printf \
 done
 
 install -m 0755 "$AGENT_BIN" "$NOVA_ROOT/opt/harmony/play-agent"
-install -m 0644 "$HARMONY_NOVA_CORE" "$NOVA_ROOT/opt/harmony/quicknes_libretro.so"
 install -m 0644 "$HARMONY_NOVA_ROM" "$NOVA_ROOT/opt/harmony/nova.nes"
-
-cp -L /lib64/ld-linux-x86-64.so.2 "$NOVA_ROOT/lib64/"
-{ ldd "$AGENT_BIN"; ldd "$HARMONY_NOVA_CORE"; } 2>/dev/null \
-    | awk '/=> \// {print $3}' | sort -u >"$BUILD_ROOT/nova-game-libs.txt"
-while read -r shared_object; do
-    [ -e "$shared_object" ] && \
-        cp -L "$shared_object" "$NOVA_ROOT/lib/x86_64-linux-gnu/$(basename "$shared_object")"
-done <"$BUILD_ROOT/nova-game-libs.txt"
 
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$NOVA_ROOT/etc/passwd"
 printf 'root:x:0:\n' >"$NOVA_ROOT/etc/group"

@@ -18,15 +18,15 @@ $BB chmod 0666 /dev/console
 echo 2 >/proc/sys/vm/nr_hugepages
 $BB grep -E 'HugePages_(Total|Free)' /proc/meminfo
 
-if [ ! -f /opt/harmony/nova.nes ] || [ ! -f /opt/harmony/quicknes_libretro.so ]; then
-    echo "NOVA_CONSONANCE_FAIL: guest image lacks Nova ROM or QuickNES core"
+if [ ! -f /opt/harmony/nova.nes ] || [ ! -x /opt/harmony/play-agent ]; then
+    echo "NOVA_CONSONANCE_FAIL: guest image lacks Nova ROM or static QuickNES agent"
     exec $BB reboot -f
 fi
 echo "NOVA_ROM_SHA256: $($BB cat /opt/harmony/nova.nes.sha256)"
 echo "NOVA_CONSONANCE_READY: launching QuickNES payload agent"
 /opt/harmony/play-agent \
     --nova-payload \
-    --core /opt/harmony/quicknes_libretro.so \
+    --core builtin:quicknes \
     --rom /opt/harmony/nova.nes
 rc=$?
 echo "NOVA_CONSONANCE_EXIT: play-agent exited rc=$rc"

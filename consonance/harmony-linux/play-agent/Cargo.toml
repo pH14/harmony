@@ -21,6 +21,13 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 description = "The Harmony in-guest NES play-agent: SMB entropy mode and Nova SDK payload mode"
 
+[features]
+default = []
+# CI's Nova guest keeps CR4.TSD set for ring-3, so Ubuntu's dynamic loader
+# cannot execute its startup RDTSC. This feature links QuickNES directly into a
+# fully static agent and leaves the established dynamic SMB image unchanged.
+static-quicknes = []
+
 # Own workspace root so cargo does not fold this into the excluded harmony-linux tree or
 # the repo root workspace.
 [workspace]

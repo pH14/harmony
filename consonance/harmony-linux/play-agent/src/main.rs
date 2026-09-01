@@ -12,7 +12,8 @@
 //! no-`cfg(target_os)` rule, the flow-agent precedent):
 //!
 //! - the **libretro C-ABI FFI** (the task's named `unsafe` grant): `dlopen` of
-//!   the pinned core, null audio/video callbacks, savestate + work-RAM reads;
+//!   the pinned core for SMB, or direct symbols from the pinned static QuickNES
+//!   archive for Nova; null audio/video callbacks, savestate + RAM reads;
 //! - the **billboard pinning** (the grant's second half): one hugetlb mapping
 //!   (a single contiguous guest-physical range), `mlock`ed, translated once via
 //!   `/proc/self/pagemap`, published via state registers at init;
@@ -161,8 +162,8 @@ fn smoke(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The real path: the dlopen'd libretro core over the pinned billboard and the
-/// doorbell SDK. Linux + x86-64 only (the box guest).
+/// The real path: a dynamic or statically linked libretro core over the pinned
+/// billboard and doorbell SDK. Linux + x86-64 only (the box guest).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod real {
     use super::{Args, agent_config};
@@ -466,10 +467,12 @@ mod real {
     ///   pointer write (nothing left to hoist) — and it is **Miri-executed**
     ///   (round-9 P1) by this module's own unit tests, which drive `env_cb`
     ///   with a real `bool*` and no FFI (the nightly job's `--bins` run).
-    /// - `sym`'s `dlsym` + `transmute_copy` — raw symbol resolution; the
-    ///   fn-pointer size equality is `debug_assert`ed, the ABI match is the
-    ///   libretro contract.
-    /// - `dlopen`/`dlerror`/`retro_*` calls — raw C calls.
+    /// - `sym`'s `dlsym` + `transmute_copy` — raw dynamic symbol resolution;
+    ///   the fn-pointer size equality is `debug_assert`ed, the ABI match is the
+    ///   libretro contract. Nova's `static-quicknes` profile skips this edge.
+    /// - `dlopen`/`dlerror` and dynamic or static `retro_*` calls — raw C calls
+    ///   that Miri cannot enter. Their callback and buffer decisions remain in
+    ///   the Miri-covered `glue` seam.
     /// - `read_work_ram`'s `from_raw_parts` — borrows the core's RAM block
     ///   exactly as returned (non-null + non-zero length checked in safe
     ///   code); ALL copy/clamp/zero-fill logic is `glue::copy_work_ram`
@@ -542,12 +545,18 @@ mod real {
             frames
         }
 
+        #[cfg(not(feature = "static-quicknes"))]
         type EnvSetFn = unsafe extern "C" fn(extern "C" fn(c_uint, *mut c_void) -> bool);
+        #[cfg(not(feature = "static-quicknes"))]
         type VideoSetFn = unsafe extern "C" fn(extern "C" fn(*const c_void, c_uint, c_uint, usize));
+        #[cfg(not(feature = "static-quicknes"))]
         type InputPollSetFn = unsafe extern "C" fn(extern "C" fn());
+        #[cfg(not(feature = "static-quicknes"))]
         type InputStateSetFn =
             unsafe extern "C" fn(extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16);
+        #[cfg(not(feature = "static-quicknes"))]
         type AudioSampleSetFn = unsafe extern "C" fn(extern "C" fn(i16, i16));
+        #[cfg(not(feature = "static-quicknes"))]
         type AudioBatchSetFn = unsafe extern "C" fn(extern "C" fn(*const i16, usize) -> usize);
         type VoidFn = unsafe extern "C" fn();
         type LoadGameFn = unsafe extern "C" fn(*const RetroGameInfo) -> bool;
@@ -557,9 +566,31 @@ mod real {
         type GetMemorySizeFn = unsafe extern "C" fn(c_uint) -> usize;
         type SetPortDeviceFn = unsafe extern "C" fn(c_uint, c_uint);
 
-        /// The dlopen'd pinned core, driving the [`Core`] seam. The handle and
-        /// the loaded game live for the whole process (a supervised workload —
-        /// never unloaded), so the resolved symbols stay valid.
+        #[cfg(feature = "static-quicknes")]
+        unsafe extern "C" {
+            fn retro_set_environment(callback: extern "C" fn(c_uint, *mut c_void) -> bool);
+            fn retro_set_video_refresh(
+                callback: extern "C" fn(*const c_void, c_uint, c_uint, usize),
+            );
+            fn retro_set_input_poll(callback: extern "C" fn());
+            fn retro_set_input_state(
+                callback: extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16,
+            );
+            fn retro_set_audio_sample(callback: extern "C" fn(i16, i16));
+            fn retro_set_audio_sample_batch(callback: extern "C" fn(*const i16, usize) -> usize);
+            fn retro_init();
+            fn retro_load_game(info: *const RetroGameInfo) -> bool;
+            fn retro_set_controller_port_device(port: c_uint, device: c_uint);
+            fn retro_run();
+            fn retro_serialize_size() -> usize;
+            fn retro_serialize(data: *mut c_void, size: usize) -> bool;
+            fn retro_get_memory_data(id: c_uint) -> *mut c_void;
+            fn retro_get_memory_size(id: c_uint) -> usize;
+        }
+
+        /// The pinned dynamic or statically linked core driving [`Core`]. A
+        /// dynamic handle and the loaded game live for the whole supervised
+        /// process, so every function pointer stays valid.
         pub struct LibretroCore {
             run: VoidFn,
             serialize_size: SerializeSizeFn,
@@ -576,6 +607,7 @@ mod real {
         ///
         /// SAFETY (caller): `handle` is a live dlopen handle; `T` must be the
         /// exact C fn-pointer type of the symbol.
+        #[cfg(not(feature = "static-quicknes"))]
         unsafe fn sym<T: Copy>(handle: *mut c_void, name: &str) -> Result<T, String> {
             let cname = CString::new(name).map_err(|_| format!("symbol name {name:?}"))?;
             // SAFETY: dlsym on a live handle with a valid C string; a null
@@ -604,12 +636,32 @@ mod real {
             /// Fails loudly on any missing symbol or a rejected ROM — never a
             /// silently dead core.
             pub fn load(path: &str, rom_path: &str, rom: &[u8]) -> Result<LibretroCore, String> {
+                #[cfg(feature = "static-quicknes")]
+                let _ = path;
+
+                #[cfg(feature = "static-quicknes")]
+                // SAFETY: these are the pinned QuickNES archive's libretro C
+                // entrypoints. Callback types and initialization order are the
+                // same contract used by the dynamic path below.
+                unsafe {
+                    retro_set_environment(env_cb);
+                    retro_set_video_refresh(video_cb);
+                    retro_set_input_poll(input_poll_cb);
+                    retro_set_input_state(input_state_cb);
+                    retro_set_audio_sample(audio_sample_cb);
+                    retro_set_audio_sample_batch(audio_sample_batch_cb);
+                    retro_init();
+                }
+
+                #[cfg(not(feature = "static-quicknes"))]
                 let cpath = CString::new(path).map_err(|_| format!("core path {path:?}"))?;
+                #[cfg(not(feature = "static-quicknes"))]
                 // SAFETY: dlopen with a valid C string; the handle is checked
                 // for null and then intentionally leaked (the core lives for
                 // the process — a supervised workload).
                 let handle =
                     unsafe { libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+                #[cfg(not(feature = "static-quicknes"))]
                 if handle.is_null() {
                     // SAFETY: dlerror returns a static string or null.
                     let err = unsafe { libc::dlerror() };
@@ -624,6 +676,7 @@ mod real {
                     return Err(format!("dlopen {path}: {msg}"));
                 }
 
+                #[cfg(not(feature = "static-quicknes"))]
                 // SAFETY (all resolutions + calls below): `handle` is live;
                 // each `T` matches the libretro ABI signature of its symbol;
                 // the callbacks are `extern "C"` fns of the exact registered
@@ -641,6 +694,18 @@ mod real {
                     sym::<VoidFn>(handle, "retro_init")?();
                 }
 
+                #[cfg(feature = "static-quicknes")]
+                let load_game: LoadGameFn = retro_load_game;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let load_game: LoadGameFn = unsafe { sym(handle, "retro_load_game")? };
+                #[cfg(feature = "static-quicknes")]
+                let set_port_device: SetPortDeviceFn = retro_set_controller_port_device;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let set_port_device: SetPortDeviceFn =
+                    unsafe { sym(handle, "retro_set_controller_port_device")? };
+
                 let rom = rom.to_vec();
                 let rom_cpath =
                     CString::new(rom_path).map_err(|_| format!("rom path {rom_path:?}"))?;
@@ -654,25 +719,48 @@ mod real {
                 // life, see `_rom`) and `rom_cpath` (alive past the call — the
                 // libretro contract only reads `info` during retro_load_game;
                 // a path-loading core reads the file itself).
-                let loaded = unsafe { sym::<LoadGameFn>(handle, "retro_load_game")?(&info) };
+                let loaded = unsafe { load_game(&info) };
                 if !loaded {
                     return Err("retro_load_game rejected the ROM".to_string());
                 }
                 // SAFETY: standard post-load controller wiring.
-                unsafe {
-                    sym::<SetPortDeviceFn>(handle, "retro_set_controller_port_device")?(
-                        0,
-                        RETRO_DEVICE_JOYPAD,
-                    );
-                }
+                unsafe { set_port_device(0, RETRO_DEVICE_JOYPAD) };
+
+                #[cfg(feature = "static-quicknes")]
+                let run: VoidFn = retro_run;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let run: VoidFn = unsafe { sym(handle, "retro_run")? };
+                #[cfg(feature = "static-quicknes")]
+                let serialize_size: SerializeSizeFn = retro_serialize_size;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let serialize_size: SerializeSizeFn =
+                    unsafe { sym(handle, "retro_serialize_size")? };
+                #[cfg(feature = "static-quicknes")]
+                let serialize: SerializeFn = retro_serialize;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let serialize: SerializeFn = unsafe { sym(handle, "retro_serialize")? };
+                #[cfg(feature = "static-quicknes")]
+                let get_memory_data: GetMemoryDataFn = retro_get_memory_data;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let get_memory_data: GetMemoryDataFn =
+                    unsafe { sym(handle, "retro_get_memory_data")? };
+                #[cfg(feature = "static-quicknes")]
+                let get_memory_size: GetMemorySizeFn = retro_get_memory_size;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let get_memory_size: GetMemorySizeFn =
+                    unsafe { sym(handle, "retro_get_memory_size")? };
 
                 Ok(LibretroCore {
-                    // SAFETY: symbol resolution as above.
-                    run: unsafe { sym(handle, "retro_run")? },
-                    serialize_size: unsafe { sym(handle, "retro_serialize_size")? },
-                    serialize: unsafe { sym(handle, "retro_serialize")? },
-                    get_memory_data: unsafe { sym(handle, "retro_get_memory_data")? },
-                    get_memory_size: unsafe { sym(handle, "retro_get_memory_size")? },
+                    run,
+                    serialize_size,
+                    serialize,
+                    get_memory_data,
+                    get_memory_size,
                     _rom: rom,
                 })
             }
