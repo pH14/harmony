@@ -8,8 +8,18 @@
 //! byte stream — the guest-visible transcript that the determinism contract
 //! makes reproducible.
 
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    test,
+))]
 use std::io::Write;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+))]
+use std::time::Instant;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -22,8 +32,16 @@ pub enum RunError {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[error("--seed is only wired on Linux/x86-64 today; use --seed 0 on macOS")]
     SeedNotWired,
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    ))]
     #[error("vmm: {0}")]
     Vmm(String),
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    ))]
     #[error(
         "wall budget of {budget_s}s exhausted before the guest reached a terminal state \
          ({steps} exits serviced)"
@@ -37,6 +55,15 @@ pub struct Outcome {
     pub reason: String,
 }
 
+// On hosts with no drive loop the unsupported-host stub never reads the
+// spec; the fields still document the run contract there.
+#[cfg_attr(
+    not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    )),
+    allow(dead_code)
+)]
 pub struct RunSpec<'a> {
     pub kernel: &'a [u8],
     pub initramfs: &'a [u8],
@@ -60,6 +87,13 @@ pub enum StreamMode {
 /// Incremental filter from the raw serial stream to what `StreamMode`
 /// shows. Holds partial lines until their newline arrives so marker lines
 /// can be elided from a stream that appears in arbitrary-sized chunks.
+/// Compiled only where a drive loop exists (plus tests, which exercise it
+/// on every host).
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    test,
+))]
 struct StreamFilter {
     mode: StreamMode,
     consumed: usize,
@@ -68,9 +102,24 @@ struct StreamFilter {
     finished: bool,
 }
 
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    test,
+))]
 const MARKER_START: &[u8] = b"HARMONY_OCI: start";
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    test,
+))]
 const MARKER_PREFIX: &[u8] = b"HARMONY_OCI";
 
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+    test,
+))]
 impl StreamFilter {
     fn new(mode: StreamMode) -> Self {
         StreamFilter {
