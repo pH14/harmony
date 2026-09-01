@@ -619,15 +619,15 @@ fn arm64_virtual_time_pvclock_registration_is_exact_and_stamps_guest_ram() {
     assert_eq!(v.step().unwrap(), Step::Continued);
     assert_eq!(v.pvclock_registration(), Some(page_gpa));
     let first = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
-    assert_eq!(first.vns, 1_000);
+    assert_eq!(first.vns, 10_000);
     assert_eq!(first.guest_clock_hz, CNTFRQ_HZ);
     assert_eq!(v.step().unwrap(), Step::Continued);
     let second = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
-    assert_eq!(second.vns, 2_000);
+    assert_eq!(second.vns, 20_000);
     assert_eq!(v.step().unwrap(), Step::Continued);
     let tick = vtime::pvclock::read(v.pvclock_page().unwrap()).unwrap();
-    // The execution exit advances by the production contract's 1 ms quantum.
-    assert_eq!(tick.vns, 1_002_000);
+    // The execution exit advances by the production contract's 100 µs quantum.
+    assert_eq!(tick.vns, 120_000);
 
     // Direction and width are one exact tuple. Neither invalid access consumes
     // registration state or advances a fresh VM's clock.
@@ -832,8 +832,8 @@ fn arm64_clockevent_delivery_waits_for_the_irq_unmask_exit() {
     assert!(v.has_pending_guest_interrupt().unwrap());
     assert_eq!(
         v.effective_vns(),
-        Some(3_000),
-        "the unmask fence must not assign the 1 ms execution-density tick"
+        Some(30_000),
+        "the unmask fence must not assign the 100 µs execution-density tick"
     );
 }
 
@@ -926,7 +926,7 @@ fn arm64_virtual_time_wfi_jumps_to_the_clockevent_deadline() {
     use vmm_core::virtual_time::{NormalizedEventClass, check_delivery_placement};
 
     let page_gpa = 0x1000;
-    let deadline_vns = 10_000;
+    let deadline_vns = 50_000;
     let deadline_ticks = deadline_vns * CNTFRQ_HZ / 1_000_000_000;
     let mut v = vmm(vec![
         Exit::Common(CommonExit::Mmio {

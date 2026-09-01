@@ -23,6 +23,8 @@ use std::sync::OnceLock;
 use sha2::{Digest, Sha256};
 use vmm_backend::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 
+use crate::virtual_time::VirtualTimeTiming;
+
 mod canonical;
 mod parse;
 
@@ -210,27 +212,46 @@ pub fn wrmsr_disposition(index: u32, value: u64) -> MsrDisposition {
 }
 
 // ---------------------------------------------------------------------------
-// VirtualTime (assigned-at-exit) V-time durations.
+// VirtualTime (assigned-at-exit) V-time durations (the `vtime-*` §6 header
+// records).
 // ---------------------------------------------------------------------------
-// The values are the arm64 row set (`vendor::arm64::contract`), carried over
-// unchanged pending an x86-specific ruling; only their assignment structure —
-// one constant per event class, applied exactly once per classified exit — is
-// contractual today.
 
-/// Assigned duration of one interrupt-controller access: the xAPIC MMIO page,
-/// the 8259 PIC data ports, and the ELCR ports.
-pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 1_000;
-/// Assigned duration of one 8250 UART port access.
-pub const SERIAL_EXIT_VNS: u64 = 2_000;
-/// Assigned duration of one access to any other modeled platform device (the
-/// report channel and the accepted legacy ISA/PCI ports).
-pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
-/// Assigned duration of a trapped time read (the `emulate-vtime` TSC MSRs).
-pub const TRAPPED_TIME_READ_VNS: u64 = 1;
-/// Assigned duration of a deterministic architectural-control trap that is
-/// neither a device access nor a time read (a non-vtime MSR disposition, a
-/// surfaced CPUID).
-pub const ARCH_CONTROL_EXIT_VNS: u64 = 1_000;
+/// The normative x86 virtual_time timing row set, read from the ratified
+/// contract's `vtime-*` header records and covered by `contract_hash`.
+/// Production composition never uses `VirtualTimeTiming::default()`'s M0
+/// placeholders.
+///
+/// Classes: interrupt-controller = the xAPIC MMIO page, the 8259 PIC data
+/// ports, and the ELCR ports; serial = the 8250 UART ports; paravirtual = any
+/// other modeled platform device (the report channel, the accepted legacy
+/// ISA/PCI ports); time read = the `emulate-vtime` TSC MSRs and RDTSC/RDTSCP;
+/// architectural control = every other surfaced MSR/CPUID/RDRAND/RDSEED trap;
+/// execution tick = the guest kernel's ring on `VIRTUAL_TIME_TICK_PORT`.
+pub fn virtual_time_timing() -> VirtualTimeTiming {
+    let c = contract();
+    let vns = |value: i64, record: &str| {
+        u64::try_from(value).unwrap_or_else(|_| panic!("contract {record} must be non-negative"))
+    };
+    let timing = VirtualTimeTiming {
+        interrupt_controller_mmio_vns: vns(
+            c.vtime_interrupt_controller_vns,
+            "vtime-interrupt-controller-vns",
+        ),
+        serial_mmio_vns: vns(c.vtime_serial_vns, "vtime-serial-vns"),
+        paravirtual_device_mmio_vns: vns(c.vtime_paravirtual_vns, "vtime-paravirtual-vns"),
+        trapped_time_read_vns: vns(c.vtime_time_read_vns, "vtime-time-read-vns"),
+        architectural_control_vns: vns(c.vtime_arch_control_vns, "vtime-arch-control-vns"),
+        execution_tick_vns: vns(c.vtime_execution_tick_vns, "vtime-execution-tick-vns"),
+    };
+    // A tick at or above the guest's clockevent period matures the next timer
+    // at the tick itself and creates a self-sustaining interrupt loop.
+    assert!(
+        timing.execution_tick_vns
+            < vns(c.vtime_clockevent_period_vns, "vtime-clockevent-period-vns"),
+        "vtime-execution-tick-vns must stay strictly below vtime-clockevent-period-vns"
+    );
+    timing
+}
 
 // ---------------------------------------------------------------------------
 // CPUID model (CPU-MSR-CONTRACT §2).
@@ -389,6 +410,18 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn production_virtual_time_timing_is_explicit_not_the_m0_default() {
+        let timing = virtual_time_timing();
+        assert_ne!(timing, VirtualTimeTiming::default());
+        assert_eq!(timing.interrupt_controller_mmio_vns, 10_000);
+        assert_eq!(timing.serial_mmio_vns, 10_000);
+        assert_eq!(timing.paravirtual_device_mmio_vns, 10_000);
+        assert_eq!(timing.trapped_time_read_vns, 1);
+        assert_eq!(timing.architectural_control_vns, 10_000);
+        assert_eq!(timing.execution_tick_vns, 100_000);
+    }
 
     #[test]
     fn user_space_mask_is_filter_unknown_inval() {
@@ -631,7 +664,7 @@ mod tests {
     fn canonical_form_well_formed() {
         let form = canonical::serialize(contract());
         // Header anchors (literal §6 spelling).
-        assert!(form.starts_with("contract-version=4\n"));
+        assert!(form.starts_with("contract-version=5\n"));
         assert!(form.contains("\nkernel-tag=v6.18.35\n"));
         assert!(form.contains("\ncpuid-baseline=det-cfl-v1\n"));
         assert!(form.contains("\nmxcsr-mask=0x0000ffff\n"));
@@ -681,10 +714,10 @@ mod tests {
              (src/contract/testdata/canonical-v4.txt). If this is an intended, reviewed §6 \
              change, bump contract-version and regenerate the golden file (contract::tests::regen_golden)."
         );
-        // The committed v3 hash is sha256 of exactly the golden bytes.
+        // The committed v5 hash is sha256 of exactly the golden bytes.
         let hex: String = contract_hash().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
-            hex, "30839ae67142f265066be1051e93fcb4a1839c30bd3edd6d875ecdc1a37ddb67",
+            hex, "01b0214b9387e205e4c3dd418780bbe15c77f171259120c2f7902ae38858ff63",
             "contract_hash must be sha256 of the golden canonical bytes"
         );
     }
@@ -895,7 +928,7 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
     fn amd_canonical_form_well_formed() {
         let form = canonical::serialize(contract_amd_draft());
         // Header: the placeholder baseline, the deferred silicon scalars as 0.
-        assert!(form.starts_with("contract-version=1\n"));
+        assert!(form.starts_with("contract-version=2\n"));
         assert!(form.contains("\ncpuid-baseline=det-zenN-v1\n"));
         assert!(
             form.contains("\ntsc-hz=0\n"),

@@ -35,14 +35,14 @@
 #     cmos/xapic-mmio), plus the per-silicon host-assert block (`on-silicon-pending-AE4`).
 
 [contract]
-version = 1
+version = 2
 vendor = "AuthenticAMD"
 kernel-tag = "v6.18.35"
 cpuid-baseline = "det-zenN-v1"
 # §6 anti-drift anchor: sha256 of this column's canonical serialized form (computed
 # by vmm-core's serializer, never hand-written). Re-derive on any body change + a
 # version bump — including the AE-0 det-zenN-v1 pinning.
-contract_hash = "0e4e8daaa7bafe197396ebac8b42b0671453a7e1ab12f73136ee5e44533b5849"
+contract_hash = "f2944970ab883c47ecdfb1f994eb5c449ff385cbd1381c1299cb8b2e8b8b3a22"
 # mxcsr-mask: the architectural FXSAVE-area MXCSR_MASK (ISA-level; the same on any
 # SSE-capable x86-64 part), carried unchanged.
 mxcsr-mask = "0x0000ffff"

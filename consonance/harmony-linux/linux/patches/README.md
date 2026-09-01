@@ -44,39 +44,5 @@ reviewed allowlist entry, and `run-tests.sh` must be re-run to regenerate
 arm64 series carries no allowlist: its gate rejects the kernel if **any** live
 generic-counter read or LL/SC opcode survives into the published image.
 
-## Patches
-
-### x86 (`patches/x86/`)
-
-- `0001-x86-harmony-pvclock-exit-count-clocksource.patch` — task 110
-  (`docs/PARAVIRT-CLOCK.md`): `CONFIG_HARMONY_PVCLOCK`, the kvmclock-shaped
-  clocksource with the interpolation deleted; sched_clock through the same
-  seqlock page read; TSC marked unstable once the page is live; one-shot
-  doorbell registration bracketed by the two deliberate rdtsc traps.
-  Runtime-inert without the `harmony_pvclock` kernel parameter.
-- `0002-x86-harmony-character-device.patch` — R-L3/task 43: built-in
-  `/dev/harmony`, attributed JSON emit, and deterministic entropy transactions
-  over the existing doorbell. It adds no host protocol and no new exit type.
-
-### arm64 (`patches/arm64/`)
-
-- `0002-arm64-harmony-pvclock-exit-count-clocksource.patch` — AA-5(c):
-  redirects the arm64 generic-counter accessors to the owned guest's reserved
-  ABI-v1 page, publishes that guest-selected GPA through the one-shot ARM MMIO
-  registration ABI, waits for the first exact-work stamp, disables the
-  counter-reading vDSO and EL0 CNTVCT/CNTPCT access, and leaves the architected
-  timer only as a clock-event interrupt device. The arm64 build has no
-  allowlist: any surviving live-counter opcode rejects the kernel before
-  `Image` publication.
-- `0003-arm64-harmony-lse-only.patch` — AA-4/AA-5(c): adds the owned
-  `CONFIG_HARMONY_ARM_LSE_ONLY` contract, emits LSE atomics directly instead
-  of a runtime LL/SC alternative, and replaces reservation-monitor wait hints
-  and the early rendezvous with ordinary polling plus LSE. The arm64 build
-  rejects any surviving LL/SC opcode in `vmlinux`, the vDSO, or the
-  freestanding init before publication.
-- `0004-arm64-harmony-virtual-time-clockevent.patch` — AA-5(c): replaces the final
-  live-domain `CNTV_CVAL` clockevent with absolute work-clock deadlines on the
-  owned MMIO page and the level-triggered virtual-timer PPI 27. The guest ACKs before
-  its generic event handler, the host deasserts on ACK, and the build selects
-  generic `nohlt` polling support. The linked-artifact scanner rejects every
-  surviving CNTV/CNTP CVAL/TVAL program, including raw mapping-symbol words.
+Each patch describes itself in its preamble (everything before the first
+`---` header); the series listings are `ls patches/x86/` and `ls patches/arm64/`.

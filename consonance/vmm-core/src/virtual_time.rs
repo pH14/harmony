@@ -32,6 +32,9 @@ pub const PLACEHOLDER_TRAPPED_TIME_READ_VNS: u64 = 1;
 /// Placeholder duration for a trapped architectural-control access.
 pub const PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS: u64 = 1;
 
+/// Placeholder duration for the guest kernel's execution tick.
+pub const PLACEHOLDER_EXECUTION_TICK_VNS: u64 = 1;
+
 /// Device classes whose contract constants advance virtual_time V-time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeviceClass {
@@ -46,7 +49,14 @@ pub enum DeviceClass {
 /// The per-exit constants used by virtual_time advancement.
 ///
 /// The default contains deliberately named placeholders.  A production
-/// composition must pass the normative values from its determinism contract.
+/// composition must pass the normative values from its determinism contract
+/// (`vendor::arm64::contract::virtual_time_timing`,
+/// `vendor::x86::contract::virtual_time_timing`).
+///
+/// Not every row fires on every architecture: arm64 confines
+/// interrupt-controller and sysreg exits (no portable ordinal, no advance),
+/// so its interrupt-controller, time-read, and architectural-control rows are
+/// unreachable in production.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualTimeTiming {
     /// V-ns assigned to interrupt-controller MMIO.
@@ -59,6 +69,13 @@ pub struct VirtualTimeTiming {
     pub trapped_time_read_vns: u64,
     /// V-ns assigned to a trapped deterministic architectural control.
     pub architectural_control_vns: u64,
+    /// V-ns assigned to the guest kernel's execution tick (one emitted per
+    /// syscall entry, context switch, and idle-poll iteration). Must stay
+    /// strictly below the guest's programmed timer period: a timer interrupt
+    /// can itself cause a context switch, and advancing by a full period there
+    /// would immediately mature its successor and create a self-sustaining
+    /// interrupt loop.
+    pub execution_tick_vns: u64,
 }
 
 impl Default for VirtualTimeTiming {
@@ -69,12 +86,13 @@ impl Default for VirtualTimeTiming {
             paravirtual_device_mmio_vns: PLACEHOLDER_PARAVIRTUAL_DEVICE_MMIO_VNS,
             trapped_time_read_vns: PLACEHOLDER_TRAPPED_TIME_READ_VNS,
             architectural_control_vns: PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS,
+            execution_tick_vns: PLACEHOLDER_EXECUTION_TICK_VNS,
         }
     }
 }
 
 impl VirtualTimeTiming {
-    fn mmio_vns(self, class: DeviceClass) -> u64 {
+    pub(crate) fn mmio_vns(self, class: DeviceClass) -> u64 {
         match class {
             DeviceClass::InterruptController => self.interrupt_controller_mmio_vns,
             DeviceClass::Serial => self.serial_mmio_vns,
@@ -101,6 +119,21 @@ pub enum NormalizedEventClass {
 }
 
 impl NormalizedEventClass {
+    /// Stable class label for calibration logs, parsed by
+    /// `scripts/fit-vtime-costs.py`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Doorbell => "doorbell",
+            Self::DeviceMmio(DeviceClass::InterruptController) => "ic_mmio",
+            Self::DeviceMmio(DeviceClass::Serial) => "serial_mmio",
+            Self::DeviceMmio(DeviceClass::Paravirtual) => "pv_mmio",
+            Self::TimeRead => "time_read",
+            Self::ArchitecturalControl => "arch_control",
+            Self::Idle => "idle",
+            Self::Terminal => "terminal",
+        }
+    }
+
     fn tag(self) -> u8 {
         match self {
             Self::Doorbell => 0,

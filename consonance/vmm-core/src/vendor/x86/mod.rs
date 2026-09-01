@@ -78,11 +78,15 @@ impl Vendor for X86 {
             // backend only surfaced + will complete the exit. Unwired (stock KVM /
             // M1/M2) is a loud contract violation, never a host-derived value.
             X86Exit::Rdtsc | X86Exit::Rdtscp => {
-                vmm.advance_virtual_time_vtime(contract::TRAPPED_TIME_READ_VNS)?;
+                vmm.advance_virtual_time_vtime(
+                    contract::virtual_time_timing().trapped_time_read_vns,
+                )?;
                 vmm.complete_tsc()
             }
             X86Exit::Rdrand { width } | X86Exit::Rdseed { width } => {
-                vmm.advance_virtual_time_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
+                vmm.advance_virtual_time_vtime(
+                    contract::virtual_time_timing().architectural_control_vns,
+                )?;
                 vmm.complete_rng(width)
             }
         }

@@ -18,32 +18,37 @@ use vmm_backend::{Arm64Policy, IdRegModel, SysregTrapPolicy};
 
 use crate::virtual_time::VirtualTimeTiming;
 
-/// Portable duration of interrupt-controller transactions.
+/// Assigned duration of one interrupt-controller access.
 ///
-/// Stock KVM consumes GIC distributor, redistributor, and CPU-interface
-/// accesses inside the in-kernel vGIC, while HVF surfaces them to userspace.
-/// They therefore remain raw diagnostics but contribute no portable V-time.
-pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 0;
+/// The row is unreachable on arm64: stock KVM consumes GIC distributor,
+/// redistributor, and CPU-interface accesses inside the in-kernel vGIC, while
+/// HVF surfaces them to userspace, so they remain raw diagnostics with no
+/// portable ordinal or V-time. The value is carried anyway so both vendors
+/// share one row set.
+pub const INTERRUPT_CONTROLLER_EXIT_VNS: u64 = 10_000;
 /// Assigned duration of one PL011 access.
-pub const SERIAL_EXIT_VNS: u64 = 2_000;
+pub const SERIAL_EXIT_VNS: u64 = 10_000;
 /// Assigned duration of one pvclock/clockevent MMIO access.
-pub const PARAVIRTUAL_EXIT_VNS: u64 = 1_000;
+pub const PARAVIRTUAL_EXIT_VNS: u64 = 10_000;
 /// Assigned duration of the kernel's deterministic execution tick.
 ///
-/// The guest emits one tick on every syscall entry and context switch. This
-/// quantum must remain strictly below Linux's 100 Hz clockevent period: a
-/// timer interrupt can itself cause a context switch, and advancing by a full
-/// period there would immediately mature its successor and create a
-/// self-sustaining interrupt loop.
-pub(crate) const EXECUTION_TICK_VNS: u64 = 1_000_000;
+/// The guest emits one tick on every syscall entry, context switch, and
+/// idle-poll iteration. 100 µs is the calibrated median wall gap around a
+/// tick on the PostgreSQL M3 reference run. The value must remain strictly
+/// below Linux's 100 Hz clockevent period: a timer interrupt can itself
+/// cause a context switch, and advancing by a full period there would
+/// immediately mature its successor and create a self-sustaining interrupt
+/// loop.
+pub(crate) const EXECUTION_TICK_VNS: u64 = 100_000;
 pub(crate) const LINUX_CLOCKEVENT_PERIOD_VNS: u64 = 10_000_000;
 const _: () = assert!(EXECUTION_TICK_VNS < LINUX_CLOCKEVENT_PERIOD_VNS);
-/// Assigned duration of a trapped counter-shaped time read.
+/// Assigned duration of a trapped counter-shaped time read. Instruction
+/// scale, so trapped-read delay loops still measure a fast clock.
 pub const TRAPPED_TIME_READ_VNS: u64 = 1;
 /// Assigned duration of a deterministic architectural-control trap that is
 /// neither a device access nor a time read (for example Linux clearing the
 /// OS debug lock at boot).
-pub const ARCH_CONTROL_EXIT_VNS: u64 = 1_000;
+pub const ARCH_CONTROL_EXIT_VNS: u64 = 10_000;
 
 /// The normative arm64 virtual_time timing row set. Production composition
 /// never uses `VirtualTimeTiming::default()`'s M0 placeholders.
@@ -54,6 +59,7 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
         paravirtual_device_mmio_vns: PARAVIRTUAL_EXIT_VNS,
         trapped_time_read_vns: TRAPPED_TIME_READ_VNS,
         architectural_control_vns: ARCH_CONTROL_EXIT_VNS,
+        execution_tick_vns: EXECUTION_TICK_VNS,
     }
 }
 
@@ -106,8 +112,9 @@ pub fn policy() -> Arm64Policy {
     }
 }
 
-/// SHA-256 over the canonical encoding of the installed policy — the arm64
-/// snapshot's `contract_hash` anchor. Two builds whose policy rows differ
+/// SHA-256 over the canonical encoding of the installed policy and the
+/// virtual_time timing row set — the arm64 snapshot's `contract_hash` anchor.
+/// Two builds whose policy or timing rows differ
 /// stamp different hashes, so a snapshot taken under one contract baseline is
 /// refused by a VMM enforcing another (the same anti-drift role as the x86
 /// `contract_hash`, INTEGRATION.md §4). The domain-separation prefix names this
@@ -115,7 +122,7 @@ pub fn policy() -> Arm64Policy {
 pub fn contract_hash() -> [u8; 32] {
     let p = policy();
     let mut h = Sha256::new();
-    h.update(b"harmony-arm64-cross-host-baseline-v2\0");
+    h.update(b"harmony-arm64-cross-host-baseline-v3\0");
     // Canonical encoding: sorted (BTreeMap/BTreeSet) rows, little-endian
     // fixed-width fields, length-prefixed sections — deterministic (rule #4).
     h.update((p.id_regs.regs.len() as u64).to_le_bytes());
@@ -131,6 +138,18 @@ pub fn contract_hash() -> [u8; 32] {
     h.update((p.sysreg_traps.trapped.len() as u64).to_le_bytes());
     for enc in &p.sysreg_traps.trapped {
         h.update(enc.to_le_bytes());
+    }
+    let t = virtual_time_timing();
+    for vns in [
+        t.interrupt_controller_mmio_vns,
+        t.serial_mmio_vns,
+        t.paravirtual_device_mmio_vns,
+        t.trapped_time_read_vns,
+        t.architectural_control_vns,
+        t.execution_tick_vns,
+        LINUX_CLOCKEVENT_PERIOD_VNS,
+    ] {
+        h.update(vns.to_le_bytes());
     }
     h.finalize().into()
 }
@@ -165,8 +184,18 @@ mod tests {
         // snapshot check relies on.
         let mut p = policy();
         p.id_regs.regs.insert(0xc020, 0x1122);
+        let with_row = recompute(&p, virtual_time_timing());
+        assert_ne!(contract_hash(), with_row);
+        // A changed timing row must hash differently too.
+        let mut timing = virtual_time_timing();
+        timing.serial_mmio_vns += 1;
+        let with_timing = recompute(&policy(), timing);
+        assert_ne!(contract_hash(), with_timing);
+    }
+
+    fn recompute(p: &Arm64Policy, t: VirtualTimeTiming) -> [u8; 32] {
         let mut h = Sha256::new();
-        h.update(b"harmony-arm64-cross-host-baseline-v2\0");
+        h.update(b"harmony-arm64-cross-host-baseline-v3\0");
         h.update((p.id_regs.regs.len() as u64).to_le_bytes());
         for (encoding, value) in &p.id_regs.regs {
             h.update(encoding.to_le_bytes());
@@ -177,19 +206,41 @@ mod tests {
             h.update(encoding.to_le_bytes());
             h.update(value.to_le_bytes());
         }
-        h.update(0u64.to_le_bytes());
-        let with_row: [u8; 32] = h.finalize().into();
-        assert_ne!(contract_hash(), with_row);
+        h.update((p.sysreg_traps.trapped.len() as u64).to_le_bytes());
+        for enc in &p.sysreg_traps.trapped {
+            h.update(enc.to_le_bytes());
+        }
+        for vns in [
+            t.interrupt_controller_mmio_vns,
+            t.serial_mmio_vns,
+            t.paravirtual_device_mmio_vns,
+            t.trapped_time_read_vns,
+            t.architectural_control_vns,
+            t.execution_tick_vns,
+            LINUX_CLOCKEVENT_PERIOD_VNS,
+        ] {
+            h.update(vns.to_le_bytes());
+        }
+        h.finalize().into()
     }
 
     #[test]
     fn production_virtual_time_timing_is_explicit_not_the_m0_default() {
         let timing = virtual_time_timing();
         assert_ne!(timing, VirtualTimeTiming::default());
-        assert_eq!(timing.interrupt_controller_mmio_vns, 0);
-        assert_eq!(timing.serial_mmio_vns, 2_000);
-        assert_eq!(timing.paravirtual_device_mmio_vns, 1_000);
+        assert_eq!(timing.interrupt_controller_mmio_vns, 10_000);
+        assert_eq!(timing.serial_mmio_vns, 10_000);
+        assert_eq!(timing.paravirtual_device_mmio_vns, 10_000);
         assert_eq!(timing.trapped_time_read_vns, 1);
-        assert_eq!(timing.architectural_control_vns, 1_000);
+        assert_eq!(timing.architectural_control_vns, 10_000);
+        assert_eq!(timing.execution_tick_vns, 100_000);
+    }
+
+    #[test]
+    fn both_vendors_share_one_timing_row_set() {
+        assert_eq!(
+            virtual_time_timing(),
+            crate::vendor::x86::contract::virtual_time_timing()
+        );
     }
 }

@@ -17,7 +17,7 @@
 #   * insn mirrors markdown §4; timer/cmos/mmio mirror §5.
 
 [contract]
-version = 4
+version = 5
 # vendor axis (the Intel column on the one frozen contract; docs/CPU-MSR-CONTRACT.md
 # §1, docs/cpu-msr-contract-amd-draft.toml is the AMD draft column). Header metadata
 # only — the zero-drift grammar keeps this file's canonical bytes and contract_hash
@@ -28,7 +28,7 @@ kernel-sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef23
 cpuid-baseline = "det-cfl-v1"
 # §6 anti-drift anchor: sha256 of the canonical serialized form (computed by
 # vmm-core's serializer, never hand-written). Re-derive on any body change + version bump.
-contract_hash = "30839ae67142f265066be1051e93fcb4a1839c30bd3edd6d875ecdc1a37ddb67"
+contract_hash = "01b0214b9387e205e4c3dd418780bbe15c77f171259120c2f7902ae38858ff63"
 # Frozen scalar constants hashed into the canonical form (§6 header records):
 tsc-hz = 2000000000
 crystal-hz = 25000000
@@ -36,6 +36,17 @@ bus-hz = 100000000
 mxcsr-mask = "0x0000ffff"
 rtc-epoch = 1577836800
 pit-refresh-ns = 15085
+# VirtualTime per-exit-class durations in virtual nanoseconds
+# (docs/VM-EXIT-COUNT-VTIME.md). The execution tick must stay strictly below
+# the clockevent period: a timer interrupt can itself cause a context switch,
+# and advancing by a full period there would immediately mature its successor.
+vtime-interrupt-controller-vns = 10000
+vtime-serial-vns = 10000
+vtime-paravirtual-vns = 10000
+vtime-time-read-vns = 1
+vtime-arch-control-vns = 10000
+vtime-execution-tick-vns = 100000
+vtime-clockevent-period-vns = 10000000
 
 [cpuid]
 default = "zeroed"  # in-range gaps explicit all-zero; out-of-range redirects to all-zero max-basic-leaf 0x20

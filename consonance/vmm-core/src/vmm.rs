@@ -4160,7 +4160,7 @@ mod tests {
     use crate::vendor::x86::devices::REPORT_PORT;
     use crate::vendor::x86::dispatch::{
         APIC_MMIO_BASE, COM1_IRQ_VECTOR, DOORBELL_PORT, IA32_TSC_ADJUST, MsrDir, RFLAGS_IF,
-        contract_vclock_config, lookup_cpuid,
+        VIRTUAL_TIME_TICK_PORT, contract_vclock_config, lookup_cpuid,
     };
     use crate::vendor::x86::records as snapshot;
 
@@ -6351,7 +6351,7 @@ mod tests {
             .save_vtime()
             .expect("save at clean boundary")
             .expect("wired");
-        assert_eq!(snap.vns, 1001); // RNG control exit (1000) + time read (1)
+        assert_eq!(snap.vns, 10001); // RNG control exit (10000) + time read (1)
 
         // Restore into B whose counter sits at a NON-zero 99: restore_vtime must
         // RESET it to 0 (else RDTSC would read work=99 → tsc=298, not 100), set
@@ -6370,7 +6370,7 @@ mod tests {
 
         // Clock continuity: B's first post-restore TSC equals A's TSC at the
         // snapshot point (100), even though B's counter restarted at 0.
-        assert_eq!(b.backend.completions()[0], Completion::Read(2004));
+        assert_eq!(b.backend.completions()[0], Completion::Read(20004));
         // RNG continuity: A drew the first word; B (restored) draws the *second* —
         // the stream resumed, it was not replayed.
         let mut ref_stream = SeededEntropy::new(SEED);
@@ -6816,9 +6816,49 @@ mod tests {
         assert_eq!(vmm.step().unwrap(), Step::Continued);
         assert_eq!(
             vmm.effective_vns().unwrap() - before,
-            crate::vendor::x86::contract::PARAVIRTUAL_EXIT_VNS
+            crate::vendor::x86::contract::virtual_time_timing().paravirtual_device_mmio_vns
         );
         assert_eq!(vmm.report_stream(), [0xA5A5_5A5A]);
+    }
+
+    #[test]
+    fn tick_port_advances_the_execution_tick_budget() {
+        let mut vmm = vtime_vmm(
+            vec![Exit::Arch(X86Exit::Io {
+                port: VIRTUAL_TIME_TICK_PORT,
+                size: 4,
+                write: Some(1),
+            })],
+            1,
+        );
+        let before = vmm.effective_vns().unwrap();
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
+        assert_eq!(
+            vmm.effective_vns().unwrap() - before,
+            crate::vendor::x86::contract::virtual_time_timing().execution_tick_vns
+        );
+        // The tick carries no data and never stages a completion.
+        assert!(vmm.backend.completions().is_empty());
+    }
+
+    #[test]
+    fn tick_port_rejects_non_protocol_accesses() {
+        // The exact tuple (dword write of 1) is the protocol; every other
+        // access fails closed.
+        for (size, value) in [(1u8, 1u32), (2, 1), (4, 0), (4, 2)] {
+            let mut vmm = Vmm::new(
+                configured_mock(vec![Exit::Arch(X86Exit::Io {
+                    port: VIRTUAL_TIME_TICK_PORT,
+                    size,
+                    write: Some(value),
+                })]),
+                GuestRam::new(0x1000).unwrap(),
+            );
+            assert!(
+                matches!(vmm.step(), Err(VmmError::ContractViolation(_))),
+                "tick access size {size} value {value} must fail closed"
+            );
+        }
     }
 
     #[test]
@@ -7992,7 +8032,7 @@ mod tests {
         // The captured surface is non-trivial: regs, the V-time block, entropy
         // position, and the device blob all reflect the run.
         assert_eq!(s.regs.rax, 0x1111);
-        assert_eq!(s.vtime.snapshot_vns, 5002);
+        assert_eq!(s.vtime.snapshot_vns, 40002);
         assert_eq!(
             s.contract_hash,
             crate::vendor::x86::contract::contract_hash()

@@ -349,7 +349,7 @@ fn main() -> std::process::ExitCode {
     }
 
     let usage = "usage: hvf_postgres_m3 <Image-postgres> <initramfs-postgres.cpio.gz> \
-                 <optional-x86-diagnostic|-> <m3-report> [max-events]";
+                 <optional-x86-diagnostic|-> <m3-report> [max-events] [calibration-log]";
     let mut args = std::env::args_os().skip(1);
     let Some(image_path) = args.next() else {
         eprintln!("{usage}");
@@ -377,10 +377,21 @@ fn main() -> std::process::ExitCode {
         },
         None => DEFAULT_MAX_EVENTS,
     };
+    let calibration_path = args.next();
     if args.next().is_some() {
         eprintln!("{usage}");
         return std::process::ExitCode::from(2);
     }
+    let mut calibration_log = match &calibration_path {
+        Some(path) => match std::fs::File::create(path) {
+            Ok(file) => Some(std::io::BufWriter::new(file)),
+            Err(error) => {
+                eprintln!("cannot create calibration log {path:?}: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
 
     let read = |path: &std::ffi::OsStr, label: &str| -> Result<Vec<u8>, String> {
         std::fs::read(path).map_err(|error| format!("cannot read {label} {path:?}: {error}"))
@@ -494,6 +505,7 @@ fn main() -> std::process::ExitCode {
     let mut workload_end_mark = None;
     let mut postgres_stopped_mark = None;
     let mut terminal_mark = None;
+    let mut calibration_emitted = 0usize;
     for event in 0..max_events {
         if watchdog_tx.send(WatchdogCommand::Arm(event)).is_err() {
             run_error = Some("HVF liveness watchdog thread stopped unexpectedly".to_string());
@@ -562,6 +574,32 @@ fn main() -> std::process::ExitCode {
         ] {
             if slot.is_none() && contains(serial, marker) {
                 *slot = Some(observed);
+            }
+        }
+
+        // One calibration row per portable event: the same wall-clock reading
+        // that feeds the phase marks, joined to the event's class and V-time.
+        // Diagnostic output only; nothing reads it back into the run.
+        if let Some(log) = calibration_log.as_mut()
+            && let Some(trace) = vmm.virtual_time_trace()
+        {
+            let events = &trace.normalized_log().events;
+            while calibration_emitted < events.len() {
+                let entry = &events[calibration_emitted];
+                if let Err(error) = writeln!(
+                    log,
+                    "calib event={} class={} vns_after={} wall_ns={observed_wall_ns}",
+                    calibration_emitted,
+                    entry.class.label(),
+                    entry.vns_after,
+                ) {
+                    run_error = Some(format!("calibration log write failed: {error}"));
+                    break;
+                }
+                calibration_emitted += 1;
+            }
+            if run_error.is_some() {
+                break;
             }
         }
 
@@ -655,6 +693,12 @@ fn main() -> std::process::ExitCode {
     }
     let _ = watchdog_tx.send(WatchdogCommand::Stop);
     let _ = watchdog.join();
+    if let Some(log) = calibration_log.as_mut()
+        && let Err(error) = log.flush()
+        && run_error.is_none()
+    {
+        run_error = Some(format!("calibration log flush failed: {error}"));
+    }
     let mut checkpoint_hash_count = 0u64;
     match checkpoint_pool.finish() {
         Ok(checkpoints) => {

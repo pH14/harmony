@@ -1,4 +1,4 @@
-contract-version=1
+contract-version=2
 kernel-tag=v6.18.35
 cpuid-baseline=det-zenN-v1
 tsc-hz=0
@@ -7,6 +7,13 @@ bus-hz=0
 mxcsr-mask=0x0000ffff
 rtc-epoch=0
 pit-refresh-ns=0
+vtime-interrupt-controller-vns=0
+vtime-serial-vns=0
+vtime-paravirtual-vns=0
+vtime-time-read-vns=0
+vtime-arch-control-vns=0
+vtime-execution-tick-vns=0
+vtime-clockevent-period-vns=0
 cpuid 00000000.00000000 00000010 68747541 444d4163 69746e65 verified:on-silicon-pending-AE4
 cpuid 80000000.00000000 80000008 00000000 00000000 00000000 verified:on-silicon-pending-AE4
 cpuid 80000001.00000000 00000000 00000000 00000000 00000000 verified:on-silicon-pending-AE4

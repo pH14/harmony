@@ -147,6 +147,12 @@ fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     let mut steps = 0u64;
     let mut reason = None;
     let mut step_error = None;
+    // One calibration row per portable event, on the same wall clock as the
+    // watchdog. Diagnostic output only; nothing reads it back into the run.
+    let mut calibration = std::env::var_os("X2_CALIBRATION_LOG").map(|path| {
+        std::io::BufWriter::new(std::fs::File::create(path).expect("create X2_CALIBRATION_LOG"))
+    });
+    let mut calibration_emitted = 0usize;
     let stderr = std::io::stderr();
     while steps < max_steps {
         match vmm.step() {
@@ -173,6 +179,28 @@ fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
             }
         }
         steps += 1;
+        if let Some(writer) = calibration.as_mut() {
+            let events = &vmm
+                .virtual_time_trace()
+                .expect("boot_linux_stock_virtual_time wires the virtual_time trace")
+                .normalized_log()
+                .events;
+            if calibration_emitted < events.len() {
+                let wall_ns = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                while calibration_emitted < events.len() {
+                    let entry = &events[calibration_emitted];
+                    writeln!(
+                        writer,
+                        "calib event={} class={} vns_after={} wall_ns={wall_ns}",
+                        calibration_emitted,
+                        entry.class.label(),
+                        entry.vns_after,
+                    )
+                    .expect("write X2_CALIBRATION_LOG");
+                    calibration_emitted += 1;
+                }
+            }
+        }
         if stream {
             let serial = vmm.serial();
             if serial.len() > printed {
@@ -186,6 +214,9 @@ fn run_boot_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
             eprintln!("\n[x2] wall-clock budget exceeded after {steps} steps");
             break;
         }
+    }
+    if let Some(writer) = calibration.as_mut() {
+        writer.flush().expect("flush X2_CALIBRATION_LOG");
     }
     let trace = vmm
         .virtual_time_trace()

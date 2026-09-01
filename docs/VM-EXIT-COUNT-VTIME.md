@@ -10,6 +10,14 @@ A scheduled interrupt becomes eligible at the first exit boundary whose
 post-advance time reaches its deadline. When a guest is idle with a modeled
 timer pending, the same clock advances directly to the deterministic deadline.
 
+Both architectures use one shared duration set. The rows are part of the CPU
+contract — `docs/cpu-msr-contract.toml` on x86, `vendor/arm64/contract.rs` on
+arm64 — and both vendors fold them into `contract_hash`, so a changed duration
+refuses snapshots taken under the old clock. The guest kernel also rings an
+execution tick (one exit per syscall entry, context switch, and idle-poll
+iteration) so exit-free execution stretches still reach timer deadlines; its
+duration is a contract row bounded below the guest's clockevent period.
+
 The design was brought up on macOS arm64 HVF, Linux arm64 KVM, and Linux x86 KVM.
 PR #235 records the completed milestone evidence: planted negatives, normalized
 logs, checkpoint hashes, cross-host comparisons, and the exact guest-image
