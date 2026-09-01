@@ -1324,7 +1324,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         // run observed, so both import paths merge it whole.
         game.merge_origin_evidence(&mut self.evidence, source);
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
-        self.archive.preserve_inactive_snapshots(true);
+        self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(game, target)?;
         let genesis_id = 0;
         let mut counts = TreeImportCounts::default();
@@ -1451,7 +1451,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             return Err("whole-tree import retained no entry past genesis".into());
         }
         self.archive
-            .preserve_inactive_snapshots(preserve_inactive_snapshots);
+            .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
         Ok(counts)
     }
 
@@ -1867,8 +1867,8 @@ fn build_report<G: Game>(
             .collect(),
     };
     let schedule_identity = match header.schedule_policy.as_deref() {
-        Some(CAMPAIGN_SCHEDULE_POLICY) => CAMPAIGN_SCHEDULE_IDENTITY,
-        _ => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
+        None => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
+        Some(_) => CAMPAIGN_SCHEDULE_IDENTITY,
     };
     let report = CampaignModeReport {
         mode: "campaign".to_owned(),
@@ -2335,6 +2335,7 @@ where
                 }
                 let rand = &mut rands[worker as usize];
                 let max_actions = core.max_actions;
+                core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
                 loop {
                     let (parent_index, selector) =
@@ -2851,7 +2852,7 @@ where
     // Every worker and queued specification has been joined at this point.
     // Drop any non-selectable payload retained only by an in-flight Arc so
     // final artifacts describe the deterministic breeding population.
-    core.archive.preserve_inactive_snapshots(false);
+    core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
     let stream_sha256 = writer.finish()?;
@@ -3134,6 +3135,7 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    core.archive.establish_liveness_anchor(header.action_limit);
 
     let replay_window_depth = admission_window_depth(usize::try_from(header.workers)?);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
@@ -3148,7 +3150,7 @@ where
         // holders below; leave the legacy future-use map empty for this path.
         core.archive
             .preserve_recorded_snapshot_uses(BTreeMap::new());
-        core.archive.preserve_inactive_snapshots(false);
+        core.archive.preserve_inactive_snapshots(false)?;
         for (job_slot, parent_id) in replay_job_parents
             .iter()
             .take(replay_window_depth)
@@ -3409,7 +3411,7 @@ where
             }
         }
     }
-    core.archive.preserve_inactive_snapshots(false);
+    core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
 

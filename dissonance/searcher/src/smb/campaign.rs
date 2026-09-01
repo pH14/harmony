@@ -1474,7 +1474,7 @@ mod tests {
         chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
         execute_job, remember_chord_version, source_batch_ready,
     };
-    use crate::search::campaign::{CoordinatorCore, Game};
+    use crate::search::campaign::{CAMPAIGN_SCHEDULE_IDENTITY, CoordinatorCore, Game};
     use crate::search::empirical_steps::{EmpiricalStepHashRule, EmpiricalStepTables};
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
@@ -2154,9 +2154,19 @@ mod tests {
         let mut stream = Vec::new();
         run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
             .expect("new campaign");
-        let legacy = String::from_utf8(stream)
-            .expect("stream utf-8")
-            .replacen(
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        let historical = recorded.replacen(
+            "\"schedule_policy\":\"deterministic_window_4_per_worker_v1\"",
+            "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
+            1,
+        );
+        let historical_replay = replay_smb_campaign(&rom, historical.as_bytes(), None)
+            .expect("deterministic legacy policy replays");
+        assert_eq!(
+            historical_replay.schedule_identity,
+            CAMPAIGN_SCHEDULE_IDENTITY
+        );
+        let legacy = recorded.replacen(
                 "\"schedule_policy\":\"deterministic_window_4_per_worker_v1\",",
                 "",
                 1,
@@ -2398,6 +2408,7 @@ mod tests {
         .expect("budgeted live campaign");
         assert_eq!(live.executions_completed, 8_192);
         assert_eq!(live.memory_budget_mib, Some(4));
+        assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
         assert!(live.historical_entries_dropped > 0);
@@ -2409,6 +2420,16 @@ mod tests {
                 .expect("replay budgeted campaign");
         assert_eq!(live, replay);
         assert_eq!(live_checkpoint, replay_checkpoint);
+        let anchor = live
+            .archive
+            .entries
+            .iter()
+            .find(|entry| entry.id == 0)
+            .expect("genesis liveness anchor remains retained");
+        assert!(anchor
+            .selector
+            .as_ref()
+            .is_some_and(|selector| selector.selected > 0 && selector.productive > 0));
     }
 
     #[test]

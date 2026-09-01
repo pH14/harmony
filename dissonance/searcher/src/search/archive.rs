@@ -769,6 +769,9 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     snapshot_selectable: Vec<bool>,
     /// Deterministic logical-byte ceiling for history plus selectable snapshots.
     memory_limit: Option<usize>,
+    /// Stable id of the one executable snapshot retained as a bounded liveness
+    /// anchor. This is present only for memory-budgeted campaigns.
+    liveness_anchor: Option<u64>,
     /// Logical bytes charged to snapshots still resident.
     resident_snapshot_bytes: usize,
     /// Game-owned, deterministic logical-size accounting for one snapshot.
@@ -1257,6 +1260,7 @@ where
             resident_snapshots: 0,
             snapshot_selectable: Vec::new(),
             memory_limit: None,
+            liveness_anchor: None,
             resident_snapshot_bytes: 0,
             snapshot_memory_charge: None,
             resident_snapshot_order: VecDeque::new(),
@@ -1275,6 +1279,39 @@ where
         self.snapshot_memory_charge = Some(charge);
     }
 
+    /// Select the lowest stable-id active executable snapshot as the bounded
+    /// campaign's deterministic liveness anchor.
+    pub(crate) fn establish_liveness_anchor(&mut self, max_actions: usize) {
+        if self.memory_limit.is_none() {
+            return;
+        }
+        if self.liveness_anchor.is_some_and(|id| {
+            self.index_of_id(id).is_some_and(|index| {
+                self.snapshot_selectable.get(index).copied().unwrap_or(false)
+                    && self.entries[index].snapshot.is_some()
+                    && self.entries[index].input_len < max_actions
+            })
+        }) {
+            return;
+        }
+        self.liveness_anchor = self
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(index, entry)| {
+                self.active.get(*index).copied().unwrap_or(false)
+                    && self.snapshot_selectable.get(*index).copied().unwrap_or(false)
+                    && self.entries[*index].snapshot.is_some()
+                    && entry.input_len < max_actions
+            })
+            .map(|(_, entry)| entry.id);
+    }
+
+    fn is_liveness_anchor(&self, id: usize) -> bool {
+        self.memory_limit.is_some()
+            && self.liveness_anchor == self.entries.get(id).map(|entry| entry.id)
+    }
+
     fn snapshot_charge(&self, snapshot: &S) -> usize {
         self.snapshot_memory_charge
             .map_or(0, |charge| charge(snapshot))
@@ -1282,6 +1319,9 @@ where
 
     fn release_snapshot(&mut self, id: usize, budget_eviction: bool) -> bool {
         if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+            return false;
+        }
+        if budget_eviction && self.is_liveness_anchor(id) {
             return false;
         }
         let charge = self.entries[id]
@@ -1325,19 +1365,19 @@ where
         true
     }
 
-    fn enforce_snapshot_memory_budget(&mut self) {
+    fn enforce_snapshot_memory_budget(&mut self) -> Result<(), &'static str> {
         let Some(limit) = self.memory_limit else {
-            return;
+            return Ok(());
         };
-        let attempts = self.resident_snapshots.saturating_sub(1);
-        for _ in 0..attempts {
-            if self.resident_memory_bytes() <= limit || self.resident_snapshots <= 1 {
-                break;
-            }
+        while self.resident_memory_bytes() > limit && self.resident_snapshots > 1 {
             if !self.release_oldest_selectable(true) {
                 break;
             }
         }
+        if self.resident_memory_bytes() > limit && self.liveness_anchor.is_some() {
+            return Err("memory budget cannot retain the executable liveness anchor");
+        }
+        Ok(())
     }
 
     fn release_oldest_selectable(&mut self, budget_eviction: bool) -> bool {
@@ -1347,6 +1387,9 @@ where
                 break;
             };
             if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+                continue;
+            }
+            if self.is_liveness_anchor(id) {
                 continue;
             }
             return self.release_snapshot(id, budget_eviction);
@@ -1395,6 +1438,7 @@ where
                 self.active.get(index).copied().unwrap_or(false)
                     || self.metadata_pins.contains_key(&entry.id)
                     || (self.preserve_inactive_snapshots && entry.snapshot.is_some())
+                    || (self.liveness_anchor == Some(entry.id) && entry.snapshot.is_some())
                     || entry
                         .snapshot
                         .as_ref()
@@ -1535,12 +1579,15 @@ where
         if let Some(cap) = frontier_cap {
             self.rebuild_selector_index(cap);
         }
-        self.enforce_snapshot_memory_budget();
+        self.enforce_snapshot_memory_budget()?;
         Ok(())
     }
 
     /// Preserve replaced snapshots temporarily while rebuilding a source tree.
-    pub(crate) fn preserve_inactive_snapshots(&mut self, preserve: bool) {
+    pub(crate) fn preserve_inactive_snapshots(
+        &mut self,
+        preserve: bool,
+    ) -> Result<(), &'static str> {
         self.preserve_inactive_snapshots = preserve;
         if !preserve {
             self.preserved_snapshot_uses = None;
@@ -1549,8 +1596,9 @@ where
                     self.entries[id].snapshot.take();
                 }
             }
-            self.enforce_snapshot_memory_budget();
+            self.enforce_snapshot_memory_budget()?;
         }
+        Ok(())
     }
 
     pub(crate) fn preserves_inactive_snapshots(&self) -> bool {
@@ -1759,39 +1807,67 @@ where
         }
     }
 
-    /// Reopen the exact action-limit boundary when every shorter active entry
-    /// has been consumed. These entries can execute an empty suffix, but they
-    /// keep the deterministic selector alive until a new retained descendant
-    /// or a terminal campaign stop appears.
-    fn reactivate_action_limit_entries(&mut self, max_actions: usize) -> bool {
+    /// Rebuild the selector around the bounded liveness anchor after a stale
+    /// active-id index was emptied by deterministic archive maintenance.
+    fn reactivate_liveness_anchor(&mut self, max_actions: usize) -> bool {
         if !self.active_ids.is_empty() {
             return false;
         }
-        let ids = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(id, entry)| {
-                (self.active.get(id).copied().unwrap_or(false)
-                    && self.snapshot_selectable.get(id).copied().unwrap_or(false)
-                    && entry.input_len == max_actions)
-                    .then_some(id)
-            })
-            .collect::<Vec<_>>();
-        if ids.is_empty() {
+        self.establish_liveness_anchor(max_actions);
+        let Some(anchor) = self.liveness_anchor else {
+            return false;
+        };
+        let Some(index) = self.index_of_id(anchor) else {
+            return false;
+        };
+        if !self.snapshot_selectable.get(index).copied().unwrap_or(false)
+            || self.entries[index].snapshot.is_none()
+            || self.entries[index].input_len >= max_actions
+        {
             return false;
         }
-        self.active_ids = ActiveIds::from_ids(ids);
-        self.classes.clear();
-        self.live_children.iter_mut().for_each(BTreeMap::clear);
-        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
-        self.active_skip_groups.clear();
-        self.live_skip_groups.clear();
-        let active = self.active_ids.ids().collect::<Vec<_>>();
-        for id in active {
-            self.insert_active_cell_member(id);
+        if !self.active.get(index).copied().unwrap_or(false) {
+            if self.active_count >= self.max_entries
+                && !self.release_oldest_selectable(true)
+            {
+                return false;
+            }
+            let slot_key = self.entries[index].key.group(0);
+            let slot_full = self
+                .slots
+                .get(&slot_key)
+                .is_some_and(|slot| slot.len() >= MAX_ENTRIES_PER_KEY);
+            if slot_full {
+                let replaced = self
+                    .slots
+                    .get(&slot_key)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|id| !self.is_liveness_anchor(*id))
+                    .max_by_key(|id| (self.time_in_group[*id], self.entries[*id].id));
+                let Some(replaced) = replaced else {
+                    return false;
+                };
+                self.active[replaced] = false;
+                self.active_count = self.active_count.saturating_sub(1);
+                if let Some(slot) = self.slots.get_mut(&slot_key) {
+                    slot.retain(|id| *id != replaced);
+                }
+                self.release_snapshot(replaced, false);
+            }
+            self.active[index] = true;
+            self.active_count = self.active_count.saturating_add(1);
+            self.slots
+                .entry(self.entries[index].key.group(0))
+                .or_default()
+                .push(index);
         }
-        true
+        if !self.resident_snapshot_order.contains(&index) {
+            self.resident_snapshot_order.push_back(index);
+        }
+        self.rebuild_selector_index(max_actions);
+        !self.active_ids.is_empty()
     }
 
     /// Add a fresh entry to the selector index. Ids only grow, so pushes
@@ -2134,13 +2210,17 @@ where
             return Err("archive population limit did not retire an entry".into());
         }
         if let Some(replaced) = replace {
+            let replaced_anchor = self.is_liveness_anchor(replaced);
             self.active[replaced] = false;
             self.active_count = self.active_count.saturating_sub(1);
             if let Some(slot) = self.slots.get_mut(&key.group(0)) {
                 slot.retain(|id| *id != replaced);
             }
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
-            self.release_snapshot(replaced, false);
+            self.index_remove(replaced);
+            if !replaced_anchor {
+                self.release_snapshot(replaced, false);
+            }
         }
         let id = self.entries.len();
         let stable_id = self.next_entry_id;
@@ -2218,7 +2298,7 @@ where
             .saturating_add(Self::history_entry_memory_charge(suffix.len(), new_nodes));
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
-        self.enforce_snapshot_memory_budget();
+        self.enforce_snapshot_memory_budget()?;
         Ok(Some(id))
     }
 
@@ -2340,7 +2420,7 @@ where
         if self.frontier_cap != Some(max_actions) {
             self.rebuild_selector_index(max_actions);
         }
-        if self.active_ids.is_empty() && !self.reactivate_action_limit_entries(max_actions) {
+        if self.active_ids.is_empty() && !self.reactivate_liveness_anchor(max_actions) {
             return Err("archive has no expandable entry".into());
         }
         let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
@@ -3058,7 +3138,7 @@ where
 mod tests {
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
-        InputIndex, RetireThresholds, SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting,
+        InputIndex, RetireThresholds, SELECTION_EXHAUSTION_THRESHOLD, MAX_ENTRIES_PER_KEY, SelectorAccounting,
         SelectorDraw, SelectorPath, SelectorPolicy, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
@@ -3309,16 +3389,22 @@ mod tests {
 
         let exact = archive.resident_memory_bytes();
         archive.memory_limit = Some(exact);
-        archive.enforce_snapshot_memory_budget();
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
         assert_eq!(archive.resident_snapshot_count(), 4);
 
         archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(2));
-        archive.enforce_snapshot_memory_budget();
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
         assert_eq!(archive.resident_snapshot_count(), 2);
         assert_eq!(archive.snapshot_evictions(), 2);
 
         archive.memory_limit = Some(0);
-        archive.enforce_snapshot_memory_budget();
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
         assert_eq!(archive.resident_snapshot_count(), 1);
         assert_eq!(archive.snapshot_evictions(), 3);
     }
@@ -3337,16 +3423,93 @@ mod tests {
     }
 
     #[test]
-    fn selector_reactivates_selectable_action_limit_entries() {
-        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+    fn selector_reactivates_a_budgeted_executable_anchor() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: Vec::new(),
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
         archive.rebuild_selector_index(1);
-        assert!(archive.active_ids.is_empty());
+        archive.establish_liveness_anchor(1);
+        archive.time_in_group[0] = 100;
+        for (id, suffix) in [(1_u64, 1_u8), (2, 2)] {
+            archive
+                .insert(
+                    None,
+                    id,
+                    ArchiveCandidate {
+                        suffix: vec![suffix],
+                        key: FlatKey([0, 0, 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert same-slot entry")
+                .expect("retain same-slot entry");
+        }
+        assert!(!archive.active[0]);
+        assert!(archive.entries[0].snapshot.is_some());
+        archive.active_ids = ActiveIds::default();
 
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
         let (selected, _) = archive
             .select_parent(&mut rand, 1)
-            .expect("action-limit entries keep selection live");
-        assert_eq!(archive.entries[selected].input_len, 1);
+            .expect("budgeted anchor keeps selection live");
+        assert_eq!(archive.entries[selected].input_len, 0);
+        assert!(archive.entries[selected].input_len < 1);
+        assert!(archive
+            .slots
+            .values()
+            .all(|members| members.len() <= MAX_ENTRIES_PER_KEY));
+    }
+
+    #[test]
+    fn budgeted_anchor_rejects_an_unretirable_single_entry_population() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive.max_entries = 1;
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: Vec::new(),
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
+        archive.rebuild_selector_index(1);
+        archive.establish_liveness_anchor(1);
+        assert!(archive
+            .insert(
+                None,
+                1,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: FlatKey([1, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .is_err());
+        assert_eq!(archive.active_count(), 1);
+        assert!(archive
+            .slots
+            .values()
+            .all(|members| members.len() <= MAX_ENTRIES_PER_KEY));
     }
 
     fn archive_with_prunable_history() -> Archive<u8, FlatKey<3>, (), ()> {
@@ -3441,7 +3604,9 @@ mod tests {
 
         let mut preserved = flat_archive::<3>(&[[0, 0, 0, 0]]);
         let preserved_id = preserved.stable_id(0).expect("stable id");
-        preserved.preserve_inactive_snapshots(true);
+        preserved
+            .preserve_inactive_snapshots(true)
+            .expect("enable inactive snapshot preservation");
         assert!(preserved.release_snapshot(0, true));
         preserved
             .compact_history(true)
@@ -3462,11 +3627,15 @@ mod tests {
         let mut archive = flat_archive::<3>(&[[0, 0, 0, 0]]);
         let stable_id = archive.stable_id(0).expect("stable id");
         assert!(!archive.preserves_inactive_snapshots());
-        archive.preserve_inactive_snapshots(true);
+        archive
+            .preserve_inactive_snapshots(true)
+            .expect("enable inactive snapshot preservation");
         assert!(archive.preserves_inactive_snapshots());
         assert!(archive.release_snapshot(0, true));
         assert!(archive.entries[0].snapshot.is_some());
-        archive.preserve_inactive_snapshots(false);
+        archive
+            .preserve_inactive_snapshots(false)
+            .expect("disable inactive snapshot preservation");
         assert!(!archive.preserves_inactive_snapshots());
         assert!(archive.entries[0].snapshot.is_none());
 
