@@ -77,15 +77,23 @@ fn run() -> Result<(), String> {
         }
     }
 
-    fn endpoint(server: &mut Server, base: SnapId) -> Result<([u8; 32], Vec<u8>), String> {
-        let env = Reproducer {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: EnvSpec::Seeded {
-                seed: SEED,
-                policy: FaultPolicy::none(),
-            }
-            .encode(),
+    fn payload_env(payloads: Vec<Vec<u8>>) -> Reproducer {
+        let mut spec = EnvSpec::Seeded {
+            seed: SEED,
+            policy: FaultPolicy::none(),
         };
+        spec.set_payloads(Some(payloads));
+        Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        }
+    }
+
+    fn endpoint(server: &mut Server, base: SnapId) -> Result<([u8; 32], Vec<u8>), String> {
+        // The first chord is the experiment's opaque controller input. A neutral
+        // tail keeps the service offered while the deferred frame-complete point
+        // reaches its first sealable re-entry boundary.
+        let env = payload_env(vec![vec![0x81, 12], vec![0, 1]]);
         match drive(server, &Request::Branch { snap: base, env })? {
             Reply::Unit => {}
             other => return Err(format!("branch returned {other:?}")),
@@ -136,6 +144,25 @@ fn run() -> Result<(), String> {
         other => return Err(format!("hello returned {other:?}")),
     }
 
+    // The live constructor intentionally starts with a bare seeded SDK channel,
+    // where the ordered payload service is unavailable. Seal the unstarted VM,
+    // then use the normal branch reproducer to offer a bootstrap tape. The
+    // resulting setup point is the gameplay base used by both measured branches.
+    let genesis = match drive(&mut server, &Request::Snapshot)? {
+        Reply::Snapshot { id, .. } => id,
+        other => return Err(format!("genesis snapshot returned {other:?}")),
+    };
+    let bootstrap = payload_env(vec![vec![0, 1]; 16]);
+    match drive(
+        &mut server,
+        &Request::Branch {
+            snap: genesis,
+            env: bootstrap,
+        },
+    )? {
+        Reply::Unit => {}
+        other => return Err(format!("bootstrap branch returned {other:?}")),
+    }
     let setup_at = run_to_snapshot(&mut server)?;
     let base = match drive(&mut server, &Request::Snapshot)? {
         Reply::Snapshot { id, .. } => id,
