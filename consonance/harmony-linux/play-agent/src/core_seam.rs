@@ -28,6 +28,12 @@ pub trait Core {
     /// Copy the 2 KiB console work RAM into `out` (at least [`WORK_RAM_LEN`]
     /// bytes). Returns `false` if the core cannot expose it.
     fn read_work_ram(&mut self, out: &mut [u8]) -> bool;
+
+    /// Copy cartridge-backed save RAM into `out`, returning the number of
+    /// bytes copied. Workloads without save RAM may return `None`.
+    fn read_save_ram(&mut self, _out: &mut [u8]) -> Option<usize> {
+        None
+    }
 }
 
 /// The fake core for portable tests and the `--smoke` mode: synthetic console
@@ -37,6 +43,7 @@ pub trait Core {
 #[derive(Clone, Debug)]
 pub struct MockCore {
     ram: [u8; WORK_RAM_LEN],
+    save_ram: [u8; 8 * 1024],
     frame: u32,
     savestate_len: usize,
     /// Frames left until a latched `START` press finishes "loading" 1-1
@@ -66,6 +73,7 @@ impl MockCore {
     pub fn new() -> Self {
         MockCore {
             ram: [0u8; WORK_RAM_LEN],
+            save_ram: [0u8; 8 * 1024],
             frame: 0,
             savestate_len: MOCK_SAVESTATE_LEN,
             start_countdown: None,
@@ -86,6 +94,11 @@ impl MockCore {
     /// (level transitions, powerups) between steps.
     pub fn ram_mut(&mut self) -> &mut [u8; WORK_RAM_LEN] {
         &mut self.ram
+    }
+
+    /// Mutable synthetic save RAM for Nova payload-agent fixtures.
+    pub fn save_ram_mut(&mut self) -> &mut [u8; 8 * 1024] {
+        &mut self.save_ram
     }
 
     /// The frames run so far.
@@ -161,6 +174,14 @@ impl Core for MockCore {
         }
         out[..WORK_RAM_LEN].copy_from_slice(&self.ram);
         true
+    }
+
+    fn read_save_ram(&mut self, out: &mut [u8]) -> Option<usize> {
+        if out.len() < self.save_ram.len() {
+            return None;
+        }
+        out[..self.save_ram.len()].copy_from_slice(&self.save_ram);
+        Some(self.save_ram.len())
     }
 }
 

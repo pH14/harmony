@@ -3,7 +3,8 @@
 //!
 //! Started by the game image's init (`consonance/harmony-linux/linux/game-init.sh`) as the single
 //! supervised workload process: a minimal headless libretro frontend linking
-//! the commit-pinned NES core, running Super Mario Bros. unthrottled — its own
+//! a commit-pinned NES core, running Super Mario Bros. or Nova the Squirrel
+//! unthrottled — its own
 //! `retro_run` counter is the frame clock. The decision/decode *logic* lives in
 //! the [`harmony_play_agent`] library (portable, unit-tested on the dev host
 //! against a mock core). This binary is the Linux glue, all of it behind
@@ -27,9 +28,13 @@ use harmony_play_agent::{Agent, AgentConfig, ChordAlphabet, Harness};
 #[derive(Parser, Debug)]
 #[command(
     name = "play-agent",
-    about = "harmony in-guest play-agent (task 86): SMB workload"
+    about = "harmony in-guest play-agent: SMB or Nova workload"
 )]
 struct Args {
+    /// Run Nova's payload-tape protocol: each host payload is exactly one
+    /// `[buttons, hold_frames]` chord ending at a Consonance snapshot point.
+    #[arg(long)]
+    nova_payload: bool,
     /// Path to the libretro core `.so` (falls back to `HARMONY_SMB_CORE`, then
     /// the in-image default).
     #[arg(long)]
@@ -161,12 +166,20 @@ fn smoke(args: &Args) -> Result<(), String> {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod real {
     use super::{Args, agent_config};
-    use harmony_play_agent::{Agent, Harness, regs};
+    use harmony_play_agent::{
+        Agent, Harness,
+        nova::{NovaAgent, NovaChannel},
+        regs,
+    };
 
     /// The default in-image location of the pinned libretro core.
     const DEFAULT_CORE: &str = "/opt/harmony/fceumm_libretro.so";
     /// The default in-image location of the user-supplied ROM.
     const DEFAULT_ROM: &str = "/opt/harmony/smb.nes";
+    /// The default in-image location of the pinned QuickNES core.
+    const DEFAULT_NOVA_CORE: &str = "/opt/harmony/quicknes_libretro.so";
+    /// The default in-image location of the FOSS Nova ROM.
+    const DEFAULT_NOVA_ROM: &str = "/opt/harmony/nova.nes";
 
     /// The [`Harness`] over the real guest SDK: every verb maps 1:1, every
     /// error is surfaced loudly (the sdk-demo discipline — a swallowed
@@ -204,7 +217,52 @@ mod real {
         }
     }
 
+    impl<T: hypercall_proto::Transport> NovaChannel for SdkHarness<T>
+    where
+        T::Error: core::fmt::Debug,
+    {
+        type Error = String;
+
+        fn payload_fetch(&mut self, out: &mut [u8; 2]) -> Result<(), Self::Error> {
+            self.sdk
+                .client_mut()
+                .payload_fetch(out)
+                .map_err(|error| format!("payload_fetch: {error:?}"))
+        }
+
+        fn state_set(&mut self, reg: u32, value: u64) -> Result<(), Self::Error> {
+            self.sdk
+                .state_set(reg, value)
+                .map_err(|error| format!("state_set({reg}): {error:?}"))
+        }
+
+        fn state_max(&mut self, reg: u32, value: u64) -> Result<(), Self::Error> {
+            self.sdk
+                .state_max(reg, value)
+                .map_err(|error| format!("state_max({reg}): {error:?}"))
+        }
+
+        fn reachable(&mut self, point: u32) -> Result<(), Self::Error> {
+            self.sdk
+                .assert_reachable(point)
+                .map_err(|error| format!("assert_reachable({point}): {error:?}"))
+        }
+
+        fn frame_complete(&mut self, frame_count: u64) -> Result<(), Self::Error> {
+            self.sdk
+                .frame_complete(frame_count)
+                .map_err(|error| format!("frame_complete({frame_count}): {error:?}"))
+        }
+    }
+
     pub fn run(args: &Args) -> Result<(), String> {
+        if args.nova_payload {
+            return run_nova(args);
+        }
+        run_smb(args)
+    }
+
+    fn run_smb(args: &Args) -> Result<(), String> {
         let core_path = args
             .core
             .clone()
@@ -287,8 +345,12 @@ mod real {
         // Publish the billboard window once at init, then seal the setup
         // prefix — the campaign snapshots at the setup boundary, so every
         // branch inherits the published window over the primed billboard.
-        harness.state_set(regs::REG_BILLBOARD_GPA, gpa)?;
-        harness.state_set(regs::REG_BILLBOARD_LEN, layout.total_len() as u64)?;
+        Harness::state_set(&mut harness, regs::REG_BILLBOARD_GPA, gpa)?;
+        Harness::state_set(
+            &mut harness,
+            regs::REG_BILLBOARD_LEN,
+            layout.total_len() as u64,
+        )?;
         harness
             .sdk
             .setup_complete()
@@ -302,6 +364,83 @@ mod real {
             frame += 1;
             if args.frames != 0 && frame >= args.frames {
                 println!("play-agent: frame bound {frame} reached");
+                return Ok(());
+            }
+        }
+    }
+
+    fn run_nova(args: &Args) -> Result<(), String> {
+        let core_path = args
+            .core
+            .clone()
+            .or_else(|| std::env::var("HARMONY_NOVA_CORE").ok())
+            .unwrap_or_else(|| DEFAULT_NOVA_CORE.to_string());
+        let rom_path = args
+            .rom
+            .clone()
+            .or_else(|| std::env::var("HARMONY_NOVA_ROM").ok())
+            .unwrap_or_else(|| DEFAULT_NOVA_ROM.to_string());
+        let rom = std::fs::read(&rom_path).map_err(|error| format!("ROM {rom_path}: {error}"))?;
+        println!("play-agent: Nova ROM {rom_path} ({} bytes)", rom.len());
+
+        let mut core = retro::LibretroCore::load(&core_path, &rom_path, &rom)?;
+        println!("play-agent: QuickNES core {core_path} loaded");
+        let setup = harmony_play_agent::nova::run_setup(&mut core).map_err(|e| e.to_string())?;
+        println!(
+            "play-agent: Nova gameplay reached (level={} x={} y={} health={})",
+            setup.started_level + 1,
+            setup.x,
+            setup.y,
+            setup.health
+        );
+
+        let mut agent = NovaAgent::new(core).map_err(|e| e.to_string())?;
+        let layout = agent.layout();
+        let (gpa, billboard) = pinned::alloc(layout.total_len())?;
+        let sealed = agent
+            .prime_billboard(billboard)
+            .map_err(|e| e.to_string())?;
+        if sealed.health == 0 || sealed.x == 0 || sealed.y == 0 {
+            return Err(format!("Nova seal-point vacuity check failed: {sealed:?}"));
+        }
+
+        let transport = doorbell::open()?;
+        let sdk = harmony_sdk::Sdk::init(transport, harmony_play_agent::nova::regs::CATALOG)
+            .map_err(|e| format!("Nova sdk init: {e:?}"))?;
+        let mut channel = SdkHarness { sdk };
+        channel
+            .sdk
+            .state_set(harmony_play_agent::nova::regs::REG_BILLBOARD_GPA, gpa)
+            .map_err(|e| format!("Nova billboard GPA: {e:?}"))?;
+        channel
+            .sdk
+            .state_set(
+                harmony_play_agent::nova::regs::REG_BILLBOARD_LEN,
+                layout.total_len() as u64,
+            )
+            .map_err(|e| format!("Nova billboard length: {e:?}"))?;
+        channel
+            .sdk
+            .setup_complete()
+            .map_err(|e| format!("Nova setup_complete: {e:?}"))?;
+        println!(
+            "play-agent: Nova setup sealed; awaiting two-byte payload chords (billboard={gpa:#x}+{})",
+            layout.total_len()
+        );
+
+        loop {
+            let state = agent
+                .run_chord(&mut channel, billboard)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "play-agent: Nova chord complete frame={} level={} x={} y={} health={}",
+                agent.frame_count(),
+                state.started_level + 1,
+                state.x,
+                state.y,
+                state.health
+            );
+            if args.frames != 0 && agent.frame_count() >= args.frames {
                 return Ok(());
             }
         }
@@ -349,6 +488,9 @@ mod real {
         };
         use std::ffi::{CString, c_char, c_uint, c_void};
         use std::sync::atomic::{AtomicU8, Ordering};
+
+        /// Libretro's cartridge-backed save-RAM memory id.
+        const RETRO_MEMORY_SAVE_RAM: c_uint = 0;
 
         #[repr(C)]
         struct RetroGameInfo {
@@ -573,6 +715,24 @@ mod real {
                 // The copy/clamp/zero-fill bounds logic is glue::copy_work_ram
                 // (Miri-covered).
                 glue::copy_work_ram(src, out)
+            }
+
+            fn read_save_ram(&mut self, out: &mut [u8]) -> Option<usize> {
+                // SAFETY: as for `read_work_ram`, libretro owns this stable
+                // memory block and no other retro call occurs before the copy
+                // completes. Both the pointer and length are checked before
+                // constructing the source slice.
+                let src: &[u8] = unsafe {
+                    let ptr = (self.get_memory_data)(RETRO_MEMORY_SAVE_RAM);
+                    let len = (self.get_memory_size)(RETRO_MEMORY_SAVE_RAM);
+                    if ptr.is_null() || len == 0 {
+                        return None;
+                    }
+                    std::slice::from_raw_parts(ptr.cast::<u8>(), len)
+                };
+                let copied = src.len().min(out.len());
+                out[..copied].copy_from_slice(&src[..copied]);
+                Some(copied)
             }
         }
 

@@ -20,6 +20,7 @@ pub mod billboard;
 pub mod chord;
 pub mod core_seam;
 pub mod glue;
+pub mod nova;
 pub mod ram;
 pub mod regs;
 pub mod start;

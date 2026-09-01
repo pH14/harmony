@@ -1,0 +1,37 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# /init for the experimental Nova-in-Consonance x86 workload. QuickNES and the
+# FOSS Nova ROM run as an ordinary Linux guest process; the guest obtains exact
+# controller chords through the Harmony SDK and yields after each chord. The
+# host VMM, not QuickNES, owns snapshot and restore.
+
+BB=/bin/busybox
+
+$BB mount -t proc proc /proc
+$BB mount -t sysfs sysfs /sys
+$BB mount -t devtmpfs dev /dev 2>/dev/null
+$BB mount -t tmpfs tmpfs /tmp
+$BB chmod 1777 /tmp
+$BB chmod 0666 /dev/console
+
+# One physically contiguous 2 MiB billboard page, plus one spare reservation.
+echo 2 >/proc/sys/vm/nr_hugepages
+$BB grep -E 'HugePages_(Total|Free)' /proc/meminfo
+
+if [ ! -f /opt/harmony/nova.nes ] || [ ! -f /opt/harmony/quicknes_libretro.so ]; then
+    echo "NOVA_CONSONANCE_FAIL: guest image lacks Nova ROM or QuickNES core"
+    exec $BB reboot -f
+fi
+echo "NOVA_ROM_SHA256: $($BB cat /opt/harmony/nova.nes.sha256)"
+echo "NOVA_CONSONANCE_READY: launching QuickNES payload agent"
+/opt/harmony/play-agent \
+    --nova-payload \
+    --core /opt/harmony/quicknes_libretro.so \
+    --rom /opt/harmony/nova.nes
+rc=$?
+echo "NOVA_CONSONANCE_EXIT: play-agent exited rc=$rc"
+
+if [ "$rc" != "0" ]; then
+    exec $BB reboot -f
+fi
+exec $BB halt -f
