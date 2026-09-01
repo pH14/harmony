@@ -138,6 +138,13 @@ case $rc in
     # absence is detected by its 127 exit status.
     echo HARMONY_OCI: via chroot
     mount -t proc proc /harmony-oci/rootfs/proc 2>/dev/null
+    mount -t devtmpfs devtmpfs /harmony-oci/rootfs/dev 2>/dev/null
+    mkdir -p /harmony-oci/rootfs/dev/shm /harmony-oci/rootfs/dev/pts
+    mount -t tmpfs tmpfs /harmony-oci/rootfs/dev/shm 2>/dev/null
+    mount -t devpts devpts /harmony-oci/rootfs/dev/pts 2>/dev/null
+    mount -t sysfs sysfs /harmony-oci/rootfs/sys 2>/dev/null
+    mount -t tmpfs tmpfs /harmony-oci/rootfs/tmp 2>/dev/null
+    mount -t tmpfs tmpfs /harmony-oci/rootfs/run 2>/dev/null
     chroot /harmony-oci/rootfs /bin/sh /.harmony-start.sh
     rc=$?
     ;;
@@ -178,6 +185,13 @@ mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
         # runc's absence is detected by its 127 exit status.
         echo HARMONY_OCI: via chroot
         mount -t proc proc /harmony-oci/rootfs/proc 2>/dev/null
+        mount -t devtmpfs devtmpfs /harmony-oci/rootfs/dev 2>/dev/null
+        mkdir -p /harmony-oci/rootfs/dev/shm /harmony-oci/rootfs/dev/pts
+        mount -t tmpfs tmpfs /harmony-oci/rootfs/dev/shm 2>/dev/null
+        mount -t devpts devpts /harmony-oci/rootfs/dev/pts 2>/dev/null
+        mount -t sysfs sysfs /harmony-oci/rootfs/sys 2>/dev/null
+        mount -t tmpfs tmpfs /harmony-oci/rootfs/tmp 2>/dev/null
+        mount -t tmpfs tmpfs /harmony-oci/rootfs/run 2>/dev/null
         chroot /harmony-oci/rootfs /bin/sh /.harmony-start.sh
         rc=$?
         ;;
