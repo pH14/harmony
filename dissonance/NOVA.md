@@ -68,9 +68,9 @@ crossed with all four A/B combinations.
 
 `nova-campaign` normally records the job stream, immediately replays it, and
 requires the report and whole-tree checkpoint to be byte-identical. The
-marketing nightly selects `--marketing-soak` instead: it spends its budget on
-500,000 headless executions, retains only a compact progress summary, and skips
-the full-campaign replay and multi-gigabyte checkpoint artifact. It then replays
+marketing nightly selects `--marketing-soak` instead: it runs headlessly until
+victory or a 500,000-execution cap, retains only a compact progress summary, and
+skips the full-campaign replay and multi-gigabyte checkpoint artifact. It replays
 only the winning or champion input with video and native 48 kHz stereo audio
 enabled on the same QuickNES build, muxing both into the uploaded MP4. Search
 remains on QuickNES's hard audio/video-off path, so audiovisual capture consumes

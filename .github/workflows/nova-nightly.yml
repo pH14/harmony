@@ -54,10 +54,14 @@ jobs:
             --workers "${NOVA_WORKERS}" \
             --action-limit "${NOVA_ACTION_LIMIT}" \
             --marketing-soak
-      - name: Verify and describe the public artifact
+      - name: Validate and describe the public artifact
         run: |
           test "$(jq -r '.champion_endpoint_verified' "${NOVA_ARTIFACT}/run-summary.json")" = true
-          test "$(jq -r '.campaign.executions' "${NOVA_ARTIFACT}/run-summary.json")" = "${NOVA_EXECUTIONS}"
+          jq -e --argjson budget "${NOVA_EXECUTIONS}" \
+            '.campaign.execution_budget == $budget and
+             .campaign.executions > 0 and
+             .campaign.executions <= $budget' \
+            "${NOVA_ARTIFACT}/run-summary.json" >/dev/null
           test -s "${NOVA_ARTIFACT}/best.mp4"
           test "$(ffprobe -v error -select_streams a:0 \
             -show_entries stream=codec_type -of csv=p=0 \
@@ -81,7 +85,8 @@ jobs:
           {
             echo "## Nova benchmark"
             echo
-            echo "500,000-execution headless adventure; seed ${NOVA_SEED}; ${NOVA_WORKERS} workers."
+            echo "Headless adventure capped at 500,000 executions; seed ${NOVA_SEED}; ${NOVA_WORKERS} workers."
+            echo "Executions used: $(jq -r '.campaign.executions' "${NOVA_ARTIFACT}/run-summary.json")."
             echo "Champion endpoint verified: $(jq -r '.champion_endpoint_verified' "${NOVA_ARTIFACT}/run-summary.json")."
             echo "Archive entries explored: $(jq -r '.campaign.archive_entries' "${NOVA_ARTIFACT}/run-summary.json")."
             echo "Progress: $(jq -c '.campaign.progress' "${NOVA_ARTIFACT}/run-summary.json")."
