@@ -50,7 +50,7 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
 }
 
 /// Progress-band width in 16-pixel buckets for the band group depth.
-const FRONTIER_PROGRESS_BAND: u16 = 8;
+const FRONTIER_PROGRESS_BAND: u16 = 4;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 
 /// Largest bounded action horizon accepted by the completion-only archive.
@@ -66,8 +66,9 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// is the greatest one not past the landing page. On top of the room, the
 /// player's 16-pixel on-screen x bucket joins the key across the full frame
 /// width, computed by [`screen_x_bucket`], and the hundreds digit of the
-/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`].
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100";
+/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`]. The band group depth pools
+/// [`FRONTIER_PROGRESS_BAND`] progress buckets.
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_band_4";
 
 /// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
 /// the level page the lineage arrived in that area at. The arrival page is
@@ -594,7 +595,7 @@ mod tests {
         let key = key(153, [3, 5]);
         assert_eq!(key.group(0), key);
         assert_eq!(key.group(1).state_fingerprint, 0);
-        assert_eq!(key.group(2).progress, 153 / 8);
+        assert_eq!(key.group(2).progress, 153 / 4);
         assert_eq!(key.group(2).player_y_bucket, 0);
         assert_eq!(key.group(3).progress, 0);
         assert_eq!(key.group(3).room, key.room);
