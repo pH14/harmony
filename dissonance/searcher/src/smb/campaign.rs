@@ -2986,7 +2986,6 @@ mod tests {
                     level: 0,
                     progress: 0,
                     player_y_bucket: 0,
-                    player_engine_state: 0,
                     state_fingerprint: 0,
                     room_x_bucket: 0,
                     time_bucket: 0,

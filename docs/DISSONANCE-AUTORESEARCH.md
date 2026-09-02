@@ -6,9 +6,9 @@ log one line, repeat. The loop never waits for a human.
 ## Goal
 
 A single generic search algorithm completes Super Mario Bros. end to end. The
-searcher reads mechanical observations (position buckets, engine state bytes,
-level tuple) through the machine adapter and knows nothing about routes,
-levels, water, or enemies. Game knowledge lives only in the adapter's byte
+searcher reads mechanical observations (position buckets, level tuple, level
+clock) through the machine adapter and knows nothing about routes, levels,
+water, or enemies. Game knowledge lives only in the adapter's byte
 offsets. A change that helps one level by naming that level is invalid.
 
 ## Metric
@@ -112,10 +112,11 @@ search policy. `grep` for level numbers, world numbers, or area identifiers in
 `dissonance/searcher/src/search/` must return nothing.
 
 The observations the adapter exposes are fixed: world, level, horizontal
-progress, vertical bucket, engine state, death, area identity, level clock,
-and victory. Adding a RAM address by hand because a level needs it is game
-knowledge and is reverted; the maze-loop check bytes were removed for this
-reason. The searcher may still derive key bytes from RAM by a generic
+progress, vertical bucket, death, area identity, level clock, and victory.
+Engine state was removed because the fingerprint bits separate every
+transition it did. Adding a RAM address by hand because a level needs it is
+game knowledge and is reverted; the maze-loop check bytes were removed for
+this reason. The searcher may still derive key bytes from RAM by a generic
 inference that scores every byte the same way in every area.
 
 The controller vocabulary is every physically pressable button combination

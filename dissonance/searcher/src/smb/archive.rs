@@ -71,7 +71,7 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// level-x bucket; the band group depth pools [`FRONTIER_PROGRESS_BAND`] of
 /// those buckets.
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells";
+    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells_no_engine_state";
 
 /// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
 /// the level page the lineage arrived in that area at. The arrival page is
@@ -112,8 +112,6 @@ pub struct SmbArchiveKey {
     pub progress: u16,
     /// Coarse player vertical-position bucket.
     pub player_y_bucket: u8,
-    /// Mechanical player engine state.
-    pub player_engine_state: u8,
     /// Six-bit deterministic fingerprint of otherwise-hidden work RAM state.
     pub state_fingerprint: u8,
     /// One-based 16-pixel screen-x bucket, present only for states inside
@@ -167,7 +165,6 @@ impl ArchiveKey for SmbArchiveKey {
         }
         if depth >= 2 {
             group.player_y_bucket = 0;
-            group.player_engine_state = 0;
             group.time_bucket = 0;
             group.progress /= FRONTIER_PROGRESS_BAND;
         }
@@ -315,7 +312,6 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         level: state.level,
         progress: state.progress,
         player_y_bucket: state.player_y_bucket,
-        player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
         room_x_bucket: screen_x_bucket(wram),
         time_bucket: wram[GAME_TIMER_HUNDREDS_OFFSET],
@@ -522,7 +518,6 @@ mod tests {
             level: 3,
             progress,
             player_y_bucket: 11,
-            player_engine_state: 8,
             state_fingerprint: 9,
             room_x_bucket: 0,
             time_bucket: 0,
