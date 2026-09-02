@@ -39,7 +39,8 @@ the searcher's test suite. A candidate that fails the test suite is discarded.
 ## Progress record
 
 Fewest executions to each milestone on seed 20260905 at 8 workers from genesis:
-1-2 by 2,584; 1-3 by 11,211; 1-4 by 32,689; 2-1 by 40,104; 2-2 by 40,664.
+1-2 by 1,873; 1-3 by 5,810; 1-4 by 18,870; 2-1 by 21,345; 2-2 by 31,367;
+2-3 by 38,588; 2-4 by 44,462.
 The floor run updates this record. A drop below the record by more than the
 seed spread means a regression outside the candidate; bisect with one 45,000
 execution genesis run per commit before continuing.
