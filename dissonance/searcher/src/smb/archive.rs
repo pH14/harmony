@@ -66,9 +66,12 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// is the greatest one not past the landing page. On top of the room, the
 /// player's 16-pixel on-screen x bucket joins the key across the full frame
 /// width, computed by [`screen_x_bucket`], and the hundreds digit of the
-/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`]. The band group depth pools
-/// [`FRONTIER_PROGRESS_BAND`] progress buckets.
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_band_4";
+/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`]. The selection cell and the
+/// band read the camera and screen-x buckets summed into the player's
+/// level-x bucket; the band group depth pools [`FRONTIER_PROGRESS_BAND`] of
+/// those buckets.
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells";
 
 /// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
 /// the level page the lineage arrived in that area at. The arrival page is
@@ -145,19 +148,28 @@ impl ArchiveKey for SmbArchiveKey {
     }
 
     /// Depths, finest to coarsest: 0 the retention slot (the full key), 1
-    /// the selection cell (fingerprint pooled), 2 the progress band within a
-    /// room, 3 the room, 4 the `(world, level)` pair.
+    /// the selection cell (fingerprint pooled, camera and screen-x buckets
+    /// summed into the player's level-x bucket), 2 the progress band within
+    /// a room, 3 the room, 4 the `(world, level)` pair.
+    ///
+    /// The retention slot keeps the camera and the player's screen position
+    /// apart because a pinned camera hides the player's movement from the
+    /// progress coordinate. For selection the sum is the position that
+    /// matters: where the camera stands still while the player crosses the
+    /// screen, one position would otherwise open a cell per screen-x bucket
+    /// and the walk would spread its draws over the copies.
     fn group(self, depth: usize) -> Self::Group {
         let mut group = self;
         if depth >= 1 {
             group.state_fingerprint = 0;
+            group.progress = self.progress.saturating_add(u16::from(self.room_x_bucket));
+            group.room_x_bucket = 0;
         }
         if depth >= 2 {
             group.player_y_bucket = 0;
             group.player_engine_state = 0;
-            group.room_x_bucket = 0;
             group.time_bucket = 0;
-            group.progress = self.progress / FRONTIER_PROGRESS_BAND;
+            group.progress /= FRONTIER_PROGRESS_BAND;
         }
         if depth >= 3 {
             group.progress = 0;
@@ -596,6 +608,13 @@ mod tests {
         assert_eq!(key.group(0), key);
         assert_eq!(key.group(1).state_fingerprint, 0);
         assert_eq!(key.group(2).progress, 153 / 4);
+        let on_screen = SmbArchiveKey {
+            room_x_bucket: 6,
+            ..key
+        };
+        assert_eq!(on_screen.group(1).progress, 159);
+        assert_eq!(on_screen.group(1).room_x_bucket, 0);
+        assert_eq!(on_screen.group(2).progress, 159 / 4);
         assert_eq!(key.group(2).player_y_bucket, 0);
         assert_eq!(key.group(3).progress, 0);
         assert_eq!(key.group(3).room, key.room);
