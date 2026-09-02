@@ -66,12 +66,13 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// is the greatest one not past the landing page. On top of the room, the
 /// player's 16-pixel on-screen x bucket joins the key across the full frame
 /// width, computed by [`screen_x_bucket`], and the hundreds digit of the
-/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`]. The selection cell and the
-/// band read the camera and screen-x buckets summed into the player's
-/// level-x bucket; the band group depth pools [`FRONTIER_PROGRESS_BAND`] of
-/// those buckets.
+/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`]. The maze-loop standing at
+/// [`LOOP_PASS_OFFSET`] and [`LOOP_CORRECT_OFFSET`] orders ahead of the
+/// position down to the band depth. The selection cell and the band read
+/// the camera and screen-x buckets summed into the player's level-x bucket;
+/// the band group depth pools [`FRONTIER_PROGRESS_BAND`] of those buckets.
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells";
+    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells_loop_standing";
 
 /// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
 /// the level page the lineage arrived in that area at. The arrival page is
@@ -108,6 +109,15 @@ pub struct SmbArchiveKey {
     pub world: u8,
     /// Mechanical level number.
     pub level: u8,
+    /// [`FULL_LOOP_STANDING`] less the maze-loop checks the lineage has
+    /// failed in the loop section it stands in. A lineage that failed a
+    /// check can only loop back, so it orders below every lineage at any
+    /// position that has not, and the frontier walk ranks it accordingly.
+    #[serde(
+        default = "full_loop_standing",
+        skip_serializing_if = "loop_standing_is_full"
+    )]
+    pub loop_standing: u8,
     /// Current 16-pixel progress bucket.
     pub progress: u16,
     /// Coarse player vertical-position bucket.
@@ -138,6 +148,17 @@ fn room_is_absent(room: &SmbRoomIdentity) -> bool {
 
 fn room_x_bucket_is_absent(bucket: &u8) -> bool {
     *bucket == 0
+}
+
+/// The loop standing of a lineage that failed no maze-loop check.
+const FULL_LOOP_STANDING: u8 = 15;
+
+fn full_loop_standing() -> u8 {
+    FULL_LOOP_STANDING
+}
+
+fn loop_standing_is_full(standing: &u8) -> bool {
+    *standing == FULL_LOOP_STANDING
 }
 
 impl ArchiveKey for SmbArchiveKey {
@@ -172,6 +193,7 @@ impl ArchiveKey for SmbArchiveKey {
             group.progress /= FRONTIER_PROGRESS_BAND;
         }
         if depth >= 3 {
+            group.loop_standing = FULL_LOOP_STANDING;
             group.progress = 0;
         }
         if depth >= 4 {
@@ -313,6 +335,8 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
     SmbArchiveKey {
         world: state.world,
         level: state.level,
+        loop_standing: FULL_LOOP_STANDING
+            .saturating_sub(wram[LOOP_PASS_OFFSET].saturating_sub(wram[LOOP_CORRECT_OFFSET])),
         progress: state.progress,
         player_y_bucket: state.player_y_bucket,
         player_engine_state: state.player_engine_state,
@@ -326,6 +350,12 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
 /// SMB level clock hundreds digit, `$07f8`, the first of the three timer
 /// display digits.
 const GAME_TIMER_HUNDREDS_OFFSET: usize = 0x07f8;
+
+/// SMB maze-loop page checks passed in the current loop section, `$06da`.
+const LOOP_PASS_OFFSET: usize = 0x06da;
+
+/// SMB maze-loop page checks passed at the right height, `$06d9`.
+const LOOP_CORRECT_OFFSET: usize = 0x06d9;
 
 /// Stamp the candidate's arrival identity into the key's room field: the
 /// area bytes at [`ROOM_IDENTITY_BYTES`] and the arrival page.
@@ -514,6 +544,7 @@ mod tests {
             state_fingerprint: 9,
             room_x_bucket: 0,
             time_bucket: 0,
+            loop_standing: 15,
             room: [
                 area[0],
                 area[1],

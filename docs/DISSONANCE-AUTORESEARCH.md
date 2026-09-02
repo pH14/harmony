@@ -14,8 +14,8 @@ offsets. A change that helps one level by naming that level is invalid.
 ## Metric
 
 The wall metric is the first level that no run from the current searcher has
-completed from its fixture within budget. Today that is 7-4. When the searcher
-completes it, the wall moves to the next level with a fixture (8-1, 8-4)
+completed from its fixture within budget. Today that is 8-1. When the searcher
+completes it, the wall moves to the next level with a fixture (8-4)
 and the loop continues with the same rules.
 The wall moved from 2-2 to 4-2 on 2026-09-01 after keeper b37fb7d5 completed
 2-2 on all three seeds, and on to 4-3 the same day when the 4-2 baseline of
@@ -31,6 +31,9 @@ when that keeper's 7-2 baseline completed 7-2 on all three seeds
 (8,320 / 6,301 / 8,044); the 7-4 wall uses a fixture rebuilt with the castle
 area (checkpoint sha256
 4656a9e38634e307984392db6da7d6224f72e5e5b6882af63d3e14b367845b55).
+The wall moved from 7-4 to 8-1 on 2026-09-02 after the loop-standing keeper
+completed 7-4 on all three seeds (2,669 / 4,563 / 5,126); the 8-1 wall uses
+the evaluator's own 8-1 fixture.
 
 One evaluation:
 
