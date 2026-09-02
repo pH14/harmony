@@ -56,6 +56,14 @@ Anything that changes how stale the archive is when a parent is selected
 (in-flight reservation depth, prefetch, admission order) is a search change and
 is scored like every other candidate. Throughput never justifies a lower score.
 
+An execution's cost is its emulated frames. Under the one-to-six draw a
+rollout runs at most six holds (up to 720 frames), a replay from the last
+keyframe averages 150 frames and takes 6% of all frames, and a splice tail
+runs up to 128 actions; splice jobs are a fifth of jobs and half of all
+frames. The score in executions assumes every job costs about the same, so a
+candidate that changes the job shape is also reported in frames to the
+victory event and in wall seconds to it.
+
 ## Loop
 
 1. Pick the next hypothesis from the menu below or from the last result.
