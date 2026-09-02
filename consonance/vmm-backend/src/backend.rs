@@ -186,6 +186,21 @@ pub trait Backend {
     /// does not match the completion.
     fn complete_arch(&mut self, completion: <Self::A as Arch>::Completion) -> Result<()>;
 
+    /// Retire a completion that has already been staged in the backend's
+    /// userspace-exit buffer, without executing the next guest instruction.
+    ///
+    /// A backend with no staged completion must return success without doing
+    /// anything. On a backend that cannot retire a staged subtype without
+    /// guest execution, this method fails closed and leaves the completion
+    /// staged. This operation is used when restoring a snapshot in place: the
+    /// stale completion must be consumed before the restored architectural
+    /// state is installed, but the restored guest must not advance.
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        Err(crate::error::BackendError::Unsupported {
+            what: "retire_pending_completion",
+        })
+    }
+
     // --- snapshot / restore ---------------------------------------------------
 
     /// Full guest-visible vCPU state for snapshot/restore. `[refinement]`:
@@ -193,7 +208,10 @@ pub trait Backend {
     /// code must not `unwrap` (rule #4).
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState>;
 
-    /// Restore a vCPU state produced by `save`. Validates internal consistency;
+    /// Restore a vCPU state produced by `save`. On success the restored record
+    /// is authoritative: transient host-side completion, pending-injection,
+    /// interrupt-window, and accepted-interrupt bookkeeping from the displaced
+    /// timeline is cleared. Validates internal consistency;
     /// [`InvalidState`](crate::BackendError::InvalidState) on a
     /// malformed/incompatible blob (never a panic).
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()>;
@@ -272,6 +290,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn complete_arch(&mut self, completion: <Self::A as Arch>::Completion) -> Result<()> {
         (**self).complete_arch(completion)
+    }
+
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        (**self).retire_pending_completion()
     }
 
     fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {

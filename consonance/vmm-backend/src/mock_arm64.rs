@@ -96,6 +96,9 @@ pub struct MockArm64Backend {
     policy: Option<Arm64Policy>,
     script: VecDeque<Exit<Arm64>>,
     pending: Pending,
+    /// Mock bookkeeping for a completion awaiting the next modeled entry.
+    /// Explicit retirement clears this marker without consuming `script`.
+    completion_staged: bool,
     counts: ExitCounts,
     state: Arm64VcpuState,
     regions: Vec<(Gpa, usize)>,
@@ -127,6 +130,7 @@ impl MockArm64Backend {
             policy: None,
             script: VecDeque::new(),
             pending: Pending::None,
+            completion_staged: false,
             counts: ExitCounts::default(),
             state: Arm64VcpuState::default(),
             regions: Vec::new(),
@@ -248,6 +252,7 @@ impl MockArm64Backend {
     fn finish(&mut self, completion: Arm64MockCompletion) {
         self.completions.push(completion);
         self.pending = Pending::None;
+        self.completion_staged = true;
     }
 
     /// Model interrupt acceptance at a VM-entry (the mock is always injectable
@@ -300,6 +305,7 @@ impl Backend for MockArm64Backend {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = self.next_scripted()?;
+        self.completion_staged = false;
         Ok(self.deliver(exit))
     }
 
@@ -367,6 +373,17 @@ impl Backend for MockArm64Backend {
         match completion {}
     }
 
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        // This mock has no architectural run page. Retire only the bookkeeping
+        // marker and leave the next scripted exit untouched.
+        if !self.completion_staged {
+            return Ok(());
+        }
+        self.completion_staged = false;
+        self.pending = Pending::None;
+        Ok(())
+    }
+
     fn save(&self) -> Result<Arm64VcpuState> {
         Ok(self.state)
     }
@@ -376,6 +393,10 @@ impl Backend for MockArm64Backend {
         // `Arm64VcpuState`. `restore` then `save` reproduces an identical
         // state by construction.
         self.state = *state;
+        self.pending = Pending::None;
+        self.completion_staged = false;
+        self.pending_irq = None;
+        self.accepted_irq.clear();
         Ok(())
     }
 

@@ -2,17 +2,29 @@
 
 //! Run the game-blind Nova campaign with QuickNES inside Consonance.
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     real::run()
 }
 
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64", not(miri))))]
+#[cfg(not(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+)))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Err("nova-consonance-campaign requires Linux/x86-64 KVM outside Miri".into())
+    Err("nova-consonance-campaign requires Linux KVM on x86-64 or arm64 outside Miri".into())
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
 mod real {
 
     use std::{

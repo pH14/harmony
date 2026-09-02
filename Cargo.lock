@@ -860,6 +860,7 @@ dependencies = [
  "gicv3",
  "hypercall-proto",
  "lapic",
+ "libc",
  "memmap2",
  "proptest",
  "sha2",

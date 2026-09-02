@@ -93,9 +93,9 @@ pub struct SnapshotEngine {
 
 /// Default [`SnapshotEngine::max_chain_len`]: `materialize` is O(chain), so a
 /// dirty-log derive chain (task 95 M2.1) is bounded — at this depth a seal
-/// flattens via `snapshot_base` instead (one full scan; content-dedup keeps the
-/// storage cost near zero). 32 sits well below the flat region of the M1
-/// depth-sweep (materialize was depth-flat at 1/8/32 on the bench machine).
+/// flattens through the chain's page sets and dirty window instead of deriving
+/// deeper. 32 sits well below the flat region of the M1 depth-sweep (materialize
+/// was depth-flat at 1/8/32 on the bench machine).
 pub const DEFAULT_MAX_CHAIN_LEN: u32 = 32;
 
 impl SnapshotEngine {
@@ -117,9 +117,9 @@ impl SnapshotEngine {
     }
 
     /// The configured derive-chain bound (task 95 M2.1): a capture whose parent
-    /// already has `chain_len >= max_chain_len` must seal as a fresh base (one
-    /// flattening full scan) instead of deriving deeper — keeping `materialize`
-    /// O(bounded chain). Default [`DEFAULT_MAX_CHAIN_LEN`].
+    /// already has `chain_len >= max_chain_len` must seal as a fresh base using
+    /// the chain-flattening page-set walk instead of deriving deeper — keeping
+    /// `materialize` O(bounded chain). Default [`DEFAULT_MAX_CHAIN_LEN`].
     pub fn max_chain_len(&self) -> u32 {
         self.max_chain_len
     }
@@ -165,6 +165,27 @@ impl SnapshotEngine {
             builder.write_page(gfn as u64, frame)?;
         }
         Ok(builder.seal(vm_state.to_vec()))
+    }
+
+    /// Flatten the chain ending at `parent` into a fresh base, reading only the
+    /// union of page sets in that chain and the supplied `dirty` set.
+    ///
+    /// This is the bounded-chain seal path. The store walks the chain's owned page
+    /// keys, adds frames dirtied since `parent`, and lets the ordinary base builder
+    /// perform its zero-page check. Consequently a page changed back to zero is not
+    /// retained in the flat base, while a zero-to-nonzero write is retained. The
+    /// resulting base has `chain_len == 1` and is independent of `parent`.
+    pub fn snapshot_flatten(
+        &mut self,
+        parent: SnapshotId,
+        memory: &[u8],
+        dirty: &[u64],
+        vm_state: &[u8],
+    ) -> Result<SnapshotId, SnapshotError> {
+        self.check_image_len(memory)?;
+        Ok(self
+            .store
+            .flatten_base(parent, memory, dirty, vm_state.to_vec())?)
     }
 
     /// Derive a child snapshot of `parent` from the current full image.
@@ -214,6 +235,29 @@ impl SnapshotEngine {
     /// O(chain) per gfn, memoized; only non-zero pages touch the sparse tempfile.
     pub fn materialize(&self, snap: SnapshotId) -> Result<Mapping, SnapshotError> {
         Ok(self.store.materialize(snap)?)
+    }
+
+    /// Return the target contents for every page that may differ between two
+    /// snapshots. The result is sorted by guest frame number and is resolved
+    /// against `to`, including all-zero pages that are implicit in that image.
+    /// When `from` is `None`, the complete resolved target image is returned.
+    pub fn diff_pages(
+        &self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+    ) -> Result<Vec<(u64, [u8; PAGE_SIZE])>, SnapshotError> {
+        Ok(self.store.diff_pages(from, to)?)
+    }
+
+    /// Resolve one integrity-checked page from `snap`'s logical image.
+    ///
+    /// This is the in-place restore path's narrow lookup for a page dirtied by
+    /// the live VM after its last sealed image but absent from the store-side
+    /// snapshot diff.
+    pub fn read_page(&self, snap: SnapshotId, gfn: u64) -> Result<[u8; PAGE_SIZE], SnapshotError> {
+        let mut page = [0u8; PAGE_SIZE];
+        self.store.read_page(snap, gfn, &mut page)?;
+        Ok(page)
     }
 
     /// Decode the sealed `vm_state` blob of `snap` back into a vendor record
@@ -328,6 +372,53 @@ mod tests {
         // Store-wide: the 3 base contents + the 1 new content = 4 (page 1's old
         // 0xB is still referenced by the base).
         assert_eq!(eng.store_stats().stored_unique_pages, 4);
+    }
+
+    #[test]
+    fn diff_pages_exposes_target_resolved_branch_image() {
+        let mut eng = SnapshotEngine::new(4 * PG);
+        let base_mem = img(&[(0, 0x10)], 4);
+        let base = eng.snapshot_base(&base_mem, b"base").unwrap();
+        let mut child_mem = base_mem.clone();
+        child_mem[PG..2 * PG].fill(0x20);
+        let child = eng
+            .snapshot_derive(base, &child_mem, Some(&[1]), b"child")
+            .unwrap();
+
+        assert_eq!(
+            eng.diff_pages(Some(child), base).unwrap(),
+            vec![(1, [0u8; PAGE_SIZE])]
+        );
+        assert_eq!(
+            eng.diff_pages(None, child).unwrap(),
+            vec![
+                (0, [0x10u8; PAGE_SIZE]),
+                (1, [0x20u8; PAGE_SIZE]),
+                (2, [0u8; PAGE_SIZE]),
+                (3, [0u8; PAGE_SIZE]),
+            ]
+        );
+    }
+
+    #[test]
+    fn read_page_resolves_content_and_rejects_invalid_inputs() {
+        let mut eng = SnapshotEngine::new(2 * PG);
+        let base = eng.snapshot_base(&img(&[(1, 0xAB)], 2), b"base").unwrap();
+
+        assert_eq!(eng.read_page(base, 1).unwrap(), [0xAB; PAGE_SIZE]);
+        assert!(matches!(
+            eng.read_page(base, 2),
+            Err(SnapshotError::Store(StoreError::GfnOutOfRange {
+                gfn: 2,
+                mem_pages: 2
+            }))
+        ));
+
+        eng.release(base).unwrap();
+        assert!(matches!(
+            eng.read_page(base, 0),
+            Err(SnapshotError::Store(StoreError::UnknownSnapshot(id))) if id == base
+        ));
     }
 
     #[test]

@@ -1,5 +1,8 @@
 pub mod snapshot_store
 pub enum snapshot_store::StoreError
+pub snapshot_store::StoreError::BadMemoryLength
+pub snapshot_store::StoreError::BadMemoryLength::expected: usize
+pub snapshot_store::StoreError::BadMemoryLength::got: usize
 pub snapshot_store::StoreError::BadPageLength
 pub snapshot_store::StoreError::BadPageLength::len: usize
 pub snapshot_store::StoreError::BuilderMisuse(&'static str)
@@ -37,6 +40,7 @@ pub fn snapshot_store::Store::begin_base(&mut self) -> snapshot_store::BaseBuild
 pub fn snapshot_store::Store::corrupt_page_for_test(&mut self, snapshot_store::SnapshotId, u64, usize, u8) -> core::result::Result<(), snapshot_store::StoreError>
 pub fn snapshot_store::Store::corrupt_vm_state_for_test(&mut self, snapshot_store::SnapshotId, usize, u8) -> core::result::Result<(), snapshot_store::StoreError>
 pub fn snapshot_store::Store::derive(&mut self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::DeltaBuilder<'_>, snapshot_store::StoreError>
+pub fn snapshot_store::Store::flatten_base(&mut self, snapshot_store::SnapshotId, &[u8], &[u64], alloc::vec::Vec<u8>) -> core::result::Result<snapshot_store::SnapshotId, snapshot_store::StoreError>
 pub fn snapshot_store::Store::gc(&mut self) -> u64
 pub fn snapshot_store::Store::materialize(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::Mapping, snapshot_store::StoreError>
 pub fn snapshot_store::Store::new(snapshot_store::StoreConfig) -> snapshot_store::Store

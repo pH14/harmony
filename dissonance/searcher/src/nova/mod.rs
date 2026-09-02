@@ -7,7 +7,7 @@ pub mod campaign;
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",
-    target_arch = "x86_64",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
 pub mod consonance;

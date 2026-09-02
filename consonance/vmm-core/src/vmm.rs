@@ -721,6 +721,11 @@ where
     /// while the device state and assigned clock that produced it remain part
     /// of both.
     pub(crate) virtual_time_trace: Option<LiveVirtualTimeTrace>,
+    /// Count of exact hypercall-doorbell rings. This is host-only profile
+    /// evidence, deliberately excluded from VM state, hashes, and snapshots;
+    /// unlike [`Vmm::exit_counts`], it does not include unrelated port I/O or
+    /// MMIO exits.
+    pub(crate) doorbell_exits: u64,
     /// Host-only performance mode: checkpoint events retain their exact state
     /// but leave the hash slot empty for the caller to fill from an owned
     /// [`Vmm::state_blob`] on a worker. Default-off preserves synchronous trace
@@ -854,6 +859,7 @@ where
             saved_state: None,
             vtime: None,
             virtual_time_trace: None,
+            doorbell_exits: 0,
             deferred_virtual_time_checkpoints: false,
             rng_completion_staged: false,
             completion_staged: false,
@@ -884,6 +890,13 @@ where
     /// Production normalized trace, present only for assigned-at-exit V-time.
     pub fn virtual_time_trace(&self) -> Option<&LiveVirtualTimeTrace> {
         self.virtual_time_trace.as_ref()
+    }
+
+    /// Close the current host-only trace segment while keeping tracing enabled
+    /// on this same VM. Restore-in-place uses this to preserve the existing
+    /// per-branch session segmentation without replacing the VMM.
+    pub(crate) fn take_virtual_time_trace(&mut self) -> Option<LiveVirtualTimeTrace> {
+        self.virtual_time_trace.as_mut().map(std::mem::take)
     }
 
     /// Defer sparse virtual-time checkpoint hashing so a host runner can hash
@@ -1142,6 +1155,110 @@ where
     /// actually engaged (no full-image memcpy happened).
     pub fn ram_backing_is_snapshot(&self) -> bool {
         matches!(self.ram, RamBacking::Snapshot(_))
+    }
+
+    /// Write a batch of complete 4-KiB pages into the main guest-RAM backing.
+    ///
+    /// Each GFN is relative to the main RAM memslot, including when that slot
+    /// has a non-zero guest-physical base. The complete batch is validated
+    /// before any byte is written, so malformed input is atomic.
+    ///
+    /// # Errors
+    /// Returns [`VmmError::ContractViolation`] for a duplicate or out-of-range
+    /// GFN, a malformed RAM backing, or address arithmetic that cannot be
+    /// represented.
+    pub fn write_guest_pages(&mut self, pages: &[(u64, [u8; 4096])]) -> Result<(), VmmError> {
+        const PAGE_SIZE: usize = 4096;
+        const PAGE_SIZE_U64: u64 = PAGE_SIZE as u64;
+
+        if pages.is_empty() {
+            return Ok(());
+        }
+        let ram_len = self.ram.len();
+        if ram_len == 0 || !ram_len.is_multiple_of(PAGE_SIZE) {
+            return Err(VmmError::ContractViolation(format!(
+                "write_guest_pages: guest RAM length {ram_len} is not a non-zero multiple of {PAGE_SIZE}"
+            )));
+        }
+        if !self.ram_base_gpa.is_multiple_of(PAGE_SIZE_U64) {
+            return Err(VmmError::ContractViolation(format!(
+                "write_guest_pages: main RAM base GPA {:#x} is not page-aligned",
+                self.ram_base_gpa
+            )));
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+        let mut validated = Vec::with_capacity(pages.len());
+        for (gfn, page) in pages {
+            if !seen.insert(*gfn) {
+                return Err(VmmError::ContractViolation(format!(
+                    "write_guest_pages: duplicate GFN {gfn}"
+                )));
+            }
+            let gfn_usize = usize::try_from(*gfn).map_err(|_| {
+                VmmError::ContractViolation(format!(
+                    "write_guest_pages: GFN {gfn} does not fit the host address space"
+                ))
+            })?;
+            let offset = gfn_usize.checked_mul(PAGE_SIZE).ok_or_else(|| {
+                VmmError::ContractViolation(format!(
+                    "write_guest_pages: GFN {gfn} page offset overflows the host address space"
+                ))
+            })?;
+            let end = offset.checked_add(PAGE_SIZE).ok_or_else(|| {
+                VmmError::ContractViolation(format!(
+                    "write_guest_pages: GFN {gfn} page end overflows the host address space"
+                ))
+            })?;
+            if end > ram_len {
+                return Err(VmmError::ContractViolation(format!(
+                    "write_guest_pages: GFN {gfn} is outside guest RAM ({}) pages",
+                    ram_len / PAGE_SIZE
+                )));
+            }
+            let offset_u64 = u64::try_from(offset).map_err(|_| {
+                VmmError::ContractViolation(format!(
+                    "write_guest_pages: GFN {gfn} page offset does not fit a GPA"
+                ))
+            })?;
+            let gpa = self.ram_base_gpa.checked_add(offset_u64).ok_or_else(|| {
+                VmmError::ContractViolation(format!(
+                    "write_guest_pages: GFN {gfn} GPA overflows the guest address space"
+                ))
+            })?;
+            if !gpa.is_multiple_of(PAGE_SIZE_U64) || gpa.checked_add(PAGE_SIZE_U64).is_none() {
+                return Err(VmmError::ContractViolation(format!(
+                    "write_guest_pages: GFN {gfn} has an invalid GPA range"
+                )));
+            }
+            validated.push((offset, end, page));
+        }
+
+        let ram = self.ram.as_mut_bytes();
+        for &(offset, end, page) in &validated {
+            ram[offset..end].copy_from_slice(page);
+        }
+        // KVM does not log userspace writes through the mapped backing. Refuse
+        // to vouch for a delta until the restore caller resets the baseline.
+        self.host_dirty_wholesale = true;
+        Ok(())
+    }
+
+    /// Retire a userspace completion left in the backend's exit buffer without
+    /// advancing the guest to its next instruction.
+    ///
+    /// This is the in-place restore boundary: after the backend confirms the
+    /// old transaction is consumed, the VMM's completion and deferred SDK
+    /// latches no longer belong to the state that will be restored.
+    pub(crate) fn retire_pending_completion(&mut self) -> Result<(), VmmError> {
+        if !self.completion_staged {
+            return Ok(());
+        }
+        self.backend.retire_pending_completion()?;
+        self.completion_staged = false;
+        self.rng_completion_staged = false;
+        self.sdk_snapshot_reentry_required = false;
+        Ok(())
     }
 
     /// Inject bytes on the guest's serial input (the 8250 RBR) — the crude,
@@ -1691,6 +1808,16 @@ where
         // (so a branch resumes the guest's `observable_digest` / O2 signal instead of
         // losing every report emitted before the snapshot).
         <B::A as Vendor>::commit_restore(self, prep);
+        // The control server closes the old host-only trace segment before a
+        // restore. Recreate the placement oracle's active schedule from the
+        // restored timer fabric so a due first post-restore clockevent has the
+        // deadline record that produced it. This is evidence state only.
+        let restored_clockevent = <B::A as Vendor>::clockevent_trace_schedule(self);
+        if let Some(trace) = self.virtual_time_trace.as_mut() {
+            trace
+                .restore_clockevent_schedule(restored_clockevent)
+                .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+        }
         // A restored VM is runnable again from the snapshot point: clear the latched
         // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
         // restored backend state.
@@ -1700,6 +1827,11 @@ where
         // The restored backend is fresh (the next run re-executes from the restored
         // RIP) — no completion is pending.
         self.completion_staged = false;
+        // A deferred SDK snapshot re-entry belongs to the displaced timeline.
+        // The restored SDK channel's own `pending_snapshot` bit is applied by
+        // the control server after this call; no old doorbell completion may
+        // suppress or synthesize that restored point.
+        self.sdk_snapshot_reentry_required = false;
         // (Task 110: the pvclock channel needs no reset here — the blob's own
         // v4 record was validated in the vendor's `validate_restore` and
         // committed in `commit_restore` above, replacing any stale-timeline
@@ -1781,6 +1913,9 @@ where
         // re-entry did not commit the staged completion.)
         //
         let exit = self.backend.run()?;
+        if <B::A as Vendor>::is_doorbell_exit(&exit) {
+            self.doorbell_exits = self.doorbell_exits.saturating_add(1);
+        }
         // A successful entry commits the prior exit's userspace-I/O completion.
         // If `setup_complete` armed the deferred snapshot latch on that prior
         // exit, the point may now surface after this exit is serviced.
@@ -1929,8 +2064,20 @@ where
     /// byte unchanged from before this was added.
     pub fn state_blob(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        let vcpu = self.current_vcpu();
         put_chunk(&mut out, b"MEM\0", self.ram.as_bytes());
+        out.extend_from_slice(&self.state_blob_suffix());
+        out
+    }
+
+    /// The canonical state-blob bytes after the RAM chunk.
+    ///
+    /// Keeping this suffix separate lets [`Vmm::state_hash`] stream the large RAM
+    /// slice directly into SHA-256 instead of first allocating a second full-image
+    /// `Vec`. It is also the seal-time hash recipe used by portable snapshot export;
+    /// the suffix contains only fixed-size machine/channel state.
+    pub(crate) fn state_blob_suffix(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let vcpu = self.current_vcpu();
         // The dedicated hypercall-transport ABI pages are guest-visible memory
         // (arm64: a separate low-GPA memslot; x86 keeps them inside `MEM`). Fold
         // them into the hash so two states differing only in the request/response
@@ -2060,7 +2207,14 @@ where
     /// `state_hash`.
     pub fn state_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(self.state_blob());
+        // Stream the potentially hundreds-of-megabytes MEM chunk directly into
+        // the digest. The remaining canonical suffix is small and already owned
+        // by a temporary Vec, so this preserves the exact pre-change digest while
+        // removing the full-image allocation from every hash request.
+        hasher.update(b"MEM\0");
+        hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
+        hasher.update(self.ram.as_bytes());
+        hasher.update(self.state_blob_suffix());
         hasher.finalize().into()
     }
 
@@ -2186,6 +2340,13 @@ where
     /// the same at terminal.
     pub fn exit_counts(&self) -> vmm_backend::ExitCounts {
         self.backend.exit_counts()
+    }
+
+    /// The number of exact hypercall-doorbell rings since this VM was created.
+    /// This host-only diagnostic counter is not part of state, hashes, or
+    /// snapshots; it is narrower than [`Vmm::exit_counts`]'s I/O/MMIO totals.
+    pub fn doorbell_exits(&self) -> u64 {
+        self.doorbell_exits
     }
 
     /// The latched terminal reason, or `None` if the run has not reached a
@@ -4222,6 +4383,15 @@ mod tests {
     }
 
     #[test]
+    fn state_hash_streaming_keeps_the_frozen_blob_digest() {
+        let vmm = vtime_vmm(Vec::new(), 0x5eed);
+        let mut expected = Sha256::new();
+        expected.update(vmm.state_blob());
+        let expected: [u8; 32] = expected.finalize().into();
+        assert_eq!(vmm.state_hash(), expected);
+    }
+
+    #[test]
     fn deferred_checkpoint_hash_is_byte_identical_and_cannot_overwrite() {
         let exits = || {
             (0..256)
@@ -4464,6 +4634,68 @@ mod tests {
         vmm.write_doorbell_response(&[1]).unwrap();
         assert_eq!(vmm.drain_dirty_pages(), None);
         assert!(!vmm.reset_dirty_tracking());
+    }
+
+    #[test]
+    fn write_guest_pages_writes_pages_and_poison_dirty_drain_until_reset() {
+        let mut backend = configured_mock(vec![]);
+        backend.enable_dirty_tracking();
+        let mut vmm = Vmm::new(backend, GuestRam::new(TEST_RAM).unwrap());
+        let page_a = [0xA5_u8; 4096];
+        let page_b = [0x5A_u8; 4096];
+
+        vmm.write_guest_pages(&[(2, page_a), (5, page_b)]).unwrap();
+        assert_eq!(&vmm.guest_memory()[2 * 4096..3 * 4096], &page_a);
+        assert_eq!(&vmm.guest_memory()[5 * 4096..6 * 4096], &page_b);
+        assert_eq!(vmm.drain_dirty_pages(), None);
+        assert!(vmm.reset_dirty_tracking());
+        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
+    }
+
+    #[test]
+    fn write_guest_pages_empty_input_is_a_noop() {
+        let mut backend = configured_mock(vec![]);
+        backend.enable_dirty_tracking();
+        let mut vmm = Vmm::new(backend, GuestRam::new(TEST_RAM).unwrap());
+        let before = vmm.guest_memory().to_vec();
+
+        vmm.write_guest_pages(&[]).unwrap();
+
+        assert_eq!(vmm.guest_memory(), &before);
+        assert!(!vmm.host_dirty_wholesale);
+        assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
+    }
+
+    #[test]
+    fn write_guest_pages_out_of_range_is_atomic() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let before = vmm.guest_memory().to_vec();
+        let page = [0xCC_u8; 4096];
+        let out_of_range = (TEST_RAM / 4096) as u64;
+
+        assert!(matches!(
+            vmm.write_guest_pages(&[(1, page), (out_of_range, page)]),
+            Err(VmmError::ContractViolation(_))
+        ));
+        assert_eq!(vmm.guest_memory(), &before);
+        assert!(vmm.host_dirty.is_empty());
+        assert!(!vmm.host_dirty_wholesale);
+    }
+
+    #[test]
+    fn write_guest_pages_duplicate_gfn_is_atomic() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let before = vmm.guest_memory().to_vec();
+        let page_a = [0x11_u8; 4096];
+        let page_b = [0x22_u8; 4096];
+
+        assert!(matches!(
+            vmm.write_guest_pages(&[(3, page_a), (3, page_b)]),
+            Err(VmmError::ContractViolation(_))
+        ));
+        assert_eq!(vmm.guest_memory(), &before);
+        assert!(vmm.host_dirty.is_empty());
+        assert!(!vmm.host_dirty_wholesale);
     }
 
     /// The seeded draw the `Entropy` hypercall service produces for `width` bytes,
@@ -8332,6 +8564,29 @@ mod tests {
             tgt.restore_vm_state(&snap),
             Err(VmmError::ContractViolation(_))
         ));
+    }
+
+    #[test]
+    fn retiring_a_completion_clears_displaced_vmm_latches_before_restore() {
+        let mut src = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
+        step_n(&mut src, 6);
+        let snap = src.save_vm_state().unwrap();
+
+        let mut tgt = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            10,
+            1,
+        );
+        tgt.step().unwrap();
+        tgt.sdk_snapshot_reentry_required = true;
+        assert!(tgt.completion_staged);
+
+        tgt.retire_pending_completion().unwrap();
+        assert!(!tgt.completion_staged);
+        assert!(!tgt.rng_completion_staged);
+        assert!(!tgt.sdk_snapshot_reentry_required);
+        tgt.restore_vm_state(&snap).unwrap();
     }
 
     #[test]

@@ -119,6 +119,10 @@ pub struct MockBackend {
     policy: Option<X86Policy>,
     script: VecDeque<Exit<X86>>,
     pending: Pending,
+    /// `true` after a completion is supplied and before the next modeled
+    /// entry consumes it. Unlike the live KVM page this is only bookkeeping;
+    /// the explicit retirement operation clears it without popping `script`.
+    completion_staged: bool,
     counts: ExitCounts,
     state: VcpuState,
     regions: Vec<(Gpa, usize)>,
@@ -166,6 +170,7 @@ impl MockBackend {
             policy: None,
             script: VecDeque::new(),
             pending: Pending::None,
+            completion_staged: false,
             counts: ExitCounts::default(),
             state: VcpuState::default(),
             regions: Vec::new(),
@@ -313,6 +318,7 @@ impl MockBackend {
     fn finish(&mut self, completion: Completion) {
         self.completions.push(completion);
         self.pending = Pending::None;
+        self.completion_staged = true;
     }
 
     /// Model interrupt acceptance at a VM-entry: the mock is always injectable, so
@@ -384,6 +390,10 @@ impl Backend for MockBackend {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = self.next_scripted()?;
+        // A normal modeled entry consumes a staged completion before it
+        // returns the next scripted exit. Keep this after `next_scripted` so
+        // an exhausted script does not falsely report that the entry retired.
+        self.completion_staged = false;
         Ok(self.deliver(exit))
     }
 
@@ -457,6 +467,18 @@ impl Backend for MockBackend {
         }
     }
 
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        // The mock has no run page or guest instruction stream to enter. A
+        // staged completion is therefore retired by clearing only its marker;
+        // in particular, the next scripted exit must remain queued.
+        if !self.completion_staged {
+            return Ok(());
+        }
+        self.completion_staged = false;
+        self.pending = Pending::None;
+        Ok(())
+    }
+
     fn save(&self) -> Result<VcpuState> {
         Ok(self.state.clone())
     }
@@ -467,6 +489,10 @@ impl Backend for MockBackend {
         // concern). `restore` then `save` reproduces an identical state by
         // construction.
         self.state = state.clone();
+        self.pending = Pending::None;
+        self.completion_staged = false;
+        self.pending_irq = None;
+        self.accepted_irq.clear();
         Ok(())
     }
 

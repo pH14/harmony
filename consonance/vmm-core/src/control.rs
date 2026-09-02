@@ -45,8 +45,8 @@
 //!   fault policy** still answers [`ControlError::Unsupported`] (they need the
 //!   task-61 guest-plane / decide-seam enforcement loops), rather than silently
 //!   running without them.
-//! - **`replay(snap)`** → restore verbatim into a fresh VM, **no reseed** — the
-//!   repro / determinism-gate path.
+//! - **`replay(snap)`** → restore verbatim under the selected restore mode,
+//!   **no reseed** — the repro / determinism-gate path.
 //! - **`run(until)`** → advance via [`Vmm::step`] until a terminal stop or the
 //!   V-time deadline. Terminal mapping is substrate-level and workload-blind:
 //!   `Hlt` and `DebugExit{0}` → [`StopReason::Quiescent`]; `DebugExit{code≠0}`
@@ -79,16 +79,14 @@
 //!   ([`recorded_env`](ControlServer::recorded_env)), so the emitted reproducer
 //!   replays to the identical `state_hash`.
 //!
-//! ## The fresh-VM restore discipline
+//! ## Restore discipline
 //!
-//! `branch`/`replay` never restore in place: a VM that just serviced an exit
-//! usually has a **staged completion** in its backend (`kvm_run`), which
-//! [`Vmm::restore_vm_state`] correctly refuses to restore across. So every
-//! restore drops the live VM first, then boots a fresh one via the
-//! [`VmmFactory`] and restores into that — exactly the pattern the task-40/41
-//! box demos proved (`tests/live_branching_demo.rs`), and within budget here
-//! because task 58 declares snapshot performance a non-goal (D5: one full-image
-//! branch per seed is acceptable).
+//! `branch`/`replay` default to the proven fresh-VM path. An explicit
+//! [`RestoreMode::InPlace`] keeps the live VM, retires any staged userspace
+//! completion without executing another guest instruction, patches only the
+//! target-different and live-dirty pages, and restores the captured machine
+//! state. Any unavailable prerequisite or in-place error is counted and falls
+//! back to the fresh-VM path for that operation.
 //!
 //! ## Two result categories, fail-loud
 //!
@@ -101,6 +99,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
+
+use sha2::{Digest, Sha256};
 
 use control_proto::{
     Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Moment,
@@ -120,8 +120,40 @@ use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtua
 use crate::snapshot::{SnapshotEngine, SnapshotError};
 use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
-/// Boots a fresh, equivalently-composed VM — the restore target for every
-/// `branch`/`replay` (see the module doc's fresh-VM discipline). On the box
+#[cfg(all(target_os = "linux", any(test, not(miri))))]
+fn host_minor_faults_with(getrusage: impl FnOnce(*mut libc::rusage) -> i32) -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    if getrusage(usage.as_mut_ptr()) != 0 {
+        return None;
+    }
+    // SAFETY: a zero return from the supplied getrusage-compatible function
+    // means it initialized the caller-owned `rusage` buffer completely.
+    let minor_faults = unsafe { usage.assume_init() }.ru_minflt;
+    u64::try_from(minor_faults).ok()
+}
+
+/// Returns this host process's cumulative minor-page-fault count.
+///
+/// This is an out-of-band profiling counter. It must never affect guest state,
+/// encoded protocol bytes, or a determinism hash. Miri uses the testable seam
+/// rather than calling the host C library.
+#[cfg(all(target_os = "linux", not(miri)))]
+pub fn host_minor_faults() -> Option<u64> {
+    host_minor_faults_with(|usage| {
+        // SAFETY: `usage` points to the live, writable `MaybeUninit<rusage>`
+        // above, and libc writes it only for the duration of this call.
+        unsafe { libc::getrusage(libc::RUSAGE_SELF, usage) }
+    })
+}
+
+/// Returns no host minor-fault counter where `getrusage` is unavailable.
+#[cfg(any(not(target_os = "linux"), miri))]
+pub fn host_minor_faults() -> Option<u64> {
+    None
+}
+
+/// Boots a fresh, equivalently-composed VM — the restore target for `Memcpy`,
+/// `Remap` fallback, and every failed `InPlace` attempt. On the box
 /// this re-runs the composition root (`boot_linux_selected`): same RAM size,
 /// same wiring (V-time + xAPIC + legacy), same contract — the boot-loaded guest
 /// image is immediately overwritten by the restore, so the factory's seed is
@@ -153,6 +185,10 @@ pub type RemapVmmFactory<B> = Box<dyn FnMut(snapshot_store::Mapping) -> Result<V
 /// reports the path restores actually take.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RestoreMode {
+    /// Patch the live VM's RAM to the target snapshot and restore its vCPU and
+    /// device state without replacing the VM. Any unavailable prerequisite or
+    /// restore failure falls back to the fresh-VM path for that operation.
+    InPlace,
     /// The mapping becomes the memslot backing (no memcpy; lazy faults). The
     /// default once a [`RemapVmmFactory`] is installed.
     Remap,
@@ -267,6 +303,16 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// a cost hint, never a correctness input — a seal never fails because the
     /// optimization was unavailable).
     derive_parent: Option<SnapshotId>,
+    /// Store image that the live VM's tracked dirty window continues from.
+    /// Cleared whenever the VM is replaced, the image handle is dropped, or
+    /// dirty tracking cannot prove the window complete.
+    current_image: Option<SnapshotId>,
+    /// Host-only evidence: number of requested in-place restores that used the
+    /// existing fresh-VM path after an in-place prerequisite or restore failed.
+    in_place_fallbacks: u64,
+    /// Host-only evidence: bytes patched into RAM by the most recent successful
+    /// in-place restore (zero for a fresh-VM restore or an empty patch).
+    last_restore_bytes_written: u64,
     /// Wire [`SnapId`] → store [`SnapshotId`]. Wire handles are minted here,
     /// monotonically; a dropped handle is removed (using it again is a loud
     /// [`ControlError::UnknownSnapshot`]).
@@ -374,6 +420,9 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     session_trace: Vec<SessionTraceSegment>,
     /// Boundary that began the current live VMM's trace segment.
     session_trace_start: SessionTraceStart,
+    /// Dirty main-RAM GFNs drained by the most recent seal, retained solely
+    /// for out-of-band profiling and never included in deterministic state.
+    last_seal_dirty_gfns: Option<Vec<u64>>,
 }
 
 /// The per-snapshot `Net` state the control server retains (task 61): the
@@ -408,8 +457,26 @@ struct SnapshotMeta {
     trace_events: u64,
     trace_schedules: u64,
     tainted: bool,
-    state_hash: [u8; 32],
+    /// Lazily computed whole-state hash. A local seal leaves this absent;
+    /// imported portable artifacts carry the hash embedded by their source.
+    state_hash: Option<[u8; 32]>,
+    /// Canonical state-blob bytes following the large `MEM\0` chunk, captured
+    /// at the same stopped boundary as this metadata.
+    state_blob_suffix: Vec<u8>,
     policy: FaultPolicy,
+}
+
+/// Hash the exact canonical `MEM\0` chunk followed by its seal-time suffix.
+///
+/// RAM is streamed directly into SHA-256, avoiding a second full-image copy
+/// while preserving the frozen whole-state hash preimage byte for byte.
+fn hash_state_blob_parts(memory: &[u8], suffix: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"MEM\0");
+    hasher.update((memory.len() as u64).to_le_bytes());
+    hasher.update(memory);
+    hasher.update(suffix);
+    hasher.finalize().into()
 }
 
 fn reseed_marker_requires_arrival(marker: u64, restored_floor: u64) -> bool {
@@ -453,6 +520,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             engine,
             // A fresh boot is no snapshot's continuation: the first seal is a base.
             derive_parent: None,
+            current_image: None,
+            in_place_fallbacks: 0,
+            last_restore_bytes_written: 0,
             snaps: BTreeMap::new(),
             next_snap: 1,
             hello_done: false,
@@ -472,6 +542,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             exec_nonce: 0,
             session_trace: Vec::new(),
             session_trace_start: SessionTraceStart::InitialBoot,
+            last_seal_dirty_gfns: None,
         }
     }
 
@@ -525,14 +596,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         (!segments.is_empty()).then(|| SessionVirtualTimeTrace::from_segments(segments))
     }
 
-    /// Close the current VMM's host-only trace immediately before replacing
-    /// the VMM. Validation failures that leave the VMM untouched never call
-    /// this method and therefore cannot create phantom segments.
+    /// Close the current VMM's host-only trace immediately before a restore.
+    /// Taking the trace resets its live buffer, so this also preserves segment
+    /// boundaries when the restore keeps the same VMM in place.
     fn finish_session_trace_segment(&mut self) {
-        if let Some(trace) = self.vmm.as_ref().and_then(Vmm::virtual_time_trace) {
+        if let Some(trace) = self.vmm.as_mut().and_then(Vmm::take_virtual_time_trace) {
             self.session_trace.push(SessionTraceSegment::capture(
                 self.session_trace_start,
-                trace,
+                &trace,
             ));
         }
     }
@@ -551,8 +622,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.restore_mode = RestoreMode::Remap;
     }
 
-    /// Flip the restore-mode A/B knob (task 95 M2.2's determinism gate arm; no
-    /// effect unless a [`RemapVmmFactory`] is installed).
+    /// Flip the restore-mode A/B knob. [`RestoreMode::Remap`] requires an
+    /// installed [`RemapVmmFactory`]; [`RestoreMode::InPlace`] uses the live VM
+    /// and falls back to a fresh target when a prerequisite is unavailable.
     pub fn set_restore_mode(&mut self, mode: RestoreMode) {
         self.restore_mode = mode;
     }
@@ -560,6 +632,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// The active restore mode (informational; see [`RestoreMode`]).
     pub fn restore_mode(&self) -> RestoreMode {
         self.restore_mode
+    }
+
+    /// Number of in-place restore attempts that fell back to a fresh VM.
+    pub fn in_place_fallbacks(&self) -> u64 {
+        self.in_place_fallbacks
+    }
+
+    /// Bytes patched by the most recent successful in-place restore.
+    pub fn last_restore_bytes_written(&self) -> u64 {
+        self.last_restore_bytes_written
     }
 
     /// Tune the engine's derive-chain bound (task 95 M2.1; see
@@ -586,6 +668,24 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// it here (`docs/TESTING.md`, rung 4).
     pub fn snapshot_store_stats(&self) -> snapshot_store::StoreStats {
         self.engine.store_stats()
+    }
+
+    /// Statistics for one live snapshot, including its non-zero owned pages.
+    /// This is a read-only, out-of-band profiling accessor; it does not
+    /// participate in the control protocol or deterministic state.
+    pub fn snapshot_stats(&self, snap: SnapId) -> Option<snapshot_store::SnapStats> {
+        self.snaps
+            .get(&snap.0)
+            .and_then(|id| self.engine.stats(*id).ok())
+    }
+
+    /// Dirty main-RAM page GFNs drained by the most recent successful seal.
+    /// `None` means that seal used a full-image/base capture and had no
+    /// drainable dirty window. GFNs are relative to the VMM's main-RAM image,
+    /// matching [`Vmm::drain_dirty_pages`]. This evidence is never hashed or
+    /// serialized.
+    pub fn last_seal_dirty_gfns(&self) -> Option<&[u64]> {
+        self.last_seal_dirty_gfns.as_deref()
     }
 
     /// Most recently minted live snapshot handle, if any. This is an
@@ -619,6 +719,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))?;
         let memory = self.engine.materialize(store_id)?;
         let vm_state = self.engine.vm_state_bytes(store_id)?;
+        let state_hash = meta
+            .state_hash
+            .unwrap_or_else(|| hash_state_blob_parts(memory.as_slice(), &meta.state_blob_suffix));
         PortableSnapshotRef {
             memory: memory.as_slice(),
             vm_state,
@@ -630,7 +733,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
             tainted: meta.tainted,
-            state_hash: meta.state_hash,
+            state_hash,
         }
         .write_to(writer)?;
         Ok(PortableSnapshotReceipt {
@@ -640,7 +743,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
             tainted: meta.tainted,
-            state_hash: meta.state_hash,
+            state_hash,
         })
     }
 
@@ -649,7 +752,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// Import verifies the artifact digest, every bounded nested codec, the
     /// exact configured RAM size, and the destination vendor's VM-state codec
     /// before minting a handle. The VM is not replaced; a subsequent ordinary
-    /// `Replay` drives the same fresh-VM restore path as any local snapshot.
+    /// `Replay` uses the server's selected restore mode exactly like any local
+    /// snapshot.
     pub fn import_portable_snapshot<R: Read>(
         &mut self,
         reader: R,
@@ -704,7 +808,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_events: portable.trace_events,
                 trace_schedules: portable.trace_schedules,
                 tainted: portable.tainted,
-                state_hash: portable.state_hash,
+                state_hash: Some(portable.state_hash),
+                state_blob_suffix: Vec::new(),
                 policy: portable.policy,
             },
         );
@@ -1061,17 +1166,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// returns `Some` — backend log readable, no untracked host write). On any
     /// doubt — including a failed derive itself — fall back to `snapshot_base`
     /// (correct-by-construction; content-dedup keeps a flatten cheap in storage).
-    /// The seal RPC never fails because the optimization was unavailable.
-    /// Returns `(id, window_consumed)`: `window_consumed` is `true` iff the
-    /// drain ran (and therefore reset the tracking window as its own
-    /// retrieve-and-reset side effect) — the caller then arms the next window
-    /// directly instead of issuing a redundant second drain.
+    /// At the chain bound, a complete dirty-log drain flattens by walking only
+    /// the chain page sets plus the current dirty set. The seal RPC never fails
+    /// because the optimization was unavailable.
+    /// Returns `(id, window_consumed, dirty_gfns)`: `window_consumed` is `true`
+    /// iff the drain ran (and therefore reset the tracking window as its own
+    /// retrieve-and-reset side effect), while `dirty_gfns` preserves that
+    /// drain's relative page set for out-of-band profiling.
     fn seal_into_store(
         engine: &mut SnapshotEngine,
         vmm: &mut Vmm<B>,
         parent: Option<SnapshotId>,
         blob: &[u8],
-    ) -> Result<(SnapshotId, bool), SnapshotError> {
+    ) -> Result<(SnapshotId, bool, Option<Vec<u64>>), SnapshotError> {
         if let Some(parent) = parent {
             // Still live (a `drop` verb may have released it since) and bounded:
             // at the chain cap the seal flattens via a fresh base instead.
@@ -1084,16 +1191,27 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 // checked, and a dropped builder releases its interned pages)
                 // still falls back to the full scan rather than failing the seal.
                 return match engine.snapshot_derive(parent, vmm.guest_memory(), Some(&gfns), blob) {
-                    Ok(id) => Ok((id, true)),
+                    Ok(id) => Ok((id, true, Some(gfns))),
                     Err(_) => engine
                         .snapshot_base(vmm.guest_memory(), blob)
-                        .map(|id| (id, true)),
+                        .map(|id| (id, true, Some(gfns))),
+                };
+            }
+            if !chain_ok
+                && engine.stats(parent).is_ok()
+                && let Some(gfns) = vmm.drain_dirty_pages()
+            {
+                return match engine.snapshot_flatten(parent, vmm.guest_memory(), &gfns, blob) {
+                    Ok(id) => Ok((id, true, Some(gfns))),
+                    Err(_) => engine
+                        .snapshot_base(vmm.guest_memory(), blob)
+                        .map(|id| (id, true, Some(gfns))),
                 };
             }
         }
         engine
             .snapshot_base(vmm.guest_memory(), blob)
-            .map(|id| (id, false))
+            .map(|id| (id, false, None))
     }
 
     /// `snapshot`: seal the current point into the engine (memory image +
@@ -1123,6 +1241,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// than silently dropping the future (persisting the schedule inside the
     /// snapshot is a semantics change that would need its own ruling).
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
+        // Do not let a previous seal's profiling evidence leak into a failed
+        // or base capture.
+        self.last_seal_dirty_gfns = None;
         if let Some(err) = &self.schedule_poisoned {
             return Ok(Err(err.clone()));
         }
@@ -1154,7 +1275,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace.schedule().len() as u64,
             )
         });
-        let state_hash = vmm.state_hash();
         let policy = self.recorded.policy().clone();
         // Task 95 M2.1: capture O(dirty) when the tracked window allows it,
         // full-scan otherwise — then re-arm the window with the new snapshot as
@@ -1167,12 +1287,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // missing everything dirtied before the failure. A failed seal always
         // leaves `derive_parent = None` (the retry full-scans).
         let parent = self.derive_parent.take();
-        let (store_id, window_consumed) =
+        let (store_id, window_consumed, dirty_gfns) =
             Self::seal_into_store(&mut self.engine, vmm, parent, &blob)?;
+        self.last_seal_dirty_gfns = dirty_gfns;
         // A consumed window was already reset by the drain itself (nothing
         // ran since — the VM is stopped between verbs), so arm directly and
         // skip the redundant per-slot drain; otherwise drain-and-discard now.
-        self.derive_parent = (window_consumed || vmm.reset_dirty_tracking()).then_some(store_id);
+        let tracked = window_consumed || vmm.reset_dirty_tracking();
+        self.derive_parent = tracked.then_some(store_id);
+        self.current_image = tracked.then_some(store_id);
         // Task 73: capture the SDK channel's replay-relevant state (seeded stream
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
         // borrow ends before we touch `self.sdk_snaps`.
@@ -1215,7 +1338,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_events,
                 trace_schedules,
                 tainted: self.timeline_tainted,
-                state_hash,
+                state_hash: None,
+                state_blob_suffix: vmm.state_blob_suffix(),
                 policy,
             },
         );
@@ -1242,6 +1366,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // never inherit this one's taint by handle reuse.)
         self.tainted_snaps.remove(&snap.0);
         self.snapshot_meta.remove(&snap.0);
+        if self.current_image == Some(store_id) {
+            self.current_image = None;
+            self.derive_parent = None;
+        }
         // The handle was minted by `snapshot`, which retains exactly one ref;
         // releasing it can only fail if the store lost the layer — an
         // invariant failure we still answer on the wire (the handle is gone
@@ -1253,8 +1381,73 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(Reply::Unit)
     }
 
-    /// `branch` (with an env) / `replay` (without): restore `snap` into a
-    /// fresh VM from the factory, then reseed from the env's seed iff branching.
+    /// Patch the existing VM to `store_id` and restore its non-memory state.
+    ///
+    /// Every error is deliberately collapsed for the caller: in-place restore
+    /// is an optimization, so the only safe response to a missing prerequisite
+    /// or a substrate rejection is the existing fresh-VM restore path.
+    fn restore_in_place(
+        &mut self,
+        store_id: SnapshotId,
+        vm_state: &<B::A as Vendor>::Snapshot,
+    ) -> Result<u64, ()> {
+        let from = self.current_image;
+        let mut pages: BTreeMap<u64, [u8; 4096]> = self
+            .engine
+            .diff_pages(from, store_id)
+            .map_err(|_| ())?
+            .into_iter()
+            .collect();
+
+        let dirty = {
+            let vmm = self.vmm.as_mut().ok_or(())?;
+            vmm.retire_pending_completion().map_err(|_| ())?;
+            vmm.drain_dirty_pages()
+        };
+        match dirty {
+            Some(gfns) => {
+                for gfn in gfns {
+                    if let std::collections::btree_map::Entry::Vacant(entry) = pages.entry(gfn) {
+                        entry.insert(self.engine.read_page(store_id, gfn).map_err(|_| ())?);
+                    }
+                }
+            }
+            // With no known source image the store diff is the complete target
+            // image, so an unavailable dirty log cannot hide a live difference.
+            None if from.is_none() => {}
+            None => return Err(()),
+        }
+
+        let pages: Vec<(u64, [u8; 4096])> = pages.into_iter().collect();
+        let bytes = u64::try_from(pages.len())
+            .ok()
+            .and_then(|count| count.checked_mul(4096))
+            .ok_or(())?;
+        let vmm = self.vmm.as_mut().ok_or(())?;
+        vmm.write_guest_pages(&pages).map_err(|_| ())?;
+        vmm.restore_vm_state(vm_state).map_err(|_| ())?;
+        Ok(bytes)
+    }
+
+    /// Install a genuine fresh boot after a recoverable restore rejection.
+    fn install_recovery_boot(&mut self, fresh: Vmm<B>) {
+        self.vmm = Some(fresh);
+        self.derive_parent = None;
+        self.current_image = None;
+        self.last_restore_bytes_written = 0;
+        self.reset_schedule_to_fresh_vm();
+        self.timeline_tainted = false;
+        self.session_trace_start = SessionTraceStart::RecoveryBoot;
+        let sdk_env = self.recorded.materialize();
+        let sdk_policy = self.recorded.policy().clone();
+        if let Some(vmm) = self.vmm.as_mut() {
+            vmm.enable_sdk(sdk_env, &sdk_policy);
+            vmm.enable_net();
+        }
+    }
+
+    /// `branch` (with an env) / `replay` (without): restore `snap` under the
+    /// selected mode, then reseed from the env's seed iff branching.
     fn restore(
         &mut self,
         snap: SnapId,
@@ -1331,11 +1524,20 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let Some(&store_id) = self.snaps.get(&snap.0) else {
             return Ok(Err(ControlError::UnknownSnapshot(snap)));
         };
-        let Ok(mapping) = self.engine.materialize(store_id) else {
-            return Ok(Err(ControlError::RestoreFailed));
-        };
         let Ok(vm_state) = self.engine.vm_state::<<B::A as Vendor>::Snapshot>(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
+        };
+        // The fresh restore paths need the complete image before they replace
+        // the live VM. In-place restore deliberately defers materialization: a
+        // successful patch must perform work proportional only to changed and
+        // live-dirty pages.
+        let mut mapping = if self.restore_mode == RestoreMode::InPlace {
+            None
+        } else {
+            let Ok(mapping) = self.engine.materialize(store_id) else {
+                return Ok(Err(ControlError::RestoreFailed));
+            };
+            Some(mapping)
         };
         // 1b. **Validate the branch env's host schedule BEFORE any swap (PR #51
         //     round-5, blocking item 1).** A rejected branch must be side-effect-free
@@ -1380,9 +1582,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Err(ControlError::Unsupported));
             }
         }
-        // 2. Drop the live VM (frees its virtual-time clock — the box allows one
-        //    open at a time), then boot the fresh restore target. A factory
-        //    failure is fatal: the session has no VM anymore.
+        // 2. In-place mode first patches the existing VM. Any missing
+        //    prerequisite or restore error is an optimization miss: count it and
+        //    take the proven fresh-VM path for this operation. Other modes drop
+        //    the live VM immediately (freeing its virtual-time clock — the box
+        //    allows one open at a time) and boot a fresh restore target. A factory
+        //    failure is fatal once the old VM has been mutated or dropped.
         //
         //    Task 95 M2.2: with a remap factory installed (and the Remap mode
         //    active, the default), the fresh VM is composed **around** the
@@ -1391,21 +1596,57 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         //    (`restore_vm_state`): no full-image memcpy, untouched pages fault
         //    lazily, guest writes stay CoW-private. Otherwise the pre-task-95
         //    memcpy path runs byte-for-byte (`restore_snapshot`).
-        let use_remap = self.restore_mode == RestoreMode::Remap && self.remap_factory.is_some();
         self.finish_session_trace_segment();
-        self.vmm = None;
-        let (mut fresh, restore_result) = if use_remap {
-            let factory = self
-                .remap_factory
-                .as_mut()
-                .expect("use_remap checked is_some");
-            let mut fresh = factory(mapping)?;
-            let result = fresh.restore_vm_state(&vm_state);
-            (fresh, result)
+        let in_place = self.restore_mode == RestoreMode::InPlace;
+        let in_place_result = in_place.then(|| self.restore_in_place(store_id, &vm_state));
+        let used_in_place = matches!(in_place_result, Some(Ok(_)));
+        if let Some(Ok(bytes)) = in_place_result {
+            self.last_restore_bytes_written = bytes;
+        } else if in_place {
+            self.in_place_fallbacks = self.in_place_fallbacks.saturating_add(1);
+            self.last_restore_bytes_written = 0;
+            self.current_image = None;
+        }
+
+        // In-place fallback uses the remap factory when one is installed; an
+        // explicit Memcpy selection remains the only mode that forbids it.
+        let use_remap = self.restore_mode != RestoreMode::Memcpy && self.remap_factory.is_some();
+        let (mut fresh, restore_result) = if used_in_place {
+            let fresh = self.vmm.take().ok_or(ServeError::Poisoned)?;
+            (fresh, Ok(()))
         } else {
-            let mut fresh = (self.factory)()?;
-            let result = fresh.restore_snapshot(mapping.as_slice(), &vm_state);
-            (fresh, result)
+            if mapping.is_none() {
+                mapping = match self.engine.materialize(store_id) {
+                    Ok(mapping) => Some(mapping),
+                    Err(_) => {
+                        // The in-place attempt may already have consumed a
+                        // completion or dirtied the live VM. Replace it with a
+                        // genuine fresh boot before returning a recoverable
+                        // restore error.
+                        self.vmm = None;
+                        let recovery = (self.factory)()?;
+                        self.install_recovery_boot(recovery);
+                        return Ok(Err(ControlError::RestoreFailed));
+                    }
+                };
+            }
+            self.vmm = None;
+            self.current_image = None;
+            self.last_restore_bytes_written = 0;
+            let mapping = mapping.expect("fresh restore materialized the target image");
+            if use_remap {
+                let factory = self
+                    .remap_factory
+                    .as_mut()
+                    .expect("use_remap checked is_some");
+                let mut fresh = factory(mapping)?;
+                let result = fresh.restore_vm_state(&vm_state);
+                (fresh, result)
+            } else {
+                let mut fresh = (self.factory)()?;
+                let result = fresh.restore_snapshot(mapping.as_slice(), &vm_state);
+                (fresh, result)
+            }
         };
         // 3. Split the two result categories (mirrors `snapshot`).
         //    `restore_vm_state` validates the untrusted blob **before** mutating
@@ -1432,44 +1673,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     drop(fresh);
                     fresh = (self.factory)()?;
                 }
-                self.vmm = Some(fresh);
-                // Task 95 M2.1: the kept VM is a fresh boot — no snapshot's
-                // tracked continuation, so the next seal full-scans.
-                self.derive_parent = None;
-                // The VM was still REPLACED (a fresh boot), so the old timeline's
-                // staged faults + recorded reproducer must not survive attached to
-                // it (PR #51 round-2 finding): reset on every path that swaps the VM,
-                // not just success. **This is the one branch/replay path that mutates
-                // on a recoverable error** (PR #51 round-5): a genuine restore failure
-                // cannot be pre-validated (it is only discovered by attempting the
-                // restore into the fresh VM), so — unlike the host-fault rejection
-                // above, which is now side-effect-free — a `RestoreFailed` leaves the
-                // session on the reset fresh boot. Callers treat `RestoreFailed` as
-                // "the session VM was replaced; re-establish your point."
-                self.reset_schedule_to_fresh_vm();
-                // Task 81: the kept VM is a **fresh boot** (a clean genesis-like
-                // timeline), not the tainted snapshot's state — so it is untainted,
-                // whatever the failed-to-restore handle's taint was. (An untainted
-                // state reachable only from an untainted ancestor: this boot is one.)
-                self.timeline_tainted = false;
-                self.session_trace_start = SessionTraceStart::RecoveryBoot;
-                // Task 73 (round-4 P3): the kept fresh VM must carry an SDK channel
-                // too — `GUEST_HAS_SDK` is advertised unconditionally, so a doorbell
-                // on it after a recoverable `RestoreFailed` would otherwise be a
-                // contract violation (`sdk: None`). Wire it from the reset (bare
-                // `Seeded`) reproducer, mirroring `new` + the success path.
-                let sdk_env = self.recorded.materialize();
-                let sdk_policy = self.recorded.policy().clone();
-                if let Some(vmm) = self.vmm.as_mut() {
-                    vmm.enable_sdk(sdk_env, &sdk_policy);
-                }
-                // Task 61: the kept fresh VM must carry a Net channel too (same
-                // reason — the doorbell is serviced when net is wired), mirroring
-                // `new` + the success path. No env: a net decision draws from the
-                // shared SDK stream wired just above (the single-stream ruling).
-                if let Some(vmm) = self.vmm.as_mut() {
-                    vmm.enable_net();
-                }
+                self.install_recovery_boot(fresh);
                 return Ok(Err(ControlError::RestoreFailed));
             }
             // Post-validation substrate breakage — the VM is unvouched; tear down.
@@ -1618,7 +1822,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // latch; if it cannot arm, the next seal simply full-scans.
         {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-            self.derive_parent = vmm.reset_dirty_tracking().then_some(store_id);
+            let tracked = vmm.reset_dirty_tracking();
+            self.derive_parent = tracked.then_some(store_id);
+            self.current_image = tracked.then_some(store_id);
         }
         Ok(Ok(Reply::Unit))
     }
@@ -2143,6 +2349,8 @@ mod tests {
 
     use proptest::prelude::*;
 
+    #[cfg(target_os = "linux")]
+    use super::host_minor_faults_with;
     use super::{
         ControlServer, ServeError, page_console, page_sdk_events, reseed_marker_requires_arrival,
         server_caps,
@@ -2150,6 +2358,22 @@ mod tests {
     use crate::vendor::Vendor;
     use crate::vendor::x86::contract_vclock_config;
     use crate::vmm::{GuestRam, Vmm, VmmError, VtimeWiring};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_minor_fault_counter_initializes_through_the_miri_seam() {
+        let faults = host_minor_faults_with(|usage| {
+            // SAFETY: every field in Linux's integer/timeval-only `rusage`
+            // representation admits zero, producing a valid initialized value.
+            let mut fixture: libc::rusage = unsafe { std::mem::zeroed() };
+            fixture.ru_minflt = 77;
+            // SAFETY: the seam supplies one live, correctly aligned, writable
+            // `rusage` pointer, and this closure initializes it exactly once.
+            unsafe { usage.write(fixture) };
+            0
+        });
+        assert_eq!(faults, Some(77));
+    }
 
     /// Guest RAM for the doorbell-driving tests (was a per-test `0x2_0000`):
     /// 128 KiB natively, 64 KiB under Miri — the smallest size covering the
@@ -2741,6 +2965,91 @@ mod tests {
         assert_eq!(stop_memcpy, stop_remap);
         assert_eq!(mem_memcpy, mem_remap);
         assert_eq!(hash_memcpy.unwrap(), hash_remap.unwrap());
+    }
+
+    /// A live-dirty page absent from the store-side snapshot diff is still
+    /// restored from the target image, and the operation keeps the same VMM.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
+    )]
+    fn in_place_restore_unions_live_dirty_pages_and_reports_exact_bytes() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let target = snap(&mut s);
+        let expected_hash = s
+            .handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap();
+
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_host_fault(&EnvHostFault::CorruptMemory {
+                gpa: 3 * 4096,
+                mask: BitMask(0xA5A5_5A5A),
+            })
+            .unwrap();
+        s.set_restore_mode(super::RestoreMode::InPlace);
+        assert_eq!(s.handle(&Request::Replay(target)).unwrap(), Ok(Reply::Unit));
+
+        assert_eq!(s.in_place_fallbacks(), 0);
+        assert_eq!(s.last_restore_bytes_written(), 4096);
+        assert_eq!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap(),
+            expected_hash
+        );
+    }
+
+    /// A lost source image makes the optimization unavailable, so the restore
+    /// uses the established fresh-VM path and records exactly one fallback.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot materialization and page hashing use mmap-backed production paths"
+    )]
+    fn in_place_restore_falls_back_when_the_source_image_is_gone() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let target = snap(&mut s);
+        let expected_hash = s
+            .handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap();
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_host_fault(&EnvHostFault::CorruptMemory {
+                gpa: 4096,
+                mask: BitMask(0x55AA_33CC),
+            })
+            .unwrap();
+        let lost_source = s
+            .engine
+            .snapshot_base(s.vmm.as_ref().unwrap().guest_memory(), b"stale-source")
+            .unwrap();
+        s.engine.release(lost_source).unwrap();
+        s.engine.gc();
+        s.current_image = Some(lost_source);
+
+        s.set_restore_mode(super::RestoreMode::InPlace);
+        assert_eq!(s.handle(&Request::Replay(target)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.in_place_fallbacks(), 1);
+        assert_eq!(s.last_restore_bytes_written(), 0);
+        assert_eq!(s.current_image, None, "fresh mock factory is untracked");
+        assert_eq!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap(),
+            expected_hash
+        );
     }
 
     /// A remap-path restore that rejects (mis-composed target: the snapshot has

@@ -42,7 +42,7 @@ use crate::{
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",
-    target_arch = "x86_64",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
 use crate::nova::consonance::{
@@ -88,7 +88,7 @@ enum NovaBackend {
     #[cfg(all(
         feature = "consonance",
         target_os = "linux",
-        target_arch = "x86_64",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
     ))]
     Consonance {
@@ -106,7 +106,7 @@ pub enum NovaCampaignTarget {
     #[cfg(all(
         feature = "consonance",
         target_os = "linux",
-        target_arch = "x86_64",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
     ))]
     Consonance(ConsonanceNovaTarget),
@@ -121,7 +121,7 @@ pub enum NovaCampaignSnapshot {
     #[cfg(all(
         feature = "consonance",
         target_os = "linux",
-        target_arch = "x86_64",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
     ))]
     Consonance(ConsonanceNovaSnapshot),
@@ -159,7 +159,7 @@ impl NovaGame {
     #[cfg(all(
         feature = "consonance",
         target_os = "linux",
-        target_arch = "x86_64",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
     ))]
     #[must_use]
@@ -427,7 +427,7 @@ impl NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.mechanical_state(),
@@ -440,7 +440,7 @@ impl NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.is_dead(),
@@ -453,7 +453,7 @@ impl NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.cleared_a_level(),
@@ -466,7 +466,7 @@ impl NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.frames_clocked(),
@@ -479,7 +479,7 @@ impl NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.last_action_observations(),
@@ -492,7 +492,7 @@ impl NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.survives_probe(buttons, frames),
@@ -512,7 +512,12 @@ impl NovaCampaignTarget {
             Self::QuickNes(target) => {
                 target.render_input(input, tail_frames, video_output, audio_output)
             }
-            #[cfg(all(feature = "consonance", target_os = "linux", target_arch = "x86_64", not(miri)))]
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
+                not(miri)
+            ))]
             Self::Consonance(_) => Err("Consonance search targets are headless; render the winning tape through direct QuickNES".into()),
         }
     }
@@ -529,7 +534,7 @@ impl Target for NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.reset(),
@@ -542,7 +547,7 @@ impl Target for NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.apply(*action),
@@ -555,7 +560,7 @@ impl Target for NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target
@@ -586,7 +591,7 @@ impl Target for NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.exit_kind(),
@@ -599,7 +604,7 @@ impl Target for NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             Self::Consonance(target) => target.snapshot().map(NovaCampaignSnapshot::Consonance),
@@ -614,7 +619,7 @@ impl Target for NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             (Self::Consonance(target), NovaCampaignSnapshot::Consonance(snapshot)) => {
@@ -623,7 +628,7 @@ impl Target for NovaCampaignTarget {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             _ => Err("Nova campaign snapshot backend does not match its target".into()),
@@ -671,7 +676,7 @@ impl Game for NovaGame {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             NovaCampaignSnapshot::Consonance(snapshot) => snapshot.resident_memory_charge(),
@@ -741,7 +746,7 @@ impl Game for NovaGame {
             #[cfg(all(
                 feature = "consonance",
                 target_os = "linux",
-                target_arch = "x86_64",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
                 not(miri)
             ))]
             NovaBackend::Consonance { kernel, initramfs } => {

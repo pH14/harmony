@@ -56,7 +56,7 @@ at* it:
 
 - **`Request::Read { gpa: u64, len: u32 } → Reply::Bytes(Vec<u8>)`** — guest
   physical memory. Body = `REQ_READ(10) · gpa:u64 · len:u32`. `len` is bounded by
-  the new **`READ_CAP` = 64 KiB** const; the backend answers a loud
+  the bounded **`READ_CAP` = 256 KiB** const; the backend answers a loud
   `ControlError::ReadTooLarge { len, cap }` for an over-cap request and
   `ControlError::ReadOutOfRange { gpa, len, ram_len }` for a `[gpa, gpa+len)` past
   guest RAM — **never** a truncated success.

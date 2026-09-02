@@ -83,6 +83,9 @@ fn boxed_backend_forwards_every_method() {
             edx: 0xD,
         })
         .unwrap();
+    // The explicit completion-retirement operation is also object-safe and
+    // forwarded through the boxed backend. It must not consume the next exit.
+    backend.retire_pending_completion().unwrap();
 
     assert_eq!(
         backend.run().unwrap(),

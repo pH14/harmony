@@ -19,7 +19,7 @@ use kvm_bindings::{
     kvm_create_device, kvm_device_attr, kvm_enable_cap, kvm_run, kvm_userspace_memory_region,
     kvm_vcpu_init,
 };
-use kvm_ioctls::{DeviceFd, Kvm, VcpuFd, VmFd};
+use kvm_ioctls::{Cap, DeviceFd, Kvm, VcpuFd, VmFd};
 
 use crate::arm64_kvm::{Arm64Kvm, KvmRunView, RunOffsets, RunPage};
 use crate::error::{BackendError, Result};
@@ -62,6 +62,7 @@ const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_REG_ARM_FW == kvm_bindings::KVM_REG_ARM_FW as u64);
     assert!(0x0016 << 16 == kvm_bindings::KVM_REG_ARM_FW_FEAT_BMAP);
     assert!(crate::arm64_kvm::KVM_ARM_VCPU_PSCI_0_2 == kvm_bindings::KVM_ARM_VCPU_PSCI_0_2);
+    assert!(crate::arm64_kvm::KVM_MEM_LOG_DIRTY_PAGES == kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES);
     assert!(
         crate::arm64_kvm::KVM_DEV_ARM_VGIC_GRP_DIST_REGS
             == kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS
@@ -124,9 +125,21 @@ impl LiveKvm {
     /// `KVM_ARM_PREFERRED_TARGET` + `KVM_ARM_VCPU_INIT`.
     ///
     /// # Errors
-    /// A [`BackendError::Io`] wrapping the failing ioctl's errno.
+    /// [`BackendError::Capability`] when the host lacks immediate-exit or
+    /// writable implementation-ID registers; [`BackendError::Io`] wraps a
+    /// failing KVM syscall.
     pub fn new() -> Result<Self> {
         let kvm = Kvm::new().map_err(kvm_err)?;
+        // MMIO loads are completed with one `KVM_RUN` whose
+        // `kvm_run.immediate_exit` bit prevents execution of the following
+        // guest instruction.  Kernels without this capability ignore that bit,
+        // so accepting them would make restore boundaries depend on host signal
+        // timing instead of the deterministic exit stream.
+        if !kvm.check_extension(Cap::ImmediateExit) {
+            return Err(BackendError::Capability {
+                cap: "KVM_CAP_IMMEDIATE_EXIT",
+            });
+        }
         let vm = kvm.create_vm().map_err(kvm_err)?;
         Self::enable_writable_imp_id_regs(&vm)?;
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
@@ -324,9 +337,31 @@ impl Arm64Kvm for LiveKvm {
         host: *mut u8,
         len: u64,
     ) -> Result<()> {
+        // SAFETY: this compatibility entry point uses the same pinned backing
+        // contract as the flagged registration path and requests logging by
+        // default, matching the backend's normal ARM behavior.
+        unsafe {
+            self.set_user_memory_region_with_flags(
+                slot,
+                gpa,
+                host,
+                len,
+                kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES,
+            )
+        }
+    }
+
+    unsafe fn set_user_memory_region_with_flags(
+        &mut self,
+        slot: u32,
+        gpa: u64,
+        host: *mut u8,
+        len: u64,
+        flags: u32,
+    ) -> Result<()> {
         let region = kvm_userspace_memory_region {
             slot,
-            flags: 0,
+            flags,
             guest_phys_addr: gpa,
             memory_size: len,
             userspace_addr: host as u64,
@@ -335,6 +370,18 @@ impl Arm64Kvm for LiveKvm {
         // pinned, page-aligned, and unaliased for the backend's lifetime), so
         // registering it as a memslot is sound.
         unsafe { self._vm.set_user_memory_region(region) }.map_err(kvm_err)
+    }
+
+    fn get_dirty_log(&mut self, slot: u32, size: u64) -> Result<Vec<u64>> {
+        let expected = crate::arm64_kvm::dirty_bitmap_words(size)?;
+        let size = usize::try_from(size).map_err(|_| BackendError::InvalidState)?;
+        let bitmap = self._vm.get_dirty_log(slot, size).map_err(kvm_err)?;
+        if bitmap.len() != expected {
+            return Err(BackendError::Internal(
+                "KVM dirty bitmap has an unexpected size",
+            ));
+        }
+        Ok(bitmap)
     }
 
     fn get_one_reg(&self, id: u64) -> Result<u64> {
