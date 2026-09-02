@@ -316,7 +316,6 @@ impl<C: Core> NovaAgent<C> {
             .payload_fetch(&mut payload)
             .map_err(NovaError::Channel)?;
         let hold = payload[1].clamp(1, MAX_HOLD_FRAMES);
-        let mut state = read_state(&mut self.core).map_err(widen_error)?;
         let mut frames_run = 0_u8;
         for slot in 0..usize::from(hold) {
             self.core.run_frame(payload[0]);
@@ -326,11 +325,10 @@ impl<C: Core> NovaAgent<C> {
                 return Err(NovaError::MemoryUnavailable);
             }
             frames_run = frames_run.saturating_add(1);
-            state = read_state(&mut self.core).map_err(widen_error)?;
-            if state.dead() || state.cleared > self.genesis.cleared {
-                break;
-            }
         }
+        // A chord is an exact held-input interval. Decode only its endpoint;
+        // death and clear are host-adapter meanings, not guest-side stops.
+        let state = read_state(&mut self.core).map_err(widen_error)?;
         // The host sees a coherent endpoint only after the raw ring, save RAM,
         // and savestate are all complete. This is the sole billboard write
         // after the per-frame ring copies.
@@ -589,6 +587,56 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum TerminalCondition {
+        Dead,
+        Cleared,
+    }
+
+    struct TerminalCore {
+        inner: RingCore,
+        condition: TerminalCondition,
+    }
+
+    impl TerminalCore {
+        fn new(condition: TerminalCondition) -> Self {
+            Self {
+                inner: RingCore::new(),
+                condition,
+            }
+        }
+    }
+
+    impl Core for TerminalCore {
+        fn serialize_size(&mut self) -> usize {
+            self.inner.serialize_size()
+        }
+
+        fn serialize(&mut self, out: &mut [u8]) -> bool {
+            self.inner.serialize(out)
+        }
+
+        fn run_frame(&mut self, joypad: u8) {
+            self.inner.run_frame(joypad);
+            if self.inner.inner.frames_run() == 1 {
+                match self.condition {
+                    TerminalCondition::Dead => self.inner.inner.ram_mut()[PLAYER_HEALTH] = 0,
+                    TerminalCondition::Cleared => {
+                        self.inner.inner.save_ram_mut()[LEVEL_CLEARED] = 1;
+                    }
+                }
+            }
+        }
+
+        fn read_work_ram(&mut self, out: &mut [u8]) -> bool {
+            self.inner.read_work_ram(out)
+        }
+
+        fn read_save_ram(&mut self, out: &mut [u8]) -> Option<usize> {
+            self.inner.read_save_ram(out)
+        }
+    }
+
     impl Core for RingCore {
         fn serialize_size(&mut self) -> usize {
             self.inner.serialize_size()
@@ -645,10 +693,57 @@ mod tests {
             &[0xA5]
         );
         assert_eq!(agent.core.serializes, 1);
-        // The state decoder reads the core's save RAM at setup, at the action
-        // start, and once per frame; the billboard window itself is populated
-        // only by the single endpoint copy above.
-        assert_eq!(agent.core.save_reads, 6);
+        // The state decoder reads the core's save RAM at setup and once at the
+        // action endpoint; the billboard window itself is populated only by
+        // the single endpoint copy above.
+        assert_eq!(agent.core.save_reads, 3);
+    }
+
+    fn assert_full_hold_after_terminal(condition: TerminalCondition) {
+        let mut agent = NovaAgent::new(TerminalCore::new(condition)).expect("agent");
+        let mut billboard = vec![0_u8; agent.layout().total_len()];
+        let mut tape = Tape {
+            payload: Some([0, 4]),
+            ..Tape::default()
+        };
+
+        let endpoint = agent.run_chord(&mut tape, &mut billboard).expect("chord");
+
+        assert_eq!(agent.frame_count(), 4);
+        assert_eq!(agent.core.inner.inner.frames_run(), 4);
+        assert_eq!(billboard[13], 4);
+        for slot in 0..4 {
+            let ram = agent.layout().work_ram_slot_mut(&mut billboard, slot);
+            assert_eq!(ram[0], (slot + 1) as u8);
+        }
+        assert_eq!(tape.calls, ["payload_fetch", "frame_complete"]);
+        assert_eq!(tape.frames, [4]);
+        assert_eq!(
+            NovaBillboardLayout::dead_flag(&billboard),
+            matches!(condition, TerminalCondition::Dead)
+        );
+        assert_eq!(
+            NovaBillboardLayout::cleared_flag(&billboard),
+            matches!(condition, TerminalCondition::Cleared)
+        );
+        assert_eq!(
+            endpoint.dead(),
+            matches!(condition, TerminalCondition::Dead)
+        );
+        assert_eq!(
+            endpoint.cleared > agent.genesis.cleared,
+            matches!(condition, TerminalCondition::Cleared)
+        );
+    }
+
+    #[test]
+    fn dead_core_still_runs_and_publishes_the_full_hold() {
+        assert_full_hold_after_terminal(TerminalCondition::Dead);
+    }
+
+    #[test]
+    fn cleared_core_still_runs_and_publishes_the_full_hold() {
+        assert_full_hold_after_terminal(TerminalCondition::Cleared);
     }
 
     #[test]
