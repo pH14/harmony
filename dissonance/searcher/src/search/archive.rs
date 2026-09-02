@@ -2816,7 +2816,8 @@ where
     /// new and the frames in group of the cheapest member its draw offers.
     /// Under the energy selector each group's weight halves every `scale`
     /// barren selections and floors at 1/256 of a fresh group, then halves
-    /// again for every distinct deeper frontier, or for every
+    /// again for every distinct deeper frontier that still holds energy, down
+    /// to 1/65,536 of the deepest, or for every
     /// `CELL_NOVELTY_RANK_SCALE` newer cells that still count as new plus
     /// every `CHEAPEST_RANK_SCALE` cells with a cheaper best member, so the
     /// rank order survives the energy floor; a cell past its novelty draws
@@ -2842,14 +2843,28 @@ where
         let Some(scale) = scales.groups.get(depth - 1).copied() else {
             return Ok(rand.below(count));
         };
-        // Frontier rank depends only on the set of distinct frontiers. Build
-        // that ordering once instead of filtering, allocating, sorting, and
-        // deduplicating the complete list once per candidate group.
+        // Frontier rank depends only on the set of distinct frontiers that
+        // still hold energy: a frontier whose own draws have all faded no
+        // longer pushes the groups behind it down, so a stalled frontier
+        // hands its draws back to the fork it grew from. Build that ordering
+        // once instead of filtering, allocating, sorting, and deduplicating
+        // the complete list once per candidate group.
         let ranked = match frontier {
             Some(frontier) if ranked_by_frontier => {
+                let frontier_depth = Self::frontier_depth();
+                let frontier_scale = scales.groups.get(frontier_depth - 1).copied();
                 let mut ranked = frontier.to_vec();
                 ranked.sort_unstable();
                 ranked.dedup();
+                ranked.retain(|band| {
+                    let barren = self
+                        .group_barren
+                        .get(frontier_depth - 1)
+                        .and_then(|map| map.get(band))
+                        .copied()
+                        .unwrap_or(0);
+                    frontier_scale.is_none_or(|scale| barren / scale < 8)
+                });
                 ranked
             }
             _ => Vec::new(),
@@ -2880,10 +2895,8 @@ where
             }
             let (rank, span) = match (frontier, cells) {
                 (Some(frontier), _) => {
-                    let position = ranked
-                        .binary_search(&frontier[index])
-                        .map_err(|_| "energy frontier group is missing from its own rank table")?;
-                    (ranked.len().saturating_sub(position.saturating_add(1)), 8)
+                    let behind = ranked.partition_point(|band| *band <= frontier[index]);
+                    (ranked.len().saturating_sub(behind), 16)
                 }
                 (None, Some(cells)) => {
                     let (opened, cost) = cells[index];
