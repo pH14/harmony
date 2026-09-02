@@ -400,6 +400,18 @@ pub const NES_RUN_THIRTEEN_BUTTON_MASKS: [u8; 13] = [
     0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0x82, 0x42, 0x83, 0x43, 0x10, 0x20,
 ];
 
+/// Every physically pressable chord in the emulator's bit order: each of the
+/// nine direction sets (none, Right, Left, Up, Down, and the four diagonals)
+/// with none, A, B, and A+B. Start and Select are excluded because either
+/// pauses or leaves the game, and the pinned QuickNES options filter the
+/// opposing pairs Left+Right and Up+Down. Which chords matter is left to the
+/// chord table to learn.
+pub const NES_PRESSABLE_BUTTON_MASKS: [u8; 36] = [
+    0x00, 0x01, 0x02, 0x03, 0x80, 0x81, 0x82, 0x83, 0x40, 0x41, 0x42, 0x43, 0x10, 0x11, 0x12, 0x13,
+    0x20, 0x21, 0x22, 0x23, 0x90, 0x91, 0x92, 0x93, 0xa0, 0xa1, 0xa2, 0xa3, 0x50, 0x51, 0x52, 0x53,
+    0x60, 0x61, 0x62, 0x63,
+];
+
 /// Draw one chord: a uniform mask and a hold from one of two strata, short
 /// (2..=12 frames) for control and long (96..=120 frames) for time.
 pub(crate) fn sample_chord_from_masks(

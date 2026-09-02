@@ -373,9 +373,12 @@ pub enum SmbButtonVocabulary {
     /// recordings replay byte-exact.
     NesDownTen,
     /// The emulator-order chord set with each direction alone and with A, B,
-    /// and A+B.
-    #[default]
+    /// and A+B; kept so its recordings replay byte-exact.
     NesRunThirteen,
+    /// Every physically pressable chord: nine direction sets times none, A,
+    /// B, and A+B.
+    #[default]
+    NesPressable,
 }
 
 impl SmbButtonVocabulary {
@@ -386,6 +389,7 @@ impl SmbButtonVocabulary {
             Self::DownTenMask => &DOWN_TEN_BUTTON_MASKS,
             Self::NesDownTen => &crate::smb::archive::NES_DOWN_TEN_BUTTON_MASKS,
             Self::NesRunThirteen => &crate::smb::archive::NES_RUN_THIRTEEN_BUTTON_MASKS,
+            Self::NesPressable => &crate::smb::archive::NES_PRESSABLE_BUTTON_MASKS,
         }
     }
 }
@@ -397,6 +401,7 @@ pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static
         SmbButtonVocabulary::DownTenMask => "down_ten_mask",
         SmbButtonVocabulary::NesDownTen => "nes_down_ten",
         SmbButtonVocabulary::NesRunThirteen => "nes_run_thirteen",
+        SmbButtonVocabulary::NesPressable => "nes_pressable_36",
     }
 }
 
@@ -412,6 +417,7 @@ pub fn button_vocabulary_from_identifier(
         "down_ten_mask" => Ok(SmbButtonVocabulary::DownTenMask),
         "nes_down_ten" => Ok(SmbButtonVocabulary::NesDownTen),
         "nes_run_thirteen" => Ok(SmbButtonVocabulary::NesRunThirteen),
+        "nes_pressable_36" => Ok(SmbButtonVocabulary::NesPressable),
         _ => Err("campaign stream controller vocabulary is not recognized".into()),
     }
 }
@@ -2379,7 +2385,7 @@ mod tests {
             "probe_at_admission_45",
             "fewest_frames_in_level",
             "whole_tree",
-            "nes_run_thirteen",
+            "nes_pressable_36",
             "frozen_area_span",
             "one_to_six",
             "stratified",
@@ -2699,7 +2705,7 @@ mod tests {
             ("probe_at_admission_45", "probe_at_admission_45_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
-            ("nes_run_thirteen", "frozen_nine_mask"),
+            ("nes_pressable_36", "frozen_nine_mask"),
             ("deterministic_window_4_per_worker_v1", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
