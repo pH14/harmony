@@ -115,6 +115,7 @@ jobs:
               --fixed-execution-soak \
               --action-limit 512 \
               --wall-seconds 3000 \
+              --memory-budget-mib 2048 \
             2>&1 | tee nova-consonance-report/campaign.txt
           python3 - <<'PY'
           import json
@@ -132,6 +133,12 @@ jobs:
               raise SystemExit(
                   f"campaign completed {summary.get('executions')} executions, not 10000"
               )
+          if summary.get("memory_budget_mib") != 2048:
+              raise SystemExit("campaign did not enforce the 2048 MiB process budget")
+          if summary.get("archive_memory_budget_mib") != 1088:
+              raise SystemExit("campaign archive budget did not reserve worker VM memory")
+          if summary.get("process_memory_reserve_mib") != 960:
+              raise SystemExit("campaign process reserve did not match four workers")
           video = summary.get("video") or {}
           if not video.get("mp4_sha256"):
               raise SystemExit("campaign did not produce a hashed film")
