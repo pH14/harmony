@@ -14,9 +14,11 @@ offsets. A change that helps one level by naming that level is invalid.
 ## Metric
 
 The wall metric is the first level that no run from the current searcher has
-completed from its fixture within budget. Today that is 2-2. When the searcher
-completes it, the wall moves to the next level with a fixture (4-2, 4-3, 7-2,
-7-4, 8-1, 8-4) and the loop continues with the same rules.
+completed from its fixture within budget. Today that is 4-2. When the searcher
+completes it, the wall moves to the next level with a fixture (4-3, 7-2, 7-4,
+8-1, 8-4) and the loop continues with the same rules.
+The wall moved from 2-2 to 4-2 on 2026-09-01 after keeper b37fb7d5 completed
+2-2 on all three seeds.
 
 One evaluation:
 
