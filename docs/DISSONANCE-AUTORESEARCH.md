@@ -20,8 +20,10 @@ complete the game from power-on.
 
 One evaluation:
 
-- origin genesis; seed 20260905; 8 workers; action limit 8192; everything else
-  default; killed at 10 minutes of wall time;
+- origin genesis; seed 20260905; 24 workers; action limit 8192; everything else
+  default; killed at 10 minutes of wall time. The default admission window is
+  one reservation per worker, recorded in the stream header as the schedule
+  policy `deterministic_window_1_per_worker_v1`;
 - score: executions to the victory event, lower is better. A run that does not
   complete scores by deepest level reached, then watermark, and any completion
   beats any watermark;
@@ -42,10 +44,10 @@ the searcher's test suite. A candidate that fails the test suite is discarded.
 
 ## Progress record
 
-Fewest executions to each milestone on seed 20260905 at 8 workers from genesis:
-1-2 by 1,873; 1-3 by 5,420; 1-4 by 9,672; 2-1 by 10,718; 2-2 by 16,422;
-2-3 by 21,161; 2-4 by 28,430; 3-1 by 33,278; 3-2 by 35,898; 3-3 by 37,500;
-3-4 by 43,467.
+Fewest executions to each milestone on seed 20260905 at 24 workers from genesis:
+1-2 by 1,337; 1-3 by 4,799; 1-4 by 11,584; 2-1 by 14,825; 2-2 by 23,212;
+2-3 by 42,946; 2-4 by 46,182; 3-1 by 48,593; 3-2 by 51,381; 3-3 by 52,876;
+3-4 by 58,997.
 The scored run updates this record. A drop below the record by more than the
 seed spread means a regression outside the candidate; bisect with one 45,000
 execution genesis run per commit before continuing.
