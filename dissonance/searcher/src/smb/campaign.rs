@@ -737,18 +737,23 @@ pub(crate) struct SmbJobPolicies {
     pub(crate) terminal: SmbTerminalPredicate,
 }
 
-/// Execute one job: restore the parent snapshot and apply the suffix exactly as
-/// the campaign suffix loop does, collecting per-boundary candidates
-/// with worker-side probe verdicts.
+/// Execute one job: restore the origin snapshot, replay the actions that
+/// lead from it to the parent, and apply the suffix exactly as the campaign
+/// suffix loop does, collecting per-boundary candidates with worker-side
+/// probe verdicts.
 pub(crate) fn execute_job(
     target: &mut SmbTarget,
-    parent_snapshot: &SmbSnapshot,
+    origin_snapshot: &SmbSnapshot,
+    replay: &[ButtonChord],
     parent_actions: usize,
     parent_milestones: SmbMilestones,
     suffix: &[ButtonChord],
     policies: SmbJobPolicies,
 ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
-    target.restore(parent_snapshot)?;
+    target.restore(origin_snapshot)?;
+    for action in replay {
+        target.apply(action);
+    }
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -1148,7 +1153,8 @@ impl Game for SmbGame {
         &self,
         run: &SmbCampaignRun,
         target: &mut SmbTarget,
-        parent_snapshot: &SmbSnapshot,
+        origin_snapshot: &SmbSnapshot,
+        replay: &[ButtonChord],
         parent_actions: usize,
         parent_milestones: SmbMilestones,
         suffix: &[ButtonChord],
@@ -1157,7 +1163,8 @@ impl Game for SmbGame {
     ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
         execute_job(
             target,
-            parent_snapshot,
+            origin_snapshot,
+            replay,
             parent_actions,
             parent_milestones,
             suffix,
@@ -1975,6 +1982,7 @@ mod tests {
         let on_first = execute_job(
             &mut first,
             &snapshot,
+            &[],
             1,
             SmbMilestones::default(),
             &suffix,
@@ -1984,6 +1992,7 @@ mod tests {
         let on_second = execute_job(
             &mut second,
             &snapshot,
+            &[],
             1,
             SmbMilestones::default(),
             &suffix,
@@ -2004,6 +2013,7 @@ mod tests {
         let result = execute_job(
             &mut target,
             &won,
+            &[],
             0,
             SmbMilestones::default(),
             &[ButtonChord::new(0x01, 4)],

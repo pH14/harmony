@@ -283,8 +283,9 @@ pub trait Game: Sync {
         snapshot: &Self::Snapshot,
     ) -> Result<Self::Key, Box<dyn Error>>;
 
-    /// Execute one job: restore the parent snapshot and apply the suffix,
-    /// collecting per-boundary candidates with worker-side probe verdicts.
+    /// Execute one job: restore the origin snapshot, replay the actions that
+    /// lead from it to the parent, and apply the suffix, collecting
+    /// per-boundary candidates with worker-side probe verdicts.
     ///
     /// # Errors
     ///
@@ -294,7 +295,8 @@ pub trait Game: Sync {
         &self,
         run: &Self::Run,
         target: &mut Self::Target,
-        parent_snapshot: &Self::Snapshot,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
         parent_actions: usize,
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
@@ -1979,6 +1981,8 @@ fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn E
 struct JobSpec<G: Game + ?Sized> {
     reservation: usize,
     snapshot: Arc<G::Snapshot>,
+    /// Actions from the snapshot to the parent entry.
+    replay: Vec<G::Action>,
     parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
@@ -2113,6 +2117,9 @@ pub struct CampaignProgressRecord<K> {
     /// Snapshots displaced by the global memory budget so far.
     #[serde(default)]
     pub snapshot_evictions: u64,
+    /// Active entries the memory budget's sweep deactivated so far.
+    #[serde(default)]
+    pub entry_drops: u64,
     /// Compact entries held by the live acceleration structure.
     #[serde(default)]
     pub live_entries: usize,
@@ -2313,6 +2320,7 @@ where
                 &config.run,
                 target,
                 &spec.snapshot,
+                &spec.replay,
                 spec.parent_actions,
                 spec.parent_milestones,
                 &spec.suffix,
@@ -2454,15 +2462,13 @@ where
                         core.archive.pin_metadata(*donor_id)?;
                         core.archive.pin_metadata(*leaf_id)?;
                     }
+                    let (snapshot, replay) = core.archive.job_origin(parent_index)?;
                     let entry = &core.archive.entries[parent_index];
                     return Ok(Some((
                         JobSpec {
                             reservation: 0,
-                            snapshot: entry
-                                .snapshot
-                                .as_ref()
-                                .ok_or("live selector chose an entry without a snapshot")?
-                                .clone(),
+                            snapshot,
+                            replay,
                             parent_actions: entry.input_len,
                             parent_milestones: entry.milestones,
                             suffix,
@@ -2743,6 +2749,7 @@ where
                                     .resident_memory_bytes()
                                     .saturating_add(draw_state_memory_bytes),
                                 snapshot_evictions: core.archive.snapshot_evictions(),
+                                entry_drops: core.archive.entry_drops(),
                                 live_entries: core.archive.live_entry_count(),
                                 history_compactions: core.archive.history_compactions(),
                                 historical_entries_dropped: core
@@ -3157,7 +3164,7 @@ where
 
     let replay_window_depth = admission_window_depth(usize::try_from(header.workers)?);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
-    let mut replay_job_snapshots = BTreeMap::<usize, Arc<G::Snapshot>>::new();
+    let mut replay_job_snapshots = BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>)>::new();
     if legacy_schedule {
         core.archive
             .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
@@ -3178,14 +3185,7 @@ where
                 .archive
                 .index_of_id(*parent_id)
                 .ok_or("initial replay job names a parent the archive does not hold")?;
-            let snapshot = core
-                .archive
-                .entries
-                .get(parent_index)
-                .and_then(|entry| entry.snapshot.as_ref())
-                .ok_or("recorded job names an entry without a live snapshot")?
-                .clone();
-            replay_job_snapshots.insert(job_slot, snapshot);
+            replay_job_snapshots.insert(job_slot, core.archive.job_origin(parent_index)?);
             for metadata_id in &replay_job_metadata[job_slot] {
                 let uses = replay_metadata_uses.entry(*metadata_id).or_default();
                 *uses = uses
@@ -3256,7 +3256,7 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let (snapshot, parent_actions, parent_milestones) = {
+                let ((snapshot, replay), parent_actions, parent_milestones) = {
                     let entry = core
                         .archive
                         .entries
@@ -3264,11 +3264,7 @@ where
                         .ok_or("recorded job names a parent the archive does not hold")?;
                     (
                         if legacy_schedule {
-                            entry
-                                .snapshot
-                                .as_ref()
-                                .ok_or("recorded job names an entry without a live snapshot")?
-                                .clone()
+                            core.archive.job_origin(parent_index)?
                         } else {
                             replay_job_snapshots
                                 .remove(&replay_job_slot)
@@ -3310,6 +3306,7 @@ where
                     &replay_run,
                     &mut target,
                     &snapshot,
+                    &replay,
                     parent_actions,
                     parent_milestones,
                     &suffix,
@@ -3401,14 +3398,8 @@ where
                             .archive
                             .index_of_id(*parent_id)
                             .ok_or("next replay job names a parent the archive does not hold")?;
-                        let snapshot = core
-                            .archive
-                            .entries
-                            .get(parent_index)
-                            .and_then(|entry| entry.snapshot.as_ref())
-                            .ok_or("recorded job names an entry without a live snapshot")?
-                            .clone();
-                        replay_job_snapshots.insert(next_slot, snapshot);
+                        replay_job_snapshots
+                            .insert(next_slot, core.archive.job_origin(parent_index)?);
                         for metadata_id in &replay_job_metadata[next_slot] {
                             let uses = replay_metadata_uses.entry(*metadata_id).or_default();
                             *uses = uses

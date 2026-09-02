@@ -76,6 +76,14 @@ const HISTORY_COMPACTION_MIN_DROPS: usize = 4_096;
 // control flow fail well inside the mutation-test timeout.
 #[cfg(test)]
 const HISTORY_COMPACTION_MIN_DROPS: usize = 16;
+/// Every lineage keeps a resident keyframe snapshot within this many actions
+/// of each active entry: the entry whose input length first enters each
+/// bucket of this width is the keyframe for the rest of the bucket. Expanding
+/// an entry whose own snapshot was released costs at most this much replay.
+pub const REPLAY_DISTANCE_ACTIONS: usize = 8;
+/// Sweep visits one admission may spend releasing snapshots and dropping
+/// entries under a memory budget, so maintenance never bursts.
+const MAINTENANCE_QUANTUM: usize = 32;
 
 /// One recorded input: actions in execution order.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -779,6 +787,22 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// population. Replay may temporarily keep a non-selectable payload for
     /// an already-dispatched job without changing this logical state.
     snapshot_selectable: Vec<bool>,
+    /// Whether each entry is the keyframe of its replay bucket.
+    keyframe: Vec<bool>,
+    /// Stable id of the nearest keyframe on each entry's lineage (its own id
+    /// for a keyframe). Its snapshot stays resident while any active entry
+    /// depends on it.
+    keyframe_id: Vec<u64>,
+    /// Number of active entries depending on each keyframe, itself included.
+    keyframe_dependents: Vec<usize>,
+    /// CLOCK reference bit: set when the entry is selected, cleared when a
+    /// sweep passes it. An unreferenced entry loses its snapshot first and
+    /// its active status second.
+    referenced: Vec<bool>,
+    /// Position of the entry-drop sweep.
+    drop_hand: usize,
+    /// Active entries the budget sweeps deactivated.
+    entry_drops: u64,
     /// Deterministic logical-byte ceiling for history plus selectable snapshots.
     memory_limit: Option<usize>,
     /// Stable id of the one executable snapshot retained as a bounded liveness
@@ -952,6 +976,21 @@ impl<A: Clone + Ord> InputIndex<A> {
         }
         reversed.reverse();
         Some(reversed)
+    }
+
+    /// Actions on the path from `ancestor` down to `node`, `distance` edges
+    /// long. `None` when the path does not end at `ancestor`.
+    fn actions_between(&self, ancestor: usize, mut node: usize, distance: usize) -> Option<Vec<A>> {
+        let mut reversed = Vec::with_capacity(distance);
+        for _ in 0..distance {
+            let current = self.nodes.get(node)?.as_ref()?;
+            reversed.push(current.action.as_ref()?.clone());
+            node = current.parent?;
+        }
+        (node == ancestor).then(|| {
+            reversed.reverse();
+            reversed
+        })
     }
 
     /// Remove a terminal owner and reclaim its now-unreferenced tail. Shared
@@ -1288,6 +1327,12 @@ where
             metadata_pins: BTreeMap::new(),
             resident_snapshots: 0,
             snapshot_selectable: Vec::new(),
+            keyframe: Vec::new(),
+            keyframe_id: Vec::new(),
+            keyframe_dependents: Vec::new(),
+            referenced: Vec::new(),
+            drop_hand: 0,
+            entry_drops: 0,
             memory_limit: None,
             liveness_anchor: None,
             #[cfg(test)]
@@ -1363,19 +1408,7 @@ where
         if !self.active.get(index).copied().unwrap_or(false) {
             return false;
         }
-        self.active[index] = false;
-        self.active_count = self.active_count.saturating_sub(1);
-        let slot_key = self.entries[index].key.group(0);
-        let remove_slot = if let Some(slot) = self.slots.get_mut(&slot_key) {
-            slot.retain(|id| *id != index);
-            slot.is_empty()
-        } else {
-            false
-        };
-        if remove_slot {
-            self.slots.remove(&slot_key);
-        }
-        self.index_remove(index);
+        self.deactivate(index);
         true
     }
 
@@ -1384,18 +1417,80 @@ where
             .map_or(0, |charge| charge(snapshot))
     }
 
-    fn release_snapshot(&mut self, id: usize, budget_eviction: bool) -> bool {
-        if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+    /// Replay bucket of one input length.
+    fn replay_bucket(input_len: usize) -> usize {
+        input_len / REPLAY_DISTANCE_ACTIONS
+    }
+
+    /// Whether an entry's snapshot must stay resident: an active keyframe,
+    /// a keyframe some active entry still replays from, or the liveness
+    /// anchor. Every other resident snapshot is a cache the budget may
+    /// release.
+    fn snapshot_retained(&self, id: usize) -> bool {
+        (self.keyframe[id] && self.keyframe_dependents[id] > 0) || self.is_liveness_anchor(id)
+    }
+
+    /// Whether an entry can seed a job: its own snapshot is resident or its
+    /// keyframe's is.
+    fn origin_resident(&self, id: usize) -> bool {
+        if self.snapshot_selectable[id] {
+            return true;
+        }
+        self.index_of_id(self.keyframe_id[id])
+            .is_some_and(|keyframe| self.snapshot_selectable[keyframe])
+    }
+
+    /// Move an entry out of the active population and release whatever it
+    /// alone kept resident.
+    fn deactivate(&mut self, id: usize) -> bool {
+        if !self.active.get(id).copied().unwrap_or(false) {
             return false;
         }
-        if budget_eviction && self.is_liveness_anchor(id) {
+        self.active[id] = false;
+        self.active_count = self.active_count.saturating_sub(1);
+        let slot_key = self.entries[id].key.group(0);
+        let remove_slot = if let Some(slot) = self.slots.get_mut(&slot_key) {
+            slot.retain(|entry| *entry != id);
+            slot.is_empty()
+        } else {
+            false
+        };
+        if remove_slot {
+            self.slots.remove(&slot_key);
+        }
+        self.index_remove(id);
+        if !self.is_liveness_anchor(id) {
+            self.input_index
+                .set_owner(self.entries[id].input_node, None);
+        }
+        let keyframe = self.index_of_id(self.keyframe_id[id]);
+        if let Some(keyframe) = keyframe {
+            self.keyframe_dependents[keyframe] =
+                self.keyframe_dependents[keyframe].saturating_sub(1);
+        }
+        if !self.snapshot_retained(id) {
+            self.release_snapshot(id);
+        }
+        if let Some(keyframe) = keyframe
+            && keyframe != id
+            && !self.active[keyframe]
+            && !self.snapshot_retained(keyframe)
+        {
+            self.release_snapshot(keyframe);
+        }
+        true
+    }
+
+    /// Release one snapshot from the selectable population. The entry keeps
+    /// its active status; an active entry replays from its keyframe.
+    fn release_snapshot(&mut self, id: usize) -> bool {
+        if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
             return false;
         }
         let charge = self.entries[id]
             .snapshot
             .as_deref()
             .map_or(0, |snapshot| self.snapshot_charge(snapshot));
-        self.index_remove(id);
         self.snapshot_selectable[id] = false;
         self.resident_snapshots = self.resident_snapshots.saturating_sub(1);
         self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_sub(charge);
@@ -1410,56 +1505,82 @@ where
         if (!self.preserve_inactive_snapshots || !has_future_use) && !worker_holds_snapshot {
             self.entries[id].snapshot.take();
         }
-        self.input_index
-            .set_owner(self.entries[id].input_node, None);
-        if budget_eviction {
-            if self.active.get(id).copied().unwrap_or(false) {
-                self.active[id] = false;
-                self.active_count = self.active_count.saturating_sub(1);
-                let slot_key = self.entries[id].key.group(0);
-                let remove_slot = if let Some(slot) = self.slots.get_mut(&slot_key) {
-                    slot.retain(|entry| *entry != id);
-                    slot.is_empty()
-                } else {
-                    false
-                };
-                if remove_slot {
-                    self.slots.remove(&slot_key);
-                }
-            }
-            self.snapshot_evictions = self.snapshot_evictions.saturating_add(1);
-        }
         true
     }
 
+    /// Bring the logical charge back under the budget with a bounded amount
+    /// of work: release unreferenced cache snapshots in CLOCK order, then
+    /// drop unreferenced active entries in CLOCK order. Work left over is
+    /// finished by later admissions.
     fn enforce_snapshot_memory_budget(&mut self) -> Result<(), &'static str> {
         let Some(limit) = self.memory_limit else {
             return Ok(());
         };
-        while self.resident_memory_bytes() > limit && self.resident_snapshots > 1 {
-            if !self.release_oldest_selectable(true) {
+        let mut visits = 0_usize;
+        let mut reclaimed = false;
+        while self.resident_memory_bytes() > limit && visits < MAINTENANCE_QUANTUM {
+            let Some(id) = self.resident_snapshot_order.pop_front() else {
+                break;
+            };
+            visits = visits.saturating_add(1);
+            if !self.snapshot_selectable[id] || self.snapshot_retained(id) {
+                continue;
+            }
+            if self.referenced[id] {
+                self.referenced[id] = false;
+                self.resident_snapshot_order.push_back(id);
+                continue;
+            }
+            if self.resident_snapshots <= 1 {
+                self.resident_snapshot_order.push_front(id);
                 break;
             }
+            self.release_snapshot(id);
+            self.snapshot_evictions = self.snapshot_evictions.saturating_add(1);
+            reclaimed = true;
         }
-        if self.resident_memory_bytes() > limit && self.liveness_anchor.is_some() {
+        while self.resident_memory_bytes() > limit
+            && visits < MAINTENANCE_QUANTUM
+            && self.active_count > 1
+        {
+            visits = visits.saturating_add(1);
+            if !self.drop_one_entry() {
+                break;
+            }
+            reclaimed = true;
+        }
+        if self.resident_memory_bytes() > limit
+            && !reclaimed
+            && self.resident_snapshot_order.is_empty()
+            && self.active_count <= 1
+            && self.liveness_anchor.is_some()
+        {
             return Err("memory budget cannot retain the executable liveness anchor");
         }
         Ok(())
     }
 
-    fn release_oldest_selectable(&mut self, budget_eviction: bool) -> bool {
-        let candidates = self.resident_snapshot_order.len();
-        for _ in 0..candidates {
-            let Some(id) = self.resident_snapshot_order.pop_front() else {
-                break;
-            };
-            if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+    /// Deactivate the next unreferenced active entry under the drop hand,
+    /// clearing reference bits on the way. Two full passes without a drop
+    /// mean nothing is droppable.
+    fn drop_one_entry(&mut self) -> bool {
+        let count = self.entries.len();
+        if count == 0 {
+            return false;
+        }
+        for _ in 0..count.saturating_mul(2) {
+            let id = self.drop_hand % count;
+            self.drop_hand = (id + 1) % count;
+            if !self.active[id] || self.is_liveness_anchor(id) {
                 continue;
             }
-            if self.is_liveness_anchor(id) {
+            if self.referenced[id] {
+                self.referenced[id] = false;
                 continue;
             }
-            return self.release_snapshot(id, budget_eviction);
+            self.deactivate(id);
+            self.entry_drops = self.entry_drops.saturating_add(1);
+            return true;
         }
         false
     }
@@ -1496,6 +1617,13 @@ where
         if !force && self.history_memory_bytes() <= history_target && !entry_pressure {
             return Ok(());
         }
+        // Only inactive entries can be dropped, so fewer inactive entries than
+        // the batch means the scan below could not reach it either.
+        if !force
+            && self.entries.len().saturating_sub(self.active_count) < HISTORY_COMPACTION_MIN_DROPS
+        {
+            return Ok(());
+        }
 
         let keep = self
             .entries
@@ -1504,6 +1632,7 @@ where
             .map(|(index, entry)| {
                 self.active.get(index).copied().unwrap_or(false)
                     || self.metadata_pins.contains_key(&entry.id)
+                    || (self.keyframe[index] && self.keyframe_dependents[index] > 0)
                     || (self.preserve_inactive_snapshots && entry.snapshot.is_some())
                     || (self.liveness_anchor == Some(entry.id) && entry.snapshot.is_some())
                     || entry
@@ -1556,6 +1685,12 @@ where
         self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
         self.snapshot_selectable =
             retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
+        self.keyframe = retain_marked(std::mem::take(&mut self.keyframe), &keep);
+        self.keyframe_id = retain_marked(std::mem::take(&mut self.keyframe_id), &keep);
+        self.keyframe_dependents =
+            retain_marked(std::mem::take(&mut self.keyframe_dependents), &keep);
+        self.referenced = retain_marked(std::mem::take(&mut self.referenced), &keep);
+        self.drop_hand = 0;
 
         // Novelty and pooled-barrenness are compact historical metadata, not
         // reasons to keep snapshots or dead entries resident. Once history is
@@ -1605,7 +1740,9 @@ where
                         .as_deref()
                         .map_or(0, |snapshot| self.snapshot_charge(snapshot)),
                 );
-                self.resident_snapshot_order.push_back(index);
+                if !self.keyframe[index] {
+                    self.resident_snapshot_order.push_back(index);
+                }
             }
         }
 
@@ -1770,6 +1907,40 @@ where
         Ok(Input { actions })
     }
 
+    /// The snapshot a job for this entry restores and the actions it replays
+    /// before its own suffix: the entry's own resident snapshot and nothing,
+    /// or its keyframe's snapshot and the path between them.
+    pub(crate) fn job_origin(&self, id: usize) -> Result<(Arc<S>, Vec<A>), &'static str> {
+        let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
+        if self.snapshot_selectable[id] {
+            let snapshot = entry
+                .snapshot
+                .clone()
+                .ok_or("job origin entry has no resident snapshot")?;
+            return Ok((snapshot, Vec::new()));
+        }
+        let keyframe = self
+            .index_of_id(self.keyframe_id[id])
+            .ok_or("job origin keyframe is missing")?;
+        if !self.snapshot_selectable[keyframe] {
+            return Err("job origin keyframe has no resident snapshot");
+        }
+        let keyframe_entry = &self.entries[keyframe];
+        let snapshot = keyframe_entry
+            .snapshot
+            .clone()
+            .ok_or("job origin keyframe has no resident snapshot")?;
+        let distance = entry
+            .input_len
+            .checked_sub(keyframe_entry.input_len)
+            .ok_or("job origin keyframe is longer than its dependent")?;
+        let replay = self
+            .input_index
+            .actions_between(keyframe_entry.input_node, entry.input_node, distance)
+            .ok_or("job origin keyframe is not on the entry's input path")?;
+        Ok((snapshot, replay))
+    }
+
     fn existing_input_id(&self, parent_id: Option<usize>, suffix: &[A]) -> Option<usize> {
         let node = self.input_index_start(parent_id);
         let node = self.input_index.walk(node, suffix)?;
@@ -1898,7 +2069,7 @@ where
             return false;
         }
         if !self.active.get(index).copied().unwrap_or(false) {
-            if self.active_count >= self.max_entries && !self.release_oldest_selectable(true) {
+            if self.active_count >= self.max_entries && !self.drop_one_entry() {
                 return false;
             }
             let slot_key = self.entries[index].key.group(0);
@@ -1918,15 +2089,15 @@ where
                 let Some(replaced) = replaced else {
                     return false;
                 };
-                self.active[replaced] = false;
-                self.active_count = self.active_count.saturating_sub(1);
-                if let Some(slot) = self.slots.get_mut(&slot_key) {
-                    slot.retain(|id| *id != replaced);
-                }
-                self.release_snapshot(replaced, false);
+                self.deactivate(replaced);
             }
             self.active[index] = true;
             self.active_count = self.active_count.saturating_add(1);
+            let keyframe = self.index_of_id(self.keyframe_id[index]);
+            if let Some(keyframe) = keyframe {
+                self.keyframe_dependents[keyframe] =
+                    self.keyframe_dependents[keyframe].saturating_add(1);
+            }
             self.slots
                 .entry(self.entries[index].key.group(0))
                 .or_default()
@@ -1936,9 +2107,6 @@ where
                 self.liveness_anchor_reactivations =
                     self.liveness_anchor_reactivations.saturating_add(1);
             }
-        }
-        if !self.resident_snapshot_order.contains(&index) {
-            self.resident_snapshot_order.push_back(index);
         }
         self.rebuild_selector_index(max_actions);
         !self.active_ids.is_empty()
@@ -2310,7 +2478,7 @@ where
             if self.active_count < self.max_entries {
                 break;
             }
-            if !self.release_oldest_selectable(true) {
+            if !self.drop_one_entry() {
                 if self.active_count == 1 && self.deactivate_liveness_anchor_for_admission() {
                     continue;
                 }
@@ -2321,17 +2489,8 @@ where
             return Err("archive population limit did not retire an entry".into());
         }
         if let Some(replaced) = replace {
-            let replaced_anchor = self.is_liveness_anchor(replaced);
-            self.active[replaced] = false;
-            self.active_count = self.active_count.saturating_sub(1);
-            if let Some(slot) = self.slots.get_mut(&key.group(0)) {
-                slot.retain(|id| *id != replaced);
-            }
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
-            self.index_remove(replaced);
-            if !replaced_anchor {
-                self.release_snapshot(replaced, false);
-            }
+            self.deactivate(replaced);
         }
         let id = self.entries.len();
         let stable_id = self.next_entry_id;
@@ -2362,7 +2521,31 @@ where
         self.snapshot_selectable.push(true);
         self.resident_snapshots = self.resident_snapshots.saturating_add(1);
         self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_add(snapshot_charge);
-        self.resident_snapshot_order.push_back(id);
+        // The first entry of each replay bucket on a lineage is its keyframe.
+        // A lineage whose keyframe is no longer resident, which can happen
+        // when the parent was retired while its job was in flight, restarts
+        // its bucket here.
+        let inherited_keyframe = parent_id
+            .filter(|parent| {
+                Self::replay_bucket(self.entries[*parent].input_len)
+                    == Self::replay_bucket(input_len)
+            })
+            .and_then(|parent| self.index_of_id(self.keyframe_id[parent]))
+            .filter(|keyframe| self.snapshot_selectable[*keyframe]);
+        let keyframe_index = inherited_keyframe.unwrap_or(id);
+        self.keyframe.push(inherited_keyframe.is_none());
+        self.keyframe_id.push(if inherited_keyframe.is_none() {
+            stable_id
+        } else {
+            self.entries[keyframe_index].id
+        });
+        self.keyframe_dependents.push(0);
+        self.keyframe_dependents[keyframe_index] =
+            self.keyframe_dependents[keyframe_index].saturating_add(1);
+        self.referenced.push(true);
+        if inherited_keyframe.is_some() {
+            self.resident_snapshot_order.push_back(id);
+        }
         self.active.push(true);
         self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
@@ -2505,9 +2688,7 @@ where
             .iter()
             .enumerate()
             .filter_map(|(id, active)| {
-                (*active
-                    && self.snapshot_selectable[id]
-                    && self.entries[id].input_len < max_actions)
+                (*active && self.origin_resident(id) && self.entries[id].input_len < max_actions)
                     .then_some(id)
             })
             .collect()
@@ -3079,6 +3260,11 @@ where
         self.snapshot_evictions
     }
 
+    /// Active entries the memory budget's sweep deactivated.
+    pub fn entry_drops(&self) -> u64 {
+        self.entry_drops
+    }
+
     /// Compact entries currently held by the live acceleration structure.
     #[must_use]
     pub fn live_entry_count(&self) -> usize {
@@ -3200,6 +3386,7 @@ where
         let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
+        self.referenced[id] = true;
         let key = self.entries[id].key;
         if let Some(members) = self
             .classes
@@ -3483,7 +3670,7 @@ mod tests {
                 .expect("resident snapshot"),
         );
 
-        assert!(archive.release_snapshot(0, false));
+        assert!(archive.release_snapshot(0));
         assert!(archive.entries[0].snapshot.is_some());
         assert_eq!(Arc::strong_count(&in_flight), 2);
     }
@@ -3560,7 +3747,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_budget_evicts_the_oldest_snapshot_without_freezing_admission() {
+    fn memory_budget_drops_an_entry_without_freezing_admission() {
         let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
         let root_charge = Archive::<u8, FlatKey<3>, (), ()>::prefix_node_memory_charge();
         let history_charge =
@@ -3587,7 +3774,8 @@ mod tests {
         assert_eq!(archive.active_count(), 2);
         assert_eq!(archive.resident_snapshot_count(), 2);
         assert_eq!(archive.resident_snapshot_bytes(), 2);
-        assert_eq!(archive.snapshot_evictions(), 1);
+        assert_eq!(archive.snapshot_evictions(), 0);
+        assert_eq!(archive.entry_drops(), 1);
         assert_eq!(
             archive.history_memory_bytes(),
             archive
@@ -3646,27 +3834,101 @@ mod tests {
             .enforce_snapshot_memory_budget()
             .expect("budget remains satisfiable");
         assert_eq!(archive.resident_snapshot_count(), 2);
-        assert_eq!(archive.snapshot_evictions(), 2);
+        assert_eq!(archive.active_count(), 2);
+        assert_eq!(archive.snapshot_evictions(), 0);
+        assert_eq!(archive.entry_drops(), 2);
 
         archive.memory_limit = Some(0);
         archive
             .enforce_snapshot_memory_budget()
             .expect("budget remains satisfiable");
         assert_eq!(archive.resident_snapshot_count(), 1);
-        assert_eq!(archive.snapshot_evictions(), 3);
+        assert_eq!(archive.active_count(), 1);
+        assert_eq!(archive.entry_drops(), 3);
     }
 
     #[test]
-    fn oldest_selectable_release_skips_dead_order_entries_and_reports_exhaustion() {
+    fn budget_enforcement_evicts_cached_snapshots_before_dropping_entries() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![0],
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
+        for step in 1_u8..4 {
+            archive
+                .insert(
+                    Some(usize::from(step - 1)),
+                    u64::from(step),
+                    ArchiveCandidate {
+                        suffix: vec![step],
+                        key: FlatKey([u16::from(step), u16::from(step), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert child")
+                .expect("retain child");
+        }
+        assert_eq!(archive.resident_snapshot_count(), 4);
+        assert!(archive.keyframe[0]);
+        assert!(archive.keyframe[1..4].iter().all(|keyframe| !keyframe));
+        assert_eq!(archive.keyframe_dependents[0], 4);
+
+        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(1));
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
+        assert_eq!(archive.active_count(), 4);
+        assert_eq!(archive.resident_snapshot_count(), 1);
+        assert_eq!(archive.snapshot_evictions(), 3);
+        assert_eq!(archive.entry_drops(), 0);
+        assert!(archive.entries[0].snapshot.is_some());
+
+        let (origin, replay) = archive.job_origin(3).expect("replay from the keyframe");
+        assert!(Arc::ptr_eq(
+            &origin,
+            archive.entries[0]
+                .snapshot
+                .as_ref()
+                .expect("keyframe snapshot")
+        ));
+        assert_eq!(replay, vec![1, 2, 3]);
+        let (_, replay) = archive.job_origin(0).expect("keyframe is its own origin");
+        assert!(replay.is_empty());
+
+        let mut rand = RomuDuoJrRand::with_seed(1);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..64 {
+            let (selected, _) = archive
+                .select_parent(&mut rand, 8)
+                .expect("select from replayable entries");
+            seen.insert(selected);
+        }
+        assert_eq!(seen.len(), 4, "entries without a snapshot stay selectable");
+    }
+
+    #[test]
+    fn entry_drop_sweep_clears_reference_bits_first_and_reports_exhaustion() {
         let mut empty = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
-        assert!(!empty.release_oldest_selectable(true));
+        assert!(!empty.drop_one_entry());
 
         let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
-        assert!(archive.release_snapshot(0, true));
-        assert!(archive.release_oldest_selectable(true));
+        assert!(archive.deactivate(0));
+        assert!(archive.drop_one_entry());
+        assert_eq!(archive.active_count(), 0);
         assert_eq!(archive.resident_snapshot_count(), 0);
-        assert_eq!(archive.snapshot_evictions(), 2);
-        assert!(!archive.release_oldest_selectable(true));
+        assert_eq!(archive.entry_drops(), 1);
+        assert!(!archive.drop_one_entry());
     }
 
     #[test]
@@ -3795,7 +4057,7 @@ mod tests {
                 .expect("retain history entry");
         }
         for index in 0..HISTORY_COMPACTION_MIN_DROPS {
-            assert!(archive.release_snapshot(index, true));
+            assert!(archive.deactivate(index));
         }
         archive
     }
@@ -3839,7 +4101,7 @@ mod tests {
     #[test]
     fn history_compaction_waits_for_the_minimum_drop_batch() {
         let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
-        assert!(archive.release_snapshot(0, true));
+        assert!(archive.deactivate(0));
         archive.memory_limit = Some(1);
         archive
             .compact_history_if_needed()
@@ -3858,7 +4120,7 @@ mod tests {
                 .as_ref()
                 .expect("resident snapshot"),
         );
-        assert!(held.release_snapshot(0, true));
+        assert!(held.deactivate(0));
         held.compact_history(true)
             .expect("worker-owned snapshot survives final compaction");
         assert!(held.index_of_id(held_id).is_some());
@@ -3869,14 +4131,14 @@ mod tests {
         preserved
             .preserve_inactive_snapshots(true)
             .expect("enable inactive snapshot preservation");
-        assert!(preserved.release_snapshot(0, true));
+        assert!(preserved.deactivate(0));
         preserved
             .compact_history(true)
             .expect("explicitly preserved snapshot survives final compaction");
         assert!(preserved.index_of_id(preserved_id).is_some());
 
         let mut empty = flat_archive::<3>(&[[0, 0, 0, 0]]);
-        assert!(empty.release_snapshot(0, true));
+        assert!(empty.deactivate(0));
         empty.preserve_inactive_snapshots = true;
         empty
             .compact_history(true)
@@ -3893,7 +4155,7 @@ mod tests {
             .preserve_inactive_snapshots(true)
             .expect("enable inactive snapshot preservation");
         assert!(archive.preserves_inactive_snapshots());
-        assert!(archive.release_snapshot(0, true));
+        assert!(archive.deactivate(0));
         assert!(archive.entries[0].snapshot.is_some());
         archive
             .preserve_inactive_snapshots(false)
@@ -4227,7 +4489,7 @@ mod tests {
         assert_eq!(archive.barren_group_count(), 2);
 
         for index in 0..survivor {
-            assert!(archive.release_snapshot(index, true));
+            assert!(archive.deactivate(index));
         }
         archive.memory_limit = Some(4);
         archive

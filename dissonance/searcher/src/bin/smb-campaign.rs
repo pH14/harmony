@@ -30,6 +30,12 @@ use searcher::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+/// Archive memory budget of a run that names none. The archive keeps its
+/// population under this charge with proportional maintenance; a whole-game
+/// search stays inside it with room for the emulator and the workers on an
+/// ordinary machine.
+const DEFAULT_MEMORY_BUDGET_MIB: usize = 2048;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mode = args.next().ok_or("usage: smb-campaign <run|replay> ...")?;
@@ -105,7 +111,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut checkpoint_path = None;
     let mut write_final_artifacts = true;
     let mut archive_entry_limit = MAX_ARCHIVE_ENTRIES;
-    let mut memory_budget_mib = None;
+    let mut memory_budget_mib = Some(DEFAULT_MEMORY_BUDGET_MIB);
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
