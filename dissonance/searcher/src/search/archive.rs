@@ -295,7 +295,7 @@ const CONCENTRATION_WINDOW: usize = 128;
 /// cheapest offered member, so a band's draws follow the routes that reach
 /// it with the most time left; a compiled property of the recorded
 /// identifier, like the window itself.
-const CHEAPEST_RANK_SCALE: usize = 16;
+const CHEAPEST_RANK_SCALE: usize = 4;
 
 /// Selections after which a cell stops counting as new and competes on
 /// energy and cost alone, so a fresh cell that keeps failing cannot hold
