@@ -113,6 +113,7 @@ const GIC_STATE_VERSION: u32 = 3;
 /// half uses the corresponding generated binding when it builds the ioctl.
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
+const KVM_DIRTY_BITMAP_WORD_PAGES: u64 = 64;
 
 const fn vgic_sysreg(op0: u64, op1: u64, crn: u64, crm: u64, op2: u64) -> u64 {
     op0 << 14 | op1 << 11 | crn << 7 | crm << 3 | op2
@@ -306,6 +307,45 @@ pub(crate) fn dirty_bitmap_words(size: u64) -> Result<usize> {
     let pages = size / KVM_PAGE_SIZE;
     let words = pages.checked_add(63).ok_or(BackendError::InvalidState)? / 64;
     usize::try_from(words).map_err(|_| BackendError::InvalidState)
+}
+
+/// Validate one `KVM_CLEAR_DIRTY_LOG` request before it crosses the syscall
+/// seam. The kernel consumes one bitmap word per 64 pages; only a request that
+/// reaches the slot's final partial word may have a non-64-page length.
+pub(crate) fn validate_clear_dirty_log(
+    slot_size: u64,
+    first_page: u64,
+    num_pages: u32,
+    bitmap: &[u64],
+) -> Result<()> {
+    let _ = dirty_bitmap_words(slot_size)?;
+    let slot_pages = slot_size / KVM_PAGE_SIZE;
+    if num_pages == 0 || !first_page.is_multiple_of(KVM_DIRTY_BITMAP_WORD_PAGES) {
+        return Err(BackendError::InvalidState);
+    }
+    let num_pages = u64::from(num_pages);
+    let end_page = first_page
+        .checked_add(num_pages)
+        .ok_or(BackendError::InvalidState)?;
+    if first_page >= slot_pages || end_page > slot_pages {
+        return Err(BackendError::InvalidState);
+    }
+    let expected_words = usize::try_from(
+        num_pages
+            .checked_add(KVM_DIRTY_BITMAP_WORD_PAGES - 1)
+            .ok_or(BackendError::InvalidState)?
+            / KVM_DIRTY_BITMAP_WORD_PAGES,
+    )
+    .map_err(|_| BackendError::InvalidState)?;
+    if bitmap.len() != expected_words {
+        return Err(BackendError::Internal(
+            "KVM clear dirty bitmap has an unexpected size",
+        ));
+    }
+    if !num_pages.is_multiple_of(KVM_DIRTY_BITMAP_WORD_PAGES) && end_page != slot_pages {
+        return Err(BackendError::InvalidState);
+    }
+    Ok(())
 }
 
 /// Decode one validated KVM dirty bitmap to absolute guest frame numbers.
@@ -967,12 +1007,31 @@ pub trait Arm64Kvm {
         unsafe { self.set_user_memory_region(slot, gpa, host, len) }
     }
 
-    /// Retrieve and reset one KVM dirty bitmap.
+    /// Retrieve one KVM dirty bitmap. In manual-protect mode this operation
+    /// does not clear the bits; callers must follow it with
+    /// [`Self::clear_dirty_log`] after decoding the bitmap.
     ///
     /// `size` is the registered memslot length in bytes. Implementations must
     /// return exactly one `u64` per 64 pages (rounded up); a malformed bitmap
     /// is an error rather than a truncated or over-read decode.
     fn get_dirty_log(&mut self, slot: u32, size: u64) -> Result<Vec<u64>>;
+
+    /// Clear selected bits from one KVM dirty bitmap.
+    ///
+    /// `first_page` is relative to the slot and must be 64-page aligned.
+    /// `num_pages` is a multiple of 64, except when the range reaches the
+    /// slot's final partial word. `bitmap` contains exactly the words covering
+    /// the requested range. Implementations validate all of these shape
+    /// constraints before issuing `KVM_CLEAR_DIRTY_LOG`.
+    #[doc(hidden)]
+    fn clear_dirty_log(
+        &mut self,
+        slot: u32,
+        size: u64,
+        first_page: u64,
+        num_pages: u32,
+        bitmap: &[u64],
+    ) -> Result<()>;
 
     /// `KVM_GET_ONE_REG` (u64).
     fn get_one_reg(&self, id: u64) -> Result<u64>;
@@ -1176,6 +1235,76 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             }
         }
     }
+
+    /// Clear every maximal run of nonzero dirty-bitmap words. Manual dirty-log
+    /// mode leaves the result of GET intact, so clearing only these runs avoids
+    /// the full-slot write-protect/bitmap walk on sparse workloads. The local
+    /// `slot_gfns` is held until all CLEAR calls for this slot succeed, so an
+    /// error can never expose a partial result.
+    fn clear_dirty_runs(&mut self, slot: u32, size: u64, bitmap: &[u64]) -> Result<()> {
+        let words = dirty_bitmap_words(size)?;
+        if bitmap.len() != words {
+            return Err(BackendError::Internal(
+                "KVM dirty bitmap has an unexpected size",
+            ));
+        }
+        let slot_pages = size / KVM_PAGE_SIZE;
+        let max_words = usize::try_from(u64::from(u32::MAX) / KVM_DIRTY_BITMAP_WORD_PAGES)
+            .map_err(|_| BackendError::InvalidState)?;
+        let final_mask = if slot_pages.is_multiple_of(KVM_DIRTY_BITMAP_WORD_PAGES) {
+            u64::MAX
+        } else {
+            (1u64 << (slot_pages % KVM_DIRTY_BITMAP_WORD_PAGES)) - 1
+        };
+        let nonzero = |index: usize| {
+            let mask = if index + 1 == words {
+                final_mask
+            } else {
+                u64::MAX
+            };
+            bitmap[index] & mask != 0
+        };
+
+        let mut start = 0usize;
+        while start < words {
+            if !nonzero(start) {
+                start += 1;
+                continue;
+            }
+            let mut end = start + 1;
+            while end < words && nonzero(end) {
+                end += 1;
+            }
+            let mut chunk_start = start;
+            while chunk_start < end {
+                let chunk_end = end.min(
+                    chunk_start
+                        .checked_add(max_words)
+                        .ok_or(BackendError::InvalidState)?,
+                );
+                let first_page = u64::try_from(chunk_start)
+                    .map_err(|_| BackendError::InvalidState)?
+                    .checked_mul(KVM_DIRTY_BITMAP_WORD_PAGES)
+                    .ok_or(BackendError::InvalidState)?;
+                let chunk_end_page = u64::try_from(chunk_end)
+                    .map_err(|_| BackendError::InvalidState)?
+                    .checked_mul(KVM_DIRTY_BITMAP_WORD_PAGES)
+                    .ok_or(BackendError::InvalidState)?;
+                let end_page = chunk_end_page.min(slot_pages);
+                let num_pages = end_page
+                    .checked_sub(first_page)
+                    .ok_or(BackendError::InvalidState)?;
+                let num_pages = u32::try_from(num_pages).map_err(|_| BackendError::InvalidState)?;
+                let slice = &bitmap[chunk_start..chunk_end];
+                validate_clear_dirty_log(size, first_page, num_pages, slice)?;
+                self.kvm
+                    .clear_dirty_log(slot, size, first_page, num_pages, slice)?;
+                chunk_start = chunk_end;
+            }
+            start = end;
+        }
+        Ok(())
+    }
 }
 
 impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
@@ -1291,12 +1420,19 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         }
 
         let mut gfns = Vec::new();
-        for &(slot, gpa, size) in &self.dirty_slots {
-            // KVM_GET_DIRTY_LOG retrieves and resets this slot. If a later
-            // slot fails, return only Err: callers must full-scan and must not
-            // consume the earlier partial vector.
+        for index in 0..self.dirty_slots.len() {
+            // Copy the metadata before mutably borrowing the syscall seam; the
+            // indexed tuple is `Copy`, so no per-snapshot metadata clone is
+            // needed and the immutable borrow ends before GET/CLEAR.
+            let (slot, gpa, size) = self.dirty_slots[index];
+            // Manual-protect KVM_GET_DIRTY_LOG does not reset this slot. Decode
+            // directly into the result buffer and clear only the nonzero runs
+            // after the bitmap shape has been validated. If any slot fails,
+            // return only Err: the populated buffer is dropped and callers
+            // never observe a partial vector.
             let bitmap = self.kvm.get_dirty_log(slot, size)?;
             decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns)?;
+            self.clear_dirty_runs(slot, size, &bitmap)?;
         }
         gfns.sort_unstable();
         gfns.dedup();
@@ -1465,14 +1601,19 @@ pub struct FakeKvm {
     pub memslots: Vec<(u32, u64, u64)>,
     /// Recorded `(slot, flags)` for each memory registration, in call order.
     pub memslot_flags: Vec<(u32, u32)>,
-    /// The current deterministic dirty bitmap for each registered slot. A
-    /// successful `get_dirty_log` replaces the bitmap with all-zero words,
-    /// modeling KVM's retrieve-and-reset behavior.
+    /// The current deterministic dirty bitmap for each registered slot. Manual
+    /// `get_dirty_log` leaves this bitmap unchanged; `clear_dirty_log` clears
+    /// the selected bits, matching KVM's manual-protect mode.
     pub dirty_bitmaps: std::collections::BTreeMap<u32, Vec<u64>>,
     /// Every dirty-log request `(slot, size)` issued by the backend.
     pub dirty_log_calls: Vec<(u32, u64)>,
     /// One-based request number at which the fake should return an error.
     pub dirty_log_fail_on_call: Option<usize>,
+    /// Every clear request `(slot, size, first_page, num_pages, bitmap)` issued
+    /// by the backend.
+    pub dirty_clear_calls: Vec<(u32, u64, u64, u32, Vec<u64>)>,
+    /// One-based clear request number at which the fake should return an error.
+    pub dirty_clear_fail_on_call: Option<usize>,
     /// Portable model of the vGIC device-attribute register file.
     vgic_attrs: std::collections::BTreeMap<(u32, u64, bool), u64>,
     /// Whether a scripted entry models the guest accepting an asserted IRQ.
@@ -1509,8 +1650,8 @@ impl FakeKvm {
         self
     }
 
-    /// Set the deterministic bitmap returned for a slot's next dirty-log
-    /// retrieval. The bitmap is reset to zero after retrieval.
+    /// Set the deterministic bitmap returned for a slot's dirty-log
+    /// retrieval. Manual GET leaves it in place until a matching CLEAR.
     pub fn set_dirty_bitmap(&mut self, slot: u32, bitmap: Vec<u64>) -> &mut Self {
         self.dirty_bitmaps.insert(slot, bitmap);
         self
@@ -1520,6 +1661,13 @@ impl FakeKvm {
     /// mid-drain error never exposes an earlier partial result.
     pub fn fail_dirty_log_on_call(&mut self, call: usize) -> &mut Self {
         self.dirty_log_fail_on_call = Some(call);
+        self
+    }
+
+    /// Make the one-based dirty-log clear request number fail, for testing
+    /// that a clear error never exposes an earlier partial result.
+    pub fn fail_dirty_clear_on_call(&mut self, call: usize) -> &mut Self {
+        self.dirty_clear_fail_on_call = Some(call);
         self
     }
 }
@@ -1580,7 +1728,45 @@ impl Arm64Kvm for FakeKvm {
                 "fake KVM dirty bitmap has an unexpected size",
             ));
         }
-        Ok(std::mem::replace(bitmap, vec![0; words]))
+        Ok(bitmap.clone())
+    }
+
+    fn clear_dirty_log(
+        &mut self,
+        slot: u32,
+        size: u64,
+        first_page: u64,
+        num_pages: u32,
+        bitmap: &[u64],
+    ) -> Result<()> {
+        validate_clear_dirty_log(size, first_page, num_pages, bitmap)?;
+        let words = dirty_bitmap_words(size)?;
+        let call = self.dirty_clear_calls.len() + 1;
+        self.calls.push("clear_dirty_log");
+        self.dirty_clear_calls
+            .push((slot, size, first_page, num_pages, bitmap.to_vec()));
+        if self.dirty_clear_fail_on_call == Some(call) {
+            return Err(BackendError::Internal("fake KVM dirty-log clear failed"));
+        }
+        let dirty = self
+            .dirty_bitmaps
+            .entry(slot)
+            .or_insert_with(|| vec![0; words]);
+        if dirty.len() != words {
+            return Err(BackendError::Internal(
+                "fake KVM dirty bitmap has an unexpected size",
+            ));
+        }
+        let first_word = usize::try_from(first_page / KVM_DIRTY_BITMAP_WORD_PAGES)
+            .map_err(|_| BackendError::InvalidState)?;
+        for (offset, &mask) in bitmap.iter().enumerate() {
+            let index = first_word
+                .checked_add(offset)
+                .ok_or(BackendError::InvalidState)?;
+            let word = dirty.get_mut(index).ok_or(BackendError::InvalidState)?;
+            *word &= !mask;
+        }
+        Ok(())
     }
 
     fn get_one_reg(&self, id: u64) -> Result<u64> {
@@ -2773,7 +2959,7 @@ mod tests {
     }
 
     #[test]
-    fn dirty_log_retrieval_resets_fake_bitmap() {
+    fn dirty_log_manual_get_requires_clear_and_repeat_drain_is_empty() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
         fake.set_dirty_bitmap(0, vec![1 << 1]);
@@ -2788,6 +2974,83 @@ mod tests {
         );
         assert!(b.drain_dirty_pages().unwrap().is_empty());
         assert_eq!(b.kvm().dirty_log_calls, vec![(0, 2 * 4096), (0, 2 * 4096)]);
+        assert_eq!(
+            b.kvm().dirty_clear_calls,
+            vec![(0, 2 * 4096, 0, 2, vec![1 << 1])]
+        );
+    }
+
+    #[test]
+    fn dirty_log_clears_only_maximal_sparse_runs_and_final_partial_word() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        // 193 pages occupy four bitmap words; the final word has one valid bit.
+        fake.set_dirty_bitmap(0, vec![1 << 1, 0, 1 << 3, 1]);
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        let mut ram = vec![0u8; 193 * 4096];
+        unsafe { b.map_memory(Gpa(0x8_0000_0000), &mut ram).unwrap() };
+
+        assert_eq!(
+            b.drain_dirty_pages().unwrap(),
+            vec![
+                0x8_0000_0000 / 4096 + 1,
+                0x8_0000_0000 / 4096 + 2 * 64 + 3,
+                0x8_0000_0000 / 4096 + 3 * 64,
+            ]
+        );
+        assert_eq!(
+            b.kvm().dirty_clear_calls,
+            vec![
+                (0, 193 * 4096, 0, 64, vec![1 << 1]),
+                (0, 193 * 4096, 128, 65, vec![1 << 3, 1]),
+            ]
+        );
+        assert!(b.drain_dirty_pages().unwrap().is_empty());
+        assert_eq!(b.kvm().dirty_clear_calls.len(), 2);
+    }
+
+    #[test]
+    fn dirty_log_clear_rejects_malformed_shape_without_panicking() {
+        let mut fake = FakeKvm::new();
+        let size = 65 * 4096;
+        assert!(matches!(
+            fake.clear_dirty_log(0, size, 1, 1, &[1]),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            fake.clear_dirty_log(0, size, 64, 1, &[]),
+            Err(BackendError::Internal(
+                "KVM clear dirty bitmap has an unexpected size"
+            ))
+        ));
+        assert!(matches!(
+            fake.clear_dirty_log(0, size, 64, 64, &[1]),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            fake.clear_dirty_log(0, 130 * 4096, 0, 1, &[1]),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(fake.dirty_clear_calls.is_empty());
+    }
+
+    #[test]
+    fn dirty_log_clear_error_never_exposes_partial_result() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_dirty_bitmap(0, vec![1, 0, 1]);
+        fake.fail_dirty_clear_on_call(2);
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        let mut ram = vec![0u8; 129 * 4096];
+        unsafe { b.map_memory(Gpa(0x9_0000_0000), &mut ram).unwrap() };
+
+        assert!(matches!(
+            b.drain_dirty_pages(),
+            Err(BackendError::Internal("fake KVM dirty-log clear failed"))
+        ));
+        assert_eq!(b.kvm().dirty_clear_calls.len(), 2);
     }
 
     #[test]

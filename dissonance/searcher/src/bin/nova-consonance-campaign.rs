@@ -54,6 +54,19 @@ mod real {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
+    // Each worker keeps one guest VM resident for the campaign. This backing
+    // is outside the archive's logical snapshot charge and belongs in the
+    // whole-process reserve.
+    const PERSISTENT_VM_MEMORY_MIB: usize = 128;
+    // Reserve a conservative, deterministic amount for non-archive process
+    // allocations, rounded up from measured campaign overhead.
+    const NON_ARCHIVE_PROCESS_OVERHEAD_MIB: usize = 448;
+
+    struct MemoryBudget {
+        archive_memory_budget_mib: usize,
+        process_memory_reserve_mib: usize,
+    }
+
     struct Args {
         kernel: PathBuf,
         initramfs: PathBuf,
@@ -90,7 +103,7 @@ mod real {
             let mut action_limit = 512_usize;
             let mut wall_seconds = 14_400_u64;
             let mut host = "github-actions-consonance".to_owned();
-            let mut memory_budget_mib = 512_usize;
+            let mut memory_budget_mib = 1024_usize;
             let mut fixed_execution_soak = false;
             let mut args = values.into_iter();
             while let Some(flag) = args.next() {
@@ -123,7 +136,7 @@ mod real {
                     other => return Err(format!("unknown argument {other:?}").into()),
                 }
             }
-            Ok(Self {
+            let parsed = Self {
                 kernel: kernel.ok_or("missing --kernel")?,
                 initramfs: initramfs.ok_or("missing --initramfs")?,
                 rom: rom.ok_or("missing --rom")?,
@@ -137,8 +150,44 @@ mod real {
                 host,
                 memory_budget_mib,
                 fixed_execution_soak,
-            })
+            };
+            memory_budget_for_workers(parsed.memory_budget_mib, parsed.workers)?;
+            Ok(parsed)
         }
+    }
+
+    fn process_memory_reserve_mib(workers: usize) -> Result<usize, Box<dyn Error>> {
+        let persistent_vm_memory_mib = workers
+            .checked_mul(PERSISTENT_VM_MEMORY_MIB)
+            .ok_or("worker VM memory reserve overflow")?;
+        NON_ARCHIVE_PROCESS_OVERHEAD_MIB
+            .checked_add(persistent_vm_memory_mib)
+            .ok_or("process memory reserve overflow")
+            .map_err(Into::into)
+    }
+
+    fn memory_budget_for_workers(
+        memory_budget_mib: usize,
+        workers: u32,
+    ) -> Result<MemoryBudget, Box<dyn Error>> {
+        if workers == 0 {
+            return Err("workers must be greater than zero".into());
+        }
+        let workers = usize::try_from(workers).map_err(|_| "worker count does not fit usize")?;
+        let process_memory_reserve_mib = process_memory_reserve_mib(workers)?;
+        if memory_budget_mib <= process_memory_reserve_mib {
+            return Err(format!(
+                "memory-budget-mib must be greater than the {process_memory_reserve_mib} MiB process reserve"
+            )
+            .into());
+        }
+        let archive_memory_budget_mib = memory_budget_mib
+            .checked_sub(process_memory_reserve_mib)
+            .ok_or("archive memory budget underflow")?;
+        Ok(MemoryBudget {
+            archive_memory_budget_mib,
+            process_memory_reserve_mib,
+        })
     }
 
     fn parse_number<T>(name: &str, value: OsString) -> Result<T, Box<dyn Error>>
@@ -155,6 +204,7 @@ mod real {
 
     pub fn run() -> Result<(), Box<dyn Error>> {
         let args = Args::parse()?;
+        let memory_budget = memory_budget_for_workers(args.memory_budget_mib, args.workers)?;
         fs::create_dir_all(&args.output)?;
         let rom = fs::read(&args.rom)?;
         let kernel = fs::read(&args.kernel)?;
@@ -169,7 +219,7 @@ mod real {
             wall_budget: Some(std::time::Duration::from_secs(args.wall_seconds)),
             continue_after_victory: args.fixed_execution_soak,
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-            memory_budget_mib: Some(args.memory_budget_mib),
+            memory_budget_mib: Some(memory_budget.archive_memory_budget_mib),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::AdmitAlive,
             selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
@@ -216,6 +266,9 @@ mod real {
             "emulator_backend": game.emulator_identity(),
             "campaign_seed": report.campaign_seed,
             "workers": report.workers,
+            "memory_budget_mib": args.memory_budget_mib,
+            "archive_memory_budget_mib": memory_budget.archive_memory_budget_mib,
+            "process_memory_reserve_mib": memory_budget.process_memory_reserve_mib,
             "execution_budget": report.execution_budget,
             "executions": report.executions_completed,
             "frames_emulated": report.frames_emulated,
@@ -324,7 +377,10 @@ mod real {
 
     #[cfg(test)]
     mod tests {
-        use super::{Args, OsString};
+        use super::{
+            Args, NON_ARCHIVE_PROCESS_OVERHEAD_MIB, OsString, memory_budget_for_workers,
+            process_memory_reserve_mib,
+        };
 
         fn required_args(extra: &[&str]) -> Vec<OsString> {
             let mut args = [
@@ -355,6 +411,49 @@ mod real {
                 .expect("soak arguments parse");
             assert!(soak.fixed_execution_soak);
             assert_eq!(soak.seed, 42);
+        }
+
+        #[test]
+        fn effective_archive_budget_accounts_for_each_worker_vm() {
+            for (workers, expected_archive_budget_mib) in
+                [(1, 1_472), (4, 1_088), (8, 576), (12, 64)]
+            {
+                let budget = memory_budget_for_workers(2_048, workers)
+                    .expect("requested process budget should fit");
+                assert_eq!(
+                    budget.archive_memory_budget_mib,
+                    expected_archive_budget_mib
+                );
+                assert_eq!(
+                    budget.process_memory_reserve_mib,
+                    NON_ARCHIVE_PROCESS_OVERHEAD_MIB + 128 * workers as usize
+                );
+            }
+        }
+
+        #[test]
+        fn worker_vm_reserve_uses_checked_arithmetic() {
+            assert!(process_memory_reserve_mib(usize::MAX).is_err());
+        }
+
+        #[test]
+        fn budget_must_exceed_process_reserve() {
+            assert!(memory_budget_for_workers(576, 1).is_err());
+            assert!(memory_budget_for_workers(575, 1).is_err());
+        }
+
+        #[test]
+        fn worker_count_must_be_nonzero() {
+            assert!(memory_budget_for_workers(2_048, 0).is_err());
+        }
+
+        #[test]
+        fn parse_rejects_invalid_process_budget_inputs() {
+            let zero_workers = required_args(&["--workers", "0"]);
+            assert!(Args::parse_from(zero_workers).is_err());
+
+            let too_small = required_args(&["--memory-budget-mib", "576"]);
+            assert!(Args::parse_from(too_small).is_err());
         }
     }
 }
