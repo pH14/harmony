@@ -95,6 +95,9 @@ const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 /// Curve sampling interval in admitted executions.
 const CURVE_INTERVAL: u64 = 100;
 
+/// Fixed sidecar checkpoint interval in completed executions.
+const PROGRESS_CHECKPOINT_INTERVAL: u64 = 100;
+
 /// Maximum deterministic progress samples retained in a live campaign.
 const MAX_PROGRESS_CURVE_POINTS: usize = 1_024;
 
@@ -113,8 +116,15 @@ fn compact_progress_curve<M, P>(
     next_interval
 }
 
-/// Seconds between sidecar observations.
-const PROGRESS_INTERVAL_SECONDS: u64 = 60;
+/// Whether a sidecar checkpoint is due for the completed execution count.
+///
+/// Progress sidecars are observations, but their checkpoint boundaries are
+/// part of deterministic run diagnostics: every same-seed run must emit the
+/// same execution series regardless of host speed. The Unix timestamp in a
+/// record remains informational only.
+fn progress_checkpoint_due(executions: u64) -> bool {
+    executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
+}
 
 /// Identifier recorded for the resume rule: the source archive's whole
 /// retained tree is imported, and the header's resume input is the frontier
@@ -2263,11 +2273,6 @@ where
     #[allow(clippy::disallowed_methods)] // not order-observable: reservation cutoff only.
     let started = config.wall_budget.map(|_| std::time::Instant::now());
 
-    // Sidecar cadence. Held outside the worker scope so one clock covers the run.
-    #[allow(clippy::disallowed_methods)]
-    let progress_started = std::time::Instant::now();
-    let mut next_progress = 0_u64;
-
     let mut reserved = 0_u64;
     let mut coordinator_profile =
         live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
@@ -2670,15 +2675,10 @@ where
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
                     if let Some(sink) = progress.as_deref_mut() {
-                        // Wall-clock controls the sidecar only. It selects nothing and
-                        // enters no recorded artifact, so its nondeterminism cannot
-                        // reach the stream.
-                        #[allow(clippy::disallowed_methods)]
-                        let elapsed = progress_started.elapsed().as_secs();
-                        if elapsed >= next_progress {
-                            next_progress = elapsed
-                                .saturating_add(PROGRESS_INTERVAL_SECONDS)
-                                .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+                        // Count-based boundaries keep sidecar presence
+                        // independent of host speed; the timestamp below is
+                        // informational only.
+                        if progress_checkpoint_due(sequence) {
                             #[allow(clippy::disallowed_methods)]
                             let unix_time = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -2690,6 +2690,9 @@ where
                                 .unwrap_or((None, 0, 0));
                             let line = serde_json::to_string(&CampaignProgressRecord {
                                 unix_time,
+                                // `sequence` is the one-based count returned by admission;
+                                // the sidecar must report completed executions, not the
+                                // zero-based reservation/admission index.
                                 executions: sequence,
                                 frames_emulated: counters
                                     .bootstrap_frames
@@ -3329,8 +3332,8 @@ mod tests {
         MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP, archive_entry_limit_is_valid,
         compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
-        progress_policy_is_supported, record_compaction_elapsed, replay_splice,
-        retained_archive_indexes, uses_bounded_progress_curve, worker_queue_is_idle,
+        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
+        replay_splice, retained_archive_indexes, uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3490,6 +3493,17 @@ mod tests {
         core.compact_progress_curve_if_needed();
         assert_eq!(core.curve.len(), MAX_PROGRESS_CURVE_POINTS / 2);
         assert_eq!(core.curve_interval, 200);
+    }
+
+    #[test]
+    fn sidecar_checkpoint_boundaries_use_completed_execution_count() {
+        let checkpoints = (1..=200)
+            .filter(|&executions| progress_checkpoint_due(executions))
+            .collect::<Vec<_>>();
+        assert_eq!(checkpoints, vec![1, 100, 200]);
+        for executions in [0, 2, 99, 101] {
+            assert!(!progress_checkpoint_due(executions));
+        }
     }
 
     #[test]
