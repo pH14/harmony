@@ -385,13 +385,20 @@ fn screen_x_bucket(wram: &[u8; 2_048]) -> u8 {
 pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x20];
 
-/// The controller vocabulary in the emulator's bit order: no button, Right,
-/// Left, B, A, A+Right, A+Left, A+Left+Right, Up, Down. Start and Select are
-/// excluded because either pauses or leaves the game. The pinned QuickNES
-/// options filter Left+Right, so `0xc1` currently reaches the game as plain A;
-/// a future vocabulary identity can replace that dead entry.
+/// The earlier vocabulary in the emulator's bit order: no button, Right,
+/// Left, B, A, A+Right, A+Left, A+Left+Right, Up, Down. It has no B+direction
+/// chord, so the player can never run; it is kept only so recordings made
+/// under its identifier keep replaying byte-exact.
 pub const NES_DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0xc1, 0x10, 0x20];
+
+/// The controller vocabulary in the emulator's bit order: no button, Right,
+/// Left, B, A, and each direction with A, with B, and with A+B, then Up and
+/// Down. Start and Select are excluded because either pauses or leaves the
+/// game, and the pinned QuickNES options filter Left+Right.
+pub const NES_RUN_THIRTEEN_BUTTON_MASKS: [u8; 13] = [
+    0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0x82, 0x42, 0x83, 0x43, 0x10, 0x20,
+];
 
 /// Draw one chord: a uniform mask and a hold from one of two strata, short
 /// (2..=12 frames) for control and long (96..=120 frames) for time.
