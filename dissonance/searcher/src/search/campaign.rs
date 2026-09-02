@@ -1817,6 +1817,33 @@ struct LiveCoordinatorProfile {
     receives: u64,
     admissions: u64,
     selections: u64,
+    replay_jobs: u64,
+    replay_actions: u64,
+    replay_time: u64,
+    suffix_actions: u64,
+    suffix_time: u64,
+}
+
+impl LiveCoordinatorProfile {
+    /// Account one dispatched job's replay path and suffix in actions and in
+    /// the game's action time.
+    fn note_dispatch<G: Game + ?Sized>(&mut self, spec: &JobSpec<G>, time: fn(&G::Action) -> u64) {
+        if !self.enabled {
+            return;
+        }
+        let total = |actions: &[G::Action]| actions.iter().map(time).sum::<u64>();
+        if !spec.replay.is_empty() {
+            self.replay_jobs = self.replay_jobs.saturating_add(1);
+        }
+        self.replay_actions = self
+            .replay_actions
+            .saturating_add(u64::try_from(spec.replay.len()).unwrap_or(u64::MAX));
+        self.replay_time = self.replay_time.saturating_add(total(&spec.replay));
+        self.suffix_actions = self
+            .suffix_actions
+            .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
+        self.suffix_time = self.suffix_time.saturating_add(total(&spec.suffix));
+    }
 }
 
 fn live_coordinator_profile(enabled: bool) -> LiveCoordinatorProfile {
@@ -2327,6 +2354,7 @@ where
     let mut reserved = 0_u64;
     let mut coordinator_profile =
         live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
+    let action_time = game.action_time_fn();
 
     let max_actions = config.action_limit;
     let retention = config.retention;
@@ -2534,6 +2562,7 @@ where
                 let Some((mut spec, pending_job)) = selected else {
                     break;
                 };
+                coordinator_profile.note_dispatch(&spec, action_time);
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
                 if pending.insert(reservation, pending_job).is_some() {
@@ -2785,7 +2814,7 @@ where
                             sink.flush()?;
                             if coordinator_profile.enabled {
                                 eprintln!(
-                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} idle_workers={} queued_specs={} completed_buffered={}",
+                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} idle_workers={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
                                     coordinator_profile.receive_wait_ns,
                                     coordinator_profile.admission_ns,
                                     coordinator_profile.bookkeeping_ns,
@@ -2818,6 +2847,12 @@ where
                                     idle_workers.len(),
                                     queued_specs.len(),
                                     completed.len(),
+                                    counters.job_frames,
+                                    coordinator_profile.replay_jobs,
+                                    coordinator_profile.replay_actions,
+                                    coordinator_profile.replay_time,
+                                    coordinator_profile.suffix_actions,
+                                    coordinator_profile.suffix_time,
                                 );
                             }
                         }
@@ -2841,6 +2876,7 @@ where
                     coordinator_profile.selections =
                         coordinator_profile.selections.saturating_add(1);
                     if let Some((mut spec, pending_job)) = selected {
+                        coordinator_profile.note_dispatch(&spec, action_time);
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;
                         if pending.insert(reservation, pending_job).is_some() {
