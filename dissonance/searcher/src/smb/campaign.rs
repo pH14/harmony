@@ -2974,7 +2974,6 @@ mod tests {
                     state_fingerprint: 0,
                     room_x_bucket: 0,
                     time_bucket: 0,
-                    loop_standing: 15,
                     room: [0; 3],
                 },
                 milestones: SmbMilestones::default(),

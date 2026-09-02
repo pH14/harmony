@@ -4511,7 +4511,6 @@ mod tests {
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
                 room_x_bucket: 0,
                 time_bucket: 0,
-                loop_standing: 15,
                 room: [0; 3],
             };
             archive
@@ -4710,7 +4709,6 @@ mod tests {
                 state_fingerprint: index,
                 room_x_bucket: 0,
                 time_bucket: 0,
-                loop_standing: 15,
                 room: [0; 3],
             };
             archive
@@ -4978,7 +4976,6 @@ mod tests {
             state_fingerprint: 0,
             room_x_bucket: 0,
             time_bucket: 0,
-            loop_standing: 15,
             room: [0; 3],
         }
     }
