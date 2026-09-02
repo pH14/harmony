@@ -244,6 +244,9 @@ pub struct SmbCampaignConfig {
     pub wall_budget: Option<std::time::Duration>,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
+    /// Reservations held ahead of ordered admission per worker, recorded in
+    /// the header's schedule policy.
+    pub reservations_per_worker: usize,
     /// Deterministic logical-memory budget for the live search structures.
     pub memory_budget_mib: Option<usize>,
     /// Live-only: materialize full archive inputs and snapshots at completion.
@@ -279,6 +282,7 @@ impl SmbCampaignConfig {
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             archive_entry_limit: self.archive_entry_limit,
+            reservations_per_worker: self.reservations_per_worker,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: SmbCampaignRun {
@@ -1494,7 +1498,10 @@ mod tests {
         chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
         execute_job, remember_chord_version, source_batch_ready,
     };
-    use crate::search::campaign::{CAMPAIGN_SCHEDULE_IDENTITY, CoordinatorCore, Game};
+    use crate::search::campaign::{
+        CAMPAIGN_SCHEDULE_IDENTITY, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+        Game,
+    };
     use crate::search::empirical_steps::{EmpiricalStepHashRule, EmpiricalStepTables};
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
@@ -1590,6 +1597,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             archive_entry_limit: 32_768,
+            reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             chord: SmbCampaignChordPolicy::default(),
@@ -2166,7 +2174,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_4_per_worker_v1\"")
+                .contains("\"schedule_policy\":\"deterministic_window_1_per_worker_v1\"")
         );
     }
 
@@ -2186,7 +2194,7 @@ mod tests {
         .expect("new campaign");
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
         let historical = recorded.replacen(
-            "\"schedule_policy\":\"deterministic_window_4_per_worker_v1\"",
+            "\"schedule_policy\":\"deterministic_window_1_per_worker_v1\"",
             "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
             1,
         );
@@ -2208,7 +2216,7 @@ mod tests {
         );
         let legacy = recorded
             .replacen(
-                "\"schedule_policy\":\"deterministic_window_4_per_worker_v1\",",
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v1\",",
                 "",
                 1,
             )
@@ -2716,7 +2724,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
-            ("deterministic_window_4_per_worker_v1", "unknown_order_v9"),
+            ("deterministic_window_1_per_worker_v1", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(

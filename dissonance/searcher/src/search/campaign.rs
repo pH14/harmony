@@ -65,7 +65,6 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
 const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
      alone; the recorded stream is this campaign's identity; two live runs at one seed may \
      differ, and each replays exactly";
-const CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_4_per_worker_v1";
 const LEGACY_CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const LEGACY_CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
@@ -78,8 +77,9 @@ const ORIGIN_ARCHIVE: &str = "archive";
 /// coordinator-owned.
 const EXECUTOR_PREFETCH_JOBS: usize = 8;
 
-/// Reservations held ahead of ordered admission per logical worker.
-const ADMISSION_RESERVATIONS_PER_WORKER: usize = 4;
+/// Reservations held ahead of ordered admission per logical worker when the
+/// run does not set its own.
+pub const DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER: usize = 1;
 
 /// Number of reservations that may be ahead of the ordered admission cursor.
 ///
@@ -88,16 +88,33 @@ const ADMISSION_RESERVATIONS_PER_WORKER: usize = 4;
 /// admission exactly one new reservation is selected. Consequently selection
 /// of reservation `k` observes archive state no older than admission
 /// `k - pipeline_depth`, while the physical executors retain their prefetch.
-const fn admission_window_depth(workers: usize) -> usize {
-    workers.saturating_mul(ADMISSION_RESERVATIONS_PER_WORKER)
+const fn admission_window_depth(workers: usize, reservations_per_worker: usize) -> usize {
+    workers.saturating_mul(reservations_per_worker)
+}
+
+/// The schedule policy a run records: the per-worker window is part of the
+/// identifier because replay must hold the same reservations in flight.
+fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
+    format!("deterministic_window_{reservations_per_worker}_per_worker_v1")
+}
+
+/// The per-worker window a recorded schedule policy names; `None` for the
+/// legacy policy and for identifiers no run could have recorded.
+fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
+    let policy = policy?;
+    if policy == LEGACY_CAMPAIGN_SCHEDULE_POLICY {
+        return None;
+    }
+    policy
+        .strip_prefix("deterministic_window_")?
+        .strip_suffix("_per_worker_v1")?
+        .parse()
+        .ok()
+        .filter(|window| *window >= 1)
 }
 
 fn schedule_policy_is_supported(policy: Option<&str>) -> bool {
-    policy.is_none()
-        || matches!(
-            policy,
-            Some(CAMPAIGN_SCHEDULE_POLICY | LEGACY_CAMPAIGN_SCHEDULE_POLICY)
-        )
+    schedule_policy_is_legacy(policy) || schedule_policy_window(policy).is_some()
 }
 
 fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
@@ -563,6 +580,9 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     pub wall_budget: Option<Duration>,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
+    /// Reservations held ahead of ordered admission per logical worker,
+    /// recorded in the header's schedule policy.
+    pub reservations_per_worker: usize,
     /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
     /// Live-only: materialize full archive inputs and snapshots at completion.
@@ -1712,7 +1732,7 @@ fn stream_header<G: Game>(
         format: game.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         workers: config.workers,
-        schedule_policy: Some(CAMPAIGN_SCHEDULE_POLICY.to_owned()),
+        schedule_policy: Some(schedule_policy_identifier(config.reservations_per_worker)),
         progress_policy: Some(CAMPAIGN_PROGRESS_POLICY.to_owned()),
         host: config.host.clone(),
         origin_kind: origin.kind.clone(),
@@ -2487,7 +2507,7 @@ where
                 }
             };
 
-            let pipeline_depth = admission_window_depth(workers);
+            let pipeline_depth = admission_window_depth(workers, config.reservations_per_worker);
             let mut pending = BTreeMap::<usize, PendingJob>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
             let mut queued_specs = VecDeque::with_capacity(pipeline_depth);
@@ -3162,7 +3182,11 @@ where
         core.archive.establish_liveness_anchor(header.action_limit);
     }
 
-    let replay_window_depth = admission_window_depth(usize::try_from(header.workers)?);
+    let replay_window_depth = admission_window_depth(
+        usize::try_from(header.workers)?,
+        schedule_policy_window(header.schedule_policy.as_deref())
+            .unwrap_or(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
+    );
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots = BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>)>::new();
     if legacy_schedule {
@@ -3450,13 +3474,15 @@ mod tests {
     use super::{
         CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate, CampaignJobRecord,
         CampaignJobResult, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-        CoordinatorCore, EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP, admission_window_depth,
-        archive_entry_limit_is_valid, compact_progress_curve, draw_state_memory_is_within_reserve,
-        finish_record, is_zero_usize, live_coordinator_profile, postcard_sha256, profile_elapsed,
-        profile_now, progress_policy_is_supported, record_compaction_elapsed, replay_splice,
-        retained_archive_indexes, schedule_policy_is_legacy, schedule_policy_is_supported,
-        uses_bounded_progress_curve, worker_queue_is_idle,
+        CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, EnergyStrategy, Game,
+        GamePolicies, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP,
+        admission_window_depth, archive_entry_limit_is_valid, compact_progress_curve,
+        draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
+        live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
+        progress_policy_is_supported, record_compaction_elapsed, replay_splice,
+        retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_legacy,
+        schedule_policy_is_supported, schedule_policy_window, uses_bounded_progress_curve,
+        worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3815,8 +3841,8 @@ mod tests {
     #[test]
     fn sliding_window_depth_is_the_only_selection_staleness() {
         let workers = 3;
-        let depth = admission_window_depth(workers);
-        assert_eq!(depth, workers * super::ADMISSION_RESERVATIONS_PER_WORKER);
+        let depth = admission_window_depth(workers, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert_eq!(depth, workers * DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
 
         // Model the coordinator's event order: fill the pipeline, then admit
         // one result and select one replacement. No reservation can be more
@@ -3848,23 +3874,39 @@ mod tests {
 
     #[test]
     fn sliding_window_depth_saturates_without_overflow() {
-        assert_eq!(admission_window_depth(0), 0);
-        assert_eq!(admission_window_depth(usize::MAX), usize::MAX);
+        assert_eq!(
+            admission_window_depth(0, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
+            0
+        );
+        assert_eq!(admission_window_depth(usize::MAX, 1), usize::MAX);
     }
 
     #[test]
-    fn schedule_policy_dispatch_accepts_current_and_legacy_only() {
+    fn schedule_policy_dispatch_accepts_windowed_and_legacy_only() {
+        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert_eq!(current, "deterministic_window_1_per_worker_v1");
         assert!(schedule_policy_is_supported(None));
+        assert!(schedule_policy_is_supported(Some(&current)));
         assert!(schedule_policy_is_supported(Some(
-            super::CAMPAIGN_SCHEDULE_POLICY
+            "deterministic_window_4_per_worker_v1"
         )));
         assert!(schedule_policy_is_supported(Some(
             super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
         )));
         assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
-        assert!(!schedule_policy_is_legacy(Some(
-            super::CAMPAIGN_SCHEDULE_POLICY
+        assert!(!schedule_policy_is_supported(Some(
+            "deterministic_window_0_per_worker_v1"
         )));
+        assert_eq!(schedule_policy_window(Some(&current)), Some(1));
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v1")),
+            Some(4)
+        );
+        assert_eq!(
+            schedule_policy_window(Some(super::LEGACY_CAMPAIGN_SCHEDULE_POLICY)),
+            None
+        );
+        assert!(!schedule_policy_is_legacy(Some(&current)));
         assert!(schedule_policy_is_legacy(Some(
             super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
         )));
