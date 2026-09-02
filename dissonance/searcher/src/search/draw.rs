@@ -18,14 +18,43 @@ pub const SUFFIX_ONE_OR_TWO_IDENTIFIER: &str = "one_or_two";
 /// Identifier recorded for the one-to-six suffix shape.
 pub const SUFFIX_ONE_TO_SIX_IDENTIFIER: &str = "one_to_six";
 
+/// Identifier recorded for the one-to-six suffix shape cut at the rollout
+/// time bound.
+pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str = "one_to_six_within_360_full_hold";
+
+/// Action time one job's suffix may reach. The action that reaches the
+/// bound runs in full and ends the suffix, so a job never runs longer than
+/// the bound plus one action.
+pub const SUFFIX_TIME_BOUND: u64 = 360;
+
 /// How many actions one job appends to its parent's input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SuffixShape {
     /// One action, or two at one-in-four odds.
     OneOrTwo,
     /// A uniform draw of one to six actions.
-    #[default]
     OneToSix,
+    /// A uniform draw of one to six actions, cut after the action that
+    /// reaches `SUFFIX_TIME_BOUND`; a spliced tail is cut the same way.
+    #[default]
+    OneToSixBounded,
+}
+
+impl SuffixShape {
+    /// Cut a suffix after the action that reaches the shape's time bound.
+    pub fn bound_time<A>(self, suffix: &mut Vec<A>, time: fn(&A) -> u64) {
+        if self != Self::OneToSixBounded {
+            return;
+        }
+        let mut total = 0_u64;
+        let reached = suffix.iter().position(|action| {
+            total = total.saturating_add(time(action));
+            total >= SUFFIX_TIME_BOUND
+        });
+        if let Some(index) = reached {
+            suffix.truncate(index.saturating_add(1));
+        }
+    }
 }
 
 /// The recorded identifier of a suffix shape.
@@ -34,6 +63,7 @@ pub fn suffix_shape_identifier(shape: SuffixShape) -> &'static str {
     match shape {
         SuffixShape::OneOrTwo => SUFFIX_ONE_OR_TWO_IDENTIFIER,
         SuffixShape::OneToSix => SUFFIX_ONE_TO_SIX_IDENTIFIER,
+        SuffixShape::OneToSixBounded => SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER,
     }
 }
 
@@ -46,6 +76,7 @@ pub fn suffix_shape_from_identifier(identifier: &str) -> Result<SuffixShape, Box
     match identifier {
         SUFFIX_ONE_OR_TWO_IDENTIFIER => Ok(SuffixShape::OneOrTwo),
         SUFFIX_ONE_TO_SIX_IDENTIFIER => Ok(SuffixShape::OneToSix),
+        SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER => Ok(SuffixShape::OneToSixBounded),
         _ => Err(format!("suffix shape {identifier} is not recognized").into()),
     }
 }
@@ -289,7 +320,9 @@ where
                 1
             }
         }
-        SuffixShape::OneToSix => 1 + rand.below(NonZeroUsize::new(6).ok_or("invalid suffix odds")?),
+        SuffixShape::OneToSix | SuffixShape::OneToSixBounded => {
+            1 + rand.below(NonZeroUsize::new(6).ok_or("invalid suffix odds")?)
+        }
     };
     let mut suffix = Vec::with_capacity(length);
     for _ in 0..length {
@@ -316,6 +349,23 @@ mod tests {
         draw_mixture_identifier, draw_suffix, energy_strategy, energy_strategy_is_biased,
         suffix_shape_from_identifier, suffix_shape_identifier,
     };
+
+    #[test]
+    fn the_bounded_shape_cuts_a_suffix_after_the_action_that_reaches_the_bound() {
+        let time = |action: &u64| *action;
+        let mut suffix = vec![100, 200, 60, 5, 5];
+        SuffixShape::OneToSixBounded.bound_time(&mut suffix, time);
+        assert_eq!(suffix, vec![100, 200, 60]);
+        let mut short = vec![100, 200, 59];
+        SuffixShape::OneToSixBounded.bound_time(&mut short, time);
+        assert_eq!(short, vec![100, 200, 59]);
+        let mut one = vec![1_000, 1];
+        SuffixShape::OneToSixBounded.bound_time(&mut one, time);
+        assert_eq!(one, vec![1_000]);
+        let mut unbounded = vec![100, 200, 60, 5, 5];
+        SuffixShape::OneToSix.bound_time(&mut unbounded, time);
+        assert_eq!(unbounded.len(), 5);
+    }
 
     #[test]
     fn the_shape_identifier_round_trips_and_rejects_unknown_names() {

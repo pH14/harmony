@@ -2462,7 +2462,7 @@ where
                         } else {
                             (None, None)
                         };
-                    let suffix = match spliced {
+                    let mut suffix = match spliced {
                         Some(tail) => tail,
                         None => game.expand_suffix(
                             &config.run,
@@ -2476,6 +2476,7 @@ where
                             mutation_seed,
                         )?,
                     };
+                    config.suffix.bound_time(&mut suffix, action_time);
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
@@ -3138,6 +3139,7 @@ where
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
+    let action_time = game.action_time_fn();
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
@@ -3275,7 +3277,7 @@ where
                     strategy,
                     skip.splice,
                 )?;
-                let suffix = match spliced {
+                let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
                         &replay_run,
@@ -3290,6 +3292,7 @@ where
                         skip.mutation_seed,
                     )?,
                 };
+                replay_suffix.bound_time(&mut suffix, action_time);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -3346,7 +3349,7 @@ where
                     strategy,
                     job.splice.clone(),
                 )?;
-                let suffix = match spliced {
+                let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
                         &replay_run,
@@ -3361,6 +3364,7 @@ where
                         job.mutation_seed,
                     )?,
                 };
+                replay_suffix.bound_time(&mut suffix, action_time);
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &replay_run,
