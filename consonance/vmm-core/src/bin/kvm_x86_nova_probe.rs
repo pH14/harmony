@@ -28,6 +28,66 @@ fn main() -> std::process::ExitCode {
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
+fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
+    let normalized = console.replace('\r', "");
+    let report = normalized
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("Memory: ").or_else(|| {
+                let timestamped = line.strip_prefix('[')?;
+                let (_, message) = timestamped.split_once("] ")?;
+                message.strip_prefix("Memory: ")
+            })
+        })
+        .and_then(|line| line.split_whitespace().next())
+        .ok_or_else(|| "guest console lacks the kernel memory report".to_owned())?;
+    let (available, total) = report
+        .split_once('/')
+        .ok_or_else(|| "guest kernel memory report lacks its total".to_owned())?;
+    let parse_kib = |value: &str| -> Result<u64, String> {
+        value
+            .strip_suffix('K')
+            .ok_or_else(|| "guest kernel memory value is not in KiB".to_owned())?
+            .parse::<u64>()
+            .map_err(|_| "guest kernel memory value is malformed".to_owned())
+    };
+    Ok((parse_kib(total)?, parse_kib(available)?))
+}
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+mod tests {
+    use super::boot_memory_kib;
+
+    #[test]
+    fn boot_memory_accepts_plain_and_kernel_timestamped_reports() {
+        assert_eq!(
+            boot_memory_kib("Memory: 90660K/130676K available\n"),
+            Ok((130676, 90660))
+        );
+        assert_eq!(
+            boot_memory_kib("[    0.010000] Memory: 90660K/130676K available\r\n"),
+            Ok((130676, 90660))
+        );
+    }
+
+    #[test]
+    fn boot_memory_rejects_unframed_substrings_and_malformed_values() {
+        assert!(boot_memory_kib("prefix Memory: 1K/2K available\n").is_err());
+        assert!(boot_memory_kib("[ 0.1] Memory: bad/2K available\n").is_err());
+        assert!(boot_memory_kib("[ 0.1] Memory: 1K/2 available\n").is_err());
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
 fn run() -> Result<(), String> {
     use control_proto::{
         HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
@@ -459,26 +519,6 @@ fn run() -> Result<(), String> {
             Ok(other) => format!("<unexpected console reply {other:?}>"),
             Err(error) => format!("<console unavailable: {error}>"),
         }
-    }
-
-    fn boot_memory_kib(console: &str) -> Result<(u64, u64), String> {
-        let normalized = console.replace('\r', "");
-        let report = normalized
-            .lines()
-            .find_map(|line| line.strip_prefix("Memory: "))
-            .and_then(|line| line.split_whitespace().next())
-            .ok_or_else(|| "guest console lacks the kernel memory report".to_owned())?;
-        let (available, total) = report
-            .split_once('/')
-            .ok_or_else(|| "guest kernel memory report lacks its total".to_owned())?;
-        let parse_kib = |value: &str| -> Result<u64, String> {
-            value
-                .strip_suffix('K')
-                .ok_or_else(|| "guest kernel memory value is not in KiB".to_owned())?
-                .parse::<u64>()
-                .map_err(|_| "guest kernel memory value is malformed".to_owned())
-        };
-        Ok((parse_kib(total)?, parse_kib(available)?))
     }
 
     fn run_to_snapshot(server: &mut Server, profile: &mut ProbeProfile) -> Result<Moment, String> {
