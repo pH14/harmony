@@ -13,46 +13,29 @@ offsets. A change that helps one level by naming that level is invalid.
 
 ## Metric
 
-The wall metric is the first level that no run from the current searcher has
-completed from its fixture within budget. Today that is 8-4. When the searcher
-completes it, the loop continues with the same rules on the next level that
-has a fixture.
-The wall moved from 2-2 to 4-2 on 2026-09-01 after keeper b37fb7d5 completed
-2-2 on all three seeds, and on to 4-3 the same day when the 4-2 baseline of
-that keeper completed 4-2 on all three seeds (6,784 / 12,086 / 16,456).
-The evaluator's 4-3 fixture pokes area 2, which in world 4 is 4-2's
-underground (worlds 1, 2, 4 and 7 give the x-2 pipe intro its own area), so
-the 4-3 wall uses a fixture rebuilt with area 3 (checkpoint sha256
-9d85126bc8165983186fe6e4e7a7f4130b83d62b6032e59a00855d8591f0d983); the
-evaluator's 7-4 fixture has the same fault and is really 7-3.
-The wall moved from 4-3 to 7-2 on 2026-09-01 after keeper ee3dc1cc completed
-4-3 on all three seeds (8,430 / 6,411 / 8,519), and on to 7-4 the same day
-when that keeper's 7-2 baseline completed 7-2 on all three seeds
-(8,320 / 6,301 / 8,044); the 7-4 wall uses a fixture rebuilt with the castle
-area (checkpoint sha256
-4656a9e38634e307984392db6da7d6224f72e5e5b6882af63d3e14b367845b55).
-The wall moved from 7-4 to 8-1 on 2026-09-02 after the loop-standing keeper
-completed 7-4 on all three seeds (2,669 / 4,563 / 5,126); the 8-1 wall uses
-the evaluator's own 8-1 fixture.
-The wall moved from 8-1 to 8-4 on 2026-09-02 after the cost-rank keeper
-completed 8-1 on all three seeds (29,914 / 28,072 / 41,938); the 8-4 wall
-uses the evaluator's own 8-4 fixture, whose prefix pokes world 8 area 3, the
-castle, since world 8 has no pipe-intro area.
+The searcher completed the game from power-on on 2026-09-02 (keeper 6fe85d12:
+241,103 / 207,014 / 259,173 executions on the three seeds, with a hand-picked
+maze-loop key that has since been reverted). The metric is executions to
+complete the game from power-on.
 
 One evaluation:
 
-- origin: the wall's fixture checkpoint; seed 20260905; 8 workers;
-  60,000 executions; action limit 8192; everything else default;
-- score: executions to exit the level, lower is better. Without an exit, the
-  score is the final progress watermark, higher is better, and any exit beats
-  any watermark;
-- wall time is recorded beside the score and a run is killed at 10 minutes.
+- origin genesis; seed 20260905; 8 workers; action limit 8192; everything else
+  default; killed at 10 minutes of wall time;
+- score: executions to the victory event, lower is better. A run that does not
+  complete scores by deepest level reached, then watermark, and any completion
+  beats any watermark;
+- wall time is recorded beside the score.
 
 A candidate is kept when its score beats the current best. A keeper is then
-confirmed on seeds 20260906 and 20260907 and must beat the best on at least
-one of them and lose on neither. A keeper also runs the floor: genesis seed
-20260905, 8 workers, 45,000 executions must still reach 2-1. The floor is a
-floor; 1-1 speed may drop.
+confirmed on seeds 20260906 and 20260907, judged by the three-seed median, and
+no single seed may lose by more than a third. Beside every keeper's score the
+same run at `--memory-budget-mib 256` is recorded; a keeper may not make that
+score worse than the current best's.
+
+The level fixtures under the evaluator's e07/fixtures directory (2-2, 4-3,
+7-4, 8-4) remain available as diagnostics for a stall inside one level. They
+never decide a keeper.
 
 Determinism is a CI test, the paired same-seed stream comparison already in
 the searcher's test suite. A candidate that fails the test suite is discarded.
@@ -63,7 +46,7 @@ Fewest executions to each milestone on seed 20260905 at 8 workers from genesis:
 1-2 by 1,873; 1-3 by 5,420; 1-4 by 9,672; 2-1 by 10,718; 2-2 by 16,422;
 2-3 by 21,161; 2-4 by 28,430; 3-1 by 33,278; 3-2 by 35,898; 3-3 by 37,500;
 3-4 by 43,467.
-The floor run updates this record. A drop below the record by more than the
+The scored run updates this record. A drop below the record by more than the
 seed spread means a regression outside the candidate; bisect with one 45,000
 execution genesis run per commit before continuing.
 
@@ -127,3 +110,14 @@ productive descendants; that takes minutes on artifacts already on disk.
 Generic search modules import no target adapter. Target modules implement no
 search policy. `grep` for level numbers, world numbers, or area identifiers in
 `dissonance/searcher/src/search/` must return nothing.
+
+The observations the adapter exposes are fixed: world, level, horizontal
+progress, vertical bucket, engine state, death, area identity, level clock,
+and victory. Adding a RAM address by hand because a level needs it is game
+knowledge and is reverted; the maze-loop check bytes were removed for this
+reason. The searcher may still derive key bytes from RAM by a generic
+inference that scores every byte the same way in every area.
+
+The controller vocabulary is every physically pressable button combination
+except Start, Select, and opposing directions. It is never curated. Which
+combinations matter is for the chord table to learn.
