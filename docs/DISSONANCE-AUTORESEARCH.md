@@ -93,12 +93,6 @@ generic, deterministic, and read only archive counters or RAM bytes.
 - **Rollout length as an arm.** Make the suffix length per area a bandit arm
   instead of the fixed one-to-six ("When to Go, and When to Explore"). Targets
   momentum-driven areas that need long or short holds.
-- **Inferred key bytes.** Score RAM bytes by few distinct values, low change
-  rate along a lineage, and separation of productive from barren parents;
-  build the cell key per area from the top bytes and drop the hash bits
-  (stateful greybox fuzzing state inference; Go-Explore cell adaptation).
-  Targets merged states with different momentum and split states that differ
-  only in timers.
 - **Adaptive cell resolution.** Split a cell's key finer when it is over-visited
   and barren, coarsen when sparse (Go-Explore online downscale adaptation).
 - **Fixed total in-flight depth.** Bound selection staleness by a constant
@@ -109,11 +103,6 @@ generic, deterministic, and read only archive counters or RAM bytes.
 - **Connectivity graph with transition costs.** Keep best-known cost per cell
   transition and propagate improvements; give the selector distance-to-frontier
   (Antithesis Metroid). Targets long routes that exhaust the action budget.
-
-Check the cheapest evidence first. Before building the key or resolution
-candidates, group the wall fixture's recorded archive by current key and
-measure within-group spread of candidate bytes and their correlation with
-productive descendants; that takes minutes on artifacts already on disk.
 
 ## Boundary
 
@@ -126,8 +115,7 @@ progress, vertical bucket, death, area identity, level clock, and victory.
 Engine state was removed because the fingerprint bits separate every
 transition it did. Adding a RAM address by hand because a level needs it is
 game knowledge and is reverted; the maze-loop check bytes were removed for
-this reason. The searcher may still derive key bytes from RAM by a generic
-inference that scores every byte the same way in every area.
+this reason.
 
 The controller vocabulary is every physically pressable button combination
 except Start, Select, and opposing directions. It is never curated. Which
