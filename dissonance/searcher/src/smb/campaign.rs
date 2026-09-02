@@ -2966,6 +2966,7 @@ mod tests {
                     player_engine_state: 0,
                     state_fingerprint: 0,
                     room_x_bucket: 0,
+                    time_bucket: 0,
                     room: [0; 3],
                 },
                 milestones: SmbMilestones::default(),

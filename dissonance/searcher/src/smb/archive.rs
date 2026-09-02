@@ -65,8 +65,9 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// backward warp lands in the lineage's room of that area whose arrival page
 /// is the greatest one not past the landing page. On top of the room, the
 /// player's 16-pixel on-screen x bucket joins the key across the full frame
-/// width, computed by [`screen_x_bucket`].
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16";
+/// width, computed by [`screen_x_bucket`], and the hundreds digit of the
+/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`].
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100";
 
 /// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
 /// the level page the lineage arrived in that area at. The arrival page is
@@ -115,6 +116,11 @@ pub struct SmbArchiveKey {
     /// the registered scroll-frozen room; zero and omitted everywhere else.
     #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
     pub room_x_bucket: u8,
+    /// Hundreds digit of the level clock, so routes that reach one position
+    /// with different time left are different cells and a faster route to a
+    /// known position counts as a discovery.
+    #[serde(default)]
+    pub time_bucket: u8,
     /// The room the entry stands in, see [`SmbRoomIdentity`]. A freshly
     /// decoded key carries the arrival identity (area bytes plus the current
     /// page); completion against the parent's key and lineage resolves it.
@@ -149,6 +155,7 @@ impl ArchiveKey for SmbArchiveKey {
             group.player_y_bucket = 0;
             group.player_engine_state = 0;
             group.room_x_bucket = 0;
+            group.time_bucket = 0;
             group.progress = self.progress / FRONTIER_PROGRESS_BAND;
         }
         if depth >= 3 {
@@ -298,9 +305,14 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
         room_x_bucket: screen_x_bucket(wram),
+        time_bucket: wram[GAME_TIMER_HUNDREDS_OFFSET],
         room: [0; 3],
     }
 }
+
+/// SMB level clock hundreds digit, `$07f8`, the first of the three timer
+/// display digits.
+const GAME_TIMER_HUNDREDS_OFFSET: usize = 0x07f8;
 
 /// Stamp the candidate's arrival identity into the key's room field: the
 /// area bytes at [`ROOM_IDENTITY_BYTES`] and the arrival page.
@@ -481,6 +493,7 @@ mod tests {
             player_engine_state: 8,
             state_fingerprint: 9,
             room_x_bucket: 0,
+            time_bucket: 0,
             room: [
                 area[0],
                 area[1],

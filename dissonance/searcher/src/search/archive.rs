@@ -291,9 +291,21 @@ pub(crate) const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
 const CONCENTRATION_WINDOW: usize = 128;
 
 /// Cost ranks per halving of a cell entry's draw weight under the cheapest
-/// concentration; a compiled property of its recorded identifier, like the
-/// window itself.
+/// concentration, and of a cell's draw weight within its band by its
+/// cheapest offered member, so a band's draws follow the routes that reach
+/// it with the most time left; a compiled property of the recorded
+/// identifier, like the window itself.
 const CHEAPEST_RANK_SCALE: usize = 16;
+
+/// Selections after which a cell stops counting as new and competes on
+/// energy and cost alone, so a fresh cell that keeps failing cannot hold
+/// the front of its band's novelty order.
+const CELL_NOVELTY_DRAWS: u64 = 4;
+
+/// Newer live cells per halving of a cell's draw weight within its band
+/// under the energy frontier selectors, so a cell opened moments ago is
+/// tried before the band's older cells dilute it.
+const CELL_NOVELTY_RANK_SCALE: usize = 8;
 
 /// Which selection path one recorded draw took.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -801,6 +813,12 @@ struct CellMembers<K: ArchiveKey> {
     ids: BTreeSet<usize>,
     sampleable: BTreeSet<usize>,
     donors: BTreeSet<DonorRank<K>>,
+    /// Id of the entry that most recently opened the cell; ids are creation
+    /// order, so it orders the band's cells by novelty.
+    opened: usize,
+    /// Selections of the cell's current members, so novelty expires once
+    /// the cell has had `CELL_NOVELTY_DRAWS` tries.
+    drawn: u64,
 }
 
 type DonorRank<K> = (K, usize, usize);
@@ -811,7 +829,16 @@ impl<K: ArchiveKey> Default for CellMembers<K> {
             ids: BTreeSet::new(),
             sampleable: BTreeSet::new(),
             donors: BTreeSet::new(),
+            opened: 0,
+            drawn: 0,
         }
+    }
+}
+
+impl<K: ArchiveKey> CellMembers<K> {
+    /// The id that opened the cell while the cell still counts as new.
+    fn novelty(&self) -> Option<usize> {
+        (self.drawn < CELL_NOVELTY_DRAWS).then_some(self.opened)
     }
 }
 
@@ -1952,6 +1979,7 @@ where
         if let Some(cells) = self.classes.get_mut(&class) {
             if let Some(members) = cells.get_mut(&cell) {
                 if members.ids.remove(&id) {
+                    members.drawn = members.drawn.saturating_sub(self.selected[id]);
                     members.donors.remove(&(deepest.0, deepest.1, id));
                     if was_sampleable {
                         members.sampleable.remove(&id);
@@ -1990,7 +2018,11 @@ where
             .or_default();
         let new_cell = members.ids.is_empty();
         let was_live = !members.sampleable.is_empty();
+        if new_cell {
+            members.opened = id;
+        }
         members.ids.insert(id);
+        members.drawn = members.drawn.saturating_add(self.selected[id]);
         members.donors.insert((deepest.0, deepest.1, id));
         if sampleable {
             members.sampleable.insert(id);
@@ -2616,7 +2648,7 @@ where
                 }
                 let mut groups = deepest.keys().copied().collect::<Vec<_>>();
                 let frontier = deepest.values().copied().collect::<Vec<_>>();
-                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier))?;
+                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
                 let chosen = groups.swap_remove(index);
                 cells.retain(|(key, _)| key.group(depth) == chosen);
             }
@@ -2630,7 +2662,17 @@ where
                     .iter()
                     .map(|(key, _)| key.group(1))
                     .collect::<Vec<_>>();
-                self.draw_group_index(rand, 1, &cell_groups, None)?
+                let ranked = cells
+                    .iter()
+                    .map(|(_, members)| {
+                        let offered = members.ids.iter().filter(|id| {
+                            self.active.get(**id).copied().unwrap_or(false)
+                                && (ignore_streaks || self.entry_unexhausted(**id))
+                        });
+                        (members.novelty(), self.cheapest_offered(offered))
+                    })
+                    .collect::<Vec<_>>();
+                self.draw_group_index(rand, 1, &cell_groups, None, Some(&ranked))?
             } else {
                 let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
                 rand.below(count)
@@ -2683,7 +2725,7 @@ where
                     .iter()
                     .map(|group| self.deepest_live_band(class, depth, *group))
                     .collect::<Result<Vec<_>, _>>()?;
-                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier))?;
+                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
                 parent = groups[index];
             }
 
@@ -2697,7 +2739,19 @@ where
                     .copied()
                     .collect::<Vec<_>>();
                 if class_depth >= 1 {
-                    groups[self.draw_group_index(rand, cell_depth, &groups, None)?]
+                    let ranked = groups
+                        .iter()
+                        .map(|cell| {
+                            let members = cells.get(cell);
+                            (
+                                members.and_then(CellMembers::novelty),
+                                members.and_then(|members| {
+                                    self.cheapest_offered(members.sampleable.iter())
+                                }),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    groups[self.draw_group_index(rand, cell_depth, &groups, None, Some(&ranked))?]
                 } else {
                     groups[rand
                         .below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
@@ -2705,7 +2759,7 @@ where
             } else {
                 let only = [class];
                 if class_depth >= 1 {
-                    let _ = self.draw_group_index(rand, cell_depth, &only, None)?;
+                    let _ = self.draw_group_index(rand, cell_depth, &only, None, None)?;
                 } else {
                     let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
                 }
@@ -2757,18 +2811,24 @@ where
 
     /// Draw one index into `groups` at `depth`, where `frontier[i]` is the
     /// deepest live frontier-depth group under `groups[i]`, or `None` below
-    /// the frontier depth where every group shares one. Under the energy
-    /// selector each group's weight halves every `scale` barren selections
-    /// and floors at 1/256 of a fresh group, then halves again for every
-    /// distinct deeper frontier, so the rank order survives the energy
-    /// floor; every other selector draws uniformly, so their recorded rand
-    /// streams keep their exact bytes.
+    /// the frontier depth where every group shares one and `cells[i]` is
+    /// instead the id that opened cell `groups[i]` while it still counts as
+    /// new and the frames in group of the cheapest member its draw offers.
+    /// Under the energy selector each group's weight halves every `scale`
+    /// barren selections and floors at 1/256 of a fresh group, then halves
+    /// again for every distinct deeper frontier, or for every
+    /// `CELL_NOVELTY_RANK_SCALE` newer cells that still count as new plus
+    /// every `CHEAPEST_RANK_SCALE` cells with a cheaper best member, so the
+    /// rank order survives the energy floor; a cell past its novelty draws
+    /// competes on energy and cost alone; every other selector draws
+    /// uniformly, so their recorded rand streams keep their exact bytes.
     fn draw_group_index(
         &self,
         rand: &mut RomuDuoJrRand,
         depth: usize,
         groups: &[K::Group],
         frontier: Option<&[K::Group]>,
+        cells: Option<&[(Option<usize>, Option<u64>)]>,
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
         let (scales, ranked_by_frontier) = match &self.selector_policy {
@@ -2794,6 +2854,16 @@ where
             }
             _ => Vec::new(),
         };
+        let (newest, cheapest) = match cells {
+            Some(cells) if ranked_by_frontier && frontier.is_none() => {
+                let mut newest = cells.iter().filter_map(|cell| cell.0).collect::<Vec<_>>();
+                newest.sort_unstable();
+                let mut cheapest = cells.iter().filter_map(|cell| cell.1).collect::<Vec<_>>();
+                cheapest.sort_unstable();
+                (newest, cheapest)
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
         let mut weights = Vec::with_capacity(groups.len());
         for (index, group) in groups.iter().enumerate() {
             let barren = self
@@ -2808,16 +2878,33 @@ where
                 weights.push(energy);
                 continue;
             }
-            let rank = match frontier {
-                Some(frontier) => {
+            let (rank, span) = match (frontier, cells) {
+                (Some(frontier), _) => {
                     let position = ranked
                         .binary_search(&frontier[index])
                         .map_err(|_| "energy frontier group is missing from its own rank table")?;
-                    ranked.len().saturating_sub(position.saturating_add(1))
+                    (ranked.len().saturating_sub(position.saturating_add(1)), 8)
                 }
-                None => 0,
+                (None, Some(cells)) => {
+                    let (opened, cost) = cells[index];
+                    let novelty = match opened {
+                        Some(opened) => {
+                            let position = newest
+                                .binary_search(&opened)
+                                .map_err(|_| "energy cell is missing from its own novelty table")?;
+                            newest.len().saturating_sub(position.saturating_add(1))
+                                / CELL_NOVELTY_RANK_SCALE
+                        }
+                        None => 8,
+                    };
+                    let costlier = cost.map_or(0, |cost| {
+                        cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
+                    });
+                    (novelty.saturating_add(costlier), 16)
+                }
+                (None, None) => (0, 8),
             };
-            weights.push((energy << 8) >> rank.min(8));
+            weights.push((energy << span) >> rank.min(span));
         }
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
         let mut draw = rand.below(total);
@@ -2869,6 +2956,20 @@ where
                     })
             }
         }
+    }
+
+    /// Frames in group of the cheapest member a cell's draw offers, given
+    /// the cell's sampleable ids in ascending order: the draw sees only the
+    /// `CONCENTRATION_WINDOW` greatest of them.
+    fn cheapest_offered<'a>(
+        &self,
+        sampleable: impl DoubleEndedIterator<Item = &'a usize>,
+    ) -> Option<u64> {
+        sampleable
+            .rev()
+            .take(CONCENTRATION_WINDOW)
+            .map(|id| self.time_in_group[*id])
+            .min()
     }
 
     /// Uniform draw within the chosen cell, narrowed to the cell's
@@ -3086,6 +3187,15 @@ where
         let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
+        let key = self.entries[id].key;
+        if let Some(members) = self
+            .classes
+            .get_mut(&Reverse(key.group(Self::class_depth())))
+            .and_then(|cells| cells.get_mut(&key.group(Self::cell_depth())))
+            && members.ids.contains(&id)
+        {
+            members.drawn = members.drawn.saturating_add(1);
+        }
         if was_sampleable && !self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, false);
         }
@@ -3096,7 +3206,6 @@ where
                 | SelectorPolicy::EnergyFrontier(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
         ) {
-            let key = self.entries[id].key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 let counter = map.entry(key.group(offset + 1)).or_insert(0);
                 *counter = counter.saturating_add(1);
@@ -4388,6 +4497,7 @@ mod tests {
                 player_engine_state: 0,
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
                 room_x_bucket: 0,
+                time_bucket: 0,
                 room: [0; 3],
             };
             archive
@@ -4585,6 +4695,7 @@ mod tests {
                 player_engine_state: 0,
                 state_fingerprint: index,
                 room_x_bucket: 0,
+                time_bucket: 0,
                 room: [0; 3],
             };
             archive
@@ -4851,6 +4962,7 @@ mod tests {
             player_engine_state: 0,
             state_fingerprint: 0,
             room_x_bucket: 0,
+            time_bucket: 0,
             room: [0; 3],
         }
     }
