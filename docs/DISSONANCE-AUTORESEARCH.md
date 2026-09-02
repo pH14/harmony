@@ -14,9 +14,9 @@ offsets. A change that helps one level by naming that level is invalid.
 ## Metric
 
 The wall metric is the first level that no run from the current searcher has
-completed from its fixture within budget. Today that is 4-3. When the searcher
-completes it, the wall moves to the next level with a fixture (7-2, 7-4, 8-1,
-8-4) and the loop continues with the same rules.
+completed from its fixture within budget. Today that is 7-2. When the searcher
+completes it, the wall moves to the next level with a fixture (7-4, 8-1, 8-4)
+and the loop continues with the same rules.
 The wall moved from 2-2 to 4-2 on 2026-09-01 after keeper b37fb7d5 completed
 2-2 on all three seeds, and on to 4-3 the same day when the 4-2 baseline of
 that keeper completed 4-2 on all three seeds (6,784 / 12,086 / 16,456).
@@ -25,6 +25,8 @@ underground (worlds 1, 2, 4 and 7 give the x-2 pipe intro its own area), so
 the 4-3 wall uses a fixture rebuilt with area 3 (checkpoint sha256
 9d85126bc8165983186fe6e4e7a7f4130b83d62b6032e59a00855d8591f0d983); the
 evaluator's 7-4 fixture has the same fault and is really 7-3.
+The wall moved from 4-3 to 7-2 on 2026-09-01 after keeper ee3dc1cc completed
+4-3 on all three seeds (8,430 / 6,411 / 8,519).
 
 One evaluation:
 
@@ -47,8 +49,9 @@ the searcher's test suite. A candidate that fails the test suite is discarded.
 ## Progress record
 
 Fewest executions to each milestone on seed 20260905 at 8 workers from genesis:
-1-2 by 1,873; 1-3 by 5,810; 1-4 by 18,870; 2-1 by 21,345; 2-2 by 31,367;
-2-3 by 38,588; 2-4 by 44,462.
+1-2 by 1,873; 1-3 by 5,420; 1-4 by 9,672; 2-1 by 10,718; 2-2 by 16,422;
+2-3 by 21,161; 2-4 by 28,430; 3-1 by 33,278; 3-2 by 35,898; 3-3 by 37,500;
+3-4 by 43,467.
 The floor run updates this record. A drop below the record by more than the
 seed spread means a regression outside the candidate; bisect with one 45,000
 execution genesis run per commit before continuing.
