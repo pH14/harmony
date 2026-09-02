@@ -17,11 +17,136 @@
 //! every snapshot by re-running inputs would price a whole-tree resume in
 //! re-emulation the export already paid for.
 
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+pub mod consonance;
 pub mod nes;
 #[cfg(unix)]
 pub mod quicknes;
 
-use std::fmt;
+use std::{fmt, sync::Arc};
+
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned, ser::SerializeSeq,
+};
+
+const SHARED_STATE_CHUNK_SIZE: usize = 512;
+
+#[derive(Debug, Eq, PartialEq)]
+struct SharedStateInner {
+    chunks: Vec<Arc<[u8; SHARED_STATE_CHUNK_SIZE]>>,
+    len: usize,
+}
+
+/// A portable byte state whose full 512-byte chunks can be shared with a base.
+///
+/// `SharedState` has the same Serde representation as `Vec<u8>`: it is
+/// serialized as a sequence of bytes, with no chunk or sharing metadata on the
+/// wire. An exported state records the full allocation size of chunks it newly
+/// owns relative to its optional export base; a deserialized state has no base
+/// and therefore charges every allocated chunk. The charge is explicit and
+/// deterministic, and never depends on the process-global reference count.
+#[derive(Clone)]
+pub struct SharedState {
+    inner: Arc<SharedStateInner>,
+    newly_owned_bytes: usize,
+}
+
+impl fmt::Debug for SharedState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SharedState")
+            .field("len", &self.inner.len)
+            .field("chunks", &self.inner.chunks.len())
+            .field("newly_owned_bytes", &self.newly_owned_bytes)
+            .finish()
+    }
+}
+
+impl PartialEq for SharedState {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+    }
+}
+
+impl Eq for SharedState {}
+
+impl SharedState {
+    pub(crate) fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
+        let mut chunks = Vec::with_capacity(bytes.len().div_ceil(SHARED_STATE_CHUNK_SIZE));
+        let mut newly_owned_chunks = 0_usize;
+        for (index, source) in bytes.chunks(SHARED_STATE_CHUNK_SIZE).enumerate() {
+            let mut chunk = [0_u8; SHARED_STATE_CHUNK_SIZE];
+            chunk[..source.len()].copy_from_slice(source);
+            let shared = base
+                .and_then(|state| state.inner.chunks.get(index))
+                .filter(|existing| existing.as_ref() == &chunk)
+                .cloned();
+            let chunk = match shared {
+                Some(existing) => existing,
+                None => {
+                    newly_owned_chunks = newly_owned_chunks.saturating_add(1);
+                    Arc::new(chunk)
+                }
+            };
+            chunks.push(chunk);
+        }
+        Self {
+            inner: Arc::new(SharedStateInner {
+                chunks,
+                len: bytes.len(),
+            }),
+            newly_owned_bytes: newly_owned_chunks.saturating_mul(SHARED_STATE_CHUNK_SIZE),
+        }
+    }
+
+    pub(crate) fn materialize(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.inner.len);
+        for chunk in &self.inner.chunks {
+            let remaining = self.inner.len.saturating_sub(bytes.len());
+            bytes.extend_from_slice(&chunk[..remaining.min(SHARED_STATE_CHUNK_SIZE)]);
+        }
+        bytes
+    }
+
+    pub(crate) fn memory_charge(&self) -> usize {
+        self.newly_owned_bytes
+    }
+}
+
+impl Serialize for SharedState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(self.inner.len))?;
+        for index in 0..self.inner.len {
+            let chunk = self
+                .inner
+                .chunks
+                .get(index / SHARED_STATE_CHUNK_SIZE)
+                .ok_or_else(|| <S::Error as serde::ser::Error>::custom("invalid shared state"))?;
+            let byte = chunk
+                .get(index % SHARED_STATE_CHUNK_SIZE)
+                .ok_or_else(|| <S::Error as serde::ser::Error>::custom("invalid shared state"))?;
+            sequence.serialize_element(byte)?;
+        }
+        sequence.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SharedState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<u8>::deserialize(deserializer).map(|bytes| Self::from_bytes(bytes, None))
+    }
+}
 
 /// One run's recorded environment, carried as an opaque versioned blob.
 ///
@@ -239,6 +364,9 @@ impl std::error::Error for MachineError {}
 
 /// The machine boundary required by deterministic search workloads.
 pub trait Machine {
+    /// Archive representation of a captured machine state.
+    type Portable: Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
+
     /// Capture the current state behind a handle.
     ///
     /// # Errors
@@ -287,4 +415,68 @@ pub trait Machine {
     ///
     /// Returns an error for a range outside the machine's memory.
     fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError>;
+
+    /// Export a held snapshot into the archive representation.
+    ///
+    /// When `base` is supplied, an implementation may share identical
+    /// content with it. The resulting portable value owns the newly allocated
+    /// portion and reports that portion through
+    /// [`Machine::portable_memory_charge`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown snapshot or a failed export.
+    fn export(
+        &mut self,
+        snap: SnapId,
+        base: Option<&Self::Portable>,
+    ) -> Result<Self::Portable, MachineError>;
+
+    /// Import an archive representation behind a fresh snapshot handle.
+    ///
+    /// Import does not make the state current; use [`Machine::replay`] or
+    /// [`Machine::branch`] with the returned handle to restore it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing implementation cannot hold the
+    /// portable state.
+    fn import(&mut self, portable: &Self::Portable) -> Result<SnapId, MachineError>;
+
+    /// Return the deterministic bytes charged for this portable state.
+    ///
+    /// For chunk-shared states this is the full allocation size of chunks
+    /// newly owned by the value at export time. A value reconstructed by
+    /// deserialization has no base and charges all of its allocated chunks.
+    #[must_use]
+    fn portable_memory_charge(portable: &Self::Portable) -> usize;
+
+    /// Return the lifetime machine time. Restoring a snapshot does not rewind
+    /// this clock.
+    #[must_use]
+    fn now(&self) -> Moment;
+
+    /// Work RAM captured after each frame of the most recent [`Machine::run`].
+    #[must_use]
+    fn frames(&self) -> &[[u8; 2048]];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SharedState;
+
+    #[test]
+    fn shared_state_charges_new_full_chunks_not_reference_counts() {
+        let base = SharedState::from_bytes(vec![7_u8; 513], None);
+        assert_eq!(base.memory_charge(), 2 * 512);
+
+        let same = SharedState::from_bytes(vec![7_u8; 513], Some(&base));
+        assert_eq!(same.memory_charge(), 0);
+
+        let mut changed_bytes = vec![7_u8; 513];
+        changed_bytes[512] = 8;
+        let changed = SharedState::from_bytes(changed_bytes.clone(), Some(&base));
+        assert_eq!(changed.memory_charge(), 512);
+        assert_eq!(changed.materialize(), changed_bytes);
+    }
 }

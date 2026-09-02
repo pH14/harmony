@@ -7,7 +7,7 @@ use std::{
     error::Error,
     ffi::OsString,
     fs,
-    io::{self, BufWriter, Write},
+    io::{BufWriter, Write},
     path::PathBuf,
     process::Command,
 };
@@ -41,6 +41,8 @@ struct Args {
     action_limit: usize,
     level: NovaLevel,
     marketing_soak: bool,
+    host: String,
+    memory_budget_mib: Option<usize>,
 }
 
 struct RenderedMedia {
@@ -60,6 +62,8 @@ impl Args {
         let mut action_limit = 512_usize;
         let mut level_number = 1_u8;
         let mut marketing_soak = false;
+        let mut host = "github-actions".to_owned();
+        let mut memory_budget_mib = None;
         let mut args = env::args_os().skip(1);
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
@@ -78,6 +82,12 @@ impl Args {
                 "--workers" => workers = parse_number("workers", value)?,
                 "--action-limit" => action_limit = parse_number("action-limit", value)?,
                 "--level" => level_number = parse_number("level", value)?,
+                "--host" => {
+                    host = value.into_string().map_err(|_| "host is not UTF-8")?;
+                }
+                "--memory-budget-mib" => {
+                    memory_budget_mib = Some(parse_number("memory-budget-mib", value)?);
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -91,6 +101,8 @@ impl Args {
             action_limit,
             level: NovaLevel::from_number(level_number)?,
             marketing_soak,
+            host,
+            memory_budget_mib,
         })
     }
 }
@@ -118,10 +130,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         workers: args.workers,
         execution_budget: args.executions,
         action_limit: args.action_limit,
-        host: "github-actions".to_owned(),
+        host: args.host.clone(),
         wall_budget: None,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-        memory_budget_mib: None,
+        memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::AdmitAlive,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
@@ -145,7 +157,7 @@ fn run_marketing_soak(
     config: &NovaCampaignConfig,
     output: &std::path::Path,
 ) -> Result<(), Box<dyn Error>> {
-    let mut stream = io::sink();
+    let mut stream = BufWriter::new(fs::File::create(output.join("stream.jsonl"))?);
     let mut progress = BufWriter::new(fs::File::create(output.join("progress.jsonl"))?);
     let (live, checkpoint) = run_nova_campaign_checkpointed(
         game,
@@ -154,6 +166,8 @@ fn run_marketing_soak(
         &mut stream,
         Some(&mut progress),
     )?;
+    stream.flush()?;
+    drop(stream);
     progress.flush()?;
     drop(progress);
     drop(checkpoint);
@@ -185,6 +199,10 @@ fn run_marketing_soak(
         "first_reached": live.archive.first_reached,
         "progress_curve": &live.archive.progress_curve,
     });
+    fs::write(
+        output.join("archive.json"),
+        serde_json::to_vec_pretty(&live.archive)?,
+    )?;
     drop(live);
 
     let best_endpoint = write_best_observation(game, &best_input, output)?;

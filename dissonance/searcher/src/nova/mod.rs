@@ -4,11 +4,4 @@
 
 pub mod archive;
 pub mod campaign;
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64"),
-    not(miri)
-))]
-pub mod consonance;
 pub mod target;

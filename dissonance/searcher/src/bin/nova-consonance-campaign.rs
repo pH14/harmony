@@ -32,7 +32,7 @@ mod real {
         error::Error,
         ffi::OsString,
         fs,
-        io::{self, BufWriter},
+        io::{BufWriter, Write},
         path::PathBuf,
         process::Command,
     };
@@ -65,6 +65,8 @@ mod real {
         workers: u32,
         action_limit: usize,
         wall_seconds: u64,
+        host: String,
+        memory_budget_mib: usize,
     }
 
     impl Args {
@@ -79,6 +81,8 @@ mod real {
             let mut workers = 1_u32;
             let mut action_limit = 512_usize;
             let mut wall_seconds = 14_400_u64;
+            let mut host = "github-actions-consonance".to_owned();
+            let mut memory_budget_mib = 512_usize;
             let mut args = env::args_os().skip(1);
             while let Some(flag) = args.next() {
                 let value = args
@@ -95,6 +99,12 @@ mod real {
                     "--workers" => workers = parse_number("workers", value)?,
                     "--action-limit" => action_limit = parse_number("action-limit", value)?,
                     "--wall-seconds" => wall_seconds = parse_number("wall-seconds", value)?,
+                    "--host" => {
+                        host = value.into_string().map_err(|_| "host is not UTF-8")?;
+                    }
+                    "--memory-budget-mib" => {
+                        memory_budget_mib = parse_number("memory-budget-mib", value)?;
+                    }
                     other => return Err(format!("unknown argument {other:?}").into()),
                 }
             }
@@ -109,6 +119,8 @@ mod real {
                 workers,
                 action_limit,
                 wall_seconds,
+                host,
+                memory_budget_mib,
             })
         }
     }
@@ -137,10 +149,10 @@ mod real {
             workers: args.workers,
             execution_budget: args.executions,
             action_limit: args.action_limit,
-            host: "github-actions-consonance".to_owned(),
+            host: args.host.clone(),
             wall_budget: Some(std::time::Duration::from_secs(args.wall_seconds)),
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-            memory_budget_mib: Some(512),
+            memory_budget_mib: Some(args.memory_budget_mib),
             materialize_final_artifacts: true,
             retention: RetentionPolicy::AdmitAlive,
             selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
@@ -151,19 +163,28 @@ mod real {
             mixture: DrawMixture::AlphabetOnly,
             victory_input_path: Some(args.output.join("victory-input.json")),
         };
-        let mut progress = fs::File::create(args.output.join("progress.jsonl"))?;
+        let mut stream = BufWriter::new(fs::File::create(args.output.join("stream.jsonl"))?);
+        let mut progress = BufWriter::new(fs::File::create(args.output.join("progress.jsonl"))?);
         let (report, checkpoint) = run_nova_campaign_checkpointed(
             &game,
             &config,
             &NovaCampaignOrigin::Genesis,
-            &mut io::sink(),
+            &mut stream,
             Some(&mut progress),
         )?;
+        stream.flush()?;
+        progress.flush()?;
+        drop(stream);
+        drop(progress);
         drop(checkpoint);
         let best_input = report
             .victory_input
             .as_ref()
             .unwrap_or(&report.archive.champion_input);
+        fs::write(
+            args.output.join("archive.json"),
+            serde_json::to_vec_pretty(&report.archive)?,
+        )?;
         fs::write(
             args.output.join("best-input.json"),
             serde_json::to_vec_pretty(best_input)?,
@@ -186,6 +207,8 @@ mod real {
             "progress": report.archive.progress_watermark,
             "milestones": report.archive.milestones,
             "first_reached": report.archive.first_reached,
+            "progress_curve": report.archive.progress_curve,
+            "jobs_per_worker": report.jobs_per_worker,
             "best_input_actions": best_input.actions.len(),
             "video": media,
         });

@@ -99,6 +99,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -115,7 +116,11 @@ use vmm_backend::Backend;
 use crate::vendor::{InterruptReject, Vendor};
 
 use crate::exec::ExecSession;
-use crate::portable_snapshot::{PortableSnapshot, PortableSnapshotError, PortableSnapshotRef};
+use crate::portable_snapshot::{
+    PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparsePortableSidecarRef,
+    SparsePortableSnapshot, SparsePortableSnapshotReceipt, decode_sparse_sidecar,
+    encode_sparse_sidecar,
+};
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
 use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
@@ -694,6 +699,204 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// address snapshots only by explicit handles.
     pub fn latest_snapshot(&self) -> Option<SnapId> {
         self.snaps.last_key_value().map(|(&id, _)| SnapId(id))
+    }
+
+    /// Export a target snapshot as an in-process sparse portable value.
+    ///
+    /// base and target must be live handles in this server. The page list
+    /// is resolved against target by the snapshot store and contains only
+    /// pages that may differ from base; the sidecar carries the exact
+    /// non-memory replay state. This path never materializes RAM and never
+    /// computes a whole-state hash.
+    pub fn export_sparse_snapshot(
+        &self,
+        base: SnapId,
+        target: SnapId,
+    ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
+        let base_id = *self
+            .snaps
+            .get(&base.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
+        let target_id = *self
+            .snaps
+            .get(&target.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(target.0))?;
+        let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
+        let mut pages = Vec::with_capacity(candidates.len());
+        for (gfn, page) in candidates {
+            // Item 2 returns the target-resolved union of potentially
+            // changed keys. Compare each candidate with the live base so
+            // a base-to-base export remains genuinely sparse even when
+            // both layers independently recorded the same non-zero page.
+            if self.engine.read_page(base_id, gfn)? != page {
+                pages.push((gfn, Arc::new(page)));
+            }
+        }
+        let meta = self
+            .snapshot_meta
+            .get(&target.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(target.0))?;
+        let vm_state = self.engine.vm_state_bytes(target_id)?;
+        let sidecar = encode_sparse_sidecar(&SparsePortableSidecarRef {
+            vm_state,
+            sdk: self.sdk_snaps.get(&target.0).map(|s| &s.channel),
+            net: self.net_snaps.get(&target.0).map(|s| &s.channel),
+            policy: &meta.policy,
+            at: meta.at,
+            sdk_events: meta.sdk_events,
+            trace_events: meta.trace_events,
+            trace_schedules: meta.trace_schedules,
+            tainted: meta.tainted,
+            state_blob_suffix: &meta.state_blob_suffix,
+        })?;
+        Ok(SparsePortableSnapshot { pages, sidecar })
+    }
+
+    /// Import an in-process sparse portable value as a child of base.
+    ///
+    /// The sidecar, vendor VM state, and complete page list are validated
+    /// before the store derives a layer or a wire handle is minted. The
+    /// resulting layer therefore retains base as its ancestor and costs
+    /// O(number of supplied pages), with no full-RAM materialization.
+    pub fn import_sparse_snapshot(
+        &mut self,
+        base: SnapId,
+        portable: SparsePortableSnapshot,
+    ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
+        self.import_sparse_snapshot_parts(base, &portable.pages, &portable.sidecar)
+    }
+
+    /// Import sparse pages and their opaque sidecar without taking ownership.
+    ///
+    /// This is the parts-oriented form used by callers that keep page buffers
+    /// in a worker-owned cache. Validation is atomic: an invalid GFN ordering,
+    /// sidecar, or VM state leaves both the store and handle tables unchanged.
+    pub fn import_sparse_snapshot_parts(
+        &mut self,
+        base: SnapId,
+        pages: &[(u64, Arc<[u8; 4096]>)],
+        sidecar: &[u8],
+    ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
+        let base_id = *self
+            .snaps
+            .get(&base.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
+        let mut previous = None;
+        for (gfn, _) in pages {
+            if let Some(prev) = previous {
+                if *gfn == prev {
+                    return Err(PortableSnapshotError::Snapshot(
+                        SnapshotError::SparsePageDuplicate { gfn: *gfn },
+                    ));
+                }
+                if *gfn < prev {
+                    return Err(PortableSnapshotError::Snapshot(
+                        SnapshotError::SparsePagesNotSorted {
+                            previous: prev,
+                            current: *gfn,
+                        },
+                    ));
+                }
+            }
+            if *gfn >= self.engine.mem_pages() {
+                return Err(PortableSnapshotError::Snapshot(
+                    SnapshotError::SparsePageOutOfRange {
+                        gfn: *gfn,
+                        pages: self.engine.mem_pages(),
+                    },
+                ));
+            }
+            previous = Some(*gfn);
+        }
+
+        let portable = decode_sparse_sidecar(sidecar)?;
+        let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
+            .map_err(SnapshotError::from)?;
+        if decoded.vtime().snapshot_vns != portable.at {
+            return Err(PortableSnapshotError::Malformed(
+                "sparse sidecar V-time does not match vendor VM state",
+            ));
+        }
+        if let Some(sdk) = &portable.sdk {
+            if usize::try_from(portable.sdk_events).ok() != Some(sdk.events.len()) {
+                return Err(PortableSnapshotError::Malformed(
+                    "sparse sidecar SDK event count",
+                ));
+            }
+        } else if portable.sdk_events != 0 {
+            return Err(PortableSnapshotError::Malformed(
+                "sparse sidecar SDK event count",
+            ));
+        }
+        let id = self.next_snap;
+        let next_snap = self
+            .next_snap
+            .checked_add(1)
+            .ok_or(PortableSnapshotError::Malformed("snapshot handle overflow"))?;
+        let mut owned_pages = Vec::new();
+        owned_pages
+            .try_reserve_exact(pages.len())
+            .map_err(|_| PortableSnapshotError::Malformed("sparse page allocation"))?;
+        for (gfn, page) in pages {
+            owned_pages.push((*gfn, **page));
+        }
+        let store_id =
+            self.engine
+                .snapshot_sparse_derive(base_id, &owned_pages, &portable.vm_state)?;
+
+        self.next_snap = next_snap;
+        self.snaps.insert(id, store_id);
+        if let Some(channel) = portable.sdk {
+            self.sdk_snaps.insert(
+                id,
+                SdkSnap {
+                    channel,
+                    policy: portable.policy.clone(),
+                },
+            );
+        }
+        if let Some(channel) = portable.net {
+            self.net_snaps.insert(
+                id,
+                NetSnap {
+                    channel,
+                    policy: portable.policy.clone(),
+                },
+            );
+        }
+        if portable.tainted {
+            self.tainted_snaps.insert(id);
+        }
+        self.snapshot_meta.insert(
+            id,
+            SnapshotMeta {
+                at: portable.at,
+                sdk_events: portable.sdk_events,
+                trace_events: portable.trace_events,
+                trace_schedules: portable.trace_schedules,
+                tainted: portable.tainted,
+                state_hash: None,
+                state_blob_suffix: portable.state_blob_suffix,
+                policy: portable.policy,
+            },
+        );
+        Ok(SparsePortableSnapshotReceipt {
+            id: SnapId(id),
+            at: Moment(decoded.vtime().snapshot_vns),
+            sdk_events: self
+                .snapshot_meta
+                .get(&id)
+                .map_or(0, |meta| meta.sdk_events),
+            trace_events: self
+                .snapshot_meta
+                .get(&id)
+                .map_or(0, |meta| meta.trace_events),
+            trace_schedules: self
+                .snapshot_meta
+                .get(&id)
+                .map_or(0, |meta| meta.trace_schedules),
+            tainted: self.tainted_snaps.contains(&id),
+        })
     }
 
     /// Export one session-local snapshot as a complete host-neutral artifact.
@@ -4121,6 +4324,133 @@ mod tests {
             uninterrupted_next,
             "the restored payload suffix must reproduce the uninterrupted future"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the replay half materializes a snapshot-store mapping, while sparse export/import validation is exercised by Miri-safe unit tests"
+    )]
+    fn sparse_portable_snapshot_replays_from_a_corresponding_base() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let base = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xA5);
+        image[3 * 4096..4 * 4096].fill(0x5A);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let exported = source.export_sparse_snapshot(base, target).unwrap();
+        assert_eq!(exported.pages.len(), 2);
+        assert_eq!(
+            exported
+                .pages
+                .iter()
+                .map(|(gfn, _)| *gfn)
+                .collect::<Vec<_>>(),
+            vec![1, 3],
+            "export pages are sorted and target-resolved"
+        );
+        assert_eq!(exported.pages[0].1.as_ref(), &[0xA5; 4096]);
+        assert_eq!(exported.pages[1].1.as_ref(), &[0x5A; 4096]);
+        assert!(
+            !exported.sidecar.windows(4).any(|tag| tag == b"MEM\0"),
+            "the sidecar carries no full-memory section"
+        );
+        let source_hash = hash(&mut source);
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let destination_base = snap(&mut destination);
+        let imported = destination
+            .import_sparse_snapshot(destination_base, exported)
+            .unwrap();
+        assert_eq!(
+            destination.snapshot_stats(imported.id).unwrap().owned_pages,
+            2
+        );
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut destination), source_hash);
+        let mut round_trip_artifact = Vec::new();
+        let round_trip = destination
+            .export_portable_snapshot(imported.id, &mut round_trip_artifact)
+            .unwrap();
+        assert_eq!(
+            round_trip.state_hash, source_hash,
+            "restored state_blob_suffix keeps an on-demand whole-state hash correct"
+        );
+        assert_eq!(run_all(&mut source), run_all(&mut destination));
+        assert_eq!(hash(&mut source), hash(&mut destination));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the foreign-vendor arm fixture performs an ordinary snapshot restore"
+    )]
+    fn sparse_portable_import_rejects_bad_input_before_minting() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let base = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xA5);
+        image[3 * 4096..4 * 4096].fill(0x5A);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let exported = source.export_sparse_snapshot(base, target).unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let destination_base = snap(&mut destination);
+        let destination_pages = destination.engine.mem_pages();
+        let mut assert_rejected = |candidate| {
+            let before = destination.snapshot_store_stats();
+            assert!(
+                destination
+                    .import_sparse_snapshot(destination_base, candidate)
+                    .is_err()
+            );
+            assert_eq!(destination.snapshot_store_stats(), before);
+            assert_eq!(destination.latest_snapshot(), Some(destination_base));
+        };
+
+        let mut unsorted = exported.clone();
+        unsorted.pages.swap(0, 1);
+        assert_rejected(unsorted);
+        let mut duplicate = exported.clone();
+        duplicate.pages[1] = duplicate.pages[0].clone();
+        assert_rejected(duplicate);
+        let mut out_of_range = exported.clone();
+        out_of_range.pages[0].0 = destination_pages;
+        assert_rejected(out_of_range);
+        let mut truncated = exported.clone();
+        truncated.sidecar.pop();
+        assert_rejected(truncated);
+        let mut corrupted = exported.clone();
+        corrupted.sidecar[0] ^= 1;
+        assert_rejected(corrupted);
+
+        // An x86 vm_state blob must not be accepted by an arm64 destination;
+        // the vendor SnapshotRecords codec rejects it before the layer/handle.
+        let mut arm = accumulated_session_server();
+        let arm_base = arm.latest_snapshot().unwrap();
+        let before = arm.snapshot_store_stats();
+        assert!(arm.import_sparse_snapshot(arm_base, exported).is_err());
+        assert_eq!(arm.snapshot_store_stats(), before);
+        assert_eq!(arm.latest_snapshot(), Some(arm_base));
     }
 
     #[test]

@@ -142,7 +142,9 @@ pub type GamePolicies = BTreeMap<String, String>;
 /// share the context, hence `Sync`.
 pub trait Game: Sync {
     /// Emulated game instance a worker drives.
-    type Target: Send;
+    /// The pool constructs, uses, and drops each target on its worker thread;
+    /// targets are never transferred between threads.
+    type Target;
     /// One recorded input action.
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     /// Archive key.
@@ -711,7 +713,7 @@ pub struct CampaignJobRecord {
     pub mutation_seed: u64,
     /// Frames the job emulated, admission probes included.
     pub frames: u64,
-    /// SHA-256 of the serialized job result, snapshots included.
+    /// SHA-256 of the game's deterministic job-result projection.
     pub result_sha256: String,
     /// Ordered admission decisions for the job's candidates.
     pub decisions: Vec<CampaignAdmissionDecision>,
@@ -1106,8 +1108,9 @@ impl<G: Game + ?Sized> Debug for CampaignActionResult<G> {
     }
 }
 
-/// Complete result of one executed job; its serialization is digested into the
-/// stream so replay verifies byte-exact re-execution, snapshots included.
+/// Complete result of one executed job. Games choose the deterministic
+/// projection they digest into the stream; [`postcard_result_sha256`] uses the
+/// complete serialization, including snapshots.
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: Game + ?Sized> {
@@ -1930,10 +1933,12 @@ impl postcard::ser_flavors::Flavor for PostcardSha256 {
 pub(crate) fn postcard_result_sha256<G: Game + ?Sized>(
     result: &CampaignJobResult<G>,
 ) -> Result<String, Box<dyn Error>> {
-    postcard_sha256(result)
+    postcard_value_sha256(result)
 }
 
-fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
+pub(crate) fn postcard_value_sha256<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
         PostcardSha256(Sha256::new()),
@@ -3323,7 +3328,7 @@ mod tests {
         CoordinatorCore, EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile,
         MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP, archive_entry_limit_is_valid,
         compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
-        live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
+        live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_policy_is_supported, record_compaction_elapsed, replay_splice,
         retained_archive_indexes, uses_bounded_progress_curve, worker_queue_is_idle,
     };
@@ -3387,7 +3392,7 @@ mod tests {
         let value = (17_u64, vec![0_u8, 1, 15, 16, 255], Some("deterministic"));
         let encoded = postcard::to_allocvec(&value).expect("fixture encodes");
         let expected = format!("{:x}", Sha256::digest(encoded));
-        let actual = postcard_sha256(&value).expect("incremental digest succeeds");
+        let actual = postcard_value_sha256(&value).expect("incremental digest succeeds");
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 64);

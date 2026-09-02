@@ -67,6 +67,28 @@ pub enum SnapshotError {
         /// The configured guest image size in pages.
         pages: u64,
     },
+    /// A sparse snapshot page list was not sorted by guest frame number.
+    #[error("sparse snapshot pages are not sorted: {previous} then {current}")]
+    SparsePagesNotSorted {
+        /// The preceding page's guest frame number.
+        previous: u64,
+        /// The page that appeared after `previous`.
+        current: u64,
+    },
+    /// A sparse snapshot page list contained a guest frame more than once.
+    #[error("sparse snapshot page {gfn} is duplicated")]
+    SparsePageDuplicate {
+        /// The repeated guest frame number.
+        gfn: u64,
+    },
+    /// A sparse snapshot page lies outside this engine's configured image.
+    #[error("sparse snapshot page {gfn} out of range: guest image is {pages} pages")]
+    SparsePageOutOfRange {
+        /// The offending guest frame number.
+        gfn: u64,
+        /// The configured guest image size in pages.
+        pages: u64,
+    },
     /// The userspace xAPIC rejected a restored [`LapicState`].
     #[error("device restore rejected: {0}")]
     DeviceRestore(&'static str),
@@ -225,6 +247,47 @@ impl SnapshotEngine {
                     builder.write_page(gfn as u64, frame)?;
                 }
             }
+        }
+        Ok(builder.seal(vm_state.to_vec()))
+    }
+
+    /// Derive a child snapshot directly from a sorted sparse page list.
+    ///
+    /// Every page is the target-resolved content relative to `parent`; absent
+    /// pages therefore remain inherited from the parent. Validation completes
+    /// before the store builder is created, and the builder is only committed
+    /// by `seal`, so malformed input cannot partially mutate the store.
+    pub fn snapshot_sparse_derive(
+        &mut self,
+        parent: SnapshotId,
+        pages: &[(u64, [u8; PAGE_SIZE])],
+        vm_state: &[u8],
+    ) -> Result<SnapshotId, SnapshotError> {
+        let mut previous = None;
+        for &(gfn, _) in pages {
+            if gfn >= self.mem_pages {
+                return Err(SnapshotError::SparsePageOutOfRange {
+                    gfn,
+                    pages: self.mem_pages,
+                });
+            }
+            if let Some(prev) = previous {
+                if gfn == prev {
+                    return Err(SnapshotError::SparsePageDuplicate { gfn });
+                }
+                if gfn < prev {
+                    return Err(SnapshotError::SparsePagesNotSorted {
+                        previous: prev,
+                        current: gfn,
+                    });
+                }
+            }
+            previous = Some(gfn);
+        }
+
+        let mut builder = self.store.derive(parent)?;
+        for &(gfn, page) in pages {
+            builder.write_page(gfn, &page)?;
         }
         Ok(builder.seal(vm_state.to_vec()))
     }
@@ -398,6 +461,53 @@ mod tests {
                 (3, [0u8; PAGE_SIZE]),
             ]
         );
+    }
+
+    #[test]
+    fn sparse_derive_is_sorted_atomic_and_parent_relative() {
+        let mut eng = SnapshotEngine::new(4 * PG);
+        let base = eng
+            .snapshot_base(&img(&[(0, 0x10), (2, 0x20)], 4), b"base")
+            .unwrap();
+        let pages = vec![(1, [0x30; PAGE_SIZE]), (3, [0x40; PAGE_SIZE])];
+        let child = eng.snapshot_sparse_derive(base, &pages, b"child").unwrap();
+        assert_eq!(eng.stats(child).unwrap().owned_pages, 2);
+        assert_eq!(
+            eng.diff_pages(Some(base), child).unwrap(),
+            pages,
+            "sparse derive preserves target-resolved pages"
+        );
+
+        let before = eng.store_stats();
+        assert!(matches!(
+            eng.snapshot_sparse_derive(
+                base,
+                &[(2, [0xAA; PAGE_SIZE]), (1, [0xBB; PAGE_SIZE])],
+                b"bad"
+            ),
+            Err(SnapshotError::SparsePagesNotSorted {
+                previous: 2,
+                current: 1
+            })
+        ));
+        assert_eq!(
+            eng.store_stats(),
+            before,
+            "invalid sparse input does not mutate the store"
+        );
+        assert!(matches!(
+            eng.snapshot_sparse_derive(
+                base,
+                &[(1, [0xAA; PAGE_SIZE]), (1, [0xBB; PAGE_SIZE])],
+                b"bad"
+            ),
+            Err(SnapshotError::SparsePageDuplicate { gfn: 1 })
+        ));
+        assert!(matches!(
+            eng.snapshot_sparse_derive(base, &[(4, [0xAA; PAGE_SIZE])], b"bad"),
+            Err(SnapshotError::SparsePageOutOfRange { gfn: 4, pages: 4 })
+        ));
+        assert_eq!(eng.store_stats(), before);
     }
 
     #[test]

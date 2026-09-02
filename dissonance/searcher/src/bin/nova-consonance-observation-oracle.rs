@@ -28,11 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod real {
     use std::{env, error::Error, ffi::OsString, fs, path::PathBuf};
 
+    use machine::consonance::ConsonanceMachine;
     use searcher::{
-        nova::{
-            consonance::ConsonanceNovaTarget,
-            target::{ButtonChord, MAX_HOLD_FRAMES, NovaTarget},
-        },
+        nova::target::{ButtonChord, MAX_HOLD_FRAMES, NovaTarget},
         target::Target,
     };
     use sha2::{Digest, Sha256};
@@ -123,7 +121,8 @@ mod real {
         let mut direct = NovaTarget::from_rom_bytes_headless(&rom, &args.core, &core_sha256)?;
         let kernel = fs::read(&args.kernel)?;
         let initramfs = fs::read(&args.initramfs)?;
-        let mut consonance = ConsonanceNovaTarget::new(&kernel, &initramfs)?;
+        let mut consonance =
+            NovaTarget::from_machine(ConsonanceMachine::new(&kernel, &initramfs)?)?;
         let mut rng = args.seed;
         let mut compared_actions = 0_u64;
         let mut stream = Sha256::new();
@@ -141,7 +140,7 @@ mod real {
             for action_index in 0..args.actions_per_sequence {
                 let action = next_action(&mut rng);
                 direct.apply(&action);
-                consonance.apply(action);
+                consonance.apply(&action);
                 if direct.last_action_observations() != consonance.last_action_observations() {
                     return Err(format!(
                         "observation mismatch at sequence {sequence} action {action_index}: direct={:?} consonance={:?}",
