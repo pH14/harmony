@@ -67,10 +67,18 @@ mod real {
         wall_seconds: u64,
         host: String,
         memory_budget_mib: usize,
+        fixed_execution_soak: bool,
     }
 
     impl Args {
         fn parse() -> Result<Self, Box<dyn Error>> {
+            Self::parse_from(env::args_os().skip(1))
+        }
+
+        fn parse_from<I>(values: I) -> Result<Self, Box<dyn Error>>
+        where
+            I: IntoIterator<Item = OsString>,
+        {
             let mut kernel = None;
             let mut initramfs = None;
             let mut rom = None;
@@ -83,8 +91,15 @@ mod real {
             let mut wall_seconds = 14_400_u64;
             let mut host = "github-actions-consonance".to_owned();
             let mut memory_budget_mib = 512_usize;
-            let mut args = env::args_os().skip(1);
+            let mut fixed_execution_soak = false;
+            let mut args = values.into_iter();
             while let Some(flag) = args.next() {
+                if flag == "--fixed-execution-soak" {
+                    // A throughput acceptance run must reach its exact budget
+                    // even when the ordinary search finds a victory first.
+                    fixed_execution_soak = true;
+                    continue;
+                }
                 let value = args
                     .next()
                     .ok_or_else(|| format!("missing value after {}", flag.to_string_lossy()))?;
@@ -121,6 +136,7 @@ mod real {
                 wall_seconds,
                 host,
                 memory_budget_mib,
+                fixed_execution_soak,
             })
         }
     }
@@ -151,6 +167,7 @@ mod real {
             action_limit: args.action_limit,
             host: args.host.clone(),
             wall_budget: Some(std::time::Duration::from_secs(args.wall_seconds)),
+            continue_after_victory: args.fixed_execution_soak,
             archive_entry_limit: MAX_ARCHIVE_ENTRIES,
             memory_budget_mib: Some(args.memory_budget_mib),
             materialize_final_artifacts: true,
@@ -191,7 +208,11 @@ mod real {
         )?;
         let media = render(&args, &rom, best_input)?;
         let summary = json!({
-            "mode": "consonance_marketing_campaign",
+            "mode": if args.fixed_execution_soak {
+                "consonance_fixed_execution_soak"
+            } else {
+                "consonance_marketing_campaign"
+            },
             "emulator_backend": game.emulator_identity(),
             "campaign_seed": report.campaign_seed,
             "workers": report.workers,
@@ -299,5 +320,41 @@ mod real {
         fs::remove_file(video_path)?;
         fs::remove_file(audio_path)?;
         Ok(result)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{Args, OsString};
+
+        fn required_args(extra: &[&str]) -> Vec<OsString> {
+            let mut args = [
+                "--kernel",
+                "kernel",
+                "--initramfs",
+                "initramfs",
+                "--rom",
+                "rom",
+                "--core",
+                "core",
+                "--output",
+                "output",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+            args.extend(extra.iter().map(OsString::from));
+            args
+        }
+
+        #[test]
+        fn fixed_execution_soak_is_explicit_and_valueless() {
+            let ordinary = Args::parse_from(required_args(&[])).expect("ordinary arguments parse");
+            assert!(!ordinary.fixed_execution_soak);
+
+            let soak = Args::parse_from(required_args(&["--fixed-execution-soak", "--seed", "42"]))
+                .expect("soak arguments parse");
+            assert!(soak.fixed_execution_soak);
+            assert_eq!(soak.seed, 42);
+        }
     }
 }

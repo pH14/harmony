@@ -325,6 +325,9 @@ pub struct NovaCampaignConfig {
     pub host: String,
     /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
+    /// Live-only: continue issuing reservations after the first victory until
+    /// another live limit stops the run. Never recorded or used by replay.
+    pub continue_after_victory: bool,
     /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
     /// Deterministic logical-memory budget for live search structures.
@@ -352,6 +355,7 @@ impl NovaCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
+            continue_after_victory: self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,

@@ -554,6 +554,9 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     /// It never enters campaign state: the stream that was recorded up to the
     /// cutoff still replays exactly.
     pub wall_budget: Option<Duration>,
+    /// Live-only: continue issuing reservations after the first victory until
+    /// another live limit stops the run. Never recorded or used by replay.
+    pub continue_after_victory: bool,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
     /// Deterministic logical-memory budget for live search structures.
@@ -1014,6 +1017,10 @@ fn progress_policy_is_supported(policy: Option<&str>) -> bool {
 
 fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
     policy == Some(CAMPAIGN_PROGRESS_POLICY)
+}
+
+fn stop_reservations_after_victory(continue_after_victory: bool, victory_found: bool) -> bool {
+    victory_found && !continue_after_victory
 }
 
 /// One candidate boundary inside a job result.
@@ -2318,7 +2325,12 @@ where
                           reserved: &mut u64,
                           worker: u32|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
-                if *reserved >= config.execution_budget || core.victory_input.is_some() {
+                if *reserved >= config.execution_budget
+                    || stop_reservations_after_victory(
+                        config.continue_after_victory,
+                        core.victory_input.is_some(),
+                    )
+                {
                     return Ok(None);
                 }
                 if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
@@ -3333,7 +3345,8 @@ mod tests {
         compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        replay_splice, retained_archive_indexes, uses_bounded_progress_curve, worker_queue_is_idle,
+        replay_splice, retained_archive_indexes, stop_reservations_after_victory,
+        uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3504,6 +3517,13 @@ mod tests {
         for executions in [0, 2, 99, 101] {
             assert!(!progress_checkpoint_due(executions));
         }
+    }
+
+    #[test]
+    fn reservations_continue_after_victory_only_when_requested() {
+        assert!(stop_reservations_after_victory(false, true));
+        assert!(!stop_reservations_after_victory(true, true));
+        assert!(!stop_reservations_after_victory(false, false));
     }
 
     #[test]

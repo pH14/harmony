@@ -132,6 +132,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         action_limit: args.action_limit,
         host: args.host.clone(),
         wall_budget: None,
+        continue_after_victory: false,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
