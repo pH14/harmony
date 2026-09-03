@@ -1,6 +1,6 @@
 # Exploration
 
-Dissonance searches a deterministic machine for useful states. It chooses
+dissonance searches a deterministic machine for useful states. It chooses
 which captured state to extend and which controlled inputs to try, then judges
 the observations returned by the target. It is not part of the machine's
 transition function.
@@ -52,9 +52,9 @@ The machine boundary distinguishes two operations that start with a restore:
   exploration;
 - `replay` restores a snapshot verbatim for reproduction.
 
-Consonance exposes this distinction directly. Emulator-backed targets provide
+consonance exposes this distinction directly. Emulator-backed targets provide
 the same behavior through deterministic state restore and recorded actions.
-Dissonance can use either target shape without changing the archive algorithm.
+dissonance can use either target shape without changing the archive algorithm.
 
 Snapshots are an acceleration structure. The recorded input remains the
 authoritative path. A missing snapshot can be rebuilt by replaying actions from
@@ -63,7 +63,7 @@ campaign faster, but are validated against the target and campaign origin.
 
 ## Search archive
 
-Dissonance uses a bounded quality-diversity archive. A workload maps an observed
+dissonance uses a bounded quality-diversity archive. A workload maps an observed
 state to an ordered archive key. The key supplies several grouping depths:
 
 - the finest group is a retention slot in which nearby candidates compete;
@@ -94,7 +94,7 @@ mechanical state, changed memory locations, guest events, logs, coverage
 fingerprints, or an exit classification. The adapter turns those observations
 into archive keys and milestones. Reading them does not change the machine.
 
-For a Consonance-backed target, Dissonance supplies opaque workload actions
+For a consonance-backed target, dissonance supplies opaque workload actions
 through the guest environment and consumes guest-published state and events.
 The generic coordinator does not need CPU registers, physical addresses, or
 guest-specific protocol details.
@@ -135,8 +135,8 @@ states.
 
 ## Current targets
 
-The repository exercises Dissonance with deterministic NES targets. The direct
-QuickNES path provides emulator snapshots. The Consonance-backed Nova path runs
+The repository exercises dissonance with deterministic NES targets. The direct
+QuickNES path provides emulator snapshots. The consonance-backed Nova path runs
 QuickNES inside a controlled Linux VM and maps input prefixes to whole-VM
 snapshots local to each evaluator thread. Both present the same game-level
 action and observation model to the campaign engine.

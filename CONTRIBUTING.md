@@ -1,6 +1,6 @@
 # Contributing to Harmony
 
-Harmony is a Rust project with a root workspace for Consonance and a separate
+Harmony is a Rust project with a root workspace for consonance and a separate
 workspace in `dissonance/`. The checked-in toolchain and CI configuration are
 the authorities for supported versions and validation commands.
 
@@ -40,9 +40,9 @@ The pre-push hook runs the fast subset. `.github/workflows/quality.yml` defines
 the complete portable gate, including coverage, mutation tests, formal checks,
 public-API snapshots, cross-architecture checks, and standalone guest crates.
 
-## Dissonance workspace
+## dissonance workspace
 
-Run Dissonance's checks against its independent manifest:
+Run dissonance's checks against its independent manifest:
 
 ```sh
 cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check

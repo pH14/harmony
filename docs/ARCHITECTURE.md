@@ -1,12 +1,12 @@
 # Architecture
 
-Harmony separates execution from exploration. Consonance supplies a
-deterministic machine that can be captured, branched, and replayed. Dissonance
+Harmony separates execution from exploration. consonance supplies a
+deterministic machine that can be captured, branched, and replayed. dissonance
 treats that machine as a search target and decides which executions to try.
 
 The boundary consists of operations such as `snapshot`, `branch`, `replay`,
-`run`, and `read`, plus opaque recorded environments. Dissonance does not need
-to know how the machine virtualizes a CPU or stores a snapshot. Consonance does
+`run`, and `read`, plus opaque recorded environments. dissonance does not need
+to know how the machine virtualizes a CPU or stores a snapshot. consonance does
 not need to know how the searcher evaluates a state. The
 [control protocol](PROTOCOL.md) defines the operations shared across this
 boundary.
@@ -15,13 +15,13 @@ boundary.
 
 1. A machine is created from fixed workload bytes and deterministic
    configuration.
-2. Consonance runs it until a requested stop, such as a deadline, decision,
+2. consonance runs it until a requested stop, such as a deadline, decision,
    assertion, crash, or quiescent point.
-3. At a quiescent point, Consonance can seal the complete state behind a
+3. At a quiescent point, consonance can seal the complete state behind a
    snapshot handle.
-4. Dissonance selects a retained state, derives a new input or environmental
+4. dissonance selects a retained state, derives a new input or environmental
    mutation, and asks the machine to branch from that state.
-5. The rollout returns observations. Dissonance converts them into
+5. The rollout returns observations. dissonance converts them into
    workload-specific progress keys and decides whether to retain the endpoint.
 6. The machine's recorded environment reproduces an individual timeline. The
    campaign stream separately records the choices needed to reproduce the
@@ -31,9 +31,9 @@ A snapshot is a live resource owned by one machine or snapshot pool. A
 reproducer is an input artifact that can reconstruct an execution. Snapshots
 make branching inexpensive; reproducers make results portable.
 
-## Consonance
+## consonance
 
-Consonance owns the state and inputs that can affect future guest-visible
+consonance owns the state and inputs that can affect future guest-visible
 behavior.
 
 ### VMM engine
@@ -78,7 +78,7 @@ hashes.
 
 ### State and snapshots
 
-A Consonance snapshot has two main parts:
+A consonance snapshot has two main parts:
 
 - `snapshot-store` retains guest memory as copy-on-write page layers;
 - `vm-state` encodes the non-memory state needed to continue execution,
@@ -116,13 +116,13 @@ remain the execution evidence.
 `acceptance-suite` applies the project oracles to registered microprograms and
 workloads. [Testing](TESTING.md) describes these layers.
 
-## Dissonance
+## dissonance
 
-The `dissonance` workspace is independent of the Consonance build graph.
+The `dissonance` workspace is independent of the consonance build graph.
 
 `machine` defines a small deterministic-machine vocabulary for search clients.
 It mirrors the control operations with local types, so the searcher is not
-coupled to Consonance crates. Its QuickNES implementation provides an
+coupled to consonance crates. Its QuickNES implementation provides an
 emulator-backed target.
 
 `searcher` contains the campaign coordinator, mutation policies,
@@ -132,7 +132,7 @@ observations, archive keys, milestones, and snapshots supplied by a `Game`. It
 does not encode game rules.
 
 Current adapters exercise the search machinery against NES workloads. A
-Consonance-backed Nova adapter runs the emulator inside the controlled Linux
+consonance-backed Nova adapter runs the emulator inside the controlled Linux
 guest while retaining the same search boundary. [Exploration](EXPLORATION.md)
 describes the search model.
 

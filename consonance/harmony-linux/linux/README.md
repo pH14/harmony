@@ -3,7 +3,7 @@
 # Harmony Linux images
 
 This directory builds the pinned Linux kernels and initramfs variants used by
-Consonance guest workloads. The build scripts fetch sources from
+consonance guest workloads. The build scripts fetch sources from
 `versions.lock`, apply the architecture-specific patch series, merge fixed
 configuration fragments, assemble an image, and verify the resulting artifacts
 against `MANIFEST.sha256`.

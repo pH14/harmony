@@ -2,7 +2,7 @@
 
 # Acceptance suite
 
-`acceptance-suite` is Consonance's executable acceptance surface. It combines
+`acceptance-suite` is consonance's executable acceptance surface. It combines
 the O1/O2/O3 oracle runner with small bare-metal workloads and the reviewed
 observations produced by those workloads.
 

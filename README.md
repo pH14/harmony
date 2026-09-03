@@ -5,16 +5,16 @@ an interesting execution exactly.
 
 It has two parts:
 
-- Consonance is the deterministic machine. It runs a controlled workload, owns
+- consonance is the deterministic machine. It runs a controlled workload, owns
   its time and environmental inputs, captures complete machine state, and can
   branch or replay from that state.
-- Dissonance is the explorer. It chooses inputs and faults, evaluates the
+- dissonance is the explorer. It chooses inputs and faults, evaluates the
   resulting states, and retains useful paths for further search.
 
 Harmony is under active development. The repository contains x86-64 and arm64
 virtualization paths, a controlled Linux guest environment, deterministic
 machine and protocol models, acceptance workloads, and search targets backed by
-both an emulator and Consonance. The supported determinism claim is narrower
+both an emulator and consonance. The supported determinism claim is narrower
 than arbitrary software on arbitrary hardware; [Determinism](docs/DETERMINISM.md)
 defines its scope.
 
@@ -42,9 +42,9 @@ repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
   archive, and workload adapters.
 - `scripts/` contains repository-level development and validation helpers.
 
-Consonance and Dissonance are separate Rust workspaces. Consonance also owns the
+consonance and dissonance are separate Rust workspaces. consonance also owns the
 shared environment and control vocabulary because those contracts form part of
-the deterministic machine boundary. Dissonance depends on the meaning of that
+the deterministic machine boundary. dissonance depends on the meaning of that
 boundary without depending on a particular hypervisor implementation.
 
 ## License

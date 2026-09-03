@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# Dissonance
+# dissonance
 
-Dissonance is a standalone workspace for deterministic search over a machine
-boundary. It is separate from the Consonance workspace so target execution,
+dissonance is a standalone workspace for deterministic search over a machine
+boundary. It is separate from the consonance workspace so target execution,
 search policy, and hardware-backed control remain independently testable.
 
 ## Workspace crates

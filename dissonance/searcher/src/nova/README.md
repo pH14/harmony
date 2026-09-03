@@ -2,7 +2,7 @@
 
 # Nova workload adapter
 
-This module adapts Nova the Squirrel to Dissonance's target-neutral search
+This module adapts Nova the Squirrel to dissonance's target-neutral search
 interfaces. It owns Nova addresses, menu input, observations, archive keys,
 state preference, and terminal conditions. The generic coordinator receives
 only actions, ordered keys, observations, snapshots, and policy identifiers.

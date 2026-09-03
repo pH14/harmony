@@ -35,7 +35,7 @@ modeled and tested.
 
 ## Virtual time
 
-Consonance does not derive guest time from wall time, host CPU frequency, or a
+consonance does not derive guest time from wall time, host CPU frequency, or a
 performance counter. Its V-time clock is an integer accumulator advanced at
 normalized machine events.
 
@@ -95,7 +95,7 @@ guest. The distinction is used by the acceptance oracles described in
 
 ## CPU and architecture boundary
 
-Consonance installs an architecture-specific CPU identity and handles or
+consonance installs an architecture-specific CPU identity and handles or
 excludes channels that expose host-specific time, entropy, performance
 counters, save-image residue, or implementation identity.
 
@@ -103,7 +103,7 @@ Depending on the operation and substrate, closure can use one or more of these
 mechanisms:
 
 - expose a fixed architectural identity;
-- provide a Consonance-owned replacement for time or entropy;
+- provide a consonance-owned replacement for time or entropy;
 - trap an operation and handle it deterministically;
 - hide the associated feature and audit owned executable images;
 - canonicalize architecturally irrelevant state before hashing or saving.
@@ -117,7 +117,7 @@ untrappable entropy or timing instruction is outside the claim.
 ## Trust and portability
 
 The virtualization substrate is trusted to save, restore, and report the
-architectural state it exposes correctly. The argument also trusts Consonance's
+architectural state it exposes correctly. The argument also trusts consonance's
 engine and device models, the selected CPU contract, and the controlled guest
 environment.
 

@@ -1,6 +1,6 @@
 # environment
 
-`environment` is the deterministic fault and input model used by Dissonance.
+`environment` is the deterministic fault and input model used by dissonance.
 It owns the guest decision catalog, host perturbation catalog, seeded and
 recorded backings, and the byte-exact reproducer format. It contains pure logic
 only; VM, guest, and host-device enforcement belongs to the owning services.

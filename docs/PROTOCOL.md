@@ -1,11 +1,11 @@
 # Control protocol
 
 The control protocol is the semantic boundary between an explorer and a live
-Consonance machine. It can be driven in process or carried over a byte stream.
+consonance machine. It can be driven in process or carried over a byte stream.
 The operations and their obligations are the same in either form.
 
 `control-proto` owns the versioned request and reply vocabulary. `vmm-core` owns
-the server that applies it to a VM. Dissonance's machine interface mirrors the
+the server that applies it to a VM. dissonance's machine interface mirrors the
 state operations without depending on either crate.
 
 A session is one client and server transport lifetime. It is independent of a

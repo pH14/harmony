@@ -23,7 +23,7 @@ for replay.
   milestones, and controller-chord policies.
 - `nova/` maps Nova system/save RAM to spatial keys, level and collectible
   progress, milestones, and its input vocabulary. Its optional `consonance`
-  module drives the Consonance control protocol for a live guest.
+  module drives the consonance control protocol for a live guest.
 - `target.rs` provides the smaller action/observation/snapshot seam used by
   target implementations and tests.
 

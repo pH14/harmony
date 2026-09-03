@@ -2,7 +2,7 @@
 
 # machine
 
-`machine` is the deterministic target boundary consumed by Dissonance. The
+`machine` is the deterministic target boundary consumed by dissonance. The
 `Machine` trait exposes snapshot, drop, branch, replay, run, and read
 operations. Environments and decision answers are opaque byte blobs, so a
 search policy can drive different machines without parsing their formats.
