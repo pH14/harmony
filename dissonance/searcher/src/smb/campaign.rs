@@ -2183,7 +2183,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_without_a_victory_reports_no_frames_to_victory() {
+    fn a_run_without_a_victory_reports_no_first_victory_counters() {
         let rom = synthetic_nrom();
         let config = genesis_config(0x5eed_ca43, 2, 32);
         let mut stream = Vec::new();
@@ -2191,12 +2191,15 @@ mod tests {
             .expect("live campaign without a victory");
         assert_eq!(live.victories, 0);
         assert_eq!(live.frames_to_first_victory, None);
-        assert!(
-            !serde_json::to_string(&live)
-                .expect("serialize report")
-                .contains("frames_to_first_victory"),
-            "a run without a victory must not add the field to its report"
-        );
+        assert_eq!(live.executions_to_first_victory, None);
+        assert!(live.executions_completed > 0);
+        let json = serde_json::to_string(&live).expect("serialize report");
+        for field in ["frames_to_first_victory", "executions_to_first_victory"] {
+            assert!(
+                !json.contains(field),
+                "a run without a victory must not add {field} to its report"
+            );
+        }
     }
 
     #[test]

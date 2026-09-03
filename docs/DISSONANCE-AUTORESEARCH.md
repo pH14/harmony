@@ -24,9 +24,10 @@ One evaluation:
   default; killed at 10 minutes of wall time. The default admission window is
   one reservation per worker, recorded in the stream header as the schedule
   policy `deterministic_window_1_per_worker_v2`;
-- score: executions to the victory event, lower is better. A run that does not
-  complete scores by deepest level reached, then watermark, and any completion
-  beats any watermark;
+- score: executions to the victory event, the report's
+  `executions_to_first_victory`, lower is better. A run that does not complete
+  scores by deepest level reached, then watermark, and any completion beats any
+  watermark;
 - wall time is recorded beside the score.
 
 A candidate is kept when its score beats the current best. A keeper is then
@@ -66,13 +67,14 @@ fifth of jobs and half of all frames. The score in executions assumes every
 job costs about the same, so a candidate that changes the job shape is also
 reported in frames to the victory event and in wall seconds to it.
 
-Frames to the victory event is the report's `frames_to_first_victory`: the
-bootstrap walk plus every job's frames through the ordered admission that
-first reached the success predicate. It is absent from a run that never
-reached it, and it is the frame figure a job-shape candidate reports.
-`frames_emulated` counts the whole run, including the jobs already reserved
-when the win was admitted and drained afterwards, so it overshoots by an
-amount that grows with the admission window; use it for throughput only.
+Both figures to the victory event stop at the ordered admission that first
+reached the success predicate. `executions_to_first_victory` is that
+admission's sequence position, and `frames_to_first_victory` is the bootstrap
+walk plus every job's frames through it. Both are absent from a run that never
+reached it. `executions_completed` and `frames_emulated` count the whole run,
+including the jobs already reserved when the win was admitted and drained
+afterwards, so both overshoot by an amount that grows with the admission
+window; use them for throughput only.
 
 ## Loop
 

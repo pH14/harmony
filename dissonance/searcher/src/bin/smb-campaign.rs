@@ -483,6 +483,7 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "victories": report.victories,
         "probe_refused": report.probe_refused,
         "duplicates_skipped": report.duplicates_skipped,
+        "executions_to_first_victory": report.executions_to_first_victory,
         "frames_emulated": report.frames_emulated,
         "frames_to_first_victory": report.frames_to_first_victory,
         "jobs_per_worker": report.jobs_per_worker,

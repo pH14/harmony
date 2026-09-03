@@ -899,8 +899,15 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub origin: CampaignOriginRecord,
     /// Execution budget requested for the run.
     pub execution_budget: u64,
-    /// Jobs actually executed and admitted.
+    /// Jobs actually executed and admitted, the winning admission's own
+    /// drained window included. This is the run's throughput.
     pub executions_completed: u64,
+    /// Ordered admission position of the first job to reach the success
+    /// predicate; absent when none did. This is the run's score. Jobs
+    /// already reserved when that admission happened still drain into
+    /// `executions_completed`, so the two differ by the window's overshoot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executions_to_first_victory: Option<u64>,
     /// Wall budget in seconds when one was set for the live run.
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
@@ -942,7 +949,8 @@ pub struct CampaignModeReport<A: Ord, R> {
     /// admission that first reached the success predicate; absent when no
     /// admission did. Jobs already reserved when that admission happened
     /// still drain into `frames_emulated`, so the two differ by the window's
-    /// overshoot.
+    /// overshoot. This is the frame cost of the score, while
+    /// `frames_emulated` is drained throughput.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames_to_first_victory: Option<u64>,
     /// Jobs skipped before execution as known duplicates.
@@ -1822,6 +1830,7 @@ struct CampaignCounters {
     tree_import: Option<TreeImportCounts>,
     job_frames: u64,
     frames_to_first_victory: Option<u64>,
+    executions_to_first_victory: Option<u64>,
     duplicates_skipped: u64,
     draw_state_memory_bytes: usize,
     jobs_per_worker: Vec<u64>,
@@ -1897,13 +1906,15 @@ fn profile_elapsed(started: Option<Instant>) -> u128 {
 }
 
 impl CampaignCounters {
-    /// Record the running frame total at the ordered admission that first
-    /// reached the success predicate. Later admissions keep adding to
-    /// `job_frames`, so only the first one may set this.
-    fn note_first_victory(&mut self) {
+    /// Record the ordered admission that first reached the success
+    /// predicate, in its sequence position and in the frames run to reach
+    /// it. Jobs reserved before that admission keep draining afterwards and
+    /// keep adding to both totals, so only the first winner may set these.
+    fn note_first_victory(&mut self, sequence: u64) {
         if self.frames_to_first_victory.is_none() {
             self.frames_to_first_victory =
                 Some(self.bootstrap_frames.saturating_add(self.job_frames));
+            self.executions_to_first_victory = Some(sequence);
         }
     }
 
@@ -1913,6 +1924,7 @@ impl CampaignCounters {
             tree_import: None,
             job_frames: 0,
             frames_to_first_victory: None,
+            executions_to_first_victory: None,
             duplicates_skipped: 0,
             draw_state_memory_bytes: 0,
             jobs_per_worker: vec![0; workers as usize],
@@ -1977,6 +1989,7 @@ fn build_report<G: Game>(
         origin,
         execution_budget: header.execution_budget,
         executions_completed,
+        executions_to_first_victory: counters.executions_to_first_victory,
         wall_budget_seconds: header.wall_budget_seconds,
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
@@ -2802,7 +2815,7 @@ where
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
                     if victories_before == 0 && core.victories > 0 {
-                        counters.note_first_victory();
+                        counters.note_first_victory(sequence);
                     }
                     if let Some(sink) = progress.as_deref_mut() {
                         // Wall-clock controls the sidecar only. It selects nothing and
@@ -3534,7 +3547,7 @@ where
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
                 if victories_before == 0 && core.victories > 0 {
-                    counters.note_first_victory();
+                    counters.note_first_victory(sequence);
                 }
             }
         }
@@ -3977,24 +3990,24 @@ mod tests {
     }
 
     #[test]
-    fn frames_to_first_victory_excludes_jobs_that_drain_after_the_win() {
+    fn the_first_victory_counters_exclude_jobs_that_drain_after_the_win() {
         // Once an admission wins, the coordinator stops reserving, but every
-        // job already reserved still runs and still adds to `job_frames`.
+        // job already reserved still runs, still lands at its own sequence
+        // position, and still adds to `job_frames`.
         let mut counters = CampaignCounters::new(4);
         counters.bootstrap_frames = 1_000;
         counters.job_frames = 250;
-        counters.note_first_victory();
-        let to_victory = counters
-            .frames_to_first_victory
-            .expect("the first winning admission sets the metric");
-        assert_eq!(to_victory, 1_250);
+        counters.note_first_victory(11);
+        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.executions_to_first_victory, Some(11));
 
-        for drained in [90, 140, 70] {
+        for (sequence, drained) in [(12, 90), (13, 140), (14, 70)] {
             counters.job_frames = counters.job_frames.saturating_add(drained);
-            // A later admission cannot move the metric even if it also wins.
-            counters.note_first_victory();
+            // A later admission cannot move either metric even if it wins.
+            counters.note_first_victory(sequence);
         }
-        assert_eq!(counters.frames_to_first_victory, Some(to_victory));
+        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.executions_to_first_victory, Some(11));
         assert_eq!(
             counters
                 .bootstrap_frames
@@ -4004,11 +4017,12 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_never_wins_has_no_frames_to_first_victory() {
+    fn a_run_that_never_wins_has_no_first_victory_counters() {
         let mut counters = CampaignCounters::new(1);
         counters.bootstrap_frames = 10;
         counters.job_frames = 20;
         assert_eq!(counters.frames_to_first_victory, None);
+        assert_eq!(counters.executions_to_first_victory, None);
     }
 
     #[test]
