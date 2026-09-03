@@ -23,7 +23,7 @@ One evaluation:
 - origin genesis; seed 20260905; 24 workers; action limit 8192; everything else
   default; killed at 10 minutes of wall time. The default admission window is
   one reservation per worker, recorded in the stream header as the schedule
-  policy `deterministic_window_1_per_worker_v1`;
+  policy `deterministic_window_1_per_worker_v2`;
 - score: executions to the victory event, lower is better. A run that does not
   complete scores by deepest level reached, then watermark, and any completion
   beats any watermark;
@@ -63,6 +63,15 @@ runs up to 128 actions; splice jobs are a fifth of jobs and half of all
 frames. The score in executions assumes every job costs about the same, so a
 candidate that changes the job shape is also reported in frames to the
 victory event and in wall seconds to it.
+
+Frames to the victory event is the report's `frames_to_first_victory`: the
+bootstrap walk plus every job's frames through the ordered admission that
+first reached the success predicate. It is absent from a run that never
+reached it. `frames_emulated` counts the whole run, including the jobs that
+were already reserved when the win was admitted and drained afterwards, so it
+overshoots by an amount that grows with the admission window. Compare
+candidates on `frames_to_first_victory`; use `frames_emulated` for
+throughput.
 
 ## Loop
 

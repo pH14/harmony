@@ -2183,6 +2183,23 @@ mod tests {
     }
 
     #[test]
+    fn a_run_without_a_victory_reports_no_frames_to_victory() {
+        let rom = synthetic_nrom();
+        let config = genesis_config(0x5eed_ca43, 2, 32);
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("live campaign without a victory");
+        assert_eq!(live.victories, 0);
+        assert_eq!(live.frames_to_first_victory, None);
+        assert!(
+            !serde_json::to_string(&live)
+                .expect("serialize report")
+                .contains("frames_to_first_victory"),
+            "a run without a victory must not add the field to its report"
+        );
+    }
+
+    #[test]
     fn a_zero_reservation_window_is_refused_by_the_public_campaign_entry() {
         let rom = synthetic_nrom();
         let mut config = genesis_config(0x5eed_ca40, 2, 8);
