@@ -5,7 +5,7 @@
 # **official `postgres` image** runs deterministically in the guest as a real
 # OCI container).
 #
-# **Why runc-direct, not dockerd (the load-bearing finding — see IMPLEMENTATION.md).**
+# Why runc is invoked directly rather than through dockerd:
 # We bake the FULL Docker static stack (dockerd + containerd + containerd-shim +
 # runc) into the rootfs, but the deterministic run drives the container with
 # **`runc` directly** — the same low-level OCI runtime dockerd/containerd invoke
@@ -22,7 +22,7 @@
 # The rootfs is a static busybox + the static Docker bundle + an **OCI bundle**
 # (the official postgres image's rootfs, extracted from the registry export, +
 # a generated `config.json`). The companion kernel is the *unchanged* task-36
-# container-class bzImage (the §capability audit in consonance/harmony-linux/linux/IMPLEMENTATION.md
+# container-class bzImage (the §capability audit in consonance/harmony-linux/linux/README.md
 # confirmed cgroup-v2, the namespace set, TMPFS, EPOLL/FUTEX/… are all built in —
 # no kernel change). The container rootfs lives in the initramfs tmpfs (RAM), so
 # PGDATA is RAM-backed (fsync is a noop — no durability-fault surface, deferred
@@ -30,7 +30,7 @@
 #
 # Linux + root only (mounts, cgroup, the static-bin layout assume a Linux build
 # host; the box is the pinned build environment). On macOS run it in a
-# linux/amd64 container as root — see docs/BUILDING.md.
+# linux/amd64 container as root — see CONTRIBUTING.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -257,7 +257,7 @@ trap - EXIT
 # socket-only, pinned TZ/locale, deterministic pid log prefix, autovacuum off.
 cat >>"$BUNDLE/rootfs$PGDATA_REL/postgresql.conf" <<EOF
 
-# --- task 38 determinism overlay (see consonance/harmony-linux/linux/IMPLEMENTATION.md) ---
+# --- task 38 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = ''            # unix socket only — no networking nondeterminism
 unix_socket_directories = '/run/postgresql'
 fsync = on                       # instant + deterministic on RAM-backed rootfs
@@ -309,7 +309,7 @@ install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
 # — the config.json `runc spec` already wrote is runc-ready (allow-all devices,
 # terminal=false, runs /run-workload.sh). The unlock vs task 38: the Go runtime is
 # now preempted at the V-time LAPIC deadline (task 47 run_with_deadline), so runc's
-# container-init no longer deadlocks. See runc-init.sh + tasks/48-runc-postgres.md.
+# container-init no longer deadlocks. See runc-init.sh + consonance/harmony-linux/linux/README.md.
 install -m 0755 "$LINUX_DIR/runc-init.sh" "$DKROOT/runc-init"
 
 # --- 5. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------

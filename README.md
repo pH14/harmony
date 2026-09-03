@@ -1,26 +1,53 @@
 # Harmony
 
-Harmony is a deterministic test environment designed to source, and then perfectly reproduce, difficult-to-catch bugs. It is heavily (_heavily_) inspired by Antithesis, the pioneer of the autonomous testing space.
+Harmony is a test environment for exploring controlled executions and replaying
+an interesting execution exactly.
 
-Harmony is the composition of two components:
+It has two parts:
 
-`consonance`: the deterministic hypervisor that can (in theory!) run arbitrary Linux workloads with perfect reproducibility
+- Consonance is the deterministic machine. It runs a controlled workload, owns
+  its time and environmental inputs, captures complete machine state, and can
+  branch or replay from that state.
+- Dissonance is the explorer. It chooses inputs and faults, evaluates the
+  resulting states, and retains useful paths for further search.
 
-`dissonance`: the state explorer that injects entropy into those workloads
+Harmony is under active development. The repository contains x86-64 and arm64
+virtualization paths, a controlled Linux guest environment, deterministic
+machine and protocol models, acceptance workloads, and search targets backed by
+both an emulator and Consonance. The supported determinism claim is narrower
+than arbitrary software on arbitrary hardware; [Determinism](docs/DETERMINISM.md)
+defines its scope.
 
-Together, the progression back and forth between `consonance` and `dissonance` allows the system to bring the principles of deterministic simulation testing to systems that weren't designed with such testing in mind.
+## Documentation
 
-## Disclaimers
+- [Architecture](docs/ARCHITECTURE.md) describes the system and its ownership
+  boundaries.
+- [Determinism](docs/DETERMINISM.md) defines exact replay, its argument, and its
+  limits.
+- [Exploration](docs/EXPLORATION.md) describes campaigns, rollouts, branching,
+  and search replay.
+- [Control protocol](docs/PROTOCOL.md) defines the operations between an
+  explorer and a machine.
+- [Testing](docs/TESTING.md) describes the oracles and corpus used to test the
+  determinism claim.
 
-* As you can probably tell, this project's development is heavily (_heavily_) assisted by AI. The process of building such a system in this way is as much of an experiment as Harmony itself.
+Component details live in READMEs beside their code. Development setup and
+repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-* It might not work at all :)
+## Repository map
 
-## Development
+- `consonance/` contains the deterministic VMM, machine models, snapshots,
+  guest protocols, Linux guest environment, and acceptance suite.
+- `dissonance/` contains the machine abstraction, campaign engine, search
+  archive, and workload adapters.
+- `scripts/` contains repository-level development and validation helpers.
 
-Before contributing, configure the repository's local hooks and credential-leak checks as
-described in [`docs/SECRET-HYGIENE.md`](docs/SECRET-HYGIENE.md).
+Consonance and Dissonance are separate Rust workspaces. Consonance also owns the
+shared environment and control vocabulary because those contracts form part of
+the deterministic machine boundary. Dissonance depends on the meaning of that
+boundary without depending on a particular hypervisor implementation.
 
 ## License
 
-Harmony is free software, licensed under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`) — see [`LICENSE`](LICENSE).
+Harmony is free software licensed under the GNU Affero General Public License
+v3.0 or later (`AGPL-3.0-or-later`). See [LICENSE](LICENSE).

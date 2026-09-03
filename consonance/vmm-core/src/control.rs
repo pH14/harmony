@@ -583,7 +583,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// The `Drop` verb's obligation is that dropping a handle **actually
     /// releases the state**, not merely forgets the handle. That is only
     /// checkable against the store's own accounting, so the protocol tests read
-    /// it here (`docs/TESTING.md`, rung 4).
+    /// it here (`docs/TESTING.md`).
     pub fn snapshot_store_stats(&self) -> snapshot_store::StoreStats {
         self.engine.store_stats()
     }
@@ -834,7 +834,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             // moving it. Both borrow `self.vmm` immutably and touch nothing else —
             // not the schedule, not `recorded`, not V-time — so `hash(Whole)` before
             // and after any sequence of them is bit-identical, and neither is ever
-            // recorded into an `Reproducer` (the RESOLUTION.md search-surface
+            // recorded into an `Reproducer` (the docs/PROTOCOL.md search-surface
             // criterion: observation, not a move). Serviceable at any point (no
             // synchronization gate): a `regs` view is honest even at a terminal.
             Request::Read { gpa, len } => self.read(*gpa, *len),
@@ -1911,11 +1911,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// caller may deliberately sacrifice a timeline; fork-first is a usage
     /// discipline, not a server rule.
     ///
-    /// **Off the record by ruling** (git history's `docs/RESOLUTION.md` §Improvisations): the
+    /// **Off the record by ruling** (`docs/PROTOCOL.md`): the
     /// serial channel is deliberately crude, there is **no determinism guarantee**
     /// on this path, and nothing here is recorded into the reproducer
     /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. See the
-    /// sentinel scheme + failure modes in [`crate::exec`] and `IMPLEMENTATION.md`.
+    /// sentinel scheme + failure modes in [`crate::exec`] and `README.md`.
     fn exec(
         &mut self,
         cmd: &str,
@@ -3134,7 +3134,7 @@ mod tests {
         /// **Acceptance gate 1 (observation invariance).** Any interleaving of
         /// `read`/`regs` among the other verbs yields byte-identical `hash` results
         /// and `StopReason` outcomes as the same sequence with the observations
-        /// stripped — the RESOLUTION.md search-surface criterion: observation, not a
+        /// stripped — the docs/PROTOCOL.md search-surface criterion: observation, not a
         /// move. Reads that are out of range / over-cap (loud errors) are included,
         /// so even a *rejected* observation is proven inert.
         #[test]

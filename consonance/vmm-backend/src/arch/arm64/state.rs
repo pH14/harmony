@@ -173,7 +173,7 @@ pub struct Arm64SysregFile {
     pub tpidr_el0: u64,
     pub tpidr_el1: u64,
     /// `CNTKCTL_EL1` — the EL0 counter-access control the paravirt-clock
-    /// closure story turns off (`docs/PARAVIRT-CLOCK.md` §4.2); carried so the
+    /// closure story turns off (`consonance/vtime/README.md`); carried so the
     /// closure posture survives a snapshot.
     pub cntkctl_el1: u64,
 }

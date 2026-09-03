@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only live M1/M2 gates (`#[cfg(target_os = "linux")]` **and `#[ignore]`**, on
-//! `ssh <det-box>`, CPU-pinned per `docs/BOX-PINNING.md`, against the real
+//! `ssh <det-box>`, CPU-pinned per `.github/workflows/box.yml`, against the real
 //! `KvmBackend`).
 //!
 //! - **M1 — boots & prints.** `boot(KvmBackend::new(), hello, ram)` then `run()`:
@@ -29,7 +29,7 @@
 //! the `det-cfl-v1` re-baseline (contract-v3, task 11) the box (an i9-9900K, Coffee
 //! Lake-S) **matches** the §1.1 baseline, so `host_assert_report` shows all PASS and
 //! the host-baseline precondition no longer blocks M1/M2 (see
-//! `consonance/vmm-core/IMPLEMENTATION.md` host-baseline note).
+//! `consonance/vmm-core/README.md`).
 //!
 //! The whole file compiles only on Linux (`KvmBackend` is Linux-only); on macOS it
 //! is an empty test binary.
@@ -88,7 +88,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` (Intel VMX, \
-         perf_event), CPU-pinned `taskset -c 1` per docs/BOX-PINNING.md."
+         perf_event), CPU-pinned `taskset -c 1` per .github/workflows/box.yml."
     );
     if let Err(e) = KvmBackend::new() {
         panic!(
@@ -98,12 +98,12 @@ fn require_kvm() {
     }
 }
 
-/// Print the CPU-MSR-CONTRACT §1.1 host-baseline assertion report; return whether
+/// Print the x86 CPU contract host-baseline assertion report; return whether
 /// **every** assertion passes. Pure diagnostic — it does not decide pass/fail.
 fn print_host_baseline_report() -> bool {
     let report = vmm_core::vendor::x86::hostassert::report();
     let mut all_pass = true;
-    eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 host-baseline report:");
+    eprintln!("[host-assert] x86 CPU contract host-baseline report:");
     for o in &report {
         let tag = if o.pass { "PASS" } else { "FAIL" };
         eprintln!(
@@ -125,10 +125,10 @@ fn print_host_baseline_report() -> bool {
 fn require_host_baseline() {
     if !print_host_baseline_report() {
         panic!(
-            "host CPU does not match the det-cfl-v1 baseline (CPU-MSR-CONTRACT §1.1) — M1/M2 \
+            "host CPU does not match the det-cfl-v1 baseline (x86 CPU contract) — M1/M2 \
              cannot run the frozen contract faithfully here. Run on the det-cfl-v1 determinism \
-             box (i9-9900K, microcode 0xf8) per docs/BOX-PINNING.md; see \
-             consonance/vmm-core/IMPLEMENTATION.md host-baseline note. The assert is NOT loosened \
+             box (i9-9900K, microcode 0xf8) per .github/workflows/box.yml; see \
+             consonance/vmm-core/README.md. The assert is NOT loosened \
              to fake a pass."
         );
     }

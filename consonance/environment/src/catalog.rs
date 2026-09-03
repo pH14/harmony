@@ -7,10 +7,10 @@
 //! (conventions: the litmus is "does the guest have to *ask* for this?"). The
 //! workload-agnostic host plane ([`HostFault`](crate::HostFault)) is **not** in
 //! this catalog — it has no service point and no [`decide`](crate::Environment::decide)
-//! entry; see [`HostFault`](crate::HostFault) and `tasks/45-host-control-plane.md`.
+//! entry; see [`HostFault`](crate::HostFault) and `consonance/environment/README.md`.
 //!
 //! **Guest, namespaced, layerable (D7).** Per the dissonance ruling
-//! (git history's `docs/DISSONANCE.md`, "The guest control planes"), guest decision classes are
+//! As described in `docs/EXPLORATION.md`, guest decision classes are
 //! *namespaced per `harmony-<env>` layer* (`linux.net.drop`, `kube.net.partition`,
 //! …) and they **layer**: a higher guest environment may *add* or *constrain* a
 //! lower layer's classes but never silently reinterpret them. The proper division

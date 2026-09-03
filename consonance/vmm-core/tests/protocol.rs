@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! **Protocol tests** (`docs/TESTING.md`, rung 4): the per-plane obligations of
+//! **Protocol tests** (`docs/TESTING.md`): the per-plane obligations of
 //! the control wire, driven through `ControlServer::handle` over a scripted
 //! `MockBackend`.
 //!

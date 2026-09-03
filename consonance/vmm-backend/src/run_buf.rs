@@ -6,7 +6,7 @@
 //! the run loop can read a PIO `OUT` value out of the data buffer and write an
 //! `IN` value back; in tests and under Miri it wraps a fake `alloc_zeroed` page
 //! so **all the offset math is exercised with no syscall** (the
-//! `hypercall-doorbell` precedent, `tasks/00-CONVENTIONS.md` / `AGENTS.md`).
+//! `hypercall-doorbell` precedent, `AGENTS.md` / `AGENTS.md`).
 //!
 //! Both accessors bound-check `offset + len <= len` **before** any pointer
 //! arithmetic or copy. That check is the load-bearing safety property: no offset,

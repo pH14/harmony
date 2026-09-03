@@ -3,7 +3,7 @@
 //! x86 `linux_loader`, but far smaller: an `Image` is a flat, self-decompressing
 //! (or already-flat) blob with a fixed 64-byte header, so there is no bzImage
 //! setup-header / `boot_params` / page-table apparatus. Multiboot is deleted for
-//! ARM, not ported (`docs/ARCH-BOUNDARY.md` §B).
+//! ARM, not ported (`docs/ARCHITECTURE.md`).
 //!
 //! **Trust boundary (Convention rule #4).** [`load`] is total over arbitrary
 //! `&[u8]`: every field read is bounds-checked and every address is

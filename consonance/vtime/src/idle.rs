@@ -96,7 +96,7 @@ impl IdlePlanner {
 /// Kani proof harnesses for the idle planner (quality-f). Split into a
 /// `#[cfg(kani)]` `#[path]` child (like `clock_proofs.rs`) so cargo-mutants
 /// glob-excludes them: they are verified by the dedicated `kani` CI job, not the
-/// mutation oracle. See `IMPLEMENTATION.md` ("Formal proofs (Kani)").
+/// mutation oracle. See `README.md`.
 #[cfg(kani)]
 #[path = "idle_proofs.rs"]
 mod proofs;

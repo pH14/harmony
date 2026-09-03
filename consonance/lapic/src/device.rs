@@ -113,7 +113,7 @@ pub struct LapicConfig {
     /// low 8 bits are significant in xAPIC mode).
     pub apic_id: u32,
     /// Frozen APIC-timer input frequency in Hz — the core crystal clock from
-    /// CPUID 0x15 per `docs/CPU-MSR-CONTRACT.md`. The timer counts down at this
+    /// CPUID 0x15 per `consonance/vmm-core/contracts/x86/README.md`. The timer counts down at this
     /// rate divided by the divide-config setting. Must be non-zero.
     pub timer_hz: u64,
 }
@@ -856,7 +856,7 @@ fn sat_u32(value: u128) -> u32 {
 
 /// Formal proof harnesses (bounded model checking via Kani); compiled only under
 /// `cargo kani`. Declared as a child of `device` so `use super::*` reaches the
-/// private helpers it verifies. See `IMPLEMENTATION.md` ("Formal proofs (Kani)").
+/// private helpers it verifies. See `README.md`.
 #[cfg(kani)]
 #[path = "device_proofs.rs"]
 mod proofs;

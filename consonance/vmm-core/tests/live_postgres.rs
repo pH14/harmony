@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **bare-Postgres workload** gates (`#[cfg(target_os = "linux")]` **and
 //! `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules,
-//! CPU-pinned per `docs/BOX-PINNING.md`). Task 37 — consonance workload stream,
+//! CPU-pinned per `.github/workflows/box.yml`). Task 37 — consonance workload stream,
 //! step 2 of 3.
 //!
 //! These boot the **Postgres workload image** (`consonance/harmony-linux/build/bzImage` — the task-36
@@ -39,7 +39,7 @@
 //! `pg_strong_random` cancel keys, *random UUIDs and wall-clock timestamps* — runs
 //! bit-for-bit identically because every nondeterminism source (TSC, RNG, fork
 //! order, timers, the clock) is determinized from below by the patched backend +
-//! V-time. See `consonance/harmony-linux/linux/IMPLEMENTATION.md` for the determinism closure.
+//! V-time. See `consonance/harmony-linux/linux/README.md` for the determinism closure.
 //!
 //! **Gate 3 — seed-sensitivity ([`p3_postgres_seed_sensitivity_patched`]).** A run
 //! at a *different* seed produces *different* UUIDs — proving they are genuinely
@@ -159,7 +159,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -168,7 +168,7 @@ fn require_kvm() {
 fn require_host_baseline() {
     let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
-    eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
+    eprintln!("[host-assert] x86 CPU contract baseline:");
     for o in &report {
         eprintln!(
             "[host-assert]   {}  {}: expected {}, observed {}",
@@ -182,7 +182,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per docs/BOX-PINNING.md."
+         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 

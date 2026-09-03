@@ -1,198 +1,132 @@
-# PROTOCOL — the wire-protocol authority doc
+# Control protocol
 
-This document is the authority for the control protocol: what its verbs are, which plane each
-belongs to, and what obligation that plane carries. It records a ruled *direction* for the wire
-as well — but **this document changes no bytes**. Executing the collapse described under "Ruled
-direction" is a separate PR, gated on the protocol tests that landed alongside this doc.
-Companion docs: `docs/TESTING.md` (rung 4 is where these obligations become tests),
-`docs/GLOSSARY.md` (the naming authority).
+The control protocol is the semantic boundary between an explorer and a live
+Consonance machine. It can be driven in process or carried over a byte stream.
+The operations and their obligations are the same in either form.
 
-## What the control protocol is
+`control-proto` owns the versioned request and reply vocabulary. `vmm-core` owns
+the server that applies it to a VM. Dissonance's machine interface mirrors the
+state operations without depending on either crate.
 
-harmony's engine can be driven in-process, but the interesting clients are remote: a campaign
-runner, an interactive resolution session, a recording tool. They speak a small binary protocol
-over a byte stream — `dissonance/control-proto` defines the frames and the value types,
-`vmm_core::control::ControlServer` serves them against a live VM.
+A session is one client and server transport lifetime. It is independent of a
+search campaign.
 
-A **session** is one transport lifetime (server ↔ client). It is orthogonal to a campaign and is
-never a synonym for one.
+## Session plane
 
-The protocol has **14 peer verbs** today. Listing them is not a design; classifying them is.
-Grouping the verbs into planes, and attaching **one obligation per plane**, is what makes the wire
-reviewable: a new verb inherits its plane's obligation, and a verb that cannot honor the
-obligation of any plane is a design error rather than an implementation detail.
+`Hello` exchanges protocol version, accepted reproducer versions, coverage-map
+geometry, and capability flags.
 
----
+Compatibility must be established before use. `Hello` is the first operation
+in a session. Before it, other operations are unsupported. Each peer can decide
+from the returned capabilities whether the session is usable.
 
-## The five planes
+## State plane
 
-### 1. Session — `Hello`
+The state operations are:
 
-**Verb.** `Hello(Caps)` → `Reply::Hello(Caps)`.
-
-**What it is.** The capability and version handshake. It must be the first verb of a session:
-before it, nothing has been negotiated, so everything else answers `Unsupported`. Both sides
-exchange a `Caps` — protocol version, the range of reproducer-blob versions understood, the
-coverage-map geometry, and the capability flags — and each compares for itself. Version
-incompatibility is therefore *detectable from `Caps` alone*; the server does not need an error
-reply to express it.
-
-**Obligation: the handshake is first, and mismatch is visible without a failed operation.** A
-client must never discover an incompatibility by having a later verb misbehave.
-
-### 2. State algebra — `Snapshot`, `Branch`, `Run`, `Replay`, `Drop`
-
-**Verbs.**
-
-| Verb | Meaning |
+| Operation | Meaning |
 |---|---|
-| `Snapshot` | capture state at a quiescent point → the seal-bound reply: the pool-wide handle, the synchronized seal `Moment`, the timeline taint bit, and the seal's evidence cut |
-| `Branch { snap, env }` | restore `snap` into a fresh VM and reseed from `env` — the explore path |
-| `Replay(snap)` | restore `snap` verbatim — the reproduce path |
-| `Run { until, resolve }` | advance the VM to a stop condition → a `StopReason` |
-| `Drop(snap)` | release a snapshot handle (pool GC) |
+| `Snapshot` | Seal the current quiescent state and return its handle and evidence cut. |
+| `Branch` | Restore a snapshot and install a new reproducer for exploration. |
+| `Replay` | Restore a snapshot verbatim for reproduction. |
+| `Run` | Advance to a requested stop condition. |
+| `Drop` | Release a snapshot handle. |
 
-**What it is.** The deterministic core. These five verbs are the algebra of states and
-transitions: a snapshot is a value, branch and replay are the two ways to get back to one, run is
-the transition, drop is the deallocation. Everything else in the protocol is either a question
-about the machine or a way to change what the machine is running.
+The obligation of this plane is replay identity. Restoring a snapshot and
+applying the same inputs must produce the same complete state.
 
-**Obligation: replay identity.** Restoring a snapshot and re-running the same inputs must
-reproduce the same state, bit for bit. This is not one obligation among several — it is the
-property the entire project exists to provide, expressed on the wire. Every other plane's
-obligation exists to keep *this* one true.
+A snapshot reply binds values taken from one stopped state: its session-local
+handle, seal `Moment`, timeline taint, and the prefix length of SDK events
+included in the seal. The prefix length is authoritative because several events
+may share a `Moment`. Console bytes are a separate observation stream and are
+not part of that cut.
 
-Consequences that follow from it, and are therefore not separate rules: a `Drop`ped snapshot is no
-longer branchable (a handle that outlives its state could reproduce nothing); a double-drop and a
-dangling handle are errors rather than silent successes (a client that believes it holds state it
-does not hold will mint reproducers that do not reproduce); handles are never reused (a later
-snapshot must not inherit an earlier one's identity, or its taint).
+Handles name resources in the snapshot pool. Unknown or dropped handles are
+errors. A `Run` returns a guest outcome such as a deadline, quiescence, crash,
+surfaced decision, snapshot point, or assertion. Protocol and machine failures
+are reported separately from these outcomes.
 
-### 3. Observation — `Hash`, `Read`, `Regs`, `Console`, `SdkEvents`
+## Observation plane
 
-**Verbs.**
+The observation operations are:
 
-| Verb | Meaning |
+| Operation | Meaning |
 |---|---|
-| `Hash { scope }` | a canonical 32-byte digest of the machine, at the requested scope |
-| `Read { gpa, len }` | `len` bytes of guest-physical memory |
-| `Regs` | a versioned register *view* (not the save/restore format — additive evolution, no round-trip obligation) |
-| `Console { offset }` | a page of the guest serial capture |
-| `SdkEvents { offset }` | a page of the `Moment`-stamped SDK event capture |
+| `Hash` | Return a canonical digest for a requested scope. |
+| `Read` | Read an exact range of guest-physical memory. |
+| `Regs` | Return a versioned register view. |
+| `Console` | Read a page of captured serial bytes. |
+| `SdkEvents` | Read a page of `Moment`-stamped guest SDK events. |
 
-**What it is.** Questions. None of them is a move: an observation reads the machine and is never
-recorded into a reproducer, because replaying a question would change nothing.
+Observation is state-neutral. Inserting observations into a run does not alter
+its state hash, V-time, environment, or later behavior.
 
-**Obligation: hash neutrality.** *Observing must not change the machine.* A run with observations
-interleaved into it must end at exactly the same `state_hash` as the same run with no observations
-at all. This is the obligation that makes an interactive session safe: a human poking at a
-timeline must not be able to invalidate it, and a debugging session must not silently become
-un-reproducible.
+Paging state belongs to the request rather than the server. Console and SDK
+event cursors are explicit offsets. A memory read returns the requested bytes
+exactly or an error. The register reply is an observation schema rather than
+the save and restore representation, and can evolve additively.
 
-Hash neutrality also bounds what may join this plane. A verb that must mutate to answer does not
-belong here, however read-like it looks.
+The vocabulary defines whole-state, disk, and memory-region hash scopes. The
+current server implements the whole-state digest. An unavailable scope returns
+`Unsupported` rather than a substitute value.
 
-Two structural notes that fall out of the plane, and that the tests pin:
+## Intervention plane
 
-- **Paging is a property of the answer, not of the machine.** `Console` and `SdkEvents` are paged
-  because a capture can exceed the frame limit; the cursor lives in the client's request, never in
-  server state, so paging cannot perturb anything.
-- **An over-range read is an error, never a truncated success.** A short answer that looks like a
-  successful answer is how a client silently builds a wrong model of the guest.
+`Perturb` stages a host-plane fault at a `Moment`. `Exec` injects an interactive
+serial command and runs to a completion marker or deadline. Each operation has
+an explicit recording policy.
 
-### 4. Intervention — `Perturb`, `Exec`
+A perturbation is a recorded input. When applied, it joins the active recorded
+environment at the requested point. Invalid, past, or unschedulable
+perturbations fail without changing the recorded timeline.
 
-**Verbs.**
+`Exec` is off the record. Its first use taints the current timeline. Later
+snapshots preserve the taint, and the server refuses to mint a reproducer from
+that timeline. The serial command has no replay guarantee. The taint ensures it
+cannot be mistaken for reproducible evidence.
 
-| Verb | Meaning |
+## Provenance plane
+
+`RecordedEnv` returns the genesis-complete reproducer for the current point.
+
+Persisted reproducers have stable, versioned meaning. The reproducer is opaque
+to the control codec and generic search code. Its owning machine validates the
+blob version and contents. A tainted timeline returns an error instead of a
+reproducer.
+
+Round-trip codec tests do not by themselves preserve persisted evidence because
+an encoder and decoder can change together. Golden bytes and version rejection
+make representation changes visible.
+
+## Stops and decisions
+
+`Run` takes an optional deadline, a mask of decision classes to surface, and an
+optional answer to the immediately preceding decision. Terminal conditions
+always surface. Other guest decisions can be answered by the installed
+environment or returned to the explorer when their class is armed.
+
+At most one decision is outstanding on a timeline. An answer without a pending
+decision is an error. Silently discarding it would desynchronize the client and
+machine.
+
+## Hash vocabulary
+
+Three related names have separate roles:
+
+| Name | Role |
 |---|---|
-| `Perturb { fault, at }` | stage a host-plane fault to be applied at `Moment` `at` |
-| `Exec { cmd, deadline }` | inject a command on the guest's serial input and capture the output |
+| `state_hash` | Digest of modeled state that can affect future execution, including latent state. |
+| `observable_digest` | Digest of output deliberately emitted by the guest. |
+| `Hash { scope }` | Protocol operation used to request a digest. |
 
-**What it is.** The two ways a client changes what the machine is running rather than asking about
-it. They look similar and their obligations are **opposite**, which is precisely why they share a
-plane: putting them side by side is what stops the difference from being forgotten.
+`state_hash` establishes replay identity. `observable_digest` describes visible
+workload behavior. `Hash` is the request vocabulary, and its scope determines
+the digest requested.
 
-**Obligation, `Perturb`: it is recorded.** A fault is an **input**. Staging one is therefore
-*environment amendment* — the fault is stamped into the active recorded reproducer at its
-`Moment`, and replaying that reproducer re-applies the identical schedule at the identical counts.
-A host fault that were not recorded would be a deterministic engine producing an unreproducible
-run, which is a contradiction, not a limitation.
+## Representation ownership
 
-**Obligation, `Exec`: it is explicitly off the record, and says so structurally.** The serial byte
-channel is deliberately crude; an improvisation carries no determinism guarantee and is never
-recorded into any reproducer. What *is* airtight is the taint guard around it: the first `Exec`
-against a timeline sets that timeline's taint bit, every snapshot taken from it reports itself
-tainted, and minting a reproducer from a tainted timeline is a loud error rather than a handle
-that does not reproduce. The server refuses nothing — a caller may deliberately sacrifice a
-timeline — but the consequence is structural, not conventional.
-
-**`Exec` belongs behind a debug capability.** It is an interactive-debugging affordance, not part
-of the production drive path, and a client that never intends to improvise should not be able to
-taint a timeline by accident. See the ruled direction below.
-
-### 5. Provenance — `RecordedEnv`
-
-**Verb.** `RecordedEnv` → `Reply::Recorded(Reproducer)`: the genesis-complete reproducer that
-replays the current point, or a loud `Tainted` error if the timeline has been improvised on.
-
-**What it is.** The mint. It converts the *live* currency (a state, expensive and transient) into
-the *portable* one (a reproducer, cheap and durable) — the identity `state = replay(reproducer)`
-made into a wire verb.
-
-**Obligation: golden-stable encoding.** Reproducers are **persisted evidence**. A reproducer
-recorded today is expected to replay months from now, from an archive, on a different machine, to
-justify a bug report. Codec drift therefore does not merely break a client — it silently
-invalidates the archive, and it does so without any test failing unless the *bytes themselves* are
-pinned. That is why the provenance obligation is stated as an encoding property rather than a
-round-trip property: a codec that round-trips its own drift is exactly the failure mode.
-
----
-
-## The three-hash pin
-
-Three names, three roles, near-identical vocabulary. **Never unify them.**
-
-| Name | What it covers | Where it lives |
-|---|---|---|
-| `state_hash` | **all** architectural state, latent state included — registers, RAM, device models, the seed-derived entropy stream | `Subject::state_hash`, `Vmm::state_hash` |
-| `observable_digest` | **only** guest-emitted output — the bytes the guest deliberately emits (report stream, serial), carrying no latent device or PRNG state | `Subject::observable_digest` |
-| `Hash { scope }` | the **wire verb** that asks for a digest, scoped by `HashScope` | `control-proto` |
-
-The distinction is load-bearing for the **O3 seed-sensitivity** oracle, and only for a reason that
-is easy to get backwards: two runs at different seeds will diverge `state_hash` *whatever the
-payload does*, because the seeded entropy stream is part of the state. So `state_hash` cannot
-distinguish "this payload's behavior depends on the seed" from "this payload was handed a
-different seed" — it answers "diverged" for both. **`observable_digest` is the only sound basis
-for O3.** A payload that consumes randomness without branching on it must keep an identical work
-count across seeds while its *observable output* diverges; that statement is only checkable
-against the observable digest.
-
-`Hash { scope }` is neither of the other two: it is the request. Its scope selects what the server
-digests. Collapsing it into either digest's name would make it impossible to say "ask for the
-observable digest over the wire" without ambiguity.
-
----
-
-## Ruled direction — recorded, not executed here
-
-The following changes to the wire are **ruled**, and are **not made in this PR**. Executing them
-is a separate PR, **gated on the protocol tests landed alongside this document** — the tests are
-what make the collapse safe to perform, so they come first.
-
-1. **Collapse the five observation verbs into one `Observe { scope }`.** `Hash`, `Read`, `Regs`,
-   `Console`, and `SdkEvents` are five spellings of one operation with five scopes. One verb with
-   a scope makes the plane's obligation checkable in one place — a new observation kind becomes a
-   new scope variant that inherits hash neutrality by construction, instead of a new verb whose
-   author must remember the rule.
-2. **Fold `Perturb` into environment amendment.** `Perturb` already *is* environment amendment
-   (that is its obligation); it should be spelled as such, so the wire says what it does rather
-   than naming the effect on the guest.
-3. **Gate `Exec` behind a debug capability.** Negotiated at `Hello`, off by default. A client that
-   does not ask for improvisation cannot taint a timeline.
-4. **Rename `RecordedEnv` → `Reproduce`.** The reply already carries a `Reproducer`; the request
-   should use the ruled word (`docs/GLOSSARY.md`) rather than the retired one. The verb answers
-   "give me the thing that reproduces this point."
-
-None of the four is a behavior change. All four are places where the current wire spells a ruled
-concept with a pre-ruling word, or spends five verbs where the obligation is one.
+Frame tags, integer widths, size limits, discriminants, and byte order are
+owned by `consonance/control-proto`. Guest-service frame details are owned by
+`consonance/hypercall-proto`, and their transport is owned by
+`consonance/hypercall-doorbell`. These representations are contracts. Their
+tables live beside the implementations that encode and decode them.

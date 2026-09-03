@@ -2,8 +2,8 @@
 
 # M6 concurrency-discovery suite
 
-This directory is the absolute finding measurement for M6 in
-`docs/VM-EXIT-COUNT-VTIME.md`. It contains two separately compiled,
+This directory measures concurrency discovery under the virtual-time model in
+`../../../docs/DETERMINISM.md`. It contains two separately compiled,
 cooperatively scheduled concurrent payloads:
 
 - `rust-lost-update`: two real Rust threads split a non-atomic increment into

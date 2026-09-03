@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Frozen public-API snapshot guard — see `docs/CODE-QUALITY.md`
-//! ("Public-API snapshots") and `tasks/00-CONVENTIONS.md` rule 3.
+//! Frozen public-API snapshot guard — see `CONTRIBUTING.md`
 //!
 //! Regenerates this crate's public surface with `cargo public-api` on the
 //! pinned nightly toolchain and asserts it byte-matches the committed
@@ -18,7 +17,7 @@
 use std::process::Command;
 
 /// Pinned nightly — `cargo-public-api` needs rustdoc-JSON, which is
-/// nightly-only. Keep in sync with `docs/CODE-QUALITY.md`.
+/// nightly-only. Keep in sync with `CONTRIBUTING.md`.
 const PINNED_NIGHTLY: &str = "nightly-2026-06-16";
 const CRATE: &str = "vm-state";
 

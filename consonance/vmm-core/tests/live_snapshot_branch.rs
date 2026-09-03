@@ -13,14 +13,13 @@
 //!   base store the base's pages **once** store-wide.
 //! - **Restore latency** (gate 2, probe): the store-side materialize cost and the
 //!   guest-RAM restore copy are timed and printed. The O(dirty) memslot-swap that
-//!   *beats* full-`memcpy` is the `vmm-backend` follow-up (task 08's chosen
-//!   mechanism, below the `Backend` trait); see `IMPLEMENTATION.md`.
+//!   *beats* full-`memcpy` is a `vmm-backend` concern below the `Backend` trait.
 //!
 //! Box-only because it needs the loaded patched `/dev/kvm`
 //! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
 //! host. `#[ignore]`d out of the default lane (like `live_determinism.rs`): default
 //! CI shows it **not-run**, never a vacuous green. Run on `ssh <det-box>`, CPU-pinned
-//! per `docs/BOX-PINNING.md`, patched modules loaded, reverted to stock after:
+//! per `.github/workflows/box.yml`, patched modules loaded, reverted to stock after:
 //!
 //! ```sh
 //! taskset -c 4 cargo test -p vmm-core --test live_snapshot_branch -- --ignored --test-threads=1
@@ -114,7 +113,7 @@ fn boot_patched_or_panic() -> DynVmm {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the patched KVM \
-         modules loaded, CPU-pinned per docs/BOX-PINNING.md (taskset -c 4)."
+         modules loaded, CPU-pinned per .github/workflows/box.yml (taskset -c 4)."
     );
     match boot_selected(BackendKind::Patched, &payload_image(), GUEST_RAM_LEN, SEED) {
         Ok(vmm) => vmm,
@@ -233,7 +232,7 @@ fn gate2_capture_is_dirty_set_proportional() {
     // structurally via store stats, **not** wall-clock: timing is disallowed in this
     // determinism codebase (`clippy.toml` bans `Instant::now`), and the wall-clock
     // "beat full-memcpy on restore" headline is the `vmm-backend` memslot-swap
-    // follow-up (below the `Backend` trait; see IMPLEMENTATION.md) — not measurable,
+    // follow-up below the `Backend` trait — not measurable,
     // nor measured, here. Restore correctness is asserted instead.
     let mut a = boot_patched_or_panic();
     a.step().expect("step to a clean intercept");

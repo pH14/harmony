@@ -806,7 +806,7 @@ impl Backend for HvfBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        // Exclusive-monitor canonicalization (VM-EXIT-COUNT-VTIME M1). HVF has
+        // Exclusive-monitor canonicalization (virtual-time model). HVF has
         // no public monitor get/set/clear API. The cooperative image is scanned
         // at build time by `consonance/harmony-linux/scripts/aa4-exclusive-scan.py`, whose
         // planted LDXR/STXR negative must fail before the real kernel, vDSO, and

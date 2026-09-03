@@ -39,7 +39,7 @@ const RUN_OFFSETS: RunOffsets = RunOffsets {
 };
 
 // --- compile-time UAPI pin ---------------------------------------------------
-// `docs/VM-EXIT-COUNT-VTIME.md`: verify knowable UAPI surfaces against
+// `docs/DETERMINISM.md`: verify knowable UAPI surfaces against
 // the pinned kernel, never take a constant on faith. The portable `arm64_kvm`
 // exit-reason and register-class constants MUST equal the pinned kernel's
 // `uapi/linux/kvm.h` (reached here through `kvm-bindings`, generated from those

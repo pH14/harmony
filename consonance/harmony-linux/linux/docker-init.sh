@@ -7,7 +7,7 @@
 # local unix socket, streaming its stdout/stderr to ttyS0, to a clean terminal.
 #
 # **Why unshare, not runc/dockerd (the load-bearing finding — see
-# IMPLEMENTATION.md).** Under consonance's single-vCPU / V-time model, V-time
+# README.md).** Under consonance's single-vCPU / V-time model, V-time
 # advances ONLY when the guest executes RDTSC/RDMSR(IA32_TSC). Any busy-wait that
 # does no RDTSC freezes V-time → the LAPIC tick never fires → nothing is ever
 # preempted → deadlock. **dockerd** busy-spins on gRPC (frozen at "containerd
@@ -73,7 +73,7 @@ log "OCI runtime baked: runc $(runc --version 2>/dev/null | $BB head -1) (unused
 # cooperative task-37 flow (container-setup.sh → chroot → /run-workload.sh:
 # postgres + the psql loop), which advances V-time exactly as task 37's bare
 # Postgres did. The full Docker/runc stack stays baked (the OCI runtime is
-# present, it just can't run here) — see consonance/harmony-linux/linux/IMPLEMENTATION.md.
+# present, it just can't run here) — see consonance/harmony-linux/linux/README.md.
 #
 # Namespaces: --mount (isolated mounts + chroot to the image rootfs), --pid (own
 # PID space; -f forks so the container is PID 1), --net (= `--network none`:
