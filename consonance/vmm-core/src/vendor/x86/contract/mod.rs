@@ -246,11 +246,19 @@ pub fn virtual_time_timing() -> VirtualTimeTiming {
     // A tick at or above the guest's clockevent period matures the next timer
     // at the tick itself and creates a self-sustaining interrupt loop.
     assert!(
-        timing.execution_tick_vns
-            < vns(c.vtime_clockevent_period_vns, "vtime-clockevent-period-vns"),
+        timing.execution_tick_vns < clockevent_period_vns(),
         "vtime-execution-tick-vns must stay strictly below vtime-clockevent-period-vns"
     );
     timing
+}
+
+/// The guest's clockevent period from the contract's `vtime-clockevent-period-vns`
+/// header record. It is the seventh shared timing row: no exit is charged with it,
+/// so it is not a [`VirtualTimeTiming`] field, but it bounds the execution tick and
+/// both architectures must carry the same value.
+pub(crate) fn clockevent_period_vns() -> u64 {
+    u64::try_from(contract().vtime_clockevent_period_vns)
+        .unwrap_or_else(|_| panic!("contract vtime-clockevent-period-vns must be non-negative"))
 }
 
 // ---------------------------------------------------------------------------
@@ -668,6 +676,18 @@ mod tests {
         assert!(form.contains("\nkernel-tag=v6.18.35\n"));
         assert!(form.contains("\ncpuid-baseline=det-cfl-v1\n"));
         assert!(form.contains("\nmxcsr-mask=0x0000ffff\n"));
+        // The seven vtime header records, in their normative order and with their
+        // ratified values: the calibrated per-exit-class durations plus the
+        // clockevent period that bounds the execution tick.
+        assert!(form.contains(concat!(
+            "\nvtime-interrupt-controller-vns=10000\n",
+            "vtime-serial-vns=10000\n",
+            "vtime-paravirtual-vns=10000\n",
+            "vtime-time-read-vns=1\n",
+            "vtime-arch-control-vns=10000\n",
+            "vtime-execution-tick-vns=100000\n",
+            "vtime-clockevent-period-vns=10000000\n",
+        )));
         // Section anchors.
         assert!(form.contains(
             "\ncpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:76da3203 0f8bbb7f\n"
@@ -691,8 +711,8 @@ mod tests {
     }
 
     /// **GOLDEN** §6 canonical form — the exact byte string the serializer must
-    /// emit for the ratified v3 contract (det-cfl-v1), committed at
-    /// `src/contract/testdata/canonical-v4.txt`. This locks **every** §6 spelling
+    /// emit for the ratified v5 contract (det-cfl-v1), committed at
+    /// `src/vendor/x86/contract/testdata/canonical-v5.txt`. This locks **every** §6 spelling
     /// and ordering decision (header scalars, CPUID `dyn:` tokens, MSR formula ids,
     /// the timer device order, the 3-hex `xapic.<offset>` form, the 2-hex `cmos`
     /// tokens, and the bracketed `host-assert cr4-force-reserved [PKE, PKS]`), so
@@ -706,12 +726,12 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn canonical_form_matches_golden() {
-        let golden = include_str!("testdata/canonical-v4.txt");
+        let golden = include_str!("testdata/canonical-v5.txt");
         let form = canonical::serialize(contract());
         assert_eq!(
             form, golden,
             "§6 canonical form drifted from the committed golden \
-             (src/contract/testdata/canonical-v4.txt). If this is an intended, reviewed §6 \
+             (src/vendor/x86/contract/testdata/canonical-v5.txt). If this is an intended, reviewed §6 \
              change, bump contract-version and regenerate the golden file (contract::tests::regen_golden)."
         );
         // The committed v5 hash is sha256 of exactly the golden bytes.
@@ -845,7 +865,7 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
     /// Intel byte-identity through the restructure (Deliverable 6): the live
     /// `contract()` is still the GenuineIntel column. Its canonical form and hash
     /// are pinned unchanged by `canonical_form_matches_golden` / the registry gate
-    /// above (v4, `30839ae6…`); adding the `vendor` header key is zero-drift (the
+    /// above (v5, `01b0214b…`); adding the `vendor` header key is zero-drift (the
     /// serializer never emits it), so those Intel gates stay green untouched.
     #[test]
     fn live_contract_is_the_intel_column() {
@@ -1493,12 +1513,12 @@ host-assert = \"on-silicon-pending-AE4\"\n";
     /// `cargo test -p vmm-core contract::tests::regen_golden -- --ignored`.
     /// Then update `canonical_form_matches_golden`'s expected hash to the new value.
     #[test]
-    #[ignore = "writes src/vendor/x86/contract/testdata/canonical-v4.txt; run manually on a reviewed §6 bump"]
+    #[ignore = "writes src/vendor/x86/contract/testdata/canonical-v5.txt; run manually on a reviewed §6 bump"]
     fn regen_golden() {
         let form = canonical::serialize(contract());
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/vendor/x86/contract/testdata/canonical-v4.txt"
+            "/src/vendor/x86/contract/testdata/canonical-v5.txt"
         );
         std::fs::write(path, &form).expect("write golden");
     }

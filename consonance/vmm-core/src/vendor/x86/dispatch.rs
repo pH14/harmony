@@ -266,6 +266,20 @@ impl<B: Backend<A = X86>> Vmm<B> {
         size: u8,
         value: u32,
     ) -> Result<Step, VmmError> {
+        if port == VIRTUAL_TIME_TICK_PORT {
+            // The exact tuple is the protocol, so it is validated **before** the
+            // tick is charged: an off-protocol width or value must leave V-time
+            // untouched on its way to the error, never half-advance the clock.
+            require_dword_io("OUT", port, size)?;
+            if value != 1 {
+                return Err(VmmError::ContractViolation(format!(
+                    "execution-tick protocol fault: OUT {port:#06x} value {value:#x} (must be 1)"
+                )));
+            }
+            self.advance_virtual_time_for_port(port)?;
+            // The write itself carries no data.
+            return Ok(Step::Continued);
+        }
         self.advance_virtual_time_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
             require_byte_io("OUT", port, size)?;
@@ -286,17 +300,6 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // and fails closed (never a truncated/extended report value).
             require_dword_io("OUT", port, size)?;
             self.report_stream.push(value);
-            return Ok(Step::Continued);
-        }
-        if port == VIRTUAL_TIME_TICK_PORT {
-            // The execution tick was already charged by
-            // `advance_virtual_time_for_port`; the write itself carries no data.
-            require_dword_io("OUT", port, size)?;
-            if value != 1 {
-                return Err(VmmError::ContractViolation(format!(
-                    "execution-tick protocol fault: OUT {port:#06x} value {value:#x} (must be 1)"
-                )));
-            }
             return Ok(Step::Continued);
         }
         // Task 73: the hypercall doorbell. The port is a **modeled** device, so a
@@ -327,6 +330,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
+        if port == VIRTUAL_TIME_TICK_PORT {
+            // The tick port is store-only. A read is not an execution tick, so it
+            // fails closed without charging one.
+            return Err(VmmError::ContractViolation(format!(
+                "execution-tick protocol fault: IN {port:#06x} (size {size}); the tick port is \
+                 write-only"
+            )));
+        }
         self.advance_virtual_time_for_port(port)?;
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;

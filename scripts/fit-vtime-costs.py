@@ -34,14 +34,21 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-import numpy as np
-
 ROW_RE = re.compile(
     r"^calib event=(?P<event>\d+) class=(?P<class>\w+) "
     r"vns_after=(?P<vns>\d+) wall_ns=(?P<wall>\d+)$"
 )
 
 NON_CONSTANT_CLASSES = {"idle", "terminal"}
+
+# The frozen execution-tick duration, mirroring `vtime-execution-tick-vns` in
+# docs/cpu-msr-contract.toml (and EXECUTION_TICK_VNS in vendor/arm64/contract.rs).
+# Ticks are indistinguishable from other paravirtual-MMIO events except by their
+# V-time delta, so a stale value here silently reports zero ticks. `--self-test`
+# compares it against the contract.
+EXECUTION_TICK_VNS = 100_000
+
+CONTRACT_TOML = Path(__file__).resolve().parent.parent / "docs" / "cpu-msr-contract.toml"
 
 
 def parse_log(path: Path) -> list[tuple[str, int, int]]:
@@ -71,16 +78,74 @@ def subclassify(rows: list[tuple[str, int, int]], tick_vns: int) -> list[tuple[s
     return out
 
 
+TICK_ROW_RE = re.compile(r"^vtime-execution-tick-vns\s*=\s*(?P<vns>\d+)\s*$", re.MULTILINE)
+
+
+def contract_execution_tick_vns() -> int:
+    """Read `vtime-execution-tick-vns` from the ratified x86 contract.
+
+    Matched by line rather than parsed as TOML so the check runs on any Python 3.
+    """
+    matches = TICK_ROW_RE.findall(CONTRACT_TOML.read_text())
+    if len(matches) != 1:
+        raise SystemExit(
+            f"{CONTRACT_TOML}: expected exactly one vtime-execution-tick-vns row, "
+            f"found {len(matches)}"
+        )
+    return int(matches[0])
+
+
+def self_test() -> None:
+    """Check the tick constant against the contract and exercise subclassification."""
+    frozen = contract_execution_tick_vns()
+    if frozen != EXECUTION_TICK_VNS:
+        raise SystemExit(
+            f"EXECUTION_TICK_VNS is {EXECUTION_TICK_VNS} but "
+            f"{CONTRACT_TOML} freezes vtime-execution-tick-vns = {frozen}. "
+            "Update the constant so the default --tick-vns still finds ticks."
+        )
+
+    # One tick, one ordinary paravirtual exit, one serial exit. Only the event
+    # whose V-time delta is exactly the tick is reclassified.
+    rows = [
+        ("pv_mmio", EXECUTION_TICK_VNS, 1_000),
+        ("pv_mmio", EXECUTION_TICK_VNS + 10_000, 2_000),
+        ("serial", EXECUTION_TICK_VNS + 20_000, 3_000),
+    ]
+    labels = [cls for cls, _, _ in subclassify(rows, EXECUTION_TICK_VNS)]
+    if labels != ["tick", "pv_mmio", "serial"]:
+        raise SystemExit(f"subclassify mislabeled the tick: {labels}")
+
+    # A stale constant must not silently relabel some other class as a tick.
+    stale = [cls for cls, _, _ in subclassify(rows, EXECUTION_TICK_VNS * 10)]
+    if "tick" in stale:
+        raise SystemExit(f"subclassify found a tick at the wrong constant: {stale}")
+
+    print(f"self-test ok: execution tick = {EXECUTION_TICK_VNS} vns")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("logs", nargs="+", type=Path)
+    parser.add_argument("logs", nargs="*", type=Path)
     parser.add_argument(
         "--tick-vns",
         type=int,
-        default=1_000_000,
-        help="execution-tick V-ns constant used to split ticks out of pv_mmio",
+        default=EXECUTION_TICK_VNS,
+        help="execution-tick V-ns constant used to split ticks out of pv_mmio "
+        f"(default {EXECUTION_TICK_VNS}, the frozen contract row)",
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="check the tick constant against the contract and exit",
     )
     args = parser.parse_args()
+
+    if args.self_test:
+        self_test()
+        return
+    if not args.logs:
+        parser.error("at least one calibration log is required")
 
     deltas: dict[str, list[int]] = defaultdict(list)
     totals: list[tuple[Counter, int, int, Path]] = []
@@ -111,6 +176,8 @@ def main() -> None:
         )
 
     if len(totals) >= len(classes):
+        import numpy as np
+
         design = np.array(
             [[counts.get(cls, 0) for cls in classes] for counts, _, _, _ in totals],
             dtype=float,

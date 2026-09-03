@@ -236,11 +236,20 @@ mod tests {
         assert_eq!(timing.execution_tick_vns, 100_000);
     }
 
+    /// The shared set is seven rows: the six [`VirtualTimeTiming`] durations plus
+    /// the clockevent period, which is carried outside the struct because no exit
+    /// is charged with it. Comparing the struct alone would let the x86 contract's
+    /// parsed `vtime-clockevent-period-vns` drift from the arm64 constant while
+    /// staying green.
     #[test]
-    fn both_vendors_share_one_timing_row_set() {
+    fn both_architectures_share_one_timing_row_set() {
         assert_eq!(
             virtual_time_timing(),
             crate::vendor::x86::contract::virtual_time_timing()
+        );
+        assert_eq!(
+            LINUX_CLOCKEVENT_PERIOD_VNS,
+            crate::vendor::x86::contract::clockevent_period_vns()
         );
     }
 }

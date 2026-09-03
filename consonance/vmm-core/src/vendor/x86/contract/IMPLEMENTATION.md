@@ -101,14 +101,14 @@ distinguished in the hash by their genuinely different content (the AuthenticAMD
 string, the `det-zenN-v1` baseline, the AMD MSR rows, the verify/applies-when/transfer
 tokens), not by a `vendor=` line. Consequences:
 
-- **Intel is byte-identical through the restructure.** `contract-version` stays `4`; the
-  golden `testdata/canonical-v4.txt` is **unchanged**; the committed Intel
-  `contract_hash = 30839ae6…` is **unchanged**. The existing Intel disposition / CPUID /
-  filter / golden / registry-drift tests stay green **untouched** — they are the proof of
-  byte-identity. The only Intel-file diff is the single additive `vendor` header line
-  (plus its comment).
+- **Intel was byte-identical through the restructure.** The vendor key changed no Intel
+  byte: the existing Intel disposition / CPUID / filter / golden / registry-drift tests
+  stayed green **untouched** — they are the proof of byte-identity. The only Intel-file
+  diff was the single additive `vendor` header line (plus its comment). The Intel column
+  is now at `contract-version = 5` with golden `testdata/canonical-v5.txt` and committed
+  `contract_hash = 01b0214b…`, bumped by the ratified vtime timing rows.
 - **AMD hash committed:** `docs/cpu-msr-contract-amd-draft.toml` `[contract]
-  contract_hash = 0e4e8daaa7bafe197396ebac8b42b0671453a7e1ab12f73136ee5e44533b5849`, with
+  contract_hash = f2944970ab883c47ecdfb1f994eb5c449ff385cbd1381c1299cb8b2e8b8b3a22`, with
   golden `testdata/canonical-amd-draft.txt` (regen: `contract::tests::regen_amd_golden`,
   ignored). The computed-==committed gate is green. The zen4+ PerfMonV2 section carries the
   full global control/status set `0xc000_0300`–`0xc000_0303` (GLOBAL_STATUS / CTL /

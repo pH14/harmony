@@ -18,6 +18,14 @@ execution tick (one exit per syscall entry, context switch, and idle-poll
 iteration) so exit-free execution stretches still reach timer deadlines; its
 duration is a contract row bounded below the guest's clockevent period.
 
+The tick is a store-only ring with an exact tuple. On x86 it is a dword `OUT` of
+the value 1 to port `0x0CA3`; the dispatcher validates width and value before
+charging the tick, and every other access to that port — a byte or word write, a
+value other than 1, or any `IN` — is a contract violation that advances no time.
+On arm64 it is a 32-bit store of 1 at offset `0x20` of the guest's pvclock MMIO
+frame. Neither form reads a counter or host time, so the tick depends only on
+guest execution boundaries.
+
 The design was brought up on macOS arm64 HVF, Linux arm64 KVM, and Linux x86 KVM.
 PR #235 records the completed milestone evidence: planted negatives, normalized
 logs, checkpoint hashes, cross-host comparisons, and the exact guest-image

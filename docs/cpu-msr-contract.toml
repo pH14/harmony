@@ -3352,3 +3352,18 @@ width = "dword"
 direction = "out"
 capture = "host"
 hashed = false
+
+[[ports.entry]]
+# Guest execution-tick ring. A 32-bit `OUT 0x0CA3, 1` is one execution tick: the
+# guest kernel rings it on every syscall entry, context switch, and idle-poll
+# iteration so an exit-free stretch still reaches timer deadlines. The exact tuple
+# is the protocol — a non-dword width, a value other than 1, or any IN fails closed
+# without advancing V-time. The tick's duration is the hashed
+# `vtime-execution-tick-vns` row above; the port itself carries no per-host input,
+# so it is not a §6-hashed row. See docs/VM-EXIT-COUNT-VTIME.md.
+name = "VIRTUAL_TIME_TICK_PORT"
+port = "0x0ca3"
+width = "dword"
+direction = "out"
+capture = "host"
+hashed = false

@@ -87,6 +87,8 @@ jobs:
           cmp /tmp/n6-listing.tsv docs/determinism-instructions.generated.tsv
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
           python3 consonance/vmm-backend/kvm-patches/n6-tripwire-audit.py
+      - name: V-time cost fitter self-test
+        run: python3 scripts/fit-vtime-costs.py --self-test
       # The ARCH-BOUNDARY seam gate (tasks/108). The whole point of the `Arch` trait
       # + engine/vendor split is that a NON-x86 vendor can be added additively — but
       # nothing else in CI would ever notice if that stopped being true, because this

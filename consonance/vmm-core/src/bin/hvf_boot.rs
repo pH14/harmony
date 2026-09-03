@@ -149,13 +149,6 @@ fn main() -> std::process::ExitCode {
         },
         None => None,
     };
-    // not order-observable: calibration rows pair each portable event with the
-    // host wall clock for the per-class duration fit. Diagnostic output only;
-    // nothing reads it back into the run.
-    #[allow(clippy::disallowed_methods)]
-    let calibration_start = std::time::Instant::now();
-    let mut calibration_emitted = 0usize;
-
     let image = match std::fs::read(&image_path) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -213,6 +206,14 @@ fn main() -> std::process::ExitCode {
         let _ = tx.send(WatchdogCommand::Stop);
         let _ = thread.join();
     };
+
+    // not order-observable: calibration rows pair each portable event with the
+    // host wall clock for the per-class duration fit. Diagnostic output only;
+    // nothing reads it back into the run. The epoch starts at the event loop so
+    // the fitted totals cover event execution, not image reads and VM setup.
+    #[allow(clippy::disallowed_methods)]
+    let calibration_start = std::time::Instant::now();
+    let mut calibration_emitted = 0usize;
 
     let mut emitted = 0;
     for event in 0..max_events {

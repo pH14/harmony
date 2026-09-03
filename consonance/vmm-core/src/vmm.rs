@@ -6862,6 +6862,34 @@ mod tests {
     }
 
     #[test]
+    fn off_protocol_tick_accesses_do_not_advance_virtual_time() {
+        // Fail-closed is a whole-transition property: an off-protocol width or
+        // value must not charge the execution tick on its way to the error, or a
+        // rejected access would still have moved the clock.
+        let writes = [(1u8, Some(1u32)), (2, Some(1)), (4, Some(0)), (4, Some(2))];
+        for (size, write) in writes.into_iter().chain([(1, None), (4, None)]) {
+            let mut vmm = vtime_vmm(
+                vec![Exit::Arch(X86Exit::Io {
+                    port: VIRTUAL_TIME_TICK_PORT,
+                    size,
+                    write,
+                })],
+                1,
+            );
+            let before = vmm.effective_vns().unwrap();
+            assert!(
+                matches!(vmm.step(), Err(VmmError::ContractViolation(_))),
+                "tick access size {size} write {write:?} must fail closed"
+            );
+            assert_eq!(
+                vmm.effective_vns().unwrap(),
+                before,
+                "rejected tick access size {size} write {write:?} must leave V-time unchanged"
+            );
+        }
+    }
+
+    #[test]
     fn report_port_non_dword_fails_closed() {
         // The report channel is dword-addressed; a byte/word write is unmodeled
         // and must fail closed, never silently truncate a reported value.
