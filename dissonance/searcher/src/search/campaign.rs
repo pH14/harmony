@@ -92,25 +92,37 @@ const fn admission_window_depth(workers: usize, reservations_per_worker: usize) 
     workers.saturating_mul(reservations_per_worker)
 }
 
+/// Namespace a live windowed run records. The `_v1` namespace it replaces
+/// collides with [`LEGACY_CAMPAIGN_SCHEDULE_POLICY`] at window 64, which
+/// would send a live window-64 stream down the legacy replay path.
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
+/// Namespace of windowed streams recorded before the collision was closed.
+const HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v1";
+const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
+
 /// The schedule policy a run records: the per-worker window is part of the
 /// identifier because replay must hold the same reservations in flight.
 fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
-    format!("deterministic_window_{reservations_per_worker}_per_worker_v1")
+    format!(
+        "{SCHEDULE_POLICY_WINDOW_PREFIX}{reservations_per_worker}{SCHEDULE_POLICY_WINDOW_SUFFIX}"
+    )
 }
 
 /// The per-worker window a recorded schedule policy names; `None` for the
 /// legacy policy and for identifiers no run could have recorded.
+///
+/// The historical `_v1` namespace still resolves, except at window 64, where
+/// its text is the legacy policy and the legacy meaning wins.
 fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
     let policy = policy?;
     if policy == LEGACY_CAMPAIGN_SCHEDULE_POLICY {
         return None;
     }
-    policy
-        .strip_prefix("deterministic_window_")?
-        .strip_suffix("_per_worker_v1")?
-        .parse()
-        .ok()
-        .filter(|window| *window >= 1)
+    let window = policy.strip_prefix(SCHEDULE_POLICY_WINDOW_PREFIX)?;
+    let window = window
+        .strip_suffix(SCHEDULE_POLICY_WINDOW_SUFFIX)
+        .or_else(|| window.strip_suffix(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))?;
+    window.parse().ok().filter(|window| *window >= 1)
 }
 
 fn schedule_policy_is_supported(policy: Option<&str>) -> bool {
@@ -2285,6 +2297,9 @@ where
     if !archive_entry_limit_is_valid(config.archive_entry_limit) {
         return Err("campaign archive entry limit is outside its bounded range".into());
     }
+    if config.reservations_per_worker == 0 {
+        return Err("campaign reservations per worker must be at least one".into());
+    }
     if config.memory_budget_mib == Some(0) {
         return Err("campaign memory budget must be nonzero".into());
     }
@@ -2545,7 +2560,11 @@ where
             let pipeline_depth = admission_window_depth(workers, config.reservations_per_worker);
             let mut pending = BTreeMap::<usize, PendingJob>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            let mut queued_specs = VecDeque::with_capacity(pipeline_depth);
+            // The run can never reserve past its execution budget, so a
+            // saturated pipeline depth must not size the initial allocation.
+            let mut queued_specs = VecDeque::with_capacity(
+                pipeline_depth.min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX)),
+            );
             // Fill only the pipeline depth. Every later reservation is
             // selected after, and therefore from the archive produced by,
             // its predecessor's ordered admission.
@@ -3931,9 +3950,12 @@ mod tests {
     #[test]
     fn schedule_policy_dispatch_accepts_windowed_and_legacy_only() {
         let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
-        assert_eq!(current, "deterministic_window_1_per_worker_v1");
+        assert_eq!(current, "deterministic_window_1_per_worker_v2");
         assert!(schedule_policy_is_supported(None));
         assert!(schedule_policy_is_supported(Some(&current)));
+        assert!(schedule_policy_is_supported(Some(
+            "deterministic_window_4_per_worker_v2"
+        )));
         assert!(schedule_policy_is_supported(Some(
             "deterministic_window_4_per_worker_v1"
         )));
@@ -3942,9 +3964,13 @@ mod tests {
         )));
         assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
         assert!(!schedule_policy_is_supported(Some(
-            "deterministic_window_0_per_worker_v1"
+            "deterministic_window_0_per_worker_v2"
         )));
         assert_eq!(schedule_policy_window(Some(&current)), Some(1));
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
+            Some(4)
+        );
         assert_eq!(
             schedule_policy_window(Some("deterministic_window_4_per_worker_v1")),
             Some(4)
@@ -3958,6 +3984,26 @@ mod tests {
             super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
         )));
         assert!(schedule_policy_is_legacy(None));
+    }
+
+    #[test]
+    fn a_live_window_of_sixty_four_is_not_recorded_as_the_legacy_policy() {
+        // The legacy identifier is exactly the window-64 text in the `_v1`
+        // namespace, so a live window-64 run must record `_v2` and replay as
+        // a window, not as the legacy all-future pinning.
+        let live = schedule_policy_identifier(64);
+        assert_ne!(live, super::LEGACY_CAMPAIGN_SCHEDULE_POLICY);
+        assert!(!schedule_policy_is_legacy(Some(&live)));
+        assert_eq!(schedule_policy_window(Some(&live)), Some(64));
+
+        // The same text in the historical namespace still means legacy.
+        assert!(schedule_policy_is_legacy(Some(
+            "deterministic_window_64_per_worker_v1"
+        )));
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_64_per_worker_v1")),
+            None
+        );
     }
 
     #[test]

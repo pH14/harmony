@@ -2178,7 +2178,70 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_1_per_worker_v1\"")
+                .contains("\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"")
+        );
+    }
+
+    #[test]
+    fn a_zero_reservation_window_is_refused_by_the_public_campaign_entry() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca40, 2, 8);
+        config.reservations_per_worker = 0;
+        let mut stream = Vec::new();
+        let error = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect_err("a zero window is refused");
+        assert!(
+            error.to_string().contains("reservations per worker"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            stream.is_empty(),
+            "a refused run must not write a stream header"
+        );
+    }
+
+    #[test]
+    fn a_live_window_of_sixty_four_records_and_replays_as_a_window() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca41, 2, 256);
+        config.reservations_per_worker = 64;
+        config.memory_budget_mib = Some(4);
+        let mut stream = Vec::new();
+        let (live, live_checkpoint) = run_smb_campaign_checkpointed(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("window-64 live campaign");
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        // Window 64 in the historical namespace is the legacy identifier
+        // verbatim, so a live run at that window must record its own.
+        assert!(
+            recorded
+                .lines()
+                .next()
+                .expect("stream header")
+                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v2\""),
+            "unexpected header: {}",
+            recorded.lines().next().unwrap_or_default()
+        );
+        let (replay, replay_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, recorded.as_bytes(), None, None)
+                .expect("window-64 stream replays off the windowed path");
+        assert_eq!(live, replay);
+        assert_eq!(live_checkpoint, replay_checkpoint);
+        let legacy_tagged = recorded.replacen(
+            "deterministic_window_64_per_worker_v2",
+            "deterministic_window_64_per_worker_v1",
+            1,
+        );
+        // Rewriting only the namespace sends the same stream down the legacy
+        // all-future pinning path, which does not reproduce this run.
+        assert!(
+            replay_smb_campaign_checkpointed(&rom, legacy_tagged.as_bytes(), None, None).is_err(),
+            "the legacy path must not silently accept a live window-64 stream"
         );
     }
 
@@ -2198,7 +2261,7 @@ mod tests {
         .expect("new campaign");
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
         let historical = recorded.replacen(
-            "\"schedule_policy\":\"deterministic_window_1_per_worker_v1\"",
+            "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"",
             "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
             1,
         );
@@ -2220,7 +2283,7 @@ mod tests {
         );
         let legacy = recorded
             .replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v1\",",
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\",",
                 "",
                 1,
             )
@@ -2728,7 +2791,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
-            ("deterministic_window_1_per_worker_v1", "unknown_order_v9"),
+            ("deterministic_window_1_per_worker_v2", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(
