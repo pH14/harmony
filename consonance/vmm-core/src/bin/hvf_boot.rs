@@ -139,6 +139,16 @@ fn main() -> std::process::ExitCode {
         portable_component_events.insert(event);
     }
 
+    let mut calibration_log = match std::env::var_os("HARMONY_CALIBRATION_LOG") {
+        Some(path) => match std::fs::File::create(&path) {
+            Ok(file) => Some(std::io::BufWriter::new(file)),
+            Err(error) => {
+                eprintln!("cannot create calibration log {path:?}: {error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     let image = match std::fs::read(&image_path) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -197,6 +207,14 @@ fn main() -> std::process::ExitCode {
         let _ = thread.join();
     };
 
+    // not order-observable: calibration rows pair each portable event with the
+    // host wall clock for the per-class duration fit. Diagnostic output only;
+    // nothing reads it back into the run. The epoch starts at the event loop so
+    // the fitted totals cover event execution, not image reads and VM setup.
+    #[allow(clippy::disallowed_methods)]
+    let calibration_start = std::time::Instant::now();
+    let mut calibration_emitted = 0usize;
+
     let mut emitted = 0;
     for event in 0..max_events {
         if watchdog_tx.send(WatchdogCommand::Arm(event)).is_err() {
@@ -229,6 +247,30 @@ fn main() -> std::process::ExitCode {
             }
         };
         let _ = watchdog_tx.send(WatchdogCommand::Disarm);
+        if let Some(log) = calibration_log.as_mut()
+            && let Some(trace) = vmm.virtual_time_trace()
+        {
+            let events = &trace.normalized_log().events;
+            if calibration_emitted < events.len() {
+                let wall_ns =
+                    u64::try_from(calibration_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                while calibration_emitted < events.len() {
+                    let entry = &events[calibration_emitted];
+                    if let Err(error) = writeln!(
+                        log,
+                        "calib event={} class={} vns_after={} wall_ns={wall_ns}",
+                        calibration_emitted,
+                        entry.class.label(),
+                        entry.vns_after,
+                    ) {
+                        eprintln!("calibration log write failed: {error}");
+                        stop_watchdog(&watchdog_tx, watchdog);
+                        return std::process::ExitCode::FAILURE;
+                    }
+                    calibration_emitted += 1;
+                }
+            }
+        }
         let current_portable_event = vmm
             .virtual_time_trace()
             .and_then(|trace| trace.normalized_log().events.last())
@@ -391,6 +433,13 @@ fn main() -> std::process::ExitCode {
             );
             let hash = vmm.state_hash();
             println!("HVF_BOOT_READY event={event} state_hash={}", hex(&hash));
+            if let Some(log) = calibration_log.as_mut()
+                && let Err(error) = log.flush()
+            {
+                eprintln!("calibration log flush failed: {error}");
+                stop_watchdog(&watchdog_tx, watchdog);
+                return std::process::ExitCode::FAILURE;
+            }
             stop_watchdog(&watchdog_tx, watchdog);
             return std::process::ExitCode::SUCCESS;
         }
@@ -415,6 +464,11 @@ fn main() -> std::process::ExitCode {
             stop_watchdog(&watchdog_tx, watchdog);
             return std::process::ExitCode::FAILURE;
         }
+    }
+    if let Some(log) = calibration_log.as_mut()
+        && let Err(error) = log.flush()
+    {
+        eprintln!("calibration log flush failed: {error}");
     }
     eprintln!("HVF boot watchdog reached {max_events} events before /init marker");
     stop_watchdog(&watchdog_tx, watchdog);

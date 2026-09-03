@@ -14,10 +14,9 @@
 # Regenerate when the runner toolchain moves or the patch series changes: the
 # scan failure prints the unlisted/stale sites in paste-ready form; re-verify
 # the function-subset property against rdtsc-allowlist.txt before committing.
-# Last re-baseline: N2's guest-config and patch cleanup shifted ten sites in
-# the alternatives replacement section by eleven bytes. The old and new
-# captures contain the same ten counter reads in the same reviewed synthetic
-# function; no function or opcode count was added or removed.
+# Last re-baseline: guest patch 0004's execution-tick OUT in do_syscall_64
+# shifted that function's one reviewed counter read from +0x1b2 to +0x1bd.
+# No function or opcode count was added or removed.
 # Selected by build-kernel.sh via HARMONY_RDTSC_ALLOWLIST (the x86-vtime
 # workflow sets it).
 vmlinux:.altinstr_replacement+0x1d20
@@ -68,7 +67,7 @@ vmlinux:dmar_disable_qi+0x0
 vmlinux:dmar_disable_qi+0x79
 vmlinux:dmar_disable_qi+0xa8
 vmlinux:dmar_disable_qi+0xc4
-vmlinux:do_syscall_64+0x1b2
+vmlinux:do_syscall_64+0x1bd
 vmlinux:ecmd_submit_sync+0x60
 vmlinux:ecmd_submit_sync+0x7b
 vmlinux:entropy_timer+0x25

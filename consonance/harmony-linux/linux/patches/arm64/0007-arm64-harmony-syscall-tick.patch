@@ -4,8 +4,9 @@ VirtualTime execution cannot stop an exit-free userspace stretch or idle-poll
 loop at a timer deadline. Give the cooperative M3 Linux guest a deterministic
 exit at every native syscall entry, context switch, and idle-poll iteration
 (all contract intervals are N=1): a write to the owned pvclock MMIO frame.
-Userspace assigns that exact tick one 100 Hz period, making an armed clockevent
-due even after the runnable task blocks and the sole vCPU enters idle polling.
+Userspace assigns that exact tick 100 microseconds of virtual time, one hundredth
+of the 100 Hz clockevent period, so an armed clockevent still matures after the
+runnable task blocks and the sole vCPU enters idle polling.
 
 The tick depends only on guest execution boundaries. It reads no counter and no
 host time, and the exact offset, width, direction, and value are default-denied
@@ -32,7 +33,7 @@ repository's designated guest-kernel patch exception.
 +
 +/*
 + * N=1 is the virtual_time execution-tick contract. The MMIO write is the exit;
-+ * userspace assigns it one complete 100 Hz tick before re-entering the guest.
++ * userspace assigns it 100 us, one hundredth of the 100 Hz clockevent period.
 + */
 +void harmony_arm_virtual_time_tick(void)
 +{

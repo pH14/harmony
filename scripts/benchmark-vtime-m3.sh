@@ -12,9 +12,9 @@ fi
 image=$1
 initramfs=$2
 report=$3
-expected_image=91b4f5781c32b01e9d10a7762f7a8951e83d49a9442edd72e8f61f8dc10a72f0
-expected_initramfs=c3939c777730b95335c1e518c6d09225eba00898a841164b28822ea19a1b66ab
-expected_trace=8418141803debd1e19a1e4e8cb47b77787a73be29b76497af66a69d8572c5ab8
+expected_image=08cafe8a473b56f7ad9274641cb661770bb45e11245fb504254ea6a154a499b1
+expected_initramfs=a7ec0987ff422f4c587f2d2ef54df194ae6de937420902319e9cb519c868905b
+expected_trace=774399eb909c640ad6d364178e2c3589bebb84e75c3e8d2442c79251ca313224
 
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
     echo "benchmark-vtime-m3 requires Apple Silicon macOS" >&2
@@ -45,9 +45,9 @@ codesign --force --sign - \
 target/release/hvf_postgres_m3 "$image" "$initramfs" - "$report"
 
 rg -q '^status PASS$' "$report"
-rg -q '^checkpoint_hashes count=149 workers=8 status=PASS$' "$report"
-rg -q '^exit_count_comparator event_loop=41278 raw_trace=41278 portable_trace=38295 substrate_private=2983 status=PASS$' "$report"
-rg -q "^trace events=38295 raw=41278 schedules=10451 digest=$expected_trace$" "$report"
+rg -q '^checkpoint_hashes count=700 workers=8 status=PASS$' "$report"
+rg -q '^exit_count_comparator event_loop=180012 raw_trace=180012 portable_trace=179271 substrate_private=741 status=PASS$' "$report"
+rg -q "^trace events=179271 raw=180012 schedules=1139 digest=$expected_trace$" "$report"
 
 performance=$(rg '^performance_intrinsic status=PASS ' "$report")
 wall_ns=$(sed -E 's/.*total_wall_ns=([0-9]+).*/\1/' <<<"$performance")

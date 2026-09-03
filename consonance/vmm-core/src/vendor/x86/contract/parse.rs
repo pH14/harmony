@@ -393,6 +393,13 @@ pub(crate) struct Contract {
     pub mxcsr_mask: String,
     pub rtc_epoch: i64,
     pub pit_refresh_ns: i64,
+    pub vtime_interrupt_controller_vns: i64,
+    pub vtime_serial_vns: i64,
+    pub vtime_paravirtual_vns: i64,
+    pub vtime_time_read_vns: i64,
+    pub vtime_arch_control_vns: i64,
+    pub vtime_execution_tick_vns: i64,
+    pub vtime_clockevent_period_vns: i64,
     /// The §6 registry hash, if/once the foreman has committed
     /// `contract_hash = "<hex>"` to the `[contract]` table. `None` until then.
     /// **Not** part of the canonical form (it is the hash *of* the body, so it
@@ -725,6 +732,34 @@ impl Contract {
                 .unwrap_or_default(),
             pit_refresh_ns: c
                 .get("pit-refresh-ns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_interrupt_controller_vns: c
+                .get("vtime-interrupt-controller-vns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_serial_vns: c
+                .get("vtime-serial-vns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_paravirtual_vns: c
+                .get("vtime-paravirtual-vns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_time_read_vns: c
+                .get("vtime-time-read-vns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_arch_control_vns: c
+                .get("vtime-arch-control-vns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_execution_tick_vns: c
+                .get("vtime-execution-tick-vns")
+                .map(TomlValue::as_int)
+                .unwrap_or_default(),
+            vtime_clockevent_period_vns: c
+                .get("vtime-clockevent-period-vns")
                 .map(TomlValue::as_int)
                 .unwrap_or_default(),
             contract_hash: c.get("contract_hash").map(|v| v.as_str().to_string()),

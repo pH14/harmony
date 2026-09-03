@@ -87,6 +87,25 @@ pub(crate) fn serialize(c: &Contract) -> String {
     line(format!("mxcsr-mask={}", c.mxcsr_mask));
     line(format!("rtc-epoch={}", c.rtc_epoch));
     line(format!("pit-refresh-ns={}", c.pit_refresh_ns));
+    line(format!(
+        "vtime-interrupt-controller-vns={}",
+        c.vtime_interrupt_controller_vns
+    ));
+    line(format!("vtime-serial-vns={}", c.vtime_serial_vns));
+    line(format!("vtime-paravirtual-vns={}", c.vtime_paravirtual_vns));
+    line(format!("vtime-time-read-vns={}", c.vtime_time_read_vns));
+    line(format!(
+        "vtime-arch-control-vns={}",
+        c.vtime_arch_control_vns
+    ));
+    line(format!(
+        "vtime-execution-tick-vns={}",
+        c.vtime_execution_tick_vns
+    ));
+    line(format!(
+        "vtime-clockevent-period-vns={}",
+        c.vtime_clockevent_period_vns
+    ));
 
     // 2. CPUID records, sorted ascending by (leaf, subleaf).
     let mut cpuid: Vec<_> = c.cpuid.clone();

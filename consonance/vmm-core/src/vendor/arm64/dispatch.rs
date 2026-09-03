@@ -468,7 +468,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         // bits that real HVF already truncates at the MMIO exit.
         if in_frame(addr, PL011) {
             if self.virtual_time_vtime_enabled() {
-                self.advance_virtual_time_vtime(contract::SERIAL_EXIT_VNS)?;
+                self.advance_virtual_time_vtime(contract::virtual_time_timing().serial_mmio_vns)?;
             }
             let offset = addr - PL011.0;
             let mask = match size {
@@ -525,10 +525,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                 )));
             }
             if self.virtual_time_vtime_enabled() {
+                let timing = contract::virtual_time_timing();
                 let advance = if offset == 0x020 {
-                    contract::EXECUTION_TICK_VNS
+                    timing.execution_tick_vns
                 } else {
-                    contract::PARAVIRTUAL_EXIT_VNS
+                    timing.paravirtual_device_mmio_vns
                 };
                 self.advance_virtual_time_vtime(advance)?;
             }

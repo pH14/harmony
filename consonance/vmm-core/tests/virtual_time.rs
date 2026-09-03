@@ -33,6 +33,7 @@ fn timing() -> VirtualTimeTiming {
         paravirtual_device_mmio_vns: 7,
         trapped_time_read_vns: 2,
         architectural_control_vns: 3,
+        execution_tick_vns: 11,
     }
 }
 

@@ -1,0 +1,63 @@
+x86: ring the virtual_time tick at context switch and idle poll
+
+VirtualTime execution cannot stop an exit-free userspace stretch or idle-poll
+loop at a timer deadline. Patch 0001 defines the tick (a dword OUT of 1 to
+port 0x0CA3, the x86 form of the arm64 guest's pvclock-frame tick write) and
+rings it at every native syscall entry. This patch completes the contract's
+execution-density boundaries: one tick per context switch and per idle-poll
+iteration (all contract intervals are N=1). The host assigns each tick one
+fixed sub-period duration, making an armed clockevent due even after the
+runnable task blocks and the sole vCPU enters idle polling.
+
+The tick depends only on guest execution boundaries. It reads no counter and
+no host time, and the exact port, width, and value are default-denied by the
+userspace device model.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/kernel/process_64.c
++++ b/arch/x86/kernel/process_64.c
+@@ -57,6 +57,7 @@
+ #include <asm/unistd.h>
+ #include <asm/fsgsbase.h>
+ #include <asm/fred.h>
++#include <asm/harmony_pvclock.h>
+ #include <asm/msr.h>
+ #ifdef CONFIG_IA32_EMULATION
+ /* Not included via unistd.h */
+@@ -620,6 +621,8 @@
+ 	WARN_ON_ONCE(IS_ENABLED(CONFIG_DEBUG_ENTRY) &&
+ 		     this_cpu_read(hardirq_stack_inuse));
+
++	harmony_virtual_time_tick();
++
+ 	switch_fpu(prev_p, cpu);
+
+ 	/* We must save %fs and %gs before load_TLS() because
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -11,6 +11,10 @@
+ #include <linux/livepatch.h>
+ #include "sched.h"
+ #include "smp.h"
++
++#ifdef CONFIG_HARMONY_PVCLOCK
++#include <asm/harmony_pvclock.h>
++#endif
+
+ /* Linker adds these: start and end of __cpuidle functions */
+ extern char __cpuidle_text_start[], __cpuidle_text_end[];
+@@ -64,7 +68,11 @@
+ 	raw_local_irq_enable();
+ 	while (!tif_need_resched() &&
+ 	       (cpu_idle_force_poll || tick_check_broadcast_expired()))
++#ifdef CONFIG_HARMONY_PVCLOCK
++		harmony_virtual_time_tick();
++#else
+ 		cpu_relax();
++#endif
+ 	raw_local_irq_disable();
+
+ 	ct_cpuidle_exit();

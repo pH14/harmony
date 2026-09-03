@@ -243,7 +243,8 @@ jobs:
       - name: X2 smoke (one virtual_time stock boot)
         run: |
           grep -m1 "model name" /proc/cpuinfo | tee x2-report.txt
-          X2_LOG_DUMP=$PWD/x2-normalized-log.txt timeout -k 10 900 cargo test --release -p vmm-core --test x86_kvm_linux_virtual_time \
+          X2_LOG_DUMP=$PWD/x2-normalized-log.txt X2_CALIBRATION_LOG=$PWD/x2-boot.calib \
+            timeout -k 10 900 cargo test --release -p vmm-core --test x86_kvm_linux_virtual_time \
             x2_virtual_time_stock_boot_smoke -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee -a x2-report.txt
       - name: X2 determinism (10 same-seed boots, one normalized log)
@@ -274,6 +275,7 @@ jobs:
           path: |
             x2-report.txt
             x2-normalized-log.txt
+            x2-boot.calib
           if-no-files-found: error
 
   # Widen the vendor sample: the pool serves Intel rarely, and every closed

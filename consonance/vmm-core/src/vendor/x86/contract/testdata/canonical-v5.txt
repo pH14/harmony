@@ -1,4 +1,4 @@
-contract-version=4
+contract-version=5
 kernel-tag=v6.18.35
 cpuid-baseline=det-cfl-v1
 tsc-hz=2000000000
@@ -7,6 +7,13 @@ bus-hz=100000000
 mxcsr-mask=0x0000ffff
 rtc-epoch=1577836800
 pit-refresh-ns=15085
+vtime-interrupt-controller-vns=10000
+vtime-serial-vns=10000
+vtime-paravirtual-vns=10000
+vtime-time-read-vns=1
+vtime-arch-control-vns=10000
+vtime-execution-tick-vns=100000
+vtime-clockevent-period-vns=10000000
 cpuid 00000000.00000000 00000020 756e6547 6c65746e 49656e69
 cpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:76da3203 0f8bbb7f
 cpuid 00000002.00000000 0000ff01 00000000 00000000 00000000

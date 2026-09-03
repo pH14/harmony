@@ -369,14 +369,9 @@ pub vmm_core::vendor::x86::contract::MsrDisposition::AllowStateful
 pub vmm_core::vendor::x86::contract::MsrDisposition::DenyGp
 pub vmm_core::vendor::x86::contract::MsrDisposition::DenyIgnoreWrite
 pub vmm_core::vendor::x86::contract::MsrDisposition::EmulateVtime
-pub const vmm_core::vendor::x86::contract::ARCH_CONTROL_EXIT_VNS: u64
-pub const vmm_core::vendor::x86::contract::INTERRUPT_CONTROLLER_EXIT_VNS: u64
 pub const vmm_core::vendor::x86::contract::MSR_EXIT_REASON_FILTER: u64
 pub const vmm_core::vendor::x86::contract::MSR_EXIT_REASON_INVAL: u64
 pub const vmm_core::vendor::x86::contract::MSR_EXIT_REASON_UNKNOWN: u64
-pub const vmm_core::vendor::x86::contract::PARAVIRTUAL_EXIT_VNS: u64
-pub const vmm_core::vendor::x86::contract::SERIAL_EXIT_VNS: u64
-pub const vmm_core::vendor::x86::contract::TRAPPED_TIME_READ_VNS: u64
 pub const vmm_core::vendor::x86::contract::USER_SPACE_MSR_MASK: u64
 pub fn vmm_core::vendor::x86::contract::contract_hash() -> [u8; 32]
 pub fn vmm_core::vendor::x86::contract::cpuid_model() -> vmm_backend::arch::x86::config::CpuidModel
@@ -384,6 +379,7 @@ pub fn vmm_core::vendor::x86::contract::cpuid_model_hw_rng_hidden() -> vmm_backe
 pub fn vmm_core::vendor::x86::contract::msr_filter_allow() -> vmm_backend::arch::x86::config::MsrFilter
 pub fn vmm_core::vendor::x86::contract::rdmsr_disposition(u32) -> vmm_core::vendor::x86::contract::MsrDisposition
 pub fn vmm_core::vendor::x86::contract::resolve_cpuid(vmm_backend::arch::x86::config::CpuidEntry, u64, u64) -> vmm_backend::arch::x86::config::CpuidEntry
+pub fn vmm_core::vendor::x86::contract::virtual_time_timing() -> vmm_core::virtual_time::VirtualTimeTiming
 pub fn vmm_core::vendor::x86::contract::wrmsr_disposition(u32, u64) -> vmm_core::vendor::x86::contract::MsrDisposition
 pub mod vmm_core::vendor::x86::devices
 pub struct vmm_core::vendor::x86::devices::LegacyPlatform
@@ -697,6 +693,8 @@ pub vmm_core::virtual_time::NormalizedEventClass::Doorbell
 pub vmm_core::virtual_time::NormalizedEventClass::Idle
 pub vmm_core::virtual_time::NormalizedEventClass::Terminal
 pub vmm_core::virtual_time::NormalizedEventClass::TimeRead
+impl vmm_core::virtual_time::NormalizedEventClass
+pub fn vmm_core::virtual_time::NormalizedEventClass::label(self) -> &'static str
 pub enum vmm_core::virtual_time::PlacementViolation
 pub vmm_core::virtual_time::PlacementViolation::BadEventIndex
 pub vmm_core::virtual_time::PlacementViolation::BadEventIndex::actual: u64
@@ -784,6 +782,7 @@ pub fn vmm_core::virtual_time::VirtualTimeRunLoop<B>::schedule_interrupt(&mut se
 pub fn vmm_core::virtual_time::VirtualTimeRunLoop<B>::vns(&self) -> u64
 pub struct vmm_core::virtual_time::VirtualTimeTiming
 pub vmm_core::virtual_time::VirtualTimeTiming::architectural_control_vns: u64
+pub vmm_core::virtual_time::VirtualTimeTiming::execution_tick_vns: u64
 pub vmm_core::virtual_time::VirtualTimeTiming::interrupt_controller_mmio_vns: u64
 pub vmm_core::virtual_time::VirtualTimeTiming::paravirtual_device_mmio_vns: u64
 pub vmm_core::virtual_time::VirtualTimeTiming::serial_mmio_vns: u64
@@ -791,6 +790,7 @@ pub vmm_core::virtual_time::VirtualTimeTiming::trapped_time_read_vns: u64
 impl core::default::Default for vmm_core::virtual_time::VirtualTimeTiming
 pub fn vmm_core::virtual_time::VirtualTimeTiming::default() -> Self
 pub const vmm_core::virtual_time::PLACEHOLDER_ARCHITECTURAL_CONTROL_VNS: u64
+pub const vmm_core::virtual_time::PLACEHOLDER_EXECUTION_TICK_VNS: u64
 pub const vmm_core::virtual_time::PLACEHOLDER_INTERRUPT_CONTROLLER_MMIO_VNS: u64
 pub const vmm_core::virtual_time::PLACEHOLDER_PARAVIRTUAL_DEVICE_MMIO_VNS: u64
 pub const vmm_core::virtual_time::PLACEHOLDER_SERIAL_MMIO_VNS: u64
