@@ -69,14 +69,95 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
     let mode = args
         .next()
-        .ok_or("usage: smb-fixture <extract|verify> ...")?;
+        .ok_or("usage: smb-fixture <extract|verify|trace> ...")?;
     if mode == "extract" {
         return extract(&mut args);
     }
     if mode == "verify" {
         return verify(&mut args);
     }
+    if mode == "trace" {
+        return trace(&mut args);
+    }
     Err("unknown smb-fixture mode".into())
+}
+
+fn trace(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
+    let prefix_path = PathBuf::from(args.next().ok_or("missing prefix path")?);
+    let mut checkpoint_path = None;
+    while let Some(flag) = args.next() {
+        if flag == "--checkpoint" {
+            checkpoint_path = Some(PathBuf::from(
+                args.next().ok_or("missing --checkpoint value")?,
+            ));
+        } else {
+            return Err("unexpected trace argument".into());
+        }
+    }
+    let prefix = read_prefix(&prefix_path)?;
+    let rom = read_rom()?;
+    let game = selected_game(&rom)?;
+    let mut target = game
+        .new_target()
+        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+    if let Some(path) = checkpoint_path {
+        let checkpoint =
+            SmbSnapshotCheckpoint::from_bytes(&fs::read(path)?, SNAPSHOT_CHECKPOINT_FORMAT)?;
+        let [entry] = checkpoint.entries.as_slice() else {
+            return Err("trace checkpoint must contain exactly one entry".into());
+        };
+        game.restore(&mut target, &entry.snapshot)?;
+    } else {
+        target.reset();
+    }
+    let mut previous = smb_mechanical_state_from_wram(&target.wram());
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "action": 0,
+            "frame": 0,
+            "state": previous,
+            "dead": target.is_dead(),
+            "victory": target.is_victory(),
+        }))?
+    );
+    let mut frame = 0_u64;
+    for (index, action) in prefix.actions.iter().enumerate() {
+        target.apply(action);
+        frame = frame.saturating_add(u64::from(action.bounded_hold_frames()));
+        let state = smb_mechanical_state_from_wram(&target.wram());
+        let terminal =
+            target.is_dead() || target.is_victory() || target.exit_kind() != ExitKind::Ok;
+        if (state.world, state.level) != (previous.world, previous.level) || terminal {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "action": index + 1,
+                    "frame": frame,
+                    "state": state,
+                    "dead": target.is_dead(),
+                    "victory": target.is_victory(),
+                    "exit_kind": format!("{:?}", target.exit_kind()),
+                }))?
+            );
+        }
+        if terminal {
+            return Ok(());
+        }
+        previous = state;
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "action": prefix.actions.len(),
+            "frame": frame,
+            "state": previous,
+            "dead": target.is_dead(),
+            "victory": target.is_victory(),
+            "final": true,
+        }))?
+    );
+    Ok(())
 }
 
 fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {

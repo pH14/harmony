@@ -16,6 +16,7 @@ use searcher::{
         MAX_ARCHIVE_ENTRIES, RetentionPolicy, RetireThresholds, SelectorPolicy,
         retention_policy_from_identifier,
     },
+    search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
     search::draw::{
         DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
     },
@@ -29,6 +30,12 @@ use searcher::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+/// Archive memory budget of a run that names none. The archive keeps its
+/// population under this charge with proportional maintenance; a whole-game
+/// search stays inside it with room for the emulator and the workers on an
+/// ordinary machine.
+const DEFAULT_MEMORY_BUDGET_MIB: usize = 2048;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os().skip(1);
@@ -105,7 +112,8 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let mut checkpoint_path = None;
     let mut write_final_artifacts = true;
     let mut archive_entry_limit = MAX_ARCHIVE_ENTRIES;
-    let mut memory_budget_mib = None;
+    let mut memory_budget_mib = Some(DEFAULT_MEMORY_BUDGET_MIB);
+    let mut reservations_per_worker = DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER;
     while let Some(flag) = args.next() {
         if flag == "--wall-seconds" {
             let seconds = parse_u64(
@@ -163,6 +171,16 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
                     .ok_or("missing --archive-entry-limit value")?
                     .to_string_lossy(),
             )?)?;
+        } else if flag == "--window-per-worker" {
+            reservations_per_worker = usize::try_from(parse_u64(
+                &args
+                    .next()
+                    .ok_or("missing --window-per-worker value")?
+                    .to_string_lossy(),
+            )?)?;
+            if reservations_per_worker == 0 {
+                return Err("--window-per-worker must be at least 1".into());
+            }
         } else if flag == "--memory-budget-mib" {
             memory_budget_mib = Some(usize::try_from(parse_u64(
                 &args
@@ -203,6 +221,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         host,
         wall_budget,
         archive_entry_limit,
+        reservations_per_worker,
         memory_budget_mib,
         materialize_final_artifacts: write_final_artifacts,
         chord,
@@ -464,7 +483,9 @@ fn summary(report: &SmbCampaignModeReport) -> serde_json::Value {
         "victories": report.victories,
         "probe_refused": report.probe_refused,
         "duplicates_skipped": report.duplicates_skipped,
+        "executions_to_first_victory": report.executions_to_first_victory,
         "frames_emulated": report.frames_emulated,
+        "frames_to_first_victory": report.frames_to_first_victory,
         "jobs_per_worker": report.jobs_per_worker,
         "stream_sha256": report.stream_sha256,
     })

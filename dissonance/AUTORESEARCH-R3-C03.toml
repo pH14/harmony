@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 3
+candidate = "R3-C03"
+hypothesis = "Existing accounting can distinguish suffix-reach starvation from exhaustion-retirement starvation without adding policy."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "NO-CODE"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "PROMOTE"
+promotion_scope = "diagnosis-only"
+
+[diagnosis]
+suffix_reach = "UNTESTED: R3-C01 was configuration-identical to the champion."
+retirement = "NOT_SUPPORTED: R3-C02 regressed known 30K AUC by 102200 on 7-2 and 15900 on 8-4."
+interaction = "UNDERDETERMINED: no valid rollout-distribution intervention was available for comparison."
+next_test = "Use the existing one_or_two suffix shape as the actual rollout-distribution intervention; compare progress curves and retained parent-relative suffix lengths by execution count."

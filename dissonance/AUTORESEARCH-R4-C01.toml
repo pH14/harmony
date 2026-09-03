@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 4
+candidate = "R4-C01"
+hypothesis = "The existing generic one-or-two action suffix shape can increase feedback frequency while preserving incumbent selection."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "CONFIGURATION-ONLY"
+binary_sha256 = "134b41451f490bd4985a8d588af0c5fbfd7fbcae78ac3ff185903430385edec6"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "REJECT"
+failed_stage = "canary"
+suffix = "one_or_two"
+stage_1a_executions = 0
+
+[stage_0]
+configuration_validation = "PASS"
+micro_replay = "PASS"
+micro_stream_sha256 = "adf763d731c5fd21914a8c6db950ea0661c70bc49e12f04533406b3b6cfa4891"
+micro_archive_sha256 = "91c937663d72a0c3874f2ab53bf954527a0db060a168a18b2fc22e404fb7f06b"
+micro_report_sha256 = "109b70e99f9ff1c4ab323885f8af5617d460ed0625997b503f24dd8038fb05f2"
+
+[canary]
+executions_completed = 15000
+victories = 0
+resident_bytes = 168145708
+resident_snapshot_bytes = 162531240
+history_memory_bytes = 5610322
+live_entries = 11724
+stream_sha256 = "a4c6f1fe9f138309f60e5343034ab159d2303c605511280dd3457badcf64d0a6"
+
+[disposition]
+diagnosis = "Shorter suffixes materially reduce the retained population but lose all 1-1 completions at the frozen budget. Feedback frequency alone does not preserve the champion's canary competence."

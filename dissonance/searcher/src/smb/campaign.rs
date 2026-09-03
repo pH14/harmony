@@ -244,6 +244,9 @@ pub struct SmbCampaignConfig {
     pub wall_budget: Option<std::time::Duration>,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
+    /// Reservations held ahead of ordered admission per worker, recorded in
+    /// the header's schedule policy.
+    pub reservations_per_worker: usize,
     /// Deterministic logical-memory budget for the live search structures.
     pub memory_budget_mib: Option<usize>,
     /// Live-only: materialize full archive inputs and snapshots at completion.
@@ -279,6 +282,7 @@ impl SmbCampaignConfig {
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             archive_entry_limit: self.archive_entry_limit,
+            reservations_per_worker: self.reservations_per_worker,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: SmbCampaignRun {
@@ -369,18 +373,27 @@ pub enum SmbButtonVocabulary {
     /// Masks written in the SMB-disassembly bit order the emulator reads
     /// reversed; kept so its recordings replay byte-exact.
     DownTenMask,
-    /// The intended chord set in the emulator's bit order.
-    #[default]
+    /// The emulator-order chord set without B+direction chords; kept so its
+    /// recordings replay byte-exact.
     NesDownTen,
+    /// The emulator-order chord set with each direction alone and with A, B,
+    /// and A+B; kept so its recordings replay byte-exact.
+    NesRunThirteen,
+    /// Every physically pressable chord: nine direction sets times none, A,
+    /// B, and A+B.
+    #[default]
+    NesPressable,
 }
 
 impl SmbButtonVocabulary {
     /// Button masks this vocabulary draws from.
     #[must_use]
-    pub fn masks(self) -> &'static [u8; 10] {
+    pub fn masks(self) -> &'static [u8] {
         match self {
             Self::DownTenMask => &DOWN_TEN_BUTTON_MASKS,
             Self::NesDownTen => &crate::smb::archive::NES_DOWN_TEN_BUTTON_MASKS,
+            Self::NesRunThirteen => &crate::smb::archive::NES_RUN_THIRTEEN_BUTTON_MASKS,
+            Self::NesPressable => &crate::smb::archive::NES_PRESSABLE_BUTTON_MASKS,
         }
     }
 }
@@ -391,6 +404,8 @@ pub fn button_vocabulary_identifier(vocabulary: SmbButtonVocabulary) -> &'static
     match vocabulary {
         SmbButtonVocabulary::DownTenMask => "down_ten_mask",
         SmbButtonVocabulary::NesDownTen => "nes_down_ten",
+        SmbButtonVocabulary::NesRunThirteen => "nes_run_thirteen",
+        SmbButtonVocabulary::NesPressable => "nes_pressable_36",
     }
 }
 
@@ -405,6 +420,8 @@ pub fn button_vocabulary_from_identifier(
     match identifier {
         "down_ten_mask" => Ok(SmbButtonVocabulary::DownTenMask),
         "nes_down_ten" => Ok(SmbButtonVocabulary::NesDownTen),
+        "nes_run_thirteen" => Ok(SmbButtonVocabulary::NesRunThirteen),
+        "nes_pressable_36" => Ok(SmbButtonVocabulary::NesPressable),
         _ => Err("campaign stream controller vocabulary is not recognized".into()),
     }
 }
@@ -724,18 +741,23 @@ pub(crate) struct SmbJobPolicies {
     pub(crate) terminal: SmbTerminalPredicate,
 }
 
-/// Execute one job: restore the parent snapshot and apply the suffix exactly as
-/// the campaign suffix loop does, collecting per-boundary candidates
-/// with worker-side probe verdicts.
+/// Execute one job: restore the origin snapshot, replay the actions that
+/// lead from it to the parent, and apply the suffix exactly as the campaign
+/// suffix loop does, collecting per-boundary candidates with worker-side
+/// probe verdicts.
 pub(crate) fn execute_job(
     target: &mut SmbTarget,
-    parent_snapshot: &SmbSnapshot,
+    origin_snapshot: &SmbSnapshot,
+    replay: &[ButtonChord],
     parent_actions: usize,
     parent_milestones: SmbMilestones,
     suffix: &[ButtonChord],
     policies: SmbJobPolicies,
 ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
-    target.restore(parent_snapshot)?;
+    target.restore(origin_snapshot)?;
+    for action in replay {
+        target.apply(action);
+    }
     let mut milestones = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -991,6 +1013,10 @@ impl Game for SmbGame {
         chord_time
     }
 
+    fn longest_action_time(&self) -> u64 {
+        u64::from(crate::smb::archive::LONG_HOLD_FRAMES.1)
+    }
+
     fn snapshot_memory_charge(snapshot: &SmbSnapshot) -> usize {
         snapshot.resident_memory_charge()
     }
@@ -1135,7 +1161,8 @@ impl Game for SmbGame {
         &self,
         run: &SmbCampaignRun,
         target: &mut SmbTarget,
-        parent_snapshot: &SmbSnapshot,
+        origin_snapshot: &SmbSnapshot,
+        replay: &[ButtonChord],
         parent_actions: usize,
         parent_milestones: SmbMilestones,
         suffix: &[ButtonChord],
@@ -1144,7 +1171,8 @@ impl Game for SmbGame {
     ) -> Result<SmbCampaignJobResult, Box<dyn Error>> {
         execute_job(
             target,
-            parent_snapshot,
+            origin_snapshot,
+            replay,
             parent_actions,
             parent_milestones,
             suffix,
@@ -1474,7 +1502,10 @@ mod tests {
         chord_policy_from_identifier, chord_policy_identifier, derive_suffix, derive_worker_seed,
         execute_job, remember_chord_version, source_batch_ready,
     };
-    use crate::search::campaign::{CoordinatorCore, Game};
+    use crate::search::campaign::{
+        CAMPAIGN_SCHEDULE_IDENTITY, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+        Game,
+    };
     use crate::search::empirical_steps::{EmpiricalStepHashRule, EmpiricalStepTables};
     use crate::{
         search::empirical_steps::EmpiricalStepParameters,
@@ -1570,6 +1601,7 @@ mod tests {
             host: "unit-test".to_owned(),
             wall_budget: None,
             archive_entry_limit: 32_768,
+            reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: None,
             materialize_final_artifacts: true,
             chord: SmbCampaignChordPolicy::default(),
@@ -1962,6 +1994,7 @@ mod tests {
         let on_first = execute_job(
             &mut first,
             &snapshot,
+            &[],
             1,
             SmbMilestones::default(),
             &suffix,
@@ -1971,6 +2004,7 @@ mod tests {
         let on_second = execute_job(
             &mut second,
             &snapshot,
+            &[],
             1,
             SmbMilestones::default(),
             &suffix,
@@ -1991,6 +2025,7 @@ mod tests {
         let result = execute_job(
             &mut target,
             &won,
+            &[],
             0,
             SmbMilestones::default(),
             &[ButtonChord::new(0x01, 4)],
@@ -2143,8 +2178,149 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"")
+                .contains("\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"")
         );
+    }
+
+    #[test]
+    fn a_run_without_a_victory_reports_no_first_victory_counters() {
+        let rom = synthetic_nrom();
+        let config = genesis_config(0x5eed_ca43, 2, 32);
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("live campaign without a victory");
+        assert_eq!(live.victories, 0);
+        assert_eq!(live.frames_to_first_victory, None);
+        assert_eq!(live.executions_to_first_victory, None);
+        assert!(live.executions_completed > 0);
+        let json = serde_json::to_string(&live).expect("serialize report");
+        for field in ["frames_to_first_victory", "executions_to_first_victory"] {
+            assert!(
+                !json.contains(field),
+                "a run without a victory must not add {field} to its report"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_reservation_window_is_refused_by_the_public_campaign_entry() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca40, 2, 8);
+        config.reservations_per_worker = 0;
+        let mut stream = Vec::new();
+        let error = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect_err("a zero window is refused");
+        assert!(
+            error.to_string().contains("reservations per worker"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            stream.is_empty(),
+            "a refused run must not write a stream header"
+        );
+    }
+
+    #[test]
+    fn a_live_window_of_sixty_four_records_and_replays_as_a_window() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca41, 2, 256);
+        config.reservations_per_worker = 64;
+        config.memory_budget_mib = Some(4);
+        let mut stream = Vec::new();
+        let (live, live_checkpoint) = run_smb_campaign_checkpointed(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("window-64 live campaign");
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        // Window 64 in the historical namespace is the legacy identifier
+        // verbatim, so a live run at that window must record its own.
+        assert!(
+            recorded
+                .lines()
+                .next()
+                .expect("stream header")
+                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v2\""),
+            "unexpected header: {}",
+            recorded.lines().next().unwrap_or_default()
+        );
+        let (replay, replay_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, recorded.as_bytes(), None, None)
+                .expect("window-64 stream replays off the windowed path");
+        assert_eq!(live, replay);
+        assert_eq!(live_checkpoint, replay_checkpoint);
+        let legacy_tagged = recorded.replacen(
+            "deterministic_window_64_per_worker_v2",
+            "deterministic_window_64_per_worker_v1",
+            1,
+        );
+        // Rewriting only the namespace claims a run recorded before the
+        // budget maintenance was corrected, which this stream is not.
+        assert!(
+            replay_smb_campaign_checkpointed(&rom, legacy_tagged.as_bytes(), None, None).is_err(),
+            "the legacy path must not silently accept a live window-64 stream"
+        );
+    }
+
+    #[test]
+    fn a_budgeted_stream_in_a_historical_namespace_is_refused_rather_than_replayed() {
+        // Budgeted runs recorded before the maintenance correction enforced
+        // the budget at other stream positions and counted CLOCK work
+        // differently, so which entries survive differs. Replay must say so
+        // instead of running and diverging.
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca44, 2, 128);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.memory_budget_mib = Some(4);
+        config.archive_entry_limit = 1;
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("budgeted live campaign");
+        assert!(
+            live.liveness_anchor_reactivations > 0,
+            "the budget must bind for this stream to be maintenance-sensitive"
+        );
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        replay_smb_campaign(&rom, recorded.as_bytes(), None).expect("its own namespace replays");
+
+        let refused = "campaign stream recorded a memory budget under superseded maintenance \
+                       and cannot be replayed";
+        for historical in [
+            recorded.replacen("_per_worker_v2", "_per_worker_v1", 1),
+            recorded.replacen(
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"",
+                "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
+                1,
+            ),
+            recorded.replacen(
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\",",
+                "",
+                1,
+            ),
+        ] {
+            let error = replay_smb_campaign(&rom, historical.as_bytes(), None)
+                .expect_err("a budgeted historical stream is refused");
+            assert_eq!(error.to_string(), refused);
+        }
+
+        // The same rewrite stays replayable without a budget, because the
+        // maintenance step does nothing there.
+        let unbudgeted = genesis_config(0x5eed_ca45, 2, 32);
+        let mut stream = Vec::new();
+        run_smb_campaign(&rom, &unbudgeted, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("unbudgeted live campaign");
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        replay_smb_campaign(
+            &rom,
+            recorded
+                .replacen("_per_worker_v2", "_per_worker_v1", 1)
+                .as_bytes(),
+            None,
+        )
+        .expect("an unbudgeted historical stream still replays");
     }
 
     #[test]
@@ -2152,12 +2328,39 @@ mod tests {
         let rom = synthetic_nrom();
         let config = genesis_config(0x5eed_ca22, 1, 4);
         let mut stream = Vec::new();
-        run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
-            .expect("new campaign");
-        let legacy = String::from_utf8(stream)
-            .expect("stream utf-8")
+        let (live, live_checkpoint) = run_smb_campaign_checkpointed(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("new campaign");
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        let historical = recorded.replacen(
+            "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"",
+            "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
+            1,
+        );
+        let (historical_replay, historical_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
+                .expect("deterministic legacy policy replays");
+        let (historical_replay_again, historical_checkpoint_again) =
+            replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
+                .expect("legacy policy replays deterministically");
+        assert_eq!(historical_replay, historical_replay_again);
+        assert_eq!(historical_checkpoint, historical_checkpoint_again);
+        // Replacing only the schedule tag changes the stream digest by
+        // design; the archive and checkpoint must remain identical.
+        assert_eq!(historical_replay.archive, live.archive);
+        assert_eq!(historical_checkpoint, live_checkpoint);
+        assert_eq!(
+            historical_replay.schedule_identity,
+            CAMPAIGN_SCHEDULE_IDENTITY
+        );
+        let legacy = recorded
             .replacen(
-                "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\",",
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\",",
                 "",
                 1,
             )
@@ -2344,7 +2547,7 @@ mod tests {
             "probe_at_admission_45",
             "fewest_frames_in_level",
             "whole_tree",
-            "nes_down_ten",
+            "nes_pressable_36",
             "frozen_area_span",
             "one_to_six",
             "stratified",
@@ -2379,10 +2582,12 @@ mod tests {
     }
 
     #[test]
-    fn budgeted_campaign_keeps_admitting_and_replays_exactly() {
+    fn budgeted_64_entry_campaign_reactivates_at_action_limit_and_replays_exactly() {
         let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca31, 4, 2_048);
+        let mut config = genesis_config(0x5eed_ca31, 4, 8_192);
         config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        // This bounded setup drives the active population to the action limit
+        // while the 64-entry budget continues admitting replacements.
         config.memory_budget_mib = Some(4);
         config.archive_entry_limit = 64;
         let mut stream = Vec::new();
@@ -2394,8 +2599,12 @@ mod tests {
             None,
         )
         .expect("budgeted live campaign");
-        assert_eq!(live.executions_completed, 2_048);
+        assert_eq!(live.executions_completed, 8_192);
         assert_eq!(live.memory_budget_mib, Some(4));
+        assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
+        // Skips account a selection without inserting, so this run exercises
+        // the budget maintenance the coordinator spends outside admission.
+        assert!(live.duplicates_skipped > 0);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
         assert!(live.historical_entries_dropped > 0);
@@ -2407,6 +2616,47 @@ mod tests {
                 .expect("replay budgeted campaign");
         assert_eq!(live, replay);
         assert_eq!(live_checkpoint, replay_checkpoint);
+        let anchor = live
+            .archive
+            .entries
+            .iter()
+            .find(|entry| entry.id == 0)
+            .expect("genesis liveness anchor remains retained");
+        assert!(
+            anchor
+                .selector
+                .as_ref()
+                .is_some_and(|selector| selector.selected > 0 && selector.productive > 0)
+        );
+    }
+
+    #[test]
+    fn budgeted_single_entry_campaign_reactivates_displaced_anchor() {
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca32, 1, 128);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.memory_budget_mib = Some(4);
+        config.archive_entry_limit = 1;
+        let mut stream = Vec::new();
+        let (live, checkpoint) = run_smb_campaign_checkpointed(
+            &rom,
+            &config,
+            &SmbCampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("single-entry bounded campaign");
+        assert!(live.liveness_anchor_reactivations > 0);
+        let (replay, replay_checkpoint) =
+            replay_smb_campaign_checkpointed(&rom, &stream, None, None)
+                .expect("single-entry bounded replay");
+        assert!(live.liveness_anchor_reactivations > 0);
+        let mut live_without_test_evidence = live;
+        let mut replay_without_test_evidence = replay;
+        live_without_test_evidence.liveness_anchor_reactivations = 0;
+        replay_without_test_evidence.liveness_anchor_reactivations = 0;
+        assert_eq!(live_without_test_evidence, replay_without_test_evidence);
+        assert_eq!(checkpoint, replay_checkpoint);
     }
 
     #[test]
@@ -2620,8 +2870,8 @@ mod tests {
             ("probe_at_admission_45", "probe_at_admission_45_snapback_16"),
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
-            ("nes_down_ten", "frozen_nine_mask"),
-            ("deterministic_window_64_per_worker_v1", "unknown_order_v9"),
+            ("nes_pressable_36", "frozen_nine_mask"),
+            ("deterministic_window_1_per_worker_v2", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(
@@ -2891,9 +3141,9 @@ mod tests {
                     level: 0,
                     progress: 0,
                     player_y_bucket: 0,
-                    player_engine_state: 0,
                     state_fingerprint: 0,
                     room_x_bucket: 0,
+                    time_bucket: 0,
                     room: [0; 3],
                 },
                 milestones: SmbMilestones::default(),

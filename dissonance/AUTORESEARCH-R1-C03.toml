@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 1
+candidate = "R1-C03"
+hypothesis = "One measured generic lifetime change can cut mature archive-plus-checkpoint deterministic bytes by at least 30 percent without changing search semantics."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "8b29a222c6a44f0e8a72a58475edddda64b3f7f5"
+diff_sha256 = "2f2652a69fb436b9602485c46611542d983a34c1269830f9150c79a5e304df47"
+patch_sha256 = "d0e7061ede6833cfbff366e6f1bdb134ddc611f177e1365327f6b52692cbdf2d"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "INCONCLUSIVE"
+failed_stage = "memory evidence"
+complexity_delta = "reverse ancestry census, release schedule, and inactive-payload accounting"
+
+[stage_0]
+fmt = "PASS"
+tests = "PASS (106)"
+clippy = "PASS"
+boundary_review = "PASS with coverage suggestion"
+micro_replay = "PASS"
+micro_stream_sha256 = "880157a025d262ff62059a00ab6c477ec64891e6586cebbcd920ab131cc21af4"
+micro_archive_sha256 = "a0b1dbe431b90e1dbb62f9a5e999f0d1421866b8963101f6a35dccb79457d55b"
+
+[evidence]
+synthetic_snapshot_bytes_before = 400
+synthetic_snapshot_bytes_after = 200
+synthetic_reduction_percent = 50
+mature_archive_checkpoint_measurement = "NOT PRODUCED"
+search_effectiveness_comparison = "NOT RUN"
+
+[disposition]
+memory_threshold = "NOT ESTABLISHED"
+diagnosis = "The only reduction is a direct four-snapshot unit fixture. It does not invoke the changed whole-tree import scheduler and does not measure the charter's mature archive-plus-checkpoint byte target at 10K, 30K, or 100K. RSS cannot substitute because promotion uses deterministic bytes."
+next_step = "First add observation-only deterministic peak and mature byte census for actual whole-tree imports, including checkpointed and re-emulated ancestry; only then test a lifetime change."

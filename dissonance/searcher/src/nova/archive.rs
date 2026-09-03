@@ -324,6 +324,10 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
+/// Longest hold [`sample_chord`] can draw; the suffix time bound is a
+/// multiple of it.
+pub const LONGEST_HOLD_FRAMES: u8 = 120;
+
 const DIRECTIONS: [u8; 9] = [0, 0x10, 0x20, 0x40, 0x80, 0x50, 0x90, 0x60, 0xa0];
 const AB: [u8; 4] = [0, 0x01, 0x02, 0x03];
 

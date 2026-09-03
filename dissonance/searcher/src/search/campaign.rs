@@ -65,27 +65,86 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
 const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
      alone; the recorded stream is this campaign's identity; two live runs at one seed may \
      differ, and each replays exactly";
-const CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
+const LEGACY_CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
 const LEGACY_CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
 const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 
-/// Deterministic reservations kept ahead of admission per worker. The window
-/// hides individual long jobs while bounding result memory and wall-budget
-/// overshoot to a small number of jobs per core.
-const WINDOW_JOBS_PER_WORKER: usize = 64;
-
-/// Already-reserved jobs buffered in each physical executor. This is smaller
-/// than the logical reorder window and changes only overlap: logical worker
-/// identity, selection, and admission remain coordinator-owned.
+/// Already-reserved jobs buffered in each physical executor. It changes only
+/// overlap: logical worker identity, selection, and admission remain
+/// coordinator-owned.
 const EXECUTOR_PREFETCH_JOBS: usize = 8;
 
-/// Ordered admissions processed before the coordinator returns to completed
-/// physical workers. This bounds refill latency without changing admission
-/// order or any recorded choice.
-const ADMISSION_BATCH_JOBS: usize = 32;
+/// Reservations held ahead of ordered admission per logical worker when the
+/// run does not set its own.
+pub const DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER: usize = 1;
+
+/// Number of reservations that may be ahead of the ordered admission cursor.
+///
+/// This is the actual sliding-window depth, not a speculative batch size. The
+/// initial fill puts only this many jobs in flight; after each ordered
+/// admission exactly one new reservation is selected. Consequently selection
+/// of reservation `k` observes archive state no older than admission
+/// `k - pipeline_depth`, while the physical executors retain their prefetch.
+const fn admission_window_depth(workers: usize, reservations_per_worker: usize) -> usize {
+    workers.saturating_mul(reservations_per_worker)
+}
+
+/// Namespace a live windowed run records. The `_v1` namespace it replaces
+/// collides with [`LEGACY_CAMPAIGN_SCHEDULE_POLICY`] at window 64, which
+/// would send a live window-64 stream down the legacy replay path.
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
+/// Namespace of windowed streams recorded before the collision was closed.
+const HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v1";
+const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
+
+/// The schedule policy a run records: the per-worker window is part of the
+/// identifier because replay must hold the same reservations in flight.
+fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
+    format!(
+        "{SCHEDULE_POLICY_WINDOW_PREFIX}{reservations_per_worker}{SCHEDULE_POLICY_WINDOW_SUFFIX}"
+    )
+}
+
+/// The per-worker window a recorded schedule policy names; `None` for the
+/// legacy policy and for identifiers no run could have recorded.
+///
+/// The historical `_v1` namespace still resolves, except at window 64, where
+/// its text is the legacy policy and the legacy meaning wins.
+fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
+    let policy = policy?;
+    if policy == LEGACY_CAMPAIGN_SCHEDULE_POLICY {
+        return None;
+    }
+    let window = policy.strip_prefix(SCHEDULE_POLICY_WINDOW_PREFIX)?;
+    let window = window
+        .strip_suffix(SCHEDULE_POLICY_WINDOW_SUFFIX)
+        .or_else(|| window.strip_suffix(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))?;
+    window.parse().ok().filter(|window| *window >= 1)
+}
+
+fn schedule_policy_is_supported(policy: Option<&str>) -> bool {
+    schedule_policy_is_legacy(policy) || schedule_policy_window(policy).is_some()
+}
+
+fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
+    matches!(policy, None | Some(LEGACY_CAMPAIGN_SCHEDULE_POLICY))
+}
+
+/// Whether a recorded policy predates the corrected memory-budget
+/// maintenance.
+///
+/// Runs in the historical namespaces enforced the budget at different stream
+/// positions and charged the CLOCK sweep one visit per drop attempt rather
+/// than per examined entry. Both decide which entries an archive holds, so a
+/// budgeted stream from those runs replays against a different archive.
+/// Without a budget the maintenance step does nothing and the streams replay
+/// unchanged.
+fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
+    policy.is_none_or(|policy| policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))
+}
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
 /// next drawn job anyway and lets admission deduplicate, so a saturated archive
@@ -177,6 +236,9 @@ pub trait Game: Sync {
     fn max_action_limit(&self) -> usize;
     /// Time-accounting function handed to the archive.
     fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
+    /// Time of the longest single action the target can draw; the suffix
+    /// time bound is a multiple of it.
+    fn longest_action_time(&self) -> u64;
     /// Deterministic logical memory charge for one resident snapshot.
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
     /// Fixed logical-memory reserve withheld from the recorded global budget
@@ -266,8 +328,9 @@ pub trait Game: Sync {
         snapshot: &Self::Snapshot,
     ) -> Result<Self::Key, Box<dyn Error>>;
 
-    /// Execute one job: restore the parent snapshot and apply the suffix,
-    /// collecting per-boundary candidates with worker-side probe verdicts.
+    /// Execute one job: restore the origin snapshot, replay the actions that
+    /// lead from it to the parent, and apply the suffix, collecting
+    /// per-boundary candidates with worker-side probe verdicts.
     ///
     /// # Errors
     ///
@@ -277,7 +340,8 @@ pub trait Game: Sync {
         &self,
         run: &Self::Run,
         target: &mut Self::Target,
-        parent_snapshot: &Self::Snapshot,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
         parent_actions: usize,
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
@@ -544,6 +608,9 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     pub wall_budget: Option<Duration>,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
+    /// Reservations held ahead of ordered admission per logical worker,
+    /// recorded in the header's schedule policy.
+    pub reservations_per_worker: usize,
     /// Deterministic logical-memory budget for live search structures.
     pub memory_budget_mib: Option<usize>,
     /// Live-only: materialize full archive inputs and snapshots at completion.
@@ -845,8 +912,15 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub origin: CampaignOriginRecord,
     /// Execution budget requested for the run.
     pub execution_budget: u64,
-    /// Jobs actually executed and admitted.
+    /// Jobs actually executed and admitted, the winning admission's own
+    /// drained window included. This is the run's throughput.
     pub executions_completed: u64,
+    /// Ordered admission position of the first job to reach the success
+    /// predicate; absent when none did. This is the run's score. Jobs
+    /// already reserved when that admission happened still drain into
+    /// `executions_completed`, so the two differ by the window's overshoot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executions_to_first_victory: Option<u64>,
     /// Wall budget in seconds when one was set for the live run.
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
@@ -884,6 +958,14 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub tree_import: Option<TreeImportCounts>,
     /// Bootstrap frames plus every job's frames, probes included.
     pub frames_emulated: u64,
+    /// Bootstrap frames plus every job's frames through the ordered
+    /// admission that first reached the success predicate; absent when no
+    /// admission did. Jobs already reserved when that admission happened
+    /// still drain into `frames_emulated`, so the two differ by the window's
+    /// overshoot. This is the frame cost of the score, while
+    /// `frames_emulated` is drained throughput.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames_to_first_victory: Option<u64>,
     /// Jobs skipped before execution as known duplicates.
     pub duplicates_skipped: u64,
     /// Candidates refused by the admission probe.
@@ -916,6 +998,11 @@ pub struct CampaignModeReport<A: Ord, R> {
     /// Deterministic history compactions completed by this campaign.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub history_compactions: u64,
+    /// Test-only evidence that bounded liveness reactivated its retained
+    /// executable anchor after displacement.
+    #[cfg(test)]
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub(crate) liveness_anchor_reactivations: u64,
     /// Stream-recorded entries retired from live memory.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub historical_entries_dropped: u64,
@@ -1307,7 +1394,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         // run observed, so both import paths merge it whole.
         game.merge_origin_evidence(&mut self.evidence, source);
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
-        self.archive.preserve_inactive_snapshots(true);
+        self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(game, target)?;
         let genesis_id = 0;
         let mut counts = TreeImportCounts::default();
@@ -1434,7 +1521,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             return Err("whole-tree import retained no entry past genesis".into());
         }
         self.archive
-            .preserve_inactive_snapshots(preserve_inactive_snapshots);
+            .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
         Ok(counts)
     }
 
@@ -1457,6 +1544,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         // read here is identical to the parent the worker saw at selection.
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
+        let mut previous_key = None;
         let mut decisions = Vec::new();
         for action in result.actions {
             pending_suffix.push(action.action);
@@ -1490,8 +1578,9 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     continue;
                 }
                 let retained_before = self.archive.retained;
-                match self.archive.insert(
+                let (admitted, key) = self.archive.insert_after(
                     Some(current_parent),
+                    previous_key,
                     sequence,
                     ArchiveCandidate {
                         suffix: pending_suffix.clone(),
@@ -1499,7 +1588,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
-                )? {
+                )?;
+                match admitted {
                     Some(id) if self.archive.retained > retained_before => {
                         decisions.push(CampaignAdmissionDecision::Retained {
                             id: self
@@ -1509,6 +1599,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        previous_key = None;
                     }
                     Some(id) => {
                         decisions.push(CampaignAdmissionDecision::Duplicate {
@@ -1519,8 +1610,12 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        previous_key = None;
                     }
-                    None => decisions.push(CampaignAdmissionDecision::Rejected),
+                    None => {
+                        decisions.push(CampaignAdmissionDecision::Rejected);
+                        previous_key = Some(key);
+                    }
                 }
             }
         }
@@ -1680,7 +1775,7 @@ fn stream_header<G: Game>(
         format: game.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         workers: config.workers,
-        schedule_policy: Some(CAMPAIGN_SCHEDULE_POLICY.to_owned()),
+        schedule_policy: Some(schedule_policy_identifier(config.reservations_per_worker)),
         progress_policy: Some(CAMPAIGN_PROGRESS_POLICY.to_owned()),
         host: config.host.clone(),
         origin_kind: origin.kind.clone(),
@@ -1747,6 +1842,8 @@ struct CampaignCounters {
     bootstrap_frames: u64,
     tree_import: Option<TreeImportCounts>,
     job_frames: u64,
+    frames_to_first_victory: Option<u64>,
+    executions_to_first_victory: Option<u64>,
     duplicates_skipped: u64,
     draw_state_memory_bytes: usize,
     jobs_per_worker: Vec<u64>,
@@ -1765,6 +1862,33 @@ struct LiveCoordinatorProfile {
     receives: u64,
     admissions: u64,
     selections: u64,
+    replay_jobs: u64,
+    replay_actions: u64,
+    replay_time: u64,
+    suffix_actions: u64,
+    suffix_time: u64,
+}
+
+impl LiveCoordinatorProfile {
+    /// Account one dispatched job's replay path and suffix in actions and in
+    /// the game's action time.
+    fn note_dispatch<G: Game + ?Sized>(&mut self, spec: &JobSpec<G>, time: fn(&G::Action) -> u64) {
+        if !self.enabled {
+            return;
+        }
+        let total = |actions: &[G::Action]| actions.iter().map(time).sum::<u64>();
+        if !spec.replay.is_empty() {
+            self.replay_jobs = self.replay_jobs.saturating_add(1);
+        }
+        self.replay_actions = self
+            .replay_actions
+            .saturating_add(u64::try_from(spec.replay.len()).unwrap_or(u64::MAX));
+        self.replay_time = self.replay_time.saturating_add(total(&spec.replay));
+        self.suffix_actions = self
+            .suffix_actions
+            .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
+        self.suffix_time = self.suffix_time.saturating_add(total(&spec.suffix));
+    }
 }
 
 fn live_coordinator_profile(enabled: bool) -> LiveCoordinatorProfile {
@@ -1795,11 +1919,25 @@ fn profile_elapsed(started: Option<Instant>) -> u128 {
 }
 
 impl CampaignCounters {
+    /// Record the ordered admission that first reached the success
+    /// predicate, in its sequence position and in the frames run to reach
+    /// it. Jobs reserved before that admission keep draining afterwards and
+    /// keep adding to both totals, so only the first winner may set these.
+    fn note_first_victory(&mut self, sequence: u64) {
+        if self.frames_to_first_victory.is_none() {
+            self.frames_to_first_victory =
+                Some(self.bootstrap_frames.saturating_add(self.job_frames));
+            self.executions_to_first_victory = Some(sequence);
+        }
+    }
+
     fn new(workers: u32) -> Self {
         Self {
             bootstrap_frames: 0,
             tree_import: None,
             job_frames: 0,
+            frames_to_first_victory: None,
+            executions_to_first_victory: None,
             duplicates_skipped: 0,
             draw_state_memory_bytes: 0,
             jobs_per_worker: vec![0; workers as usize],
@@ -1832,6 +1970,8 @@ fn build_report<G: Game>(
         .saturating_add(draw_state_memory_bytes);
     let live_entries = core.archive.live_entry_count();
     let history_compactions = core.archive.history_compactions();
+    #[cfg(test)]
+    let liveness_anchor_reactivations = core.archive.liveness_anchor_reactivations();
     let historical_entries_dropped = core.archive.historical_entries_dropped();
     let input_reconstructions = core.archive.input_reconstructions();
     let input_index_nodes = core.archive.input_index_nodes();
@@ -1850,8 +1990,8 @@ fn build_report<G: Game>(
             .collect(),
     };
     let schedule_identity = match header.schedule_policy.as_deref() {
-        Some(CAMPAIGN_SCHEDULE_POLICY) => CAMPAIGN_SCHEDULE_IDENTITY,
-        _ => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
+        None => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
+        Some(_) => CAMPAIGN_SCHEDULE_IDENTITY,
     };
     let report = CampaignModeReport {
         mode: "campaign".to_owned(),
@@ -1862,6 +2002,7 @@ fn build_report<G: Game>(
         origin,
         execution_budget: header.execution_budget,
         executions_completed,
+        executions_to_first_victory: counters.executions_to_first_victory,
         wall_budget_seconds: header.wall_budget_seconds,
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
@@ -1880,6 +2021,7 @@ fn build_report<G: Game>(
         frames_emulated: counters
             .bootstrap_frames
             .saturating_add(counters.job_frames),
+        frames_to_first_victory: counters.frames_to_first_victory,
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
         victories,
@@ -1892,6 +2034,8 @@ fn build_report<G: Game>(
         resident_memory_bytes,
         live_entries,
         history_compactions,
+        #[cfg(test)]
+        liveness_anchor_reactivations,
         historical_entries_dropped,
         input_reconstructions,
         input_index_nodes,
@@ -1945,6 +2089,8 @@ fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn E
 struct JobSpec<G: Game + ?Sized> {
     reservation: usize,
     snapshot: Arc<G::Snapshot>,
+    /// Actions from the snapshot to the parent entry.
+    replay: Vec<G::Action>,
     parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
@@ -2079,6 +2225,9 @@ pub struct CampaignProgressRecord<K> {
     /// Snapshots displaced by the global memory budget so far.
     #[serde(default)]
     pub snapshot_evictions: u64,
+    /// Active entries the memory budget's sweep deactivated so far.
+    #[serde(default)]
+    pub entry_drops: u64,
     /// Compact entries held by the live acceleration structure.
     #[serde(default)]
     pub live_entries: usize,
@@ -2194,6 +2343,9 @@ where
     if !archive_entry_limit_is_valid(config.archive_entry_limit) {
         return Err("campaign archive entry limit is outside its bounded range".into());
     }
+    if config.reservations_per_worker == 0 {
+        return Err("campaign reservations per worker must be at least one".into());
+    }
     if config.memory_budget_mib == Some(0) {
         return Err("campaign memory budget must be nonzero".into());
     }
@@ -2266,6 +2418,8 @@ where
     let mut reserved = 0_u64;
     let mut coordinator_profile =
         live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
+    let action_time = game.action_time_fn();
+    let longest_action_time = game.longest_action_time();
 
     let max_actions = config.action_limit;
     let retention = config.retention;
@@ -2279,6 +2433,7 @@ where
                 &config.run,
                 target,
                 &spec.snapshot,
+                &spec.replay,
                 spec.parent_actions,
                 spec.parent_milestones,
                 &spec.suffix,
@@ -2318,6 +2473,7 @@ where
                 }
                 let rand = &mut rands[worker as usize];
                 let max_actions = core.max_actions;
+                core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
@@ -2371,7 +2527,7 @@ where
                         } else {
                             (None, None)
                         };
-                    let suffix = match spliced {
+                    let mut suffix = match spliced {
                         Some(tail) => tail,
                         None => game.expand_suffix(
                             &config.run,
@@ -2385,6 +2541,9 @@ where
                             mutation_seed,
                         )?,
                     };
+                    config
+                        .suffix
+                        .bound_time(&mut suffix, action_time, longest_action_time);
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
@@ -2402,6 +2561,7 @@ where
                             draw_table_after,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
+                        core.archive.maintain_memory_budget()?;
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                         counters.skips_per_worker[worker as usize] =
                             counters.skips_per_worker[worker as usize].saturating_add(1);
@@ -2419,15 +2579,13 @@ where
                         core.archive.pin_metadata(*donor_id)?;
                         core.archive.pin_metadata(*leaf_id)?;
                     }
+                    let (snapshot, replay) = core.archive.job_origin(parent_index)?;
                     let entry = &core.archive.entries[parent_index];
                     return Ok(Some((
                         JobSpec {
                             reservation: 0,
-                            snapshot: entry
-                                .snapshot
-                                .as_ref()
-                                .ok_or("live selector chose an entry without a snapshot")?
-                                .clone(),
+                            snapshot,
+                            replay,
                             parent_actions: entry.input_len,
                             parent_milestones: entry.milestones,
                             suffix,
@@ -2446,11 +2604,18 @@ where
                 }
             };
 
-            let window_capacity = workers.saturating_mul(WINDOW_JOBS_PER_WORKER);
+            let pipeline_depth = admission_window_depth(workers, config.reservations_per_worker);
             let mut pending = BTreeMap::<usize, PendingJob>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            let mut queued_specs = VecDeque::with_capacity(window_capacity);
-            for _ in 0..window_capacity {
+            // The run can never reserve past its execution budget, so a
+            // saturated pipeline depth must not size the initial allocation.
+            let mut queued_specs = VecDeque::with_capacity(
+                pipeline_depth.min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX)),
+            );
+            // Fill only the pipeline depth. Every later reservation is
+            // selected after, and therefore from the archive produced by,
+            // its predecessor's ordered admission.
+            for _ in 0..pipeline_depth {
                 let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                 let worker = u32::try_from(worker_index)?;
                 let selection_started = profile_now(coordinator_profile.enabled);
@@ -2470,6 +2635,7 @@ where
                 let Some((mut spec, pending_job)) = selected else {
                     break;
                 };
+                coordinator_profile.note_dispatch(&spec, action_time);
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
                 if pending.insert(reservation, pending_job).is_some() {
@@ -2554,10 +2720,7 @@ where
                     ready_reply = pool.try_receive()?;
                 }
 
-                for _ in 0..ADMISSION_BATCH_JOBS {
-                    let Some(completed_job) = completed.remove(&next_admission) else {
-                        break;
-                    };
+                while let Some(completed_job) = completed.remove(&next_admission) {
                     let pending_job = completed_job.pending;
                     let worker_index = usize::try_from(pending_job.worker)?;
                     let result = completed_job.result;
@@ -2632,7 +2795,7 @@ where
                     }
                     let compaction_started = profile_now(coordinator_profile.enabled);
                     let compactions_before = core.archive.history_compactions();
-                    core.archive.compact_history_if_needed()?;
+                    core.archive.maintain_memory_budget()?;
                     record_compaction_elapsed(
                         &mut coordinator_profile,
                         compactions_before,
@@ -2664,6 +2827,9 @@ where
                     counters.jobs_per_worker[worker_index] =
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
+                    if victories_before == 0 && core.victories > 0 {
+                        counters.note_first_victory(sequence);
+                    }
                     if let Some(sink) = progress.as_deref_mut() {
                         // Wall-clock controls the sidecar only. It selects nothing and
                         // enters no recorded artifact, so its nondeterminism cannot
@@ -2708,6 +2874,7 @@ where
                                     .resident_memory_bytes()
                                     .saturating_add(draw_state_memory_bytes),
                                 snapshot_evictions: core.archive.snapshot_evictions(),
+                                entry_drops: core.archive.entry_drops(),
                                 live_entries: core.archive.live_entry_count(),
                                 history_compactions: core.archive.history_compactions(),
                                 historical_entries_dropped: core
@@ -2723,7 +2890,7 @@ where
                             sink.flush()?;
                             if coordinator_profile.enabled {
                                 eprintln!(
-                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} idle_workers={} queued_specs={} completed_buffered={}",
+                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} idle_workers={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
                                     coordinator_profile.receive_wait_ns,
                                     coordinator_profile.admission_ns,
                                     coordinator_profile.bookkeeping_ns,
@@ -2756,6 +2923,12 @@ where
                                     idle_workers.len(),
                                     queued_specs.len(),
                                     completed.len(),
+                                    counters.job_frames,
+                                    coordinator_profile.replay_jobs,
+                                    coordinator_profile.replay_actions,
+                                    coordinator_profile.replay_time,
+                                    coordinator_profile.suffix_actions,
+                                    coordinator_profile.suffix_time,
                                 );
                             }
                         }
@@ -2779,12 +2952,30 @@ where
                     coordinator_profile.selections =
                         coordinator_profile.selections.saturating_add(1);
                     if let Some((mut spec, pending_job)) = selected {
+                        coordinator_profile.note_dispatch(&spec, action_time);
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;
                         if pending.insert(reservation, pending_job).is_some() {
                             return Err("campaign reserved one job twice".into());
                         }
                         queued_specs.push_back(spec);
+                    }
+
+                    // Refill an executor as soon as the corresponding
+                    // reservation is selected. This keeps the physical
+                    // pipeline full while preserving logical reservation and
+                    // admission order.
+                    while !queued_specs.is_empty() {
+                        let Some(worker) = idle_workers.pop_front() else {
+                            break;
+                        };
+                        let spec = queued_specs
+                            .pop_front()
+                            .ok_or("campaign queued-job count changed while dispatching")?;
+                        pool.send(worker, spec)?;
+                        let physical_index = usize::try_from(worker)?;
+                        physical_queued[physical_index] =
+                            physical_queued[physical_index].saturating_add(1);
                     }
                 }
                 while !queued_specs.is_empty() {
@@ -2816,7 +3007,7 @@ where
     // Every worker and queued specification has been joined at this point.
     // Drop any non-selectable payload retained only by an in-flight Arc so
     // final artifacts describe the deterministic breeding population.
-    core.archive.preserve_inactive_snapshots(false);
+    core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
     let stream_sha256 = writer.finish()?;
@@ -2922,6 +3113,8 @@ where
     let mut required_draw_versions = BTreeSet::new();
     let mut recorded_snapshot_uses = BTreeMap::<u64, u32>::new();
     let mut recorded_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut replay_job_parents = Vec::<u64>::new();
+    let mut replay_job_metadata = Vec::<Vec<u64>>::new();
     for line in &record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         let before = match record {
@@ -2930,6 +3123,8 @@ where
                 *uses = uses
                     .checked_add(1)
                     .ok_or("recorded parent use count overflow")?;
+                replay_job_parents.push(job.parent_id);
+                let mut metadata_ids = vec![job.parent_id];
                 let metadata = recorded_metadata_uses.entry(job.parent_id).or_default();
                 *metadata = metadata
                     .checked_add(1)
@@ -2941,12 +3136,14 @@ where
                 }) = job.splice.as_ref()
                 {
                     for id in [*donor_id, *leaf_id] {
+                        metadata_ids.push(id);
                         let metadata = recorded_metadata_uses.entry(id).or_default();
                         *metadata = metadata
                             .checked_add(1)
                             .ok_or("recorded splice metadata use count overflow")?;
                     }
                 }
+                replay_job_metadata.push(metadata_ids);
                 job.draw_table_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_table_before,
@@ -2958,15 +3155,21 @@ where
     if header.format != game.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
-    if header
-        .schedule_policy
-        .as_deref()
-        .is_some_and(|policy| policy != CAMPAIGN_SCHEDULE_POLICY)
-    {
+    let legacy_schedule = schedule_policy_is_legacy(header.schedule_policy.as_deref());
+    if !schedule_policy_is_supported(header.schedule_policy.as_deref()) {
         return Err("campaign stream schedule policy is not recognized".into());
     }
     if !progress_policy_is_supported(header.progress_policy.as_deref()) {
         return Err("campaign stream progress policy is not recognized".into());
+    }
+    if header.memory_budget_mib.is_some()
+        && schedule_policy_predates_budget_maintenance(header.schedule_policy.as_deref())
+    {
+        return Err(
+            "campaign stream recorded a memory budget under superseded maintenance and cannot be \
+             replayed"
+                .into(),
+        );
     }
     if header.rom_sha256 != game.image_sha256() {
         return Err("campaign replay ROM does not match the recorded stream".into());
@@ -3020,6 +3223,8 @@ where
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
+    let action_time = game.action_time_fn();
+    let longest_action_time = game.longest_action_time();
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
@@ -3068,14 +3273,6 @@ where
     core.record_progress = header.progress_policy.is_some();
     core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
     core.archive.selector_policy = replay_selector.clone();
-    // Live window slots own their selected snapshot even if admission replaces
-    // the archive entry before that job completes. Serial replay has no such
-    // in-flight owner, so retain replaced snapshots until every recorded job
-    // has consumed its parent, then release the same inactive set as live.
-    core.archive
-        .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
-    core.archive
-        .preserve_recorded_metadata_uses(recorded_metadata_uses);
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
         format!("failed to build the replay target: {error}").into()
@@ -3104,7 +3301,50 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    if !legacy_schedule {
+        core.archive.establish_liveness_anchor(header.action_limit);
+    }
 
+    let replay_window_depth = admission_window_depth(
+        usize::try_from(header.workers)?,
+        schedule_policy_window(header.schedule_policy.as_deref())
+            .unwrap_or(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
+    );
+    let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut replay_job_snapshots = BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>)>::new();
+    if legacy_schedule {
+        core.archive
+            .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
+        core.archive
+            .preserve_recorded_metadata_uses(recorded_metadata_uses);
+    } else {
+        // Replay models selected-but-not-yet-admitted jobs with explicit Arc
+        // holders below; leave the legacy future-use map empty for this path.
+        core.archive
+            .preserve_recorded_snapshot_uses(BTreeMap::new());
+        core.archive.preserve_inactive_snapshots(false)?;
+        for (job_slot, parent_id) in replay_job_parents
+            .iter()
+            .take(replay_window_depth)
+            .enumerate()
+        {
+            let parent_index = core
+                .archive
+                .index_of_id(*parent_id)
+                .ok_or("initial replay job names a parent the archive does not hold")?;
+            replay_job_snapshots.insert(job_slot, core.archive.job_origin(parent_index)?);
+            for metadata_id in &replay_job_metadata[job_slot] {
+                let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                *uses = uses
+                    .checked_add(1)
+                    .ok_or("recorded metadata use count overflow")?;
+            }
+        }
+        core.archive
+            .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+    }
+
+    let mut replay_job_index = 0_usize;
     for line in record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         match record {
@@ -3122,7 +3362,7 @@ where
                     strategy,
                     skip.splice,
                 )?;
-                let suffix = match spliced {
+                let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
                         &replay_run,
@@ -3137,6 +3377,7 @@ where
                         skip.mutation_seed,
                     )?,
                 };
+                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -3146,6 +3387,7 @@ where
                 }
                 verify_selector_annotation(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
+                core.archive.maintain_memory_budget()?;
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
@@ -3157,27 +3399,33 @@ where
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
+                let replay_job_slot = replay_job_index;
+                replay_job_index = replay_job_index.saturating_add(1);
                 let parent_index = core
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let (snapshot, parent_actions, parent_milestones) = {
+                let ((snapshot, replay), parent_actions, parent_milestones) = {
                     let entry = core
                         .archive
                         .entries
                         .get(parent_index)
                         .ok_or("recorded job names a parent the archive does not hold")?;
                     (
-                        entry
-                            .snapshot
-                            .as_ref()
-                            .ok_or("recorded job names an entry without a live snapshot")?
-                            .clone(),
+                        if legacy_schedule {
+                            core.archive.job_origin(parent_index)?
+                        } else {
+                            replay_job_snapshots
+                                .remove(&replay_job_slot)
+                                .ok_or("recorded job has no replayed in-flight snapshot")?
+                        },
                         entry.input_len,
                         entry.milestones,
                     )
                 };
-                core.archive.consume_recorded_snapshot_use(job.parent_id);
+                if legacy_schedule {
+                    core.archive.consume_recorded_snapshot_use(job.parent_id);
+                }
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice(
@@ -3187,7 +3435,7 @@ where
                     strategy,
                     job.splice.clone(),
                 )?;
-                let suffix = match spliced {
+                let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
                         &replay_run,
@@ -3202,11 +3450,13 @@ where
                         job.mutation_seed,
                     )?,
                 };
+                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &replay_run,
                     &mut target,
                     &snapshot,
+                    &replay,
                     parent_actions,
                     parent_milestones,
                     &suffix,
@@ -3231,6 +3481,8 @@ where
                     )
                     .into());
                 }
+                drop(snapshot);
+                let victories_before = core.victories;
                 let (sequence, decisions) = core.admit_job(game, job.parent_id, result)?;
                 if sequence != job.sequence {
                     return Err(format!(
@@ -3279,7 +3531,36 @@ where
                     core.archive.unpin_metadata(donor_id);
                     core.archive.unpin_metadata(leaf_id);
                 }
-                core.archive.compact_history_if_needed()?;
+                core.archive.maintain_memory_budget()?;
+                if !legacy_schedule {
+                    for metadata_id in &replay_job_metadata[replay_job_slot] {
+                        if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
+                            *uses = uses.saturating_sub(1);
+                            if *uses == 0 {
+                                replay_metadata_uses.remove(metadata_id);
+                            }
+                        }
+                    }
+                    if let Some(parent_id) =
+                        replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
+                    {
+                        let next_slot = replay_job_slot.saturating_add(replay_window_depth);
+                        let parent_index = core
+                            .archive
+                            .index_of_id(*parent_id)
+                            .ok_or("next replay job names a parent the archive does not hold")?;
+                        replay_job_snapshots
+                            .insert(next_slot, core.archive.job_origin(parent_index)?);
+                        for metadata_id in &replay_job_metadata[next_slot] {
+                            let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                            *uses = uses
+                                .checked_add(1)
+                                .ok_or("recorded metadata use count overflow")?;
+                        }
+                    }
+                    core.archive
+                        .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+                }
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {
                     return Err("recorded job names an unknown worker".into());
@@ -3287,10 +3568,13 @@ where
                 counters.jobs_per_worker[worker] =
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
+                if victories_before == 0 && core.victories > 0 {
+                    counters.note_first_victory(sequence);
+                }
             }
         }
     }
-    core.archive.preserve_inactive_snapshots(false);
+    core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
     core.finish_curve();
 
@@ -3318,14 +3602,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate, CampaignJobRecord,
-        CampaignJobResult, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-        CoordinatorCore, EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile,
-        MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP, archive_entry_limit_is_valid,
+        CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate, CampaignCounters,
+        CampaignJobRecord, CampaignJobResult, CampaignSpliceRecord, CampaignStreamHeader,
+        CampaignStreamRecord, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+        EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
+        SPLICE_ACTION_CAP, admission_window_depth, archive_entry_limit_is_valid,
         compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
         progress_policy_is_supported, record_compaction_elapsed, replay_splice,
-        retained_archive_indexes, uses_bounded_progress_curve, worker_queue_is_idle,
+        retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_legacy,
+        schedule_policy_is_supported, schedule_policy_predates_budget_maintenance,
+        schedule_policy_window, uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3678,6 +3965,160 @@ mod tests {
                 &[CampaignAdmissionDecision::Retained { id: u64::MAX }],
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn sliding_window_depth_is_the_only_selection_staleness() {
+        let workers = 3;
+        let depth = admission_window_depth(workers, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert_eq!(depth, workers * DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+
+        // Model the coordinator's event order: fill the pipeline, then admit
+        // one result and select one replacement. No reservation can be more
+        // than `depth` ahead of the ordered admission cursor.
+        let mut next_selection = 0_usize;
+        let mut selected = Vec::new();
+        for next_admission in 0..=depth {
+            while next_selection < next_admission + depth {
+                selected.push((next_selection, next_admission));
+                next_selection += 1;
+            }
+            assert_eq!(next_selection, next_admission + depth);
+        }
+
+        assert_eq!(selected.first(), Some(&(0, 0)));
+        assert_eq!(selected.last(), Some(&(depth * 2 - 1, depth)));
+        assert!(
+            selected
+                .iter()
+                .all(|(reservation, admitted)| *reservation < admitted + depth)
+        );
+        assert!(
+            selected
+                .iter()
+                .skip(depth)
+                .all(|(reservation, admitted)| *admitted >= reservation - depth)
+        );
+    }
+
+    #[test]
+    fn sliding_window_depth_saturates_without_overflow() {
+        assert_eq!(
+            admission_window_depth(0, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
+            0
+        );
+        assert_eq!(admission_window_depth(usize::MAX, 1), usize::MAX);
+    }
+
+    #[test]
+    fn the_first_victory_counters_exclude_jobs_that_drain_after_the_win() {
+        // Once an admission wins, the coordinator stops reserving, but every
+        // job already reserved still runs, still lands at its own sequence
+        // position, and still adds to `job_frames`.
+        let mut counters = CampaignCounters::new(4);
+        counters.bootstrap_frames = 1_000;
+        counters.job_frames = 250;
+        counters.note_first_victory(11);
+        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.executions_to_first_victory, Some(11));
+
+        for (sequence, drained) in [(12, 90), (13, 140), (14, 70)] {
+            counters.job_frames = counters.job_frames.saturating_add(drained);
+            // A later admission cannot move either metric even if it wins.
+            counters.note_first_victory(sequence);
+        }
+        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.executions_to_first_victory, Some(11));
+        assert_eq!(
+            counters
+                .bootstrap_frames
+                .saturating_add(counters.job_frames),
+            1_550
+        );
+    }
+
+    #[test]
+    fn a_run_that_never_wins_has_no_first_victory_counters() {
+        let mut counters = CampaignCounters::new(1);
+        counters.bootstrap_frames = 10;
+        counters.job_frames = 20;
+        assert_eq!(counters.frames_to_first_victory, None);
+        assert_eq!(counters.executions_to_first_victory, None);
+    }
+
+    #[test]
+    fn the_historical_namespaces_predate_the_corrected_budget_maintenance() {
+        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert!(!schedule_policy_predates_budget_maintenance(Some(&current)));
+        assert!(!schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_64_per_worker_v2"
+        )));
+        assert!(schedule_policy_predates_budget_maintenance(None));
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_4_per_worker_v1"
+        )));
+    }
+
+    #[test]
+    fn schedule_policy_dispatch_accepts_windowed_and_legacy_only() {
+        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert_eq!(current, "deterministic_window_1_per_worker_v2");
+        assert!(schedule_policy_is_supported(None));
+        assert!(schedule_policy_is_supported(Some(&current)));
+        assert!(schedule_policy_is_supported(Some(
+            "deterministic_window_4_per_worker_v2"
+        )));
+        assert!(schedule_policy_is_supported(Some(
+            "deterministic_window_4_per_worker_v1"
+        )));
+        assert!(schedule_policy_is_supported(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
+        assert!(!schedule_policy_is_supported(Some(
+            "deterministic_window_0_per_worker_v2"
+        )));
+        assert_eq!(schedule_policy_window(Some(&current)), Some(1));
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
+            Some(4)
+        );
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v1")),
+            Some(4)
+        );
+        assert_eq!(
+            schedule_policy_window(Some(super::LEGACY_CAMPAIGN_SCHEDULE_POLICY)),
+            None
+        );
+        assert!(!schedule_policy_is_legacy(Some(&current)));
+        assert!(schedule_policy_is_legacy(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_is_legacy(None));
+    }
+
+    #[test]
+    fn a_live_window_of_sixty_four_is_not_recorded_as_the_legacy_policy() {
+        // The legacy identifier is exactly the window-64 text in the `_v1`
+        // namespace, so a live window-64 run must record `_v2` and replay as
+        // a window, not as the legacy all-future pinning.
+        let live = schedule_policy_identifier(64);
+        assert_ne!(live, super::LEGACY_CAMPAIGN_SCHEDULE_POLICY);
+        assert!(!schedule_policy_is_legacy(Some(&live)));
+        assert_eq!(schedule_policy_window(Some(&live)), Some(64));
+
+        // The same text in the historical namespace still means legacy.
+        assert!(schedule_policy_is_legacy(Some(
+            "deterministic_window_64_per_worker_v1"
+        )));
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_64_per_worker_v1")),
+            None
         );
     }
 

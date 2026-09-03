@@ -10,7 +10,10 @@
 use std::{error::Error, mem::size_of, path::Path};
 
 use crate::target::ExitKind;
-use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
+use machine::{
+    Machine, MachineError, SnapId, StopConditions, nes,
+    quicknes::{QuickNesMachine, VideoFrame},
+};
 use serde::{Deserialize, Serialize};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
@@ -132,7 +135,7 @@ impl SmbSnapshot {
 /// controller inputs: the title screen settles, Start is pressed once, and
 /// the pre-level sequence plays out. Target setup rather than model-visible
 /// search guidance.
-const BOOT_WALK: [ButtonChord; 4] = [
+const BOOT_WALK: [ButtonChord; 2] = [
     ButtonChord {
         buttons: 0,
         hold_frames: 120,
@@ -141,15 +144,16 @@ const BOOT_WALK: [ButtonChord; 4] = [
         buttons: 0x08,
         hold_frames: 1,
     },
-    ButtonChord {
-        buttons: 0,
-        hold_frames: 120,
-    },
-    ButtonChord {
-        buttons: 0,
-        hold_frames: 120,
-    },
 ];
+
+/// Longest wait, in frames, from the Start press to the first frame of play.
+const BOOT_PLAY_WAIT_FRAMES: u32 = 900;
+/// Operating mode byte and the value the game holds during play.
+const OPER_MODE_OFFSET: usize = 0x0770;
+const OPER_MODE_PLAY: u8 = 1;
+/// Operating mode task byte and the value that hands control to the player.
+const OPER_MODE_TASK_OFFSET: usize = 0x0772;
+const OPER_MODE_TASK_PLAY: u8 = 3;
 
 /// Machine-backed target used by the Super Mario Bros campaigns.
 #[derive(Debug)]
@@ -163,11 +167,45 @@ pub struct SmbTarget {
 }
 
 impl SmbTarget {
-    fn from_machine(mut machine: QuickNesMachine) -> Result<Self, MachineError> {
+    fn from_machine(machine: QuickNesMachine) -> Result<Self, MachineError> {
+        Self::boot(machine, true)
+    }
+
+    /// Emulate the boot walk and seal genesis at the first frame of play.
+    ///
+    /// `require_play` is false only for the loopback core, which has no SMB
+    /// state machine and so never reports the play operating mode.
+    fn boot(mut machine: QuickNesMachine, require_play: bool) -> Result<Self, MachineError> {
         let power_on = machine.snapshot()?;
         machine.branch(power_on, &nes::reproducer(&BOOT_WALK))?;
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(power_on)?;
+        // Genesis is the first frame of play, found by stepping one frame at
+        // a time after Start, so the searcher starts before the game moves.
+        let idle = [ButtonChord {
+            buttons: 0,
+            hold_frames: 1,
+        }];
+        let mut reached_play = false;
+        for _ in 0..BOOT_PLAY_WAIT_FRAMES {
+            let wram = wram_array(&machine)?;
+            if wram[OPER_MODE_OFFSET] == OPER_MODE_PLAY
+                && wram[OPER_MODE_TASK_OFFSET] == OPER_MODE_TASK_PLAY
+            {
+                reached_play = true;
+                break;
+            }
+            let here = machine.snapshot()?;
+            machine.branch(here, &nes::reproducer(&idle))?;
+            machine.run(StopConditions::default(), None)?;
+            machine.drop_snapshot(here)?;
+        }
+        if require_play && !reached_play {
+            return Err(MachineError::Backend(format!(
+                "Super Mario Bros did not reach play within {BOOT_PLAY_WAIT_FRAMES} frames \
+                 of the Start press"
+            )));
+        }
         let genesis = machine.snapshot()?;
         let wram = wram_array(&machine)?;
         let observation = SmbObservations {
@@ -206,9 +244,40 @@ impl SmbTarget {
         Self::from_machine(machine)
     }
 
+    /// Load SMB exactly as [`Self::from_smb_rom_bytes_headless`] does, with
+    /// the core's video and audio planes enabled so a replay can be filmed.
+    ///
+    /// Capture starts before the boot walk, so the film opens on the title
+    /// screen the machine saw.
+    ///
+    /// # Errors
+    ///
+    /// Returns a machine error if the core, ROM, bootstrap, or snapshot fails.
+    pub fn from_smb_rom_bytes_capturing(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+        machine.set_video_capture(true);
+        machine.set_audio_capture(true);
+        Self::from_machine(machine)
+    }
+
+    /// Take the video frames emulated since the last drain, in emulation
+    /// order.
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    /// Take the interleaved stereo samples emulated since the last drain.
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
+    }
+
     #[cfg(test)]
     pub(crate) fn loopback_for_tests(rom: &[u8]) -> Result<Self, MachineError> {
-        Self::from_machine(QuickNesMachine::loopback_for_tests(rom)?)
+        Self::boot(QuickNesMachine::loopback_for_tests(rom)?, false)
     }
 
     /// Clock one fixed mask for a bounded horizon and report whether the run stays alive.
@@ -686,10 +755,25 @@ fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
+        BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
         smb_mechanical_state_from_wram,
     };
     use crate::target::Target;
+    use machine::quicknes::QuickNesMachine;
+
+    #[test]
+    fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {
+        // The loopback core has no SMB state machine, so it stands in for a
+        // production core whose operating mode never reaches play.
+        let core = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
+        let error = SmbTarget::boot(core, true).expect_err("non-play genesis is refused");
+        assert!(
+            error
+                .to_string()
+                .contains(&BOOT_PLAY_WAIT_FRAMES.to_string()),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn chord_duration_is_total_and_bounded() {

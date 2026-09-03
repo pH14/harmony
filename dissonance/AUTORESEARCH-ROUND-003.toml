@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 3
+experiment = "E09"
+status = "FROZEN"
+base_champion = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+evaluator = "smb-v0001-094a15da-batch3"
+scope = "super-mario-bros"
+primary_host = "ms02"
+workers = 12
+action_limit = 512
+canary = "1-1"
+screen_challenges = ["2-2", "7-2", "8-4"]
+full_visible_challenges = ["2-2", "4-2", "4-3", "7-2", "7-4", "8-1", "8-4"]
+screen_seeds = [6672613057367113729]
+paired_seeds = [6672613057367113729, 6672613057367113730]
+confirmation_seeds = [6672613057367113729, 6672613057367113730, 6672613057367113731, 6672613057367113732, 6672613057367113733, 6672613057367113734]
+canary_budget = 15000
+stage_1a_budget = 5000
+stage_1b_budget = 30000
+stage_2_budget = 100000
+memory_budget_mib = 2048
+champion_stream_binary_sha256 = "134b41451f490bd4985a8d588af0c5fbfd7fbcae78ac3ff185903430385edec6"
+stall_rule = "active: diagnosis included and two of three candidates change component classes untried in rounds 1-2"
+
+[scoring]
+reducer = "smb-progress-auc-v1"
+reducer_sha256 = "5eddecbd1aae95600442079ec5bcd6e00a20c038b51febef8602edfbb2b0a47d"
+definition = "right-step integral of fixture-normalized mechanical progress over the evaluator-native progress_curve; 256 progress units per level and 4 levels per world"
+champion_stage_1a_auc = { "2-2" = 106400, "7-2" = 101900, "8-4" = 18100 }
+
+[selection]
+primary = "worst-column progress AUC, then challenge completions"
+stage_1a = "kill the dominated half after one seed on all three screen challenges"
+stage_1b = "kill when the worst challenge is dominated, there is no unique win, or champion first-quartile progress is missed"
+stage_2 = "confirm provisional winner and every survivor within its noise band across six paired seeds"
+
+[vetoes]
+canary = "at least one completion within 15000 executions"
+determinism = "micro replay at Stage 0; duplicate full-parallel campaign at Stage 2"
+memory = "deterministic resident bytes remain within the declared bound and do not regress materially"
+boundary = "no game constants or policy above the observation adapter"
+complexity = "promotion requires equal or lower post-simplification concept count"
+
+[[candidate]]
+id = "R3-C01"
+lens = "rollout-distribution"
+component_class = "rollout distribution (untried against the stalled column in rounds 1-2)"
+hypothesis = "The existing generic one-to-six action suffix distribution increases temporal reach while leaving the incumbent parent selector unchanged, improving worst-column progress AUC without losing the 1-1 canary."
+configuration = "champion binary with --suffix one_to_six; all other policies unchanged"
+allowed_modules = ["no policy code required", "direct configuration validation", "observation-only reduction"]
+predicted_complexity = "zero new concepts; selects an existing recorded suffix shape"
+
+[[candidate]]
+id = "R3-C02"
+lens = "retirement"
+component_class = "retirement (untried against the stalled column in rounds 1-2)"
+hypothesis = "Earlier generic exhaustion retirement at thresholds 2,4,8,1 redirects attempts from barren parents and bounds snapshot growth while retaining the incumbent energy-frontier-cheapest ranking."
+configuration = "champion binary with selector room_cell_uniform_128_energy_frontier_cheapest:2,4,8,1; suffix and retention unchanged"
+allowed_modules = ["no policy code required", "direct configuration validation", "observation-only reduction"]
+predicted_complexity = "zero new concepts; changes recorded thresholds of the incumbent selector"
+
+[[candidate]]
+id = "R3-C03"
+lens = "diagnosis"
+component_class = "observation-only diagnosis"
+hypothesis = "Existing generic progress, selector, retention, and memory accounting can distinguish suffix-reach starvation from exhaustion-retirement starvation without adding policy."
+allowed_modules = ["observation-only reducers", "generic report accounting", "direct tests"]
+predicted_complexity = "zero search-policy concepts"
+
+[outcome]
+status = "DEGRADED_COMPLETE"
+champion = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+algorithmic_survivors = []
+deviation = "R3-C01 was configuration-identical to the champion, so the rollout-distribution class remained untried."
+diagnosis_promotions = ["R3-C03"]

@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+evaluator = "smb-v0001-094a15da-batch3"
+charter_commit = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+champion_commit = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+branch = "codex/dissonance-autoresearch-smb-batch-3"
+scope = "super-mario-bros"
+primary_host = "ms02"
+artifact_root = "/root/harmony-searcher-scaling/autoresearch/smb-evaluator-v0001-094a15da-batch3/artifacts"
+source_root = "/root/harmony-searcher-scaling/autoresearch/smb-evaluator-v0001-094a15da-batch3/source/dissonance"
+rom_path = "/root/harmony/target/autoresearch/smb-charter-v4-evaluator-4/private/smb.nes"
+rom_sha256 = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"
+quicknes_core_path = "/root/harmony-searcher-scaling/quicknes-src/quicknes_libretro.so"
+quicknes_core_sha256 = "a6b0876d999a97c518fff3ffd6a60752497a2699160e78ef2b1370787d497eda"
+workers_search = 12
+workers_systems_sweet_spot = 24
+action_limit = 512
+memory_budget_mib = 2048
+e00_execution_budget = 30000
+micro_execution_budget = 128
+canary_screen_budget = 15000
+hard_challenge_screen_budget = 30000
+b4_execution_budget = 110000
+cross_host_smoke = "not-applicable-single-host-fleet-per-section-5"

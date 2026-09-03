@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 2
+candidate = "R2-C01"
+hypothesis = "A dispatch-ordered two-mode scheduler can separate observation-cell discovery from transition-cost improvement without the Round-1 timing leak and improve worst-column progress AUC."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "b66e0c05c939c948bdac5df27c0480672eb33a6e"
+diff_sha256 = "7ed84a795aac112848a69f4c679bcb9d77a911f1a67b75c2916d337b8f67b559"
+patch_sha256 = "20911767998d8f36367f2d59a4d0d5543ae6316a37e51fce74a9309ccff3bc60"
+binary_sha256 = "7542c92350e66ff43d98a5513825effd7df641bbacc44494cb75106775ceb0b7"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "REJECT"
+failed_stage = "canary"
+stage_1a_executions = 0
+selector = "room_cell_uniform_128_two_mode"
+
+[stage_0]
+fmt = "PASS"
+tests = "PASS (107)"
+clippy = "PASS"
+boundary_review = "PASS with test-strength suggestion"
+micro_replay = "PASS"
+micro_stream_sha256 = "f5c3a5727f9df80d211e7f26b6f226cf482f68b1777b6a8bc6d92402015a1153"
+review_note = "The phase and parallel replay tests do not independently prove that the fourth draw uses the cost-weighted path."
+
+[canary]
+executions_completed = 15000
+victories = 0
+final_progress = 185
+resident_bytes = 465054658
+resident_snapshot_bytes = 449398464
+history_memory_bytes = 15651826
+live_entries = 32424
+stream_sha256 = "ea5373e72225e06696146613c95b456f085313ceed41f19c32f513f96b56fef7"
+
+[disposition]
+diagnosis = "The dispatch-order repair closes Round 1's timing leak, but the top-level two-mode policy still discards incumbent energy/frontier/exhaustion behavior. It fails the champion-valid canary and grows deterministic resident state, so efficacy screening is forbidden."

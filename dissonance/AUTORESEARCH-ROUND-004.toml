@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 4
+experiment = "E09"
+status = "FROZEN"
+base_champion = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+evaluator = "smb-v0001-094a15da-batch3"
+scope = "super-mario-bros"
+primary_host = "ms02"
+workers = 12
+action_limit = 512
+canary = "1-1"
+screen_challenges = ["2-2", "7-2", "8-4"]
+screen_seeds = [6672613057367113729]
+paired_seeds = [6672613057367113729, 6672613057367113730]
+confirmation_seeds = [6672613057367113729, 6672613057367113730, 6672613057367113731, 6672613057367113732, 6672613057367113733, 6672613057367113734]
+canary_budget = 15000
+stage_1a_budget = 5000
+stage_1b_budget = 30000
+stage_2_budget = 100000
+memory_budget_mib = 2048
+champion_stream_binary_sha256 = "134b41451f490bd4985a8d588af0c5fbfd7fbcae78ac3ff185903430385edec6"
+stall_rule = "active: R3 was degraded; diagnosis included and both algorithmic candidates are actual untried component-class changes"
+
+[scoring]
+reducer = "smb-progress-auc-v1"
+reducer_sha256 = "5eddecbd1aae95600442079ec5bcd6e00a20c038b51febef8602edfbb2b0a47d"
+champion_stage_1a_auc = { "2-2" = 106400, "7-2" = 101900, "8-4" = 18100 }
+
+[vetoes]
+canary = "at least one completion within 15000 executions"
+determinism = "micro replay at Stage 0; duplicate full-parallel campaign at Stage 2"
+memory = "deterministic resident bytes remain within the declared bound and do not regress materially"
+boundary = "no game constants or policy above the observation adapter"
+complexity = "promotion requires equal or lower post-simplification concept count"
+
+[[candidate]]
+id = "R4-C01"
+lens = "rollout-distribution"
+component_class = "rollout distribution"
+hypothesis = "The existing generic one-or-two action suffix shape increases feedback frequency and improves worst-column progress AUC while preserving the incumbent selector and 1-1 completion competence."
+configuration = "champion binary with --suffix one_or_two; all other policies unchanged"
+allowed_modules = ["no policy code required", "direct configuration validation", "observation-only reduction"]
+predicted_complexity = "zero new concepts; selects an existing recorded suffix shape"
+
+[[candidate]]
+id = "R4-C02"
+lens = "archive-grouping"
+component_class = "archive grouping / cell representation"
+hypothesis = "Pooling the generic progress-band selection group at 16 observation buckets instead of 8 reduces sparse-group fragmentation and improves worst-column AUC without changing retention slots or game policy above the adapter."
+configuration = "change only the SMB observation adapter's selection-group progress-band width from 8 to 16"
+allowed_modules = ["smb/archive.rs", "direct archive-key grouping tests"]
+predicted_complexity = "zero new concepts; one frozen mechanical grouping width replaces another"
+
+[[candidate]]
+id = "R4-C03"
+lens = "diagnosis"
+component_class = "observation-only diagnosis"
+hypothesis = "Existing progress curves, retained suffix lengths, occupied cells, and selector counters can attribute any Round-4 change to feedback frequency or group fragmentation without adding policy."
+allowed_modules = ["observation-only reducers", "generic report accounting", "direct tests"]
+predicted_complexity = "zero search-policy concepts"
+
+[outcome]
+status = "COMPLETE"
+champion = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+algorithmic_survivors = []
+stage_1a_runs = 0
+stage_2_runs = 0
+diagnosis_promotions = ["R4-C03"]
+batch_stopping_point = "second synthesis pass"

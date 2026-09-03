@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 1
+candidate = "R1-C01"
+hypothesis = "A deterministic generic two-mode scheduler separating observation-cell discovery from transition-cost improvement beats the combined energy selector on worst-column progress AUC or completions."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "cc94b71f68e4d9f001a70ab2c3fade3be372bec6"
+patch_sha256 = "545ce14755badfd14a6b3efec78a7e3ee7ee05c3a81b6826f41b68a97b751519"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "INVALID"
+failed_stage = 0
+efficacy_runs = 0
+complexity_delta = "one selector variant; one four-draw cadence; cost-weighted cell branch"
+
+[finding]
+severity = "blocking"
+file = "dissonance/searcher/src/search/archive.rs"
+lines = "2684-2685,2722-2727"
+scenario = "At multiple workers, more than one parent may be dispatched before an earlier result is admitted. The TwoMode phase reads selector accounting advanced on admission, so host completion timing can change whether the next draw is discovery or cost-weighted and therefore change the same-seed stream."
+disposition = "Reject without efficacy run; a future version must derive phase from deterministic dispatch order or record and replay-validate it."
+
+[tests]
+worker_fmt = "PASS"
+worker_tests = "PASS (106)"
+worker_clippy = "PASS"
+controller_boundary_review = "FAIL"
+controller_note = "The cadence unit test advances admission accounting synchronously and cannot expose the multi-worker timing leak."

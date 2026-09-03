@@ -30,7 +30,8 @@ use crate::{
         campaign::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, Game, GamePolicies, SnapshotCheckpoint,
+            CampaignProgressRecord, CampaignStreamHeader,
+            DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, Game, GamePolicies, SnapshotCheckpoint,
             postcard_result_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
@@ -273,6 +274,7 @@ impl NovaCampaignConfig {
             host: self.host.clone(),
             wall_budget: self.wall_budget,
             archive_entry_limit: self.archive_entry_limit,
+            reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
             run: NovaCampaignRun,
@@ -324,16 +326,21 @@ fn admission_is_viable(
     Ok(viable)
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the game-neutral `Game::execute_job` signature.
 fn execute_job(
     target: &mut NovaCampaignTarget,
-    parent_snapshot: &NovaCampaignSnapshot,
+    origin_snapshot: &NovaCampaignSnapshot,
+    replay: &[ButtonChord],
     parent_actions: usize,
     parent_milestones: NovaMilestones,
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
 ) -> Result<NovaCampaignJobResult, Box<dyn Error>> {
-    target.restore(parent_snapshot)?;
+    target.restore(origin_snapshot)?;
+    for action in replay {
+        target.apply(action);
+    }
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -665,6 +672,10 @@ impl Game for NovaGame {
         chord_time
     }
 
+    fn longest_action_time(&self) -> u64 {
+        u64::from(crate::nova::archive::LONGEST_HOLD_FRAMES)
+    }
+
     fn snapshot_memory_charge(snapshot: &NovaCampaignSnapshot) -> usize {
         match snapshot {
             NovaCampaignSnapshot::QuickNes(snapshot) => snapshot.resident_memory_charge(),
@@ -816,7 +827,8 @@ impl Game for NovaGame {
         &self,
         _run: &NovaCampaignRun,
         target: &mut NovaCampaignTarget,
-        parent_snapshot: &NovaCampaignSnapshot,
+        origin_snapshot: &NovaCampaignSnapshot,
+        replay: &[ButtonChord],
         parent_actions: usize,
         parent_milestones: NovaMilestones,
         suffix: &[ButtonChord],
@@ -825,7 +837,8 @@ impl Game for NovaGame {
     ) -> Result<NovaCampaignJobResult, Box<dyn Error>> {
         execute_job(
             target,
-            parent_snapshot,
+            origin_snapshot,
+            replay,
             parent_actions,
             parent_milestones,
             suffix,

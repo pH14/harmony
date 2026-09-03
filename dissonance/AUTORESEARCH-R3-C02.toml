@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 3
+candidate = "R3-C02"
+hypothesis = "Earlier generic exhaustion retirement at thresholds 2,4,8,1 can redirect barren attempts while preserving the incumbent ranking."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "CONFIGURATION-ONLY"
+binary_sha256 = "134b41451f490bd4985a8d588af0c5fbfd7fbcae78ac3ff185903430385edec6"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "REJECT"
+failed_stage = "stage_1b"
+selector = "room_cell_uniform_128_energy_frontier_cheapest:2,4,8,1"
+
+[stage_0]
+configuration_validation = "PASS"
+micro_replay = "PASS"
+micro_stream_sha256 = "f66a675e7e1d3078d07d4bc2490eb25671f07361eb10230ce1beebffe047c129"
+micro_archive_sha256 = "a0b1dbe431b90e1dbb62f9a5e999f0d1421866b8963101f6a35dccb79457d55b"
+micro_report_sha256 = "6a5955d73a24c11936a39144731b1a0a6965386b715f7cf33f1d88dd403b8f1a"
+
+[canary]
+executions_completed = 10525
+victories = 16
+resident_bytes = 309633093
+resident_snapshot_bytes = 298987437
+history_memory_bytes = 10641158
+live_entries = 21616
+stream_sha256 = "712a0443196c7c75c7eecd7d6da6ea09633f5d6dda8b2b3cddcea7ac385deebc"
+
+[stage_1a]
+candidate_auc = { "2-2" = 105000, "7-2" = 102100, "8-4" = 18100 }
+champion_auc = { "2-2" = 106400, "7-2" = 101900, "8-4" = 18100 }
+decision = "advance: one unique column win and not pointwise dominated"
+
+[stage_1b]
+candidate_auc = { "2-2" = 1217200, "7-2" = 1375500, "8-4" = 1577300 }
+champion_auc_known = { "7-2" = 1477700, "8-4" = 1593200 }
+worst_known_delta = -102200
+candidate_streams = { "2-2" = "8c23499cf16e36789b7fa31dc19c54e92763ed186c5892acb37eb9f3bc52f48f", "7-2" = "2fdc7abcfbefd827dc39863e27759e9d331e38b3ccdcbe794745ca645490f0f6", "8-4" = "07cea6c892dcca8124a2c826f6c45bb5a988811eb6b4ce39c86347fa82cde6c8" }
+resident_bytes = { "2-2" = 814368906, "7-2" = 816037077, "8-4" = 595510213 }
+
+[disposition]
+diagnosis = "Earlier retirement produced only a small mixed Stage-1a shift and then regressed both 7-2 and 8-4 at 30K. The negative worst-column delta rejects it before confirmation."

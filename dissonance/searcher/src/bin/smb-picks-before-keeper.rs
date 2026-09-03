@@ -78,7 +78,7 @@ struct Report {
     per_room: PoolSummary,
 }
 
-type CellClass = (u8, u8, SmbRoomIdentity, u16, u8, u8, u8);
+type CellClass = (u8, u8, SmbRoomIdentity, u16, u8, u8);
 type BandClass = (u8, u8, SmbRoomIdentity, u16);
 type RoomClass = (u8, u8, SmbRoomIdentity);
 
@@ -89,7 +89,6 @@ fn cell_of(key: &SmbArchiveKey) -> CellClass {
         key.room,
         key.progress,
         key.player_y_bucket,
-        key.player_engine_state,
         key.room_x_bucket,
     )
 }

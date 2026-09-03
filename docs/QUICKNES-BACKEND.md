@@ -76,11 +76,18 @@ QuickNES's libretro wrapper has global emulator and callback state. The adapter
 therefore copies the exact shared object to a unique temporary pathname for
 each machine, loads that private image with local symbol visibility, and
 unlinks it immediately. Workers never share an emulator and no lock serializes
-execution. Video and audio are hard-disabled, controller input is provided
+execution. Search hard-disables video and audio, controller input is provided
 synchronously, system RAM is read directly from the core's validated 2 KiB
 block, and state uses fixed-buffer serialize/unserialize. The QuickNES machine
 boundary exposes only that 2 KiB work-RAM window through `Machine::read`, not
 the NES CPU's complete 64 KiB address space.
+
+`set_video_capture` and `set_audio_capture` turn on the replay-only copies the
+film tools consume. Both planes validate the core's reported geometry and batch
+length before any pointer arithmetic, convert frames to tightly packed RGB24,
+and buffer a bounded backlog: a caller that never drains gets a machine error
+rather than unbounded growth. `take_video_frame` reads one frame per emulated
+frame; `take_video_frames` drains a whole action's frames in emulation order.
 
 ## Behavioral differences from the retired backend
 
