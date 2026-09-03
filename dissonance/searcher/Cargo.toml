@@ -20,6 +20,11 @@ name = "nova-consonance-campaign"
 path = "src/bin/nova-consonance-campaign.rs"
 required-features = ["consonance"]
 
+[[bin]]
+name = "nova-consonance-observation-oracle"
+path = "src/bin/nova-consonance-observation-oracle.rs"
+required-features = ["consonance"]
+
 [dev-dependencies]
 criterion = "=0.5.1"
 machine = { path = "../machine", version = "=0.1.0", features = ["test-loopback"] }

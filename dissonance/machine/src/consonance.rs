@@ -51,9 +51,10 @@ const RAM_GPA_BASE: u64 = 0;
 #[cfg(target_arch = "aarch64")]
 const RAM_GPA_BASE: u64 = board::RAM_BASE;
 #[cfg(target_arch = "x86_64")]
-const DEADLINE: u64 = 2_000_000_000;
+const BOOT_BUDGET: u64 = 2_000_000_000;
 #[cfg(target_arch = "aarch64")]
-const DEADLINE: u64 = 20_000_000_000;
+const BOOT_BUDGET: u64 = 20_000_000_000;
+const RUN_BUDGET: u64 = BOOT_BUDGET;
 const SEED: u64 = 0x4e4f_5641_5f53_4541;
 #[cfg(target_arch = "x86_64")]
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
@@ -578,6 +579,9 @@ pub struct ConsonanceMachine {
     save_ram: [u8; BILLBOARD_SAVE_RAM_LEN],
     ring: Vec<[u8; nes::WRAM_SIZE]>,
     lifetime_frames: u64,
+    last_vtime: u64,
+    snapshot_vtimes: BTreeMap<SnapId, u64>,
+    observation_valid: bool,
     profile: ConsonanceProfile,
 }
 
@@ -635,7 +639,7 @@ impl ConsonanceMachine {
                 )));
             }
         }
-        let genesis = snapshot(&mut server, &mut profile)?;
+        let (genesis, genesis_vtime) = snapshot(&mut server, &mut profile)?;
         expect_unit(
             drive_profiled(
                 &mut server,
@@ -654,7 +658,7 @@ impl ConsonanceMachine {
             // immediately after this opt-in-only measurement.
             server.set_max_chain_len(0);
         }
-        let setup = snapshot(&mut server, &mut profile)?;
+        let (setup, setup_vtime) = snapshot(&mut server, &mut profile)?;
         if profile.enabled {
             server.set_max_chain_len(DEFAULT_MAX_CHAIN_LEN);
         }
@@ -699,6 +703,7 @@ impl ConsonanceMachine {
                 MachineError::Backend("setup snapshot statistics unavailable".to_owned())
             })?;
         profile.set_setup(setup_nonzero_pages, billboard_gpa, u64::from(billboard_len));
+        let snapshot_vtimes = BTreeMap::from([(genesis, genesis_vtime), (setup, setup_vtime)]);
         Ok(Self {
             server,
             setup,
@@ -709,6 +714,9 @@ impl ConsonanceMachine {
             save_ram: observed.save_ram,
             ring: Vec::new(),
             lifetime_frames: 0,
+            last_vtime: setup_vtime,
+            snapshot_vtimes,
+            observation_valid: true,
             profile,
         })
     }
@@ -734,7 +742,9 @@ impl ConsonanceMachine {
                 &portable.sidecar.materialize(),
             )
             .map_err(|error| MachineError::Backend(format!("sparse import failed: {error}")))?;
-        Ok(SnapId(receipt.id.0))
+        let snapshot = SnapId(receipt.id.0);
+        self.snapshot_vtimes.insert(snapshot, receipt.at.0);
+        Ok(snapshot)
     }
 }
 
@@ -742,7 +752,9 @@ impl Machine for ConsonanceMachine {
     type Portable = ConsonancePortable;
 
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
-        snapshot(&mut self.server, &mut self.profile)
+        let (snapshot, vtime) = snapshot(&mut self.server, &mut self.profile)?;
+        self.snapshot_vtimes.insert(snapshot, vtime);
+        Ok(snapshot)
     }
 
     fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -753,10 +765,15 @@ impl Machine for ConsonanceMachine {
                 &mut self.profile,
             )?,
             "drop snapshot",
-        )
+        )?;
+        self.snapshot_vtimes.remove(&snap);
+        Ok(())
     }
 
     fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+        let restored_vtime = *self.snapshot_vtimes.get(&snap).ok_or_else(|| {
+            MachineError::Backend("branched snapshot has no recorded V-time".to_owned())
+        })?;
         let actions = nes::actions_of(env)?;
         let mut payloads = Vec::new();
         payloads
@@ -780,10 +797,16 @@ impl Machine for ConsonanceMachine {
                 &mut self.profile,
             )?,
             "branch",
-        )
+        )?;
+        self.last_vtime = restored_vtime;
+        self.observation_valid = false;
+        Ok(())
     }
 
     fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+        let restored_vtime = *self.snapshot_vtimes.get(&snap).ok_or_else(|| {
+            MachineError::Backend("replayed snapshot has no recorded V-time".to_owned())
+        })?;
         expect_unit(
             drive_profiled(
                 &mut self.server,
@@ -791,18 +814,24 @@ impl Machine for ConsonanceMachine {
                 &mut self.profile,
             )?,
             "replay",
-        )
+        )?;
+        self.last_vtime = restored_vtime;
+        self.observation_valid = false;
+        Ok(())
     }
 
     fn run(
         &mut self,
-        _until: StopConditions,
+        until: StopConditions,
         resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
         if resolve.is_some() {
             return Err(MachineError::ResolveWithoutDecision);
         }
+        validate_supported_stop_conditions(until)?;
         self.ring.clear();
+        self.observation_valid = false;
+        let deadline = run_deadline(self.last_vtime, RUN_BUDGET)?;
         let before_faults = self.profile.enabled.then(host_minor_faults).flatten();
         let before_dirty = self.profile.dirty_totals();
         let before_doorbells = self
@@ -814,7 +843,7 @@ impl Machine for ConsonanceMachine {
             &mut self.server,
             &Request::Run {
                 until: ControlStopConditions {
-                    deadline: Some(control_proto::Moment(DEADLINE)),
+                    deadline: Some(control_proto::Moment(deadline)),
                     on: ControlStopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
                 },
                 resolve: None,
@@ -827,6 +856,7 @@ impl Machine for ConsonanceMachine {
             }
         };
         let mapped = map_stop(stop);
+        self.last_vtime = stop_vtime(&mapped).0;
         if !matches!(mapped, StopReason::SnapshotPoint { .. }) {
             return Ok(mapped);
         }
@@ -855,11 +885,18 @@ impl Machine for ConsonanceMachine {
         self.ring = observed.work_frames;
         self.endpoint_work_ram = observed.endpoint_work_ram;
         self.save_ram = observed.save_ram;
+        self.observation_valid = true;
         Ok(mapped)
     }
 
     fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
-        read_cached(&self.endpoint_work_ram, &self.save_ram, addr, len)
+        read_observation(
+            self.observation_valid,
+            &self.endpoint_work_ram,
+            &self.save_ram,
+            addr,
+            len,
+        )
     }
 
     fn export(
@@ -988,11 +1025,17 @@ fn expect_unit(reply: Reply, operation: &str) -> Result<(), MachineError> {
     }
 }
 
-fn snapshot(server: &mut Server, profile: &mut ConsonanceProfile) -> Result<SnapId, MachineError> {
+fn snapshot(
+    server: &mut Server,
+    profile: &mut ConsonanceProfile,
+) -> Result<(SnapId, u64), MachineError> {
     match drive_profiled(server, &Request::Snapshot, profile)? {
         Reply::Snapshot {
-            id, tainted: false, ..
-        } => Ok(SnapId(id.0)),
+            id,
+            at,
+            tainted: false,
+            ..
+        } => Ok((SnapId(id.0), at.0)),
         Reply::Snapshot { tainted: true, .. } => Err(MachineError::Backend(
             "Consonance timeline is tainted".to_owned(),
         )),
@@ -1010,7 +1053,7 @@ fn run_to_snapshot(
         server,
         &Request::Run {
             until: ControlStopConditions {
-                deadline: Some(control_proto::Moment(DEADLINE)),
+                deadline: Some(control_proto::Moment(BOOT_BUDGET)),
                 on: ControlStopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
             },
             resolve: None,
@@ -1266,6 +1309,21 @@ fn read_cached(
     Err(MachineError::ReadOutOfBounds)
 }
 
+fn read_observation(
+    valid: bool,
+    work_ram: &[u8; nes::WRAM_SIZE],
+    save_ram: &[u8; BILLBOARD_SAVE_RAM_LEN],
+    addr: u64,
+    len: u32,
+) -> Result<Vec<u8>, MachineError> {
+    if !valid {
+        return Err(MachineError::Backend(
+            "no cached observation at the current stop".to_owned(),
+        ));
+    }
+    read_cached(work_ram, save_ram, addr, len)
+}
+
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, MachineError> {
     let end = offset
         .checked_add(4)
@@ -1315,6 +1373,32 @@ fn map_stop(stop: control_proto::StopReason) -> StopReason {
             },
         },
     }
+}
+
+fn stop_vtime(stop: &StopReason) -> Moment {
+    match stop {
+        StopReason::Deadline { vtime }
+        | StopReason::Quiescent { vtime }
+        | StopReason::Crash { vtime, .. }
+        | StopReason::Decision { vtime, .. }
+        | StopReason::SnapshotPoint { vtime }
+        | StopReason::Assertion { vtime, .. } => *vtime,
+    }
+}
+
+fn validate_supported_stop_conditions(until: StopConditions) -> Result<(), MachineError> {
+    if until != StopConditions::default() {
+        return Err(MachineError::Backend(
+            "ConsonanceMachine supports only default stop conditions".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn run_deadline(last_vtime: u64, budget: u64) -> Result<u64, MachineError> {
+    last_vtime
+        .checked_add(budget)
+        .ok_or_else(|| MachineError::Backend("Consonance per-run deadline overflow".to_owned()))
 }
 
 fn image_identity(kernel: &[u8], initramfs: &[u8]) -> [u8; 32] {
@@ -1625,6 +1709,50 @@ mod tests {
         assert!(read_cached(&work_ram, &save_ram, u64::MAX - 1, 4).is_err());
         assert!(read_cached(&work_ram, &save_ram, 0x07ff, 2).is_err());
         assert!(read_cached(&work_ram, &save_ram, 0x7fff, 2).is_err());
+    }
+
+    #[test]
+    fn run_budget_is_relative_to_the_restored_lineage_vtime() {
+        let deep_vtime = BOOT_BUDGET.checked_mul(37).expect("fixture fits");
+        let deadline = run_deadline(deep_vtime, RUN_BUDGET).expect("deep deadline");
+        assert_eq!(deadline, deep_vtime + RUN_BUDGET);
+        assert!(deadline > BOOT_BUDGET);
+        assert!(run_deadline(u64::MAX, 1).is_err());
+        assert!(run_deadline(u64::MAX - 1, 2).is_err());
+    }
+
+    #[test]
+    fn only_default_stop_conditions_are_supported() {
+        assert!(validate_supported_stop_conditions(StopConditions::default()).is_ok());
+        assert!(
+            validate_supported_stop_conditions(StopConditions {
+                deadline: Some(Moment(1)),
+                ..StopConditions::default()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_supported_stop_conditions(StopConditions {
+                on: crate::StopMask::NONE.arm(crate::class_bit::ASSERTION),
+                ..StopConditions::default()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn invalidated_observation_cache_cannot_serve_stale_ram() {
+        let work_ram = [0xA5_u8; nes::WRAM_SIZE];
+        let save_ram = [0x5A_u8; BILLBOARD_SAVE_RAM_LEN];
+        assert!(matches!(
+            read_observation(false, &work_ram, &save_ram, 0, 1),
+            Err(MachineError::Backend(message))
+                if message == "no cached observation at the current stop"
+        ));
+        assert_eq!(
+            read_observation(true, &work_ram, &save_ram, 0, 1).unwrap(),
+            vec![0xA5]
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! Compare per-action Nova observations from direct QuickNES and Consonance.
 
 #[cfg(all(
+    feature = "consonance",
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
@@ -12,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(all(
+    feature = "consonance",
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
@@ -21,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(all(
+    feature = "consonance",
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
@@ -31,7 +34,7 @@ mod real {
     use machine::consonance::ConsonanceMachine;
     use searcher::{
         nova::target::{ButtonChord, MAX_HOLD_FRAMES, NovaTarget},
-        target::Target,
+        target::{ExitKind, Target},
     };
     use sha2::{Digest, Sha256};
 
@@ -138,9 +141,26 @@ mod real {
                 return Err(format!("setup state mismatch in sequence {sequence}").into());
             }
             for action_index in 0..args.actions_per_sequence {
+                if direct.is_dead() || direct.cleared_a_level() {
+                    break;
+                }
                 let action = next_action(&mut rng);
                 direct.apply(&action);
                 consonance.apply(&action);
+                let direct_exit = direct.exit_kind();
+                let consonance_exit = consonance.exit_kind();
+                if direct_exit != consonance_exit {
+                    return Err(format!(
+                        "exit-kind mismatch at sequence {sequence} action {action_index}: direct={direct_exit:?} consonance={consonance_exit:?}"
+                    )
+                    .into());
+                }
+                if direct_exit != ExitKind::Ok {
+                    return Err(format!(
+                        "both backends failed at sequence {sequence} action {action_index}"
+                    )
+                    .into());
+                }
                 if direct.last_action_observations() != consonance.last_action_observations() {
                     return Err(format!(
                         "observation mismatch at sequence {sequence} action {action_index}: direct={:?} consonance={:?}",
@@ -148,6 +168,17 @@ mod real {
                         consonance.last_action_observations(),
                     )
                     .into());
+                }
+                let direct_terminal = direct.is_dead() || direct.cleared_a_level();
+                let consonance_terminal = consonance.is_dead() || consonance.cleared_a_level();
+                if direct_terminal != consonance_terminal {
+                    return Err(format!(
+                        "terminal-state mismatch at sequence {sequence} action {action_index}: direct={direct_terminal} consonance={consonance_terminal}"
+                    )
+                    .into());
+                }
+                if direct_terminal {
+                    break;
                 }
                 let encoded = serde_json::to_vec(direct.last_action_observations())?;
                 stream.update(sequence.to_le_bytes());

@@ -202,6 +202,36 @@ mod real {
             .parse()?)
     }
 
+    fn parse_peak_rss_bytes(status: &str) -> Result<u64, String> {
+        let line = status
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .ok_or_else(|| "Linux process status has no VmHWM field".to_owned())?;
+        let mut fields = line.split_ascii_whitespace();
+        if fields.next() != Some("VmHWM:") {
+            return Err("Linux VmHWM field is malformed".to_owned());
+        }
+        let kib = fields
+            .next()
+            .ok_or_else(|| "Linux VmHWM value is absent".to_owned())?
+            .parse::<u64>()
+            .map_err(|error| format!("Linux VmHWM value is malformed: {error}"))?;
+        if fields.next() != Some("kB") || fields.next().is_some() {
+            return Err("Linux VmHWM unit is not kB".to_owned());
+        }
+        kib.checked_mul(1024)
+            .ok_or_else(|| "Linux VmHWM byte conversion overflow".to_owned())
+    }
+
+    fn process_peak_rss_bytes() -> Result<u64, Box<dyn Error>> {
+        let status = fs::read_to_string("/proc/self/status")?;
+        parse_peak_rss_bytes(&status).map_err(Into::into)
+    }
+
+    fn bytes_to_mib_ceil(bytes: u64) -> u64 {
+        bytes.saturating_add((1 << 20) - 1) >> 20
+    }
+
     pub fn run() -> Result<(), Box<dyn Error>> {
         let args = Args::parse()?;
         let memory_budget = memory_budget_for_workers(args.memory_budget_mib, args.workers)?;
@@ -257,6 +287,7 @@ mod real {
             serde_json::to_vec_pretty(best_input)?,
         )?;
         let media = render(&args, &rom, best_input)?;
+        let peak_rss_bytes = process_peak_rss_bytes()?;
         let summary = json!({
             "mode": if args.fixed_execution_soak {
                 "consonance_fixed_execution_soak"
@@ -269,6 +300,8 @@ mod real {
             "memory_budget_mib": args.memory_budget_mib,
             "archive_memory_budget_mib": memory_budget.archive_memory_budget_mib,
             "process_memory_reserve_mib": memory_budget.process_memory_reserve_mib,
+            "peak_rss_bytes": peak_rss_bytes,
+            "peak_rss_mib": bytes_to_mib_ceil(peak_rss_bytes),
             "execution_budget": report.execution_budget,
             "executions": report.executions_completed,
             "frames_emulated": report.frames_emulated,
@@ -378,8 +411,8 @@ mod real {
     #[cfg(test)]
     mod tests {
         use super::{
-            Args, NON_ARCHIVE_PROCESS_OVERHEAD_MIB, OsString, memory_budget_for_workers,
-            process_memory_reserve_mib,
+            Args, NON_ARCHIVE_PROCESS_OVERHEAD_MIB, OsString, bytes_to_mib_ceil,
+            memory_budget_for_workers, parse_peak_rss_bytes, process_memory_reserve_mib,
         };
 
         fn required_args(extra: &[&str]) -> Vec<OsString> {
@@ -454,6 +487,16 @@ mod real {
 
             let too_small = required_args(&["--memory-budget-mib", "576"]);
             assert!(Args::parse_from(too_small).is_err());
+        }
+
+        #[test]
+        fn linux_peak_rss_parser_converts_kib_to_bytes() {
+            let status = "Name:\tnova\nVmPeak:\t999 kB\nVmHWM:\t2049 kB\nVmRSS:\t100 kB\n";
+            assert_eq!(parse_peak_rss_bytes(status).unwrap(), 2049 * 1024);
+            assert_eq!(bytes_to_mib_ceil(2049 * 1024), 3);
+            assert!(parse_peak_rss_bytes("VmHWM:\t2 MB\n").is_err());
+            assert!(parse_peak_rss_bytes("VmRSS:\t2 kB\n").is_err());
+            assert!(parse_peak_rss_bytes("VmHWM:\t18446744073709551615 kB\n").is_err());
         }
     }
 }

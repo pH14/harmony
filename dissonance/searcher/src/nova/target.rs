@@ -457,6 +457,13 @@ impl<M: Machine> NovaTarget<M> {
         let mut survived = true;
         while observed_frames < requested_frames {
             let stop = self.machine.run(StopConditions::default(), None);
+            if matches!(stop, Ok(machine::StopReason::Deadline { .. })) {
+                // The Consonance deadline is a host-side per-run safety budget,
+                // not a game death or a successful partial action.
+                self.failed = true;
+                survived = false;
+                break;
+            }
             let produced = self.machine.frames();
             if produced.is_empty() {
                 survived = false;
@@ -481,7 +488,6 @@ impl<M: Machine> NovaTarget<M> {
             let acceptable_stop = matches!(
                 stop,
                 Ok(machine::StopReason::SnapshotPoint { .. }
-                    | machine::StopReason::Deadline { .. }
                     | machine::StopReason::Quiescent { .. })
             );
             if !acceptable_stop {
@@ -508,10 +514,7 @@ impl<M: Machine> NovaTarget<M> {
                 break;
             }
             match stop {
-                Ok(
-                    machine::StopReason::SnapshotPoint { .. }
-                    | machine::StopReason::Deadline { .. },
-                ) => {}
+                Ok(machine::StopReason::SnapshotPoint { .. }) => {}
                 Ok(machine::StopReason::Quiescent { .. }) | Ok(_) | Err(_) => {
                     survived = false;
                     break;
@@ -723,11 +726,15 @@ impl<M: Machine> Target for NovaTarget<M> {
             return;
         }
         let run = self.machine.run(StopConditions::default(), None);
+        if matches!(run, Ok(machine::StopReason::Deadline { .. })) {
+            // Exhausting the Consonance safety budget is infrastructure
+            // failure. Do not decode cached RAM and report it as a game death.
+            self.failed = true;
+            return;
+        }
         if !matches!(
             run,
-            Ok(machine::StopReason::Deadline { .. }
-                | machine::StopReason::Quiescent { .. }
-                | machine::StopReason::SnapshotPoint { .. })
+            Ok(machine::StopReason::Quiescent { .. } | machine::StopReason::SnapshotPoint { .. })
         ) {
             self.failed = true;
             return;
@@ -1306,6 +1313,25 @@ mod tests {
             });
         assert!(probe.survives_probe(0, 2));
         assert_eq!(probe.exit_kind(), ExitKind::Ok);
+    }
+
+    #[test]
+    fn infrastructure_deadline_is_a_failure_not_a_game_death() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target
+            .machine
+            .run_stops
+            .push_back(machine::StopReason::Deadline {
+                vtime: machine::Moment(3),
+            });
+        let reads_before = target.machine.read_calls.get();
+        target.apply(&ButtonChord::new(0x81, 3));
+
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+        assert!(!target.is_dead());
+        assert_eq!(target.machine.read_calls.get(), reads_before);
+        assert_eq!(target.machine.snapshot_calls, 1);
+        assert!(target.last_action_observations().is_empty());
     }
 
     #[test]
