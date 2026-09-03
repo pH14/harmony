@@ -478,6 +478,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
     let mut stream = open_archive(archive)?;
     let mut members: Vec<Member> = Vec::new();
     let mut long_name: Option<Vec<u8>> = None;
+    let mut pax = Pax::default();
     let mut block = [0u8; TAR_BLOCK];
     while read_block(&mut stream, &mut block)? {
         if block.iter().all(|byte| *byte == 0) {
@@ -502,21 +503,26 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
             b'K' => {
                 header_data(&mut stream, size)?;
             }
-            // pax extended header: a `path` record renames the next member.
-            // A global header that renames every following member is a form
-            // this reader does not model, so it is refused rather than
-            // ignored.
-            typeflag @ (b'x' | b'g') => {
-                let path = pax_path(&header_data(&mut stream, size)?)?;
-                match (typeflag, path) {
-                    (b'x', Some(path)) => long_name = Some(path),
-                    (b'g', Some(_)) => {
-                        return Err(ImageError::Tar(
-                            "archive sets a global pax path record".into(),
-                        ));
-                    }
-                    _ => {}
-                }
+            // pax extended header: its records describe the member that
+            // follows.
+            b'x' => {
+                let data = header_data(&mut stream, size)?;
+                parse_pax(&data, &mut pax)?;
+            }
+            // A global pax header carries metadata for every member after
+            // it. This reader does not model that, and ignoring one would
+            // let the archive rename members behind the check.
+            b'g' => {
+                return Err(ImageError::Tar(
+                    "archive carries a global pax header".into(),
+                ));
+            }
+            // Sparse and multi-volume members store their data in layouts
+            // this reader does not model, so it cannot find the next header.
+            b'S' | b'M' => {
+                return Err(ImageError::Tar(
+                    "archive carries an unsupported member type".into(),
+                ));
             }
             typeflag => {
                 if members.len() == MAX_MEMBERS {
@@ -524,11 +530,20 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                         "archive has more than {MAX_MEMBERS} members"
                     )));
                 }
+                let Pax {
+                    path,
+                    size: pax_size,
+                } = std::mem::take(&mut pax);
+                let gnu_name = long_name.take();
                 members.push(Member {
-                    name: long_name.take().unwrap_or_else(|| ustar_name(&block)),
+                    name: path.or(gnu_name).unwrap_or_else(|| ustar_name(&block)),
                     is_dir: typeflag == b'5',
                 });
-                skip(&mut stream, size + padding(size))?;
+                let size = pax_size.unwrap_or(size);
+                let data = size
+                    .checked_add(padding(size))
+                    .ok_or_else(|| ImageError::Tar("tar member size is too large".into()))?;
+                skip(&mut stream, data)?;
             }
         }
     }
@@ -664,10 +679,23 @@ fn ustar_name(block: &[u8; TAR_BLOCK]) -> Vec<u8> {
     [prefix, vec![b'/'], name].concat()
 }
 
-/// The `path` record of a pax header, which renames the member it precedes.
-/// Records are `<length> <key>=<value>\n`, the length covering the whole
-/// record.
-fn pax_path(records: &[u8]) -> Result<Option<Vec<u8>>, ImageError> {
+/// What a pax header sets for the member that follows it. `tar` honors these
+/// over the header's own fields, so the check reads the member the same way
+/// extraction will.
+#[derive(Default)]
+struct Pax {
+    path: Option<Vec<u8>>,
+    size: Option<u64>,
+}
+
+/// Merge one pax header's records into `pax`. Records are
+/// `<length> <key>=<value>\n`, the length covering the whole record, and a
+/// repeated key keeps its last value, which is what `tar` does.
+///
+/// Records that change a member's name or the layout of its data in a form
+/// this reader does not model are refused. Ignoring one would let extraction
+/// write a member the check never saw.
+fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
     let malformed = || ImageError::Tar("malformed pax header".into());
     let mut rest = records;
     while !rest.is_empty() {
@@ -683,15 +711,34 @@ fn pax_path(records: &[u8]) -> Result<Option<Vec<u8>>, ImageError> {
             return Err(malformed());
         }
         let record = &rest[space + 1..length];
-        if let Some(equals) = record.iter().position(|byte| *byte == b'=')
-            && &record[..equals] == b"path"
-        {
-            let value = &record[equals + 1..];
-            return Ok(Some(value.strip_suffix(b"\n").unwrap_or(value).to_vec()));
+        let equals = record
+            .iter()
+            .position(|byte| *byte == b'=')
+            .ok_or_else(malformed)?;
+        let (key, value) = record.split_at(equals);
+        let value = &value[1..];
+        let value = value.strip_suffix(b"\n").unwrap_or(value);
+        match key {
+            b"path" => pax.path = Some(value.to_vec()),
+            b"size" => {
+                let size = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|text| text.parse().ok())
+                    .ok_or_else(|| ImageError::Tar("unreadable pax size record".into()))?;
+                pax.size = Some(size);
+            }
+            // A sparse member's data is stored in a layout these records
+            // describe, so a reader that ignores them skips the wrong bytes.
+            key if key.starts_with(b"GNU.sparse.") => {
+                return Err(ImageError::Tar(
+                    "archive uses an unsupported sparse pax record".into(),
+                ));
+            }
+            _ => {}
         }
         rest = &rest[length..];
     }
-    Ok(None)
+    Ok(())
 }
 
 /// Extract `archive` into `dest`, which must be a fresh empty directory.
@@ -1487,12 +1534,172 @@ mod tests {
         reseal(&mut oversized);
         let path = write_archive(dir.path(), "oversized.tar", &oversized);
         assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+    }
 
-        let record = pax_record("path", "elsewhere");
-        let mut global = raw_member(b"pax_global_header", b'g', "", record.as_bytes());
-        global.extend_from_slice(&member);
-        let path = write_archive(dir.path(), "global.tar", &global);
-        assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+    /// A pax header may set the same key twice, and `tar` keeps the last
+    /// value. Checking the first one checks a name that is never written.
+    #[test]
+    fn apply_layer_refuses_a_traversing_path_from_the_last_pax_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rootfs, victim) = planted(dir.path());
+        let records = [
+            pax_record("path", "safe"),
+            pax_record("path", "../../victim/pwn"),
+        ]
+        .concat();
+        let body = [
+            raw_member(b"PaxHeaders/0", b'x', "", records.as_bytes()),
+            raw_member(b"safe", b'0', "", b""),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "pax-path.tar", &body);
+        assert_eq!(
+            read_members(&layer)
+                .unwrap()
+                .iter()
+                .map(Member::shown)
+                .collect::<Vec<_>>(),
+            vec!["../../victim/pwn".to_string()]
+        );
+        assert!(matches!(
+            apply_layer(&layer, &rootfs),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(victim.join("sentinel").exists());
+    }
+
+    /// A pax `size` record overrides the header's own size field, so a
+    /// member whose header claims two blocks of data has none: those blocks
+    /// are the next two headers. Reading the header field instead would skip
+    /// them and check an archive that is missing its dangerous members.
+    #[test]
+    fn apply_layer_reads_the_members_a_pax_size_of_zero_exposes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rootfs, victim) = planted(dir.path());
+        let mut cover = raw_member(b"cover", b'0', "", b"");
+        cover[124..136].copy_from_slice(b"00000002000\0"); // 1024, in octal
+        reseal(&mut cover);
+        let body = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("size", "0").as_bytes(),
+            ),
+            cover,
+            raw_member(b"link", b'2', "../../victim", b""),
+            raw_member(b"link/pwn", b'0', "", b""),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "pax-zero-size.tar", &body);
+        assert_eq!(
+            read_members(&layer)
+                .unwrap()
+                .iter()
+                .map(Member::shown)
+                .collect::<Vec<_>>(),
+            vec![
+                "cover".to_string(),
+                "link".to_string(),
+                "link/pwn".to_string()
+            ]
+        );
+        assert!(matches!(
+            apply_layer(&layer, &rootfs),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(victim.join("sentinel").exists());
+        assert!(!victim.join("pwn").exists());
+    }
+
+    /// The same record the other way round: the header field says zero and
+    /// the pax record says two blocks, so those blocks are data and the
+    /// headers they imitate are not members.
+    #[test]
+    fn read_members_skips_the_data_a_pax_size_declares() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = [
+            raw_member(b"link", b'2', "../../victim", b""),
+            raw_member(b"link/pwn", b'0', "", b""),
+        ]
+        .concat();
+        let mut cover = raw_member(b"cover", b'0', "", &data);
+        cover[124..136].copy_from_slice(b"00000000000\0");
+        reseal(&mut cover);
+        let body = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("size", "1024").as_bytes(),
+            ),
+            cover,
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "pax-size.tar", &body);
+        assert_eq!(
+            read_members(&layer)
+                .unwrap()
+                .iter()
+                .map(Member::shown)
+                .collect::<Vec<_>>(),
+            vec!["cover".to_string()]
+        );
+    }
+
+    /// Header forms whose effective name or data layout this reader does not
+    /// model are refused, so it can never check a member set that differs
+    /// from the one extraction writes.
+    #[test]
+    fn read_members_refuses_unmodeled_header_forms() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = raw_member(b"file", b'0', "", b"");
+        let refused = |name: &str, body: &[u8]| {
+            let path = write_archive(dir.path(), name, body);
+            assert!(
+                matches!(read_members(&path), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+        };
+
+        // A global pax header, whatever it carries.
+        for (name, record) in [
+            ("global-path.tar", pax_record("path", "elsewhere")),
+            ("global-comment.tar", pax_record("comment", "anything")),
+        ] {
+            let mut body = raw_member(b"pax_global_header", b'g', "", record.as_bytes());
+            body.extend_from_slice(&member);
+            refused(name, &body);
+        }
+
+        // Sparse metadata, in either the pax records or the member type.
+        let mut sparse = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("GNU.sparse.size", "4096").as_bytes(),
+        );
+        sparse.extend_from_slice(&member);
+        refused("sparse-pax.tar", &sparse);
+        refused("sparse-member.tar", &raw_member(b"file", b'S', "", b""));
+
+        // A multi-volume continuation, whose data starts mid-member.
+        refused("multivolume.tar", &raw_member(b"file", b'M', "", b""));
+
+        // A pax record with no key.
+        let mut keyless = raw_member(b"PaxHeaders/0", b'x', "", b"5 bad\n");
+        keyless.extend_from_slice(&member);
+        refused("keyless-pax.tar", &keyless);
+
+        // A pax size that is not a number.
+        let mut unreadable = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("size", "eleven").as_bytes(),
+        );
+        unreadable.extend_from_slice(&member);
+        refused("unreadable-size.tar", &unreadable);
     }
 
     /// A size an octal field cannot hold is stored in binary. Refusing that
