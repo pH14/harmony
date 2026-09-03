@@ -1557,8 +1557,10 @@ where
             && visits < MAINTENANCE_QUANTUM
             && self.active_count > 1
         {
-            visits = visits.saturating_add(1);
-            if !self.drop_one_entry() {
+            let (dropped, examined) =
+                self.drop_one_entry_within(MAINTENANCE_QUANTUM.saturating_sub(visits));
+            visits = visits.saturating_add(examined);
+            if !dropped {
                 break;
             }
             reclaimed = true;
@@ -1578,13 +1580,25 @@ where
     /// clearing reference bits on the way. Two full passes without a drop
     /// mean nothing is droppable.
     fn drop_one_entry(&mut self) -> bool {
+        let budget = self.entries.len().saturating_mul(2);
+        self.drop_one_entry_within(budget).0
+    }
+
+    /// [`Self::drop_one_entry`] over at most `budget` entries, reporting how
+    /// many it examined. The budgeted maintenance sweep spends its quantum on
+    /// examinations, because clearing reference bits and skipping inactive
+    /// entries is the work the hand actually does.
+    fn drop_one_entry_within(&mut self, budget: usize) -> (bool, usize) {
         let count = self.entries.len();
         if count == 0 {
-            return false;
+            return (false, 0);
         }
-        for _ in 0..count.saturating_mul(2) {
+        let limit = budget.min(count.saturating_mul(2));
+        let mut examined = 0_usize;
+        while examined < limit {
             let id = self.drop_hand % count;
             self.drop_hand = (id + 1) % count;
+            examined = examined.saturating_add(1);
             if !self.active[id] || self.is_liveness_anchor(id) {
                 continue;
             }
@@ -1594,9 +1608,20 @@ where
             }
             self.deactivate(id);
             self.entry_drops = self.entry_drops.saturating_add(1);
-            return true;
+            return (true, examined);
         }
-        false
+        (false, examined)
+    }
+
+    /// Spend one maintenance quantum on the logical memory budget.
+    ///
+    /// Retention already enforces the budget from every path that adds an
+    /// entry. Selection accounting adds pooled barren counters to the same
+    /// charge without inserting anything, so the coordinator calls this at
+    /// the stream position where live and replay both finish accounting one
+    /// record.
+    pub(crate) fn enforce_memory_budget(&mut self) -> Result<(), &'static str> {
+        self.enforce_snapshot_memory_budget()
     }
 
     /// Reclaim non-selectable history once its deterministic charge reaches a
@@ -3597,9 +3622,9 @@ mod tests {
 
     use super::{
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
-        InputIndex, MAX_ENTRIES_PER_KEY, RetireThresholds, SELECTION_EXHAUSTION_THRESHOLD,
-        SelectorAccounting, SelectorDraw, SelectorPath, SelectorPolicy,
-        selector_policy_from_identifier,
+        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
+        SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
+        SelectorPolicy, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
     use crate::smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveKey};
@@ -3932,6 +3957,121 @@ mod tests {
         assert_eq!(archive.resident_snapshot_count(), 1);
         assert_eq!(archive.active_count(), 1);
         assert_eq!(archive.entry_drops(), 3);
+    }
+
+    #[test]
+    fn selection_accounting_charge_is_brought_back_under_the_budget() {
+        // `record_selection` grows the pooled barren counters the budget
+        // charges, and it is the last thing an admitted job does. Without
+        // maintenance after it, a run reports a charge above its own budget.
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+            entry: 1,
+            groups: vec![3, 4],
+        });
+        for index in 0_u8..64 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        let limit = archive.resident_memory_bytes();
+        archive.memory_limit = Some(limit);
+        assert_eq!(archive.barren_group_count(), 0);
+
+        let draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for id in 0..archive.entries.len() {
+            archive.record_selection(id, &draw);
+        }
+        assert!(archive.barren_group_count() > 0);
+        assert!(
+            archive.resident_memory_bytes() > limit,
+            "selection accounting should have pushed the charge over the budget"
+        );
+
+        // The maintenance the coordinator now spends at this stream position
+        // is bounded per call, so convergence takes a bounded number of them.
+        let mut quanta = 0_usize;
+        while archive.resident_memory_bytes() > limit && quanta < 64 {
+            archive
+                .enforce_memory_budget()
+                .expect("budget remains satisfiable");
+            archive
+                .compact_history_if_needed()
+                .expect("compaction succeeds");
+            quanta = quanta.saturating_add(1);
+        }
+        assert!(
+            archive.resident_memory_bytes() <= limit,
+            "maintenance left {} bytes charged against a {limit} byte budget after {quanta} quanta",
+            archive.resident_memory_bytes()
+        );
+    }
+
+    #[test]
+    fn the_maintenance_quantum_counts_entries_the_clock_examines() {
+        // Every entry is referenced, so the hand clears reference bits and
+        // drops nothing. The sweep must still stop after one quantum of
+        // examinations rather than scanning the whole archive per drop.
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        let entries = MAINTENANCE_QUANTUM * 4;
+        for index in 0..entries {
+            let key = u16::try_from(index).expect("key fits u16");
+            archive
+                .insert(
+                    None,
+                    index as u64,
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index % 251).expect("suffix byte"), key as u8],
+                        key: FlatKey([key, key, key, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        archive.referenced.fill(true);
+        archive.drop_hand = 0;
+        archive.memory_limit = Some(0);
+        archive
+            .enforce_memory_budget()
+            .expect("budget remains satisfiable");
+        assert_eq!(
+            archive.entry_drops(),
+            0,
+            "referenced entries are not droppable"
+        );
+        assert!(
+            archive.drop_hand <= MAINTENANCE_QUANTUM,
+            "the sweep examined {} entries for a {MAINTENANCE_QUANTUM} entry quantum",
+            archive.drop_hand
+        );
+
+        // The bounded helper reports what it examined so the caller can spend
+        // exactly its quantum across repeated calls.
+        archive.referenced.fill(true);
+        archive.drop_hand = 0;
+        let (dropped, examined) = archive.drop_one_entry_within(4);
+        assert!(!dropped);
+        assert_eq!(examined, 4);
+        assert_eq!(archive.drop_hand, 4);
     }
 
     #[test]

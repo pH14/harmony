@@ -2525,6 +2525,9 @@ mod tests {
         assert_eq!(live.executions_completed, 8_192);
         assert_eq!(live.memory_budget_mib, Some(4));
         assert!(live.resident_memory_bytes <= 4 * 1024 * 1024);
+        // Skips account a selection without inserting, so this run exercises
+        // the budget maintenance the coordinator spends outside admission.
+        assert!(live.duplicates_skipped > 0);
         assert!(live.archive.retained > 1);
         assert!(live.history_compactions > 0);
         assert!(live.historical_entries_dropped > 0);

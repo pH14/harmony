@@ -2515,6 +2515,7 @@ where
                             draw_table_after,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
+                        core.archive.enforce_memory_budget()?;
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                         counters.skips_per_worker[worker as usize] =
                             counters.skips_per_worker[worker as usize].saturating_add(1);
@@ -2708,6 +2709,7 @@ where
                         new_slot_descendant,
                         new_cell_descendant,
                     );
+                    core.archive.enforce_memory_budget()?;
                     if let DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } =
                         config.mixture
                     {
@@ -3328,6 +3330,7 @@ where
                 }
                 verify_selector_annotation(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
+                core.archive.enforce_memory_budget()?;
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
@@ -3460,6 +3463,7 @@ where
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id)),
                 );
+                core.archive.enforce_memory_budget()?;
                 core.archive.unpin_metadata(job.parent_id);
                 if let Some(CampaignSpliceRecord::Tail {
                     donor_id,
