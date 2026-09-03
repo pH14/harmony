@@ -3,7 +3,8 @@
 //!
 //! Started by the game image's init (`consonance/harmony-linux/linux/game-init.sh`) as the single
 //! supervised workload process: a minimal headless libretro frontend linking
-//! the commit-pinned NES core, running Super Mario Bros. unthrottled — its own
+//! a commit-pinned NES core, running Super Mario Bros. or Nova the Squirrel
+//! unthrottled — its own
 //! `retro_run` counter is the frame clock. The decision/decode *logic* lives in
 //! the [`harmony_play_agent`] library (portable, unit-tested on the dev host
 //! against a mock core). This binary is the Linux glue, all of it behind
@@ -11,7 +12,8 @@
 //! no-`cfg(target_os)` rule, the flow-agent precedent):
 //!
 //! - the **libretro C-ABI FFI** (the task's named `unsafe` grant): `dlopen` of
-//!   the pinned core, null audio/video callbacks, savestate + work-RAM reads;
+//!   the pinned core for SMB, or direct symbols from the pinned static QuickNES
+//!   archive for Nova; null audio/video callbacks, savestate + RAM reads;
 //! - the **billboard pinning** (the grant's second half): one hugetlb mapping
 //!   (a single contiguous guest-physical range), `mlock`ed, translated once via
 //!   `/proc/self/pagemap`, published via state registers at init;
@@ -27,9 +29,13 @@ use harmony_play_agent::{Agent, AgentConfig, ChordAlphabet, Harness};
 #[derive(Parser, Debug)]
 #[command(
     name = "play-agent",
-    about = "harmony in-guest play-agent (task 86): SMB workload"
+    about = "harmony in-guest play-agent: SMB or Nova workload"
 )]
 struct Args {
+    /// Run Nova's payload-tape protocol: each host payload is exactly one
+    /// `[buttons, hold_frames]` chord ending at a Consonance snapshot point.
+    #[arg(long)]
+    nova_payload: bool,
     /// Path to the libretro core `.so` (falls back to `HARMONY_SMB_CORE`, then
     /// the in-image default).
     #[arg(long)]
@@ -156,17 +162,25 @@ fn smoke(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The real path: the dlopen'd libretro core over the pinned billboard and the
-/// doorbell SDK. Linux + x86-64 only (the box guest).
+/// The real path: a dynamic or statically linked libretro core over the pinned
+/// billboard and doorbell SDK. Linux + x86-64 only (the box guest).
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod real {
     use super::{Args, agent_config};
-    use harmony_play_agent::{Agent, Harness, regs};
+    use harmony_play_agent::{
+        Agent, Harness,
+        nova::{NovaAgent, NovaChannel},
+        regs,
+    };
 
     /// The default in-image location of the pinned libretro core.
     const DEFAULT_CORE: &str = "/opt/harmony/fceumm_libretro.so";
     /// The default in-image location of the user-supplied ROM.
     const DEFAULT_ROM: &str = "/opt/harmony/smb.nes";
+    /// The default in-image location of the pinned QuickNES core.
+    const DEFAULT_NOVA_CORE: &str = "/opt/harmony/quicknes_libretro.so";
+    /// The default in-image location of the FOSS Nova ROM.
+    const DEFAULT_NOVA_ROM: &str = "/opt/harmony/nova.nes";
 
     /// The [`Harness`] over the real guest SDK: every verb maps 1:1, every
     /// error is surfaced loudly (the sdk-demo discipline — a swallowed
@@ -204,7 +218,52 @@ mod real {
         }
     }
 
+    impl<T: hypercall_proto::Transport> NovaChannel for SdkHarness<T>
+    where
+        T::Error: core::fmt::Debug,
+    {
+        type Error = String;
+
+        fn payload_fetch(&mut self, out: &mut [u8; 2]) -> Result<(), Self::Error> {
+            self.sdk
+                .client_mut()
+                .payload_fetch(out)
+                .map_err(|error| format!("payload_fetch: {error:?}"))
+        }
+
+        fn state_set(&mut self, reg: u32, value: u64) -> Result<(), Self::Error> {
+            self.sdk
+                .state_set(reg, value)
+                .map_err(|error| format!("state_set({reg}): {error:?}"))
+        }
+
+        fn state_max(&mut self, reg: u32, value: u64) -> Result<(), Self::Error> {
+            self.sdk
+                .state_max(reg, value)
+                .map_err(|error| format!("state_max({reg}): {error:?}"))
+        }
+
+        fn reachable(&mut self, point: u32) -> Result<(), Self::Error> {
+            self.sdk
+                .assert_reachable(point)
+                .map_err(|error| format!("assert_reachable({point}): {error:?}"))
+        }
+
+        fn frame_complete(&mut self, frame_count: u64) -> Result<(), Self::Error> {
+            self.sdk
+                .frame_complete(frame_count)
+                .map_err(|error| format!("frame_complete({frame_count}): {error:?}"))
+        }
+    }
+
     pub fn run(args: &Args) -> Result<(), String> {
+        if args.nova_payload {
+            return run_nova(args);
+        }
+        run_smb(args)
+    }
+
+    fn run_smb(args: &Args) -> Result<(), String> {
         let core_path = args
             .core
             .clone()
@@ -287,8 +346,12 @@ mod real {
         // Publish the billboard window once at init, then seal the setup
         // prefix — the campaign snapshots at the setup boundary, so every
         // branch inherits the published window over the primed billboard.
-        harness.state_set(regs::REG_BILLBOARD_GPA, gpa)?;
-        harness.state_set(regs::REG_BILLBOARD_LEN, layout.total_len() as u64)?;
+        Harness::state_set(&mut harness, regs::REG_BILLBOARD_GPA, gpa)?;
+        Harness::state_set(
+            &mut harness,
+            regs::REG_BILLBOARD_LEN,
+            layout.total_len() as u64,
+        )?;
         harness
             .sdk
             .setup_complete()
@@ -302,6 +365,86 @@ mod real {
             frame += 1;
             if args.frames != 0 && frame >= args.frames {
                 println!("play-agent: frame bound {frame} reached");
+                return Ok(());
+            }
+        }
+    }
+
+    fn run_nova(args: &Args) -> Result<(), String> {
+        let core_path = args
+            .core
+            .clone()
+            .or_else(|| std::env::var("HARMONY_NOVA_CORE").ok())
+            .unwrap_or_else(|| DEFAULT_NOVA_CORE.to_string());
+        let rom_path = args
+            .rom
+            .clone()
+            .or_else(|| std::env::var("HARMONY_NOVA_ROM").ok())
+            .unwrap_or_else(|| DEFAULT_NOVA_ROM.to_string());
+        let rom = std::fs::read(&rom_path).map_err(|error| format!("ROM {rom_path}: {error}"))?;
+        println!("play-agent: Nova ROM {rom_path} ({} bytes)", rom.len());
+
+        let mut core = retro::LibretroCore::load(&core_path, &rom_path, &rom)?;
+        println!("play-agent: QuickNES core {core_path} loaded");
+        let setup = harmony_play_agent::nova::run_setup(&mut core).map_err(|e| e.to_string())?;
+        println!(
+            "play-agent: Nova gameplay reached (level={} x={} y={} health={})",
+            setup.started_level + 1,
+            setup.x,
+            setup.y,
+            setup.health
+        );
+
+        let mut agent = NovaAgent::new(core).map_err(|e| e.to_string())?;
+        let layout = agent.layout();
+        let (gpa, billboard) = pinned::alloc(layout.total_len())?;
+        let sealed = agent
+            .prime_billboard(billboard)
+            .map_err(|e| e.to_string())?;
+        if sealed.health == 0 || sealed.x == 0 || sealed.y == 0 {
+            return Err(format!("Nova seal-point vacuity check failed: {sealed:?}"));
+        }
+
+        let transport = doorbell::open()?;
+        let sdk = harmony_sdk::Sdk::init(transport, harmony_play_agent::nova::regs::CATALOG)
+            .map_err(|e| format!("Nova sdk init: {e:?}"))?;
+        let mut channel = SdkHarness { sdk };
+        channel
+            .sdk
+            .state_set(harmony_play_agent::nova::regs::REG_BILLBOARD_GPA, gpa)
+            .map_err(|e| format!("Nova billboard GPA: {e:?}"))?;
+        channel
+            .sdk
+            .state_set(
+                harmony_play_agent::nova::regs::REG_BILLBOARD_LEN,
+                layout.total_len() as u64,
+            )
+            .map_err(|e| format!("Nova billboard length: {e:?}"))?;
+        agent
+            .emit_state(&mut channel, sealed)
+            .map_err(|e| format!("Nova initial state: {e}"))?;
+        channel
+            .sdk
+            .setup_complete()
+            .map_err(|e| format!("Nova setup_complete: {e:?}"))?;
+        println!(
+            "play-agent: Nova setup sealed; awaiting two-byte payload chords (billboard={gpa:#x}+{})",
+            layout.total_len()
+        );
+
+        loop {
+            let state = agent
+                .run_chord(&mut channel, billboard)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "play-agent: Nova chord complete frame={} level={} x={} y={} health={}",
+                agent.frame_count(),
+                state.started_level + 1,
+                state.x,
+                state.y,
+                state.health
+            );
+            if args.frames != 0 && agent.frame_count() >= args.frames {
                 return Ok(());
             }
         }
@@ -327,10 +470,12 @@ mod real {
     ///   pointer write (nothing left to hoist) — and it is **Miri-executed**
     ///   (round-9 P1) by this module's own unit tests, which drive `env_cb`
     ///   with a real `bool*` and no FFI (the nightly job's `--bins` run).
-    /// - `sym`'s `dlsym` + `transmute_copy` — raw symbol resolution; the
-    ///   fn-pointer size equality is `debug_assert`ed, the ABI match is the
-    ///   libretro contract.
-    /// - `dlopen`/`dlerror`/`retro_*` calls — raw C calls.
+    /// - `sym`'s `dlsym` + `transmute_copy` — raw dynamic symbol resolution;
+    ///   the fn-pointer size equality is `debug_assert`ed, the ABI match is the
+    ///   libretro contract. Nova's `static-quicknes` profile skips this edge.
+    /// - `dlopen`/`dlerror` and dynamic or static `retro_*` calls — raw C calls
+    ///   that Miri cannot enter. Their callback and buffer decisions remain in
+    ///   the Miri-covered `glue` seam.
     /// - `read_work_ram`'s `from_raw_parts` — borrows the core's RAM block
     ///   exactly as returned (non-null + non-zero length checked in safe
     ///   code); ALL copy/clamp/zero-fill logic is `glue::copy_work_ram`
@@ -349,6 +494,9 @@ mod real {
         };
         use std::ffi::{CString, c_char, c_uint, c_void};
         use std::sync::atomic::{AtomicU8, Ordering};
+
+        /// Libretro's cartridge-backed save-RAM memory id.
+        const RETRO_MEMORY_SAVE_RAM: c_uint = 0;
 
         #[repr(C)]
         struct RetroGameInfo {
@@ -400,12 +548,18 @@ mod real {
             frames
         }
 
+        #[cfg(not(feature = "static-quicknes"))]
         type EnvSetFn = unsafe extern "C" fn(extern "C" fn(c_uint, *mut c_void) -> bool);
+        #[cfg(not(feature = "static-quicknes"))]
         type VideoSetFn = unsafe extern "C" fn(extern "C" fn(*const c_void, c_uint, c_uint, usize));
+        #[cfg(not(feature = "static-quicknes"))]
         type InputPollSetFn = unsafe extern "C" fn(extern "C" fn());
+        #[cfg(not(feature = "static-quicknes"))]
         type InputStateSetFn =
             unsafe extern "C" fn(extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16);
+        #[cfg(not(feature = "static-quicknes"))]
         type AudioSampleSetFn = unsafe extern "C" fn(extern "C" fn(i16, i16));
+        #[cfg(not(feature = "static-quicknes"))]
         type AudioBatchSetFn = unsafe extern "C" fn(extern "C" fn(*const i16, usize) -> usize);
         type VoidFn = unsafe extern "C" fn();
         type LoadGameFn = unsafe extern "C" fn(*const RetroGameInfo) -> bool;
@@ -415,9 +569,31 @@ mod real {
         type GetMemorySizeFn = unsafe extern "C" fn(c_uint) -> usize;
         type SetPortDeviceFn = unsafe extern "C" fn(c_uint, c_uint);
 
-        /// The dlopen'd pinned core, driving the [`Core`] seam. The handle and
-        /// the loaded game live for the whole process (a supervised workload —
-        /// never unloaded), so the resolved symbols stay valid.
+        #[cfg(feature = "static-quicknes")]
+        unsafe extern "C" {
+            fn retro_set_environment(callback: extern "C" fn(c_uint, *mut c_void) -> bool);
+            fn retro_set_video_refresh(
+                callback: extern "C" fn(*const c_void, c_uint, c_uint, usize),
+            );
+            fn retro_set_input_poll(callback: extern "C" fn());
+            fn retro_set_input_state(
+                callback: extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16,
+            );
+            fn retro_set_audio_sample(callback: extern "C" fn(i16, i16));
+            fn retro_set_audio_sample_batch(callback: extern "C" fn(*const i16, usize) -> usize);
+            fn retro_init();
+            fn retro_load_game(info: *const RetroGameInfo) -> bool;
+            fn retro_set_controller_port_device(port: c_uint, device: c_uint);
+            fn retro_run();
+            fn retro_serialize_size() -> usize;
+            fn retro_serialize(data: *mut c_void, size: usize) -> bool;
+            fn retro_get_memory_data(id: c_uint) -> *mut c_void;
+            fn retro_get_memory_size(id: c_uint) -> usize;
+        }
+
+        /// The pinned dynamic or statically linked core driving [`Core`]. A
+        /// dynamic handle and the loaded game live for the whole supervised
+        /// process, so every function pointer stays valid.
         pub struct LibretroCore {
             run: VoidFn,
             serialize_size: SerializeSizeFn,
@@ -434,6 +610,7 @@ mod real {
         ///
         /// SAFETY (caller): `handle` is a live dlopen handle; `T` must be the
         /// exact C fn-pointer type of the symbol.
+        #[cfg(not(feature = "static-quicknes"))]
         unsafe fn sym<T: Copy>(handle: *mut c_void, name: &str) -> Result<T, String> {
             let cname = CString::new(name).map_err(|_| format!("symbol name {name:?}"))?;
             // SAFETY: dlsym on a live handle with a valid C string; a null
@@ -462,12 +639,32 @@ mod real {
             /// Fails loudly on any missing symbol or a rejected ROM — never a
             /// silently dead core.
             pub fn load(path: &str, rom_path: &str, rom: &[u8]) -> Result<LibretroCore, String> {
+                #[cfg(feature = "static-quicknes")]
+                let _ = path;
+
+                #[cfg(feature = "static-quicknes")]
+                // SAFETY: these are the pinned QuickNES archive's libretro C
+                // entrypoints. Callback types and initialization order are the
+                // same contract used by the dynamic path below.
+                unsafe {
+                    retro_set_environment(env_cb);
+                    retro_set_video_refresh(video_cb);
+                    retro_set_input_poll(input_poll_cb);
+                    retro_set_input_state(input_state_cb);
+                    retro_set_audio_sample(audio_sample_cb);
+                    retro_set_audio_sample_batch(audio_sample_batch_cb);
+                    retro_init();
+                }
+
+                #[cfg(not(feature = "static-quicknes"))]
                 let cpath = CString::new(path).map_err(|_| format!("core path {path:?}"))?;
+                #[cfg(not(feature = "static-quicknes"))]
                 // SAFETY: dlopen with a valid C string; the handle is checked
                 // for null and then intentionally leaked (the core lives for
                 // the process — a supervised workload).
                 let handle =
                     unsafe { libc::dlopen(cpath.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+                #[cfg(not(feature = "static-quicknes"))]
                 if handle.is_null() {
                     // SAFETY: dlerror returns a static string or null.
                     let err = unsafe { libc::dlerror() };
@@ -482,6 +679,7 @@ mod real {
                     return Err(format!("dlopen {path}: {msg}"));
                 }
 
+                #[cfg(not(feature = "static-quicknes"))]
                 // SAFETY (all resolutions + calls below): `handle` is live;
                 // each `T` matches the libretro ABI signature of its symbol;
                 // the callbacks are `extern "C"` fns of the exact registered
@@ -499,6 +697,18 @@ mod real {
                     sym::<VoidFn>(handle, "retro_init")?();
                 }
 
+                #[cfg(feature = "static-quicknes")]
+                let load_game: LoadGameFn = retro_load_game;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let load_game: LoadGameFn = unsafe { sym(handle, "retro_load_game")? };
+                #[cfg(feature = "static-quicknes")]
+                let set_port_device: SetPortDeviceFn = retro_set_controller_port_device;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let set_port_device: SetPortDeviceFn =
+                    unsafe { sym(handle, "retro_set_controller_port_device")? };
+
                 let rom = rom.to_vec();
                 let rom_cpath =
                     CString::new(rom_path).map_err(|_| format!("rom path {rom_path:?}"))?;
@@ -512,25 +722,48 @@ mod real {
                 // life, see `_rom`) and `rom_cpath` (alive past the call — the
                 // libretro contract only reads `info` during retro_load_game;
                 // a path-loading core reads the file itself).
-                let loaded = unsafe { sym::<LoadGameFn>(handle, "retro_load_game")?(&info) };
+                let loaded = unsafe { load_game(&info) };
                 if !loaded {
                     return Err("retro_load_game rejected the ROM".to_string());
                 }
                 // SAFETY: standard post-load controller wiring.
-                unsafe {
-                    sym::<SetPortDeviceFn>(handle, "retro_set_controller_port_device")?(
-                        0,
-                        RETRO_DEVICE_JOYPAD,
-                    );
-                }
+                unsafe { set_port_device(0, RETRO_DEVICE_JOYPAD) };
+
+                #[cfg(feature = "static-quicknes")]
+                let run: VoidFn = retro_run;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let run: VoidFn = unsafe { sym(handle, "retro_run")? };
+                #[cfg(feature = "static-quicknes")]
+                let serialize_size: SerializeSizeFn = retro_serialize_size;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let serialize_size: SerializeSizeFn =
+                    unsafe { sym(handle, "retro_serialize_size")? };
+                #[cfg(feature = "static-quicknes")]
+                let serialize: SerializeFn = retro_serialize;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let serialize: SerializeFn = unsafe { sym(handle, "retro_serialize")? };
+                #[cfg(feature = "static-quicknes")]
+                let get_memory_data: GetMemoryDataFn = retro_get_memory_data;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let get_memory_data: GetMemoryDataFn =
+                    unsafe { sym(handle, "retro_get_memory_data")? };
+                #[cfg(feature = "static-quicknes")]
+                let get_memory_size: GetMemorySizeFn = retro_get_memory_size;
+                #[cfg(not(feature = "static-quicknes"))]
+                // SAFETY: the resolved symbol has the exact libretro ABI.
+                let get_memory_size: GetMemorySizeFn =
+                    unsafe { sym(handle, "retro_get_memory_size")? };
 
                 Ok(LibretroCore {
-                    // SAFETY: symbol resolution as above.
-                    run: unsafe { sym(handle, "retro_run")? },
-                    serialize_size: unsafe { sym(handle, "retro_serialize_size")? },
-                    serialize: unsafe { sym(handle, "retro_serialize")? },
-                    get_memory_data: unsafe { sym(handle, "retro_get_memory_data")? },
-                    get_memory_size: unsafe { sym(handle, "retro_get_memory_size")? },
+                    run,
+                    serialize_size,
+                    serialize,
+                    get_memory_data,
+                    get_memory_size,
                     _rom: rom,
                 })
             }
@@ -573,6 +806,24 @@ mod real {
                 // The copy/clamp/zero-fill bounds logic is glue::copy_work_ram
                 // (Miri-covered).
                 glue::copy_work_ram(src, out)
+            }
+
+            fn read_save_ram(&mut self, out: &mut [u8]) -> Option<usize> {
+                // SAFETY: as for `read_work_ram`, libretro owns this stable
+                // memory block and no other retro call occurs before the copy
+                // completes. Both the pointer and length are checked before
+                // constructing the source slice.
+                let src: &[u8] = unsafe {
+                    let ptr = (self.get_memory_data)(RETRO_MEMORY_SAVE_RAM);
+                    let len = (self.get_memory_size)(RETRO_MEMORY_SAVE_RAM);
+                    if ptr.is_null() || len == 0 {
+                        return None;
+                    }
+                    std::slice::from_raw_parts(ptr.cast::<u8>(), len)
+                };
+                let copied = src.len().min(out.len());
+                out[..copied].copy_from_slice(&src[..copied]);
+                Some(copied)
             }
         }
 

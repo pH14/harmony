@@ -16,7 +16,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
 };
 
-use machine::quicknes::CapturedFrame;
+use machine::quicknes::VideoFrame;
 use searcher::{
     smb::target::{SmbInput, SmbTarget},
     target::{ExitKind, Target},
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         File::create(&audio_raw)?,
         usize::try_from(width)?
             .checked_mul(usize::try_from(height)?)
-            .and_then(|pixels| pixels.checked_mul(4))
+            .and_then(|pixels| pixels.checked_mul(3))
             .ok_or("frame dimensions overflow")?,
     );
     film.write(&opening, &target.drain_audio())?;
@@ -136,7 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Sink for the streaming pass: RGBA frames go to FFmpeg's pipe, interleaved
+/// Sink for the streaming pass: RGB24 frames go to FFmpeg's pipe, interleaved
 /// samples to a raw file the mux pass reads back.
 struct FilmWriter {
     encoder: ChildStdin,
@@ -157,12 +157,12 @@ impl FilmWriter {
         }
     }
 
-    fn write(&mut self, frames: &[CapturedFrame], audio: &[i16]) -> Result<(), Box<dyn Error>> {
+    fn write(&mut self, frames: &[VideoFrame], audio: &[i16]) -> Result<(), Box<dyn Error>> {
         for frame in frames {
-            if frame.rgba.len() != self.pixels {
+            if frame.rgb24.len() != self.pixels {
                 return Err("QuickNES changed its frame geometry mid-replay".into());
             }
-            self.encoder.write_all(&frame.rgba)?;
+            self.encoder.write_all(&frame.rgb24)?;
             self.frames = self.frames.saturating_add(1);
         }
         for sample in audio {
@@ -189,7 +189,7 @@ fn spawn_encoder(width: u32, height: u32, output: &Path) -> Result<Child, Box<dy
             "-f",
             "rawvideo",
             "-pixel_format",
-            "rgba",
+            "rgb24",
             "-video_size",
             &format!("{width}x{height}"),
             "-framerate",
