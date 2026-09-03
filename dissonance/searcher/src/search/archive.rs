@@ -1570,13 +1570,18 @@ where
         Ok(())
     }
 
-    /// Charge the anchor holds that no maintenance can release: its snapshot
-    /// and its own entry metadata.
+    /// Lower bound on the charge the anchor holds that no maintenance can
+    /// release: its snapshot and its own entry metadata. The compacted
+    /// archive also charges the anchor's action-prefix nodes and the novelty
+    /// and barren counters of its groups, so a budget above this bound can
+    /// still be unaffordable.
     ///
-    /// Everything charged above this is dead history, and compaction only
-    /// returns it once enough entries are droppable to fill a batch. Testing
-    /// the total instead would report an unaffordable anchor whenever that
-    /// batch is still filling.
+    /// A bound is what this check needs. Everything charged above the anchor
+    /// during a run is dead history, and compaction only returns it once
+    /// enough entries are droppable to fill a batch, so testing the total
+    /// would report an unaffordable anchor whenever that batch is filling.
+    /// [`Self::compact_history_for_final_report`] makes the exact comparison,
+    /// where nothing is left to reclaim.
     fn liveness_anchor_memory_bytes(&self) -> usize {
         let Some(index) = self.liveness_anchor.and_then(|id| self.index_of_id(id)) else {
             return 0;
@@ -1664,7 +1669,49 @@ where
     /// transient parallel dispatch window.
     pub(crate) fn compact_history_for_final_report(&mut self) -> Result<(), &'static str> {
         self.metadata_pins.clear();
-        self.compact_history(true)
+        // Compaction drops what retention released, and the bounded sweep it
+        // ends with can release more. Repeat until a pass advances nothing,
+        // so the charge below is the population the archive actually keeps.
+        loop {
+            let before = self.maintenance_state();
+            self.compact_history(true)?;
+            if self.maintenance_state() == before {
+                break;
+            }
+        }
+        if self
+            .memory_limit
+            .is_some_and(|limit| self.resident_memory_bytes() > limit)
+        {
+            // Nothing is left to reclaim, so the report would otherwise state
+            // a budget the retained population does not honour.
+            return Err("memory budget cannot retain the compacted archive");
+        }
+        Ok(())
+    }
+
+    /// Everything a bounded maintenance step can advance.
+    ///
+    /// Each field is non-increasing across forced compaction passes, so a
+    /// pass that leaves the tuple unchanged did nothing and the next would
+    /// do nothing either. Charged bytes alone are not enough: a quantum
+    /// spent clearing reference bits, and one spent deactivating entries
+    /// whose snapshots are free, both reclaim nothing yet let the following
+    /// pass reclaim.
+    fn maintenance_state(&self) -> (usize, usize, usize, usize, usize) {
+        let referenced_active = self
+            .referenced
+            .iter()
+            .zip(&self.active)
+            .filter(|(referenced, active)| **referenced && **active)
+            .count();
+        (
+            self.entries.len(),
+            self.active_count,
+            self.resident_snapshots,
+            referenced_active,
+            self.resident_memory_bytes(),
+        )
     }
 
     fn compact_history(&mut self, force: bool) -> Result<(), &'static str> {
@@ -4137,15 +4184,128 @@ mod tests {
         let anchor_bytes = archive.liveness_anchor_memory_bytes();
         assert!(anchor_bytes > 0, "the anchor holds an irreducible charge");
 
-        archive.memory_limit = Some(anchor_bytes);
-        archive
-            .maintain_memory_budget()
-            .expect("a budget that fits the anchor is satisfiable");
-
         archive.memory_limit = Some(anchor_bytes - 1);
         assert_eq!(
             archive.maintain_memory_budget(),
             Err("memory budget cannot retain the executable liveness anchor")
+        );
+    }
+
+    #[test]
+    fn the_final_compaction_refuses_a_budget_the_compacted_archive_exceeds() {
+        // `liveness_anchor_memory_bytes` is a lower bound, so a budget above
+        // it can still be unaffordable. Live maintenance accepts such a
+        // budget, because during a run the excess may be dead history a
+        // later compaction returns. The final forced compaction has nothing
+        // left to return, so it must refuse.
+        let anchored = || {
+            let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+            archive.set_memory_budget(usize::MAX, |_| 1);
+            for index in 0_u8..4 {
+                archive
+                    .insert(
+                        None,
+                        u64::from(index),
+                        ArchiveCandidate {
+                            suffix: vec![index],
+                            key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .expect("insert entry")
+                    .expect("retain entry");
+            }
+            archive.establish_liveness_anchor(64);
+            archive
+        };
+
+        // Drive an archive down to the anchor, then compact it unbudgeted.
+        // What remains is the charge a budget must actually hold.
+        let sweep = |archive: &mut Archive<u8, FlatKey<3>, (), ()>| {
+            for _ in 0..64 {
+                archive
+                    .maintain_memory_budget()
+                    .expect("live maintenance cannot rule this budget out");
+            }
+        };
+        let mut floor = anchored();
+        floor.memory_limit = Some(floor.liveness_anchor_memory_bytes());
+        sweep(&mut floor);
+        floor.memory_limit = None;
+        floor
+            .compact_history_for_final_report()
+            .expect("an unbudgeted archive compacts");
+        let floor_bytes = floor.resident_memory_bytes();
+        let lower_bound = floor.liveness_anchor_memory_bytes();
+        assert!(
+            lower_bound < floor_bytes,
+            "the anchor bound {lower_bound} should undercount the compacted charge {floor_bytes}"
+        );
+
+        let mut archive = anchored();
+        archive.memory_limit = Some(lower_bound);
+        sweep(&mut archive);
+        assert_eq!(
+            archive.compact_history_for_final_report(),
+            Err("memory budget cannot retain the compacted archive")
+        );
+
+        let mut affordable = anchored();
+        affordable.memory_limit = Some(floor_bytes);
+        sweep(&mut affordable);
+        affordable
+            .compact_history_for_final_report()
+            .expect("a budget that holds the compacted archive is satisfiable");
+    }
+
+    #[test]
+    fn the_final_compaction_keeps_passing_while_a_quantum_reclaims_no_bytes() {
+        // Every entry is active, referenced, and holds a free snapshot, so
+        // the first passes spend their quantum clearing reference bits and
+        // releasing snapshots without changing a single charged byte. The
+        // budget is still reachable, and the passes after them reach it.
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 0);
+        archive.set_memory_budget(usize::MAX, |_| 0);
+        let entries = MAINTENANCE_QUANTUM * 4;
+        for index in 0..entries {
+            let key = u16::try_from(index).expect("key fits u16");
+            archive
+                .insert(
+                    None,
+                    index as u64,
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index % 251).expect("suffix byte")],
+                        key: FlatKey([key, key, key, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        archive.referenced.fill(true);
+        archive.drop_hand = 0;
+        let limit = archive.resident_memory_bytes() / 4;
+        archive.memory_limit = Some(limit);
+
+        let charged_before = archive.resident_memory_bytes();
+        archive
+            .compact_history(true)
+            .expect("one forced pass is not a verdict");
+        assert_eq!(
+            archive.resident_memory_bytes(),
+            charged_before,
+            "the first pass spends its quantum on reference bits and frees nothing"
+        );
+
+        archive
+            .compact_history_for_final_report()
+            .expect("later passes reclaim enough to fit the budget");
+        assert!(
+            archive.resident_memory_bytes() <= limit,
+            "the compacted archive charges {} against a {limit} byte budget",
+            archive.resident_memory_bytes()
         );
     }
 
