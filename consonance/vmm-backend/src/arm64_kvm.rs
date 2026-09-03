@@ -379,7 +379,13 @@ fn decode_dirty_bitmap(
         let word_idx = u64::try_from(word_idx).map_err(|_| BackendError::InvalidState)?;
         let word_base = word_idx.checked_mul(64).ok_or(BackendError::InvalidState)?;
         let mut bits = word;
-        while bits != 0 {
+        // Each correct clear removes one set bit. Bounding the scan by the
+        // original population count keeps a future regression in the clear
+        // step from spinning forever while preserving the usual bit walk.
+        for _ in 0..word.count_ones() {
+            if bits == 0 {
+                break;
+            }
             let bit = u64::from(bits.trailing_zeros());
             bits &= bits - 1;
             let page = word_base
