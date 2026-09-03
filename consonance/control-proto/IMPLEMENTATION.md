@@ -56,7 +56,7 @@ at* it:
 
 - **`Request::Read { gpa: u64, len: u32 } → Reply::Bytes(Vec<u8>)`** — guest
   physical memory. Body = `REQ_READ(10) · gpa:u64 · len:u32`. `len` is bounded by
-  the new **`READ_CAP` = 64 KiB** const; the backend answers a loud
+  the bounded **`READ_CAP` = 256 KiB** const; the backend answers a loud
   `ControlError::ReadTooLarge { len, cap }` for an over-cap request and
   `ControlError::ReadOutOfRange { gpa, len, ram_len }` for a `[gpa, gpa+len)` past
   guest RAM — **never** a truncated success.
@@ -87,6 +87,13 @@ a mid-session `ShortFrame` on a tag it does not know. Golden bytes (`req_read`,
 the loopback ("every verb") session, and `public-api.txt` all extend to the new
 surface; the decoder's new discriminant arms are reached by the existing
 arbitrary-bytes fuzz target.
+
+The Nova whole-VM observation window later raised `READ_CAP` from 64 KiB to
+256 KiB. Because clients and servers use this constant to decide whether a
+request is admissible, that semantic change is negotiated as
+`APP_PROTOCOL_VERSION` **10**. The control server rejects a mixed v9/v10 pair
+during `hello` without opening the session, instead of failing only when the
+first larger observation is requested.
 
 ### Module layout
 

@@ -33,12 +33,12 @@ obligation of any plane is a design error rather than an implementation detail.
 **What it is.** The capability and version handshake. It must be the first verb of a session:
 before it, nothing has been negotiated, so everything else answers `Unsupported`. Both sides
 exchange a `Caps` — protocol version, the range of reproducer-blob versions understood, the
-coverage-map geometry, and the capability flags — and each compares for itself. Version
-incompatibility is therefore *detectable from `Caps` alone*; the server does not need an error
-reply to express it.
+coverage-map geometry, and the capability flags. The server rejects a mismatched application
+protocol version as `Unsupported` without opening the session, and a client also compares the
+returned capabilities before issuing another verb.
 
-**Obligation: the handshake is first, and mismatch is visible without a failed operation.** A
-client must never discover an incompatibility by having a later verb misbehave.
+**Obligation: the handshake is first, and mismatch is rejected there.** A client must never
+discover an incompatibility by having a later verb misbehave.
 
 ### 2. State algebra — `Snapshot`, `Branch`, `Run`, `Replay`, `Drop`
 

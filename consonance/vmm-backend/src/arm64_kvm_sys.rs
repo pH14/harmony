@@ -16,10 +16,10 @@
 use std::os::fd::AsRawFd;
 
 use kvm_bindings::{
-    kvm_create_device, kvm_device_attr, kvm_enable_cap, kvm_run, kvm_userspace_memory_region,
-    kvm_vcpu_init,
+    kvm_clear_dirty_log, kvm_clear_dirty_log__bindgen_ty_1, kvm_create_device, kvm_device_attr,
+    kvm_enable_cap, kvm_run, kvm_userspace_memory_region, kvm_vcpu_init,
 };
-use kvm_ioctls::{DeviceFd, Kvm, VcpuFd, VmFd};
+use kvm_ioctls::{Cap, DeviceFd, Kvm, VcpuFd, VmFd};
 
 use crate::arm64_kvm::{Arm64Kvm, KvmRunView, RunOffsets, RunPage};
 use crate::error::{BackendError, Result};
@@ -62,6 +62,9 @@ const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_REG_ARM_FW == kvm_bindings::KVM_REG_ARM_FW as u64);
     assert!(0x0016 << 16 == kvm_bindings::KVM_REG_ARM_FW_FEAT_BMAP);
     assert!(crate::arm64_kvm::KVM_ARM_VCPU_PSCI_0_2 == kvm_bindings::KVM_ARM_VCPU_PSCI_0_2);
+    assert!(crate::arm64_kvm::KVM_MEM_LOG_DIRTY_PAGES == kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES);
+    assert!(kvm_bindings::KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2 == 168);
+    assert!(kvm_bindings::KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE == 1);
     assert!(
         crate::arm64_kvm::KVM_DEV_ARM_VGIC_GRP_DIST_REGS
             == kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS
@@ -85,6 +88,12 @@ const GICR_BASE: u64 = 0x080a_0000;
 /// unregistered and masked in the guest.
 const QUARANTINED_VTIMER_PPI: u32 = 20;
 
+/// Build a Linux ioctl request number (`_IOC` encoding): direction bits 30-31,
+/// size bits 16-29, type bits 8-15, and number bits 0-7.
+const fn ioc(dir: u64, typ: u64, nr: u64, size: u64) -> u64 {
+    (dir << 30) | (size << 16) | (typ << 8) | nr
+}
+
 /// `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)` from `linux/kvm.h`.
 ///
 /// `kvm-ioctls` 0.25 exposes `VmFd::enable_cap` only on architectures which
@@ -94,9 +103,17 @@ const QUARANTINED_VTIMER_PPI: u32 = 20;
 /// binding, and compile-time-pin both the capability number and structure size.
 const KVM_ENABLE_CAP_IOCTL: libc::c_ulong = 0x4068_aea3;
 
+/// `_IOWR(KVMIO, 0xc0, struct kvm_clear_dirty_log)` from `linux/kvm.h`.
+/// `kvm-ioctls` 0.25 does not expose this newer VM ioctl on arm64, so keep the
+/// request derived from and pinned to the generated 24-byte UAPI structure.
+const KVM_CLEAR_DIRTY_LOG_IOCTL: libc::c_ulong =
+    ioc(3, 0xAE, 0xC0, size_of::<kvm_clear_dirty_log>() as u64) as libc::c_ulong;
+
 const _: () = {
     assert!(kvm_bindings::KVM_CAP_ARM_WRITABLE_IMP_ID_REGS == 239);
     assert!(size_of::<kvm_enable_cap>() == 104);
+    assert!(size_of::<kvm_clear_dirty_log>() == 24);
+    assert!(KVM_CLEAR_DIRTY_LOG_IOCTL == 0xc018_aec0);
 };
 
 /// Map a `kvm-ioctls` error to the crate's portable [`BackendError`].
@@ -124,10 +141,30 @@ impl LiveKvm {
     /// `KVM_ARM_PREFERRED_TARGET` + `KVM_ARM_VCPU_INIT`.
     ///
     /// # Errors
-    /// A [`BackendError::Io`] wrapping the failing ioctl's errno.
+    /// [`BackendError::Capability`] when the host lacks immediate-exit, manual
+    /// dirty-log protection, or writable implementation-ID registers;
+    /// [`BackendError::Io`] wraps a failing KVM syscall.
     pub fn new() -> Result<Self> {
+        // KVM dirty-log bitmaps are indexed in host pages, while the portable
+        // backend contract and all GFN arithmetic are fixed at 4 KiB. Reject a
+        // 16/64-KiB arm64 host before opening/configuring a VM rather than
+        // silently decode its bitmap with the wrong geometry.
+        // SAFETY: `sysconf` has no pointer arguments or memory-safety contract.
+        let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        crate::arm64_kvm::require_4k_host_page_size(host_page_size as i64)?;
         let kvm = Kvm::new().map_err(kvm_err)?;
+        // MMIO loads are completed with one `KVM_RUN` whose
+        // `kvm_run.immediate_exit` bit prevents execution of the following
+        // guest instruction.  Kernels without this capability ignore that bit,
+        // so accepting them would make restore boundaries depend on host signal
+        // timing instead of the deterministic exit stream.
+        if !kvm.check_extension(Cap::ImmediateExit) {
+            return Err(BackendError::Capability {
+                cap: "KVM_CAP_IMMEDIATE_EXIT",
+            });
+        }
         let vm = kvm.create_vm().map_err(kvm_err)?;
+        Self::enable_manual_dirty_log(&vm)?;
         Self::enable_writable_imp_id_regs(&vm)?;
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
 
@@ -164,6 +201,39 @@ impl LiveKvm {
         this.vcpu_init()?;
         this.create_vgic()?;
         Ok(this)
+    }
+
+    /// Require manual dirty-log protection and enable only the manual mode
+    /// bit in `kvm_enable_cap.args[0]`. In particular, do not request
+    /// `KVM_DIRTY_LOG_INITIALLY_SET`: snapshots begin from the bitmap KVM
+    /// actually reports after registration.
+    fn enable_manual_dirty_log(vm: &VmFd) -> Result<()> {
+        let capability = kvm_bindings::KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2;
+        if vm.check_extension_raw(libc::c_ulong::from(capability)) <= 0 {
+            return Err(BackendError::Capability {
+                cap: "KVM_CAP_MANUAL_DIRTY_LOG_PROTECT2",
+            });
+        }
+        let cap = kvm_enable_cap {
+            cap: capability,
+            flags: 0,
+            args: [
+                u64::from(kvm_bindings::KVM_DIRTY_LOG_MANUAL_PROTECT_ENABLE),
+                0,
+                0,
+                0,
+            ],
+            pad: [0; 64],
+        };
+        // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
+        // input structure required by KVM_ENABLE_CAP. The kernel only reads it
+        // for this ioctl; the reference remains live for the entire call.
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(BackendError::Io(std::io::Error::last_os_error()))
+        }
     }
 
     /// Make MIDR_EL1, REVIDR_EL1, and AIDR_EL1 VM-scoped writable values
@@ -324,9 +394,31 @@ impl Arm64Kvm for LiveKvm {
         host: *mut u8,
         len: u64,
     ) -> Result<()> {
+        // SAFETY: this compatibility entry point uses the same pinned backing
+        // contract as the flagged registration path and requests logging by
+        // default, matching the backend's normal ARM behavior.
+        unsafe {
+            self.set_user_memory_region_with_flags(
+                slot,
+                gpa,
+                host,
+                len,
+                kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES,
+            )
+        }
+    }
+
+    unsafe fn set_user_memory_region_with_flags(
+        &mut self,
+        slot: u32,
+        gpa: u64,
+        host: *mut u8,
+        len: u64,
+        flags: u32,
+    ) -> Result<()> {
         let region = kvm_userspace_memory_region {
             slot,
-            flags: 0,
+            flags,
             guest_phys_addr: gpa,
             memory_size: len,
             userspace_addr: host as u64,
@@ -335,6 +427,52 @@ impl Arm64Kvm for LiveKvm {
         // pinned, page-aligned, and unaliased for the backend's lifetime), so
         // registering it as a memslot is sound.
         unsafe { self._vm.set_user_memory_region(region) }.map_err(kvm_err)
+    }
+
+    fn get_dirty_log(&mut self, slot: u32, size: u64) -> Result<Vec<u64>> {
+        let expected = crate::arm64_kvm::dirty_bitmap_words(size)?;
+        let size = usize::try_from(size).map_err(|_| BackendError::InvalidState)?;
+        let bitmap = self._vm.get_dirty_log(slot, size).map_err(kvm_err)?;
+        if bitmap.len() != expected {
+            return Err(BackendError::Internal(
+                "KVM dirty bitmap has an unexpected size",
+            ));
+        }
+        Ok(bitmap)
+    }
+
+    fn clear_dirty_log(
+        &mut self,
+        slot: u32,
+        size: u64,
+        first_page: u64,
+        num_pages: u32,
+        bitmap: &[u64],
+    ) -> Result<()> {
+        crate::arm64_kvm::validate_clear_dirty_log(size, first_page, num_pages, bitmap)?;
+        let clear = kvm_clear_dirty_log {
+            slot,
+            num_pages,
+            first_page,
+            __bindgen_anon_1: kvm_clear_dirty_log__bindgen_ty_1 {
+                dirty_bitmap: bitmap.as_ptr().cast_mut().cast(),
+            },
+        };
+        // SAFETY: the VM fd is live; `bitmap` is a validated, live slice whose
+        // exact word count covers `num_pages`; and KVM reads it only for this
+        // synchronous ioctl while the vCPU is stopped at the drain boundary.
+        let result = unsafe {
+            libc::ioctl(
+                self._vm.as_raw_fd(),
+                KVM_CLEAR_DIRTY_LOG_IOCTL,
+                std::ptr::from_ref(&clear),
+            )
+        };
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(BackendError::Io(std::io::Error::last_os_error()))
+        }
     }
 
     fn get_one_reg(&self, id: u64) -> Result<u64> {

@@ -6,9 +6,11 @@ use std::{
     collections::BTreeSet,
     error::Error,
     io::Write,
+    marker::PhantomData,
     path::{Path, PathBuf},
 };
 
+use machine::{Machine, quicknes::QuickNesMachine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -31,7 +33,7 @@ use crate::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
             CampaignProgressRecord, CampaignStreamHeader, Game, GamePolicies, SnapshotCheckpoint,
-            postcard_result_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
+            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::{DrawMixture, MixtureDraw, SuffixShape, draw_suffix},
         empirical_steps::EmpiricalStepCheckpoint,
@@ -42,12 +44,10 @@ use crate::{
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",
-    target_arch = "x86_64",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
     not(miri)
 ))]
-use crate::nova::consonance::{
-    ConsonanceNovaSnapshot, ConsonanceNovaTarget, identity as consonance_identity,
-};
+use machine::consonance::{ConsonanceMachine, identity as consonance_identity};
 
 /// Stream format written by Nova campaigns.
 pub const CAMPAIGN_STREAM_FORMAT: &str = "nova-quicknes-campaign-stream-v1";
@@ -74,13 +74,14 @@ type NovaChampionKey = (NovaProgressWatermark, NovaPreference);
 pub struct NovaNoTableHeader;
 
 /// ROM and emulator identity shared by Nova workers.
-pub struct NovaGame {
+pub struct NovaGame<M = QuickNesMachine> {
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
     level: NovaLevel,
     identity: String,
     backend: NovaBackend,
+    machine: PhantomData<fn() -> M>,
 }
 
 enum NovaBackend {
@@ -88,7 +89,7 @@ enum NovaBackend {
     #[cfg(all(
         feature = "consonance",
         target_os = "linux",
-        target_arch = "x86_64",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
         not(miri)
     ))]
     Consonance {
@@ -97,37 +98,58 @@ enum NovaBackend {
     },
 }
 
-/// Campaign target selected by the recorded Nova emulator backend.
+/// Machine construction used by a Nova campaign.
 #[doc(hidden)]
-pub enum NovaCampaignTarget {
-    /// Direct pinned QuickNES target.
-    QuickNes(Box<NovaTarget>),
-    /// QuickNES running inside a Consonance Linux guest.
-    #[cfg(all(
-        feature = "consonance",
-        target_os = "linux",
-        target_arch = "x86_64",
-        not(miri)
-    ))]
-    Consonance(ConsonanceNovaTarget),
+pub trait NovaMachineKind: Machine + Sized {
+    /// Construct one worker-local machine and seal Nova gameplay genesis.
+    fn new_nova_target(game: &NovaGame<Self>) -> Result<NovaTarget<Self>, String>;
 }
 
-/// Portable snapshot form used by either Nova campaign backend.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum NovaCampaignSnapshot {
-    /// Serialized direct-QuickNES state.
-    QuickNes(NovaSnapshot),
-    /// Portable prefix mapped to a whole-VM snapshot by each evaluator.
-    #[cfg(all(
-        feature = "consonance",
-        target_os = "linux",
-        target_arch = "x86_64",
-        not(miri)
-    ))]
-    Consonance(ConsonanceNovaSnapshot),
+impl NovaMachineKind for QuickNesMachine {
+    fn new_nova_target(game: &NovaGame<Self>) -> Result<NovaTarget<Self>, String> {
+        match game.backend {
+            NovaBackend::QuickNes => NovaTarget::from_rom_bytes_headless_at_level(
+                &game.rom,
+                &game.core_path,
+                &game.core_sha256,
+                game.level,
+            )
+            .map_err(|error| error.to_string()),
+            #[cfg(all(
+                feature = "consonance",
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64"),
+                not(miri)
+            ))]
+            NovaBackend::Consonance { .. } => {
+                Err("Nova backend does not match the direct machine type".to_owned())
+            }
+        }
+    }
 }
 
-impl NovaGame {
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl NovaMachineKind for ConsonanceMachine {
+    fn new_nova_target(game: &NovaGame<Self>) -> Result<NovaTarget<Self>, String> {
+        match &game.backend {
+            NovaBackend::Consonance { kernel, initramfs } => {
+                ConsonanceMachine::new(kernel, initramfs)
+                    .and_then(NovaTarget::from_machine)
+                    .map_err(|error| error.to_string())
+            }
+            NovaBackend::QuickNes => {
+                Err("Nova backend does not match the Consonance machine type".to_owned())
+            }
+        }
+    }
+}
+
+impl NovaGame<QuickNesMachine> {
     /// Build a game context over a pinned QuickNES core.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
@@ -139,7 +161,7 @@ impl NovaGame {
     #[must_use]
     pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: NovaLevel) -> Self {
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:{};result_digest=postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis=nova-level-prefix-v1:{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -152,28 +174,7 @@ impl NovaGame {
             level,
             identity,
             backend: NovaBackend::QuickNes,
-        }
-    }
-
-    /// Build a Nova game whose evaluator runs QuickNES inside Consonance.
-    #[cfg(all(
-        feature = "consonance",
-        target_os = "linux",
-        target_arch = "x86_64",
-        not(miri)
-    ))]
-    #[must_use]
-    pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
-        Self {
-            rom: rom.to_vec(),
-            core_path: PathBuf::new(),
-            core_sha256: String::new(),
-            level: NovaLevel::default(),
-            identity: consonance_identity(kernel, initramfs),
-            backend: NovaBackend::Consonance {
-                kernel: kernel.to_vec(),
-                initramfs: initramfs.to_vec(),
-            },
+            machine: PhantomData,
         }
     }
 
@@ -186,7 +187,37 @@ impl NovaGame {
         let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
         Ok(Self::new(rom, &core_path, &core_sha256))
     }
+}
 
+#[cfg(all(
+    feature = "consonance",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+impl NovaGame<ConsonanceMachine> {
+    /// Build a Nova game whose evaluator runs QuickNES inside Consonance.
+    #[must_use]
+    pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
+        Self {
+            rom: rom.to_vec(),
+            core_path: PathBuf::new(),
+            core_sha256: String::new(),
+            level: NovaLevel::default(),
+            identity: format!(
+                "{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3",
+                consonance_identity(kernel, initramfs),
+            ),
+            backend: NovaBackend::Consonance {
+                kernel: kernel.to_vec(),
+                initramfs: initramfs.to_vec(),
+            },
+            machine: PhantomData,
+        }
+    }
+}
+
+impl<M> NovaGame<M> {
     /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
@@ -217,19 +248,68 @@ pub struct NovaCampaignEvidence {
 }
 
 /// Nova campaign origin.
-pub type NovaCampaignOrigin = CampaignOrigin<NovaGame>;
+pub type NovaCampaignOrigin<M = QuickNesMachine> = CampaignOrigin<NovaGame<M>>;
 /// Nova resume checkpoint.
-pub type NovaCampaignCheckpoint = CampaignCheckpoint<NovaCampaignSnapshot>;
+pub type NovaCampaignCheckpoint<M = QuickNesMachine> =
+    CampaignCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
 /// Nova whole-tree snapshot checkpoint.
-pub type NovaSnapshotCheckpoint = SnapshotCheckpoint<NovaCampaignSnapshot>;
+pub type NovaSnapshotCheckpoint<M = QuickNesMachine> =
+    SnapshotCheckpoint<NovaSnapshot<<M as Machine>::Portable>>;
 /// Nova stream header.
 pub type NovaCampaignStreamHeader = CampaignStreamHeader<NovaNoTableHeader>;
 /// Nova campaign report.
 pub type NovaCampaignModeReport = CampaignModeReport<ButtonChord, NovaArchiveReport>;
 /// Nova progress sidecar record.
 pub type NovaCampaignProgressRecord = CampaignProgressRecord<NovaArchiveKey>;
-type NovaCampaignActionResult = CampaignActionResult<NovaGame>;
-type NovaCampaignJobResult = CampaignJobResult<NovaGame>;
+type NovaCampaignActionResult<M> = CampaignActionResult<NovaGame<M>>;
+type NovaCampaignJobResult<M> = CampaignJobResult<NovaGame<M>>;
+
+#[derive(Serialize)]
+struct NovaResultCandidate<'a> {
+    key: &'a NovaArchiveKey,
+    viable: bool,
+}
+
+#[derive(Serialize)]
+struct NovaResultAction<'a> {
+    action: ButtonChord,
+    observations: &'a [NovaObservations],
+    milestones: NovaMilestones,
+    dead: bool,
+    victory: bool,
+    failed: bool,
+    candidate: Option<NovaResultCandidate<'a>>,
+}
+
+#[derive(Serialize)]
+struct NovaResult<'a> {
+    actions: Vec<NovaResultAction<'a>>,
+}
+
+fn nova_result_sha256<M: NovaMachineKind>(
+    result: &NovaCampaignJobResult<M>,
+) -> Result<String, Box<dyn Error>> {
+    let actions = result
+        .actions
+        .iter()
+        .map(|action| NovaResultAction {
+            action: action.action,
+            observations: &action.observations,
+            milestones: action.milestones,
+            dead: action.dead,
+            victory: action.victory,
+            failed: action.failed,
+            candidate: action
+                .candidate
+                .as_ref()
+                .map(|candidate| NovaResultCandidate {
+                    key: &candidate.key,
+                    viable: candidate.viable,
+                }),
+        })
+        .collect();
+    postcard_value_sha256(&NovaResult { actions })
+}
 
 /// Fixed configuration for one live Nova campaign.
 pub struct NovaCampaignConfig {
@@ -245,6 +325,9 @@ pub struct NovaCampaignConfig {
     pub host: String,
     /// Optional live-only wall cutoff.
     pub wall_budget: Option<std::time::Duration>,
+    /// Live-only: continue issuing reservations after the first victory until
+    /// another live limit stops the run. Never recorded or used by replay.
+    pub continue_after_victory: bool,
     /// Maximum retained archive entries.
     pub archive_entry_limit: usize,
     /// Deterministic logical-memory budget for live search structures.
@@ -264,7 +347,7 @@ pub struct NovaCampaignConfig {
 }
 
 impl NovaCampaignConfig {
-    fn generic(&self) -> CampaignConfig<NovaGame> {
+    fn generic<M: NovaMachineKind>(&self) -> CampaignConfig<NovaGame<M>> {
         CampaignConfig {
             campaign_seed: self.campaign_seed,
             workers: self.workers,
@@ -272,6 +355,7 @@ impl NovaCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
+            continue_after_victory: self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
@@ -292,9 +376,9 @@ fn recorded<'a>(policies: &'a GamePolicies, field: &str) -> Result<&'a str, Box<
         .ok_or_else(|| format!("Nova stream is missing {field}").into())
 }
 
-fn merge_action_milestones(
+fn merge_action_milestones<M: Machine>(
     aggregate: &mut NovaMilestones,
-    target: &NovaCampaignTarget,
+    target: &NovaTarget<M>,
 ) -> Result<(), Box<dyn Error>> {
     if target.exit_kind() != ExitKind::Ok {
         // A target failure is an ordinary terminal search result. Its action
@@ -308,9 +392,9 @@ fn merge_action_milestones(
     Ok(())
 }
 
-fn admission_is_viable(
-    target: &mut NovaCampaignTarget,
-    snapshot: &NovaCampaignSnapshot,
+fn admission_is_viable<M: Machine>(
+    target: &mut NovaTarget<M>,
+    snapshot: &NovaSnapshot<M::Portable>,
 ) -> Result<bool, Box<dyn Error>> {
     let mut viable = false;
     for mask in VIABILITY_PROBE_MASKS {
@@ -324,15 +408,15 @@ fn admission_is_viable(
     Ok(viable)
 }
 
-fn execute_job(
-    target: &mut NovaCampaignTarget,
-    parent_snapshot: &NovaCampaignSnapshot,
+fn execute_job<M: NovaMachineKind>(
+    target: &mut NovaTarget<M>,
+    parent_snapshot: &NovaSnapshot<M::Portable>,
     parent_actions: usize,
     parent_milestones: NovaMilestones,
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
-) -> Result<NovaCampaignJobResult, Box<dyn Error>> {
+) -> Result<NovaCampaignJobResult<M>, Box<dyn Error>> {
     target.restore(parent_snapshot)?;
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
@@ -420,224 +504,13 @@ fn action_champion_key(observations: &[NovaObservations]) -> Option<NovaChampion
     })
 }
 
-impl NovaCampaignTarget {
-    fn mechanical_state(&self) -> crate::nova::target::NovaMechanicalState {
-        match self {
-            Self::QuickNes(target) => target.mechanical_state(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.mechanical_state(),
-        }
-    }
-
-    fn is_dead(&self) -> bool {
-        match self {
-            Self::QuickNes(target) => target.is_dead(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.is_dead(),
-        }
-    }
-
-    fn cleared_a_level(&self) -> bool {
-        match self {
-            Self::QuickNes(target) => target.cleared_a_level(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.cleared_a_level(),
-        }
-    }
-
-    fn frames_clocked(&self) -> u64 {
-        match self {
-            Self::QuickNes(target) => target.frames_clocked(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.frames_clocked(),
-        }
-    }
-
-    fn last_action_observations(&self) -> &[NovaObservations] {
-        match self {
-            Self::QuickNes(target) => target.last_action_observations(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.last_action_observations(),
-        }
-    }
-
-    fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-        match self {
-            Self::QuickNes(target) => target.survives_probe(buttons, frames),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.survives_probe(buttons, frames),
-        }
-    }
-
-    /// Render through direct QuickNES; Consonance campaigns replay their winning
-    /// input through a separately constructed direct game for observer media.
-    pub fn render_input(
-        &mut self,
-        input: &NovaInput,
-        tail_frames: u32,
-        video_output: &mut dyn Write,
-        audio_output: &mut dyn Write,
-    ) -> Result<crate::nova::target::NovaVideoMetadata, Box<dyn Error>> {
-        match self {
-            Self::QuickNes(target) => {
-                target.render_input(input, tail_frames, video_output, audio_output)
-            }
-            #[cfg(all(feature = "consonance", target_os = "linux", target_arch = "x86_64", not(miri)))]
-            Self::Consonance(_) => Err("Consonance search targets are headless; render the winning tape through direct QuickNES".into()),
-        }
-    }
-}
-
-impl Target for NovaCampaignTarget {
-    type Action = ButtonChord;
-    type Observations = NovaObservations;
-    type Snapshot = NovaCampaignSnapshot;
-
-    fn reset(&mut self) {
-        match self {
-            Self::QuickNes(target) => target.reset(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.reset(),
-        }
-    }
-
-    fn apply(&mut self, action: &ButtonChord) {
-        match self {
-            Self::QuickNes(target) => target.apply(action),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.apply(*action),
-        }
-    }
-
-    fn observe(&self) -> NovaObservations {
-        match self {
-            Self::QuickNes(target) => target.observe(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target
-                .last_action_observations()
-                .last()
-                .cloned()
-                .unwrap_or_else(|| NovaObservations {
-                    frame_count: 0,
-                    decoded: target.mechanical_state(),
-                    changed_indices: Vec::new(),
-                    dead: target.is_dead(),
-                    log_line: String::new(),
-                }),
-        }
-    }
-
-    fn fingerprint(&self) -> u64 {
-        let state = self.mechanical_state();
-        (u64::from(state.started_level) << 40)
-            | (u64::from(state.level) << 32)
-            | (u64::from(state.x / 32) << 16)
-            | u64::from(state.y / 32)
-    }
-
-    fn exit_kind(&self) -> ExitKind {
-        match self {
-            Self::QuickNes(target) => target.exit_kind(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.exit_kind(),
-        }
-    }
-
-    fn snapshot(&mut self) -> Option<NovaCampaignSnapshot> {
-        match self {
-            Self::QuickNes(target) => target.snapshot().map(NovaCampaignSnapshot::QuickNes),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            Self::Consonance(target) => target.snapshot().map(NovaCampaignSnapshot::Consonance),
-        }
-    }
-
-    fn restore(&mut self, snapshot: &NovaCampaignSnapshot) -> Result<(), Box<dyn Error>> {
-        match (self, snapshot) {
-            (Self::QuickNes(target), NovaCampaignSnapshot::QuickNes(snapshot)) => {
-                target.restore(snapshot)
-            }
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            (Self::Consonance(target), NovaCampaignSnapshot::Consonance(snapshot)) => {
-                target.restore(snapshot)
-            }
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            _ => Err("Nova campaign snapshot backend does not match its target".into()),
-        }
-    }
-}
-
-impl Game for NovaGame {
-    type Target = NovaCampaignTarget;
+impl<M: NovaMachineKind> Game for NovaGame<M> {
+    type Target = NovaTarget<M>;
     type Action = ButtonChord;
     type Key = NovaArchiveKey;
     type Milestones = NovaMilestones;
     type Progress = NovaProgressWatermark;
-    type Snapshot = NovaCampaignSnapshot;
+    type Snapshot = NovaSnapshot<M::Portable>;
     type Observations = NovaObservations;
     type Evidence = NovaCampaignEvidence;
     type ArchiveReport = NovaArchiveReport;
@@ -665,17 +538,8 @@ impl Game for NovaGame {
         chord_time
     }
 
-    fn snapshot_memory_charge(snapshot: &NovaCampaignSnapshot) -> usize {
-        match snapshot {
-            NovaCampaignSnapshot::QuickNes(snapshot) => snapshot.resident_memory_charge(),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            NovaCampaignSnapshot::Consonance(snapshot) => snapshot.resident_memory_charge(),
-        }
+    fn snapshot_memory_charge(snapshot: &NovaSnapshot<M::Portable>) -> usize {
+        M::portable_memory_charge(&snapshot.emulator_state)
     }
 
     fn draw_state_memory_reserve_bytes(
@@ -690,8 +554,8 @@ impl Game for NovaGame {
         0
     }
 
-    fn result_sha256(&self, result: &NovaCampaignJobResult) -> Result<String, Box<dyn Error>> {
-        postcard_result_sha256(result)
+    fn result_sha256(&self, result: &NovaCampaignJobResult<M>) -> Result<String, Box<dyn Error>> {
+        nova_result_sha256(result)
     }
 
     fn policies(&self, _run: &NovaCampaignRun) -> GamePolicies {
@@ -727,48 +591,29 @@ impl Game for NovaGame {
         Ok(NovaCampaignRun)
     }
 
-    fn new_target(&self) -> Result<NovaCampaignTarget, String> {
-        match &self.backend {
-            NovaBackend::QuickNes => NovaTarget::from_rom_bytes_headless_at_level(
-                &self.rom,
-                &self.core_path,
-                &self.core_sha256,
-                self.level,
-            )
-            .map(Box::new)
-            .map(NovaCampaignTarget::QuickNes)
-            .map_err(|error| error.to_string()),
-            #[cfg(all(
-                feature = "consonance",
-                target_os = "linux",
-                target_arch = "x86_64",
-                not(miri)
-            ))]
-            NovaBackend::Consonance { kernel, initramfs } => {
-                ConsonanceNovaTarget::new(kernel, initramfs).map(NovaCampaignTarget::Consonance)
-            }
-        }
+    fn new_target(&self) -> Result<NovaTarget<M>, String> {
+        M::new_nova_target(self)
     }
 
-    fn reset(&self, target: &mut NovaCampaignTarget) {
+    fn reset(&self, target: &mut NovaTarget<M>) {
         target.reset();
     }
 
     fn restore(
         &self,
-        target: &mut NovaCampaignTarget,
-        snapshot: &NovaCampaignSnapshot,
+        target: &mut NovaTarget<M>,
+        snapshot: &NovaSnapshot<M::Portable>,
     ) -> Result<(), Box<dyn Error>> {
         target.restore(snapshot)
     }
 
-    fn frames_clocked(&self, target: &NovaCampaignTarget) -> u64 {
+    fn frames_clocked(&self, target: &NovaTarget<M>) -> u64 {
         target.frames_clocked()
     }
 
     fn apply_action(
         &self,
-        target: &mut NovaCampaignTarget,
+        target: &mut NovaTarget<M>,
         action: &ButtonChord,
         aggregate: &mut NovaMilestones,
     ) -> Result<(), Box<dyn Error>> {
@@ -776,14 +621,14 @@ impl Game for NovaGame {
         merge_action_milestones(aggregate, target)
     }
 
-    fn is_terminal(&self, target: &NovaCampaignTarget) -> bool {
+    fn is_terminal(&self, target: &NovaTarget<M>) -> bool {
         target.is_dead() || target.exit_kind() != ExitKind::Ok
     }
 
     fn is_run_terminal(
         &self,
         _run: &NovaCampaignRun,
-        target: &NovaCampaignTarget,
+        target: &NovaTarget<M>,
     ) -> Result<bool, Box<dyn Error>> {
         if target.exit_kind() != ExitKind::Ok {
             return Err("Nova terminal predicate cannot inspect a failed emulator".into());
@@ -793,21 +638,21 @@ impl Game for NovaGame {
 
     fn snapshot(
         &self,
-        target: &mut NovaCampaignTarget,
-    ) -> Result<NovaCampaignSnapshot, Box<dyn Error>> {
+        target: &mut NovaTarget<M>,
+    ) -> Result<NovaSnapshot<M::Portable>, Box<dyn Error>> {
         target
             .snapshot()
             .ok_or_else(|| "failed to snapshot Nova".into())
     }
 
-    fn current_key(&self, target: &NovaCampaignTarget) -> Result<NovaArchiveKey, Box<dyn Error>> {
+    fn current_key(&self, target: &NovaTarget<M>) -> Result<NovaArchiveKey, Box<dyn Error>> {
         Ok(archive_key(target.mechanical_state()))
     }
 
     fn complete_candidate_key(
         &self,
         key: NovaArchiveKey,
-        _snapshot: &NovaCampaignSnapshot,
+        _snapshot: &NovaSnapshot<M::Portable>,
     ) -> Result<NovaArchiveKey, Box<dyn Error>> {
         Ok(key)
     }
@@ -815,14 +660,14 @@ impl Game for NovaGame {
     fn execute_job(
         &self,
         _run: &NovaCampaignRun,
-        target: &mut NovaCampaignTarget,
-        parent_snapshot: &NovaCampaignSnapshot,
+        target: &mut NovaTarget<M>,
+        parent_snapshot: &NovaSnapshot<M::Portable>,
         parent_actions: usize,
         parent_milestones: NovaMilestones,
         suffix: &[ButtonChord],
         max_actions: usize,
         retention: RetentionPolicy,
-    ) -> Result<NovaCampaignJobResult, Box<dyn Error>> {
+    ) -> Result<NovaCampaignJobResult<M>, Box<dyn Error>> {
         execute_job(
             target,
             parent_snapshot,
@@ -930,7 +775,7 @@ impl Game for NovaGame {
     fn merge_snapshot_root_evidence(
         &self,
         evidence: &mut NovaCampaignEvidence,
-        target: &NovaCampaignTarget,
+        target: &NovaTarget<M>,
     ) -> Result<(), Box<dyn Error>> {
         let observation = NovaObservations {
             frame_count: 0,
@@ -966,7 +811,7 @@ impl Game for NovaGame {
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut NovaCampaignEvidence,
-        action: &NovaCampaignActionResult,
+        action: &NovaCampaignActionResult<M>,
         sequence: u64,
         input: F,
     ) -> Result<(), Box<dyn Error>>
@@ -1047,29 +892,62 @@ impl Game for NovaGame {
 }
 
 /// Run a Nova campaign and return its report plus whole-tree checkpoint.
-pub fn run_nova_campaign_checkpointed(
-    game: &NovaGame,
+pub fn run_nova_campaign_checkpointed<M: NovaMachineKind>(
+    game: &NovaGame<M>,
     config: &NovaCampaignConfig,
-    origin: &NovaCampaignOrigin,
+    origin: &NovaCampaignOrigin<M>,
     stream: &mut dyn Write,
     progress: Option<&mut dyn Write>,
-) -> Result<(NovaCampaignModeReport, NovaSnapshotCheckpoint), Box<dyn Error>> {
+) -> Result<(NovaCampaignModeReport, NovaSnapshotCheckpoint<M>), Box<dyn Error>> {
     run_campaign_checkpointed(game, &config.generic(), origin, stream, progress)
 }
 
 /// Replay a recorded Nova stream exactly.
-pub fn replay_nova_campaign_checkpointed(
-    game: &NovaGame,
+pub fn replay_nova_campaign_checkpointed<M: NovaMachineKind>(
+    game: &NovaGame<M>,
     stream_bytes: &[u8],
     origin_report: Option<&NovaArchiveReport>,
-    origin_checkpoint: Option<&NovaCampaignCheckpoint>,
-) -> Result<(NovaCampaignModeReport, NovaSnapshotCheckpoint), Box<dyn Error>> {
+    origin_checkpoint: Option<&NovaCampaignCheckpoint<M>>,
+) -> Result<(NovaCampaignModeReport, NovaSnapshotCheckpoint<M>), Box<dyn Error>> {
     replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn result_with_portable(bytes: Vec<u8>) -> NovaCampaignJobResult<QuickNesMachine> {
+        let state = crate::nova::target::NovaMechanicalState::default();
+        let observation = NovaObservations {
+            frame_count: 3,
+            decoded: state,
+            changed_indices: vec![1, 2],
+            dead: false,
+            log_line: "frame=3 changed=[1, 2]".to_owned(),
+        };
+        let portable = serde_json::from_value(serde_json::json!(bytes))
+            .expect("shared-state wire representation");
+        CampaignJobResult {
+            actions: vec![CampaignActionResult {
+                action: ButtonChord::new(0x81, 3),
+                observations: vec![observation.clone()],
+                milestones: NovaMilestones::default(),
+                dead: false,
+                victory: false,
+                failed: false,
+                candidate: Some(CampaignCandidate {
+                    key: archive_key(state),
+                    viable: true,
+                    snapshot: NovaSnapshot {
+                        emulator_state: portable,
+                        observation,
+                        wram: vec![0; 2_048],
+                        failed: false,
+                    },
+                }),
+            }],
+        }
+    }
 
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {
@@ -1089,6 +967,26 @@ mod tests {
         assert!(
             game.emulator_identity()
                 .contains("genesis=nova-level-prefix-v1:17")
+        );
+    }
+
+    #[test]
+    fn result_digest_uses_game_visible_candidate_state_not_portable_bytes() {
+        let first = result_with_portable(vec![1, 2, 3]);
+        let mut second = result_with_portable(vec![9, 8, 7, 6]);
+        assert_eq!(
+            nova_result_sha256(&first).expect("first digest"),
+            nova_result_sha256(&second).expect("second digest"),
+        );
+
+        let changed = crate::nova::target::NovaMechanicalState {
+            x: 64,
+            ..crate::nova::target::NovaMechanicalState::default()
+        };
+        second.actions[0].candidate.as_mut().expect("candidate").key = archive_key(changed);
+        assert_ne!(
+            nova_result_sha256(&first).expect("first digest"),
+            nova_result_sha256(&second).expect("changed digest"),
         );
     }
 }

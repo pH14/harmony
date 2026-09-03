@@ -33,6 +33,8 @@ use crate::{
 #[cfg(not(miri))]
 use sha2::{Digest, Sha256};
 
+pub use crate::SharedState;
+
 /// Exact QuickNES revision supported by this adapter.
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
 
@@ -104,6 +106,8 @@ const QUICKNES_PPU_UNUSED2_LEN: usize = 3;
 const RETRO_MEMORY_SAVE_RAM: u32 = 0;
 const RETRO_MEMORY_SYSTEM_RAM: u32 = 2;
 const MAX_SAVE_RAM_SIZE: usize = 64 * 1024;
+const SAVE_RAM_BASE: u64 = 0x6000;
+const SAVE_RAM_SIZE: u64 = 0x2000;
 const RETRO_DEVICE_JOYPAD: u32 = 1;
 const RETRO_DEVICE_ID_JOYPAD_MASK: u32 = 256;
 const RETRO_ENVIRONMENT_GET_CAN_DUPE: u32 = 3;
@@ -458,8 +462,8 @@ fn validate_core_revision(api: CoreApi) -> Result<(), MachineError> {
     Ok(())
 }
 
-/// Deterministic QuickNES-backed machine whose readable address window is the
-/// core's 2 KiB work RAM.
+/// Deterministic QuickNES-backed machine whose readable address windows are
+/// the core's 2 KiB work RAM and 8 KiB save RAM.
 pub struct QuickNesMachine {
     api: CoreApi,
     #[cfg(not(miri))]
@@ -472,6 +476,7 @@ pub struct QuickNesMachine {
     hold_remaining: u8,
     input: u8,
     vtime: u64,
+    frames: Vec<[u8; WRAM_SIZE]>,
     capture_video: bool,
     capture_audio: bool,
     _not_sync: PhantomData<Cell<()>>,
@@ -578,6 +583,7 @@ impl QuickNesMachine {
             hold_remaining: 0,
             input: 0,
             vtime: 0,
+            frames: Vec::new(),
             capture_video: false,
             capture_audio: false,
             _not_sync: PhantomData,
@@ -588,6 +594,12 @@ impl QuickNesMachine {
     #[must_use]
     pub fn now(&self) -> Moment {
         Moment(self.vtime)
+    }
+
+    /// Work RAM copied after each frame of the most recent run.
+    #[must_use]
+    pub fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+        &self.frames
     }
 
     /// Copy the core's complete 2 KiB system RAM into a fixed buffer without
@@ -833,10 +845,11 @@ impl QuickNesMachine {
         unsafe { (self.api.run)() };
         INPUT_BITS.with(|input| input.set(0));
         self.vtime = self.vtime.saturating_add(1);
-        CALLBACK_ERROR.with(|error| match error.borrow_mut().take() {
-            Some(detail) => Err(MachineError::Backend(detail)),
-            None => Ok(()),
-        })
+        if let Some(detail) = CALLBACK_ERROR.with(|error| error.borrow_mut().take()) {
+            return Err(MachineError::Backend(detail));
+        }
+        self.frames.push(self.read_wram()?);
+        Ok(())
     }
 
     /// Construct a deterministic in-process loopback core for downstream unit
@@ -934,6 +947,8 @@ impl Drop for QuickNesMachine {
 }
 
 impl Machine for QuickNesMachine {
+    type Portable = SharedState;
+
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
         let bytes = self.capture()?;
         let id = self.next_snap;
@@ -965,6 +980,7 @@ impl Machine for QuickNesMachine {
         until: StopConditions,
         resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
+        self.frames.clear();
         if resolve.is_some() {
             return Err(MachineError::ResolveWithoutDecision);
         }
@@ -996,22 +1012,71 @@ impl Machine for QuickNesMachine {
     fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
         let end = addr
             .checked_add(u64::from(len))
-            .filter(|end| *end <= WRAM_SIZE as u64)
             .ok_or(MachineError::ReadOutOfBounds)?;
-        let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
-        let finish = usize::try_from(end).map_err(|_| MachineError::ReadOutOfBounds)?;
+        let (memory_id, offset) = if end <= WRAM_SIZE as u64 {
+            (
+                RETRO_MEMORY_SYSTEM_RAM,
+                usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?,
+            )
+        } else if addr >= SAVE_RAM_BASE && end <= SAVE_RAM_BASE + SAVE_RAM_SIZE {
+            (
+                RETRO_MEMORY_SAVE_RAM,
+                usize::try_from(addr - SAVE_RAM_BASE).map_err(|_| MachineError::ReadOutOfBounds)?,
+            )
+        } else {
+            return Err(MachineError::ReadOutOfBounds);
+        };
+        let length = usize::try_from(len).map_err(|_| MachineError::ReadOutOfBounds)?;
         self.api.activate();
-        // SAFETY: construction validated this core's system RAM pointer and
-        // length; the checked range lies within WRAM_SIZE and is copied now.
+        // SAFETY: the construction-time memory checks establish the system
+        // RAM contract, and the save-RAM length is checked again below before
+        // any pointer arithmetic. The selected range is bounded to one NES
+        // memory window above and the copy completes synchronously.
         unsafe {
-            let memory = (self.api.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM).cast::<u8>();
-            if memory.is_null() {
+            let memory = (self.api.get_memory_data)(memory_id).cast::<u8>();
+            let available = (self.api.get_memory_size)(memory_id);
+            let valid_length = if memory_id == RETRO_MEMORY_SYSTEM_RAM {
+                available == WRAM_SIZE
+            } else {
+                (SAVE_RAM_SIZE as usize..=MAX_SAVE_RAM_SIZE).contains(&available)
+            };
+            let finish = offset.checked_add(length);
+            if memory.is_null() || !valid_length || finish.is_none_or(|finish| finish > available) {
                 return Err(MachineError::Backend(
-                    "QuickNES system RAM disappeared".to_owned(),
+                    "QuickNES memory window disappeared or has an invalid length".to_owned(),
                 ));
             }
-            Ok(std::slice::from_raw_parts(memory.add(start), finish - start).to_vec())
+            Ok(std::slice::from_raw_parts(memory.add(offset), length).to_vec())
         }
+    }
+
+    fn export(
+        &mut self,
+        snap: SnapId,
+        base: Option<&Self::Portable>,
+    ) -> Result<Self::Portable, MachineError> {
+        let bytes = self
+            .snapshots
+            .get(&snap.0)
+            .ok_or(MachineError::UnknownSnapshot)?
+            .clone();
+        Ok(SharedState::from_bytes(bytes, base))
+    }
+
+    fn import(&mut self, portable: &Self::Portable) -> Result<SnapId, MachineError> {
+        Ok(self.import_snapshot(&portable.materialize()))
+    }
+
+    fn portable_memory_charge(portable: &Self::Portable) -> usize {
+        portable.memory_charge()
+    }
+
+    fn now(&self) -> Moment {
+        QuickNesMachine::now(self)
+    }
+
+    fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+        QuickNesMachine::frames(self)
     }
 }
 
@@ -1647,7 +1712,16 @@ mod tests {
             machine.run(StopConditions::default(), None).expect("run"),
             StopReason::Quiescent { vtime: Moment(3) }
         );
+        assert_eq!(machine.frames().len(), 3);
+        assert_eq!(machine.frames()[0][0], 1);
+        assert_eq!(machine.frames()[1][0], 2);
+        assert_eq!(machine.frames()[2][0], 3);
         assert_eq!(machine.read(0, 1).expect("read"), vec![3]);
+        assert_eq!(machine.read(0x07ff, 1).expect("last WRAM byte"), vec![0]);
+        assert!(machine.read(0x0800, 1).is_err());
+        assert_eq!(machine.read(0x6000, 1).expect("first save byte"), vec![0]);
+        assert_eq!(machine.read(0x7fff, 1).expect("last save byte"), vec![0]);
+        assert!(machine.read(0x8000, 1).is_err());
         assert_eq!(machine.read_wram().expect("fixed RAM read")[0], 3);
         assert_eq!(machine.read_save_ram().expect("save RAM").len(), 8 * 1024);
         machine
@@ -1657,8 +1731,43 @@ mod tests {
             &machine.read_save_ram().expect("written save RAM")[7..10],
             &[1, 2, 3]
         );
+        assert_eq!(
+            machine.read(0x6007, 3).expect("written save range"),
+            vec![1, 2, 3]
+        );
         assert!(machine.write_save_ram(8 * 1024, &[1]).is_err());
         assert!(machine.write_save_ram(usize::MAX, &[1]).is_err());
+
+        let base_portable = machine.export(base, None).expect("base portable");
+        assert!(
+            <QuickNesMachine as Machine>::portable_memory_charge(&base_portable) > 0,
+            "a state with chunks must charge its owned allocations"
+        );
+        machine.replay(base).expect("base for child portable");
+        machine
+            .branch(base, &nes::reproducer(&[nes::ButtonChord::new(0x81, 3)]))
+            .expect("child branch");
+        machine
+            .run(StopConditions::default(), None)
+            .expect("child run");
+        let child = machine.snapshot().expect("child snapshot");
+        let child_portable = machine
+            .export(child, Some(&base_portable))
+            .expect("child portable");
+        assert_eq!(
+            <QuickNesMachine as Machine>::portable_memory_charge(&child_portable),
+            <QuickNesMachine as Machine>::portable_memory_charge(&base_portable),
+            "a child remains fully charged if its shared base is evicted"
+        );
+        let imported = machine.import(&child_portable).expect("portable import");
+        machine.replay(imported).expect("portable restore");
+        assert_eq!(machine.read(0, 1).expect("portable read"), vec![3]);
+
+        machine
+            .run(StopConditions::default(), None)
+            .expect("empty run");
+        assert!(machine.frames().is_empty());
+
         machine.replay(base).expect("restore");
         assert_eq!(machine.read(0, 1).expect("read restored"), vec![0]);
         let fixed = machine.snapshot().expect("fixed snapshot");

@@ -126,6 +126,13 @@ exclude_re = [
     #     in the gate. (Matches both `… in probe::evaluate` statement mutants and
     #     `replace probe::fmt_hex -> …` function-return mutants.)
     "probe::",
+    # The non-Linux/Miri fallback for the out-of-band minor-fault profiler is
+    # cfg-excluded from the Linux mutation oracle, so replacing its `None` with
+    # a sentinel `Some` cannot affect that build. Linux exercises the real
+    # getrusage path and its testable seam; macOS exercises this fallback in the
+    # ordinary all-features gates. Pin the exact fallback line so the live Linux
+    # accessor remains mutation-gated.
+    "consonance/vmm-core/src/control\\.rs:159:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
     # (b) Provably-equivalent disjoint-bit OR mutants in vmm-core: `a | b` ≡ `a ^ b`
     #     whenever a,b share no set bits — true of every bitwise-flag combine here
     #     (USER_SPACE_MSR_MASK = FILTER|UNKNOWN|INVAL; resolve_cpuid's clear-then-set
@@ -191,10 +198,11 @@ exclude_re = [
     # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
     # OR and XOR are identical for this compile-time constant expression.
     "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",
-    # `FLAG_SDK` is `1 << 0`; shifting either direction by zero is exactly the
-    # identity operation. The neighboring NET/TAINTED shifts remain gated and
-    # are caught by the exact wire-value and round-trip tests.
-    "consonance/vmm-core/src/portable_snapshot\\.rs:24:25: replace << with >>",
+    # `FLAG_SDK` and `SPARSE_FLAG_SDK` are both `1 << 0`; shifting either
+    # direction by zero is exactly the identity operation. The neighboring
+    # NET/TAINTED shifts remain gated and are caught by the exact wire-value
+    # and round-trip tests.
+    "consonance/vmm-core/src/portable_snapshot\\.rs:(26:25|37:32): replace << with >>",
     # (g) `impl Backend for Box<B>`'s `inject` forward (task 21): `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot

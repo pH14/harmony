@@ -202,6 +202,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
         action_limit,
         host,
         wall_budget,
+        continue_after_victory: false,
         archive_entry_limit,
         memory_budget_mib,
         materialize_final_artifacts: write_final_artifacts,
