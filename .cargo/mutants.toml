@@ -233,4 +233,47 @@ exclude_re = [
     # `< CAP`→`<= CAP` changes only whether the saturated log contains 4096 or
     # 4097 entries; it cannot affect page bytes, guest state, or any hash.
     "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*pvclock_stamp",
+    # (k) `harmony-cli` host probes: `detect_kvm`/`detect_hvf`/`detect_nested`
+    #     read live host state (/dev/kvm open, sysctl, /proc/cpuinfo) that the
+    #     mutation runner's host fixes to one value, and `Isa::current` reads
+    #     the compile-target arch, so the other arm can never be entered. The
+    #     pure classification they feed (`classify`, `guest_dir_name`,
+    #     `Hypervisor::available`, Display) is unit-tested and stays gated.
+    "cli/src/host\\.rs.*(detect_kvm|detect_hvf|detect_nested|Isa::current)",
+    # `oci::runner`'s `execute` variants are the per-cell hypervisor
+    # composition roots (same category as `boot_hvf`/`boot_linux_selected`
+    # above) and `drive` is their step loop over a live vCPU: neither can run
+    # without HVF or /dev/kvm plus built guest artifacts. Verified end-to-end
+    # by the `oci-smoke` CI lane's real seed-0/seed-0/seed-7 runs. The stream
+    # filtering and cmdline policy they use are unit-tested and stay gated.
+    "cli/src/oci/runner\\.rs.*(execute|drive)",
+    # `oci::run` is the verb's end-to-end pipeline (host check → docker stage
+    # → boot → artifact write) and `rootfs_segment_for` its docker-backed
+    # cache orchestration; both need a container tool and a hypervisor the
+    # oracle host does not guarantee. Covered by the `oci-smoke` lane; the
+    # pure pieces (`hex`, `parse_container_rc`, bundle/cache/cpio) stay gated.
+    "cli/src/oci/mod\\.rs.*(in run|rootfs_segment_for)",
+    # docker/podman subprocess glue: probe for an installed tool, inspect the
+    # local image store, pull, save. The oracle host's container-tool state is
+    # not controllable from a unit test. The parsing these feed
+    # (`parse_runtime_config`, manifest/layout resolution, layer whiteouts)
+    # is unit-tested and stays gated.
+    "cli/src/oci/image\\.rs.*(replace tool|local_image_id|ensure_local|export_from_tool)",
+    # `cache::key` is the image-ID lookup through docker/podman — same
+    # category; the store/load/atomic-write logic it keys is unit-tested.
+    "cli/src/oci/cache\\.rs.*replace key ->",
+    # `preflight::run` composes the live host probes above, and `print_text`
+    # is println-only reporting with no test-observable return (same category
+    # as the loud-log entries in (c)).
+    "cli/src/preflight\\.rs.*(print_text|in run)",
+    # In `tree`'s skip guard, `meta.rdev() != 0` is true only for device
+    # nodes, which an unprivileged test cannot create (mknod needs root); the
+    # fifo/socket halves of the guard ARE killed by the tree test's fifo and
+    # socket entries.
+    "cli/src/oci/cpio\\.rs:96:75: replace != with ==",
+    # newc type bits (0o040000/0o100000/0o120000) and the 0o7777-masked
+    # permission bits are disjoint, so OR and XOR build identical headers —
+    # the same provably-equivalent class as (b). The `|`→`&` and `&`→`^`/`|`
+    # siblings ARE killed by the exact-mode header parse test.
+    "cli/src/oci/cpio\\.rs:(60|64|70):36: replace \\| with \\^",
 ]
