@@ -1015,6 +1015,10 @@ fn progress_policy_is_supported(policy: Option<&str>) -> bool {
     })
 }
 
+fn uses_deterministic_window_schedule(policy: Option<&str>) -> bool {
+    policy == Some(CAMPAIGN_SCHEDULE_POLICY)
+}
+
 fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
     policy == Some(CAMPAIGN_PROGRESS_POLICY)
 }
@@ -2431,7 +2435,7 @@ where
                         continue;
                     }
                     *reserved = reserved.saturating_add(1);
-                    core.archive.pin_metadata(parent_id)?;
+                    core.archive.pin_inflight_snapshot(parent_id)?;
                     if let Some(CampaignSpliceRecord::Tail {
                         donor_id,
                         leaf_id,
@@ -2642,7 +2646,7 @@ where
                             "live draw state exceeds its deterministic memory reserve".into()
                         );
                     }
-                    core.archive.unpin_metadata(pending_job.parent_id);
+                    core.archive.unpin_inflight_snapshot(pending_job.parent_id);
                     if let Some(CampaignSpliceRecord::Tail {
                         donor_id,
                         leaf_id,
@@ -2942,10 +2946,12 @@ where
     let mut required_draw_versions = BTreeSet::new();
     let mut recorded_snapshot_uses = BTreeMap::<u64, u32>::new();
     let mut recorded_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut recorded_job_parents = Vec::new();
     for line in &record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
+                recorded_job_parents.push(job.parent_id);
                 let uses = recorded_snapshot_uses.entry(job.parent_id).or_default();
                 *uses = uses
                     .checked_add(1)
@@ -3125,6 +3131,20 @@ where
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
 
+    // Live execution keeps exactly one deterministic reservation window of
+    // parent snapshots in flight. Recreate those pins so budget eviction in
+    // serial replay sees the same physically resident snapshot set.
+    let deterministic_window =
+        uses_deterministic_window_schedule(header.schedule_policy.as_deref());
+    let replay_window_capacity =
+        usize::try_from(header.workers)?.saturating_mul(WINDOW_JOBS_PER_WORKER);
+    if deterministic_window {
+        for parent_id in recorded_job_parents.iter().take(replay_window_capacity) {
+            core.archive.pin_recorded_inflight_snapshot(*parent_id)?;
+        }
+    }
+    let mut replay_job_index = 0_usize;
+
     for line in record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         match record {
@@ -3289,6 +3309,24 @@ where
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id)),
                 );
+                if deterministic_window {
+                    let expected_parent = recorded_job_parents
+                        .get(replay_job_index)
+                        .copied()
+                        .ok_or("recorded job count exceeds the replay snapshot-pin plan")?;
+                    if expected_parent != job.parent_id {
+                        return Err(
+                            "recorded job order diverges from the replay snapshot-pin plan".into(),
+                        );
+                    }
+                    core.archive.unpin_recorded_inflight_snapshot(job.parent_id);
+                    if let Some(parent_id) = recorded_job_parents
+                        .get(replay_job_index.saturating_add(replay_window_capacity))
+                    {
+                        core.archive.pin_recorded_inflight_snapshot(*parent_id)?;
+                    }
+                    replay_job_index = replay_job_index.saturating_add(1);
+                }
                 core.archive.unpin_metadata(job.parent_id);
                 if let Some(CampaignSpliceRecord::Tail {
                     donor_id,
@@ -3346,7 +3384,7 @@ mod tests {
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
         replay_splice, retained_archive_indexes, stop_reservations_after_victory,
-        uses_bounded_progress_curve, worker_queue_is_idle,
+        uses_bounded_progress_curve, uses_deterministic_window_schedule, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3741,6 +3779,13 @@ mod tests {
             super::LEGACY_CAMPAIGN_PROGRESS_POLICY
         )));
         assert!(!progress_policy_is_supported(Some("unknown-progress")));
+        assert!(!uses_deterministic_window_schedule(None));
+        assert!(uses_deterministic_window_schedule(Some(
+            super::CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(!uses_deterministic_window_schedule(Some(
+            "unknown-schedule"
+        )));
         assert!(!uses_bounded_progress_curve(None));
         assert!(uses_bounded_progress_curve(Some(
             super::CAMPAIGN_PROGRESS_POLICY

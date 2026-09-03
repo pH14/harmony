@@ -775,6 +775,15 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// pins never affect selection or logical-budget decisions; they only
     /// defer physical reclamation until a bounded in-flight use completes.
     metadata_pins: BTreeMap<u64, u32>,
+    /// Live sliding-window references to parent snapshots. Unlike metadata
+    /// pins, these keep a snapshot's charge inside the memory ceiling even if
+    /// retention replaces the entry before its ordered admission completes.
+    inflight_snapshot_pins: BTreeMap<u64, u32>,
+    /// Charges for in-flight snapshots that no longer belong to the selectable
+    /// breeding population. Each allocation is counted exactly once: here or
+    /// in `resident_snapshot_bytes`, never in both.
+    inflight_snapshot_charges: BTreeMap<u64, usize>,
+    inflight_snapshot_bytes: usize,
     /// Number of entry snapshots still resident, maintained in constant time.
     resident_snapshots: usize,
     /// Whether each entry's snapshot belongs to the selectable breeding
@@ -1268,6 +1277,9 @@ where
             preserve_inactive_snapshots: false,
             preserved_snapshot_uses: None,
             metadata_pins: BTreeMap::new(),
+            inflight_snapshot_pins: BTreeMap::new(),
+            inflight_snapshot_charges: BTreeMap::new(),
+            inflight_snapshot_bytes: 0,
             resident_snapshots: 0,
             snapshot_selectable: Vec::new(),
             memory_limit: None,
@@ -1319,6 +1331,14 @@ where
             .snapshot
             .as_deref()
             .map_or(0, |snapshot| self.snapshot_charge(snapshot));
+        let stable_id = self.entries[id].id;
+        if self.inflight_snapshot_pins.contains_key(&stable_id) {
+            let previous = self.inflight_snapshot_charges.insert(stable_id, charge);
+            debug_assert!(previous.is_none());
+            if previous.is_none() {
+                self.inflight_snapshot_bytes = self.inflight_snapshot_bytes.saturating_add(charge);
+            }
+        }
         self.index_remove(id);
         self.snapshot_selectable[id] = false;
         self.resident_snapshots = self.resident_snapshots.saturating_sub(1);
@@ -1355,10 +1375,34 @@ where
             if self.resident_memory_bytes() <= limit || self.resident_snapshots <= 1 {
                 break;
             }
-            if !self.release_oldest_selectable(true) {
+            if !self.release_oldest_reclaimable() {
                 break;
             }
         }
+    }
+
+    /// Release the oldest selectable snapshot whose allocation is not held by
+    /// the deterministic worker window. Population limits may still retire a
+    /// pinned entry, but memory-pressure eviction must make physical progress.
+    fn release_oldest_reclaimable(&mut self) -> bool {
+        let candidates = self.resident_snapshot_order.len();
+        for _ in 0..candidates {
+            let Some(id) = self.resident_snapshot_order.pop_front() else {
+                break;
+            };
+            if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+                continue;
+            }
+            if self
+                .inflight_snapshot_pins
+                .contains_key(&self.entries[id].id)
+            {
+                self.resident_snapshot_order.push_back(id);
+                continue;
+            }
+            return self.release_snapshot(id, true);
+        }
+        false
     }
 
     fn release_oldest_selectable(&mut self, budget_eviction: bool) -> bool {
@@ -1391,6 +1435,9 @@ where
     /// perform this forced rebuild, making final artifacts independent of the
     /// transient parallel dispatch window.
     pub(crate) fn compact_history_for_final_report(&mut self) -> Result<(), &'static str> {
+        debug_assert!(self.inflight_snapshot_pins.is_empty());
+        debug_assert!(self.inflight_snapshot_charges.is_empty());
+        debug_assert_eq!(self.inflight_snapshot_bytes, 0);
         self.metadata_pins.clear();
         self.compact_history(true)
     }
@@ -1600,6 +1647,38 @@ where
         Ok(())
     }
 
+    /// Keep one selected parent snapshot charged through ordered admission.
+    pub(crate) fn pin_inflight_snapshot(&mut self, id: u64) -> Result<(), &'static str> {
+        self.pin_recorded_inflight_snapshot(id)?;
+        if let Err(error) = self.pin_metadata(id) {
+            self.unpin_recorded_inflight_snapshot(id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Reproduce one live sliding-window snapshot pin during serial replay.
+    /// Replay installs metadata use counts separately from the whole stream.
+    pub(crate) fn pin_recorded_inflight_snapshot(&mut self, id: u64) -> Result<(), &'static str> {
+        let index = self
+            .index_of_id(id)
+            .ok_or("snapshot pin names a missing archive id")?;
+        if !self
+            .snapshot_selectable
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err("snapshot pin names a non-selectable archive id");
+        }
+        let pins = self.inflight_snapshot_pins.get(&id).copied().unwrap_or(0);
+        let pins = pins
+            .checked_add(1)
+            .ok_or("archive snapshot pin count overflow")?;
+        self.inflight_snapshot_pins.insert(id, pins);
+        Ok(())
+    }
+
     /// Release one in-flight metadata reference.
     pub(crate) fn unpin_metadata(&mut self, id: u64) {
         let remove = if let Some(pins) = self.metadata_pins.get_mut(&id) {
@@ -1615,6 +1694,29 @@ where
             // that temporary ownership is guaranteed to have ended.
             if let Some(index) = self.index_of_id(id) {
                 self.reclaim_inactive_snapshot(index);
+            }
+        }
+    }
+
+    /// Release one selected parent after its ordered admission.
+    pub(crate) fn unpin_inflight_snapshot(&mut self, id: u64) {
+        self.unpin_recorded_inflight_snapshot(id);
+        self.unpin_metadata(id);
+    }
+
+    /// Release one replayed sliding-window pin without consuming the metadata
+    /// use count installed from the full recorded stream.
+    pub(crate) fn unpin_recorded_inflight_snapshot(&mut self, id: u64) {
+        let remove = if let Some(pins) = self.inflight_snapshot_pins.get_mut(&id) {
+            *pins = pins.saturating_sub(1);
+            *pins == 0
+        } else {
+            false
+        };
+        if remove {
+            self.inflight_snapshot_pins.remove(&id);
+            if let Some(charge) = self.inflight_snapshot_charges.remove(&id) {
+                self.inflight_snapshot_bytes = self.inflight_snapshot_bytes.saturating_sub(charge);
             }
         }
     }
@@ -2755,6 +2857,7 @@ where
     #[must_use]
     pub fn resident_snapshot_bytes(&self) -> usize {
         self.resident_snapshot_bytes
+            .saturating_add(self.inflight_snapshot_bytes)
     }
 
     /// Snapshots displaced solely by the global memory budget.
@@ -2846,7 +2949,7 @@ where
     #[must_use]
     pub fn resident_memory_bytes(&self) -> usize {
         self.history_memory_bytes()
-            .saturating_add(self.resident_snapshot_bytes)
+            .saturating_add(self.resident_snapshot_bytes())
     }
 
     /// Unique action-prefix nodes retained by duplicate detection.
@@ -3219,6 +3322,57 @@ mod tests {
             ),
             logical_counters
         );
+    }
+
+    #[test]
+    fn budget_keeps_inflight_parent_charged_until_ordered_admission() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        for index in 0_u8..3 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert budgeted entry")
+                .expect("retain budgeted entry");
+        }
+
+        let parent_id = archive.stable_id(0).expect("stable parent id");
+        archive
+            .pin_inflight_snapshot(parent_id)
+            .expect("pin selected parent");
+        let worker = Arc::clone(
+            archive.entries[0]
+                .snapshot
+                .as_ref()
+                .expect("resident parent snapshot"),
+        );
+        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(2));
+        archive.enforce_snapshot_memory_budget();
+
+        assert!(archive.snapshot_selectable[0]);
+        assert!(!archive.snapshot_selectable[1]);
+        assert!(archive.snapshot_selectable[2]);
+        assert_eq!(archive.resident_snapshot_bytes(), 2);
+
+        // A retention replacement may still displace the selected parent.
+        // Its charge moves to the deterministic in-flight bucket instead of
+        // becoming available to a later admission while the worker owns it.
+        assert!(archive.release_snapshot(0, false));
+        assert_eq!(archive.resident_snapshot_bytes(), 2);
+        assert_eq!(archive.inflight_snapshot_bytes, 1);
+        drop(worker);
+        archive.unpin_inflight_snapshot(parent_id);
+        assert_eq!(archive.resident_snapshot_bytes(), 1);
+        assert_eq!(archive.inflight_snapshot_bytes, 0);
+        assert!(!archive.inflight_snapshot_charges.contains_key(&parent_id));
     }
 
     #[test]
