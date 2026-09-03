@@ -2,7 +2,7 @@
 # linux/amd64 container (docs/BUILDING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image exec-image postgres-image campaign-image docker-image k3s-image game-image maze-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image exec-image postgres-image campaign-image docker-image k3s-image game-image nova-game-image maze-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -81,6 +81,12 @@ k3s-image:
 # shared task-87 renderer core consonance/harmony-linux/build/fceumm_libretro.so.
 game-image:
 	./build-game-image.sh
+
+# Experimental FOSS Nova workload: static QuickNES + Nova + the SDK payload
+# agent in an x86 Linux guest. The caller provides HARMONY_NOVA_ROM and
+# HARMONY_NOVA_CORE_STATIC, normally from dissonance's pinned source builders.
+nova-game-image:
+	./build-nova-game-image.sh
 
 # Task 134 maze workload initramfs: static busybox + the static-musl maze
 # agent (consonance/harmony-linux/maze-agent — the deterministic gauntlet walk over X/Y

@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Nova inside Consonance experiment
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - .github/workflows/nova-consonance-experiment.yml
+      - consonance/harmony-linux/linux/build-nova-game-image.sh
+      - consonance/harmony-linux/linux/nova-game-init.sh
+      - consonance/harmony-linux/play-agent/**
+      - consonance/vmm-core/src/bin/kvm_x86_nova_probe.rs
+      - dissonance/Cargo.lock
+      - dissonance/searcher/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-consonance-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  whole-vm-search-campaign:
+    name: Dissonance search · QuickNES guest · Consonance snapshots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      NOVA_BUILD: dissonance/nova-build
+      HARMONY_QUICKNES_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Install Nova and initramfs build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends binutils cc65 cpio ffmpeg g++ shellcheck
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            dissonance -> dissonance/target
+            consonance/harmony-linux/play-agent -> target
+      - name: Reproduce pinned Nova and QuickNES
+        run: |
+          dissonance/scripts/build-nova-rom.sh "${NOVA_BUILD}"
+          HARMONY_QUICKNES_STATIC_OUTPUT="${NOVA_BUILD}/libquicknes_libretro.a" \
+            scripts/build-quicknes-core.sh "${NOVA_BUILD}/quicknes_libretro.so"
+      - name: Build the locked Harmony guest kernel
+        run: |
+          mkdir -p nix-guest-output
+          nix run .#guest-images -- --output "$PWD/nix-guest-output"
+          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
+      - name: Fetch only the pinned BusyBox source
+        run: |
+          source consonance/harmony-linux/linux/versions.lock
+          mkdir -p consonance/harmony-linux/dl
+          archive="consonance/harmony-linux/dl/$(basename "${BUSYBOX_URL}")"
+          curl --fail --location --retry 3 --output "${archive}.part" "${BUSYBOX_URL}"
+          printf '%s  %s\n' "${BUSYBOX_SHA256}" "${archive}.part" | sha256sum --check
+          mv "${archive}.part" "${archive}"
+      - name: Build Nova, QuickNES, and the SDK agent into the guest
+        env:
+          HARMONY_NOVA_ROM: ${{ github.workspace }}/dissonance/nova-build/nova.nes
+          HARMONY_NOVA_CORE_STATIC: ${{ github.workspace }}/dissonance/nova-build/libquicknes_libretro.a
+        run: consonance/harmony-linux/linux/build-nova-game-image.sh
+      - name: Build the Consonance-backed Dissonance campaign
+        run: |
+          cargo build --locked --release --manifest-path dissonance/Cargo.toml \
+            -p searcher --features consonance --bin nova-consonance-campaign
+      - name: Grant nested KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          grep -m1 'model name' /proc/cpuinfo
+      - name: Search Nova through whole-VM Consonance branches
+        run: |
+          mkdir -p nova-consonance-report
+          timeout -k 10 19800 \
+            dissonance/target/release/nova-consonance-campaign \
+              --kernel nix-guest-output/x86_64/bzImage \
+              --initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+              --rom "${NOVA_BUILD}/nova.nes" \
+              --core "${NOVA_BUILD}/quicknes_libretro.so" \
+              --output nova-consonance-report \
+              --seed 20260901 \
+              --executions 10000 \
+              --workers 1 \
+              --action-limit 512 \
+              --wall-seconds 14400 \
+            2>&1 | tee nova-consonance-report/campaign.txt
+          cp nix-guest-output/MANIFEST.sha256 nova-consonance-report/guest-kernel-manifest.sha256
+          sha256sum \
+            consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+            "${NOVA_BUILD}/nova.nes" \
+            "${NOVA_BUILD}/libquicknes_libretro.a" \
+            >nova-consonance-report/workload.sha256
+          {
+            echo "## Nova inside Consonance"
+            echo
+            echo "The game-blind Dissonance searcher drove QuickNES and Nova inside the Linux guest."
+            echo "Every mutation restored a Consonance whole-VM snapshot and supplied an opaque SDK controller payload."
+            echo "The champion tape was replayed headlessly through QuickNES into a video with game audio."
+            echo
+            printf '\140\140\140json\n'
+            cat nova-consonance-report/campaign-summary.json
+            printf '\140\140\140\n'
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nova-consonance-campaign-${{ github.run_id }}
+          path: nova-consonance-report
+          if-no-files-found: warn
+          retention-days: 30

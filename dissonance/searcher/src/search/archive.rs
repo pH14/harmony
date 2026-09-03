@@ -9,16 +9,26 @@
 //! list).
 
 use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BTreeSet},
+    cell::Cell,
+    cmp::{Ordering, Reverse},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
+    mem::size_of,
     num::NonZeroUsize,
     sync::Arc,
 };
 
 use crate::search::rand::RomuDuoJrRand;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
+    values
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(value, keep)| (*keep).then_some(value))
+        .collect()
+}
 
 /// A quality-diversity archive key.
 ///
@@ -41,6 +51,20 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     /// The key's pooled identity at `depth`; depth 0 is the retention slot.
     /// Only depths below [`groups`](Self::groups) are ever passed.
     fn group(self, depth: usize) -> Self::Group;
+    /// Maximum active representatives retained in one depth-0 slot.
+    ///
+    /// The default preserves the established two-route archive. A game may
+    /// choose one when its key supplies a deterministic per-location state
+    /// preference and superseded representatives should stop receiving work.
+    fn slot_capacity() -> usize {
+        MAX_ENTRIES_PER_KEY
+    }
+    /// Compare two keys that map to the same depth-0 slot by game-owned state
+    /// preference. The archive treats the result as opaque and falls back to
+    /// its route-cost replacement rule on equality.
+    fn preference_cmp(self, _other: Self) -> Ordering {
+        Ordering::Equal
+    }
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
     /// Complete a freshly decoded key against its parent's key and lineage.
@@ -58,6 +82,22 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
 pub const MAX_ARCHIVE_ENTRIES: usize = 4_194_304;
 /// Entries one retention slot holds before candidates must displace.
 pub const MAX_ENTRIES_PER_KEY: usize = 2;
+/// Dead metadata reclaimed per compaction. A fixed batch bounds physical
+/// slack while keeping the linear pack operation off the per-job hot path.
+#[cfg(not(test))]
+const HISTORY_COMPACTION_MIN_DROPS: usize = 4_096;
+// Keep the same threshold semantics while making corruption of compaction
+// control flow fail well inside the mutation-test timeout.
+#[cfg(test)]
+const HISTORY_COMPACTION_MIN_DROPS: usize = 16;
+/// Every lineage keeps a resident keyframe snapshot within this many actions
+/// of each active entry: the entry whose input length first enters each
+/// bucket of this width is the keyframe for the rest of the bucket. Expanding
+/// an entry whose own snapshot was released costs at most this much replay.
+pub const REPLAY_DISTANCE_ACTIONS: usize = 8;
+/// Sweep visits one admission may spend releasing snapshots and dropping
+/// entries under a memory budget, so maintenance never bursts.
+const MAINTENANCE_QUANTUM: usize = 32;
 
 /// One recorded input: actions in execution order.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -273,9 +313,21 @@ pub(crate) const SELECTION_EXHAUSTION_THRESHOLD: u64 = 64;
 const CONCENTRATION_WINDOW: usize = 128;
 
 /// Cost ranks per halving of a cell entry's draw weight under the cheapest
-/// concentration; a compiled property of its recorded identifier, like the
-/// window itself.
-const CHEAPEST_RANK_SCALE: usize = 16;
+/// concentration, and of a cell's draw weight within its band by its
+/// cheapest offered member, so a band's draws follow the routes that reach
+/// it with the most time left; a compiled property of the recorded
+/// identifier, like the window itself.
+const CHEAPEST_RANK_SCALE: usize = 4;
+
+/// Selections after which a cell stops counting as new and competes on
+/// energy and cost alone, so a fresh cell that keeps failing cannot hold
+/// the front of its band's novelty order.
+const CELL_NOVELTY_DRAWS: u64 = 4;
+
+/// Newer live cells per halving of a cell's draw weight within its band
+/// under the energy frontier selectors, so a cell opened moments ago is
+/// tried before the band's older cells dilute it.
+const CELL_NOVELTY_RANK_SCALE: usize = 8;
 
 /// Which selection path one recorded draw took.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -611,13 +663,27 @@ pub mod entries_by_suffix {
     }
 }
 
-/// One retained entry: its report and its machine snapshot.
+/// One retained entry in compact live form.
+///
+/// Full inputs are a reporting surface. The live archive stores only the
+/// actions added after the parent so historical lineage remains compact.
 #[derive(Clone, Debug)]
-pub struct ArchiveEntry<A: Ord, K, M, S> {
-    /// The serializable record.
-    pub report: ArchiveEntryReport<A, K, M>,
-    /// The retained machine snapshot.
-    pub snapshot: Arc<S>,
+pub(crate) struct ArchiveEntry<A: Ord, K, M, S> {
+    pub(crate) id: u64,
+    pub(crate) parent_id: Option<u64>,
+    pub(crate) created_execution: u64,
+    pub(crate) input_suffix: Vec<A>,
+    pub(crate) input_len: usize,
+    /// Leaf in the live prefix tree. Unlike `parent_id`, this path remains
+    /// self-contained when older archive metadata is compacted away.
+    input_node: usize,
+    pub(crate) key: K,
+    pub(crate) milestones: M,
+    /// The restorable machine snapshot while this entry can still be selected.
+    ///
+    /// Replaced entries keep their immutable report but release this payload;
+    /// already-dispatched jobs own their own [`Arc`] and remain unaffected.
+    pub(crate) snapshot: Option<Arc<S>>,
 }
 
 /// One dispatch-time splice resolution and the exact tail it selected.
@@ -629,8 +695,8 @@ pub(crate) struct CampaignSpliceTail<A> {
 
 /// One candidate offered to retention.
 pub struct ArchiveCandidate<A: Ord, K, M> {
-    /// Complete clean-reset input of the candidate.
-    pub input: Input<A>,
+    /// Actions added after the named parent (the complete input for genesis).
+    pub suffix: Vec<A>,
     /// Decoded key; its lineage-dependent parts are completed at insert.
     pub key: K,
     /// Strongest milestones observed along the input.
@@ -643,13 +709,27 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// runs record their bound in the stream header and replay under it.
     pub max_entries: usize,
     /// Retained entries in insertion order.
-    pub entries: Vec<ArchiveEntry<A, K, M, S>>,
+    pub(crate) entries: Vec<ArchiveEntry<A, K, M, S>>,
+    /// Stable stream id to current compact in-memory slot.
+    id_to_index: BTreeMap<u64, usize>,
+    /// Next stable stream id. Slots may be compacted; this id never rewinds.
+    next_entry_id: u64,
     /// Whether each entry is still active (not displaced).
     pub active: Vec<bool>,
+    /// Number of active retained entries, maintained as admissions displace
+    /// and append so progress reporting never scans historical entries.
+    active_count: usize,
     /// Retention slots: active entry ids per depth-0 group.
     pub slots: BTreeMap<K::Group, Vec<usize>>,
-    /// Archive id per already-retained input.
-    pub input_ids: BTreeMap<Input<A>, usize>,
+    /// Prefix-sharing index of already-retained inputs.
+    input_index: InputIndex<A>,
+    /// Action elements the former complete per-entry inputs would have held.
+    /// This diagnostic counter owns no actions and never scans history.
+    historical_input_actions: usize,
+    /// Action elements physically retained as parent-relative suffixes.
+    stored_input_actions: usize,
+    /// Deterministic conservative charge for compact history and indexes.
+    history_memory_bytes: usize,
     /// Candidates admitted to the active archive.
     pub retained: u64,
     /// Candidates rejected by bounded quality-diversity retention.
@@ -680,12 +760,16 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     group_barren: Vec<BTreeMap<K::Group, u64>>,
     /// Duration of one action in the cost unit the replacement rule uses.
     action_time: fn(&A) -> u64,
+    /// Deepest retained key and its cheapest group time for the live sidecar.
+    /// Both are monotone over append-only history, so reporting is constant
+    /// time instead of rescanning every historical entry once per minute.
+    live_progress: Option<(K, u64)>,
     /// Action bound the selector index was built for; `None` until the first
     /// selection. The index is derived state: rebuilding it from `entries`
     /// and `active` yields the same draws, so it is never serialized.
     frontier_cap: Option<usize>,
-    /// Active entry ids under the frontier cap, ascending.
-    active_list: Vec<usize>,
+    /// Active entry ids under the frontier cap, ranked by ascending id.
+    active_ids: ActiveIds,
     /// Active entries under the cap, pooled by walk class (deepest first)
     /// and, inside each class, by selection cell.
     classes: BTreeMap<Reverse<K::Group>, ClassCells<K>>,
@@ -700,18 +784,446 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// reproduce `classes_skipped` without rescanning every cell.
     active_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
     live_skip_groups: BTreeMap<K::Group, BTreeMap<K::Group, usize>>,
+    /// Whole-tree import may need a replaced ancestor again before all source
+    /// descendants have been rebuilt. Normal live search releases replaced
+    /// snapshots immediately because only active entries are selectable.
+    preserve_inactive_snapshots: bool,
+    /// Replay-only remaining recorded job uses per parent snapshot. When
+    /// present, an inactive payload is preserved only until its final use.
+    preserved_snapshot_uses: Option<BTreeMap<u64, u32>>,
+    /// Non-selectable metadata still referenced by dispatched jobs. These
+    /// pins never affect selection or logical-budget decisions; they only
+    /// defer physical reclamation until a bounded in-flight use completes.
+    metadata_pins: BTreeMap<u64, u32>,
+    /// Number of entry snapshots still resident, maintained in constant time.
+    resident_snapshots: usize,
+    /// Whether each entry's snapshot belongs to the selectable breeding
+    /// population. Replay may temporarily keep a non-selectable payload for
+    /// an already-dispatched job without changing this logical state.
+    snapshot_selectable: Vec<bool>,
+    /// Whether each entry is the keyframe of its replay bucket.
+    keyframe: Vec<bool>,
+    /// Stable id of the nearest keyframe on each entry's lineage (its own id
+    /// for a keyframe). Its snapshot stays resident while any active entry
+    /// depends on it.
+    keyframe_id: Vec<u64>,
+    /// Number of active entries depending on each keyframe, itself included.
+    keyframe_dependents: Vec<usize>,
+    /// CLOCK reference bit: set when the entry is selected, cleared when a
+    /// sweep passes it. An unreferenced entry loses its snapshot first and
+    /// its active status second.
+    referenced: Vec<bool>,
+    /// Position of the entry-drop sweep.
+    drop_hand: usize,
+    /// Active entries the budget sweeps deactivated.
+    entry_drops: u64,
+    /// Deterministic logical-byte ceiling for history plus selectable snapshots.
+    memory_limit: Option<usize>,
+    /// Stable id of the one executable snapshot retained as a bounded liveness
+    /// anchor. This is present only for memory-budgeted campaigns.
+    liveness_anchor: Option<u64>,
+    #[cfg(test)]
+    liveness_anchor_reactivations: u64,
+    /// Logical bytes charged to snapshots still resident.
+    resident_snapshot_bytes: usize,
+    /// Game-owned, deterministic logical-size accounting for one snapshot.
+    snapshot_memory_charge: Option<fn(&S) -> usize>,
+    /// Resident ids in insertion order. Dropped ids are harmless tombstones
+    /// until they reach the front; each id is examined at most once.
+    resident_snapshot_order: VecDeque<usize>,
+    /// Snapshots displaced solely by the global memory budget.
+    snapshot_evictions: u64,
+    /// Deterministic metadata compactions completed by this archive.
+    history_compactions: u64,
+    /// Non-selectable historical entries retired from live memory.
+    historical_entries_dropped: u64,
+    /// Rare full-input reconstructions from the compact prefix structure.
+    input_reconstructions: Cell<u64>,
 }
 
 /// Members of one walk class, ascending per selection cell.
-type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, CellMembers>;
+type ClassCells<K> = BTreeMap<<K as ArchiveKey>::Group, CellMembers<K>>;
 type GroupPair<K> = (<K as ArchiveKey>::Group, <K as ArchiveKey>::Group);
 type LiveChildren<K> = Vec<BTreeMap<GroupPair<K>, BTreeSet<<K as ArchiveKey>::Group>>>;
 type LiveGroupCells<K> = Vec<BTreeMap<GroupPair<K>, usize>>;
 
+struct CellMembers<K: ArchiveKey> {
+    ids: BTreeSet<usize>,
+    sampleable: BTreeSet<usize>,
+    donors: BTreeSet<DonorRank<K>>,
+    /// Id of the entry that most recently opened the cell; ids are creation
+    /// order, so it orders the band's cells by novelty.
+    opened: usize,
+    /// Selections of the cell's current members, so novelty expires once
+    /// the cell has had `CELL_NOVELTY_DRAWS` tries.
+    drawn: u64,
+}
+
+type DonorRank<K> = (K, usize, usize);
+
+impl<K: ArchiveKey> Default for CellMembers<K> {
+    fn default() -> Self {
+        Self {
+            ids: BTreeSet::new(),
+            sampleable: BTreeSet::new(),
+            donors: BTreeSet::new(),
+            opened: 0,
+            drawn: 0,
+        }
+    }
+}
+
+impl<K: ArchiveKey> CellMembers<K> {
+    /// The id that opened the cell while the cell still counts as new.
+    fn novelty(&self) -> Option<usize> {
+        (self.drawn < CELL_NOVELTY_DRAWS).then_some(self.opened)
+    }
+}
+
+/// Trie over retained action sequences. Entries store parent-relative
+/// suffixes; duplicate lookup shares every prefix and compares one action at
+/// a time without retaining another complete input per entry.
+struct InputNode<A: Ord> {
+    parent: Option<usize>,
+    action: Option<A>,
+    children: BTreeMap<A, usize>,
+    /// Stable archive id of the selectable entry ending at this prefix.
+    owner: Option<u64>,
+}
+
+struct InputIndex<A: Ord> {
+    nodes: Vec<Option<InputNode<A>>>,
+    free: Vec<usize>,
+    live_nodes: usize,
+}
+
+impl<A: Ord> Default for InputIndex<A> {
+    fn default() -> Self {
+        Self {
+            nodes: vec![Some(InputNode {
+                parent: None,
+                action: None,
+                children: BTreeMap::new(),
+                owner: None,
+            })],
+            free: Vec::new(),
+            live_nodes: 1,
+        }
+    }
+}
+
+impl<A: Clone + Ord> InputIndex<A> {
+    fn walk(&self, mut node: usize, actions: &[A]) -> Option<usize> {
+        for action in actions {
+            node = *self.nodes.get(node)?.as_ref()?.children.get(action)?;
+        }
+        Some(node)
+    }
+
+    fn ensure_path(
+        &mut self,
+        mut node: usize,
+        actions: &[A],
+    ) -> Result<(usize, usize), &'static str> {
+        let mut inserted = 0_usize;
+        for action in actions {
+            let existing = self
+                .nodes
+                .get(node)
+                .and_then(Option::as_ref)
+                .ok_or("input prefix starts at a missing node")?
+                .children
+                .get(action)
+                .copied();
+            if let Some(child) = existing {
+                node = child;
+                continue;
+            }
+            let child_node = InputNode {
+                parent: Some(node),
+                action: Some(action.clone()),
+                children: BTreeMap::new(),
+                owner: None,
+            };
+            let child = if let Some(free) = self.free.pop() {
+                self.nodes[free] = Some(child_node);
+                free
+            } else {
+                self.nodes.push(Some(child_node));
+                self.nodes.len() - 1
+            };
+            self.live_nodes = self.live_nodes.saturating_add(1);
+            let parent = self
+                .nodes
+                .get_mut(node)
+                .and_then(Option::as_mut)
+                .ok_or("input prefix parent disappeared while extending it")?;
+            parent.children.insert(action.clone(), child);
+            node = child;
+            inserted = inserted.saturating_add(1);
+        }
+        Ok((node, inserted))
+    }
+
+    fn owner(&self, node: usize) -> Option<u64> {
+        self.nodes.get(node)?.as_ref()?.owner
+    }
+
+    fn set_owner(&mut self, node: usize, owner: Option<u64>) {
+        if let Some(node) = self.nodes.get_mut(node).and_then(Option::as_mut) {
+            node.owner = owner;
+        }
+    }
+
+    fn materialize(&self, mut node: usize, expected_len: usize) -> Option<Vec<A>> {
+        let mut reversed = Vec::with_capacity(expected_len);
+        while node != 0 {
+            let current = self.nodes.get(node)?.as_ref()?;
+            reversed.push(current.action.as_ref()?.clone());
+            node = current.parent?;
+            if reversed.len() > expected_len {
+                return None;
+            }
+        }
+        if reversed.len() != expected_len {
+            return None;
+        }
+        reversed.reverse();
+        Some(reversed)
+    }
+
+    /// Actions on the path from `ancestor` down to `node`, `distance` edges
+    /// long. `None` when the path does not end at `ancestor`.
+    fn actions_between(&self, ancestor: usize, mut node: usize, distance: usize) -> Option<Vec<A>> {
+        let mut reversed = Vec::with_capacity(distance);
+        for _ in 0..distance {
+            let current = self.nodes.get(node)?.as_ref()?;
+            reversed.push(current.action.as_ref()?.clone());
+            node = current.parent?;
+        }
+        (node == ancestor).then(|| {
+            reversed.reverse();
+            reversed
+        })
+    }
+
+    /// Remove a terminal owner and reclaim its now-unreferenced tail. Shared
+    /// ancestors remain until their final selectable descendant disappears.
+    fn remove_owner_and_prune(&mut self, mut node: usize, owner: u64) -> usize {
+        let current_owner = self.owner(node);
+        if current_owner.is_some() && current_owner != Some(owner) {
+            return 0;
+        }
+        if current_owner == Some(owner) {
+            self.set_owner(node, None);
+        }
+        let mut removed = 0_usize;
+        while node != 0 {
+            let removable = self.nodes[node]
+                .as_ref()
+                .is_some_and(|node| node.owner.is_none() && node.children.is_empty());
+            if !removable {
+                break;
+            }
+            let Some(retired) = self.nodes[node].take() else {
+                break;
+            };
+            let Some(parent) = retired.parent else {
+                break;
+            };
+            if let (Some(action), Some(parent_node)) = (retired.action, self.nodes[parent].as_mut())
+            {
+                parent_node.children.remove(&action);
+            }
+            self.free.push(node);
+            self.live_nodes = self.live_nodes.saturating_sub(1);
+            removed = removed.saturating_add(1);
+            node = parent;
+        }
+        removed
+    }
+
+    /// Pack live prefix nodes and return the old-to-new node mapping. This
+    /// releases the high-water Vec allocation after deterministic pruning;
+    /// otherwise logical live-node accounting could fall while RSS retained
+    /// every historical tombstone.
+    fn compact(&mut self) -> Vec<Option<usize>> {
+        let mut remap = vec![None; self.nodes.len()];
+        let mut next = 0_usize;
+        for (old, node) in self.nodes.iter().enumerate() {
+            if node.is_some() {
+                remap[old] = Some(next);
+                next = next.saturating_add(1);
+            }
+        }
+        let old_nodes = std::mem::take(&mut self.nodes);
+        self.nodes = old_nodes
+            .into_iter()
+            .flatten()
+            .map(|mut node| {
+                node.parent = node.parent.and_then(|parent| remap[parent]);
+                node.children = std::mem::take(&mut node.children)
+                    .into_iter()
+                    .filter_map(|(action, child)| remap[child].map(|mapped| (action, mapped)))
+                    .collect();
+                Some(node)
+            })
+            .collect();
+        self.nodes.shrink_to_fit();
+        self.free.clear();
+        self.free.shrink_to_fit();
+        self.live_nodes = self.nodes.len();
+        remap
+    }
+}
+
+/// Append-friendly ordered set over monotonically assigned archive ids.
+///
+/// A bit per id records membership while a Fenwick tree over 64-bit words
+/// maps the selector's uniformly drawn rank back to the same ascending id
+/// that the former compact `Vec` exposed. Inserts, removals, and rank draws
+/// are logarithmic without moving every later id after a displacement.
 #[derive(Default)]
-struct CellMembers {
-    ids: Vec<usize>,
-    sampleable: usize,
+struct ActiveIds {
+    words: Vec<u64>,
+    fenwick: Vec<usize>,
+    len: usize,
+}
+
+impl ActiveIds {
+    fn from_ids(ids: impl IntoIterator<Item = usize>) -> Self {
+        let mut active = Self::default();
+        active.fenwick.push(0);
+        for id in ids {
+            active.insert(id);
+        }
+        active
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn insert(&mut self, id: usize) {
+        if self.fenwick.is_empty() {
+            self.fenwick.push(0);
+        }
+        let word_index = id / u64::BITS as usize;
+        let missing_words = word_index
+            .saturating_add(1)
+            .saturating_sub(self.words.len());
+        for _ in 0..missing_words {
+            self.push_empty_word();
+        }
+        let bit = 1_u64 << (id % u64::BITS as usize);
+        let Some(word) = self.words.get_mut(word_index) else {
+            return;
+        };
+        if *word & bit != 0 {
+            return;
+        }
+        *word |= bit;
+        self.len = self.len.saturating_add(1);
+        self.update_word(word_index, true);
+    }
+
+    fn remove(&mut self, id: usize) -> bool {
+        let word_index = id / u64::BITS as usize;
+        let bit = 1_u64 << (id % u64::BITS as usize);
+        let Some(word) = self.words.get_mut(word_index) else {
+            return false;
+        };
+        if *word & bit == 0 {
+            return false;
+        }
+        *word &= !bit;
+        self.len = self.len.saturating_sub(1);
+        self.update_word(word_index, false);
+        true
+    }
+
+    fn select(&self, rank: usize) -> Option<usize> {
+        if rank >= self.len {
+            return None;
+        }
+        let target = rank.saturating_add(1);
+        let mut tree_index = 0_usize;
+        let mut prefix = 0_usize;
+        for shift in (0..=self.words.len().ilog2()).rev() {
+            let step = 1_usize << shift;
+            let next = tree_index.saturating_add(step);
+            if next <= self.words.len() && prefix.saturating_add(self.fenwick[next]) < target {
+                tree_index = next;
+                prefix = prefix.saturating_add(self.fenwick[next]);
+            }
+        }
+        let word_index = tree_index;
+        let mut word = *self.words.get(word_index)?;
+        let within = target.saturating_sub(prefix);
+        for _ in 1..within {
+            word &= word.saturating_sub(1);
+        }
+        let bit = usize::try_from(word.trailing_zeros()).ok()?;
+        word_index.checked_mul(u64::BITS as usize)?.checked_add(bit)
+    }
+
+    fn ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self.words
+            .iter()
+            .enumerate()
+            .flat_map(|(word_index, word)| {
+                (0..u64::BITS as usize).filter_map(move |bit| {
+                    (*word & (1_u64 << bit) != 0)
+                        .then(|| {
+                            word_index
+                                .checked_mul(u64::BITS as usize)
+                                .and_then(|base| base.checked_add(bit))
+                        })
+                        .flatten()
+                })
+            })
+    }
+
+    fn push_empty_word(&mut self) {
+        let tree_index = self.words.len().saturating_add(1);
+        let low_bit = tree_index & tree_index.wrapping_neg();
+        let lower = tree_index.saturating_sub(low_bit);
+        let inherited = self
+            .prefix_sum(tree_index.saturating_sub(1))
+            .saturating_sub(self.prefix_sum(lower));
+        self.words.push(0);
+        self.fenwick.push(inherited);
+    }
+
+    fn prefix_sum(&self, mut words: usize) -> usize {
+        let mut sum = 0_usize;
+        for _ in 0..usize::BITS {
+            if words == 0 {
+                break;
+            }
+            sum = sum.saturating_add(self.fenwick[words]);
+            words &= words - 1;
+        }
+        debug_assert_eq!(words, 0);
+        sum
+    }
+
+    fn update_word(&mut self, word_index: usize, add: bool) {
+        let mut tree_index = word_index.saturating_add(1);
+        while tree_index < self.fenwick.len() {
+            if add {
+                self.fenwick[tree_index] = self.fenwick[tree_index].saturating_add(1);
+            } else {
+                self.fenwick[tree_index] = self.fenwick[tree_index].saturating_sub(1);
+            }
+            let low_bit = tree_index & tree_index.wrapping_neg();
+            tree_index = tree_index.saturating_add(low_bit);
+        }
+    }
 }
 
 fn update_count<T: Copy + Ord>(map: &mut BTreeMap<T, usize>, key: T, add: bool) -> bool {
@@ -784,9 +1296,15 @@ where
         Self {
             max_entries: MAX_ARCHIVE_ENTRIES,
             entries: Vec::new(),
+            id_to_index: BTreeMap::new(),
+            next_entry_id: 0,
             active: Vec::new(),
+            active_count: 0,
             slots: BTreeMap::new(),
-            input_ids: BTreeMap::new(),
+            input_index: InputIndex::default(),
+            historical_input_actions: 0,
+            stored_input_actions: 0,
+            history_memory_bytes: Self::prefix_node_memory_charge(),
             retained: 0,
             rejected: 0,
             selected: Vec::new(),
@@ -810,14 +1328,803 @@ where
             selector_policy: SelectorPolicy::GroupUniform,
             group_barren: vec![BTreeMap::new(); K::groups().saturating_sub(2)],
             action_time,
+            live_progress: None,
             frontier_cap: None,
-            active_list: Vec::new(),
+            active_ids: ActiveIds::default(),
             classes: BTreeMap::new(),
             live_children: vec![BTreeMap::new(); K::groups()],
             live_group_cells: vec![BTreeMap::new(); K::groups()],
             active_skip_groups: BTreeMap::new(),
             live_skip_groups: BTreeMap::new(),
+            preserve_inactive_snapshots: false,
+            preserved_snapshot_uses: None,
+            metadata_pins: BTreeMap::new(),
+            resident_snapshots: 0,
+            snapshot_selectable: Vec::new(),
+            keyframe: Vec::new(),
+            keyframe_id: Vec::new(),
+            keyframe_dependents: Vec::new(),
+            referenced: Vec::new(),
+            drop_hand: 0,
+            entry_drops: 0,
+            memory_limit: None,
+            liveness_anchor: None,
+            #[cfg(test)]
+            liveness_anchor_reactivations: 0,
+            resident_snapshot_bytes: 0,
+            snapshot_memory_charge: None,
+            resident_snapshot_order: VecDeque::new(),
+            snapshot_evictions: 0,
+            history_compactions: 0,
+            historical_entries_dropped: 0,
+            input_reconstructions: Cell::new(0),
         }
+    }
+
+    /// Configure the deterministic logical-byte ceiling for compact history
+    /// plus the selectable snapshot population. This is recorded by the
+    /// campaign; wall-clock RSS and allocator behavior never enter eviction.
+    pub(crate) fn set_memory_budget(&mut self, bytes: usize, charge: fn(&S) -> usize) {
+        self.memory_limit = Some(bytes);
+        self.snapshot_memory_charge = Some(charge);
+    }
+
+    /// Select the lowest stable-id active executable snapshot as the bounded
+    /// campaign's deterministic liveness anchor.
+    pub(crate) fn establish_liveness_anchor(&mut self, max_actions: usize) {
+        if self.memory_limit.is_none() {
+            return;
+        }
+        if self.liveness_anchor.is_some_and(|id| {
+            self.index_of_id(id).is_some_and(|index| {
+                self.snapshot_selectable
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+                    && self.entries[index].snapshot.is_some()
+                    && self.entries[index].input_len < max_actions
+            })
+        }) {
+            return;
+        }
+        self.liveness_anchor = self
+            .entries
+            .iter()
+            .enumerate()
+            .find(|(index, entry)| {
+                self.active.get(*index).copied().unwrap_or(false)
+                    && self
+                        .snapshot_selectable
+                        .get(*index)
+                        .copied()
+                        .unwrap_or(false)
+                    && self.entries[*index].snapshot.is_some()
+                    && entry.input_len < max_actions
+            })
+            .map(|(_, entry)| entry.id);
+    }
+
+    fn is_liveness_anchor(&self, id: usize) -> bool {
+        self.memory_limit.is_some()
+            && self.liveness_anchor == self.entries.get(id).map(|entry| entry.id)
+    }
+
+    /// Make room for an admission by moving the protected anchor out of the
+    /// active population while retaining its selectable snapshot. The anchor
+    /// is reinserted by `select_parent` only if the selector later empties.
+    fn deactivate_liveness_anchor_for_admission(&mut self) -> bool {
+        let Some(anchor) = self.liveness_anchor else {
+            return false;
+        };
+        let Some(index) = self.index_of_id(anchor) else {
+            return false;
+        };
+        if !self.active.get(index).copied().unwrap_or(false) {
+            return false;
+        }
+        self.deactivate(index);
+        true
+    }
+
+    fn snapshot_charge(&self, snapshot: &S) -> usize {
+        self.snapshot_memory_charge
+            .map_or(0, |charge| charge(snapshot))
+    }
+
+    /// Replay bucket of one input length.
+    fn replay_bucket(input_len: usize) -> usize {
+        input_len / REPLAY_DISTANCE_ACTIONS
+    }
+
+    /// Whether an entry's snapshot must stay resident: an active keyframe,
+    /// a keyframe some active entry still replays from, or the liveness
+    /// anchor. Every other resident snapshot is a cache the budget may
+    /// release.
+    fn snapshot_retained(&self, id: usize) -> bool {
+        (self.keyframe[id] && self.keyframe_dependents[id] > 0) || self.is_liveness_anchor(id)
+    }
+
+    /// Whether an entry can seed a job: its own snapshot is resident or its
+    /// keyframe's is.
+    fn origin_resident(&self, id: usize) -> bool {
+        if self.snapshot_selectable[id] {
+            return true;
+        }
+        self.index_of_id(self.keyframe_id[id])
+            .is_some_and(|keyframe| self.snapshot_selectable[keyframe])
+    }
+
+    /// Move an entry out of the active population and release whatever it
+    /// alone kept resident.
+    fn deactivate(&mut self, id: usize) -> bool {
+        if !self.active.get(id).copied().unwrap_or(false) {
+            return false;
+        }
+        self.active[id] = false;
+        self.active_count = self.active_count.saturating_sub(1);
+        let slot_key = self.entries[id].key.group(0);
+        let remove_slot = if let Some(slot) = self.slots.get_mut(&slot_key) {
+            slot.retain(|entry| *entry != id);
+            slot.is_empty()
+        } else {
+            false
+        };
+        if remove_slot {
+            self.slots.remove(&slot_key);
+        }
+        self.index_remove(id);
+        if !self.is_liveness_anchor(id) {
+            self.input_index
+                .set_owner(self.entries[id].input_node, None);
+        }
+        let keyframe = self.index_of_id(self.keyframe_id[id]);
+        if let Some(keyframe) = keyframe {
+            self.keyframe_dependents[keyframe] =
+                self.keyframe_dependents[keyframe].saturating_sub(1);
+        }
+        if !self.snapshot_retained(id) {
+            self.release_snapshot(id);
+        }
+        if let Some(keyframe) = keyframe
+            && keyframe != id
+            && !self.active[keyframe]
+            && !self.snapshot_retained(keyframe)
+        {
+            self.release_snapshot(keyframe);
+        }
+        true
+    }
+
+    /// Release one snapshot from the selectable population. The entry keeps
+    /// its active status; an active entry replays from its keyframe.
+    fn release_snapshot(&mut self, id: usize) -> bool {
+        if !self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+            return false;
+        }
+        let charge = self.entries[id]
+            .snapshot
+            .as_deref()
+            .map_or(0, |snapshot| self.snapshot_charge(snapshot));
+        self.snapshot_selectable[id] = false;
+        self.resident_snapshots = self.resident_snapshots.saturating_sub(1);
+        self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_sub(charge);
+        let has_future_use = self
+            .preserved_snapshot_uses
+            .as_ref()
+            .is_none_or(|uses| uses.contains_key(&self.entries[id].id));
+        let worker_holds_snapshot = self.entries[id]
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1);
+        if (!self.preserve_inactive_snapshots || !has_future_use) && !worker_holds_snapshot {
+            self.entries[id].snapshot.take();
+        }
+        true
+    }
+
+    /// Bring the logical charge back under the budget with a bounded amount
+    /// of work: release unreferenced cache snapshots in CLOCK order, then
+    /// drop unreferenced active entries in CLOCK order. Work left over is
+    /// finished by later admissions, so being over the budget on return is
+    /// the normal case. Only a budget too small for the anchor itself is an
+    /// error.
+    fn enforce_snapshot_memory_budget(&mut self) -> Result<(), &'static str> {
+        let Some(limit) = self.memory_limit else {
+            return Ok(());
+        };
+        if self.liveness_anchor_memory_bytes() > limit {
+            return Err("memory budget cannot retain the executable liveness anchor");
+        }
+        let mut visits = 0_usize;
+        while self.resident_memory_bytes() > limit && visits < MAINTENANCE_QUANTUM {
+            let Some(id) = self.resident_snapshot_order.pop_front() else {
+                break;
+            };
+            visits = visits.saturating_add(1);
+            if !self.snapshot_selectable[id] || self.snapshot_retained(id) {
+                continue;
+            }
+            if self.referenced[id] {
+                self.referenced[id] = false;
+                self.resident_snapshot_order.push_back(id);
+                continue;
+            }
+            if self.resident_snapshots <= 1 {
+                self.resident_snapshot_order.push_front(id);
+                break;
+            }
+            self.release_snapshot(id);
+            self.snapshot_evictions = self.snapshot_evictions.saturating_add(1);
+        }
+        while self.resident_memory_bytes() > limit
+            && visits < MAINTENANCE_QUANTUM
+            && self.active_count > 1
+        {
+            let (dropped, examined) =
+                self.drop_one_entry_within(MAINTENANCE_QUANTUM.saturating_sub(visits));
+            visits = visits.saturating_add(examined);
+            if !dropped {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Lower bound on the charge the anchor holds that no maintenance can
+    /// release: its snapshot and its own entry metadata. The compacted
+    /// archive also charges the anchor's action-prefix nodes and the novelty
+    /// and barren counters of its groups, so a budget above this bound can
+    /// still be unaffordable.
+    ///
+    /// A bound is what this check needs. Everything charged above the anchor
+    /// during a run is dead history, and compaction only returns it once
+    /// enough entries are droppable to fill a batch, so testing the total
+    /// would report an unaffordable anchor whenever that batch is filling.
+    /// [`Self::compact_history_for_final_report`] makes the exact comparison,
+    /// where nothing is left to reclaim.
+    fn liveness_anchor_memory_bytes(&self) -> usize {
+        let Some(index) = self.liveness_anchor.and_then(|id| self.index_of_id(id)) else {
+            return 0;
+        };
+        let entry = &self.entries[index];
+        entry
+            .snapshot
+            .as_deref()
+            .map_or(0, |snapshot| self.snapshot_charge(snapshot))
+            .saturating_add(Self::history_entry_memory_charge(
+                entry.input_suffix.len(),
+                0,
+            ))
+    }
+
+    /// Deactivate the next unreferenced active entry under the drop hand,
+    /// clearing reference bits on the way. Two full passes without a drop
+    /// mean nothing is droppable.
+    fn drop_one_entry(&mut self) -> bool {
+        let budget = self.entries.len().saturating_mul(2);
+        self.drop_one_entry_within(budget).0
+    }
+
+    /// [`Self::drop_one_entry`] over at most `budget` entries, reporting how
+    /// many it examined. The budgeted maintenance sweep spends its quantum on
+    /// examinations, because clearing reference bits and skipping inactive
+    /// entries is the work the hand actually does.
+    fn drop_one_entry_within(&mut self, budget: usize) -> (bool, usize) {
+        let count = self.entries.len();
+        if count == 0 {
+            return (false, 0);
+        }
+        let limit = budget.min(count.saturating_mul(2));
+        let mut examined = 0_usize;
+        while examined < limit {
+            let id = self.drop_hand % count;
+            self.drop_hand = (id + 1) % count;
+            examined = examined.saturating_add(1);
+            if !self.active[id] || self.is_liveness_anchor(id) {
+                continue;
+            }
+            if self.referenced[id] {
+                self.referenced[id] = false;
+                continue;
+            }
+            self.deactivate(id);
+            self.entry_drops = self.entry_drops.saturating_add(1);
+            return (true, examined);
+        }
+        (false, examined)
+    }
+
+    /// Spend one maintenance step on the logical memory budget.
+    ///
+    /// Retention already enforces the budget from every path that adds an
+    /// entry. Selection accounting adds pooled barren counters to the same
+    /// charge without inserting anything, so the coordinator calls this at
+    /// the stream position where live and replay both finish accounting one
+    /// record.
+    ///
+    /// Compaction runs first because it is the only thing that returns
+    /// pooled barren counters and dead entry metadata to the charge, while
+    /// the bounded sweep only releases snapshots and deactivates entries.
+    /// Sweeping first would report the liveness anchor unaffordable while a
+    /// compaction still had room to reclaim.
+    pub(crate) fn maintain_memory_budget(&mut self) -> Result<(), &'static str> {
+        self.compact_history_if_needed()?;
+        self.enforce_snapshot_memory_budget()
+    }
+
+    /// Reclaim non-selectable history once its deterministic charge reaches a
+    /// quarter of the campaign budget. The append-only stream remains the
+    /// authoritative history; this rebuild only compacts live acceleration
+    /// structures and preserves stable stream ids.
+    pub(crate) fn compact_history_if_needed(&mut self) -> Result<(), &'static str> {
+        self.compact_history(false)
+    }
+
+    /// Normalize the final acceleration state to the breeding population.
+    ///
+    /// All worker jobs have joined before this is called, so any remaining
+    /// metadata pins came from speculative work beyond the execution ceiling
+    /// and have no recorded future consumer. Both live execution and replay
+    /// perform this forced rebuild, making final artifacts independent of the
+    /// transient parallel dispatch window.
+    pub(crate) fn compact_history_for_final_report(&mut self) -> Result<(), &'static str> {
+        self.metadata_pins.clear();
+        // Compaction drops what retention released, and the bounded sweep it
+        // ends with can release more. Repeat until a pass advances nothing,
+        // so the charge below is the population the archive actually keeps.
+        loop {
+            let before = self.maintenance_state();
+            self.compact_history(true)?;
+            if self.maintenance_state() == before {
+                break;
+            }
+        }
+        if self
+            .memory_limit
+            .is_some_and(|limit| self.resident_memory_bytes() > limit)
+        {
+            // Nothing is left to reclaim, so the report would otherwise state
+            // a budget the retained population does not honour.
+            return Err("memory budget cannot retain the compacted archive");
+        }
+        Ok(())
+    }
+
+    /// Everything a bounded maintenance step can advance.
+    ///
+    /// Each field is non-increasing across forced compaction passes, so a
+    /// pass that leaves the tuple unchanged did nothing and the next would
+    /// do nothing either. Charged bytes alone are not enough: a quantum
+    /// spent clearing reference bits, and one spent deactivating entries
+    /// whose snapshots are free, both reclaim nothing yet let the following
+    /// pass reclaim.
+    fn maintenance_state(&self) -> (usize, usize, usize, usize, usize) {
+        let referenced_active = self
+            .referenced
+            .iter()
+            .zip(&self.active)
+            .filter(|(referenced, active)| **referenced && **active)
+            .count();
+        (
+            self.entries.len(),
+            self.active_count,
+            self.resident_snapshots,
+            referenced_active,
+            self.resident_memory_bytes(),
+        )
+    }
+
+    fn compact_history(&mut self, force: bool) -> Result<(), &'static str> {
+        let history_target = self
+            .memory_limit
+            .map_or(usize::MAX, |limit| limit / 4)
+            .max(1);
+        let entry_pressure = self.entries.len()
+            >= self
+                .max_entries
+                .saturating_add(HISTORY_COMPACTION_MIN_DROPS);
+        if !force && self.history_memory_bytes() <= history_target && !entry_pressure {
+            return Ok(());
+        }
+        // Only inactive entries can be dropped, so fewer inactive entries than
+        // the batch means the scan below could not reach it either.
+        if !force
+            && self.entries.len().saturating_sub(self.active_count) < HISTORY_COMPACTION_MIN_DROPS
+        {
+            return Ok(());
+        }
+
+        let keep = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                self.active.get(index).copied().unwrap_or(false)
+                    || self.metadata_pins.contains_key(&entry.id)
+                    || (self.keyframe[index] && self.keyframe_dependents[index] > 0)
+                    || (self.preserve_inactive_snapshots && entry.snapshot.is_some())
+                    || (self.liveness_anchor == Some(entry.id) && entry.snapshot.is_some())
+                    || entry
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1)
+            })
+            .collect::<Vec<_>>();
+        let dropped = keep.iter().filter(|keep| !**keep).count();
+        if !force && dropped < HISTORY_COMPACTION_MIN_DROPS {
+            return Ok(());
+        }
+
+        // Snapshot eviction clears a prefix owner immediately, but an
+        // in-flight job pins its entry metadata until ordered admission. Make
+        // every retained entry an owner again before pruning dead branches so
+        // removing a displaced descendant cannot prune an in-flight parent's
+        // still-required path.
+        for (index, entry) in self.entries.iter().enumerate() {
+            if keep[index] {
+                self.input_index.set_owner(entry.input_node, Some(entry.id));
+            }
+        }
+        for (index, entry) in self.entries.iter().enumerate() {
+            if !keep[index] {
+                self.input_index
+                    .remove_owner_and_prune(entry.input_node, entry.id);
+            }
+        }
+        let node_remap = self.input_index.compact();
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            if keep[index] {
+                entry.input_node = node_remap
+                    .get(entry.input_node)
+                    .copied()
+                    .flatten()
+                    .ok_or("history compaction lost a retained input prefix")?;
+            }
+        }
+
+        self.entries = retain_marked(std::mem::take(&mut self.entries), &keep);
+        self.active = retain_marked(std::mem::take(&mut self.active), &keep);
+        self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
+        self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
+        self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
+        self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
+        self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
+        self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
+        self.time_in_group = retain_marked(std::mem::take(&mut self.time_in_group), &keep);
+        self.lineages = retain_marked(std::mem::take(&mut self.lineages), &keep);
+        self.snapshot_selectable =
+            retain_marked(std::mem::take(&mut self.snapshot_selectable), &keep);
+        self.keyframe = retain_marked(std::mem::take(&mut self.keyframe), &keep);
+        self.keyframe_id = retain_marked(std::mem::take(&mut self.keyframe_id), &keep);
+        self.keyframe_dependents =
+            retain_marked(std::mem::take(&mut self.keyframe_dependents), &keep);
+        self.referenced = retain_marked(std::mem::take(&mut self.referenced), &keep);
+        self.drop_hand = 0;
+
+        // Novelty and pooled-barrenness are compact historical metadata, not
+        // reasons to keep snapshots or dead entries resident. Once history is
+        // compacted, keys absent from the selectable breeding population can
+        // be rediscovered deterministically and must not make these maps grow
+        // with the lifetime execution count.
+        self.cells_seen = self
+            .entries
+            .iter()
+            .zip(&self.active)
+            .filter_map(|(entry, active)| active.then_some(entry.key.group(Self::cell_depth())))
+            .collect();
+        for (offset, barren) in self.group_barren.iter_mut().enumerate() {
+            let live_groups = self
+                .entries
+                .iter()
+                .zip(&self.active)
+                .filter_map(|(entry, active)| active.then_some(entry.key.group(offset + 1)))
+                .collect::<BTreeSet<_>>();
+            barren.retain(|group, _| live_groups.contains(group));
+        }
+
+        self.id_to_index.clear();
+        self.slots.clear();
+        self.resident_snapshot_order.clear();
+        self.active_count = 0;
+        self.resident_snapshots = 0;
+        self.resident_snapshot_bytes = 0;
+        self.stored_input_actions = 0;
+        for (index, entry) in self.entries.iter().enumerate() {
+            self.id_to_index.insert(entry.id, index);
+            self.stored_input_actions = self
+                .stored_input_actions
+                .saturating_add(entry.input_suffix.len());
+            if self.active[index] {
+                self.active_count = self.active_count.saturating_add(1);
+                self.slots
+                    .entry(entry.key.group(0))
+                    .or_default()
+                    .push(index);
+            }
+            if self.snapshot_selectable[index] {
+                self.resident_snapshots = self.resident_snapshots.saturating_add(1);
+                self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_add(
+                    entry
+                        .snapshot
+                        .as_deref()
+                        .map_or(0, |snapshot| self.snapshot_charge(snapshot)),
+                );
+                if !self.keyframe[index] {
+                    self.resident_snapshot_order.push_back(index);
+                }
+            }
+        }
+
+        // Descendant hints are a rebuildable splice cache. Resetting them to
+        // each surviving entry is deterministic; newly admitted descendants
+        // repopulate the hints without retaining dead history.
+        self.deepest_leaf = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.key, index))
+            .collect();
+        self.history_memory_bytes = Self::prefix_node_memory_charge()
+            .saturating_add(
+                self.entries
+                    .iter()
+                    .map(|entry| Self::history_entry_memory_charge(entry.input_suffix.len(), 0))
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.input_index
+                    .live_nodes
+                    .saturating_sub(1)
+                    .saturating_mul(Self::prefix_node_memory_charge()),
+            );
+        self.history_compactions = self.history_compactions.saturating_add(1);
+        self.historical_entries_dropped = self
+            .historical_entries_dropped
+            .saturating_add(u64::try_from(dropped).unwrap_or(u64::MAX));
+
+        let frontier_cap = self.frontier_cap.take();
+        self.active_ids = ActiveIds::default();
+        self.classes.clear();
+        self.live_children.iter_mut().for_each(BTreeMap::clear);
+        self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
+        self.active_skip_groups.clear();
+        self.live_skip_groups.clear();
+        if let Some(cap) = frontier_cap {
+            self.rebuild_selector_index(cap);
+        }
+        self.enforce_snapshot_memory_budget()?;
+        Ok(())
+    }
+
+    /// Preserve replaced snapshots temporarily while rebuilding a source tree.
+    pub(crate) fn preserve_inactive_snapshots(
+        &mut self,
+        preserve: bool,
+    ) -> Result<(), &'static str> {
+        self.preserve_inactive_snapshots = preserve;
+        if !preserve {
+            self.preserved_snapshot_uses = None;
+            for id in 0..self.entries.len() {
+                if !self.snapshot_selectable[id] {
+                    self.entries[id].snapshot.take();
+                }
+            }
+            self.enforce_snapshot_memory_budget()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preserves_inactive_snapshots(&self) -> bool {
+        self.preserve_inactive_snapshots
+    }
+
+    /// Resolve one immutable stream id to its current compact live slot.
+    pub(crate) fn index_of_id(&self, id: u64) -> Option<usize> {
+        self.id_to_index.get(&id).copied()
+    }
+
+    /// Immutable stream id of one current compact live slot.
+    pub(crate) fn stable_id(&self, index: usize) -> Option<u64> {
+        self.entries.get(index).map(|entry| entry.id)
+    }
+
+    /// Keep one entry's compact metadata through an in-flight job.
+    pub(crate) fn pin_metadata(&mut self, id: u64) -> Result<(), &'static str> {
+        if self.index_of_id(id).is_none() {
+            return Err("metadata pin names a missing archive id");
+        }
+        let pins = self.metadata_pins.entry(id).or_default();
+        *pins = pins
+            .checked_add(1)
+            .ok_or("archive metadata pin count overflow")?;
+        Ok(())
+    }
+
+    /// Release one in-flight metadata reference.
+    pub(crate) fn unpin_metadata(&mut self, id: u64) {
+        let remove = if let Some(pins) = self.metadata_pins.get_mut(&id) {
+            *pins = pins.saturating_sub(1);
+            *pins == 0
+        } else {
+            false
+        };
+        if remove {
+            self.metadata_pins.remove(&id);
+        }
+    }
+
+    /// Install deterministic future metadata uses while replaying serially.
+    pub(crate) fn preserve_recorded_metadata_uses(&mut self, uses: BTreeMap<u64, u32>) {
+        self.metadata_pins = uses;
+    }
+
+    /// Preserve replay parents only until their final recorded job consumes
+    /// them, instead of retaining every displaced payload for the whole run.
+    pub(crate) fn preserve_recorded_snapshot_uses(&mut self, uses: BTreeMap<u64, u32>) {
+        self.preserve_inactive_snapshots = true;
+        self.preserved_snapshot_uses = Some(uses);
+    }
+
+    /// Consume one replay parent use and release its inactive payload when no
+    /// later recorded job can reference it.
+    pub(crate) fn consume_recorded_snapshot_use(&mut self, id: u64) {
+        let exhausted = if let Some(uses) = self.preserved_snapshot_uses.as_mut() {
+            let Some(remaining) = uses.get_mut(&id) else {
+                return;
+            };
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                uses.remove(&id);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if exhausted
+            && let Some(index) = self.index_of_id(id)
+            && !self
+                .snapshot_selectable
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+        {
+            self.entries[index].snapshot.take();
+        }
+    }
+
+    fn input_index_start(&self, parent_id: Option<usize>) -> usize {
+        let Some(parent_id) = parent_id else {
+            return 0;
+        };
+        let Some(node) = self.entries.get(parent_id).map(|entry| entry.input_node) else {
+            return 0;
+        };
+        node
+    }
+
+    /// Rebuild one complete input from compact parent-relative suffixes.
+    pub(crate) fn materialize_input(&self, id: usize) -> Result<Input<A>, &'static str> {
+        self.input_reconstructions
+            .set(self.input_reconstructions.get().saturating_add(1));
+        let entry = self.entries.get(id).ok_or("archive input id is missing")?;
+        let actions = self
+            .input_index
+            .materialize(entry.input_node, entry.input_len)
+            .ok_or("archive input length disagrees with its prefix path")?;
+        Ok(Input { actions })
+    }
+
+    /// The snapshot a job for this entry restores and the actions it replays
+    /// before its own suffix: the entry's own resident snapshot and nothing,
+    /// or its keyframe's snapshot and the path between them.
+    pub(crate) fn job_origin(&self, id: usize) -> Result<(Arc<S>, Vec<A>), &'static str> {
+        let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
+        if self.snapshot_selectable[id] {
+            let snapshot = entry
+                .snapshot
+                .clone()
+                .ok_or("job origin entry has no resident snapshot")?;
+            return Ok((snapshot, Vec::new()));
+        }
+        let keyframe = self
+            .index_of_id(self.keyframe_id[id])
+            .ok_or("job origin keyframe is missing")?;
+        if !self.snapshot_selectable[keyframe] {
+            return Err("job origin keyframe has no resident snapshot");
+        }
+        let keyframe_entry = &self.entries[keyframe];
+        let snapshot = keyframe_entry
+            .snapshot
+            .clone()
+            .ok_or("job origin keyframe has no resident snapshot")?;
+        let distance = entry
+            .input_len
+            .checked_sub(keyframe_entry.input_len)
+            .ok_or("job origin keyframe is longer than its dependent")?;
+        let replay = self
+            .input_index
+            .actions_between(keyframe_entry.input_node, entry.input_node, distance)
+            .ok_or("job origin keyframe is not on the entry's input path")?;
+        Ok((snapshot, replay))
+    }
+
+    fn existing_input_id(&self, parent_id: Option<usize>, suffix: &[A]) -> Option<usize> {
+        let node = self.input_index_start(parent_id);
+        let node = self.input_index.walk(node, suffix)?;
+        let stable_id = self.input_index.owner(node)?;
+        self.id_to_index.get(&stable_id).copied()
+    }
+
+    fn index_retained_input(
+        &mut self,
+        parent_id: Option<usize>,
+        suffix: &[A],
+        stable_id: u64,
+    ) -> Result<(usize, usize), &'static str> {
+        let node = self.input_index_start(parent_id);
+        let (node, inserted) = self.input_index.ensure_path(node, suffix)?;
+        self.input_index.set_owner(node, Some(stable_id));
+        Ok((node, inserted))
+    }
+
+    fn prefix_node_memory_charge() -> usize {
+        size_of::<BTreeMap<A, usize>>()
+            .saturating_add(size_of::<Option<usize>>())
+            .saturating_add(size_of::<A>())
+            .saturating_add(size_of::<usize>())
+            // Conservative allocator/B-tree node overhead per unique edge.
+            .saturating_add(64)
+    }
+
+    fn history_entry_memory_charge(suffix_len: usize, new_nodes: usize) -> usize {
+        size_of::<ArchiveEntry<A, K, M, S>>()
+            .saturating_add(suffix_len.saturating_mul(size_of::<A>()))
+            .saturating_add(size_of::<K::Lineage>())
+            .saturating_add(size_of::<(K, usize)>())
+            .saturating_add(4_usize.saturating_mul(size_of::<u64>()))
+            .saturating_add(4_usize.saturating_mul(size_of::<usize>()))
+            // Ordered slot/selector nodes and vector slack.
+            .saturating_add(128)
+            .saturating_add(new_nodes.saturating_mul(Self::prefix_node_memory_charge()))
+    }
+
+    fn historical_group_memory_charge(value_bytes: usize) -> usize {
+        size_of::<K::Group>()
+            .saturating_add(value_bytes)
+            // Conservative allocator/B-tree node overhead per remembered key.
+            .saturating_add(64)
+    }
+
+    fn auxiliary_history_memory_bytes(&self) -> usize {
+        self.novelty_memory_bytes()
+            .saturating_add(self.barren_memory_bytes())
+    }
+
+    /// Whether every successive action after `parent_id` reaches an input
+    /// already retained in the archive.
+    pub(crate) fn all_extensions_retained(&self, parent_id: usize, actions: &[A]) -> bool {
+        let Some(mut node) = self.entries.get(parent_id).map(|entry| entry.input_node) else {
+            return false;
+        };
+        for action in actions {
+            let Some(child) = self
+                .input_index
+                .nodes
+                .get(node)
+                .and_then(Option::as_ref)
+                .and_then(|node| node.children.get(action))
+                .copied()
+            else {
+                return false;
+            };
+            node = child;
+            if self.input_index.owner(node).is_none() {
+                return false;
+            }
+        }
+        true
     }
 
     /// The walk's class depth: the coarsest group.
@@ -835,16 +2142,88 @@ where
     /// Rebuild the selector index for `max_actions`.
     fn rebuild_selector_index(&mut self, max_actions: usize) {
         self.frontier_cap = Some(max_actions);
-        self.active_list = self.active_ids(max_actions);
+        self.active_ids = ActiveIds::from_ids(self.active_ids(max_actions));
         self.classes = BTreeMap::new();
         self.live_children.iter_mut().for_each(BTreeMap::clear);
         self.live_group_cells.iter_mut().for_each(BTreeMap::clear);
         self.active_skip_groups.clear();
         self.live_skip_groups.clear();
-        let active = self.active_list.clone();
+        let active = self.active_ids.ids().collect::<Vec<_>>();
         for id in active {
             self.insert_active_cell_member(id);
         }
+    }
+
+    /// Rebuild the selector around the bounded liveness anchor after a stale
+    /// active-id index was emptied by deterministic archive maintenance.
+    fn reactivate_liveness_anchor(&mut self, max_actions: usize) -> bool {
+        if !self.active_ids.is_empty() {
+            return false;
+        }
+        self.establish_liveness_anchor(max_actions);
+        let Some(anchor) = self.liveness_anchor else {
+            return false;
+        };
+        let Some(index) = self.index_of_id(anchor) else {
+            return false;
+        };
+        if !self
+            .snapshot_selectable
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+            || self.entries[index].snapshot.is_none()
+            || self.entries[index].input_len >= max_actions
+        {
+            return false;
+        }
+        if !self.active.get(index).copied().unwrap_or(false) {
+            if self.active_count >= self.max_entries && !self.drop_one_entry() {
+                return false;
+            }
+            let slot_key = self.entries[index].key.group(0);
+            let slot_full = self
+                .slots
+                .get(&slot_key)
+                .is_some_and(|slot| slot.len() >= MAX_ENTRIES_PER_KEY);
+            if slot_full {
+                let replaced = self
+                    .slots
+                    .get(&slot_key)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|id| !self.is_liveness_anchor(*id))
+                    .max_by_key(|id| (self.time_in_group[*id], self.entries[*id].id));
+                let Some(replaced) = replaced else {
+                    return false;
+                };
+                self.deactivate(replaced);
+            }
+            self.active[index] = true;
+            self.active_count = self.active_count.saturating_add(1);
+            let keyframe = self.index_of_id(self.keyframe_id[index]);
+            if let Some(keyframe) = keyframe {
+                self.keyframe_dependents[keyframe] =
+                    self.keyframe_dependents[keyframe].saturating_add(1);
+            }
+            self.slots
+                .entry(self.entries[index].key.group(0))
+                .or_default()
+                .push(index);
+            #[cfg(test)]
+            {
+                self.liveness_anchor_reactivations =
+                    self.liveness_anchor_reactivations.saturating_add(1);
+            }
+        }
+        self.rebuild_selector_index(max_actions);
+        !self.active_ids.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn liveness_anchor_reactivations(&self) -> u64 {
+        self.liveness_anchor_reactivations
     }
 
     /// Add a fresh entry to the selector index. Ids only grow, so pushes
@@ -853,10 +2232,10 @@ where
         let Some(cap) = self.frontier_cap else {
             return;
         };
-        if self.entries[id].report.input.actions.len() >= cap {
+        if self.entries[id].input_len >= cap {
             return;
         }
-        self.active_list.push(id);
+        self.active_ids.insert(id);
         self.insert_active_cell_member(id);
     }
 
@@ -865,24 +2244,24 @@ where
         if self.frontier_cap.is_none() {
             return;
         }
-        if let Ok(position) = self.active_list.binary_search(&id) {
-            self.active_list.remove(position);
-        }
-        let key = self.entries[id].report.key;
+        self.active_ids.remove(id);
+        let key = self.entries[id].key;
         let class = Reverse(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
         let was_sampleable = self.entry_unexhausted(id);
+        let deepest = self.deepest_leaf[id];
         let mut became_dead = false;
         let mut removed_cell = false;
         let mut removed_class = false;
         if let Some(cells) = self.classes.get_mut(&class) {
             if let Some(members) = cells.get_mut(&cell) {
-                if let Ok(position) = members.ids.binary_search(&id) {
-                    members.ids.remove(position);
+                if members.ids.remove(&id) {
+                    members.drawn = members.drawn.saturating_sub(self.selected[id]);
+                    members.donors.remove(&(deepest.0, deepest.1, id));
                     if was_sampleable {
-                        members.sampleable = members.sampleable.saturating_sub(1);
+                        members.sampleable.remove(&id);
                     }
-                    became_dead = members.sampleable == 0 && was_sampleable;
+                    became_dead = members.sampleable.is_empty() && was_sampleable;
                 }
                 if members.ids.is_empty() {
                     cells.remove(&cell);
@@ -903,10 +2282,11 @@ where
     }
 
     fn insert_active_cell_member(&mut self, id: usize) {
-        let key = self.entries[id].report.key;
+        let key = self.entries[id].key;
         let class = Reverse(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
         let sampleable = self.entry_unexhausted(id);
+        let deepest = self.deepest_leaf[id];
         let members = self
             .classes
             .entry(class)
@@ -914,15 +2294,43 @@ where
             .entry(cell)
             .or_default();
         let new_cell = members.ids.is_empty();
-        let was_live = members.sampleable > 0;
-        members.ids.push(id);
-        members.sampleable = members.sampleable.saturating_add(usize::from(sampleable));
+        let was_live = !members.sampleable.is_empty();
+        if new_cell {
+            members.opened = id;
+        }
+        members.ids.insert(id);
+        members.drawn = members.drawn.saturating_add(self.selected[id]);
+        members.donors.insert((deepest.0, deepest.1, id));
+        if sampleable {
+            members.sampleable.insert(id);
+        }
         if new_cell {
             self.insert_active_cell(key);
         }
         if !was_live && sampleable {
             self.set_cell_live(key, true);
         }
+    }
+
+    fn update_index_deepest_leaf(&mut self, id: usize, previous: (K, usize), current: (K, usize)) {
+        if self.frontier_cap.is_none() {
+            return;
+        }
+        let key = self.entries[id].key;
+        let class = Reverse(key.group(Self::class_depth()));
+        let cell = key.group(Self::cell_depth());
+        let Some(members) = self
+            .classes
+            .get_mut(&class)
+            .and_then(|cells| cells.get_mut(&cell))
+        else {
+            return;
+        };
+        if !members.ids.contains(&id) {
+            return;
+        }
+        members.donors.remove(&(previous.0, previous.1, id));
+        members.donors.insert((current.0, current.1, id));
     }
 
     fn insert_active_cell(&mut self, key: K) {
@@ -984,7 +2392,7 @@ where
     }
 
     fn set_entry_sampleable(&mut self, id: usize, sampleable: bool) {
-        let key = self.entries[id].report.key;
+        let key = self.entries[id].key;
         let class = Reverse(key.group(Self::class_depth()));
         let cell = key.group(Self::cell_depth());
         let Some(members) = self
@@ -997,16 +2405,16 @@ where
         // A selected job may finish after an earlier admission displaced its
         // parent. The cell can still exist for other entries, but that stale
         // parent must not change their cached live-member count.
-        if members.ids.binary_search(&id).is_err() {
+        if !members.ids.contains(&id) {
             return;
         }
-        let was_live = members.sampleable > 0;
+        let was_live = !members.sampleable.is_empty();
         if sampleable {
-            members.sampleable = members.sampleable.saturating_add(1);
+            members.sampleable.insert(id);
         } else {
-            members.sampleable = members.sampleable.saturating_sub(1);
+            members.sampleable.remove(&id);
         }
-        let live = members.sampleable > 0;
+        let live = !members.sampleable.is_empty();
         if live != was_live {
             self.set_cell_live(key, live);
         }
@@ -1018,10 +2426,10 @@ where
         self.live_skip_groups.clear();
         for cells in self.classes.values_mut() {
             for members in cells.values_mut() {
-                members.sampleable = 0;
+                members.sampleable.clear();
             }
         }
-        let active = self.active_list.clone();
+        let active = self.active_ids.ids().collect::<Vec<_>>();
         for id in active {
             if self.entry_unexhausted(id) {
                 self.set_entry_sampleable(id, true);
@@ -1060,16 +2468,8 @@ where
     /// calling it cannot change what a run records.
     #[must_use]
     pub fn live_progress(&self) -> Option<(K, u64, u64)> {
-        let deepest = self.entries.iter().map(|entry| entry.report.key).max()?;
-        let cheapest = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.report.key == deepest)
-            .map(|(index, _)| self.time_in_group.get(index).copied().unwrap_or(0))
-            .min()
-            .unwrap_or(0);
-        Some((deepest, cheapest, self.retained))
+        self.live_progress
+            .map(|(deepest, cheapest)| (deepest, cheapest, self.retained))
     }
 
     /// Time a candidate spent inside its own coarsest group.
@@ -1080,7 +2480,7 @@ where
     /// parent's count; one whose parent sits elsewhere entered the group
     /// during those actions and starts the count there. A candidate with no
     /// parent — genesis, and only genesis — counts its whole input.
-    fn time_in_group_of(&self, parent_id: Option<usize>, input: &Input<A>, key: K) -> u64 {
+    fn time_in_group_of(&self, parent_id: Option<usize>, suffix: &[A], key: K) -> u64 {
         let time_of = |actions: &[A]| -> u64 {
             actions
                 .iter()
@@ -1088,12 +2488,11 @@ where
                 .sum()
         };
         let Some(parent) = parent_id.and_then(|id| self.entries.get(id)) else {
-            return time_of(&input.actions);
+            return time_of(suffix);
         };
-        let parent_actions = parent.report.input.actions.len();
-        let added = time_of(input.actions.get(parent_actions..).unwrap_or(&[]));
+        let added = time_of(suffix);
         let depth = Self::coarsest_depth();
-        if parent.report.key.group(depth) == key.group(depth) {
+        if parent.key.group(depth) == key.group(depth) {
             self.time_in_group
                 .get(parent_id.unwrap_or_default())
                 .copied()
@@ -1116,75 +2515,171 @@ where
         candidate: ArchiveCandidate<A, K, M>,
         snapshot: S,
     ) -> Result<Option<usize>, Box<dyn Error>> {
+        self.insert_after(parent_id, None, execution, candidate, snapshot)
+            .map(|(id, _)| id)
+    }
+
+    /// Offer a candidate to retention, completing its key against
+    /// `previous` when given: the completed key of the boundary just before
+    /// this one on the same input, which retention did not keep. A job walks
+    /// many boundaries past its parent, and the ones landing in full slots
+    /// still carry the lineage's position forward, so completion follows the
+    /// last boundary rather than the last retained entry. Returns the
+    /// completed key with the outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on id-space overflow or a missing parent.
+    pub fn insert_after(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<A, K, M>,
+        snapshot: S,
+    ) -> Result<(Option<usize>, K), Box<dyn Error>> {
         let ArchiveCandidate {
-            input,
+            suffix,
             key,
             milestones,
         } = candidate;
-        if let Some(existing) = self.input_ids.get(&input) {
-            return Ok(Some(*existing));
+        if let Some(existing) = self.existing_input_id(parent_id, &suffix) {
+            return Ok((Some(existing), self.entries[existing].key));
         }
         if parent_id.is_some_and(|id| self.entries.get(id).is_none()) {
             return Err("archive candidate parent is missing".into());
         }
-        let parent_ctx = parent_id.map(|id| (self.entries[id].report.key, &self.lineages[id]));
+        let parent_ctx =
+            parent_id.map(|id| (previous.unwrap_or(self.entries[id].key), &self.lineages[id]));
         let key = key.complete(parent_ctx);
         let depth = Self::coarsest_depth();
         let mut lineage = match parent_id {
-            Some(id) if self.entries[id].report.key.group(depth) == key.group(depth) => {
+            Some(id) if self.entries[id].key.group(depth) == key.group(depth) => {
                 self.lineages[id].clone()
             }
             _ => K::Lineage::default(),
         };
         K::record(&mut lineage, key);
-        let candidate_time_in_group = self.time_in_group_of(parent_id, &input, key);
+        let candidate_time_in_group = self.time_in_group_of(parent_id, &suffix, key);
         // The costliest entry in the group's own clock loses to a candidate
         // that reached the same slot in strictly less time. The entry id
         // breaks ties so the choice stays a total order over the slot.
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
-        let slot_full = slot.len() >= MAX_ENTRIES_PER_KEY;
+        let slot_full = slot.len() >= K::slot_capacity().max(1);
         let replace = if slot_full {
-            slot.iter()
-                .copied()
-                .max_by_key(|id| (self.time_in_group[*id], self.entries[*id].report.id))
-                .filter(|id| candidate_time_in_group < self.time_in_group[*id])
+            let worst = slot.iter().copied().min_by(|left, right| {
+                let left_entry = &self.entries[*left];
+                let right_entry = &self.entries[*right];
+                left_entry
+                    .key
+                    .preference_cmp(right_entry.key)
+                    .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
+                    .then_with(|| right_entry.id.cmp(&left_entry.id))
+            });
+            worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
+                Ordering::Greater => true,
+                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+                Ordering::Less => false,
+            })
         } else {
             None
         };
         if slot_full && replace.is_none() {
             self.rejected = self.rejected.saturating_add(1);
-            return Ok(None);
+            return Ok((None, key));
         }
-        if self.entries.len() >= self.max_entries {
-            self.rejected = self.rejected.saturating_add(1);
-            return Ok(None);
+        let population_retirements = self
+            .active_count
+            .saturating_sub(self.max_entries)
+            .saturating_add(1);
+        for _ in 0..population_retirements {
+            if self.active_count < self.max_entries {
+                break;
+            }
+            if !self.drop_one_entry() {
+                if self.active_count == 1 && self.deactivate_liveness_anchor_for_admission() {
+                    continue;
+                }
+                return Err("archive population limit cannot retire an entry".into());
+            }
+        }
+        if self.active_count >= self.max_entries {
+            return Err("archive population limit did not retire an entry".into());
         }
         if let Some(replaced) = replace {
-            self.active[replaced] = false;
-            if let Some(slot) = self.slots.get_mut(&key.group(0)) {
-                slot.retain(|id| *id != replaced);
-            }
             self.replacement_time_displaced = self.replacement_time_displaced.saturating_add(1);
-            self.index_remove(replaced);
+            self.deactivate(replaced);
         }
         let id = self.entries.len();
-        let report = ArchiveEntryReport {
-            id: u64::try_from(id)?,
-            parent_id: parent_id.map(u64::try_from).transpose()?,
+        let stable_id = self.next_entry_id;
+        self.next_entry_id = self
+            .next_entry_id
+            .checked_add(1)
+            .ok_or("archive stable id space exhausted")?;
+        let snapshot_charge = self.snapshot_charge(&snapshot);
+        let parent_input_len = parent_id.map_or(0, |parent| self.entries[parent].input_len);
+        let input_len = parent_input_len
+            .checked_add(suffix.len())
+            .ok_or("archive candidate input length overflow")?;
+        self.historical_input_actions = self.historical_input_actions.saturating_add(input_len);
+        self.stored_input_actions = self.stored_input_actions.saturating_add(suffix.len());
+        let (input_node, new_nodes) = self.index_retained_input(parent_id, &suffix, stable_id)?;
+        self.entries.push(ArchiveEntry {
+            id: stable_id,
+            parent_id: parent_id.map(|parent| self.entries[parent].id),
             created_execution: execution,
-            input: input.clone(),
+            input_suffix: suffix.clone(),
+            input_len,
+            input_node,
             key,
             milestones,
-            selector: None,
-        };
-        self.entries.push(ArchiveEntry {
-            report,
-            snapshot: Arc::new(snapshot),
+            snapshot: Some(Arc::new(snapshot)),
         });
+        self.id_to_index.insert(stable_id, id);
+        self.snapshot_selectable.push(true);
+        self.resident_snapshots = self.resident_snapshots.saturating_add(1);
+        self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_add(snapshot_charge);
+        // The first entry of each replay bucket on a lineage is its keyframe.
+        // A lineage whose keyframe is no longer resident, which can happen
+        // when the parent was retired while its job was in flight, restarts
+        // its bucket here.
+        let inherited_keyframe = parent_id
+            .filter(|parent| {
+                Self::replay_bucket(self.entries[*parent].input_len)
+                    == Self::replay_bucket(input_len)
+            })
+            .and_then(|parent| self.index_of_id(self.keyframe_id[parent]))
+            .filter(|keyframe| self.snapshot_selectable[*keyframe]);
+        let keyframe_index = inherited_keyframe.unwrap_or(id);
+        self.keyframe.push(inherited_keyframe.is_none());
+        self.keyframe_id.push(if inherited_keyframe.is_none() {
+            stable_id
+        } else {
+            self.entries[keyframe_index].id
+        });
+        self.keyframe_dependents.push(0);
+        self.keyframe_dependents[keyframe_index] =
+            self.keyframe_dependents[keyframe_index].saturating_add(1);
+        self.referenced.push(true);
+        if inherited_keyframe.is_some() {
+            self.resident_snapshot_order.push_back(id);
+        }
         self.active.push(true);
+        self.active_count = self.active_count.saturating_add(1);
         self.lineages.push(lineage);
         self.time_in_group.push(candidate_time_in_group);
+        match &mut self.live_progress {
+            Some((deepest, cheapest)) if key > *deepest => {
+                *deepest = key;
+                *cheapest = candidate_time_in_group;
+            }
+            Some((deepest, cheapest)) if key == *deepest => {
+                *cheapest = (*cheapest).min(candidate_time_in_group);
+            }
+            Some(_) => {}
+            None => self.live_progress = Some((key, candidate_time_in_group)),
+        }
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
@@ -1200,20 +2695,24 @@ where
         self.deepest_leaf.push((key, id));
         let mut ancestor = parent_id;
         while let Some(current) = ancestor {
-            if self.deepest_leaf[current] >= (key, id) {
+            let previous = self.deepest_leaf[current];
+            if previous >= (key, id) {
                 break;
             }
+            self.update_index_deepest_leaf(current, previous, (key, id));
             self.deepest_leaf[current] = (key, id);
             ancestor = self.entries[current]
-                .report
                 .parent_id
-                .and_then(|parent| usize::try_from(parent).ok());
+                .and_then(|parent| self.id_to_index.get(&parent).copied());
         }
         self.slots.entry(key.group(0)).or_default().push(id);
-        self.input_ids.insert(input, id);
+        self.history_memory_bytes = self
+            .history_memory_bytes
+            .saturating_add(Self::history_entry_memory_charge(suffix.len(), new_nodes));
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
-        Ok(Some(id))
+        self.enforce_snapshot_memory_budget()?;
+        Ok((Some(id), key))
     }
 
     /// Derive a campaign splice after ensuring the selection-cell index is
@@ -1229,16 +2728,15 @@ where
         if self.frontier_cap != Some(max_actions) {
             self.rebuild_selector_index(max_actions);
         }
-        let parent_key = self.entries[parent].report.key;
+        let parent_key = self.entries[parent].key;
         let class = Reverse(parent_key.group(Self::class_depth()));
         let cell = parent_key.group(Self::cell_depth());
         let members = self.classes.get(&class)?.get(&cell)?;
         let donor_id = members
-            .ids
+            .donors
             .iter()
-            .filter(|member| **member != parent)
-            .max_by_key(|member| self.deepest_leaf[**member])
-            .copied()?;
+            .rev()
+            .find_map(|(_, _, donor)| (*donor != parent).then_some(*donor))?;
         let (leaf_key, leaf_id) = self.deepest_leaf[donor_id];
         if leaf_key <= parent_key {
             return None;
@@ -1276,42 +2774,32 @@ where
         if donor == parent {
             return Err("splice donor is the selected parent");
         }
-        let parent_key = parent_entry.report.key;
-        let donor_key = donor_entry.report.key;
+        let parent_key = parent_entry.key;
+        let donor_key = donor_entry.key;
         if parent_key.group(Self::class_depth()) != donor_key.group(Self::class_depth())
             || parent_key.group(Self::cell_depth()) != donor_key.group(Self::cell_depth())
         {
             return Err("splice donor is outside the parent's selection cell");
         }
-        let mut ancestor = Some(leaf);
-        let mut steps = 0_usize;
-        while let Some(id) = ancestor {
-            if id == donor {
-                break;
-            }
-            if steps > self.entries.len() {
-                ancestor = None;
-                break;
-            }
-            ancestor = self
-                .entries
-                .get(id)
-                .and_then(|entry| entry.report.parent_id)
-                .and_then(|id| usize::try_from(id).ok());
-            steps = steps.saturating_add(1);
-        }
-        if ancestor != Some(donor) {
+        let donor_input = self
+            .input_index
+            .materialize(donor_entry.input_node, donor_entry.input_len)
+            .ok_or("splice donor prefix is unavailable")?;
+        let leaf_input = self
+            .input_index
+            .materialize(leaf_entry.input_node, leaf_entry.input_len)
+            .ok_or("splice leaf prefix is unavailable")?;
+        if !leaf_input.starts_with(&donor_input) {
             return Err("splice leaf is not a descendant of its donor");
         }
-        if leaf_entry.report.key <= parent_key {
+        if leaf_entry.key <= parent_key {
             return Err("splice leaf does not advance past the parent");
         }
-        let prefix = donor_entry.report.input.actions.len();
-        let tail = &leaf_entry.report.input.actions;
-        if prefix >= tail.len() {
+        let suffix = &leaf_input[donor_input.len()..];
+        if suffix.is_empty() {
             return Err("splice leaf has no actions past its donor");
         }
-        Ok(tail[prefix..tail.len().min(prefix + cap)].to_vec())
+        Ok(suffix.iter().take(cap).cloned().collect())
     }
 
     fn active_ids(&self, max_actions: usize) -> Vec<usize> {
@@ -1319,7 +2807,8 @@ where
             .iter()
             .enumerate()
             .filter_map(|(id, active)| {
-                (*active && self.entries[id].report.input.actions.len() < max_actions).then_some(id)
+                (*active && self.origin_resident(id) && self.entries[id].input_len < max_actions)
+                    .then_some(id)
             })
             .collect()
     }
@@ -1342,13 +2831,16 @@ where
         if self.frontier_cap != Some(max_actions) {
             self.rebuild_selector_index(max_actions);
         }
-        if self.active_list.is_empty() {
+        if self.active_ids.is_empty() && !self.reactivate_liveness_anchor(max_actions) {
             return Err("archive has no expandable entry".into());
         }
         let use_walk = rand.below(NonZeroUsize::new(4).ok_or("invalid frontier odds")?) != 0;
         if !use_walk {
-            let count = NonZeroUsize::new(self.active_list.len()).ok_or("empty archive")?;
-            let id = self.active_list[rand.below(count)];
+            let count = NonZeroUsize::new(self.active_ids.len()).ok_or("empty archive")?;
+            let id = self
+                .active_ids
+                .select(rand.below(count))
+                .ok_or("active-id rank is outside the archive")?;
             return Ok((
                 id,
                 SelectorDraw {
@@ -1422,13 +2914,16 @@ where
                 // and only the finally chosen cell's live members are
                 // materialized, so a draw allocates one member list rather
                 // than one per cell.
-                let key = self.entries[members.ids[0]].report.key;
+                let Some(member) = members.ids.iter().next().copied() else {
+                    continue;
+                };
+                let key = self.entries[member].key;
                 let group_live = ignore_streaks || self.groups_unexhausted(key);
                 let live = group_live
-                    && members
-                        .ids
-                        .iter()
-                        .any(|id| ignore_streaks || self.entry_unexhausted(*id));
+                    && members.ids.iter().any(|id| {
+                        self.active.get(*id).copied().unwrap_or(false)
+                            && (ignore_streaks || self.entry_unexhausted(*id))
+                    });
                 let subclass = subclass_live.entry(key.group(skip_depth)).or_insert(false);
                 *subclass |= live;
                 if live {
@@ -1443,13 +2938,17 @@ where
                 continue;
             }
             for depth in (2..Self::coarsest_depth()).rev() {
-                let mut groups = cells
-                    .iter()
-                    .map(|(key, _)| key.group(depth))
-                    .collect::<Vec<_>>();
-                groups.sort_unstable();
-                groups.dedup();
-                let index = self.draw_group_index(rand, depth, &groups)?;
+                let mut deepest = BTreeMap::<K::Group, K::Group>::new();
+                for (key, _) in &cells {
+                    let band = key.group(Self::frontier_depth());
+                    deepest
+                        .entry(key.group(depth))
+                        .and_modify(|frontier| *frontier = (*frontier).max(band))
+                        .or_insert(band);
+                }
+                let mut groups = deepest.keys().copied().collect::<Vec<_>>();
+                let frontier = deepest.values().copied().collect::<Vec<_>>();
+                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
                 let chosen = groups.swap_remove(index);
                 cells.retain(|(key, _)| key.group(depth) == chosen);
             }
@@ -1463,7 +2962,17 @@ where
                     .iter()
                     .map(|(key, _)| key.group(1))
                     .collect::<Vec<_>>();
-                self.draw_group_index(rand, 1, &cell_groups)?
+                let ranked = cells
+                    .iter()
+                    .map(|(_, members)| {
+                        let offered = members.ids.iter().filter(|id| {
+                            self.active.get(**id).copied().unwrap_or(false)
+                                && (ignore_streaks || self.entry_unexhausted(**id))
+                        });
+                        (members.novelty(), self.cheapest_offered(offered))
+                    })
+                    .collect::<Vec<_>>();
+                self.draw_group_index(rand, 1, &cell_groups, None, Some(&ranked))?
             } else {
                 let count = NonZeroUsize::new(cells.len()).ok_or("cell draw over no cells")?;
                 rand.below(count)
@@ -1474,7 +2983,10 @@ where
                     .ids
                     .iter()
                     .copied()
-                    .filter(|id| ignore_streaks || self.entry_unexhausted(*id))
+                    .filter(|id| {
+                        self.active.get(*id).copied().unwrap_or(false)
+                            && (ignore_streaks || self.entry_unexhausted(*id))
+                    })
                     .collect(),
             ));
         }
@@ -1509,7 +3021,11 @@ where
                     .iter()
                     .copied()
                     .collect::<Vec<_>>();
-                let index = self.draw_group_index(rand, depth, &groups)?;
+                let frontier = groups
+                    .iter()
+                    .map(|group| self.deepest_live_band(class, depth, *group))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let index = self.draw_group_index(rand, depth, &groups, Some(&frontier), None)?;
                 parent = groups[index];
             }
 
@@ -1523,7 +3039,19 @@ where
                     .copied()
                     .collect::<Vec<_>>();
                 if class_depth >= 1 {
-                    groups[self.draw_group_index(rand, cell_depth, &groups)?]
+                    let ranked = groups
+                        .iter()
+                        .map(|cell| {
+                            let members = cells.get(cell);
+                            (
+                                members.and_then(CellMembers::novelty),
+                                members.and_then(|members| {
+                                    self.cheapest_offered(members.sampleable.iter())
+                                }),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    groups[self.draw_group_index(rand, cell_depth, &groups, None, Some(&ranked))?]
                 } else {
                     groups[rand
                         .below(NonZeroUsize::new(groups.len()).ok_or("cell draw over no cells")?)]
@@ -1531,7 +3059,7 @@ where
             } else {
                 let only = [class];
                 if class_depth >= 1 {
-                    let _ = self.draw_group_index(rand, cell_depth, &only)?;
+                    let _ = self.draw_group_index(rand, cell_depth, &only, None, None)?;
                 } else {
                     let _ = rand.below(NonZeroUsize::new(1).ok_or("cell draw over no cells")?);
                 }
@@ -1540,32 +3068,71 @@ where
             let members = cells
                 .get(&cell)
                 .ok_or("live selector hierarchy chose an absent cell")?;
-            let sampleable = members
-                .ids
+            let mut sampleable = members
+                .sampleable
                 .iter()
+                .rev()
+                .take(CONCENTRATION_WINDOW)
                 .copied()
-                .filter(|id| self.entry_unexhausted(*id))
                 .collect::<Vec<_>>();
-            if sampleable.len() != members.sampleable {
-                return Err("live selector cell count diverged from entry state".into());
-            }
+            sampleable.reverse();
             return Ok(Some(sampleable));
         }
         Ok(None)
     }
 
-    /// Draw one index into `groups` at `depth`. Under the energy selector
-    /// each group's weight halves every `scale` barren selections and floors
-    /// at 1/256 of a fresh group; every other selector draws uniformly, so
-    /// their recorded rand streams keep their exact bytes.
+    /// The depth whose groups order the walk's frontier rank: the pooled
+    /// threshold depth, which for a key with a progress band is the band.
+    fn frontier_depth() -> usize {
+        2.min(Self::class_depth())
+    }
+
+    /// The deepest live frontier-depth group under `group` at `depth`
+    /// within `class`. A group's own key orders by whatever its pooled
+    /// fields leave, which for a room is its identity bytes, so the walk
+    /// ranks groups above the frontier depth by their frontier instead.
+    fn deepest_live_band(
+        &self,
+        class: K::Group,
+        depth: usize,
+        group: K::Group,
+    ) -> Result<K::Group, Box<dyn Error>> {
+        let mut current = group;
+        for level in (Self::frontier_depth()..depth).rev() {
+            current = *self
+                .live_children
+                .get(level)
+                .and_then(|children| children.get(&(class, current)))
+                .and_then(BTreeSet::last)
+                .ok_or("live selector hierarchy is missing a pooled group's frontier")?;
+        }
+        Ok(current)
+    }
+
+    /// Draw one index into `groups` at `depth`, where `frontier[i]` is the
+    /// deepest live frontier-depth group under `groups[i]`, or `None` below
+    /// the frontier depth where every group shares one and `cells[i]` is
+    /// instead the id that opened cell `groups[i]` while it still counts as
+    /// new and the frames in group of the cheapest member its draw offers.
+    /// Under the energy selector each group's weight halves every `scale`
+    /// barren selections and floors at 1/256 of a fresh group, then halves
+    /// again for every distinct deeper frontier that still holds energy, down
+    /// to 1/65,536 of the deepest, or for every
+    /// `CELL_NOVELTY_RANK_SCALE` newer cells that still count as new plus
+    /// every `CHEAPEST_RANK_SCALE` cells with a cheaper best member, so the
+    /// rank order survives the energy floor; a cell past its novelty draws
+    /// competes on energy and cost alone; every other selector draws
+    /// uniformly, so their recorded rand streams keep their exact bytes.
     fn draw_group_index(
         &self,
         rand: &mut RomuDuoJrRand,
         depth: usize,
         groups: &[K::Group],
+        frontier: Option<&[K::Group]>,
+        cells: Option<&[(Option<usize>, Option<u64>)]>,
     ) -> Result<usize, Box<dyn Error>> {
         let count = NonZeroUsize::new(groups.len()).ok_or("group draw over no groups")?;
-        let (scales, frontier) = match &self.selector_policy {
+        let (scales, ranked_by_frontier) = match &self.selector_policy {
             SelectorPolicy::Energy(scales) => (scales, false),
             SelectorPolicy::EnergyFrontier(scales)
             | SelectorPolicy::EnergyFrontierCheapest(scales) => (scales, true),
@@ -1576,19 +3143,44 @@ where
         let Some(scale) = scales.groups.get(depth - 1).copied() else {
             return Ok(rand.below(count));
         };
-        // Frontier rank depends only on the set of distinct groups. Build
-        // that ordering once instead of filtering, allocating, sorting, and
-        // deduplicating the complete group list once per candidate group.
-        let ranked = if frontier {
-            let mut ranked = groups.to_vec();
-            ranked.sort_unstable();
-            ranked.dedup();
-            ranked
-        } else {
-            Vec::new()
+        // Frontier rank depends only on the set of distinct frontiers that
+        // still hold energy: a frontier whose own draws have all faded no
+        // longer pushes the groups behind it down, so a stalled frontier
+        // hands its draws back to the fork it grew from. Build that ordering
+        // once instead of filtering, allocating, sorting, and deduplicating
+        // the complete list once per candidate group.
+        let ranked = match frontier {
+            Some(frontier) if ranked_by_frontier => {
+                let frontier_depth = Self::frontier_depth();
+                let frontier_scale = scales.groups.get(frontier_depth - 1).copied();
+                let mut ranked = frontier.to_vec();
+                ranked.sort_unstable();
+                ranked.dedup();
+                ranked.retain(|band| {
+                    let barren = self
+                        .group_barren
+                        .get(frontier_depth - 1)
+                        .and_then(|map| map.get(band))
+                        .copied()
+                        .unwrap_or(0);
+                    frontier_scale.is_none_or(|scale| barren / scale < 8)
+                });
+                ranked
+            }
+            _ => Vec::new(),
+        };
+        let (newest, cheapest) = match cells {
+            Some(cells) if ranked_by_frontier && frontier.is_none() => {
+                let mut newest = cells.iter().filter_map(|cell| cell.0).collect::<Vec<_>>();
+                newest.sort_unstable();
+                let mut cheapest = cells.iter().filter_map(|cell| cell.1).collect::<Vec<_>>();
+                cheapest.sort_unstable();
+                (newest, cheapest)
+            }
+            _ => (Vec::new(), Vec::new()),
         };
         let mut weights = Vec::with_capacity(groups.len());
-        for group in groups {
+        for (index, group) in groups.iter().enumerate() {
             let barren = self
                 .group_barren
                 .get(depth - 1)
@@ -1597,17 +3189,35 @@ where
                 .unwrap_or(0);
             let halvings = usize::try_from((barren / scale).min(8)).unwrap_or(8);
             let energy = 256_usize >> halvings;
-            if !frontier {
+            if !ranked_by_frontier {
                 weights.push(energy);
                 continue;
             }
-            // Rank from the deepest distinct group value at this depth; the
-            // deepest group keeps its full energy weight.
-            let position = ranked
-                .binary_search(group)
-                .map_err(|_| "energy frontier group is missing from its own rank table")?;
-            let rank = ranked.len().saturating_sub(position.saturating_add(1));
-            weights.push((energy >> rank.min(8)).max(1));
+            let (rank, span) = match (frontier, cells) {
+                (Some(frontier), _) => {
+                    let behind = ranked.partition_point(|band| *band <= frontier[index]);
+                    (ranked.len().saturating_sub(behind), 16)
+                }
+                (None, Some(cells)) => {
+                    let (opened, cost) = cells[index];
+                    let novelty = match opened {
+                        Some(opened) => {
+                            let position = newest
+                                .binary_search(&opened)
+                                .map_err(|_| "energy cell is missing from its own novelty table")?;
+                            newest.len().saturating_sub(position.saturating_add(1))
+                                / CELL_NOVELTY_RANK_SCALE
+                        }
+                        None => 8,
+                    };
+                    let costlier = cost.map_or(0, |cost| {
+                        cheapest.partition_point(|cheaper| *cheaper < cost) / CHEAPEST_RANK_SCALE
+                    });
+                    (novelty.saturating_add(costlier), 16)
+                }
+                (None, None) => (0, 8),
+            };
+            weights.push((energy << span) >> rank.min(span));
         }
         let total = NonZeroUsize::new(weights.iter().sum()).ok_or("energy weights sum to zero")?;
         let mut draw = rand.below(total);
@@ -1661,6 +3271,20 @@ where
         }
     }
 
+    /// Frames in group of the cheapest member a cell's draw offers, given
+    /// the cell's sampleable ids in ascending order: the draw sees only the
+    /// `CONCENTRATION_WINDOW` greatest of them.
+    fn cheapest_offered<'a>(
+        &self,
+        sampleable: impl DoubleEndedIterator<Item = &'a usize>,
+    ) -> Option<u64> {
+        sampleable
+            .rev()
+            .take(CONCENTRATION_WINDOW)
+            .map(|id| self.time_in_group[*id])
+            .min()
+    }
+
     /// Uniform draw within the chosen cell, narrowed to the cell's
     /// `CONCENTRATION_WINDOW` greatest-id members.
     ///
@@ -1671,9 +3295,8 @@ where
     fn draw_from_cell(
         &mut self,
         rand: &mut RomuDuoJrRand,
-        mut cell: Vec<usize>,
+        cell: Vec<usize>,
     ) -> Result<(usize, ConcentrationDraw), Box<dyn Error>> {
-        cell.sort_unstable();
         let window = &cell[cell.len().saturating_sub(CONCENTRATION_WINDOW)..];
         let mut entered_window = 0_u64;
         for id in window {
@@ -1732,6 +3355,139 @@ where
         self.opened_cell.get(id).copied().unwrap_or(false)
     }
 
+    /// Number of entries currently participating in retention.
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.active_count
+    }
+
+    /// Number of machine snapshots currently resident for dispatch.
+    #[must_use]
+    pub fn resident_snapshot_count(&self) -> usize {
+        self.resident_snapshots
+    }
+
+    /// Deterministic logical bytes charged to resident snapshots.
+    #[must_use]
+    pub fn resident_snapshot_bytes(&self) -> usize {
+        self.resident_snapshot_bytes
+    }
+
+    /// Snapshots displaced solely by the global memory budget.
+    #[must_use]
+    pub fn snapshot_evictions(&self) -> u64 {
+        self.snapshot_evictions
+    }
+
+    /// Active entries the memory budget's sweep deactivated.
+    pub fn entry_drops(&self) -> u64 {
+        self.entry_drops
+    }
+
+    /// Compact entries currently held by the live acceleration structure.
+    #[must_use]
+    pub fn live_entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Deterministic history compactions completed so far.
+    #[must_use]
+    pub fn history_compactions(&self) -> u64 {
+        self.history_compactions
+    }
+
+    /// Historical entries retired from live memory after their stream record.
+    #[must_use]
+    pub fn historical_entries_dropped(&self) -> u64 {
+        self.historical_entries_dropped
+    }
+
+    /// Full inputs lazily reconstructed from the compact prefix structure.
+    #[must_use]
+    pub fn input_reconstructions(&self) -> u64 {
+        self.input_reconstructions.get()
+    }
+
+    /// Complete input action elements retained across historical reports.
+    #[must_use]
+    pub(crate) fn historical_input_actions(&self) -> usize {
+        self.historical_input_actions
+    }
+
+    /// Parent-relative action elements physically retained by live history.
+    #[must_use]
+    pub(crate) fn stored_input_actions(&self) -> usize {
+        self.stored_input_actions
+    }
+
+    /// Deterministic conservative bytes charged to compact history/indexes.
+    #[must_use]
+    pub fn history_memory_bytes(&self) -> usize {
+        self.history_memory_bytes
+            .saturating_add(self.auxiliary_history_memory_bytes())
+    }
+
+    /// Deterministic bytes charged to compact entry metadata, excluding its
+    /// action-prefix storage and historical selector maps.
+    #[must_use]
+    pub(crate) fn entry_metadata_memory_bytes(&self) -> usize {
+        self.entries
+            .len()
+            .saturating_mul(Self::history_entry_memory_charge(0, 0))
+    }
+
+    /// Deterministic bytes charged to the shared action-prefix index.
+    #[must_use]
+    pub(crate) fn input_index_memory_bytes(&self) -> usize {
+        self.input_index
+            .live_nodes
+            .saturating_mul(Self::prefix_node_memory_charge())
+            .saturating_add(self.stored_input_actions.saturating_mul(size_of::<A>()))
+    }
+
+    /// Deterministic bytes charged to remembered novelty cells.
+    #[must_use]
+    pub(crate) fn novelty_memory_bytes(&self) -> usize {
+        self.cells_seen
+            .len()
+            .saturating_mul(Self::historical_group_memory_charge(0))
+    }
+
+    /// Deterministic bytes charged to pooled selector-barrenness counters.
+    #[must_use]
+    pub(crate) fn barren_memory_bytes(&self) -> usize {
+        self.group_barren
+            .iter()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+            .saturating_mul(Self::historical_group_memory_charge(size_of::<u64>()))
+    }
+
+    /// Total deterministic bytes charged to live search state.
+    #[must_use]
+    pub fn resident_memory_bytes(&self) -> usize {
+        self.history_memory_bytes()
+            .saturating_add(self.resident_snapshot_bytes)
+    }
+
+    /// Unique action-prefix nodes retained by duplicate detection.
+    #[must_use]
+    pub(crate) fn input_index_nodes(&self) -> usize {
+        self.input_index.live_nodes
+    }
+
+    /// Distinct selection cells remembered for historical novelty accounting.
+    #[must_use]
+    pub(crate) fn historical_cell_count(&self) -> usize {
+        self.cells_seen.len()
+    }
+
+    /// Pooled selector groups carrying a live barren counter.
+    #[must_use]
+    pub(crate) fn barren_group_count(&self) -> usize {
+        self.group_barren.iter().map(BTreeMap::len).sum()
+    }
+
     /// Account one recorded selection of `id`.
     pub fn record_selection(&mut self, id: usize, draw: &SelectorDraw) {
         // The reset-marked draw is the only place streak counters clear.
@@ -1749,6 +3505,16 @@ where
         let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
+        self.referenced[id] = true;
+        let key = self.entries[id].key;
+        if let Some(members) = self
+            .classes
+            .get_mut(&Reverse(key.group(Self::class_depth())))
+            .and_then(|cells| cells.get_mut(&key.group(Self::cell_depth())))
+            && members.ids.contains(&id)
+        {
+            members.drawn = members.drawn.saturating_add(1);
+        }
         if was_sampleable && !self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, false);
         }
@@ -1759,7 +3525,6 @@ where
                 | SelectorPolicy::EnergyFrontier(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
         ) {
-            let key = self.entries[id].report.key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 let counter = map.entry(key.group(offset + 1)).or_insert(0);
                 *counter = counter.saturating_add(1);
@@ -1828,7 +3593,7 @@ where
             SelectorPolicy::GroupUniform => false,
         };
         if clears_groups {
-            let key = self.entries[id].report.key;
+            let key = self.entries[id].key;
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
                 map.insert(key.group(offset + 1), 0);
             }
@@ -1886,24 +3651,36 @@ where
     pub fn take_entry_reports_and_snapshots(
         &mut self,
     ) -> (Vec<ArchiveEntryReport<A, K, M>>, Vec<(u64, S)>) {
+        let inputs = (0..self.entries.len())
+            .map(|id| {
+                self.materialize_input(id)
+                    .unwrap_or_else(|_| Input::default())
+            })
+            .collect::<Vec<_>>();
         let entries = std::mem::take(&mut self.entries);
         let mut reports = Vec::with_capacity(entries.len());
         let mut snapshots = Vec::with_capacity(entries.len());
-        for (id, entry) in entries.into_iter().enumerate() {
-            let snapshot_id = entry.report.id;
-            let report = {
-                let mut report = entry.report;
-                report.selector = Some(EntrySelectorCounters {
+        for (id, (entry, input)) in entries.into_iter().zip(inputs).enumerate() {
+            let snapshot_id = entry.id;
+            let report = ArchiveEntryReport {
+                id: entry.id,
+                parent_id: entry.parent_id,
+                created_execution: entry.created_execution,
+                input,
+                key: entry.key,
+                milestones: entry.milestones,
+                selector: Some(EntrySelectorCounters {
                     selected: self.selected[id],
                     productive: self.productive[id],
-                });
-                report
+                }),
             };
             reports.push(report);
-            snapshots.push((
-                snapshot_id,
-                Arc::try_unwrap(entry.snapshot).unwrap_or_else(|snapshot| (*snapshot).clone()),
-            ));
+            if let Some(snapshot) = entry.snapshot {
+                snapshots.push((
+                    snapshot_id,
+                    Arc::try_unwrap(snapshot).unwrap_or_else(|snapshot| (*snapshot).clone()),
+                ));
+            }
         }
         (reports, snapshots)
     }
@@ -1911,8 +3688,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
+
     use super::{
-        Archive, ArchiveCandidate, ArchiveKey, Input, RetireThresholds,
+        ActiveIds, Archive, ArchiveCandidate, ArchiveKey, HISTORY_COMPACTION_MIN_DROPS, Input,
+        InputIndex, MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, RetireThresholds,
         SELECTION_EXHAUSTION_THRESHOLD, SelectorAccounting, SelectorDraw, SelectorPath,
         SelectorPolicy, selector_policy_from_identifier,
     };
@@ -1920,8 +3700,101 @@ mod tests {
     use crate::smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveKey};
     use crate::smb::target::ButtonChord;
     use serde::{Deserialize, Serialize};
+    use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
 
     type TestArchive = Archive<u8, SmbArchiveKey, (), ()>;
+
+    #[test]
+    fn active_ids_preserve_ascending_rank_across_word_boundaries() {
+        let ids = [0, 1, 63, 64, 65, 127, 128, 191, 255];
+        let active = ActiveIds::from_ids(ids);
+        assert_eq!(active.len(), ids.len());
+        assert_eq!(active.ids().collect::<Vec<_>>(), ids);
+        for (rank, id) in ids.into_iter().enumerate() {
+            assert_eq!(active.select(rank), Some(id));
+        }
+        assert_eq!(active.select(ids.len()), None);
+    }
+
+    #[test]
+    fn active_ids_remove_without_changing_survivor_ranks() {
+        let mut active = ActiveIds::from_ids(0..260);
+        for id in [0, 2, 63, 64, 129, 200, 259] {
+            assert!(active.remove(id));
+            assert!(!active.remove(id));
+        }
+        active.insert(64);
+        active.insert(259);
+        active.insert(259);
+        let expected = (0..260)
+            .filter(|id| ![0, 2, 63, 129, 200].contains(id))
+            .collect::<Vec<_>>();
+        assert_eq!(active.len(), expected.len());
+        assert_eq!(active.ids().collect::<Vec<_>>(), expected);
+        assert_eq!(
+            (0..active.len())
+                .map(|rank| active.select(rank).expect("rank is in bounds"))
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn active_ids_empty_after_removing_every_member() {
+        let mut active = ActiveIds::from_ids([0, 64, 129]);
+        assert!(!active.is_empty());
+        for id in [0, 64, 129] {
+            assert!(active.remove(id));
+        }
+        assert!(active.is_empty());
+        assert_eq!(active.len(), 0);
+        assert_eq!(active.select(0), None);
+        assert_eq!(active.ids().next(), None);
+    }
+
+    #[test]
+    fn input_index_walk_owner_and_pruning_are_exact() {
+        let mut index = InputIndex::<u8>::default();
+        let (leaf, inserted) = index
+            .ensure_path(0, &[1, 2, 3])
+            .expect("insert input prefix");
+        assert_eq!(inserted, 3);
+        assert_eq!(index.live_nodes, 4);
+        assert_eq!(index.walk(0, &[1, 2, 3]), Some(leaf));
+        assert_eq!(index.walk(0, &[1, 2, 4]), None);
+        assert_eq!(index.owner(leaf), None);
+
+        index.set_owner(leaf, Some(42));
+        assert_eq!(index.owner(leaf), Some(42));
+        assert_eq!(index.remove_owner_and_prune(leaf, 7), 0);
+        assert_eq!(index.owner(leaf), Some(42));
+        assert_eq!(index.remove_owner_and_prune(leaf, 42), 3);
+        assert_eq!(index.live_nodes, 1);
+        assert_eq!(index.walk(0, &[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn snapshot_charge_uses_the_configured_machine_accounting() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        assert_eq!(archive.snapshot_charge(&()), 0);
+        archive.set_memory_budget(1024, |_| 17);
+        assert_eq!(archive.snapshot_charge(&()), 17);
+    }
+
+    #[test]
+    fn snapshot_release_preserves_an_inflight_worker_reference() {
+        let mut archive = flat_archive::<3>(&[[1, 2, 3, 4]]);
+        let in_flight = Arc::clone(
+            archive.entries[0]
+                .snapshot
+                .as_ref()
+                .expect("resident snapshot"),
+        );
+
+        assert!(archive.release_snapshot(0));
+        assert!(archive.entries[0].snapshot.is_some());
+        assert_eq!(Arc::strong_count(&in_flight), 2);
+    }
 
     #[test]
     fn historical_tie_class_counter_loads_as_cell_selections() {
@@ -1972,6 +3845,67 @@ mod tests {
         fn record(_lineage: &mut Self::Lineage, _key: Self) {}
     }
 
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct PreferredKey {
+        slot: u8,
+        quality: u8,
+    }
+
+    impl ArchiveKey for PreferredKey {
+        type Group = u8;
+
+        fn groups() -> usize {
+            1
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            assert_eq!(depth, 0);
+            self.slot
+        }
+
+        fn slot_capacity() -> usize {
+            1
+        }
+
+        fn preference_cmp(self, other: Self) -> Ordering {
+            self.quality.cmp(&other.quality)
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[test]
+    fn opaque_preference_displaces_only_a_weaker_same_slot_representative() {
+        let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, PreferredKey, (), ()>, input, quality| {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![input],
+                        key: PreferredKey { slot: 7, quality },
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert preferred entry")
+        };
+
+        assert_eq!(insert(&mut archive, 1, 2), Some(0));
+        assert_eq!(insert(&mut archive, 2, 5), Some(1));
+        assert_eq!(archive.active, vec![false, true]);
+        assert_eq!(archive.slots.get(&7), Some(&vec![1]));
+        assert_eq!(insert(&mut archive, 3, 1), None);
+        assert_eq!(archive.active, vec![false, true]);
+    }
+
     fn flat_archive<const DEPTHS: usize>(
         keys: &[[u16; 4]],
     ) -> Archive<u8, FlatKey<DEPTHS>, (), ()> {
@@ -1982,9 +3916,7 @@ mod tests {
                     None,
                     0,
                     ArchiveCandidate {
-                        input: Input {
-                            actions: vec![u8::try_from(index).expect("input byte")],
-                        },
+                        suffix: vec![u8::try_from(index).expect("input byte")],
                         key: FlatKey(*components),
                         milestones: (),
                     },
@@ -1994,6 +3926,1119 @@ mod tests {
                 .expect("retain flat entry");
         }
         archive
+    }
+
+    #[test]
+    fn memory_budget_drops_an_entry_without_freezing_admission() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let root_charge = Archive::<u8, FlatKey<3>, (), ()>::prefix_node_memory_charge();
+        let history_charge =
+            3 * Archive::<u8, FlatKey<3>, (), ()>::history_entry_memory_charge(1, 1);
+        let novelty_charge =
+            3 * Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(0);
+        archive.set_memory_budget(root_charge + history_charge + novelty_charge + 2, |_| 1);
+        for index in 0_u8..3 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert budgeted entry")
+                .expect("budget admits a replacement");
+        }
+
+        assert_eq!(archive.active_count(), 2);
+        assert_eq!(archive.resident_snapshot_count(), 2);
+        assert_eq!(archive.resident_snapshot_bytes(), 2);
+        assert_eq!(archive.snapshot_evictions(), 0);
+        assert_eq!(archive.entry_drops(), 1);
+        assert_eq!(
+            archive.history_memory_bytes(),
+            archive
+                .entry_metadata_memory_bytes()
+                .saturating_add(archive.input_index_memory_bytes())
+                .saturating_add(archive.novelty_memory_bytes())
+                .saturating_add(archive.barren_memory_bytes())
+        );
+        assert!(!archive.active[0]);
+        assert!(archive.entries[0].snapshot.is_none());
+        assert!(
+            archive.slots.values().flatten().all(|entry| *entry != 0),
+            "the evicted entry must leave its retention slot"
+        );
+        assert!(archive.entries[1].snapshot.is_some());
+        assert!(archive.entries[2].snapshot.is_some());
+
+        let mut rand = RomuDuoJrRand::with_seed(1);
+        for _ in 0..32 {
+            let (selected, _) = archive
+                .select_parent(&mut rand, 8)
+                .expect("select from budgeted residents");
+            assert_ne!(selected, 0);
+        }
+    }
+
+    #[test]
+    fn budget_enforcement_reaches_the_limit_but_keeps_one_snapshot() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        for index in 0_u8..4 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+
+        let exact = archive.resident_memory_bytes();
+        archive.memory_limit = Some(exact);
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
+        assert_eq!(archive.resident_snapshot_count(), 4);
+
+        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(2));
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
+        assert_eq!(archive.resident_snapshot_count(), 2);
+        assert_eq!(archive.active_count(), 2);
+        assert_eq!(archive.snapshot_evictions(), 0);
+        assert_eq!(archive.entry_drops(), 2);
+
+        archive.memory_limit = Some(0);
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
+        assert_eq!(archive.resident_snapshot_count(), 1);
+        assert_eq!(archive.active_count(), 1);
+        assert_eq!(archive.entry_drops(), 3);
+    }
+
+    #[test]
+    fn selection_accounting_charge_is_brought_back_under_the_budget() {
+        // `record_selection` grows the pooled barren counters the budget
+        // charges, and it is the last thing an admitted job does. Without
+        // maintenance after it, a run reports a charge above its own budget.
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+            entry: 1,
+            groups: vec![3, 4],
+        });
+        for index in 0_u8..64 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        let limit = archive.resident_memory_bytes();
+        archive.memory_limit = Some(limit);
+        assert_eq!(archive.barren_group_count(), 0);
+
+        let draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for id in 0..archive.entries.len() {
+            archive.record_selection(id, &draw);
+        }
+        assert!(archive.barren_group_count() > 0);
+        assert!(
+            archive.resident_memory_bytes() > limit,
+            "selection accounting should have pushed the charge over the budget"
+        );
+
+        // The maintenance step the coordinator spends at this stream position
+        // is bounded per call, so convergence takes a bounded number of them.
+        let mut quanta = 0_usize;
+        while archive.resident_memory_bytes() > limit && quanta < 64 {
+            archive
+                .maintain_memory_budget()
+                .expect("budget remains satisfiable");
+            quanta = quanta.saturating_add(1);
+        }
+        assert!(
+            archive.resident_memory_bytes() <= limit,
+            "maintenance left {} bytes charged against a {limit} byte budget after {quanta} quanta",
+            archive.resident_memory_bytes()
+        );
+    }
+
+    #[test]
+    fn a_run_of_skips_maintains_the_budget_without_a_false_anchor_error() {
+        // One pre-execution duplicate skip does exactly two things to the
+        // archive: it accounts a selection and it spends one maintenance
+        // step. This loop runs that pair and nothing else, because the order
+        // is what a false "cannot retain the anchor" error depends on.
+        //
+        // The archive holds fewer entries than HISTORY_COMPACTION_MIN_DROPS,
+        // so compaction declines for the whole loop. That is the shape a
+        // production archive has below the far larger production threshold,
+        // and it is the shape in which deferred reclamation must not be
+        // mistaken for an unaffordable anchor.
+        let entries = u8::try_from(HISTORY_COMPACTION_MIN_DROPS / 2).expect("half fits u8");
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+            entry: 1,
+            groups: vec![3, 4],
+        });
+        for index in 0_u8..entries {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        // Half the standing charge, so the sweep must deactivate down to the
+        // anchor and still leave the charge over the budget.
+        let limit = archive.resident_memory_bytes() / 2;
+        archive.memory_limit = Some(limit);
+        archive.establish_liveness_anchor(64);
+        let anchor = archive
+            .liveness_anchor
+            .expect("a budgeted run has an anchor");
+
+        let draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for step in 0..256 {
+            let parent = archive
+                .index_of_id(anchor)
+                .expect("the anchor stays resolvable across compaction");
+            archive.record_selection(parent, &draw);
+            archive
+                .maintain_memory_budget()
+                .unwrap_or_else(|error| panic!("skip {step} reported {error}"));
+        }
+        assert_eq!(
+            archive.history_compactions(),
+            0,
+            "the archive is below the compaction batch, so none should have run"
+        );
+        assert_eq!(archive.active_count, 1, "the sweep keeps only the anchor");
+        assert_eq!(
+            archive.liveness_anchor,
+            Some(anchor),
+            "the anchor stays resident across the whole run of skips"
+        );
+    }
+
+    #[test]
+    fn a_budget_below_the_anchor_itself_is_an_error() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        for index in 0_u8..4 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        archive.establish_liveness_anchor(64);
+        let anchor_bytes = archive.liveness_anchor_memory_bytes();
+        assert!(anchor_bytes > 0, "the anchor holds an irreducible charge");
+
+        archive.memory_limit = Some(anchor_bytes - 1);
+        assert_eq!(
+            archive.maintain_memory_budget(),
+            Err("memory budget cannot retain the executable liveness anchor")
+        );
+    }
+
+    #[test]
+    fn the_final_compaction_refuses_a_budget_the_compacted_archive_exceeds() {
+        // `liveness_anchor_memory_bytes` is a lower bound, so a budget above
+        // it can still be unaffordable. Live maintenance accepts such a
+        // budget, because during a run the excess may be dead history a
+        // later compaction returns. The final forced compaction has nothing
+        // left to return, so it must refuse.
+        let anchored = || {
+            let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+            archive.set_memory_budget(usize::MAX, |_| 1);
+            for index in 0_u8..4 {
+                archive
+                    .insert(
+                        None,
+                        u64::from(index),
+                        ArchiveCandidate {
+                            suffix: vec![index],
+                            key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .expect("insert entry")
+                    .expect("retain entry");
+            }
+            archive.establish_liveness_anchor(64);
+            archive
+        };
+
+        // Drive an archive down to the anchor, then compact it unbudgeted.
+        // What remains is the charge a budget must actually hold.
+        let sweep = |archive: &mut Archive<u8, FlatKey<3>, (), ()>| {
+            for _ in 0..64 {
+                archive
+                    .maintain_memory_budget()
+                    .expect("live maintenance cannot rule this budget out");
+            }
+        };
+        let mut floor = anchored();
+        floor.memory_limit = Some(floor.liveness_anchor_memory_bytes());
+        sweep(&mut floor);
+        floor.memory_limit = None;
+        floor
+            .compact_history_for_final_report()
+            .expect("an unbudgeted archive compacts");
+        let floor_bytes = floor.resident_memory_bytes();
+        let lower_bound = floor.liveness_anchor_memory_bytes();
+        assert!(
+            lower_bound < floor_bytes,
+            "the anchor bound {lower_bound} should undercount the compacted charge {floor_bytes}"
+        );
+
+        let mut archive = anchored();
+        archive.memory_limit = Some(lower_bound);
+        sweep(&mut archive);
+        assert_eq!(
+            archive.compact_history_for_final_report(),
+            Err("memory budget cannot retain the compacted archive")
+        );
+
+        let mut affordable = anchored();
+        affordable.memory_limit = Some(floor_bytes);
+        sweep(&mut affordable);
+        affordable
+            .compact_history_for_final_report()
+            .expect("a budget that holds the compacted archive is satisfiable");
+    }
+
+    #[test]
+    fn the_final_compaction_keeps_passing_while_a_quantum_reclaims_no_bytes() {
+        // Every entry is active, referenced, and holds a free snapshot, so
+        // the first passes spend their quantum clearing reference bits and
+        // releasing snapshots without changing a single charged byte. The
+        // budget is still reachable, and the passes after them reach it.
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 0);
+        archive.set_memory_budget(usize::MAX, |_| 0);
+        let entries = MAINTENANCE_QUANTUM * 4;
+        for index in 0..entries {
+            let key = u16::try_from(index).expect("key fits u16");
+            archive
+                .insert(
+                    None,
+                    index as u64,
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index % 251).expect("suffix byte")],
+                        key: FlatKey([key, key, key, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        archive.referenced.fill(true);
+        archive.drop_hand = 0;
+        let limit = archive.resident_memory_bytes() / 4;
+        archive.memory_limit = Some(limit);
+
+        let charged_before = archive.resident_memory_bytes();
+        archive
+            .compact_history(true)
+            .expect("one forced pass is not a verdict");
+        assert_eq!(
+            archive.resident_memory_bytes(),
+            charged_before,
+            "the first pass spends its quantum on reference bits and frees nothing"
+        );
+
+        archive
+            .compact_history_for_final_report()
+            .expect("later passes reclaim enough to fit the budget");
+        assert!(
+            archive.resident_memory_bytes() <= limit,
+            "the compacted archive charges {} against a {limit} byte budget",
+            archive.resident_memory_bytes()
+        );
+    }
+
+    #[test]
+    fn the_maintenance_quantum_counts_entries_the_clock_examines() {
+        // Every entry is referenced, so the hand clears reference bits and
+        // drops nothing. The sweep must still stop after one quantum of
+        // examinations rather than scanning the whole archive per drop.
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        let entries = MAINTENANCE_QUANTUM * 4;
+        for index in 0..entries {
+            let key = u16::try_from(index).expect("key fits u16");
+            archive
+                .insert(
+                    None,
+                    index as u64,
+                    ArchiveCandidate {
+                        suffix: vec![u8::try_from(index % 251).expect("suffix byte"), key as u8],
+                        key: FlatKey([key, key, key, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        archive.referenced.fill(true);
+        archive.drop_hand = 0;
+        archive.memory_limit = Some(0);
+        archive
+            .maintain_memory_budget()
+            .expect("budget remains satisfiable");
+        assert_eq!(
+            archive.entry_drops(),
+            0,
+            "referenced entries are not droppable"
+        );
+        assert!(
+            archive.drop_hand <= MAINTENANCE_QUANTUM,
+            "the sweep examined {} entries for a {MAINTENANCE_QUANTUM} entry quantum",
+            archive.drop_hand
+        );
+
+        // The bounded helper reports what it examined so the caller can spend
+        // exactly its quantum across repeated calls.
+        archive.referenced.fill(true);
+        archive.drop_hand = 0;
+        let (dropped, examined) = archive.drop_one_entry_within(4);
+        assert!(!dropped);
+        assert_eq!(examined, 4);
+        assert_eq!(archive.drop_hand, 4);
+    }
+
+    #[test]
+    fn budget_enforcement_evicts_cached_snapshots_before_dropping_entries() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![0],
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
+        for step in 1_u8..4 {
+            archive
+                .insert(
+                    Some(usize::from(step - 1)),
+                    u64::from(step),
+                    ArchiveCandidate {
+                        suffix: vec![step],
+                        key: FlatKey([u16::from(step), u16::from(step), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert child")
+                .expect("retain child");
+        }
+        assert_eq!(archive.resident_snapshot_count(), 4);
+        assert!(archive.keyframe[0]);
+        assert!(archive.keyframe[1..4].iter().all(|keyframe| !keyframe));
+        assert_eq!(archive.keyframe_dependents[0], 4);
+
+        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(1));
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget remains satisfiable");
+        assert_eq!(archive.active_count(), 4);
+        assert_eq!(archive.resident_snapshot_count(), 1);
+        assert_eq!(archive.snapshot_evictions(), 3);
+        assert_eq!(archive.entry_drops(), 0);
+        assert!(archive.entries[0].snapshot.is_some());
+
+        let (origin, replay) = archive.job_origin(3).expect("replay from the keyframe");
+        assert!(Arc::ptr_eq(
+            &origin,
+            archive.entries[0]
+                .snapshot
+                .as_ref()
+                .expect("keyframe snapshot")
+        ));
+        assert_eq!(replay, vec![1, 2, 3]);
+        let (_, replay) = archive.job_origin(0).expect("keyframe is its own origin");
+        assert!(replay.is_empty());
+
+        let mut rand = RomuDuoJrRand::with_seed(1);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..64 {
+            let (selected, _) = archive
+                .select_parent(&mut rand, 8)
+                .expect("select from replayable entries");
+            seen.insert(selected);
+        }
+        assert_eq!(seen.len(), 4, "entries without a snapshot stay selectable");
+    }
+
+    #[test]
+    fn entry_drop_sweep_clears_reference_bits_first_and_reports_exhaustion() {
+        let mut empty = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        assert!(!empty.drop_one_entry());
+
+        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+        assert!(archive.deactivate(0));
+        assert!(archive.drop_one_entry());
+        assert_eq!(archive.active_count(), 0);
+        assert_eq!(archive.resident_snapshot_count(), 0);
+        assert_eq!(archive.entry_drops(), 1);
+        assert!(!archive.drop_one_entry());
+    }
+
+    #[test]
+    fn selector_reactivates_a_budgeted_executable_anchor() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: Vec::new(),
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
+        archive.rebuild_selector_index(1);
+        archive.establish_liveness_anchor(1);
+        archive.time_in_group[0] = 100;
+        for (id, suffix) in [(1_u64, 1_u8), (2, 2)] {
+            archive
+                .insert(
+                    None,
+                    id,
+                    ArchiveCandidate {
+                        suffix: vec![suffix],
+                        key: FlatKey([0, 0, 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert same-slot entry")
+                .expect("retain same-slot entry");
+        }
+        assert!(!archive.active[0]);
+        assert!(archive.entries[0].snapshot.is_some());
+        archive.active_ids = ActiveIds::default();
+
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
+        let (selected, _) = archive
+            .select_parent(&mut rand, 1)
+            .expect("budgeted anchor keeps selection live");
+        assert_eq!(archive.entries[selected].input_len, 0);
+        assert!(archive.entries[selected].input_len < 1);
+        assert!(
+            archive
+                .slots
+                .values()
+                .all(|members| members.len() <= MAX_ENTRIES_PER_KEY)
+        );
+    }
+
+    #[test]
+    fn budgeted_anchor_yields_to_single_entry_admission_and_reactivates() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive.max_entries = 1;
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: Vec::new(),
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
+        archive.rebuild_selector_index(1);
+        archive.establish_liveness_anchor(1);
+        archive
+            .insert(
+                None,
+                1,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: FlatKey([1, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("anchor yields to one-entry admission")
+            .expect("retain admitted entry");
+        assert_eq!(archive.active_count(), 1);
+        assert!(!archive.active[0]);
+        assert!(archive.entries[0].snapshot.is_some());
+        assert!(
+            archive
+                .slots
+                .values()
+                .all(|members| members.len() <= MAX_ENTRIES_PER_KEY)
+        );
+        archive.active_ids = ActiveIds::default();
+        let mut rand = RomuDuoJrRand::with_seed(0x5eed_cafe);
+        let (selected, _) = archive
+            .select_parent(&mut rand, 1)
+            .expect("displaced anchor reactivates");
+        assert_eq!(archive.entries[selected].id, 0);
+        assert_eq!(archive.active_count(), 1);
+        assert!(archive.entries[selected].input_len < 1);
+    }
+
+    fn archive_with_prunable_history() -> Archive<u8, FlatKey<3>, (), ()> {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        for index in 0_u16
+            ..=u16::try_from(HISTORY_COMPACTION_MIN_DROPS)
+                .expect("compaction threshold fits in u16")
+        {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: index.to_be_bytes().to_vec(),
+                        key: FlatKey([index, index, 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert history entry")
+                .expect("retain history entry");
+        }
+        for index in 0..HISTORY_COMPACTION_MIN_DROPS {
+            assert!(archive.deactivate(index));
+        }
+        archive
+    }
+
+    #[test]
+    fn history_compaction_obeys_the_quarter_budget_threshold() {
+        let mut archive = archive_with_prunable_history();
+        let history = archive.history_memory_bytes();
+        archive.memory_limit = Some(history.saturating_mul(4));
+        archive
+            .compact_history_if_needed()
+            .expect("history at threshold does not compact");
+        assert_eq!(archive.history_compactions(), 0);
+
+        archive.memory_limit = Some(history.saturating_mul(2));
+        archive
+            .compact_history_if_needed()
+            .expect("history above threshold compacts");
+        assert_eq!(archive.history_compactions(), 1);
+        assert_eq!(
+            archive.historical_entries_dropped(),
+            u64::try_from(HISTORY_COMPACTION_MIN_DROPS).expect("threshold fits in u64")
+        );
+    }
+
+    #[test]
+    fn entry_pressure_triggers_history_compaction() {
+        let mut archive = archive_with_prunable_history();
+        archive.max_entries = 0;
+        archive.memory_limit = Some(usize::MAX);
+        archive
+            .compact_history_if_needed()
+            .expect("entry pressure compacts history");
+        assert_eq!(archive.history_compactions(), 1);
+        assert_eq!(
+            archive.historical_entries_dropped(),
+            u64::try_from(HISTORY_COMPACTION_MIN_DROPS).expect("threshold fits in u64")
+        );
+    }
+
+    #[test]
+    fn history_compaction_waits_for_the_minimum_drop_batch() {
+        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0], [1, 1, 0, 0]]);
+        assert!(archive.deactivate(0));
+        archive.memory_limit = Some(1);
+        archive
+            .compact_history_if_needed()
+            .expect("a sub-threshold dead tail is left for a later batch");
+        assert_eq!(archive.history_compactions(), 0);
+        assert_eq!(archive.live_entry_count(), 2);
+    }
+
+    #[test]
+    fn final_compaction_keeps_only_valid_inactive_snapshot_owners() {
+        let mut held = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        let held_id = held.stable_id(0).expect("stable id");
+        let worker = Arc::clone(
+            held.entries[0]
+                .snapshot
+                .as_ref()
+                .expect("resident snapshot"),
+        );
+        assert!(held.deactivate(0));
+        held.compact_history(true)
+            .expect("worker-owned snapshot survives final compaction");
+        assert!(held.index_of_id(held_id).is_some());
+        assert_eq!(Arc::strong_count(&worker), 2);
+
+        let mut preserved = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        let preserved_id = preserved.stable_id(0).expect("stable id");
+        preserved
+            .preserve_inactive_snapshots(true)
+            .expect("enable inactive snapshot preservation");
+        assert!(preserved.deactivate(0));
+        preserved
+            .compact_history(true)
+            .expect("explicitly preserved snapshot survives final compaction");
+        assert!(preserved.index_of_id(preserved_id).is_some());
+
+        let mut empty = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        assert!(empty.deactivate(0));
+        empty.preserve_inactive_snapshots = true;
+        empty
+            .compact_history(true)
+            .expect("a preservation flag without a snapshot retains nothing");
+        assert_eq!(empty.live_entry_count(), 0);
+    }
+
+    #[test]
+    fn inactive_snapshot_and_metadata_preservation_are_reversible() {
+        let mut archive = flat_archive::<3>(&[[0, 0, 0, 0]]);
+        let stable_id = archive.stable_id(0).expect("stable id");
+        assert!(!archive.preserves_inactive_snapshots());
+        archive
+            .preserve_inactive_snapshots(true)
+            .expect("enable inactive snapshot preservation");
+        assert!(archive.preserves_inactive_snapshots());
+        assert!(archive.deactivate(0));
+        assert!(archive.entries[0].snapshot.is_some());
+        archive
+            .preserve_inactive_snapshots(false)
+            .expect("disable inactive snapshot preservation");
+        assert!(!archive.preserves_inactive_snapshots());
+        assert!(archive.entries[0].snapshot.is_none());
+
+        archive.preserve_recorded_metadata_uses(BTreeMap::from([(stable_id, 2)]));
+        assert_eq!(archive.metadata_pins.get(&stable_id), Some(&2));
+        archive.unpin_metadata(stable_id);
+        assert_eq!(archive.metadata_pins.get(&stable_id), Some(&1));
+        archive.unpin_metadata(stable_id);
+        assert!(!archive.metadata_pins.contains_key(&stable_id));
+    }
+
+    #[test]
+    fn compact_prefix_accounting_and_duplicate_lookup_are_exact() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let root = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: FlatKey([1, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
+        let child = archive
+            .insert(
+                Some(root),
+                1,
+                ArchiveCandidate {
+                    suffix: vec![2],
+                    key: FlatKey([2, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert child")
+            .expect("retain child");
+        let leaf = archive
+            .insert(
+                Some(child),
+                2,
+                ArchiveCandidate {
+                    suffix: vec![3],
+                    key: FlatKey([3, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert leaf")
+            .expect("retain leaf");
+
+        assert_eq!(archive.existing_input_id(Some(child), &[3]), Some(leaf));
+        assert!(archive.all_extensions_retained(root, &[2, 3]));
+        assert!(!archive.all_extensions_retained(root, &[2, 4]));
+        assert_eq!(archive.live_entry_count(), 3);
+        assert_eq!(archive.historical_input_actions(), 6);
+        assert_eq!(archive.stored_input_actions(), 3);
+        assert_eq!(archive.input_index_nodes(), 4);
+        assert_eq!(archive.input_reconstructions(), 0);
+        assert_eq!(
+            archive
+                .materialize_input(leaf)
+                .expect("materialize leaf")
+                .actions,
+            [1, 2, 3]
+        );
+        assert_eq!(archive.input_reconstructions(), 1);
+        assert!(Archive::<u8, FlatKey<3>, (), ()>::prefix_node_memory_charge() > 1);
+        assert!(Archive::<u8, FlatKey<3>, (), ()>::historical_group_memory_charge(8) > 1);
+        archive.group_barren[0].insert(archive.entries[root].key.group(1), 1);
+        assert!(archive.barren_memory_bytes() > 1);
+
+        let retained = archive.retained;
+        assert_eq!(
+            archive
+                .insert(
+                    Some(child),
+                    3,
+                    ArchiveCandidate {
+                        suffix: vec![3],
+                        key: FlatKey([9, 9, 9, 9]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("duplicate lookup"),
+            Some(leaf)
+        );
+        assert_eq!(archive.retained, retained);
+    }
+
+    #[test]
+    fn progress_and_expandable_ids_follow_exact_archive_state() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|action| u64::from(*action));
+        for (index, (suffix, key)) in [
+            (5, FlatKey([1, 0, 0, 0])),
+            (2, FlatKey([0, 0, 0, 0])),
+            (7, FlatKey([2, 0, 0, 0])),
+            (9, FlatKey([2, 0, 0, 0])),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![suffix],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert progress entry")
+                .expect("retain progress entry");
+            let expected = match index {
+                0 | 1 => Some((FlatKey([1, 0, 0, 0]), 5, u64::try_from(index + 1).unwrap())),
+                2 | 3 => Some((FlatKey([2, 0, 0, 0]), 7, u64::try_from(index + 1).unwrap())),
+                _ => unreachable!(),
+            };
+            assert_eq!(archive.live_progress(), expected);
+        }
+        assert_eq!(archive.live_progress(), Some((FlatKey([2, 0, 0, 0]), 7, 4)));
+        assert!(archive.active_ids(1).is_empty());
+        archive.active[1] = false;
+        archive.snapshot_selectable[2] = false;
+        assert_eq!(archive.active_ids(2), vec![0, 3]);
+    }
+
+    #[test]
+    fn live_donor_index_tracks_a_new_deepest_descendant() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let root_key = FlatKey([1, 7, 9, 0]);
+        let child_key = FlatKey([2, 7, 9, 0]);
+        let root = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: root_key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert root")
+            .expect("retain root");
+        archive.rebuild_selector_index(8);
+        let child = archive
+            .insert(
+                Some(root),
+                1,
+                ArchiveCandidate {
+                    suffix: vec![2],
+                    key: child_key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert child")
+            .expect("retain child");
+
+        let members = archive
+            .classes
+            .get(&Reverse(
+                root_key.group(Archive::<u8, FlatKey<3>, (), ()>::class_depth()),
+            ))
+            .and_then(|cells| {
+                cells.get(&root_key.group(Archive::<u8, FlatKey<3>, (), ()>::cell_depth()))
+            })
+            .expect("root selection cell");
+        assert!(members.donors.contains(&(child_key, child, root)));
+        assert!(!members.donors.contains(&(root_key, root, root)));
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct LineageKey {
+        value: u8,
+        class: u8,
+    }
+
+    impl ArchiveKey for LineageKey {
+        type Group = (u8, u8);
+
+        fn groups() -> usize {
+            2
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            match depth {
+                0 => (self.value, self.class),
+                1 => (0, self.class),
+                _ => panic!("unexpected lineage-key depth"),
+            }
+        }
+
+        type Lineage = Vec<u8>;
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(lineage: &mut Self::Lineage, key: Self) {
+            lineage.push(key.value);
+        }
+    }
+
+    #[test]
+    fn lineage_is_inherited_only_within_the_coarsest_group() {
+        let mut archive = Archive::<u8, LineageKey, (), ()>::new(|_| 1);
+        let parent = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![1],
+                    key: LineageKey { value: 1, class: 7 },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert parent")
+            .expect("retain parent");
+        let same = archive
+            .insert(
+                Some(parent),
+                1,
+                ArchiveCandidate {
+                    suffix: vec![2],
+                    key: LineageKey { value: 2, class: 7 },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert same-class child")
+            .expect("retain same-class child");
+        let different = archive
+            .insert(
+                Some(parent),
+                2,
+                ArchiveCandidate {
+                    suffix: vec![3],
+                    key: LineageKey { value: 3, class: 8 },
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert cross-class child")
+            .expect("retain cross-class child");
+
+        assert_eq!(archive.lineage(parent), Some(&vec![1]));
+        assert_eq!(archive.lineage(same), Some(&vec![1, 2]));
+        assert_eq!(archive.lineage(different), Some(&vec![3]));
+    }
+
+    #[test]
+    fn compaction_preserves_an_evicted_inflight_parents_input_prefix() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        let parent = archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![0xff, 0xfe, 0xfd],
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert parent")
+            .expect("retain parent");
+        let parent_id = archive.stable_id(parent).expect("parent stable id");
+        archive
+            .pin_metadata(parent_id)
+            .expect("pin parent metadata");
+
+        for index in 0_u16
+            ..u16::try_from(HISTORY_COMPACTION_MIN_DROPS).expect("compaction threshold fits in u16")
+        {
+            archive
+                .insert(
+                    Some(parent),
+                    u64::from(index).saturating_add(1),
+                    ArchiveCandidate {
+                        suffix: index.to_be_bytes().to_vec(),
+                        key: FlatKey([index.saturating_add(1), index.saturating_add(1), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert displaced descendant")
+                .expect("retain displaced descendant");
+        }
+        let survivor = archive
+            .insert(
+                None,
+                u64::try_from(HISTORY_COMPACTION_MIN_DROPS)
+                    .expect("compaction threshold fits in u64")
+                    .saturating_add(2),
+                ArchiveCandidate {
+                    suffix: vec![0xfe, 0xfd, 0xfc],
+                    key: FlatKey([
+                        u16::try_from(HISTORY_COMPACTION_MIN_DROPS)
+                            .expect("compaction threshold fits in u16")
+                            .saturating_add(2),
+                        u16::try_from(HISTORY_COMPACTION_MIN_DROPS)
+                            .expect("compaction threshold fits in u16")
+                            .saturating_add(2),
+                        0,
+                        0,
+                    ]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert independent survivor")
+            .expect("retain independent survivor");
+        let dead_group = archive.entries[parent].key.group(1);
+        let survivor_group = archive.entries[survivor].key.group(1);
+        archive.group_barren[0].insert(dead_group, 9);
+        archive.group_barren[0].insert(survivor_group, 3);
+        assert!(archive.historical_cell_count() > 1);
+        assert_eq!(archive.barren_group_count(), 2);
+
+        for index in 0..survivor {
+            assert!(archive.deactivate(index));
+        }
+        archive.memory_limit = Some(4);
+        archive
+            .compact_history_if_needed()
+            .expect("compact pinned input history");
+
+        let parent = archive
+            .index_of_id(parent_id)
+            .expect("pinned parent remains");
+        assert_eq!(archive.historical_cell_count(), 1);
+        assert_eq!(archive.barren_group_count(), 1);
+        assert_eq!(
+            archive.group_barren[0].get(&survivor_group),
+            Some(&3),
+            "compaction preserves live breeding-population counters"
+        );
+        assert_eq!(
+            archive
+                .materialize_input(parent)
+                .expect("materialize pinned parent")
+                .actions,
+            [0xff, 0xfe, 0xfd]
+        );
+        archive
+            .insert(
+                Some(parent),
+                4_099,
+                ArchiveCandidate {
+                    suffix: vec![9, 9, 9],
+                    key: FlatKey([4_099, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("extend pinned parent after compaction")
+            .expect("retain child of pinned parent");
     }
 
     #[test]
@@ -2120,12 +5165,13 @@ mod tests {
                       parent: Option<usize>,
                       components: [u16; 4],
                       actions: Vec<u8>| {
+            let parent_len = parent.map_or(0, |id| archive.entries[id].input_len);
             archive
                 .insert(
                     parent,
                     0,
                     ArchiveCandidate {
-                        input: Input { actions },
+                        suffix: actions[parent_len..].to_vec(),
                         key: FlatKey(components),
                         milestones: (),
                     },
@@ -2236,9 +5282,9 @@ mod tests {
                 level: *level,
                 progress: *progress,
                 player_y_bucket: u8::try_from(index / 64).expect("vertical bucket"),
-                player_engine_state: 0,
                 state_fingerprint: u8::try_from(index % 64).expect("fingerprint"),
                 room_x_bucket: 0,
+                time_bucket: 0,
                 room: [0; 3],
             };
             archive
@@ -2246,7 +5292,7 @@ mod tests {
                     None,
                     0,
                     ArchiveCandidate {
-                        input,
+                        suffix: input.actions,
                         key,
                         milestones: (),
                     },
@@ -2271,8 +5317,8 @@ mod tests {
         keys.push((7, 3, 300));
         let mut archive = selector_archive(&keys);
         for (index, entry) in archive.entries.iter_mut().enumerate() {
-            entry.report.key.room = [3, 5, 16];
-            entry.report.key.player_y_bucket = match index {
+            entry.key.room = [3, 5, 16];
+            entry.key.player_y_bucket = match index {
                 0..=59 => 11,
                 60..=62 => 7,
                 _ => 4,
@@ -2289,7 +5335,7 @@ mod tests {
                 continue;
             }
             cell_draws += 1;
-            let key = archive.entries[id].report.key;
+            let key = archive.entries[id].key;
             *per_cell
                 .entry((key.progress, key.player_y_bucket))
                 .or_default() += 1;
@@ -2433,9 +5479,9 @@ mod tests {
                 level: 0,
                 progress: 144,
                 player_y_bucket: 0,
-                player_engine_state: 0,
                 state_fingerprint: index,
                 room_x_bucket: 0,
+                time_bucket: 0,
                 room: [0; 3],
             };
             archive
@@ -2443,7 +5489,7 @@ mod tests {
                     None,
                     0,
                     ArchiveCandidate {
-                        input,
+                        suffix: input.actions,
                         key,
                         milestones: (),
                     },
@@ -2517,7 +5563,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 144), (1, 0, 124)];
         let mut archive = selector_archive(&keys);
         for entry in &mut archive.entries {
-            entry.report.key.room = [3, 5, 0];
+            entry.key.room = [3, 5, 0];
         }
         archive.selector_policy = SelectorPolicy::Retire(RetireThresholds {
             entry: 64,
@@ -2626,7 +5672,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 140];
         let mut archive = selector_archive(&keys);
         for entry in &mut archive.entries {
-            entry.report.key.player_y_bucket = 0;
+            entry.key.player_y_bucket = 0;
         }
         let mut rand = RomuDuoJrRand::with_seed(0x5eed_5e21);
         let mut cell_draws = 0;
@@ -2660,7 +5706,7 @@ mod tests {
         let keys: Vec<(u8, u8, u16)> = vec![(1, 0, 124); 129];
         let mut archive = selector_archive(&keys);
         for entry in &mut archive.entries {
-            entry.report.key.player_y_bucket = 0;
+            entry.key.player_y_bucket = 0;
         }
         let exhausting_draw = SelectorDraw {
             path: SelectorPath::GroupWalk,
@@ -2699,9 +5745,9 @@ mod tests {
             level,
             progress,
             player_y_bucket: vertical,
-            player_engine_state: 0,
             state_fingerprint: 0,
             room_x_bucket: 0,
+            time_bucket: 0,
             room: [0; 3],
         }
     }
@@ -2722,7 +5768,7 @@ mod tests {
                 parent,
                 0,
                 ArchiveCandidate {
-                    input: input.clone(),
+                    suffix: vec![ButtonChord::new(buttons, hold)],
                     key,
                     milestones: (),
                 },
@@ -2740,7 +5786,7 @@ mod tests {
                 None,
                 0,
                 ArchiveCandidate {
-                    input: Input::default(),
+                    suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
                 },
@@ -2805,7 +5851,7 @@ mod tests {
                 None,
                 0,
                 ArchiveCandidate {
-                    input: Input::default(),
+                    suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
                 },
@@ -2823,6 +5869,7 @@ mod tests {
                 slot,
             );
         }
+        assert_eq!(archive.active_count(), 3);
         let (fast, input) = chain_insert(
             &mut archive,
             Some(genesis),
@@ -2836,10 +5883,12 @@ mod tests {
             .expect("the eleven-frame route displaces a slower one");
         assert_eq!(archive.entry_time_in_group(admitted), 11);
         assert_eq!(archive.replacement_time_displaced(), 1);
+        assert_eq!(archive.active_count(), 4);
         let (slower, _) = chain_insert(&mut archive, fast, &input, 0x04, 200, slot);
         assert!(
             slower.is_none(),
             "a slower route never displaces a faster one"
         );
+        assert_eq!(archive.active_count(), 4);
     }
 }

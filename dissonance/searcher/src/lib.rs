@@ -2,6 +2,7 @@
 
 //! Deterministic Dissonance search library.
 
+pub mod nova;
 pub mod search;
 pub mod smb;
 pub mod target;

@@ -14,6 +14,7 @@ use crate::search::archive::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
+pub use crate::smb::target::ROOM_IDENTITY_BYTES;
 
 /// The parent selector a recorded identifier names, resolved under the SMB
 /// key's pooled depths.
@@ -49,7 +50,7 @@ pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
 }
 
 /// Progress-band width in 16-pixel buckets for the band group depth.
-const FRONTIER_PROGRESS_BAND: u16 = 8;
+const FRONTIER_PROGRESS_BAND: u16 = 4;
 const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 
 /// Largest bounded action horizon accepted by the completion-only archive.
@@ -64,12 +65,13 @@ pub const MAX_SMB_COMPLETION_ACTIONS: usize = 8192;
 /// backward warp lands in the lineage's room of that area whose arrival page
 /// is the greatest one not past the landing page. On top of the room, the
 /// player's 16-pixel on-screen x bucket joins the key across the full frame
-/// width, computed by [`screen_x_bucket`].
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16";
-
-/// Work RAM addresses whose byte pair identifies the current area (area type
-/// and area data offset).
-pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
+/// width, computed by [`screen_x_bucket`], and the hundreds digit of the
+/// level clock at [`GAME_TIMER_HUNDREDS_OFFSET`]. The selection cell and the
+/// band read the camera and screen-x buckets summed into the player's
+/// level-x bucket; the band group depth pools [`FRONTIER_PROGRESS_BAND`] of
+/// those buckets.
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "frozen_area_span_screen_x_16_clock_100_band_4_player_x_cells_no_engine_state";
 
 /// One room identity: the area bytes at `ROOM_IDENTITY_BYTES` followed by
 /// the level page the lineage arrived in that area at. The arrival page is
@@ -110,14 +112,17 @@ pub struct SmbArchiveKey {
     pub progress: u16,
     /// Coarse player vertical-position bucket.
     pub player_y_bucket: u8,
-    /// Mechanical player engine state.
-    pub player_engine_state: u8,
     /// Six-bit deterministic fingerprint of otherwise-hidden work RAM state.
     pub state_fingerprint: u8,
     /// One-based 16-pixel screen-x bucket, present only for states inside
     /// the registered scroll-frozen room; zero and omitted everywhere else.
     #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
     pub room_x_bucket: u8,
+    /// Hundreds digit of the level clock, so routes that reach one position
+    /// with different time left are different cells and a faster route to a
+    /// known position counts as a discovery.
+    #[serde(default)]
+    pub time_bucket: u8,
     /// The room the entry stands in, see [`SmbRoomIdentity`]. A freshly
     /// decoded key carries the arrival identity (area bytes plus the current
     /// page); completion against the parent's key and lineage resolves it.
@@ -141,18 +146,27 @@ impl ArchiveKey for SmbArchiveKey {
     }
 
     /// Depths, finest to coarsest: 0 the retention slot (the full key), 1
-    /// the selection cell (fingerprint pooled), 2 the progress band within a
-    /// room, 3 the room, 4 the `(world, level)` pair.
+    /// the selection cell (fingerprint pooled, camera and screen-x buckets
+    /// summed into the player's level-x bucket), 2 the progress band within
+    /// a room, 3 the room, 4 the `(world, level)` pair.
+    ///
+    /// The retention slot keeps the camera and the player's screen position
+    /// apart because a pinned camera hides the player's movement from the
+    /// progress coordinate. For selection the sum is the position that
+    /// matters: where the camera stands still while the player crosses the
+    /// screen, one position would otherwise open a cell per screen-x bucket
+    /// and the walk would spread its draws over the copies.
     fn group(self, depth: usize) -> Self::Group {
         let mut group = self;
         if depth >= 1 {
             group.state_fingerprint = 0;
+            group.progress = self.progress.saturating_add(u16::from(self.room_x_bucket));
+            group.room_x_bucket = 0;
         }
         if depth >= 2 {
             group.player_y_bucket = 0;
-            group.player_engine_state = 0;
-            group.room_x_bucket = 0;
-            group.progress = self.progress / FRONTIER_PROGRESS_BAND;
+            group.time_bucket = 0;
+            group.progress /= FRONTIER_PROGRESS_BAND;
         }
         if depth >= 3 {
             group.progress = 0;
@@ -236,7 +250,7 @@ pub struct SmbArchiveReport {
     /// still load.
     #[serde(with = "entries_by_suffix")]
     pub entries: Vec<SmbArchiveEntryReport>,
-    /// Fixed-interval deterministic progress curve.
+    /// Deterministic multi-resolution progress curve.
     pub progress_curve: Vec<SmbArchiveProgressPoint>,
     /// Candidate snapshots admitted to the active archive.
     pub retained: u64,
@@ -298,12 +312,16 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         level: state.level,
         progress: state.progress,
         player_y_bucket: state.player_y_bucket,
-        player_engine_state: state.player_engine_state,
         state_fingerprint: digest[0] & STATE_FINGERPRINT_MASK,
         room_x_bucket: screen_x_bucket(wram),
+        time_bucket: wram[GAME_TIMER_HUNDREDS_OFFSET],
         room: [0; 3],
     }
 }
+
+/// SMB level clock hundreds digit, `$07f8`, the first of the three timer
+/// display digits.
+const GAME_TIMER_HUNDREDS_OFFSET: usize = 0x07f8;
 
 /// Stamp the candidate's arrival identity into the key's room field: the
 /// area bytes at [`ROOM_IDENTITY_BYTES`] and the arrival page.
@@ -313,7 +331,7 @@ pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
 /// Returns an error when the work RAM is too short to hold the identity
 /// bytes.
 pub(crate) fn stamp_arrival_room(
-    mut key: SmbArchiveKey,
+    key: SmbArchiveKey,
     wram: &[u8],
 ) -> Result<SmbArchiveKey, Box<dyn Error>> {
     let mut area = [0_u8; 2];
@@ -322,6 +340,13 @@ pub(crate) fn stamp_arrival_room(
             .get(offset)
             .ok_or("room identity byte outside work RAM")?;
     }
+    stamp_arrival_room_identity(key, area)
+}
+
+pub(crate) fn stamp_arrival_room_identity(
+    mut key: SmbArchiveKey,
+    area: [u8; 2],
+) -> Result<SmbArchiveKey, Box<dyn Error>> {
     key.room = [area[0], area[1], u8::try_from(key.progress / 16)?];
     Ok(key)
 }
@@ -356,27 +381,53 @@ fn screen_x_bucket(wram: &[u8; 2_048]) -> u8 {
 pub const DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x01, 0x02, 0x40, 0x80, 0x81, 0x82, 0x83, 0x10, 0x20];
 
-/// The controller vocabulary in the emulator's bit order: no button, Right,
-/// Left, B, A, A+Right, A+Left, A+Left+Right, Up, Down. Start and Select are
-/// excluded because either pauses or leaves the game. The pinned QuickNES
-/// options filter Left+Right, so `0xc1` currently reaches the game as plain A;
-/// a future vocabulary identity can replace that dead entry.
+/// The earlier vocabulary in the emulator's bit order: no button, Right,
+/// Left, B, A, A+Right, A+Left, A+Left+Right, Up, Down. It has no B+direction
+/// chord, so the player can never run; it is kept only so recordings made
+/// under its identifier keep replaying byte-exact.
 pub const NES_DOWN_TEN_BUTTON_MASKS: [u8; 10] =
     [0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0xc1, 0x10, 0x20];
 
+/// The controller vocabulary in the emulator's bit order: no button, Right,
+/// Left, B, A, and each direction with A, with B, and with A+B, then Up and
+/// Down. Start and Select are excluded because either pauses or leaves the
+/// game, and the pinned QuickNES options filter Left+Right.
+pub const NES_RUN_THIRTEEN_BUTTON_MASKS: [u8; 13] = [
+    0x00, 0x80, 0x40, 0x02, 0x01, 0x81, 0x41, 0x82, 0x42, 0x83, 0x43, 0x10, 0x20,
+];
+
+/// Every physically pressable chord in the emulator's bit order: each of the
+/// nine direction sets (none, Right, Left, Up, Down, and the four diagonals)
+/// with none, A, B, and A+B. Start and Select are excluded because either
+/// pauses or leaves the game, and the pinned QuickNES options filter the
+/// opposing pairs Left+Right and Up+Down. Which chords matter is left to the
+/// chord table to learn.
+pub const NES_PRESSABLE_BUTTON_MASKS: [u8; 36] = [
+    0x00, 0x01, 0x02, 0x03, 0x80, 0x81, 0x82, 0x83, 0x40, 0x41, 0x42, 0x43, 0x10, 0x11, 0x12, 0x13,
+    0x20, 0x21, 0x22, 0x23, 0x90, 0x91, 0x92, 0x93, 0xa0, 0xa1, 0xa2, 0xa3, 0x50, 0x51, 0x52, 0x53,
+    0x60, 0x61, 0x62, 0x63,
+];
+
+/// Shortest and longest hold of the short stratum, drawn for control.
+pub const SHORT_HOLD_FRAMES: (u8, u8) = (2, 12);
+/// Shortest and longest hold of the long stratum, drawn for time.
+pub const LONG_HOLD_FRAMES: (u8, u8) = (96, 120);
+
 /// Draw one chord: a uniform mask and a hold from one of two strata, short
-/// (2..=12 frames) for control and long (96..=120 frames) for time.
+/// for control and long for time.
 pub(crate) fn sample_chord_from_masks(
     rand: &mut RomuDuoJrRand,
     masks: &[u8],
 ) -> Result<ButtonChord, Box<dyn Error>> {
     let buttons =
         masks[rand.below(NonZeroUsize::new(masks.len()).ok_or("empty SMB button vocabulary")?)];
-    let hold_frames = if rand.below(NonZeroUsize::new(2).ok_or("invalid stratum odds")?) == 0 {
-        u8::try_from(2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short hold span")?))?
+    let (low, high) = if rand.below(NonZeroUsize::new(2).ok_or("invalid stratum odds")?) == 0 {
+        SHORT_HOLD_FRAMES
     } else {
-        u8::try_from(96 + rand.below(NonZeroUsize::new(25).ok_or("invalid long hold span")?))?
+        LONG_HOLD_FRAMES
     };
+    let span = NonZeroUsize::new(usize::from(high - low) + 1).ok_or("invalid hold span")?;
+    let hold_frames = u8::try_from(usize::from(low) + rand.below(span))?;
     Ok(ButtonChord::new(buttons, hold_frames))
 }
 
@@ -443,7 +494,7 @@ pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16
 #[cfg(test)]
 mod tests {
     use super::{SmbArchiveKey, SmbRoomIdentity};
-    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey, Input};
+    use crate::search::archive::{Archive, ArchiveCandidate, ArchiveKey};
     use crate::smb::target::{SmbObservations, SmbProgressWatermark};
 
     #[test]
@@ -474,9 +525,9 @@ mod tests {
             level: 3,
             progress,
             player_y_bucket: 11,
-            player_engine_state: 8,
             state_fingerprint: 9,
             room_x_bucket: 0,
+            time_bucket: 0,
             room: [
                 area[0],
                 area[1],
@@ -488,37 +539,88 @@ mod tests {
     #[test]
     fn frozen_area_span_lands_same_area_warps_in_the_room_that_covers_the_page() {
         let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
-        let insert =
-            |archive: &mut Archive<u8, SmbArchiveKey, (), ()>, parent, actions: usize, key| {
-                archive
-                    .insert(
-                        parent,
-                        0,
-                        ArchiveCandidate {
-                            input: Input {
-                                actions: vec![1_u8; actions],
-                            },
-                            key,
-                            milestones: (),
-                        },
-                        (),
-                    )
-                    .expect("insert")
-            };
+        let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
+                      parent: Option<usize>,
+                      actions: usize,
+                      key| {
+            let suffix_len = parent.map_or(actions, |_| 1);
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![1_u8; suffix_len],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+        };
         let root = insert(&mut archive, None, 1, key(10, [3, 5])).expect("root");
         let deep = insert(&mut archive, Some(root), 2, key(230, [3, 5])).expect("deep");
         let water = insert(&mut archive, Some(deep), 3, key(20, [0, 2])).expect("water");
         let back = insert(&mut archive, Some(water), 4, key(260, [3, 5])).expect("back");
-        assert_eq!(archive.entries[back].report.key.room, [3, 5, 16]);
+        assert_eq!(archive.entries[back].key.room, [3, 5, 16]);
         let tip = insert(&mut archive, Some(back), 5, key(304, [3, 5])).expect("tip");
         // The page-19 loop returns to page 16: the after-water room covers it.
         let looped = insert(&mut archive, Some(tip), 6, key(258, [3, 5])).expect("loop");
-        assert_eq!(archive.entries[looped].report.key.room, [3, 5, 16]);
+        assert_eq!(archive.entries[looped].key.room, [3, 5, 16]);
         // A pipe back to page 1 lands in the start room, which covers page 1.
         let restart = insert(&mut archive, Some(looped), 7, key(20, [3, 5])).expect("restart");
-        assert_eq!(archive.entries[restart].report.key.room, [3, 5, 0]);
+        assert_eq!(archive.entries[restart].key.room, [3, 5, 0]);
         let rooms: &Vec<SmbRoomIdentity> = archive.lineage(restart).expect("lineage");
         assert_eq!(rooms, &vec![[0, 2, 1], [3, 5, 0], [3, 5, 16]]);
+    }
+
+    #[test]
+    fn a_rejected_boundary_carries_its_room_to_the_next_boundary() {
+        let mut archive: Archive<u8, SmbArchiveKey, (), ()> = Archive::new(|_| 1);
+        let insert = |archive: &mut Archive<u8, SmbArchiveKey, (), ()>,
+                      parent: Option<usize>,
+                      previous: Option<SmbArchiveKey>,
+                      actions: usize,
+                      key| {
+            archive
+                .insert_after(
+                    parent,
+                    previous,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![1_u8; actions],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert")
+        };
+        let (land, _) = insert(&mut archive, None, None, 1, key(10, [3, 5]));
+        let land = land.expect("land");
+        // Two entries fill the water page-0 slot.
+        let (first, _) = insert(&mut archive, Some(land), None, 1, key(3, [0, 2]));
+        let first = first.expect("first");
+        let (second, _) = insert(&mut archive, Some(land), None, 2, key(3, [0, 2]));
+        second.expect("second");
+        assert_eq!(archive.entries[first].key.room, [0, 2, 0]);
+        // A third boundary at page 0 is rejected; the boundary after it,
+        // at page 3, stays in the page-0 room instead of opening a room.
+        let (rejected, at_page_0) = insert(&mut archive, Some(land), None, 3, key(3, [0, 2]));
+        assert!(rejected.is_none());
+        assert_eq!(at_page_0.room, [0, 2, 0]);
+        let (deep, key_deep) = insert(
+            &mut archive,
+            Some(land),
+            Some(at_page_0),
+            4,
+            key(50, [0, 2]),
+        );
+        let deep = deep.expect("deep");
+        assert_eq!(key_deep.room, [0, 2, 0]);
+        assert_eq!(archive.entries[deep].key.room, [0, 2, 0]);
+        // Without the carried boundary the same candidate opens a page-3 room.
+        let (fresh, _) = insert(&mut archive, Some(land), None, 5, key(50, [0, 2]));
+        assert_eq!(archive.entries[fresh.expect("fresh")].key.room, [0, 2, 3]);
     }
 
     #[test]
@@ -526,7 +628,14 @@ mod tests {
         let key = key(153, [3, 5]);
         assert_eq!(key.group(0), key);
         assert_eq!(key.group(1).state_fingerprint, 0);
-        assert_eq!(key.group(2).progress, 153 / 8);
+        assert_eq!(key.group(2).progress, 153 / 4);
+        let on_screen = SmbArchiveKey {
+            room_x_bucket: 6,
+            ..key
+        };
+        assert_eq!(on_screen.group(1).progress, 159);
+        assert_eq!(on_screen.group(1).room_x_bucket, 0);
+        assert_eq!(on_screen.group(2).progress, 159 / 4);
         assert_eq!(key.group(2).player_y_bucket, 0);
         assert_eq!(key.group(3).progress, 0);
         assert_eq!(key.group(3).room, key.room);

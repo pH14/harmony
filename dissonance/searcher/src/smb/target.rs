@@ -7,11 +7,14 @@
 //! boundary or encodes actions as controller inputs; the emulator itself sits
 //! behind [`machine::Machine`].
 
-use std::{error::Error, path::Path, sync::Arc};
+use std::{error::Error, mem::size_of, path::Path};
 
 use crate::target::ExitKind;
-use machine::{Machine, MachineError, SnapId, StopConditions, nes, quicknes::QuickNesMachine};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
+use machine::{
+    Machine, MachineError, SnapId, StopConditions, nes,
+    quicknes::{QuickNesMachine, VideoFrame},
+};
+use serde::{Deserialize, Serialize};
 
 pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 
@@ -27,6 +30,8 @@ const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
 const LEVEL_ADVANCED_FLAG_TASK: u8 = 0x05;
+/// Work RAM addresses whose byte pair identifies the current area.
+pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
 
 /// A Super Mario Bros input replayed from the deterministic power-on state:
 /// controller chords in execution order.
@@ -57,90 +62,72 @@ pub struct SmbObservations {
 /// Complete in-memory state needed to resume an NES prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SmbSnapshot {
-    emulator_state: SharedState,
-    observation: SmbObservations,
+    emulator_state: Vec<u8>,
+    observation: SnapshotObservation,
+    room_area: [u8; 2],
     dead: bool,
     failed: bool,
 }
 
-const STATE_CHUNK_SIZE: usize = 512;
-
-#[derive(Debug, Eq, PartialEq)]
-struct SharedStateInner {
-    chunks: Vec<Arc<[u8; STATE_CHUNK_SIZE]>>,
-    len: usize,
+/// Snapshot-owned observation metadata. Work RAM is already present in the
+/// emulator state and is reconstructed after restore instead of being kept a
+/// second time in every archive entry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct SnapshotObservation {
+    frame_count: u64,
+    decoded: SmbMechanicalState,
+    milestones: SmbMilestones,
+    changed_indices: Vec<u16>,
+    dead: bool,
+    log_line: String,
 }
 
-/// Copy-on-write emulator bytes. Its Serde representation is deliberately
-/// identical to `Vec<u8>`, so sharing is an in-memory detail and recorded
-/// streams/checkpoints do not change.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SharedState(Arc<SharedStateInner>);
-
-impl SharedState {
-    fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
-        let mut chunks = Vec::with_capacity(bytes.len().div_ceil(STATE_CHUNK_SIZE));
-        for (index, source) in bytes.chunks(STATE_CHUNK_SIZE).enumerate() {
-            let mut chunk = [0_u8; STATE_CHUNK_SIZE];
-            chunk[..source.len()].copy_from_slice(source);
-            let shared = base
-                .and_then(|state| state.0.chunks.get(index))
-                .filter(|existing| existing.as_ref() == &chunk)
-                .cloned()
-                .unwrap_or_else(|| Arc::new(chunk));
-            chunks.push(shared);
+impl SnapshotObservation {
+    fn from_observation(observation: &SmbObservations) -> Self {
+        Self {
+            frame_count: observation.frame_count,
+            decoded: observation.decoded,
+            milestones: observation.milestones,
+            changed_indices: observation.changed_indices.clone(),
+            dead: observation.dead,
+            log_line: observation.log_line.clone(),
         }
-        Self(Arc::new(SharedStateInner {
-            chunks,
-            len: bytes.len(),
-        }))
     }
 
-    fn materialize(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.0.len);
-        for chunk in &self.0.chunks {
-            let remaining = self.0.len.saturating_sub(bytes.len());
-            bytes.extend_from_slice(&chunk[..remaining.min(STATE_CHUNK_SIZE)]);
+    fn materialize(&self, wram: Vec<u8>) -> SmbObservations {
+        SmbObservations {
+            frame_count: self.frame_count,
+            wram,
+            decoded: self.decoded,
+            milestones: self.milestones,
+            changed_indices: self.changed_indices.clone(),
+            dead: self.dead,
+            log_line: self.log_line.clone(),
         }
-        bytes
-    }
-}
-
-impl Serialize for SharedState {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut sequence = serializer.serialize_seq(Some(self.0.len))?;
-        for index in 0..self.0.len {
-            sequence.serialize_element(
-                &self.0.chunks[index / STATE_CHUNK_SIZE][index % STATE_CHUNK_SIZE],
-            )?;
-        }
-        sequence.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for SharedState {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<u8>::deserialize(deserializer).map(|bytes| Self::from_bytes(bytes, None))
     }
 }
 
 impl SmbSnapshot {
-    /// Work RAM captured with the snapshot.
-    #[must_use]
-    pub fn wram(&self) -> &[u8] {
-        &self.observation.wram
+    pub(crate) fn room_area(&self) -> [u8; 2] {
+        self.room_area
     }
 
     /// Number of persisted emulator-state bytes held by this snapshot.
     #[must_use]
     pub fn emulator_state_bytes_len(&self) -> usize {
-        self.emulator_state.0.len
+        self.emulator_state.len()
+    }
+
+    pub(crate) fn resident_memory_charge(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(self.emulator_state.len())
+            .saturating_add(
+                self.observation
+                    .changed_indices
+                    .len()
+                    .saturating_mul(size_of::<u16>()),
+            )
+            .saturating_add(self.observation.log_line.len())
     }
 }
 
@@ -148,7 +135,7 @@ impl SmbSnapshot {
 /// controller inputs: the title screen settles, Start is pressed once, and
 /// the pre-level sequence plays out. Target setup rather than model-visible
 /// search guidance.
-const BOOT_WALK: [ButtonChord; 4] = [
+const BOOT_WALK: [ButtonChord; 2] = [
     ButtonChord {
         buttons: 0,
         hold_frames: 120,
@@ -157,15 +144,16 @@ const BOOT_WALK: [ButtonChord; 4] = [
         buttons: 0x08,
         hold_frames: 1,
     },
-    ButtonChord {
-        buttons: 0,
-        hold_frames: 120,
-    },
-    ButtonChord {
-        buttons: 0,
-        hold_frames: 120,
-    },
 ];
+
+/// Longest wait, in frames, from the Start press to the first frame of play.
+const BOOT_PLAY_WAIT_FRAMES: u32 = 900;
+/// Operating mode byte and the value the game holds during play.
+const OPER_MODE_OFFSET: usize = 0x0770;
+const OPER_MODE_PLAY: u8 = 1;
+/// Operating mode task byte and the value that hands control to the player.
+const OPER_MODE_TASK_OFFSET: usize = 0x0772;
+const OPER_MODE_TASK_PLAY: u8 = 3;
 
 /// Machine-backed target used by the Super Mario Bros campaigns.
 #[derive(Debug)]
@@ -176,15 +164,48 @@ pub struct SmbTarget {
     action_observations: Vec<SmbObservations>,
     dead: bool,
     failed: bool,
-    snapshot_base: Option<SharedState>,
 }
 
 impl SmbTarget {
-    fn from_machine(mut machine: QuickNesMachine) -> Result<Self, MachineError> {
+    fn from_machine(machine: QuickNesMachine) -> Result<Self, MachineError> {
+        Self::boot(machine, true)
+    }
+
+    /// Emulate the boot walk and seal genesis at the first frame of play.
+    ///
+    /// `require_play` is false only for the loopback core, which has no SMB
+    /// state machine and so never reports the play operating mode.
+    fn boot(mut machine: QuickNesMachine, require_play: bool) -> Result<Self, MachineError> {
         let power_on = machine.snapshot()?;
         machine.branch(power_on, &nes::reproducer(&BOOT_WALK))?;
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(power_on)?;
+        // Genesis is the first frame of play, found by stepping one frame at
+        // a time after Start, so the searcher starts before the game moves.
+        let idle = [ButtonChord {
+            buttons: 0,
+            hold_frames: 1,
+        }];
+        let mut reached_play = false;
+        for _ in 0..BOOT_PLAY_WAIT_FRAMES {
+            let wram = wram_array(&machine)?;
+            if wram[OPER_MODE_OFFSET] == OPER_MODE_PLAY
+                && wram[OPER_MODE_TASK_OFFSET] == OPER_MODE_TASK_PLAY
+            {
+                reached_play = true;
+                break;
+            }
+            let here = machine.snapshot()?;
+            machine.branch(here, &nes::reproducer(&idle))?;
+            machine.run(StopConditions::default(), None)?;
+            machine.drop_snapshot(here)?;
+        }
+        if require_play && !reached_play {
+            return Err(MachineError::Backend(format!(
+                "Super Mario Bros did not reach play within {BOOT_PLAY_WAIT_FRAMES} frames \
+                 of the Start press"
+            )));
+        }
         let genesis = machine.snapshot()?;
         let wram = wram_array(&machine)?;
         let observation = SmbObservations {
@@ -203,7 +224,6 @@ impl SmbTarget {
             observation,
             dead: false,
             failed: false,
-            snapshot_base: None,
         })
     }
 
@@ -224,9 +244,40 @@ impl SmbTarget {
         Self::from_machine(machine)
     }
 
+    /// Load SMB exactly as [`Self::from_smb_rom_bytes_headless`] does, with
+    /// the core's video and audio planes enabled so a replay can be filmed.
+    ///
+    /// Capture starts before the boot walk, so the film opens on the title
+    /// screen the machine saw.
+    ///
+    /// # Errors
+    ///
+    /// Returns a machine error if the core, ROM, bootstrap, or snapshot fails.
+    pub fn from_smb_rom_bytes_capturing(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+        machine.set_video_capture(true);
+        machine.set_audio_capture(true);
+        Self::from_machine(machine)
+    }
+
+    /// Take the video frames emulated since the last drain, in emulation
+    /// order.
+    pub fn drain_frames(&mut self) -> Vec<VideoFrame> {
+        self.machine.take_video_frames()
+    }
+
+    /// Take the interleaved stereo samples emulated since the last drain.
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.take_audio_samples()
+    }
+
     #[cfg(test)]
     pub(crate) fn loopback_for_tests(rom: &[u8]) -> Result<Self, MachineError> {
-        Self::from_machine(QuickNesMachine::loopback_for_tests(rom)?)
+        Self::boot(QuickNesMachine::loopback_for_tests(rom)?, false)
     }
 
     /// Clock one fixed mask for a bounded horizon and report whether the run stays alive.
@@ -410,7 +461,6 @@ impl Target for SmbTarget {
 
     fn reset(&mut self) {
         self.failed = self.machine.replay(self.genesis).is_err();
-        self.snapshot_base = None;
         self.dead = false;
         let wram = self.wram();
         self.observation = self.observation_from(&wram, 0, &[0; WRAM_SIZE], false);
@@ -517,23 +567,30 @@ impl Target for SmbTarget {
             self.failed = true;
             return None;
         };
-        let emulator_state = SharedState::from_bytes(emulator_state, self.snapshot_base.as_ref());
-        self.snapshot_base = Some(emulator_state.clone());
+        let observation = SnapshotObservation::from_observation(&self.observation);
+        let mut room_area = [0_u8; 2];
+        for (slot, offset) in room_area.iter_mut().zip(ROOM_IDENTITY_BYTES) {
+            let Some(value) = self.observation.wram.get(offset).copied() else {
+                self.failed = true;
+                return None;
+            };
+            *slot = value;
+        }
         Some(SmbSnapshot {
             emulator_state,
-            observation: self.observation.clone(),
+            observation,
+            room_area,
             dead: self.dead,
             failed: self.failed,
         })
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        let emulator_state = snapshot.emulator_state.materialize();
         self.machine
-            .restore_bytes(&emulator_state)
+            .restore_bytes(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
-        self.snapshot_base = Some(snapshot.emulator_state.clone());
-        self.observation = snapshot.observation.clone();
+        let wram = wram_array(&self.machine).map_err(|error| error.to_string())?;
+        self.observation = snapshot.observation.materialize(wram.to_vec());
         self.action_observations = vec![self.observation.clone()];
         self.dead = snapshot.dead;
         self.failed = snapshot.failed;
@@ -698,40 +755,24 @@ fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ButtonChord, MAX_HOLD_FRAMES, STATE_CHUNK_SIZE, SharedState, SmbTarget, WRAM_SIZE,
-        smb_is_victory, smb_mechanical_state_from_wram,
+        BOOT_PLAY_WAIT_FRAMES, ButtonChord, MAX_HOLD_FRAMES, SmbTarget, WRAM_SIZE, smb_is_victory,
+        smb_mechanical_state_from_wram,
     };
     use crate::target::Target;
-    use std::sync::Arc;
+    use machine::quicknes::QuickNesMachine;
 
     #[test]
-    fn shared_state_preserves_the_flat_byte_wire_format() {
-        let bytes = (0_u16..333).map(|value| value as u8).collect::<Vec<_>>();
-        let state = SharedState::from_bytes(bytes.clone(), None);
-        assert_eq!(state.materialize(), bytes);
-        assert_eq!(
-            postcard::to_allocvec(&state).expect("encode shared state"),
-            postcard::to_allocvec(&bytes).expect("encode flat state")
+    fn a_core_that_never_reaches_play_is_an_error_rather_than_a_sealed_genesis() {
+        // The loopback core has no SMB state machine, so it stands in for a
+        // production core whose operating mode never reaches play.
+        let core = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
+        let error = SmbTarget::boot(core, true).expect_err("non-play genesis is refused");
+        assert!(
+            error
+                .to_string()
+                .contains(&BOOT_PLAY_WAIT_FRAMES.to_string()),
+            "unexpected error: {error}"
         );
-        assert_eq!(
-            serde_json::to_vec(&state).expect("encode shared JSON"),
-            serde_json::to_vec(&bytes).expect("encode flat JSON")
-        );
-        let decoded: SharedState =
-            postcard::from_bytes(&postcard::to_allocvec(&state).expect("encode round-trip state"))
-                .expect("decode shared state");
-        assert_eq!(decoded, state);
-    }
-
-    #[test]
-    fn shared_state_reuses_only_byte_identical_chunks() {
-        let base = SharedState::from_bytes(vec![1_u8; STATE_CHUNK_SIZE * 3], None);
-        let mut changed = base.materialize();
-        changed[STATE_CHUNK_SIZE + 1] = 2;
-        let child = SharedState::from_bytes(changed, Some(&base));
-        assert!(Arc::ptr_eq(&base.0.chunks[0], &child.0.chunks[0]));
-        assert!(!Arc::ptr_eq(&base.0.chunks[1], &child.0.chunks[1]));
-        assert!(Arc::ptr_eq(&base.0.chunks[2], &child.0.chunks[2]));
     }
 
     #[test]
@@ -798,5 +839,26 @@ mod tests {
         restored.apply(&ButtonChord::new(0x01, 10));
         assert_eq!(restored.frames_clocked(), frames_before);
         assert!(restored.last_action_observations().is_empty());
+    }
+
+    #[test]
+    fn snapshot_accessors_and_reset_restore_exact_genesis_state() {
+        let rom = synthetic_nrom();
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
+        target.reset();
+        for (offset, value) in super::ROOM_IDENTITY_BYTES.into_iter().zip([7, 9]) {
+            target.poke_wram(offset, value);
+        }
+        let identified = target.snapshot().expect("snapshot identified room");
+        assert_eq!(identified.room_area(), [7, 9]);
+        assert!(identified.emulator_state_bytes_len() > 1);
+        assert!(identified.resident_memory_charge() > identified.emulator_state_bytes_len());
+
+        target.reset();
+        let genesis = target.snapshot().expect("snapshot genesis");
+        target.apply(&ButtonChord::new(0x01, 10));
+        assert_ne!(target.snapshot().expect("snapshot advanced"), genesis);
+        target.reset();
+        assert_eq!(target.snapshot().expect("snapshot reset"), genesis);
     }
 }

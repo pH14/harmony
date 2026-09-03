@@ -93,6 +93,12 @@ pub(crate) const IA32_TSC_ADJUST: u32 = 0x3b;
 /// non-SDK path is byte-for-byte unchanged.
 pub(crate) const DOORBELL_PORT: u16 = 0x0CA1;
 
+/// The guest kernel's execution-tick ring (`OUT VIRTUAL_TIME_TICK_PORT, 1`):
+/// one dword write per syscall entry, context switch, and idle-poll iteration,
+/// advancing V-time by the contract's execution-tick duration. Store-only;
+/// the exact value is the protocol, so anything else fails closed.
+pub(crate) const VIRTUAL_TIME_TICK_PORT: u16 = 0x0CA3;
+
 /// `RFLAGS.IF` (interrupt-enable flag, bit 9) — the guest's own signal for "I am
 /// waiting for an interrupt I can take". [`Vmm::idle_resume_target`] uses it to
 /// tell a *resumable idle* `HLT` (`IF == 1`, an armed timer will wake the guest)
@@ -225,15 +231,15 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if !self.virtual_time_vtime_enabled() {
             return Ok(());
         }
-        let vns = match port_event_class(port) {
-            NormalizedEventClass::DeviceMmio(DeviceClass::Serial) => contract::SERIAL_EXIT_VNS,
-            NormalizedEventClass::DeviceMmio(DeviceClass::InterruptController) => {
-                contract::INTERRUPT_CONTROLLER_EXIT_VNS
+        let vns = if port == VIRTUAL_TIME_TICK_PORT {
+            contract::virtual_time_timing().execution_tick_vns
+        } else {
+            match port_event_class(port) {
+                NormalizedEventClass::DeviceMmio(class) => {
+                    contract::virtual_time_timing().mmio_vns(class)
+                }
+                _ => return Ok(()),
             }
-            NormalizedEventClass::DeviceMmio(DeviceClass::Paravirtual) => {
-                contract::PARAVIRTUAL_EXIT_VNS
-            }
-            _ => return Ok(()),
         };
         self.advance_virtual_time_vtime(vns)
     }
@@ -245,10 +251,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if !self.virtual_time_vtime_enabled() {
             return Ok(());
         }
+        let timing = contract::virtual_time_timing();
         let vns = if matches!(disp, MsrDisposition::EmulateVtime) {
-            contract::TRAPPED_TIME_READ_VNS
+            timing.trapped_time_read_vns
         } else {
-            contract::ARCH_CONTROL_EXIT_VNS
+            timing.architectural_control_vns
         };
         self.advance_virtual_time_vtime(vns)
     }
@@ -259,6 +266,20 @@ impl<B: Backend<A = X86>> Vmm<B> {
         size: u8,
         value: u32,
     ) -> Result<Step, VmmError> {
+        if port == VIRTUAL_TIME_TICK_PORT {
+            // The exact tuple is the protocol, so it is validated **before** the
+            // tick is charged: an off-protocol width or value must leave V-time
+            // untouched on its way to the error, never half-advance the clock.
+            require_dword_io("OUT", port, size)?;
+            if value != 1 {
+                return Err(VmmError::ContractViolation(format!(
+                    "execution-tick protocol fault: OUT {port:#06x} value {value:#x} (must be 1)"
+                )));
+            }
+            self.advance_virtual_time_for_port(port)?;
+            // The write itself carries no data.
+            return Ok(Step::Continued);
+        }
         self.advance_virtual_time_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
             require_byte_io("OUT", port, size)?;
@@ -309,6 +330,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     pub(crate) fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
+        if port == VIRTUAL_TIME_TICK_PORT {
+            // The tick port is store-only. A read is not an execution tick, so it
+            // fails closed without charging one.
+            return Err(VmmError::ContractViolation(format!(
+                "execution-tick protocol fault: IN {port:#06x} (size {size}); the tick port is \
+                 write-only"
+            )));
+        }
         self.advance_virtual_time_for_port(port)?;
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;
@@ -356,7 +385,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
             )));
         }
         if self.virtual_time_vtime_enabled() {
-            self.advance_virtual_time_vtime(contract::INTERRUPT_CONTROLLER_EXIT_VNS)?;
+            self.advance_virtual_time_vtime(
+                contract::virtual_time_timing().interrupt_controller_mmio_vns,
+            )?;
         }
         let now_vns = self.now_vns()?;
         let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
@@ -619,7 +650,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
     pub(crate) fn dispatch_cpuid(&mut self, leaf: u32, subleaf: u32) -> Result<Step, VmmError> {
         if self.virtual_time_vtime_enabled() {
-            self.advance_virtual_time_vtime(contract::ARCH_CONTROL_EXIT_VNS)?;
+            self.advance_virtual_time_vtime(
+                contract::virtual_time_timing().architectural_control_vns,
+            )?;
         }
         // Stock KVM answers CPUID in-kernel and never reaches here; a backend that
         // surfaces it gets the frozen model overlaid with the live dynamic cells.

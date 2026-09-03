@@ -2,7 +2,7 @@
 //! Box-only **moment-address** gate (task 80): prove that a
 //! `(genesis-complete Reproducer, Moment)` pair materializes to a live session
 //! at exactly that instruction, twice, byte-identically — the substrate for
-//! everything in `docs/RESOLUTION.md`. Driven directly against the
+//! everything in git history's `docs/RESOLUTION.md`. Driven directly against the
 //! [`ControlServer`] verbs (`hello`/`snapshot`/`branch`/`run`/`read`/`regs`/`hash`)
 //! on the real patched-KVM Postgres workload.
 //!

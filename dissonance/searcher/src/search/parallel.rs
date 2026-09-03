@@ -85,6 +85,22 @@ impl<Job, Output> WorkerPool<Job, Output> {
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
     }
+
+    /// Take one completed worker output without waiting.
+    ///
+    /// This lets a coordinator refill every physical executor whose reply is
+    /// already queued before it performs deterministic ordered admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if every reply sender has closed.
+    pub(crate) fn try_receive(&self) -> Result<Option<WorkerReply<Output>>, WorkerPoolError> {
+        match self.reply_receiver.try_recv() {
+            Ok(reply) => Ok(Some(reply)),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => Err(WorkerPoolError::RepliesClosed),
+        }
+    }
 }
 
 /// Run a coordinator against a scoped, game-neutral worker pool.
@@ -149,7 +165,37 @@ where
 mod tests {
     use std::sync::mpsc;
 
-    use super::with_worker_pool;
+    use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
+
+    #[test]
+    fn try_receive_distinguishes_ready_empty_and_disconnected() {
+        let (sender, receiver) = mpsc::channel();
+        let pool = WorkerPool::<(), u64> {
+            job_senders: Vec::new(),
+            reply_receiver: receiver,
+        };
+        assert!(
+            pool.try_receive()
+                .expect("empty channel remains open")
+                .is_none()
+        );
+        sender
+            .send(WorkerReply {
+                worker: 7,
+                outcome: Ok(11),
+            })
+            .expect("queue reply");
+        let reply = pool
+            .try_receive()
+            .expect("ready channel")
+            .expect("queued reply");
+        assert_eq!((reply.worker, reply.outcome), (7, Ok(11)));
+        drop(sender);
+        assert!(matches!(
+            pool.try_receive(),
+            Err(WorkerPoolError::RepliesClosed)
+        ));
+    }
 
     #[test]
     fn one_worker_uses_the_same_pool_path() {

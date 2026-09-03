@@ -11,8 +11,8 @@ resolver = "2"
 members = ["cli", "consonance/*"]
 # consonance/harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
 # payloads use custom targets/linker flags. Neither belongs to this workspace.
-# dissonance/ is a standalone workspace root by design (the searcher rebuild,
-# docs/DISSONANCE-FROM-SCRATCH.md); it must not share this build graph.
+# dissonance/ is a standalone workspace root by design (the searcher rebuild);
+# it must not share this build graph.
 exclude = [
   "consonance/harmony-linux",
   "dissonance",

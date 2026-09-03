@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 1
+candidate = "R1-C02"
+hypothesis = "A deterministic age-stratified cell draw reduces corridor collapse relative to the fixed concentrated 128-entry window and improves worst-column progress AUC without memory regression."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "a4d177fc3893bda67a36ec55c4b00e6f5b9b463d"
+diff_sha256 = "0a502d96325feaadae117becab639eda81fa814e59e578185251b0305e4344e2"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "REJECT"
+failed_stage = "1a"
+efficacy_executions = 15000
+screen_seed = 6672613057367113729
+selector = "room_cell_age_stratified_96_32_3_1"
+complexity_delta = "one selector variant, two age strata, and one weighted stratum draw"
+
+[stage_0]
+repair_count = 1
+repair = "pinned formatter only"
+fmt = "PASS"
+tests = "PASS (106)"
+clippy = "PASS"
+boundary_review = "PASS"
+micro_replay = "PASS"
+micro_stream_sha256 = "8c809255155bd39cd74229f28866114747bdd84ce6c32c98bf746122f9e4b902"
+micro_archive_sha256 = "c353f5cf4d78240bdd242074057eeac96fd9262d2230fbb8a6118811039a648e"
+
+[canary]
+status = "PASS"
+executions_completed = 12132
+victories = 4
+stream_sha256 = "0b57be716bc384e299bc259895a9be3966d534b25b61faddb59207e8d58f6356"
+
+[stage_1a."2-2"]
+champion_auc = 106400
+candidate_auc = 94400
+delta = -12000
+candidate_final_progress = 27
+candidate_resident_bytes = 110023876
+champion_resident_bytes = 4434062
+stream_sha256 = "da0fefd9c8deec1b493a2a1b04d45e80472b8ecbb61b7a312cd1b864a20c205a"
+
+[stage_1a."7-2"]
+champion_auc = 101900
+candidate_auc = 101400
+delta = -500
+candidate_final_progress = 27
+candidate_resident_bytes = 121291152
+champion_resident_bytes = 4115006
+stream_sha256 = "9da87aef558e1985f9fc2eb71b3f46147b179a840171125c164cc361e1873a91"
+
+[stage_1a."8-4"]
+champion_auc = 18100
+candidate_auc = 27500
+delta = 9400
+candidate_final_progress = 20
+candidate_resident_bytes = 63164806
+champion_resident_bytes = 1481238
+stream_sha256 = "bfb1172ddeb5b816a9e3bae25102873ce02a1508f9f7bec929e7f1121eadf7ac"
+
+[disposition]
+worst_column_auc_delta = -12000
+challenge_completion_delta = 0
+memory_veto = "FAIL"
+diagnosis = "The new top-level selector preserved the recency experiment but discarded the incumbent energy/frontier/cheapest exhaustion behavior, causing both a worst-column regression and a 25-43x deterministic resident-byte increase. A future recency lens must vary the cell sample while holding the outer incumbent policy fixed."

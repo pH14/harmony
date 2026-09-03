@@ -1911,7 +1911,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// caller may deliberately sacrifice a timeline; fork-first is a usage
     /// discipline, not a server rule.
     ///
-    /// **Off the record by ruling** (`docs/RESOLUTION.md` §Improvisations): the
+    /// **Off the record by ruling** (git history's `docs/RESOLUTION.md` §Improvisations): the
     /// serial channel is deliberately crude, there is **no determinism guarantee**
     /// on this path, and nothing here is recorded into the reproducer
     /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. See the
@@ -7050,7 +7050,7 @@ mod tests {
             "expected the first deferred snapshot point, got {stop:?}"
         );
         let (snap1, at1, n1, t1) = snap_cut(&mut s);
-        assert_eq!(at1, 2002, "the seal Moment is the assigned V-time");
+        assert_eq!(at1, 10002, "the seal Moment is the assigned V-time");
         assert_eq!(n1, 1, "the event emitted before the seal is included");
         assert!(!t1);
 
@@ -7065,7 +7065,7 @@ mod tests {
         assert_ne!(snap1, snap2);
         assert_eq!(
             (at2, n2),
-            (4002, 2),
+            (20002, 2),
             "later exit-count boundary, strictly larger prefix"
         );
 
@@ -7073,8 +7073,8 @@ mod tests {
         // what the prefix counts cut.
         let events = drain_sdk(&mut s);
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].0, 2001);
-        assert_eq!(events[1].0, 2002);
+        assert_eq!(events[0].0, 10001);
+        assert_eq!(events[1].0, 10002);
         assert_eq!(events[0].1, events[1].1, "identical event ids");
         assert_eq!(events[0].2, events[1].2, "identical payloads");
 

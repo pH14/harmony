@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| contract-version | 4 |
+| contract-version | 5 |
 | reference kernel | Linux **v6.18.35** — equals `consonance/harmony-linux/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
 | baseline microarchitecture | **`det-cfl-v1`** — Coffee Lake-S client (Intel Core i9-9900K, `06_9e_0c`, microcode `0xf8`); the named baseline of the frozen CPUID model (§2). The host-specific values are derived from and cited to the box dump under `docs/fragments/cfl-baseline/` |
 | contract hash | `contract_hash` = SHA-256 of the canonical serialized form, computed per §6 from the assembled tables — never hand-written into this document |
@@ -33,13 +33,16 @@ the vendor axis is byte-identical for this column (§6). The AMD column's shape 
 mandates it be authored before any vmm-core code (§7): vmm-core implements it, it does
 not negotiate with it. Where implementation and contract disagree, the implementation is
 wrong. The contract changes only by editing this document and bumping the version per §6
-— never by implementation drift. It is subordinate to INTEGRATION.md §1–§7 and docs/PLAN.md's
-trap table; any contradiction discovered later is raised as a `[question]`, not resolved
+— never by implementation drift. It is subordinate to INTEGRATION.md §1–§7 and
+`docs/DETERMINISM.md` (whose instruction table supersedes the historical `docs/PLAN.md`
+trap table); any contradiction discovered later is raised as a `[question]`, not resolved
 by a silent local choice.
 
 **How to read the tables.** The tables — not the prose — are the normative surface; the
-prose explains and motivates but binds nothing. Column grammar, uniform across the
-document:
+prose explains and motivates but binds nothing. Citation entries naming `docs/PLAN.md`,
+`docs/ROADMAP.md`, or `docs/DISSONANCE.md` cite deleted historical docs (git history); they
+stay verbatim because the assembled tables are hash-serialized (§6). Column grammar,
+uniform across the document:
 
 - **MSR tables**: `| MSR | Index | Read | Write | Rationale | Citation |`. `MSR` is the
   `arch/x86/include/asm/msr-index.h` name at v6.18.35 (or the architectural name where
@@ -430,7 +433,7 @@ form and `contract_hash` are byte-identical through the vendor-axis restructure 
 > pinned to `1/1`) describes the **v1 contract**: an SMP-*built* kernel with exactly one
 > *online* vCPU (task 56 shipped `CONFIG_SMP=y` + `maxcpus=1`; the kernel config is SMP-capable,
 > the running topology is not). Real multi-vCPU is out of scope until explicitly re-ruled —
-> deferred, not foreclosed. See `docs/DISSONANCE.md`'s matching ruling and `docs/ROADMAP.md`.
+> deferred, not foreclosed (matching rulings in git history).
 
 Baseline name: **`det-cfl-v1`** — a synthetic single-socket, single-core, single-thread
 client CPU modeled on Coffee Lake-S (GenuineIntel, family 6, model 0x9E, stepping 0xC — the
@@ -1667,7 +1670,12 @@ noted:
   determinism/conformance corpus's **report channel** (`OUT 0x0CA2`, INTEGRATION.md §1.1, task 28)
   is likewise transport/observability only — a documentary `[ports]` row in
   `docs/cpu-msr-contract.toml`, **not** a §6-hashed row (it carries no per-host input;
-  `contract_hash` is unchanged by it).
+  `contract_hash` is unchanged by it). The **execution-tick ring** (`OUT 0x0CA3, 1`,
+  `docs/VM-EXIT-COUNT-VTIME.md`) is a third such port: a dword write of exactly 1, rung by the
+  guest kernel on every syscall entry, context switch, and idle-poll iteration. A byte or word
+  write, a value other than 1, or any `IN` from the port is a contract violation that advances
+  no V-time. Only the tick's *duration* is hashed (`vtime-execution-tick-vns`, §6 item 1); the
+  port is a documentary `[ports]` row.
 - `host-pin(<knob>)` — not interceptable per-instruction; a host-side MSR pin set before
   `KVM_RUN` forces a deterministic result (only `host-pin(tsx-ctrl-rtm-disable)`: TSX). The
   pin is a **hashed `host-assert`** (§6), not prose. ⇒ class `intercept`.
@@ -1927,10 +1935,19 @@ do not bind). It consists of, in order:
    `mxcsr-mask=0x0000ffff`, `rtc-epoch=1577836800` (the CMOS/RTC boot wall-clock seed,
    2020-01-01T00:00:00Z — §5 makes `read_persistent_clock64()` reproducible), and
    `pit-refresh-ns=15085` (the §5 port-0x61 refresh-toggle half-period in V-ns, with initial
-   phase 0 at reset) — one per line, in exactly that order. The frequency constants
+   phase 0 at reset), and finally the seven V-time timing records:
+   `vtime-interrupt-controller-vns=10000`, `vtime-serial-vns=10000`,
+   `vtime-paravirtual-vns=10000`, `vtime-time-read-vns=1`, `vtime-arch-control-vns=10000`,
+   `vtime-execution-tick-vns=100000`, `vtime-clockevent-period-vns=10000000` — one record per
+   line, in exactly the order listed here. The frequency constants
    are the single source the CPUID 0x15/0x16, brand string, and MSR_PLATFORM_INFO values
    derive from (§2 [question] 3); `mxcsr-mask` is the FPU/XSAVE save-image pin (§2). They
-   are hashed so a half-updated frequency/FPU set changes the bytes.
+   are hashed so a half-updated frequency/FPU set changes the bytes. The six duration rows
+   are the per-exit-class V-time costs the run loop charges (`docs/VM-EXIT-COUNT-VTIME.md`);
+   the seventh is the guest's clockevent period, which is charged at no exit and exists to
+   bound the execution tick — the tick must stay strictly below it, or a timer interrupt's
+   own context switch would mature the next timer immediately. Both architectures carry the
+   same seven values, so a one-sided edit changes `contract_hash` and refuses old snapshots.
 2. CPUID records: one line per listed (leaf, subleaf):
    `cpuid <leaf>.<subleaf> <eax> <ebx> <ecx> <edx>`. **`<leaf>` and `<subleaf>`** are each
    8 lowercase hex digits (single), `lo-hi` (an inclusive range, both 8-hex — used only for
@@ -2154,7 +2171,7 @@ this section alone (the markdown is normative; the TOML mirrors it). The Intel c
   changes the body bytes and so requires a **new contract-version + `contract_hash`
   re-derivation, never a silent edit**. The committed AMD-draft hash is
   **`contract_hash` (AuthenticAMD draft, det-zenN-v1) =
-  `0e4e8daaa7bafe197396ebac8b42b0671453a7e1ab12f73136ee5e44533b5849`**, in
+  `f2944970ab883c47ecdfb1f994eb5c449ff385cbd1381c1299cb8b2e8b8b3a22`**, in
   `docs/cpu-msr-contract-amd-draft.toml` `[contract] contract_hash`, with the byte-exact golden
   `consonance/vmm-core/src/vendor/x86/contract/testdata/canonical-amd-draft.txt`, pinned by the
   computed-==committed gate (`amd_contract_hash_matches_committed`). An independent auditor
@@ -2197,17 +2214,17 @@ cannot change the hash, since they are excluded from serialization). There are n
 in-place value edits under an existing version, ever — a wrong value is fixed by a new
 version whose changelog says so.
 
-**Registry status (live as of v4).** The enforcement is now mechanical and committed: the §6
+**Registry status (live as of v5).** The enforcement is now mechanical and committed: the §6
 canonical serializer exists in vmm-core (`consonance/vmm-core/src/vendor/x86/contract/{canonical,parse}.rs`),
 emits the byte string specified above from the parsed `cpu-msr-contract.toml`, and
-`contract_hash` = SHA-256 of those bytes. The hash of the **v4 (det-cfl-v1)** contract is
+`contract_hash` = SHA-256 of those bytes. The hash of the **v5 (det-cfl-v1)** contract is
 
-> **`contract_hash` (v4, det-cfl-v1) = `30839ae67142f265066be1051e93fcb4a1839c30bd3edd6d875ecdc1a37ddb67`**
+> **`contract_hash` (v5, det-cfl-v1) = `01b0214b9387e205e4c3dd418780bbe15c77f171259120c2f7902ae38858ff63`**
 
 committed in `cpu-msr-contract.toml` `[contract] contract_hash` and pinned by the live gate
 `vmm_core::vendor::x86::contract::tests::contract_hash_matches_committed_registry`
 (computed-from-parsed == committed) plus the byte-exact golden
-`src/vendor/x86/contract/testdata/canonical-v4.txt`. vmm-core startup
+`src/vendor/x86/contract/testdata/canonical-v5.txt`. vmm-core startup
 re-serializes, re-hashes, and refuses a mismatch. Off-contract MSR accesses observed at runtime
 (§1) feed back into the version rule: the triaged new row changes the body, so it arrives as a
 new version, and every run header names the version + hash it executed under. *(v1 and v2 were
@@ -2261,8 +2278,19 @@ contract whose body-hash is computed and committed.)*
   (under the broadcast machinery SMP pulls in) refuses to adopt it as the per-CPU tick device,
   falling back to the unmodeled PIT broadcast so the tree-RCU idle `HLT` never wakes. Paired with
   the minimal ACPI MADT written in `consonance/vmm-core/src/linux_loader.rs` (the MADT+ARAT
-  keystone). New `contract_hash` = `30839ae6…ddb67` (above); everything else carried over unchanged
+  keystone). New `contract_hash` = `30839ae6…ddb67`; everything else carried over unchanged
   from v3.
+- **v5** — **freeze the calibrated V-time timing rows**: seven new header records
+  (`vtime-interrupt-controller-vns=10000`, `vtime-serial-vns=10000`,
+  `vtime-paravirtual-vns=10000`, `vtime-time-read-vns=1`, `vtime-arch-control-vns=10000`,
+  `vtime-execution-tick-vns=100000`, `vtime-clockevent-period-vns=10000000`) enter the
+  canonical form in §6 item 1. The six durations are the per-exit-class costs fitted from
+  calibration logs by `scripts/fit-vtime-costs.py`; the seventh bounds the execution tick.
+  They are hashed because they change guest-visible timing: two runs under different
+  durations are not comparable, and a snapshot taken under the old clock must be refused.
+  arm64 carries the identical seven values in `vendor/arm64/contract.rs` and folds them into
+  its own `contract_hash`. New `contract_hash` = `01b0214b…58ff63` (above); everything else
+  carried over unchanged from v4.
 
 ## 7. Citations
 

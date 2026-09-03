@@ -5,8 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# Pinned for all phases; upgrade once, deliberately, at phase 5
-# (docs/LIBAFL-PLAN.md "Version churn").
+# Pinned against LibAFL minor-version API churn; upgrade once, deliberately.
 libafl = "=0.15.4"
 libafl_bolts = "=0.15.4"
 postcard = { version = "=1.1.3", features = ["alloc"] }

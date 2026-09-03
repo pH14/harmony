@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+round = 4
+candidate = "R4-C03"
+hypothesis = "Existing accounting can attribute Round-4 effects to feedback frequency or group fragmentation without policy."
+base = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+submission = "NO-CODE"
+evaluator = "smb-v0001-094a15da-batch3"
+status = "PROMOTE"
+promotion_scope = "diagnosis-only"
+
+[diagnosis]
+feedback_frequency = "Shorter suffixes cut canary live entries to 11724 and resident bytes to 168145708 but produced zero completions; low memory is not sufficient."
+group_fragmentation = "A wider selection band retained 27690 entries and 397407053 bytes but produced zero completions; isolated coarsening is not supported."
+shared_mechanism = "The incumbent's canary competence is brittle to both rollout and grouping changes before hard-column efficacy can be observed."

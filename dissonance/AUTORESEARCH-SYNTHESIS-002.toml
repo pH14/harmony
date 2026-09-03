@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+synthesis = 2
+status = "BATCH_COMPLETE"
+rounds = [3, 4]
+scope = "super-mario-bros"
+champion = "094a15daa3c1618e8fc0605d8e89403663f162b9"
+evaluator = "smb-v0001-094a15da-batch3"
+algorithmic_promotions = []
+
+[[evidence]]
+item = "E00"
+result = "Fresh 128-execution and 30000-execution 12-worker campaigns replayed bit-exactly; the champion is evaluator-valid."
+
+[[evidence]]
+item = "E07"
+result = "The 1-1 canary and all seven hard SMB fixtures were freshly generated, replay-certified, and baselined on QuickNES."
+
+[[evidence]]
+item = "Rounds 1-2"
+result = "Top-level age selection improved only 8-4 while regressing the worst column and memory; dispatch-safe two-mode and within-cell age strata then failed the canary."
+
+[[evidence]]
+item = "Round 3"
+result = "Earlier retirement passed the canary but regressed known 30K AUC by 102200 on 7-2 and 15900 on 8-4; the declared rollout candidate was invalid without spending efficacy budget."
+
+[[evidence]]
+item = "Round 4"
+result = "Actual shorter suffixes and 16-bucket archive grouping both replayed exactly but produced zero canary completions, so the stall-rule mechanism changes were tested and rejected."
+
+[[evidence]]
+item = "Systems lane"
+result = "Noise CV was 2.2544%; the 2M-execution soak passed endurance at 1.446689 but peaked at 2880004 KiB RSS, so systems certification failed and B4 remains 110000."
+
+deleted_mechanisms = [
+  "admission-clock two-mode phase",
+  "top-level age-only selection",
+  "dispatch-safe top-level two-mode replacement",
+  "equal four-way within-cell age strata",
+  "earlier exhaustion thresholds 2,4,8,1",
+  "one-or-two suffix replacement",
+  "16-bucket progress-band grouping",
+  "synthetic-only displaced-snapshot lifetime claim",
+]
+remaining_bottleneck = "The champion's 1-1 completion competence depends on a narrow interaction between long suffix reach, fine progress grouping, and incumbent energy-frontier-cheapest concentration; isolated changes lose the canary before they can address the weakest hard column, while mature snapshot memory still exceeds the systems bound."
+
+next_batch_hypotheses = [
+  "A low-rate deterministic mixture of one-or-two suffixes into the incumbent one-to-six distribution preserves long reach while increasing feedback frequency; the mixture must pass the unchanged canary before screen.",
+  "A mature 10K/30K/100K whole-tree byte census will show whether snapshot payloads, rather than selector metadata or input history, dominate the 2M RSS failure and identify one lifetime intervention.",
+  "Paired observation-only canary accounting of productive selections and retained suffix ancestry can identify the minimum incumbent concentration needed for completion before any further selector change.",
+]

@@ -17,9 +17,8 @@ version = 2
 yanked = "deny"
 # Both ignores are *unmaintained* notices (not vulnerabilities), pulled only
 # through `timely` 0.30 / `differential-dataflow` 0.24 — the observation-plane
-# runtime ruled by docs/DISSONANCE-STRATEGY.md and proven by the ratified
-# tasks/120 spike (whose own CI deny step is licenses-scoped and never hit
-# them; tasks/121 brought the pair into the root workspace graph). No upgrade
+# runtime (ruling and spike record in git history: docs/DISSONANCE-STRATEGY.md,
+# tasks/120–121). No upgrade
 # exists: every current timely/DD release depends on both. Re-evaluate at any
 # timely/DD version bump.
 ignore = [

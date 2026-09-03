@@ -24,7 +24,7 @@ use std::{
     io::Write,
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -65,21 +65,86 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
 const LEGACY_CAMPAIGN_SCHEDULE_IDENTITY: &str = "the live schedule is not derivable from the seed \
      alone; the recorded stream is this campaign's identity; two live runs at one seed may \
      differ, and each replays exactly";
-const CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
-const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
+const LEGACY_CAMPAIGN_SCHEDULE_POLICY: &str = "deterministic_window_64_per_worker_v1";
+const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
+const LEGACY_CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_v1";
 const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 
-/// Deterministic reservations kept ahead of admission per worker. The window
-/// hides individual long jobs while bounding result memory and wall-budget
-/// overshoot to a small number of jobs per core.
-const WINDOW_JOBS_PER_WORKER: usize = 64;
-
-/// Already-reserved jobs buffered in each physical executor. This is smaller
-/// than the logical reorder window and changes only overlap: logical worker
-/// identity, selection, and admission remain coordinator-owned.
+/// Already-reserved jobs buffered in each physical executor. It changes only
+/// overlap: logical worker identity, selection, and admission remain
+/// coordinator-owned.
 const EXECUTOR_PREFETCH_JOBS: usize = 8;
+
+/// Reservations held ahead of ordered admission per logical worker when the
+/// run does not set its own.
+pub const DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER: usize = 1;
+
+/// Number of reservations that may be ahead of the ordered admission cursor.
+///
+/// This is the actual sliding-window depth, not a speculative batch size. The
+/// initial fill puts only this many jobs in flight; after each ordered
+/// admission exactly one new reservation is selected. Consequently selection
+/// of reservation `k` observes archive state no older than admission
+/// `k - pipeline_depth`, while the physical executors retain their prefetch.
+const fn admission_window_depth(workers: usize, reservations_per_worker: usize) -> usize {
+    workers.saturating_mul(reservations_per_worker)
+}
+
+/// Namespace a live windowed run records. The `_v1` namespace it replaces
+/// collides with [`LEGACY_CAMPAIGN_SCHEDULE_POLICY`] at window 64, which
+/// would send a live window-64 stream down the legacy replay path.
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
+/// Namespace of windowed streams recorded before the collision was closed.
+const HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v1";
+const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
+
+/// The schedule policy a run records: the per-worker window is part of the
+/// identifier because replay must hold the same reservations in flight.
+fn schedule_policy_identifier(reservations_per_worker: usize) -> String {
+    format!(
+        "{SCHEDULE_POLICY_WINDOW_PREFIX}{reservations_per_worker}{SCHEDULE_POLICY_WINDOW_SUFFIX}"
+    )
+}
+
+/// The per-worker window a recorded schedule policy names; `None` for the
+/// legacy policy and for identifiers no run could have recorded.
+///
+/// The historical `_v1` namespace still resolves, except at window 64, where
+/// its text is the legacy policy and the legacy meaning wins.
+fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
+    let policy = policy?;
+    if policy == LEGACY_CAMPAIGN_SCHEDULE_POLICY {
+        return None;
+    }
+    let window = policy.strip_prefix(SCHEDULE_POLICY_WINDOW_PREFIX)?;
+    let window = window
+        .strip_suffix(SCHEDULE_POLICY_WINDOW_SUFFIX)
+        .or_else(|| window.strip_suffix(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))?;
+    window.parse().ok().filter(|window| *window >= 1)
+}
+
+fn schedule_policy_is_supported(policy: Option<&str>) -> bool {
+    schedule_policy_is_legacy(policy) || schedule_policy_window(policy).is_some()
+}
+
+fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
+    matches!(policy, None | Some(LEGACY_CAMPAIGN_SCHEDULE_POLICY))
+}
+
+/// Whether a recorded policy predates the corrected memory-budget
+/// maintenance.
+///
+/// Runs in the historical namespaces enforced the budget at different stream
+/// positions and charged the CLOCK sweep one visit per drop attempt rather
+/// than per examined entry. Both decide which entries an archive holds, so a
+/// budgeted stream from those runs replays against a different archive.
+/// Without a budget the maintenance step does nothing and the streams replay
+/// unchanged.
+fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
+    policy.is_none_or(|policy| policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))
+}
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
 /// next drawn job anyway and lets admission deduplicate, so a saturated archive
@@ -88,6 +153,24 @@ const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 
 /// Curve sampling interval in admitted executions.
 const CURVE_INTERVAL: u64 = 100;
+
+/// Maximum deterministic progress samples retained in a live campaign.
+const MAX_PROGRESS_CURVE_POINTS: usize = 1_024;
+
+fn compact_progress_curve<M, P>(
+    curve: &mut Vec<ProgressPoint<M, P>>,
+    current_interval: u64,
+) -> u64 {
+    if curve.len() < MAX_PROGRESS_CURVE_POINTS {
+        return current_interval;
+    }
+    let next_interval = current_interval.saturating_mul(2);
+    if next_interval == current_interval {
+        return current_interval;
+    }
+    curve.retain(|point| point.executions.is_multiple_of(next_interval));
+    next_interval
+}
 
 /// Seconds between sidecar observations.
 const PROGRESS_INTERVAL_SECONDS: u64 = 60;
@@ -153,6 +236,16 @@ pub trait Game: Sync {
     fn max_action_limit(&self) -> usize;
     /// Time-accounting function handed to the archive.
     fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
+    /// Time of the longest single action the target can draw; the suffix
+    /// time bound is a multiple of it.
+    fn longest_action_time(&self) -> u64;
+    /// Deterministic logical memory charge for one resident snapshot.
+    fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
+    /// Fixed logical-memory reserve withheld from the recorded global budget
+    /// for the run's bounded input-draw acceleration state.
+    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
+    /// Current logical bytes held by the live input-draw acceleration state.
+    fn draw_state_memory_bytes(&self, state: &Self::DrawState) -> usize;
 
     /// Incrementally digest one complete worker result for stream replay verification.
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
@@ -235,8 +328,9 @@ pub trait Game: Sync {
         snapshot: &Self::Snapshot,
     ) -> Result<Self::Key, Box<dyn Error>>;
 
-    /// Execute one job: restore the parent snapshot and apply the suffix,
-    /// collecting per-boundary candidates with worker-side probe verdicts.
+    /// Execute one job: restore the origin snapshot, replay the actions that
+    /// lead from it to the parent, and apply the suffix, collecting
+    /// per-boundary candidates with worker-side probe verdicts.
     ///
     /// # Errors
     ///
@@ -246,7 +340,8 @@ pub trait Game: Sync {
         &self,
         run: &Self::Run,
         target: &mut Self::Target,
-        parent_snapshot: &Self::Snapshot,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
         parent_actions: usize,
         parent_milestones: Self::Milestones,
         suffix: &[Self::Action],
@@ -318,6 +413,9 @@ pub trait Game: Sync {
         state: &mut Self::DrawState,
         retained: &[(usize, &[Self::Action])],
     ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>>;
+    /// Whether retained-input folding needs the complete root-relative input
+    /// instead of only the newly retained parent-relative suffix.
+    fn retained_inputs_need_full(&self, run: &Self::Run) -> bool;
     /// Remember the current draw-state version when a recorded stream will
     /// need it, so replay can re-derive suffixes drawn against it.
     ///
@@ -357,13 +455,15 @@ pub trait Game: Sync {
         input: &Input<Self::Action>,
     );
     /// Merge one executed action's evidence at its admission sequence.
-    fn merge_action_evidence(
+    fn merge_action_evidence<F>(
         &self,
         evidence: &mut Self::Evidence,
         action: &CampaignActionResult<Self>,
         sequence: u64,
-        input: &Input<Self::Action>,
-    );
+        input: F,
+    ) -> Result<(), Box<dyn Error>>
+    where
+        F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>;
     /// The retained entries of a source archive report.
     fn source_entries<'a>(
         &self,
@@ -395,7 +495,7 @@ pub struct ArchiveReportState<G: Game + ?Sized> {
     pub executions: u64,
     /// Insertion-ordered entry reports.
     pub entries: Vec<ArchiveEntryReport<G::Action, G::Key, G::Milestones>>,
-    /// Fixed-interval deterministic progress curve.
+    /// Deterministic multi-resolution progress curve.
     pub progress_curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
     /// Candidates retained.
     pub retained: u64,
@@ -441,8 +541,11 @@ pub struct CampaignCheckpoint<S> {
     pub snapshots: SnapshotCheckpoint<S>,
 }
 
-/// Every retained entry's snapshot, keyed by archive identifier, so a
-/// whole-tree resume can restore the population instead of re-emulating it.
+/// Restorable archive snapshots keyed by archive identifier.
+///
+/// Live campaigns retain snapshots only for entries that remain selectable.
+/// A whole-tree resume restores those directly and deterministically
+/// re-emulates any omitted, replaced ancestors from the recorded inputs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "S: Serialize + DeserializeOwned")]
 pub struct SnapshotCheckpoint<S> {
@@ -505,6 +608,13 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     pub wall_budget: Option<Duration>,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
+    /// Reservations held ahead of ordered admission per logical worker,
+    /// recorded in the header's schedule policy.
+    pub reservations_per_worker: usize,
+    /// Deterministic logical-memory budget for live search structures.
+    pub memory_budget_mib: Option<usize>,
+    /// Live-only: materialize full archive inputs and snapshots at completion.
+    pub materialize_final_artifacts: bool,
     /// Game-owned per-run policies, recorded in the header and report.
     pub run: G::Run,
     /// Mutation shape for this run, recorded in the header and report.
@@ -563,6 +673,9 @@ pub struct CampaignStreamHeader<T> {
     pub action_limit: usize,
     /// Archive entry bound the run retained under.
     pub archive_entry_limit: usize,
+    /// Deterministic logical-memory budget for live search structures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_budget_mib: Option<usize>,
     /// Resume rule identifier.
     pub resume_policy: String,
     /// Mutation shape identifier.
@@ -611,7 +724,7 @@ fn default_mixture_weight() -> u8 {
 /// New streams record both a successful donor/leaf choice and a deterministic
 /// fall back to the alphabet. Older streams omit this field and replay by
 /// deriving the splice from their serial archive state.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum CampaignSpliceRecord {
     /// No stored donor advanced beyond the selected parent at dispatch.
@@ -622,6 +735,10 @@ pub enum CampaignSpliceRecord {
         donor_id: u64,
         /// Dispatch-time deepest descendant archive id.
         leaf_id: u64,
+        /// Exact generic action tail selected at dispatch, postcard encoded.
+        /// Older streams omit it and use donor/leaf reconstruction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tail_postcard: Option<Vec<u8>>,
     },
 }
 
@@ -795,14 +912,24 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub origin: CampaignOriginRecord,
     /// Execution budget requested for the run.
     pub execution_budget: u64,
-    /// Jobs actually executed and admitted.
+    /// Jobs actually executed and admitted, the winning admission's own
+    /// drained window included. This is the run's throughput.
     pub executions_completed: u64,
+    /// Ordered admission position of the first job to reach the success
+    /// predicate; absent when none did. This is the run's score. Jobs
+    /// already reserved when that admission happened still drain into
+    /// `executions_completed`, so the two differ by the window's overshoot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executions_to_first_victory: Option<u64>,
     /// Wall budget in seconds when one was set for the live run.
     pub wall_budget_seconds: Option<u64>,
     /// Bounded clean-reset action horizon.
     pub action_limit: usize,
     /// Archive entry bound the run retained under.
     pub archive_entry_limit: usize,
+    /// Deterministic logical-memory budget for live search structures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_budget_mib: Option<usize>,
     /// Resume rule identifier.
     pub resume_policy: String,
     /// Mutation shape identifier.
@@ -831,6 +958,14 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub tree_import: Option<TreeImportCounts>,
     /// Bootstrap frames plus every job's frames, probes included.
     pub frames_emulated: u64,
+    /// Bootstrap frames plus every job's frames through the ordered
+    /// admission that first reached the success predicate; absent when no
+    /// admission did. Jobs already reserved when that admission happened
+    /// still drain into `frames_emulated`, so the two differ by the window's
+    /// overshoot. This is the frame cost of the score, while
+    /// `frames_emulated` is drained throughput.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames_to_first_victory: Option<u64>,
     /// Jobs skipped before execution as known duplicates.
     pub duplicates_skipped: u64,
     /// Candidates refused by the admission probe.
@@ -842,6 +977,47 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub victory_input: Option<Input<A>>,
     /// Cell collisions the time-in-group replacement rule decided.
     pub replacement_frames_displaced: u64,
+    /// Snapshots displaced solely by the global memory budget.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub snapshot_evictions: u64,
+    /// Deterministic logical bytes charged to snapshots at completion.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub resident_snapshot_bytes: usize,
+    /// Deterministic conservative bytes charged to compact history/indexes.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub history_memory_bytes: usize,
+    /// Deterministic logical bytes held by the bounded input-draw state.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub draw_state_memory_bytes: usize,
+    /// Total deterministic bytes charged to live search state at completion.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub resident_memory_bytes: usize,
+    /// Compact entries still held by the live acceleration structure.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub live_entries: usize,
+    /// Deterministic history compactions completed by this campaign.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub history_compactions: u64,
+    /// Test-only evidence that bounded liveness reactivated its retained
+    /// executable anchor after displacement.
+    #[cfg(test)]
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub(crate) liveness_anchor_reactivations: u64,
+    /// Stream-recorded entries retired from live memory.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub historical_entries_dropped: u64,
+    /// Rare full inputs lazily reconstructed from compact prefix state.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub input_reconstructions: u64,
+    /// Unique live action-prefix nodes used for duplicate detection.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub input_index_nodes: usize,
+    /// Compact historical selection-cell novelty keys still remembered.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub historical_cells: usize,
+    /// Selector groups carrying a live barren counter at completion.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub barren_groups: usize,
     /// Executed jobs per worker index.
     pub jobs_per_worker: Vec<u64>,
     /// Pre-execution duplicate skips per worker index.
@@ -874,6 +1050,45 @@ pub struct TreeImportCounts {
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
+fn archive_entry_limit_is_valid(limit: usize) -> bool {
+    (1..=crate::search::archive::MAX_ARCHIVE_ENTRIES).contains(&limit)
+}
+
+fn draw_state_memory_is_within_reserve(bytes: usize, reserve: usize) -> bool {
+    bytes <= reserve
+}
+
+fn worker_queue_is_idle(queued: usize) -> bool {
+    queued == 0
+}
+
+fn retained_archive_indexes<G: Game>(
+    core: &CoordinatorCore<G>,
+    decisions: &[CampaignAdmissionDecision],
+) -> Vec<usize> {
+    decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            CampaignAdmissionDecision::Retained { id } => core.archive.index_of_id(*id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn progress_policy_is_supported(policy: Option<&str>) -> bool {
+    policy.is_none_or(|policy| {
+        policy == CAMPAIGN_PROGRESS_POLICY || policy == LEGACY_CAMPAIGN_PROGRESS_POLICY
+    })
+}
+
+fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
+    policy == Some(CAMPAIGN_PROGRESS_POLICY)
 }
 
 /// One candidate boundary inside a job result.
@@ -1044,6 +1259,8 @@ pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
     pub(crate) archive: Archive<G::Action, G::Key, G::Milestones, G::Snapshot>,
     pub(crate) evidence: G::Evidence,
     curve: Vec<ProgressPoint<G::Milestones, G::Progress>>,
+    curve_interval: u64,
+    bounded_progress_curve: bool,
     record_progress: bool,
     deaths: u64,
     pub(crate) victories: u64,
@@ -1055,13 +1272,29 @@ pub(crate) struct CoordinatorCore<G: Game + ?Sized> {
 }
 
 impl<G: Game + ?Sized> CoordinatorCore<G> {
-    pub(crate) fn new(game: &G, max_actions: usize, archive_entry_limit: usize) -> Self {
+    pub(crate) fn new(
+        game: &G,
+        run: &G::Run,
+        max_actions: usize,
+        archive_entry_limit: usize,
+        memory_budget_mib: Option<usize>,
+    ) -> Self {
         let mut archive = Archive::new(game.action_time_fn());
         archive.max_entries = archive_entry_limit;
+        if let Some(memory_budget_mib) = memory_budget_mib {
+            let total = memory_budget_mib.saturating_mul(1024 * 1024);
+            let draw_reserve = game.draw_state_memory_reserve_bytes(run, max_actions);
+            archive.set_memory_budget(
+                total.saturating_sub(draw_reserve),
+                G::snapshot_memory_charge,
+            );
+        }
         Self {
             archive,
             evidence: G::Evidence::default(),
             curve: Vec::new(),
+            curve_interval: CURVE_INTERVAL,
+            bounded_progress_curve: true,
             record_progress: true,
             deaths: 0,
             victories: 0,
@@ -1087,7 +1320,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 None,
                 0,
                 ArchiveCandidate {
-                    input: Input::default(),
+                    suffix: Vec::new(),
                     key: genesis_key,
                     milestones: G::Milestones::default(),
                 },
@@ -1117,7 +1350,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             None,
             0,
             ArchiveCandidate {
-                input: Input::default(),
+                suffix: Vec::new(),
                 key,
                 milestones: G::Milestones::default(),
             },
@@ -1160,6 +1393,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         // The source evidence already covers every action interior the source
         // run observed, so both import paths merge it whole.
         game.merge_origin_evidence(&mut self.evidence, source);
+        let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
+        self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(game, target)?;
         let genesis_id = 0;
         let mut counts = TreeImportCounts::default();
@@ -1210,7 +1445,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 }
             };
             let parent_entry = &self.archive.entries[parent_id];
-            let mut milestones = parent_entry.report.milestones;
+            let mut milestones = parent_entry.milestones;
             let prefix = entry.input.clone();
             let snapshot = if let Some(snapshot) = checkpointed.get(&entry.id) {
                 // The source recorded the strongest milestones along this
@@ -1224,7 +1459,13 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     Some((*snapshot).clone())
                 }
             } else {
-                game.restore(target, &parent_entry.snapshot)?;
+                game.restore(
+                    target,
+                    parent_entry
+                        .snapshot
+                        .as_deref()
+                        .ok_or("whole-tree import parent snapshot was released early")?,
+                )?;
                 let mut terminal = false;
                 for action in &entry.input.actions[parent_input_len..] {
                     game.apply_action(target, action, &mut milestones)?;
@@ -1246,12 +1487,17 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             };
             game.merge_import_evidence(&mut self.evidence, milestones, &prefix);
             let key = game.current_key(target)?;
+            let suffix = prefix
+                .actions
+                .get(parent_input_len..)
+                .ok_or("source archive input is shorter than its imported parent")?
+                .to_vec();
             let inserted_before = self.archive.entries.len();
             match self.archive.insert(
                 Some(parent_id),
                 0,
                 ArchiveCandidate {
-                    input: prefix,
+                    suffix,
                     key,
                     milestones,
                 },
@@ -1274,6 +1520,8 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
         if self.archive.entries.len() == 1 {
             return Err("whole-tree import retained no entry past genesis".into());
         }
+        self.archive
+            .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
         Ok(counts)
     }
 
@@ -1288,28 +1536,39 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>), Box<dyn Error>> {
         self.sequence = self.sequence.saturating_add(1);
         let sequence = self.sequence;
-        let parent_index = usize::try_from(parent_id)?;
+        let parent_index = self
+            .archive
+            .index_of_id(parent_id)
+            .ok_or("campaign job parent is no longer resident")?;
         // Entries are append-only and immutable once inserted, so the parent
         // read here is identical to the parent the worker saw at selection.
-        let mut input = self
-            .archive
-            .entries
-            .get(parent_index)
-            .ok_or("campaign job parent is missing from the archive")?
-            .report
-            .input
-            .clone();
         let mut current_parent = parent_index;
+        let mut pending_suffix = Vec::new();
+        let mut previous_key = None;
         let mut decisions = Vec::new();
         for action in result.actions {
-            input.actions.push(action.action);
-            game.merge_action_evidence(&mut self.evidence, &action, sequence, &input);
+            pending_suffix.push(action.action);
+            game.merge_action_evidence(&mut self.evidence, &action, sequence, || {
+                let mut input = self
+                    .archive
+                    .materialize_input(current_parent)
+                    .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                input.actions.extend_from_slice(&pending_suffix);
+                Ok(input)
+            })?;
             if action.dead {
                 self.deaths = self.deaths.saturating_add(1);
             }
             if action.victory {
                 self.victories = self.victories.saturating_add(1);
-                self.victory_input.get_or_insert_with(|| input.clone());
+                if self.victory_input.is_none() {
+                    let mut input = self
+                        .archive
+                        .materialize_input(current_parent)
+                        .map_err(|error| -> Box<dyn Error> { error.into() })?;
+                    input.actions.extend_from_slice(&pending_suffix);
+                    self.victory_input = Some(input);
+                }
                 decisions.push(CampaignAdmissionDecision::Victory);
             }
             if let Some(candidate) = action.candidate {
@@ -1318,35 +1577,51 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     decisions.push(CampaignAdmissionDecision::ProbeRefused);
                     continue;
                 }
-                let inserted_before = self.archive.entries.len();
-                match self.archive.insert(
+                let retained_before = self.archive.retained;
+                let (admitted, key) = self.archive.insert_after(
                     Some(current_parent),
+                    previous_key,
                     sequence,
                     ArchiveCandidate {
-                        input: input.clone(),
+                        suffix: pending_suffix.clone(),
                         key: game.complete_candidate_key(candidate.key, &candidate.snapshot)?,
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
-                )? {
-                    Some(id) if id == inserted_before => {
+                )?;
+                match admitted {
+                    Some(id) if self.archive.retained > retained_before => {
                         decisions.push(CampaignAdmissionDecision::Retained {
-                            id: u64::try_from(id)?,
+                            id: self
+                                .archive
+                                .stable_id(id)
+                                .ok_or("retained archive slot is missing")?,
                         });
                         current_parent = id;
+                        pending_suffix.clear();
+                        previous_key = None;
                     }
                     Some(id) => {
                         decisions.push(CampaignAdmissionDecision::Duplicate {
-                            id: u64::try_from(id)?,
+                            id: self
+                                .archive
+                                .stable_id(id)
+                                .ok_or("duplicate archive slot is missing")?,
                         });
                         current_parent = id;
+                        pending_suffix.clear();
+                        previous_key = None;
                     }
-                    None => decisions.push(CampaignAdmissionDecision::Rejected),
+                    None => {
+                        decisions.push(CampaignAdmissionDecision::Rejected);
+                        previous_key = Some(key);
+                    }
                 }
             }
         }
-        if sequence.is_multiple_of(CURVE_INTERVAL) {
+        if sequence.is_multiple_of(self.curve_interval) {
             self.push_curve_point();
+            self.compact_progress_curve_if_needed();
         }
         Ok((sequence, decisions))
     }
@@ -1358,10 +1633,21 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
             progress: self
                 .record_progress
                 .then(|| G::aggregate_progress(&self.evidence)),
-            active_entries: self.archive.active.iter().filter(|active| **active).count(),
+            active_entries: self.archive.active_count(),
             occupied_cells: self.archive.slots.len(),
             deaths: self.deaths,
         });
+    }
+
+    /// Coarsen the report-only curve deterministically when it reaches its
+    /// fixed live bound. Every compaction doubles the interval and retains the
+    /// points aligned to it, so the curve remains evenly spaced without any
+    /// operation whose cost grows with total campaign history.
+    fn compact_progress_curve_if_needed(&mut self) {
+        if !self.bounded_progress_curve {
+            return;
+        }
+        self.curve_interval = compact_progress_curve(&mut self.curve, self.curve_interval);
     }
 
     /// The strongest milestone summary so far; delegated through the game via
@@ -1373,7 +1659,9 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
     /// Push the final curve point at the campaign's
     /// last execution, without duplicating an interval point.
     fn finish_curve(&mut self) {
-        if self.sequence > 0 && !self.sequence.is_multiple_of(CURVE_INTERVAL) {
+        if self.sequence > 0
+            && self.curve.last().map(|point| point.executions) != Some(self.sequence)
+        {
             self.push_curve_point();
         }
     }
@@ -1382,29 +1670,28 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
     /// archived, in which case executing it cannot change the archive, any
     /// maximum, or the death count.
     fn all_prefixes_archived(&self, parent_index: usize, suffix: &[G::Action]) -> bool {
-        let parent = &self.archive.entries[parent_index].report.input;
+        let parent_actions = self.archive.entries[parent_index].input_len;
         let executable = suffix
             .len()
-            .min(self.max_actions.saturating_sub(parent.actions.len()));
+            .min(self.max_actions.saturating_sub(parent_actions));
         if executable == 0 {
             return false;
         }
-        let mut input = parent.clone();
-        for action in &suffix[..executable] {
-            input.actions.push(*action);
-            if !self.archive.input_ids.contains_key(&input) {
-                return false;
-            }
-        }
-        true
+        self.archive
+            .all_extensions_retained(parent_index, &suffix[..executable])
     }
 
     pub(crate) fn into_archive_report_and_snapshots(
         mut self,
         game: &G,
         campaign_seed: u64,
+        materialize_final_artifacts: bool,
     ) -> (G::ArchiveReport, Vec<(u64, G::Snapshot)>) {
-        let (entries, snapshots) = self.archive.take_entry_reports_and_snapshots();
+        let (entries, snapshots) = if materialize_final_artifacts {
+            self.archive.take_entry_reports_and_snapshots()
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let report = game.archive_report(
             &self.evidence,
             ArchiveReportState {
@@ -1488,7 +1775,7 @@ fn stream_header<G: Game>(
         format: game.stream_format().to_owned(),
         campaign_seed: config.campaign_seed,
         workers: config.workers,
-        schedule_policy: Some(CAMPAIGN_SCHEDULE_POLICY.to_owned()),
+        schedule_policy: Some(schedule_policy_identifier(config.reservations_per_worker)),
         progress_policy: Some(CAMPAIGN_PROGRESS_POLICY.to_owned()),
         host: config.host.clone(),
         origin_kind: origin.kind.clone(),
@@ -1502,6 +1789,7 @@ fn stream_header<G: Game>(
         wall_budget_seconds: config.wall_budget.map(|budget| budget.as_secs()),
         action_limit: config.action_limit,
         archive_entry_limit: config.archive_entry_limit,
+        memory_budget_mib: config.memory_budget_mib,
         resume_policy: if origin.kind == ORIGIN_SNAPSHOT_ROOT {
             SNAPSHOT_ROOT_RESUME_IDENTIFIER.to_owned()
         } else {
@@ -1554,18 +1842,104 @@ struct CampaignCounters {
     bootstrap_frames: u64,
     tree_import: Option<TreeImportCounts>,
     job_frames: u64,
+    frames_to_first_victory: Option<u64>,
+    executions_to_first_victory: Option<u64>,
     duplicates_skipped: u64,
+    draw_state_memory_bytes: usize,
     jobs_per_worker: Vec<u64>,
     skips_per_worker: Vec<u64>,
 }
 
+#[derive(Default)]
+struct LiveCoordinatorProfile {
+    enabled: bool,
+    receive_wait_ns: u128,
+    admission_ns: u128,
+    bookkeeping_ns: u128,
+    history_compaction_ns: u128,
+    stream_write_ns: u128,
+    selection_ns: u128,
+    receives: u64,
+    admissions: u64,
+    selections: u64,
+    replay_jobs: u64,
+    replay_actions: u64,
+    replay_time: u64,
+    suffix_actions: u64,
+    suffix_time: u64,
+}
+
+impl LiveCoordinatorProfile {
+    /// Account one dispatched job's replay path and suffix in actions and in
+    /// the game's action time.
+    fn note_dispatch<G: Game + ?Sized>(&mut self, spec: &JobSpec<G>, time: fn(&G::Action) -> u64) {
+        if !self.enabled {
+            return;
+        }
+        let total = |actions: &[G::Action]| actions.iter().map(time).sum::<u64>();
+        if !spec.replay.is_empty() {
+            self.replay_jobs = self.replay_jobs.saturating_add(1);
+        }
+        self.replay_actions = self
+            .replay_actions
+            .saturating_add(u64::try_from(spec.replay.len()).unwrap_or(u64::MAX));
+        self.replay_time = self.replay_time.saturating_add(total(&spec.replay));
+        self.suffix_actions = self
+            .suffix_actions
+            .saturating_add(u64::try_from(spec.suffix.len()).unwrap_or(u64::MAX));
+        self.suffix_time = self.suffix_time.saturating_add(total(&spec.suffix));
+    }
+}
+
+fn live_coordinator_profile(enabled: bool) -> LiveCoordinatorProfile {
+    LiveCoordinatorProfile {
+        enabled,
+        ..LiveCoordinatorProfile::default()
+    }
+}
+
+fn record_compaction_elapsed(
+    profile: &mut LiveCoordinatorProfile,
+    before: u64,
+    after: u64,
+    elapsed_ns: u128,
+) {
+    if after > before {
+        profile.history_compaction_ns = profile.history_compaction_ns.saturating_add(elapsed_ns);
+    }
+}
+
+#[allow(clippy::disallowed_methods)] // not order-observable: temporary live diagnostics only.
+fn profile_now(enabled: bool) -> Option<Instant> {
+    enabled.then(Instant::now)
+}
+
+fn profile_elapsed(started: Option<Instant>) -> u128 {
+    started.map_or(0, |started| started.elapsed().as_nanos())
+}
+
 impl CampaignCounters {
+    /// Record the ordered admission that first reached the success
+    /// predicate, in its sequence position and in the frames run to reach
+    /// it. Jobs reserved before that admission keep draining afterwards and
+    /// keep adding to both totals, so only the first winner may set these.
+    fn note_first_victory(&mut self, sequence: u64) {
+        if self.frames_to_first_victory.is_none() {
+            self.frames_to_first_victory =
+                Some(self.bootstrap_frames.saturating_add(self.job_frames));
+            self.executions_to_first_victory = Some(sequence);
+        }
+    }
+
     fn new(workers: u32) -> Self {
         Self {
             bootstrap_frames: 0,
             tree_import: None,
             job_frames: 0,
+            frames_to_first_victory: None,
+            executions_to_first_victory: None,
             duplicates_skipped: 0,
+            draw_state_memory_bytes: 0,
             jobs_per_worker: vec![0; workers as usize],
             skips_per_worker: vec![0; workers as usize],
         }
@@ -1579,13 +1953,35 @@ fn build_report<G: Game>(
     core: CoordinatorCore<G>,
     counters: &CampaignCounters,
     stream_sha256: String,
+    materialize_final_artifacts: bool,
 ) -> CampaignOutcome<G> {
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
     let victories = core.victories;
     let victory_input = core.victory_input.clone();
     let replacement_frames_displaced = core.archive.replacement_time_displaced();
-    let (archive, snapshots) = core.into_archive_report_and_snapshots(game, header.campaign_seed);
+    let snapshot_evictions = core.archive.snapshot_evictions();
+    let resident_snapshot_bytes = core.archive.resident_snapshot_bytes();
+    let history_memory_bytes = core.archive.history_memory_bytes();
+    let draw_state_memory_bytes = counters.draw_state_memory_bytes;
+    let resident_memory_bytes = core
+        .archive
+        .resident_memory_bytes()
+        .saturating_add(draw_state_memory_bytes);
+    let live_entries = core.archive.live_entry_count();
+    let history_compactions = core.archive.history_compactions();
+    #[cfg(test)]
+    let liveness_anchor_reactivations = core.archive.liveness_anchor_reactivations();
+    let historical_entries_dropped = core.archive.historical_entries_dropped();
+    let input_reconstructions = core.archive.input_reconstructions();
+    let input_index_nodes = core.archive.input_index_nodes();
+    let historical_cells = core.archive.historical_cell_count();
+    let barren_groups = core.archive.barren_group_count();
+    let (archive, snapshots) = core.into_archive_report_and_snapshots(
+        game,
+        header.campaign_seed,
+        materialize_final_artifacts,
+    );
     let checkpoint = SnapshotCheckpoint {
         format: game.checkpoint_format().to_owned(),
         entries: snapshots
@@ -1594,8 +1990,8 @@ fn build_report<G: Game>(
             .collect(),
     };
     let schedule_identity = match header.schedule_policy.as_deref() {
-        Some(CAMPAIGN_SCHEDULE_POLICY) => CAMPAIGN_SCHEDULE_IDENTITY,
-        _ => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
+        None => LEGACY_CAMPAIGN_SCHEDULE_IDENTITY,
+        Some(_) => CAMPAIGN_SCHEDULE_IDENTITY,
     };
     let report = CampaignModeReport {
         mode: "campaign".to_owned(),
@@ -1606,9 +2002,11 @@ fn build_report<G: Game>(
         origin,
         execution_budget: header.execution_budget,
         executions_completed,
+        executions_to_first_victory: counters.executions_to_first_victory,
         wall_budget_seconds: header.wall_budget_seconds,
         action_limit: header.action_limit,
         archive_entry_limit: header.archive_entry_limit,
+        memory_budget_mib: header.memory_budget_mib,
         resume_policy: header.resume_policy.clone(),
         suffix_policy: header.suffix_policy.clone(),
         mixture_policy: header.mixture_policy.clone(),
@@ -1623,11 +2021,26 @@ fn build_report<G: Game>(
         frames_emulated: counters
             .bootstrap_frames
             .saturating_add(counters.job_frames),
+        frames_to_first_victory: counters.frames_to_first_victory,
         duplicates_skipped: counters.duplicates_skipped,
         probe_refused,
         victories,
         victory_input,
         replacement_frames_displaced,
+        snapshot_evictions,
+        resident_snapshot_bytes,
+        history_memory_bytes,
+        draw_state_memory_bytes,
+        resident_memory_bytes,
+        live_entries,
+        history_compactions,
+        #[cfg(test)]
+        liveness_anchor_reactivations,
+        historical_entries_dropped,
+        input_reconstructions,
+        input_index_nodes,
+        historical_cells,
+        barren_groups,
         jobs_per_worker: counters.jobs_per_worker.clone(),
         skips_per_worker: counters.skips_per_worker.clone(),
         stream_sha256,
@@ -1676,6 +2089,8 @@ fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn E
 struct JobSpec<G: Game + ?Sized> {
     reservation: usize,
     snapshot: Arc<G::Snapshot>,
+    /// Actions from the snapshot to the parent entry.
+    replay: Vec<G::Action>,
     parent_actions: usize,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
@@ -1720,11 +2135,30 @@ fn replay_splice<G: Game>(
     }
     match recorded {
         Some(CampaignSpliceRecord::Unavailable) => Ok(None),
-        Some(CampaignSpliceRecord::Tail { donor_id, leaf_id }) => {
+        Some(CampaignSpliceRecord::Tail {
+            donor_id,
+            leaf_id,
+            tail_postcard,
+        }) => {
+            if let Some(bytes) = tail_postcard {
+                let tail: Vec<G::Action> = postcard::from_bytes(&bytes)?;
+                if tail.is_empty() || tail.len() > SPLICE_ACTION_CAP {
+                    return Err("recorded splice tail length is outside the bound".into());
+                }
+                return Ok(Some(tail));
+            }
+            let donor = core
+                .archive
+                .index_of_id(donor_id)
+                .ok_or("recorded splice donor is no longer resident")?;
+            let leaf = core
+                .archive
+                .index_of_id(leaf_id)
+                .ok_or("recorded splice leaf is no longer resident")?;
             Ok(Some(core.archive.recorded_splice_tail(
                 parent,
-                usize::try_from(donor_id)?,
-                usize::try_from(leaf_id)?,
+                donor,
+                leaf,
                 SPLICE_ACTION_CAP,
             )?))
         }
@@ -1758,6 +2192,63 @@ pub struct CampaignProgressRecord<K> {
     pub cheapest_time_in_group: u64,
     /// Entries retained so far.
     pub retained: u64,
+    /// Entries still participating in retention.
+    #[serde(default)]
+    pub active_entries: usize,
+    /// Restorable machine snapshots currently resident in memory.
+    #[serde(default)]
+    pub resident_snapshots: usize,
+    /// Deterministic logical bytes charged to resident snapshots.
+    #[serde(default)]
+    pub resident_snapshot_bytes: usize,
+    /// Deterministic conservative bytes charged to compact history/indexes.
+    #[serde(default)]
+    pub history_memory_bytes: usize,
+    /// Deterministic logical bytes held by the bounded input-draw state.
+    #[serde(default)]
+    pub draw_state_memory_bytes: usize,
+    /// Deterministic bytes charged to compact per-entry metadata.
+    #[serde(default)]
+    pub entry_metadata_memory_bytes: usize,
+    /// Deterministic bytes charged to the shared action-prefix index.
+    #[serde(default)]
+    pub input_index_memory_bytes: usize,
+    /// Deterministic bytes charged to remembered novelty cells.
+    #[serde(default)]
+    pub novelty_memory_bytes: usize,
+    /// Deterministic bytes charged to pooled barren-group counters.
+    #[serde(default)]
+    pub barren_memory_bytes: usize,
+    /// Total deterministic bytes charged to live search state.
+    #[serde(default)]
+    pub resident_memory_bytes: usize,
+    /// Snapshots displaced by the global memory budget so far.
+    #[serde(default)]
+    pub snapshot_evictions: u64,
+    /// Active entries the memory budget's sweep deactivated so far.
+    #[serde(default)]
+    pub entry_drops: u64,
+    /// Compact entries held by the live acceleration structure.
+    #[serde(default)]
+    pub live_entries: usize,
+    /// Deterministic history compactions completed so far.
+    #[serde(default)]
+    pub history_compactions: u64,
+    /// Stream-recorded entries retired from live memory so far.
+    #[serde(default)]
+    pub historical_entries_dropped: u64,
+    /// Full inputs lazily reconstructed from compact prefix state so far.
+    #[serde(default)]
+    pub input_reconstructions: u64,
+    /// Unique live action-prefix nodes used for duplicate detection.
+    #[serde(default)]
+    pub input_index_nodes: usize,
+    /// Compact historical selection-cell novelty keys remembered so far.
+    #[serde(default)]
+    pub historical_cells: usize,
+    /// Selector groups carrying a live barren counter.
+    #[serde(default)]
+    pub barren_groups: usize,
 }
 
 /// Seed the coordinator from the origin: genesis alone, or genesis plus the
@@ -1849,10 +2340,20 @@ where
     if config.action_limit == 0 || config.action_limit > game.max_action_limit() {
         return Err("campaign action limit is outside its bounded range".into());
     }
-    if config.archive_entry_limit == 0
-        || config.archive_entry_limit > crate::search::archive::MAX_ARCHIVE_ENTRIES
-    {
+    if !archive_entry_limit_is_valid(config.archive_entry_limit) {
         return Err("campaign archive entry limit is outside its bounded range".into());
+    }
+    if config.reservations_per_worker == 0 {
+        return Err("campaign reservations per worker must be at least one".into());
+    }
+    if config.memory_budget_mib == Some(0) {
+        return Err("campaign memory budget must be nonzero".into());
+    }
+    if let Some(memory_budget_mib) = config.memory_budget_mib {
+        let budget = memory_budget_mib.saturating_mul(1024 * 1024);
+        if budget <= game.draw_state_memory_reserve_bytes(&config.run, config.action_limit) {
+            return Err("campaign memory budget is too small for the bounded draw state".into());
+        }
     }
     let origin_record = resolve_origin(game, origin)?;
     let draw_origin = match origin {
@@ -1865,11 +2366,23 @@ where
         } => Some((file_sha256.as_str(), report.as_ref())),
     };
     let (mut draw_state, draw_table_header) = game.initial_draw_state(&config.run, draw_origin)?;
+    if !draw_state_memory_is_within_reserve(
+        game.draw_state_memory_bytes(&draw_state),
+        game.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+    ) {
+        return Err("initial draw state exceeds its deterministic memory reserve".into());
+    }
     let header = stream_header(game, config, &origin_record, draw_table_header);
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
 
-    let mut core = CoordinatorCore::new(game, config.action_limit, config.archive_entry_limit);
+    let mut core = CoordinatorCore::new(
+        game,
+        &config.run,
+        config.action_limit,
+        config.archive_entry_limit,
+        config.memory_budget_mib,
+    );
     core.archive.selector_policy = config.selector.clone();
     let mut counters = CampaignCounters::new(config.workers);
     let mut bootstrap_target = game.new_target().map_err(|error| -> Box<dyn Error> {
@@ -1903,6 +2416,10 @@ where
     let mut next_progress = 0_u64;
 
     let mut reserved = 0_u64;
+    let mut coordinator_profile =
+        live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
+    let action_time = game.action_time_fn();
+    let longest_action_time = game.longest_action_time();
 
     let max_actions = config.action_limit;
     let retention = config.retention;
@@ -1916,6 +2433,7 @@ where
                 &config.run,
                 target,
                 &spec.snapshot,
+                &spec.replay,
                 spec.parent_actions,
                 spec.parent_milestones,
                 &spec.suffix,
@@ -1955,9 +2473,14 @@ where
                 }
                 let rand = &mut rands[worker as usize];
                 let max_actions = core.max_actions;
+                core.archive.establish_liveness_anchor(max_actions);
                 let mut consecutive_skips = 0_u64;
                 loop {
                     let (parent_index, selector) = core.archive.select_parent(rand, max_actions)?;
+                    let parent_id = core
+                        .archive
+                        .stable_id(parent_index)
+                        .ok_or("selected archive slot is missing")?;
                     let mutation_seed = rand.next_u64();
                     let (mixture_weight, splice_weight) = match config.mixture {
                         DrawMixture::Energy { scale } => {
@@ -1982,19 +2505,29 @@ where
                                     donor_id,
                                     leaf_id,
                                     actions,
-                                }) => (
-                                    Some(actions),
-                                    Some(CampaignSpliceRecord::Tail {
-                                        donor_id: u64::try_from(donor_id)?,
-                                        leaf_id: u64::try_from(leaf_id)?,
-                                    }),
-                                ),
+                                }) => {
+                                    let tail_postcard = postcard::to_allocvec(&actions)?;
+                                    (
+                                        Some(actions),
+                                        Some(CampaignSpliceRecord::Tail {
+                                            donor_id: core
+                                                .archive
+                                                .stable_id(donor_id)
+                                                .ok_or("splice donor slot is missing")?,
+                                            leaf_id: core
+                                                .archive
+                                                .stable_id(leaf_id)
+                                                .ok_or("splice leaf slot is missing")?,
+                                            tail_postcard: Some(tail_postcard),
+                                        }),
+                                    )
+                                }
                                 None => (None, Some(CampaignSpliceRecord::Unavailable)),
                             }
                         } else {
                             (None, None)
                         };
-                    let suffix = match spliced {
+                    let mut suffix = match spliced {
                         Some(tail) => tail,
                         None => game.expand_suffix(
                             &config.run,
@@ -2008,6 +2541,9 @@ where
                             mutation_seed,
                         )?,
                     };
+                    config
+                        .suffix
+                        .bound_time(&mut suffix, action_time, longest_action_time);
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
@@ -2015,7 +2551,7 @@ where
                             game.finish_stream_record(&config.run, draw_state, &[])?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
                             worker,
-                            parent_id: u64::try_from(parent_index)?,
+                            parent_id,
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
@@ -2025,6 +2561,7 @@ where
                             draw_table_after,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
+                        core.archive.maintain_memory_budget()?;
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                         counters.skips_per_worker[worker as usize] =
                             counters.skips_per_worker[worker as usize].saturating_add(1);
@@ -2032,18 +2569,30 @@ where
                         continue;
                     }
                     *reserved = reserved.saturating_add(1);
+                    core.archive.pin_metadata(parent_id)?;
+                    if let Some(CampaignSpliceRecord::Tail {
+                        donor_id,
+                        leaf_id,
+                        tail_postcard: None,
+                    }) = &splice
+                    {
+                        core.archive.pin_metadata(*donor_id)?;
+                        core.archive.pin_metadata(*leaf_id)?;
+                    }
+                    let (snapshot, replay) = core.archive.job_origin(parent_index)?;
                     let entry = &core.archive.entries[parent_index];
                     return Ok(Some((
                         JobSpec {
                             reservation: 0,
-                            snapshot: entry.snapshot.clone(),
-                            parent_actions: entry.report.input.actions.len(),
-                            parent_milestones: entry.report.milestones,
+                            snapshot,
+                            replay,
+                            parent_actions: entry.input_len,
+                            parent_milestones: entry.milestones,
                             suffix,
                         },
                         PendingJob {
                             worker,
-                            parent_id: u64::try_from(parent_index)?,
+                            parent_id,
                             mutation_seed,
                             mixture_weight,
                             splice_weight,
@@ -2055,13 +2604,21 @@ where
                 }
             };
 
-            let window_capacity = workers.saturating_mul(WINDOW_JOBS_PER_WORKER);
+            let pipeline_depth = admission_window_depth(workers, config.reservations_per_worker);
             let mut pending = BTreeMap::<usize, PendingJob>::new();
             let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            let mut queued_specs = VecDeque::with_capacity(window_capacity);
-            for _ in 0..window_capacity {
+            // The run can never reserve past its execution budget, so a
+            // saturated pipeline depth must not size the initial allocation.
+            let mut queued_specs = VecDeque::with_capacity(
+                pipeline_depth.min(usize::try_from(config.execution_budget).unwrap_or(usize::MAX)),
+            );
+            // Fill only the pipeline depth. Every later reservation is
+            // selected after, and therefore from the archive produced by,
+            // its predecessor's ordered admission.
+            for _ in 0..pipeline_depth {
                 let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                 let worker = u32::try_from(worker_index)?;
+                let selection_started = profile_now(coordinator_profile.enabled);
                 let selected = select(
                     &mut core,
                     &mut rands,
@@ -2071,9 +2628,14 @@ where
                     &mut reserved,
                     worker,
                 )?;
+                coordinator_profile.selection_ns = coordinator_profile
+                    .selection_ns
+                    .saturating_add(profile_elapsed(selection_started));
+                coordinator_profile.selections = coordinator_profile.selections.saturating_add(1);
                 let Some((mut spec, pending_job)) = selected else {
                     break;
                 };
+                coordinator_profile.note_dispatch(&spec, action_time);
                 let reservation = usize::try_from(reserved.saturating_sub(1))?;
                 spec.reservation = reservation;
                 if pending.insert(reservation, pending_job).is_some() {
@@ -2100,48 +2662,62 @@ where
                 .collect::<Result<VecDeque<_>, _>>()?;
 
             let mut next_admission = 0_usize;
-            while !pending.is_empty() {
-                let reply = pool.receive()?;
-                let physical_worker = reply.worker;
-                let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                    format!("campaign worker {physical_worker} failed: {error}").into()
-                })?;
-                let physical_index = usize::try_from(physical_worker)?;
-                let queued = physical_queued
-                    .get_mut(physical_index)
-                    .ok_or("campaign worker replied with an unknown physical identifier")?;
-                *queued = queued
-                    .checked_sub(1)
-                    .ok_or("campaign worker replied without queued work")?;
-                let (reservation, result, frames, result_sha256) = outcome;
-                let pending_job = pending
-                    .remove(&reservation)
-                    .ok_or("campaign worker replied for an unknown reservation")?;
-                if completed
-                    .insert(
-                        reservation,
-                        CompletedJob {
-                            pending: pending_job,
-                            result,
-                            frames,
-                            result_sha256,
-                        },
-                    )
-                    .is_some()
-                {
-                    return Err("campaign worker completed one reservation twice".into());
-                }
+            while !pending.is_empty() || !completed.is_empty() {
+                let mut ready_reply = if completed.contains_key(&next_admission) {
+                    pool.try_receive()?
+                } else if pending.is_empty() {
+                    return Err("campaign reorder window ended with an admission gap".into());
+                } else {
+                    let receive_started = profile_now(coordinator_profile.enabled);
+                    let reply = pool.receive()?;
+                    coordinator_profile.receive_wait_ns = coordinator_profile
+                        .receive_wait_ns
+                        .saturating_add(profile_elapsed(receive_started));
+                    Some(reply)
+                };
+                while let Some(reply) = ready_reply {
+                    coordinator_profile.receives = coordinator_profile.receives.saturating_add(1);
+                    let physical_worker = reply.worker;
+                    let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
+                        format!("campaign worker {physical_worker} failed: {error}").into()
+                    })?;
+                    let physical_index = usize::try_from(physical_worker)?;
+                    let queued = physical_queued
+                        .get_mut(physical_index)
+                        .ok_or("campaign worker replied with an unknown physical identifier")?;
+                    *queued = queued
+                        .checked_sub(1)
+                        .ok_or("campaign worker replied without queued work")?;
+                    let (reservation, result, frames, result_sha256) = outcome;
+                    let pending_job = pending
+                        .remove(&reservation)
+                        .ok_or("campaign worker replied for an unknown reservation")?;
+                    if completed
+                        .insert(
+                            reservation,
+                            CompletedJob {
+                                pending: pending_job,
+                                result,
+                                frames,
+                                result_sha256,
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err("campaign worker completed one reservation twice".into());
+                    }
 
-                // Keep the physical executor busy while the coordinator
-                // admits the deterministic contiguous result prefix. The
-                // replacement job was already selected and reserved, so this
-                // overlap cannot change campaign state or recorded order.
-                if let Some(spec) = queued_specs.pop_front() {
-                    pool.send(physical_worker, spec)?;
-                    physical_queued[physical_index] =
-                        physical_queued[physical_index].saturating_add(1);
-                } else if physical_queued[physical_index] == 0 {
-                    idle_workers.push_back(physical_worker);
+                    // Refill every executor whose reply is already queued
+                    // before ordered admission. Physical completion order is
+                    // unrecorded; reservations and admissions remain stable.
+                    if let Some(spec) = queued_specs.pop_front() {
+                        pool.send(physical_worker, spec)?;
+                        physical_queued[physical_index] =
+                            physical_queued[physical_index].saturating_add(1);
+                    } else if worker_queue_is_idle(physical_queued[physical_index]) {
+                        idle_workers.push_back(physical_worker);
+                    }
+                    ready_reply = pool.try_receive()?;
                 }
 
                 while let Some(completed_job) = completed.remove(&next_admission) {
@@ -2151,18 +2727,22 @@ where
                     let frames = completed_job.frames;
                     let result_sha256 = completed_job.result_sha256;
                     let victories_before = core.victories;
+                    let admission_started = profile_now(coordinator_profile.enabled);
                     let (sequence, decisions) =
                         core.admit_job(game, pending_job.parent_id, result)?;
-                    let parent_index = usize::try_from(pending_job.parent_id)?;
+                    coordinator_profile.admission_ns = coordinator_profile
+                        .admission_ns
+                        .saturating_add(profile_elapsed(admission_started));
+                    coordinator_profile.admissions =
+                        coordinator_profile.admissions.saturating_add(1);
+                    let bookkeeping_started = profile_now(coordinator_profile.enabled);
+                    let parent_index = core
+                        .archive
+                        .index_of_id(pending_job.parent_id)
+                        .ok_or("completed job parent is no longer resident")?;
                     core.archive
                         .record_selection(parent_index, &pending_job.selector);
-                    let retained_ids = decisions
-                        .iter()
-                        .filter_map(|decision| match decision {
-                            CampaignAdmissionDecision::Retained { id } => usize::try_from(*id).ok(),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
+                    let retained_ids = retained_archive_indexes(&core, &decisions);
                     let new_slot_descendant = retained_ids
                         .iter()
                         .any(|id| core.archive.opened_new_slot(*id));
@@ -2194,6 +2774,38 @@ where
                     }
                     let draw_table_after =
                         finish_record(game, &config.run, &mut draw_state, &core, &decisions)?;
+                    let draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
+                    if !draw_state_memory_is_within_reserve(
+                        draw_state_memory_bytes,
+                        game.draw_state_memory_reserve_bytes(&config.run, config.action_limit),
+                    ) {
+                        return Err(
+                            "live draw state exceeds its deterministic memory reserve".into()
+                        );
+                    }
+                    core.archive.unpin_metadata(pending_job.parent_id);
+                    if let Some(CampaignSpliceRecord::Tail {
+                        donor_id,
+                        leaf_id,
+                        tail_postcard: None,
+                    }) = &pending_job.splice
+                    {
+                        core.archive.unpin_metadata(*donor_id);
+                        core.archive.unpin_metadata(*leaf_id);
+                    }
+                    let compaction_started = profile_now(coordinator_profile.enabled);
+                    let compactions_before = core.archive.history_compactions();
+                    core.archive.maintain_memory_budget()?;
+                    record_compaction_elapsed(
+                        &mut coordinator_profile,
+                        compactions_before,
+                        core.archive.history_compactions(),
+                        profile_elapsed(compaction_started),
+                    );
+                    coordinator_profile.bookkeeping_ns = coordinator_profile
+                        .bookkeeping_ns
+                        .saturating_add(profile_elapsed(bookkeeping_started));
+                    let stream_started = profile_now(coordinator_profile.enabled);
                     writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
                         sequence,
                         worker: pending_job.worker,
@@ -2209,9 +2821,15 @@ where
                         draw_table_before: pending_job.draw_table_before,
                         draw_table_after,
                     }))?;
+                    coordinator_profile.stream_write_ns = coordinator_profile
+                        .stream_write_ns
+                        .saturating_add(profile_elapsed(stream_started));
                     counters.jobs_per_worker[worker_index] =
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
+                    if victories_before == 0 && core.victories > 0 {
+                        counters.note_first_victory(sequence);
+                    }
                     if let Some(sink) = progress.as_deref_mut() {
                         // Wall-clock controls the sidecar only. It selects nothing and
                         // enters no recorded artifact, so its nondeterminism cannot
@@ -2240,15 +2858,85 @@ where
                                 deepest_key,
                                 cheapest_time_in_group: cheapest,
                                 retained,
+                                active_entries: core.archive.active_count(),
+                                resident_snapshots: core.archive.resident_snapshot_count(),
+                                resident_snapshot_bytes: core.archive.resident_snapshot_bytes(),
+                                history_memory_bytes: core.archive.history_memory_bytes(),
+                                draw_state_memory_bytes,
+                                entry_metadata_memory_bytes: core
+                                    .archive
+                                    .entry_metadata_memory_bytes(),
+                                input_index_memory_bytes: core.archive.input_index_memory_bytes(),
+                                novelty_memory_bytes: core.archive.novelty_memory_bytes(),
+                                barren_memory_bytes: core.archive.barren_memory_bytes(),
+                                resident_memory_bytes: core
+                                    .archive
+                                    .resident_memory_bytes()
+                                    .saturating_add(draw_state_memory_bytes),
+                                snapshot_evictions: core.archive.snapshot_evictions(),
+                                entry_drops: core.archive.entry_drops(),
+                                live_entries: core.archive.live_entry_count(),
+                                history_compactions: core.archive.history_compactions(),
+                                historical_entries_dropped: core
+                                    .archive
+                                    .historical_entries_dropped(),
+                                input_reconstructions: core.archive.input_reconstructions(),
+                                input_index_nodes: core.archive.input_index_nodes(),
+                                historical_cells: core.archive.historical_cell_count(),
+                                barren_groups: core.archive.barren_group_count(),
                             })?;
                             sink.write_all(line.as_bytes())?;
                             sink.write_all(b"\n")?;
                             sink.flush()?;
+                            if coordinator_profile.enabled {
+                                eprintln!(
+                                    "coordinator-profile executions={sequence} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} novelty_memory_bytes={} barren_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} idle_workers={} queued_specs={} completed_buffered={} job_frames={} replay_jobs={} replay_actions={} replay_time={} suffix_actions={} suffix_time={}",
+                                    coordinator_profile.receive_wait_ns,
+                                    coordinator_profile.admission_ns,
+                                    coordinator_profile.bookkeeping_ns,
+                                    coordinator_profile.history_compaction_ns,
+                                    coordinator_profile.stream_write_ns,
+                                    coordinator_profile.selection_ns,
+                                    coordinator_profile.receives,
+                                    coordinator_profile.admissions,
+                                    coordinator_profile.selections,
+                                    core.archive.entries.len(),
+                                    core.archive.active_count(),
+                                    core.archive.historical_input_actions(),
+                                    core.archive.stored_input_actions(),
+                                    core.archive.input_index_nodes(),
+                                    core.archive.resident_snapshot_count(),
+                                    core.archive.resident_snapshot_bytes(),
+                                    core.archive.entry_metadata_memory_bytes(),
+                                    core.archive.input_index_memory_bytes(),
+                                    core.archive.novelty_memory_bytes(),
+                                    core.archive.barren_memory_bytes(),
+                                    core.archive.history_memory_bytes(),
+                                    draw_state_memory_bytes,
+                                    core.archive
+                                        .resident_memory_bytes()
+                                        .saturating_add(draw_state_memory_bytes),
+                                    core.archive.snapshot_evictions(),
+                                    core.archive.history_compactions(),
+                                    core.archive.historical_entries_dropped(),
+                                    core.archive.input_reconstructions(),
+                                    idle_workers.len(),
+                                    queued_specs.len(),
+                                    completed.len(),
+                                    counters.job_frames,
+                                    coordinator_profile.replay_jobs,
+                                    coordinator_profile.replay_actions,
+                                    coordinator_profile.replay_time,
+                                    coordinator_profile.suffix_actions,
+                                    coordinator_profile.suffix_time,
+                                );
+                            }
                         }
                     }
                     next_admission = next_admission.saturating_add(1);
                     let worker_index = usize::try_from(reserved % u64::from(config.workers))?;
                     let worker = u32::try_from(worker_index)?;
+                    let selection_started = profile_now(coordinator_profile.enabled);
                     let selected = select(
                         &mut core,
                         &mut rands,
@@ -2258,13 +2946,36 @@ where
                         &mut reserved,
                         worker,
                     )?;
+                    coordinator_profile.selection_ns = coordinator_profile
+                        .selection_ns
+                        .saturating_add(profile_elapsed(selection_started));
+                    coordinator_profile.selections =
+                        coordinator_profile.selections.saturating_add(1);
                     if let Some((mut spec, pending_job)) = selected {
+                        coordinator_profile.note_dispatch(&spec, action_time);
                         let reservation = usize::try_from(reserved.saturating_sub(1))?;
                         spec.reservation = reservation;
                         if pending.insert(reservation, pending_job).is_some() {
                             return Err("campaign reserved one job twice".into());
                         }
                         queued_specs.push_back(spec);
+                    }
+
+                    // Refill an executor as soon as the corresponding
+                    // reservation is selected. This keeps the physical
+                    // pipeline full while preserving logical reservation and
+                    // admission order.
+                    while !queued_specs.is_empty() {
+                        let Some(worker) = idle_workers.pop_front() else {
+                            break;
+                        };
+                        let spec = queued_specs
+                            .pop_front()
+                            .ok_or("campaign queued-job count changed while dispatching")?;
+                        pool.send(worker, spec)?;
+                        let physical_index = usize::try_from(worker)?;
+                        physical_queued[physical_index] =
+                            physical_queued[physical_index].saturating_add(1);
                     }
                 }
                 while !queued_specs.is_empty() {
@@ -2293,8 +3004,14 @@ where
         },
     )?;
 
+    // Every worker and queued specification has been joined at this point.
+    // Drop any non-selectable payload retained only by an in-flight Arc so
+    // final artifacts describe the deterministic breeding population.
+    core.archive.preserve_inactive_snapshots(false)?;
+    core.archive.compact_history_for_final_report()?;
     core.finish_curve();
     let stream_sha256 = writer.finish()?;
+    counters.draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
     Ok(build_report(
         game,
         &header,
@@ -2302,6 +3019,7 @@ where
         core,
         &counters,
         stream_sha256,
+        config.materialize_final_artifacts,
     ))
 }
 
@@ -2313,26 +3031,46 @@ fn finish_record<G: Game>(
     core: &CoordinatorCore<G>,
     decisions: &[CampaignAdmissionDecision],
 ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+    let needs_full = game.retained_inputs_need_full(run);
     let mut retained_inputs = Vec::new();
     for decision in decisions {
         let CampaignAdmissionDecision::Retained { id } = decision else {
             continue;
         };
-        let index = usize::try_from(*id)?;
+        let index = core
+            .archive
+            .index_of_id(*id)
+            .ok_or("retained draw-table entry is missing from the run archive")?;
         let entry = core
             .archive
             .entries
             .get(index)
             .ok_or("retained draw-table entry is missing from the run archive")?;
-        let parent_actions = entry
-            .report
-            .parent_id
-            .and_then(|parent| usize::try_from(parent).ok())
-            .and_then(|parent| core.archive.entries.get(parent))
-            .map_or(0, |parent| parent.report.input.actions.len());
-        retained_inputs.push((parent_actions, entry.report.input.actions.as_slice()));
+        let input = if needs_full {
+            core.archive
+                .materialize_input(index)
+                .map_err(|error| -> Box<dyn Error> { error.into() })?
+        } else {
+            Input {
+                actions: entry.input_suffix.clone(),
+            }
+        };
+        let parent_actions = if needs_full {
+            entry
+                .parent_id
+                .and_then(|parent| core.archive.index_of_id(parent))
+                .and_then(|parent| core.archive.entries.get(parent))
+                .map_or(0, |parent| parent.input_len)
+        } else {
+            0
+        };
+        retained_inputs.push((parent_actions, input));
     }
-    game.finish_stream_record(run, draw_state, &retained_inputs)
+    let retained = retained_inputs
+        .iter()
+        .map(|(parent_actions, input)| (*parent_actions, input.actions.as_slice()))
+        .collect::<Vec<_>>();
+    game.finish_stream_record(run, draw_state, &retained)
 }
 
 /// Replay a recorded campaign stream serially and rebuild its report.
@@ -2365,12 +3103,49 @@ where
     let mut lines = text.lines();
     let header: CampaignStreamHeader<G::TableHeader> =
         serde_json::from_str(lines.next().ok_or("campaign stream is empty")?)?;
+    if !archive_entry_limit_is_valid(header.archive_entry_limit) {
+        return Err("recorded archive entry limit is outside the compiled bound".into());
+    }
+    if header.memory_budget_mib == Some(0) {
+        return Err("recorded memory budget must be greater than zero".into());
+    }
     let record_lines = lines.collect::<Vec<_>>();
     let mut required_draw_versions = BTreeSet::new();
+    let mut recorded_snapshot_uses = BTreeMap::<u64, u32>::new();
+    let mut recorded_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut replay_job_parents = Vec::<u64>::new();
+    let mut replay_job_metadata = Vec::<Vec<u64>>::new();
     for line in &record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         let before = match record {
-            CampaignStreamRecord::Job(job) => job.draw_table_before,
+            CampaignStreamRecord::Job(job) => {
+                let uses = recorded_snapshot_uses.entry(job.parent_id).or_default();
+                *uses = uses
+                    .checked_add(1)
+                    .ok_or("recorded parent use count overflow")?;
+                replay_job_parents.push(job.parent_id);
+                let mut metadata_ids = vec![job.parent_id];
+                let metadata = recorded_metadata_uses.entry(job.parent_id).or_default();
+                *metadata = metadata
+                    .checked_add(1)
+                    .ok_or("recorded metadata use count overflow")?;
+                if let Some(CampaignSpliceRecord::Tail {
+                    donor_id,
+                    leaf_id,
+                    tail_postcard: None,
+                }) = job.splice.as_ref()
+                {
+                    for id in [*donor_id, *leaf_id] {
+                        metadata_ids.push(id);
+                        let metadata = recorded_metadata_uses.entry(id).or_default();
+                        *metadata = metadata
+                            .checked_add(1)
+                            .ok_or("recorded splice metadata use count overflow")?;
+                    }
+                }
+                replay_job_metadata.push(metadata_ids);
+                job.draw_table_before
+            }
             CampaignStreamRecord::Skip(skip) => skip.draw_table_before,
         };
         if let Some(before) = before {
@@ -2380,19 +3155,21 @@ where
     if header.format != game.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
-    if header
-        .schedule_policy
-        .as_deref()
-        .is_some_and(|policy| policy != CAMPAIGN_SCHEDULE_POLICY)
-    {
+    let legacy_schedule = schedule_policy_is_legacy(header.schedule_policy.as_deref());
+    if !schedule_policy_is_supported(header.schedule_policy.as_deref()) {
         return Err("campaign stream schedule policy is not recognized".into());
     }
-    if header
-        .progress_policy
-        .as_deref()
-        .is_some_and(|policy| policy != CAMPAIGN_PROGRESS_POLICY)
-    {
+    if !progress_policy_is_supported(header.progress_policy.as_deref()) {
         return Err("campaign stream progress policy is not recognized".into());
+    }
+    if header.memory_budget_mib.is_some()
+        && schedule_policy_predates_budget_maintenance(header.schedule_policy.as_deref())
+    {
+        return Err(
+            "campaign stream recorded a memory budget under superseded maintenance and cannot be \
+             replayed"
+                .into(),
+        );
     }
     if header.rom_sha256 != game.image_sha256() {
         return Err("campaign replay ROM does not match the recorded stream".into());
@@ -2446,6 +3223,8 @@ where
     let replay_suffix = suffix_shape_from_identifier(&header.suffix_policy)?;
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
+    let action_time = game.action_time_fn();
+    let longest_action_time = game.longest_action_time();
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
@@ -2468,12 +3247,31 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     let (mut draw_state, replay_draw_header) = game.initial_draw_state(&replay_run, draw_origin)?;
+    if let Some(memory_budget_mib) = header.memory_budget_mib {
+        let budget = memory_budget_mib.saturating_mul(1024 * 1024);
+        if budget <= game.draw_state_memory_reserve_bytes(&replay_run, header.action_limit) {
+            return Err("recorded memory budget is too small for the bounded draw state".into());
+        }
+    }
+    if !draw_state_memory_is_within_reserve(
+        game.draw_state_memory_bytes(&draw_state),
+        game.draw_state_memory_reserve_bytes(&replay_run, header.action_limit),
+    ) {
+        return Err("replay draw state exceeds its deterministic memory reserve".into());
+    }
     if replay_draw_header != header.draw_table {
         return Err("re-derived draw table does not match the recorded header".into());
     }
     game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
-    let mut core = CoordinatorCore::new(game, header.action_limit, header.archive_entry_limit);
+    let mut core = CoordinatorCore::new(
+        game,
+        &replay_run,
+        header.action_limit,
+        header.archive_entry_limit,
+        header.memory_budget_mib,
+    );
     core.record_progress = header.progress_policy.is_some();
+    core.bounded_progress_curve = uses_bounded_progress_curve(header.progress_policy.as_deref());
     core.archive.selector_policy = replay_selector.clone();
     let mut counters = CampaignCounters::new(header.workers);
     let mut target = game.new_target().map_err(|error| -> Box<dyn Error> {
@@ -2503,15 +3301,58 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    if !legacy_schedule {
+        core.archive.establish_liveness_anchor(header.action_limit);
+    }
 
+    let replay_window_depth = admission_window_depth(
+        usize::try_from(header.workers)?,
+        schedule_policy_window(header.schedule_policy.as_deref())
+            .unwrap_or(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
+    );
+    let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
+    let mut replay_job_snapshots = BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>)>::new();
+    if legacy_schedule {
+        core.archive
+            .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
+        core.archive
+            .preserve_recorded_metadata_uses(recorded_metadata_uses);
+    } else {
+        // Replay models selected-but-not-yet-admitted jobs with explicit Arc
+        // holders below; leave the legacy future-use map empty for this path.
+        core.archive
+            .preserve_recorded_snapshot_uses(BTreeMap::new());
+        core.archive.preserve_inactive_snapshots(false)?;
+        for (job_slot, parent_id) in replay_job_parents
+            .iter()
+            .take(replay_window_depth)
+            .enumerate()
+        {
+            let parent_index = core
+                .archive
+                .index_of_id(*parent_id)
+                .ok_or("initial replay job names a parent the archive does not hold")?;
+            replay_job_snapshots.insert(job_slot, core.archive.job_origin(parent_index)?);
+            for metadata_id in &replay_job_metadata[job_slot] {
+                let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                *uses = uses
+                    .checked_add(1)
+                    .ok_or("recorded metadata use count overflow")?;
+            }
+        }
+        core.archive
+            .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+    }
+
+    let mut replay_job_index = 0_usize;
     for line in record_lines {
         let record: CampaignStreamRecord = serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
-                let parent_index = usize::try_from(skip.parent_id)?;
-                if parent_index >= core.archive.entries.len() {
-                    return Err("recorded skip names a parent the archive does not hold".into());
-                }
+                let parent_index = core
+                    .archive
+                    .index_of_id(skip.parent_id)
+                    .ok_or("recorded skip names a parent the archive does not hold")?;
                 let strategy =
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
                 let spliced = replay_splice(
@@ -2521,7 +3362,7 @@ where
                     strategy,
                     skip.splice,
                 )?;
-                let suffix = match spliced {
+                let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
                         &replay_run,
@@ -2536,6 +3377,7 @@ where
                         skip.mutation_seed,
                     )?,
                 };
+                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -2545,6 +3387,7 @@ where
                 }
                 verify_selector_annotation(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
+                core.archive.maintain_memory_budget()?;
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
@@ -2556,15 +3399,33 @@ where
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
             }
             CampaignStreamRecord::Job(job) => {
-                let parent_index = usize::try_from(job.parent_id)?;
-                let entry = core
+                let replay_job_slot = replay_job_index;
+                replay_job_index = replay_job_index.saturating_add(1);
+                let parent_index = core
                     .archive
-                    .entries
-                    .get(parent_index)
+                    .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let snapshot = entry.snapshot.clone();
-                let parent_actions = entry.report.input.actions.len();
-                let parent_milestones = entry.report.milestones;
+                let ((snapshot, replay), parent_actions, parent_milestones) = {
+                    let entry = core
+                        .archive
+                        .entries
+                        .get(parent_index)
+                        .ok_or("recorded job names a parent the archive does not hold")?;
+                    (
+                        if legacy_schedule {
+                            core.archive.job_origin(parent_index)?
+                        } else {
+                            replay_job_snapshots
+                                .remove(&replay_job_slot)
+                                .ok_or("recorded job has no replayed in-flight snapshot")?
+                        },
+                        entry.input_len,
+                        entry.milestones,
+                    )
+                };
+                if legacy_schedule {
+                    core.archive.consume_recorded_snapshot_use(job.parent_id);
+                }
                 let strategy =
                     energy_strategy(job.mutation_seed, job.mixture_weight, job.splice_weight)?;
                 let spliced = replay_splice(
@@ -2572,9 +3433,9 @@ where
                     parent_index,
                     header.action_limit,
                     strategy,
-                    job.splice,
+                    job.splice.clone(),
                 )?;
-                let suffix = match spliced {
+                let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
                         &replay_run,
@@ -2589,11 +3450,13 @@ where
                         job.mutation_seed,
                     )?,
                 };
+                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &replay_run,
                     &mut target,
                     &snapshot,
+                    &replay,
                     parent_actions,
                     parent_milestones,
                     &suffix,
@@ -2618,6 +3481,8 @@ where
                     )
                     .into());
                 }
+                drop(snapshot);
+                let victories_before = core.victories;
                 let (sequence, decisions) = core.admit_job(game, job.parent_id, result)?;
                 if sequence != job.sequence {
                     return Err(format!(
@@ -2645,13 +3510,7 @@ where
                 game.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector)?;
                 core.archive.record_selection(parent_index, &job.selector);
-                let retained_ids = decisions
-                    .iter()
-                    .filter_map(|decision| match decision {
-                        CampaignAdmissionDecision::Retained { id } => usize::try_from(*id).ok(),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
+                let retained_ids = retained_archive_indexes(&core, &decisions);
                 core.archive.record_selection_outcome(
                     parent_index,
                     !retained_ids.is_empty(),
@@ -2662,6 +3521,46 @@ where
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id)),
                 );
+                core.archive.unpin_metadata(job.parent_id);
+                if let Some(CampaignSpliceRecord::Tail {
+                    donor_id,
+                    leaf_id,
+                    tail_postcard: None,
+                }) = job.splice
+                {
+                    core.archive.unpin_metadata(donor_id);
+                    core.archive.unpin_metadata(leaf_id);
+                }
+                core.archive.maintain_memory_budget()?;
+                if !legacy_schedule {
+                    for metadata_id in &replay_job_metadata[replay_job_slot] {
+                        if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {
+                            *uses = uses.saturating_sub(1);
+                            if *uses == 0 {
+                                replay_metadata_uses.remove(metadata_id);
+                            }
+                        }
+                    }
+                    if let Some(parent_id) =
+                        replay_job_parents.get(replay_job_slot.saturating_add(replay_window_depth))
+                    {
+                        let next_slot = replay_job_slot.saturating_add(replay_window_depth);
+                        let parent_index = core
+                            .archive
+                            .index_of_id(*parent_id)
+                            .ok_or("next replay job names a parent the archive does not hold")?;
+                        replay_job_snapshots
+                            .insert(next_slot, core.archive.job_origin(parent_index)?);
+                        for metadata_id in &replay_job_metadata[next_slot] {
+                            let uses = replay_metadata_uses.entry(*metadata_id).or_default();
+                            *uses = uses
+                                .checked_add(1)
+                                .ok_or("recorded metadata use count overflow")?;
+                        }
+                    }
+                    core.archive
+                        .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
+                }
                 let worker = usize::try_from(job.worker)?;
                 if worker >= counters.jobs_per_worker.len() {
                     return Err("recorded job names an unknown worker".into());
@@ -2669,9 +3568,14 @@ where
                 counters.jobs_per_worker[worker] =
                     counters.jobs_per_worker[worker].saturating_add(1);
                 counters.job_frames = counters.job_frames.saturating_add(frames);
+                if victories_before == 0 && core.victories > 0 {
+                    counters.note_first_victory(sequence);
+                }
             }
         }
     }
+    core.archive.preserve_inactive_snapshots(false)?;
+    core.archive.compact_history_for_final_report()?;
     core.finish_curve();
 
     let origin = CampaignOriginRecord {
@@ -2683,6 +3587,7 @@ where
         resume_input_sha256: header.resume_input_sha256.clone(),
         resume_actions: header.resume_actions,
     };
+    counters.draw_state_memory_bytes = game.draw_state_memory_bytes(&draw_state);
     Ok(build_report(
         game,
         &header,
@@ -2690,18 +3595,65 @@ where
         core,
         &counters,
         stream_sha256,
+        true,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CampaignJobRecord, CampaignStreamHeader, CampaignStreamRecord, GamePolicies,
-        postcard_sha256,
+        CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate, CampaignCounters,
+        CampaignJobRecord, CampaignJobResult, CampaignSpliceRecord, CampaignStreamHeader,
+        CampaignStreamRecord, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
+        EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
+        SPLICE_ACTION_CAP, admission_window_depth, archive_entry_limit_is_valid,
+        compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
+        live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
+        progress_policy_is_supported, record_compaction_elapsed, replay_splice,
+        retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_legacy,
+        schedule_policy_is_supported, schedule_policy_predates_budget_maintenance,
+        schedule_policy_window, uses_bounded_progress_curve, worker_queue_is_idle,
     };
-    use crate::search::archive::{SelectorDraw, SelectorPath};
+    use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
+    use crate::smb::{
+        archive::archive_key,
+        campaign::{
+            SmbButtonVocabulary, SmbCampaignChordPolicy, SmbCampaignRun, SmbGame,
+            SmbTerminalPredicate,
+        },
+        target::{ButtonChord, SmbMilestones, SmbProgressWatermark, SmbTarget},
+    };
+    use crate::target::Target;
     use sha2::{Digest, Sha256};
+    use std::time::{Duration, Instant};
+
+    fn synthetic_nrom() -> Vec<u8> {
+        let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
+        rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let prg = &mut rom[16..16 + (16 * 1024)];
+        prg.fill(0xea);
+        prg[..3].copy_from_slice(&[0x4c, 0x00, 0x80]);
+        for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
+            prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
+        }
+        rom
+    }
+
+    fn smb_core() -> (SmbGame, SmbCampaignRun, CoordinatorCore<SmbGame>, SmbTarget) {
+        let rom = synthetic_nrom();
+        let game = SmbGame::loopback_for_tests(&rom);
+        let run = SmbCampaignRun {
+            chord: SmbCampaignChordPolicy::default(),
+            vocabulary: SmbButtonVocabulary::default(),
+            terminal: Some(SmbTerminalPredicate::GameVictory),
+        };
+        let mut core = CoordinatorCore::new(&game, &run, 16, 1_024, None);
+        let mut target = SmbTarget::loopback_for_tests(&rom).expect("loopback target");
+        core.bootstrap(&game, &mut target)
+            .expect("bootstrap generic core");
+        (game, run, core, target)
+    }
 
     /// The header a stream recorded before the policy map existed, verbatim.
     /// The generic layer now holds the game's policies in a map and names its
@@ -2726,6 +3678,478 @@ mod tests {
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 64);
+    }
+
+    #[test]
+    fn progress_curve_compaction_is_bounded_and_evenly_spaced() {
+        let mut curve: Vec<ProgressPoint<(), ()>> = (1..=MAX_PROGRESS_CURVE_POINTS)
+            .map(|sample| ProgressPoint {
+                executions: u64::try_from(sample).expect("sample fits u64") * 100,
+                milestones: (),
+                progress: None,
+                active_entries: sample,
+                occupied_cells: sample,
+                deaths: 0,
+            })
+            .collect();
+
+        let interval = compact_progress_curve(&mut curve, 100);
+
+        assert_eq!(interval, 200);
+        assert_eq!(curve.len(), MAX_PROGRESS_CURVE_POINTS / 2);
+        assert!(
+            curve
+                .iter()
+                .all(|point| point.executions.is_multiple_of(interval))
+        );
+        assert_eq!(curve.first().map(|point| point.executions), Some(200));
+        assert_eq!(
+            curve.last().map(|point| point.executions),
+            Some(u64::try_from(MAX_PROGRESS_CURVE_POINTS).expect("bound fits u64") * 100)
+        );
+    }
+
+    #[test]
+    fn progress_curve_boundaries_and_final_point_are_exact() {
+        let mut below: Vec<ProgressPoint<(), ()>> = (1..MAX_PROGRESS_CURVE_POINTS)
+            .map(|sample| ProgressPoint {
+                executions: u64::try_from(sample).expect("sample fits u64") * 100,
+                milestones: (),
+                progress: None,
+                active_entries: sample,
+                occupied_cells: sample,
+                deaths: 0,
+            })
+            .collect();
+        let unchanged = below.clone();
+        assert_eq!(compact_progress_curve(&mut below, 100), 100);
+        assert_eq!(below, unchanged);
+        assert!(is_zero_usize(&0));
+        assert!(!is_zero_usize(&1));
+
+        let (_game, _run, mut core, _target) = smb_core();
+        core.sequence = 0;
+        core.finish_curve();
+        assert!(core.curve.is_empty());
+        core.sequence = 7;
+        core.finish_curve();
+        core.finish_curve();
+        assert_eq!(
+            core.curve
+                .iter()
+                .map(|point| point.executions)
+                .collect::<Vec<_>>(),
+            vec![7]
+        );
+
+        core.curve = (1..=MAX_PROGRESS_CURVE_POINTS)
+            .map(|sample| ProgressPoint {
+                executions: u64::try_from(sample).expect("sample fits u64") * 100,
+                milestones: SmbMilestones::default(),
+                progress: Some(SmbProgressWatermark::default()),
+                active_entries: sample,
+                occupied_cells: sample,
+                deaths: 0,
+            })
+            .collect();
+        core.curve_interval = 100;
+        core.bounded_progress_curve = false;
+        core.compact_progress_curve_if_needed();
+        assert_eq!(core.curve.len(), MAX_PROGRESS_CURVE_POINTS);
+        core.curve.pop();
+        core.bounded_progress_curve = true;
+        core.compact_progress_curve_if_needed();
+        assert_eq!(core.curve.len(), MAX_PROGRESS_CURVE_POINTS - 1);
+        core.curve.push(ProgressPoint {
+            executions: u64::try_from(MAX_PROGRESS_CURVE_POINTS).expect("bound fits u64") * 100,
+            milestones: SmbMilestones::default(),
+            progress: Some(SmbProgressWatermark::default()),
+            active_entries: MAX_PROGRESS_CURVE_POINTS,
+            occupied_cells: MAX_PROGRESS_CURVE_POINTS,
+            deaths: 0,
+        });
+        core.bounded_progress_curve = true;
+        core.compact_progress_curve_if_needed();
+        assert_eq!(core.curve.len(), MAX_PROGRESS_CURVE_POINTS / 2);
+        assert_eq!(core.curve_interval, 200);
+    }
+
+    #[test]
+    fn coordinator_classifies_new_and_duplicate_boundaries() {
+        let (game, _run, mut core, mut target) = smb_core();
+        let action = ButtonChord::new(0x01, 4);
+        target.apply(&action);
+        let snapshot = target.snapshot().expect("snapshot candidate");
+        let result = CampaignJobResult::<SmbGame> {
+            actions: vec![CampaignActionResult {
+                action,
+                observations: Vec::new(),
+                milestones: SmbMilestones::default(),
+                dead: false,
+                victory: false,
+                failed: false,
+                candidate: Some(CampaignCandidate {
+                    key: archive_key(&target.wram()),
+                    viable: true,
+                    snapshot,
+                }),
+            }],
+        };
+
+        let (first_sequence, first) = core
+            .admit_job(&game, 0, result.clone())
+            .expect("admit new boundary");
+        assert_eq!(first_sequence, 1);
+        assert_eq!(first, vec![CampaignAdmissionDecision::Retained { id: 1 }]);
+        assert!(core.all_prefixes_archived(0, &[action]));
+        assert!(!core.all_prefixes_archived(0, &[]));
+
+        let (second_sequence, second) = core
+            .admit_job(&game, 0, result)
+            .expect("admit duplicate boundary");
+        assert_eq!(second_sequence, 2);
+        assert_eq!(second, vec![CampaignAdmissionDecision::Duplicate { id: 1 }]);
+        assert_eq!(core.archive.retained, 2);
+    }
+
+    #[test]
+    fn recorded_splice_tail_validates_strategy_and_bounds() {
+        let (_game, _run, mut core, _target) = smb_core();
+        let action = ButtonChord::new(0x01, 4);
+        let encoded = |actions: Vec<ButtonChord>| {
+            Some(CampaignSpliceRecord::Tail {
+                donor_id: 90,
+                leaf_id: 91,
+                tail_postcard: Some(postcard::to_allocvec(&actions).expect("encode splice tail")),
+            })
+        };
+
+        assert_eq!(
+            replay_splice(
+                &mut core,
+                0,
+                16,
+                EnergyStrategy::Splice,
+                encoded(vec![action])
+            )
+            .expect("replay explicit tail"),
+            Some(vec![action])
+        );
+        assert_eq!(
+            replay_splice(
+                &mut core,
+                0,
+                16,
+                EnergyStrategy::Splice,
+                Some(CampaignSpliceRecord::Unavailable)
+            )
+            .expect("replay unavailable tail"),
+            None
+        );
+        assert!(
+            replay_splice(
+                &mut core,
+                0,
+                16,
+                EnergyStrategy::Splice,
+                encoded(Vec::new())
+            )
+            .is_err()
+        );
+        assert!(
+            replay_splice(
+                &mut core,
+                0,
+                16,
+                EnergyStrategy::Splice,
+                encoded(vec![action; SPLICE_ACTION_CAP + 1])
+            )
+            .is_err()
+        );
+        assert_eq!(
+            replay_splice(
+                &mut core,
+                0,
+                16,
+                EnergyStrategy::Splice,
+                encoded(vec![action; SPLICE_ACTION_CAP])
+            )
+            .expect("tail at cap is valid")
+            .map(|tail| tail.len()),
+            Some(SPLICE_ACTION_CAP)
+        );
+        assert!(
+            replay_splice(
+                &mut core,
+                0,
+                16,
+                EnergyStrategy::Alphabet,
+                Some(CampaignSpliceRecord::Unavailable)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn coordinator_profile_helpers_distinguish_disabled_and_elapsed() {
+        assert!(!live_coordinator_profile(false).enabled);
+        assert!(live_coordinator_profile(true).enabled);
+        assert!(profile_now(false).is_none());
+        assert!(profile_now(true).is_some());
+        assert_eq!(profile_elapsed(None), 0);
+        // Test-only wall time verifies the observability-only profiler seam;
+        // it cannot reach campaign state or recorded bytes.
+        #[allow(clippy::disallowed_methods)]
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("one millisecond before now");
+        assert!(profile_elapsed(Some(started)) > 0);
+
+        let mut profile = LiveCoordinatorProfile::default();
+        record_compaction_elapsed(&mut profile, 4, 4, 10);
+        record_compaction_elapsed(&mut profile, 4, 3, 20);
+        assert_eq!(profile.history_compaction_ns, 0);
+        record_compaction_elapsed(&mut profile, 4, 5, 30);
+        assert_eq!(profile.history_compaction_ns, 30);
+    }
+
+    #[test]
+    fn admission_bookkeeping_helpers_preserve_idle_and_retained_meaning() {
+        assert!(worker_queue_is_idle(0));
+        assert!(!worker_queue_is_idle(1));
+        assert!(!worker_queue_is_idle(usize::MAX));
+
+        let (game, run, mut core, mut target) = smb_core();
+        let action = ButtonChord::new(0x01, 4);
+        target.apply(&action);
+        let snapshot = target.snapshot().expect("snapshot candidate");
+        let result = CampaignJobResult::<SmbGame> {
+            actions: vec![CampaignActionResult {
+                action,
+                observations: Vec::new(),
+                milestones: SmbMilestones::default(),
+                dead: false,
+                victory: false,
+                failed: false,
+                candidate: Some(CampaignCandidate {
+                    key: archive_key(&target.wram()),
+                    viable: true,
+                    snapshot,
+                }),
+            }],
+        };
+        let (_, admission) = core
+            .admit_job(&game, 0, result)
+            .expect("admit second archive entry");
+        assert_eq!(
+            admission,
+            vec![CampaignAdmissionDecision::Retained { id: 1 }]
+        );
+        let decisions = [
+            CampaignAdmissionDecision::Retained { id: 0 },
+            CampaignAdmissionDecision::Retained { id: 1 },
+            CampaignAdmissionDecision::Duplicate { id: 0 },
+            CampaignAdmissionDecision::Rejected,
+        ];
+        assert_eq!(retained_archive_indexes(&core, &decisions), vec![0, 1]);
+
+        let (mut draw_state, _header) = game
+            .initial_draw_state(&run, None)
+            .expect("initialize draw state");
+        assert!(
+            finish_record(
+                &game,
+                &run,
+                &mut draw_state,
+                &core,
+                &[CampaignAdmissionDecision::Retained { id: u64::MAX }],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn sliding_window_depth_is_the_only_selection_staleness() {
+        let workers = 3;
+        let depth = admission_window_depth(workers, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert_eq!(depth, workers * DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+
+        // Model the coordinator's event order: fill the pipeline, then admit
+        // one result and select one replacement. No reservation can be more
+        // than `depth` ahead of the ordered admission cursor.
+        let mut next_selection = 0_usize;
+        let mut selected = Vec::new();
+        for next_admission in 0..=depth {
+            while next_selection < next_admission + depth {
+                selected.push((next_selection, next_admission));
+                next_selection += 1;
+            }
+            assert_eq!(next_selection, next_admission + depth);
+        }
+
+        assert_eq!(selected.first(), Some(&(0, 0)));
+        assert_eq!(selected.last(), Some(&(depth * 2 - 1, depth)));
+        assert!(
+            selected
+                .iter()
+                .all(|(reservation, admitted)| *reservation < admitted + depth)
+        );
+        assert!(
+            selected
+                .iter()
+                .skip(depth)
+                .all(|(reservation, admitted)| *admitted >= reservation - depth)
+        );
+    }
+
+    #[test]
+    fn sliding_window_depth_saturates_without_overflow() {
+        assert_eq!(
+            admission_window_depth(0, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
+            0
+        );
+        assert_eq!(admission_window_depth(usize::MAX, 1), usize::MAX);
+    }
+
+    #[test]
+    fn the_first_victory_counters_exclude_jobs_that_drain_after_the_win() {
+        // Once an admission wins, the coordinator stops reserving, but every
+        // job already reserved still runs, still lands at its own sequence
+        // position, and still adds to `job_frames`.
+        let mut counters = CampaignCounters::new(4);
+        counters.bootstrap_frames = 1_000;
+        counters.job_frames = 250;
+        counters.note_first_victory(11);
+        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.executions_to_first_victory, Some(11));
+
+        for (sequence, drained) in [(12, 90), (13, 140), (14, 70)] {
+            counters.job_frames = counters.job_frames.saturating_add(drained);
+            // A later admission cannot move either metric even if it wins.
+            counters.note_first_victory(sequence);
+        }
+        assert_eq!(counters.frames_to_first_victory, Some(1_250));
+        assert_eq!(counters.executions_to_first_victory, Some(11));
+        assert_eq!(
+            counters
+                .bootstrap_frames
+                .saturating_add(counters.job_frames),
+            1_550
+        );
+    }
+
+    #[test]
+    fn a_run_that_never_wins_has_no_first_victory_counters() {
+        let mut counters = CampaignCounters::new(1);
+        counters.bootstrap_frames = 10;
+        counters.job_frames = 20;
+        assert_eq!(counters.frames_to_first_victory, None);
+        assert_eq!(counters.executions_to_first_victory, None);
+    }
+
+    #[test]
+    fn the_historical_namespaces_predate_the_corrected_budget_maintenance() {
+        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert!(!schedule_policy_predates_budget_maintenance(Some(&current)));
+        assert!(!schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_64_per_worker_v2"
+        )));
+        assert!(schedule_policy_predates_budget_maintenance(None));
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_4_per_worker_v1"
+        )));
+    }
+
+    #[test]
+    fn schedule_policy_dispatch_accepts_windowed_and_legacy_only() {
+        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert_eq!(current, "deterministic_window_1_per_worker_v2");
+        assert!(schedule_policy_is_supported(None));
+        assert!(schedule_policy_is_supported(Some(&current)));
+        assert!(schedule_policy_is_supported(Some(
+            "deterministic_window_4_per_worker_v2"
+        )));
+        assert!(schedule_policy_is_supported(Some(
+            "deterministic_window_4_per_worker_v1"
+        )));
+        assert!(schedule_policy_is_supported(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
+        assert!(!schedule_policy_is_supported(Some(
+            "deterministic_window_0_per_worker_v2"
+        )));
+        assert_eq!(schedule_policy_window(Some(&current)), Some(1));
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
+            Some(4)
+        );
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v1")),
+            Some(4)
+        );
+        assert_eq!(
+            schedule_policy_window(Some(super::LEGACY_CAMPAIGN_SCHEDULE_POLICY)),
+            None
+        );
+        assert!(!schedule_policy_is_legacy(Some(&current)));
+        assert!(schedule_policy_is_legacy(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_is_legacy(None));
+    }
+
+    #[test]
+    fn a_live_window_of_sixty_four_is_not_recorded_as_the_legacy_policy() {
+        // The legacy identifier is exactly the window-64 text in the `_v1`
+        // namespace, so a live window-64 run must record `_v2` and replay as
+        // a window, not as the legacy all-future pinning.
+        let live = schedule_policy_identifier(64);
+        assert_ne!(live, super::LEGACY_CAMPAIGN_SCHEDULE_POLICY);
+        assert!(!schedule_policy_is_legacy(Some(&live)));
+        assert_eq!(schedule_policy_window(Some(&live)), Some(64));
+
+        // The same text in the historical namespace still means legacy.
+        assert!(schedule_policy_is_legacy(Some(
+            "deterministic_window_64_per_worker_v1"
+        )));
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_64_per_worker_v1")),
+            None
+        );
+    }
+
+    #[test]
+    fn recorded_resource_bounds_and_progress_policies_validate_at_boundaries() {
+        let max = crate::search::archive::MAX_ARCHIVE_ENTRIES;
+        assert!(!archive_entry_limit_is_valid(0));
+        assert!(archive_entry_limit_is_valid(1));
+        assert!(archive_entry_limit_is_valid(max));
+        assert!(!archive_entry_limit_is_valid(max.saturating_add(1)));
+
+        assert!(draw_state_memory_is_within_reserve(0, 0));
+        assert!(draw_state_memory_is_within_reserve(1, 2));
+        assert!(draw_state_memory_is_within_reserve(2, 2));
+        assert!(!draw_state_memory_is_within_reserve(2, 1));
+
+        assert!(progress_policy_is_supported(None));
+        assert!(progress_policy_is_supported(Some(
+            super::CAMPAIGN_PROGRESS_POLICY
+        )));
+        assert!(progress_policy_is_supported(Some(
+            super::LEGACY_CAMPAIGN_PROGRESS_POLICY
+        )));
+        assert!(!progress_policy_is_supported(Some("unknown-progress")));
+        assert!(!uses_bounded_progress_curve(None));
+        assert!(uses_bounded_progress_curve(Some(
+            super::CAMPAIGN_PROGRESS_POLICY
+        )));
+        assert!(!uses_bounded_progress_curve(Some(
+            super::LEGACY_CAMPAIGN_PROGRESS_POLICY
+        )));
     }
 
     #[test]
@@ -2814,6 +4238,7 @@ mod tests {
             Some(super::CampaignSpliceRecord::Tail {
                 donor_id: 4,
                 leaf_id: 9,
+                tail_postcard: None,
             })
         );
         let written = serde_json::to_vec(&job).expect("job serializes");

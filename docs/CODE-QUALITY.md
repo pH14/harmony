@@ -91,7 +91,7 @@ The CI `mutants` job (`.github/workflows/quality.yml`) is now **gating** (no
 under-constrained logic on a changed line fails — regardless of which crate it touches.
 
 ### `cargo-deny` 🟢
-Enforces the `tasks/00-CONVENTIONS.md` **dependency whitelist mechanically** (`bans` section),
+Enforces the `AGENTS.md` **dependency whitelist mechanically** (`bans` section),
 plus RustSec advisories, license policy, and duplicate-version detection. Given the project
 already maintains an explicit allowlist by hand, `deny.toml` is the natural automation —
 "ask-by-comment if you need a new dep" becomes a failing check the PR author sees first.
@@ -190,54 +190,13 @@ timing. (`criterion` is the wall-clock alternative — use only for things iai c
 
 ---
 
-## Coverage baseline (2026-06-16)
+## Coverage
 
-Measured with `cargo llvm-cov nextest --all-features` on this workspace (123 tests,
-2 skipped). **Region coverage** is the gated metric; the CI `coverage` job enforces a
-floor of **93%** (`--fail-under-regions 93`) — `floor(93.86%)`, the measured workspace
-number rounded down, no margin padding. Ratchet the floor up as coverage improves; never
-round to a clean number. Reproduce locally with `scripts/coverage.sh`.
-
-| Scope                  | Regions | Missed | Region cover |
-| ---------------------- | ------: | -----: | -----------: |
-| unison             |    1278 |     33 |       97.42% |
-| hypercall-proto        |     984 |    158 |       83.94% |
-| snapshot-store         |     726 |     40 |       94.49% |
-| vtime                  |     857 |      5 |       99.42% |
-| **workspace (TOTAL)**  |    3845 |    236 |   **93.86%** |
-
-The floor tracks the *workspace* number. `hypercall-proto` (decode-heavy, many unreached
-malformed-frame branches) is the main drag; raising its coverage is organic test work, out
-of scope for this gating task.
-
-### Ratchet: 93% → 94.5% (2026-07-05, issue #69)
-
-A CI compile break (`Step::SdkStop`, #63→#68) had failed the coverage job *before it could
-measure* for several merges, letting `dissonance/campaign-runner`'s `record.rs`/`campaign.rs`/
-`lib.rs`/`main.rs` accumulate thin coverage undetected (68–83% region, `main.rs` 0%). #71
-added targeted gate-branch and CLI-dispatch tests to those four files (see
-`dissonance/campaign-runner/IMPLEMENTATION.md`'s "Coverage recovery" section for what was added),
-and split `main.rs`'s Linux-only `mod boxrun` (needs real `/dev/kvm` + patched KVM + a built
-guest image — uncoverable by this job, same reasoning as the live-backend
-exclusions above) into its own `src/boxrun.rs`, added to
-`--ignore-filename-regex`. Measured workspace region total after: **94.76%**
-(`cargo llvm-cov nextest --all-features`, on the determinism box — Linux, so every
-`cfg(target_os = "linux")` line compiles and counts). Floor moved to **94.5%** — a hair
-below, not the measured number itself (leaves room for ordinary cross-run noise without
-inviting the floor to silently drift back down). Reproduce on the box (a Mac-local run
-understates anything `cfg(target_os = "linux")`, since it doesn't even compile there).
-
-### Adjustment: 94.5% → 93.5% (`hm-42y`)
-
-The first *honest* run after the `hm-ph7` CI-toolchain repair measured the workspace at
-**93.66%** — under the 94.5 floor. Cause: real under-tested code merged while CI was
-fail-before-measuring (film replay bin 9.5%, `core_replay` 55.6%, telemetry bin 23.5%,
-`benchcampaign` 82.6%, `bringup` 70.2%; a stale exclusion was separately
-repaired in beb14c6). Escalated as `hm-42y` (test-up the drivers vs exclude bins vs floor
-change); **ruled: accept the dip** ("coverage floor — don't care, if it
-dips slightly that's fine"). Floor set to **93.5** — a hair below the measured 93.66,
-same no-round-number discipline as above. Testing up the drivers stays organic follow-up
-work, not gated. The ratchet doctrine is unchanged: floor moves up as coverage improves.
+**Region coverage** is the gated metric. The CI `coverage` job enforces the floor set in
+`.github/workflows/quality.yml` (`--fail-under-regions`); the floor is always a measured
+workspace number rounded down, never a clean round number, and it only moves up. Measure on
+Linux (a Mac-local run understates anything `cfg(target_os = "linux")`, since it doesn't
+compile there); reproduce with `scripts/coverage.sh`. Floor-change history is in git history.
 
 ---
 
