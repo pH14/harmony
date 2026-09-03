@@ -309,6 +309,18 @@ pub(crate) fn dirty_bitmap_words(size: u64) -> Result<usize> {
     usize::try_from(words).map_err(|_| BackendError::InvalidState)
 }
 
+/// Admit the live arm64 dirty-log path only on the page geometry its bitmap
+/// arithmetic and memslot contract model.
+#[cfg(any(test, all(target_os = "linux", target_arch = "aarch64")))]
+pub(crate) fn require_4k_host_page_size(page_size: i64) -> Result<()> {
+    if page_size != KVM_PAGE_SIZE as i64 {
+        return Err(BackendError::Capability {
+            cap: "4 KiB host page size (_SC_PAGESIZE == 4096)",
+        });
+    }
+    Ok(())
+}
+
 /// Convert the maximum page span accepted by the KVM clear-dirty ABI to its
 /// bitmap-word limit. Kept as a small pure helper so the checked chunking rule
 /// is testable without allocating a multi-terabyte bitmap.
@@ -1102,8 +1114,6 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     kvm: K,
     configured: bool,
     pending: Pending,
-    /// The staged MMIO-load completion value, applied before the next `run`.
-    staged_read: Option<[u8; 8]>,
     /// A patched sysreg completion that still lives in the run-page ABI. The
     /// skeleton has no completion-only KVM entry for that ABI, so it must stay
     /// marked and fail closed rather than execute the next guest instruction.
@@ -1121,6 +1131,9 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     /// Latched if a successfully registered slot was ever created without the
     /// dirty-log flag. Such a backend can never vouch for a complete set again.
     unlogged_slot: bool,
+    /// A clear succeeded or may have succeeded before a later dirty-log
+    /// operation failed. Once set, no later drain can vouch for completeness.
+    dirty_log_poisoned: bool,
     /// The one level input requested for the next entry. The userspace
     /// interrupt controller remains the queue; this is only its current
     /// arbitrated output (or the in-kernel clockevent line).
@@ -1145,12 +1158,12 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             kvm,
             configured: false,
             pending: Pending::None,
-            staged_read: None,
             completion_staged: false,
             regions: Vec::new(),
             dirty_slots: Vec::new(),
             dirty_log: true,
             unlogged_slot: false,
+            dirty_log_poisoned: false,
             pending_irq: None,
             applied_irq: None,
             accepted_irq: None,
@@ -1171,7 +1184,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        if self.completion_staged || self.staged_read.is_some() {
+        if self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
         Ok(())
@@ -1228,14 +1241,10 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         Ok(())
     }
 
-    /// Enter the guest: apply any staged read completion, then `KVM_RUN`, then
-    /// decode. Re-enters on control exits (`None`).
+    /// Enter the guest and decode. Re-enters on control exits (`None`).
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
             self.apply_pending_irq()?;
-            if let Some(data) = self.staged_read.take() {
-                self.kvm.write_mmio_data(data)?;
-            }
             let view = self.kvm.run()?;
             self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
@@ -1308,6 +1317,10 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
                 let num_pages = u32::try_from(num_pages).map_err(|_| BackendError::InvalidState)?;
                 let slice = &bitmap[chunk_start..chunk_end];
                 validate_clear_dirty_log(size, first_page, num_pages, slice)?;
+                // From this point onward the kernel bitmap may have been
+                // cleared even if the syscall reports an error. Keep the
+                // poison latched unless the entire multi-slot drain succeeds.
+                self.dirty_log_poisoned = true;
                 self.kvm
                     .clear_dirty_log(slot, size, first_page, num_pages, slice)?;
             }
@@ -1427,6 +1440,11 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 what: "drain_dirty_pages (a RAM slot was mapped without dirty logging)",
             });
         }
+        if self.dirty_log_poisoned {
+            return Err(BackendError::Internal(
+                "arm64 dirty log is poisoned after a partial clear",
+            ));
+        }
 
         let mut gfns = Vec::new();
         for index in 0..self.dirty_slots.len() {
@@ -1445,6 +1463,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         }
         gfns.sort_unstable();
         gfns.dedup();
+        self.dirty_log_poisoned = false;
         Ok(gfns)
     }
 
@@ -1481,13 +1500,12 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 self.pending = Pending::None;
                 Ok(())
             }
-            // The patched sysreg-read completion path (stock never reaches it).
-            Pending::SysregRead => {
-                self.staged_read = Some(le_data(value, 8));
-                self.completion_staged = true;
-                self.pending = Pending::None;
-                Ok(())
-            }
+            // The patched sysreg ABI has no completion-only entry in this
+            // backend. Reject while the exit is still pending instead of
+            // accepting a value that can never be delivered.
+            Pending::SysregRead => Err(BackendError::Unsupported {
+                what: "complete_read (arm64 sysreg)",
+            }),
             _ => Err(BackendError::NoPendingRead),
         }
     }
@@ -1528,7 +1546,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
-        if !self.completion_staged && self.staged_read.is_none() {
+        if !self.completion_staged {
             return Ok(());
         }
         // The stock arm64 MMIO path retires loads/stores synchronously through
@@ -1546,13 +1564,13 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         restore_vcpu(&mut self.kvm, state)?;
         // Every host-side completion/interrupt latch belongs to the displaced
         // timeline.  The restored vCPU and vGIC records are authoritative, as
         // they are on a freshly composed restore target.
-        self.pending = Pending::None;
-        self.staged_read = None;
-        self.completion_staged = false;
         self.pending_irq = None;
         self.applied_irq = None;
         self.accepted_irq = None;
@@ -2483,7 +2501,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_clears_every_host_side_completion_and_interrupt_latch() {
+    fn restore_rejects_completion_state_and_clears_interrupt_latches_when_clean() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
         let mut b = Arm64KvmBackend::new(fake);
@@ -2492,16 +2510,24 @@ mod tests {
         let intid = GicIntId(32);
 
         b.pending = Pending::SysregRead;
-        b.staged_read = Some([0xA5; 8]);
-        b.completion_staged = true;
         b.pending_irq = Some(intid);
         b.applied_irq = Some(intid);
         b.accepted_irq = Some(intid);
         b.reported_active_irq = Some(intid);
 
+        assert!(matches!(
+            b.restore(&state),
+            Err(BackendError::PendingCompletion)
+        ));
+        b.pending = Pending::None;
+        b.completion_staged = true;
+        assert!(matches!(
+            b.restore(&state),
+            Err(BackendError::PendingCompletion)
+        ));
+        b.completion_staged = false;
         b.restore(&state).unwrap();
         assert_eq!(b.pending, Pending::None);
-        assert_eq!(b.staged_read, None);
         assert!(!b.completion_staged);
         assert_eq!(b.pending_irq, None);
         assert_eq!(b.applied_irq, None);
@@ -2679,11 +2705,14 @@ mod tests {
                 ..
             }))
         ));
-        b.complete_read(0x90).unwrap();
         assert!(matches!(
-            b.retire_pending_completion(),
-            Err(BackendError::Unsupported { .. })
+            b.complete_read(0x90),
+            Err(BackendError::Unsupported {
+                what: "complete_read (arm64 sysreg)"
+            })
         ));
+        assert_eq!(b.pending, Pending::SysregRead);
+        assert!(matches!(b.retire_pending_completion(), Ok(())));
         assert_eq!(
             b.kvm().calls.iter().filter(|&&call| call == "run").count(),
             1,
@@ -2712,13 +2741,12 @@ mod tests {
     }
 
     #[test]
-    fn arm64_retirement_rejects_a_staged_completion_without_data() {
+    fn arm64_retirement_rejects_a_staged_sysreg_completion() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
         let mut b = Arm64KvmBackend::new(fake);
         b.set_policy(&Arm64Policy::default()).unwrap();
         b.completion_staged = true;
-        b.staged_read = None;
 
         assert!(matches!(
             b.retire_pending_completion(),
@@ -2729,21 +2757,13 @@ mod tests {
     }
 
     #[test]
-    fn ensure_runnable_rejects_each_staged_completion_latch_independently() {
+    fn ensure_runnable_rejects_a_staged_completion_latch() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
         let mut b = Arm64KvmBackend::new(fake);
         b.set_policy(&Arm64Policy::default()).unwrap();
 
         b.completion_staged = true;
-        b.staged_read = None;
-        assert!(matches!(
-            b.ensure_runnable(),
-            Err(BackendError::PendingCompletion)
-        ));
-
-        b.completion_staged = false;
-        b.staged_read = Some([0xA5; 8]);
         assert!(matches!(
             b.ensure_runnable(),
             Err(BackendError::PendingCompletion)
@@ -3183,6 +3203,17 @@ mod tests {
             Err(BackendError::Internal("fake KVM dirty-log clear failed"))
         ));
         assert_eq!(b.kvm().dirty_clear_calls.len(), 2);
+        assert!(matches!(
+            b.drain_dirty_pages(),
+            Err(BackendError::Internal(
+                "arm64 dirty log is poisoned after a partial clear"
+            ))
+        ));
+        assert_eq!(
+            b.kvm().dirty_clear_calls.len(),
+            2,
+            "a poisoned drain must not touch a bitmap whose earlier bits were cleared"
+        );
     }
 
     #[test]
@@ -3229,5 +3260,25 @@ mod tests {
             ))
         ));
         assert_eq!(b.kvm().dirty_log_calls, vec![(0, 4096), (1, 4096)]);
+        assert!(matches!(
+            b.drain_dirty_pages(),
+            Err(BackendError::Internal(
+                "arm64 dirty log is poisoned after a partial clear"
+            ))
+        ));
+        assert_eq!(b.kvm().dirty_log_calls, vec![(0, 4096), (1, 4096)]);
+    }
+
+    #[test]
+    fn host_page_size_must_match_the_dirty_log_geometry() {
+        assert!(require_4k_host_page_size(4096).is_ok());
+        for page_size in [-1, 0, 16_384, 65_536] {
+            assert!(matches!(
+                require_4k_host_page_size(page_size),
+                Err(BackendError::Capability {
+                    cap: "4 KiB host page size (_SC_PAGESIZE == 4096)"
+                })
+            ));
+        }
     }
 }

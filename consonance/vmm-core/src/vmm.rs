@@ -1709,21 +1709,22 @@ where
     /// [`VmmError::Snapshot`] for a contract mismatch / malformed device blob /
     /// rejected LAPIC; [`VmmError::ContractViolation`] at an RNG mid-exit boundary,
     /// a V-time wiring/rate mismatch, or a rejected entropy blob;
-    /// [`VmmError::Backend`]/[`VmmError::Vtime`]/[`VmmError::Work`] from the
-    /// backend/clock/counter.
+    /// [`VmmError::Backend`]/[`VmmError::Vtime`] from the backend/clock/counter;
+    /// post-commit trace failures are classified as `Backend` so callers must
+    /// discard the partially restored VM.
     pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
         // 0. Refuse if **any** backend completion is staged (not just RNG). A
         //    read-style / MSR / CPUID / determinism exit this VM serviced leaves a
         //    pending reg-write/RIP-advance in the backend's `kvm_run`; `Backend::restore`
         //    does not clear it, so the next run would commit the *old* exit's
-        //    completion over the restored state. Restore only into a fresh or committed
-        //    backend (step once more to commit, or restore into a freshly-booted VM).
+        //    completion over the restored state. Restore only into a fresh backend, or
+        //    complete and explicitly retire the old exit before restoring.
         if self.completion_staged {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state into a backend with a staged completion: the VM just serviced a \
                  read/MSR/CPUID/determinism exit whose completion is pending in kvm_run and is not \
-                 cleared by restore — it would commit the old exit on the next run. Restore only \
-                 into a fresh or committed backend (step once more, or use a freshly-booted VM)."
+                 cleared by restore — it would commit the old exit on the next run. Complete and \
+                 retire the old exit first, or use a freshly-booted VM."
                     .to_string(),
             ));
         }
@@ -1820,7 +1821,9 @@ where
         if let Some(trace) = self.virtual_time_trace.as_mut() {
             trace
                 .restore_clockevent_schedule(restored_clockevent)
-                .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+                .map_err(|message| {
+                    VmmError::Backend(vmm_backend::BackendError::Internal(message))
+                })?;
         }
         // A restored VM is runnable again from the snapshot point: clear the latched
         // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
@@ -4320,7 +4323,7 @@ mod tests {
 
     use super::*;
     use crate::virtual_time::NormalizedEventClass;
-    use vmm_backend::{Gpa, VcpuState, X86, X86Caps, X86Exit, X86Policy};
+    use vmm_backend::{ExitReason, Gpa, VcpuState, X86, X86Caps, X86Exit, X86Policy};
 
     use crate::vendor::x86::devices::REPORT_PORT;
     use crate::vendor::x86::dispatch::{
@@ -8396,6 +8399,31 @@ mod tests {
     }
 
     #[test]
+    fn restore_trace_failure_is_classified_after_commit() {
+        let mut source = vtime_vmm(vec![Exit::Arch(X86Exit::Rdtsc)], 7);
+        source.step().unwrap();
+        let snapshot = source.save_vm_state().unwrap();
+
+        let mut target = vtime_vmm(Vec::new(), 7);
+        target
+            .virtual_time_trace
+            .as_mut()
+            .unwrap()
+            .begin(
+                ExitReason::Rdtsc,
+                "planted active event".to_owned(),
+                NormalizedEventClass::TimeRead,
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(matches!(
+            target.restore_vm_state(&snapshot),
+            Err(VmmError::Backend(vmm_backend::BackendError::Internal(message)))
+                if message.contains("during an active event")
+        ));
+    }
+
+    #[test]
     fn reseed_entropy_requires_a_wired_stream() {
         let mut stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(matches!(
@@ -9524,6 +9552,9 @@ mod tests {
             "precondition: the live page is non-canonical"
         );
         let refreshes_before = vmm.pvclock_refreshes().to_vec();
+        // Both serviced exits staged backend completions. A live backend cannot
+        // restore over either until the completion-only entry has retired it.
+        vmm.retire_pending_completion().unwrap();
         // Make the vCPU unsealable (PAE-only sregs flags — the same lever the
         // existing fail-closed seal tests use).
         let mut bad = vmm.backend.save().unwrap();

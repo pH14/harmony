@@ -94,7 +94,10 @@ pub const PROTO_VERSION: u16 = 1;
 /// snapshot body mid-session, so it must reject at `hello`. Version 9 was
 /// allocated to the retired exact-stop error tag; versions are monotonic, so the
 /// number remains reserved even though that branch-clock surface is gone.
-pub const APP_PROTOCOL_VERSION: u16 = 9;
+/// Bumped to **10** when `READ_CAP` increased from 64 KiB to 256 KiB: the cap is
+/// request semantics shared by both peers, so mixed v9/v10 builds must reject at
+/// `hello` rather than disagree only when a larger read is attempted.
+pub const APP_PROTOCOL_VERSION: u16 = 10;
 
 /// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
 /// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
@@ -125,7 +128,7 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 9); // version numbers are never reused
+        assert_eq!(APP_PROTOCOL_VERSION, 10); // version numbers are never reused
         assert_eq!(READ_CAP, 262_144); // == 1 << 18 (256 KiB)
     }
 }

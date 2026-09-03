@@ -383,7 +383,7 @@ fn deferred_accept_holds_irq_pending() {
 }
 
 #[test]
-fn restore_discards_completion_and_interrupt_bookkeeping_from_the_old_timeline() {
+fn restore_requires_completion_retirement_then_discards_interrupt_bookkeeping() {
     let mut m = configured();
     m.set_pending_irq(Some(0x40)).unwrap();
     m.extend_exits([
@@ -395,12 +395,21 @@ fn restore_discards_completion_and_interrupt_bookkeeping_from_the_old_timeline()
         Exit::Common(CommonExit::Idle),
     ]);
     let exit = m.run().unwrap();
-    m.complete_read(0xA5).unwrap();
     assert!(matches!(exit, Exit::Arch(X86Exit::Io { .. })));
+    assert!(matches!(
+        m.restore(&VcpuState::default()),
+        Err(BackendError::PendingCompletion)
+    ));
+    m.complete_read(0xA5).unwrap();
     // Keep both an already-accepted report and a newly pending identity in the
     // host-only queues; neither belongs to the state being restored.
     m.set_pending_irq(Some(0x50)).unwrap();
 
+    assert!(matches!(
+        m.restore(&VcpuState::default()),
+        Err(BackendError::PendingCompletion)
+    ));
+    m.retire_pending_completion().unwrap();
     m.restore(&VcpuState::default()).unwrap();
     assert_eq!(m.pending_irq(), None);
     assert_eq!(m.take_accepted_interrupt(), None);

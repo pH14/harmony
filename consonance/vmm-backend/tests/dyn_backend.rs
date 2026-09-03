@@ -126,6 +126,7 @@ fn boxed_backend_forwards_every_method() {
         })
     );
     backend.complete_read(0x55).unwrap();
+    backend.retire_pending_completion().unwrap();
 
     // inject forward: exercised through the box (its effect is not trait-observable
     // — see `.cargo/mutants.toml` exclude for the forward).

@@ -88,6 +88,12 @@ const GICR_BASE: u64 = 0x080a_0000;
 /// unregistered and masked in the guest.
 const QUARANTINED_VTIMER_PPI: u32 = 20;
 
+/// Build a Linux ioctl request number (`_IOC` encoding): direction bits 30-31,
+/// size bits 16-29, type bits 8-15, and number bits 0-7.
+const fn ioc(dir: u64, typ: u64, nr: u64, size: u64) -> u64 {
+    (dir << 30) | (size << 16) | (typ << 8) | nr
+}
+
 /// `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)` from `linux/kvm.h`.
 ///
 /// `kvm-ioctls` 0.25 exposes `VmFd::enable_cap` only on architectures which
@@ -100,7 +106,8 @@ const KVM_ENABLE_CAP_IOCTL: libc::c_ulong = 0x4068_aea3;
 /// `_IOWR(KVMIO, 0xc0, struct kvm_clear_dirty_log)` from `linux/kvm.h`.
 /// `kvm-ioctls` 0.25 does not expose this newer VM ioctl on arm64, so keep the
 /// request derived from and pinned to the generated 24-byte UAPI structure.
-const KVM_CLEAR_DIRTY_LOG_IOCTL: libc::c_ulong = 0xc018_aec0;
+const KVM_CLEAR_DIRTY_LOG_IOCTL: libc::c_ulong =
+    ioc(3, 0xAE, 0xC0, size_of::<kvm_clear_dirty_log>() as u64) as libc::c_ulong;
 
 const _: () = {
     assert!(kvm_bindings::KVM_CAP_ARM_WRITABLE_IMP_ID_REGS == 239);
@@ -138,6 +145,13 @@ impl LiveKvm {
     /// dirty-log protection, or writable implementation-ID registers;
     /// [`BackendError::Io`] wraps a failing KVM syscall.
     pub fn new() -> Result<Self> {
+        // KVM dirty-log bitmaps are indexed in host pages, while the portable
+        // backend contract and all GFN arithmetic are fixed at 4 KiB. Reject a
+        // 16/64-KiB arm64 host before opening/configuring a VM rather than
+        // silently decode its bitmap with the wrong geometry.
+        // SAFETY: `sysconf` has no pointer arguments or memory-safety contract.
+        let host_page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        crate::arm64_kvm::require_4k_host_page_size(host_page_size as i64)?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         // MMIO loads are completed with one `KVM_RUN` whose
         // `kvm_run.immediate_exit` bit prevents execution of the following

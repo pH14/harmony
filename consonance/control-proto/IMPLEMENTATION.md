@@ -88,6 +88,13 @@ the loopback ("every verb") session, and `public-api.txt` all extend to the new
 surface; the decoder's new discriminant arms are reached by the existing
 arbitrary-bytes fuzz target.
 
+The Nova whole-VM observation window later raised `READ_CAP` from 64 KiB to
+256 KiB. Because clients and servers use this constant to decide whether a
+request is admissible, that semantic change is negotiated as
+`APP_PROTOCOL_VERSION` **10**. The control server rejects a mixed v9/v10 pair
+during `hello` without opening the session, instead of failing only when the
+first larger observation is requested.
+
 ### Module layout
 
 `error.rs` (`ControlError` / `ProtocolError`) · `types.rs` (the plain wire data +

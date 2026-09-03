@@ -182,6 +182,9 @@ impl PortableSnapshotRef<'_> {
         let sdk = self.sdk.map(encode_sdk).transpose()?;
         let net = self.net.map(encode_net).transpose()?;
         let policy = self.policy.to_bytes();
+        if self.vm_state.is_empty() {
+            return Err(PortableSnapshotError::BadFlags);
+        }
         check_len("memory", self.memory.len(), self.memory.len())?;
         check_len("vm_state", self.vm_state.len(), MAX_VM_STATE_LEN)?;
         check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
@@ -266,7 +269,11 @@ impl PortableSnapshot {
         let policy_len = bounded_len(&mut input, "policy", MAX_POLICY_LEN)?;
         let has_sdk = flags & FLAG_SDK != 0;
         let has_net = flags & FLAG_NET != 0;
-        if has_sdk != (sdk_len != 0) || has_net != (net_len != 0) || policy_len == 0 {
+        if vm_state_len == 0
+            || has_sdk != (sdk_len != 0)
+            || has_net != (net_len != 0)
+            || policy_len == 0
+        {
             return Err(PortableSnapshotError::BadFlags);
         }
         let at = get_u64(&mut input)?;
@@ -320,6 +327,9 @@ pub(crate) fn encode_sparse_sidecar(
     let sdk = sidecar.sdk.map(encode_sdk).transpose()?;
     let net = sidecar.net.map(encode_net).transpose()?;
     let policy = sidecar.policy.to_bytes();
+    if sidecar.vm_state.is_empty() {
+        return Err(PortableSnapshotError::BadFlags);
+    }
     check_len("vm_state", sidecar.vm_state.len(), MAX_VM_STATE_LEN)?;
     check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
     check_len("net", net.as_ref().map_or(0, Vec::len), MAX_NET_LEN)?;
@@ -499,12 +509,20 @@ fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
             return Err(PortableSnapshotError::Malformed("SDK coverage tag"));
         }
         let count = input.count("SDK coverage threshold count", 12)?;
+        if count == 0 {
+            return Err(PortableSnapshotError::Malformed(
+                "SDK coverage threshold count",
+            ));
+        }
+        let mut previous_thread = None;
         for _ in 0..count {
             let thread = input.u32()?;
             let threshold = input.u64()?;
-            if threshold == 0 || coverage_thresholds.insert(thread, threshold).is_some() {
+            if threshold == 0 || previous_thread.is_some_and(|previous| thread <= previous) {
                 return Err(PortableSnapshotError::Malformed("SDK coverage threshold"));
             }
+            previous_thread = Some(thread);
+            coverage_thresholds.insert(thread, threshold);
         }
     }
     input.finish("SDK")?;
@@ -991,6 +1009,59 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_and_sparse_encoders_reject_empty_vm_state() {
+        let memory = [0_u8; 16];
+        let policy = FaultPolicy::none();
+        let mut artifact = Vec::new();
+        assert!(matches!(
+            (PortableSnapshotRef {
+                memory: &memory,
+                vm_state: &[],
+                sdk: None,
+                net: None,
+                policy: &policy,
+                at: 0,
+                sdk_events: 0,
+                trace_events: 0,
+                trace_schedules: 0,
+                tainted: false,
+                state_hash: [0; 32],
+            })
+            .write_to(&mut artifact),
+            Err(PortableSnapshotError::BadFlags)
+        ));
+        assert!(artifact.is_empty());
+
+        assert!(matches!(
+            encode_sparse_sidecar(&SparsePortableSidecarRef {
+                vm_state: &[],
+                sdk: None,
+                net: None,
+                policy: &policy,
+                at: 0,
+                sdk_events: 0,
+                trace_events: 0,
+                trace_schedules: 0,
+                tainted: false,
+                state_blob_suffix: b"suffix",
+            }),
+            Err(PortableSnapshotError::BadFlags)
+        ));
+    }
+
+    #[test]
+    fn snapshot_decoder_rejects_empty_vm_state() {
+        let mut malformed = encoded();
+        // Header field layout: vm_state length occupies bytes 20..28.
+        malformed[20..28].copy_from_slice(&0_u64.to_le_bytes());
+        refresh_digest(&mut malformed);
+        assert!(matches!(
+            PortableSnapshot::read_from(malformed.as_slice(), 8192),
+            Err(PortableSnapshotError::BadFlags)
+        ));
+    }
+
+    #[test]
     fn absent_optional_sections_and_clear_flags_round_trip() {
         let memory = vec![0x5a; 32];
         let policy = FaultPolicy::none();
@@ -1086,6 +1157,36 @@ mod tests {
         assert!(matches!(
             decode_sdk(&trailing),
             Err(PortableSnapshotError::Malformed("SDK"))
+        ));
+    }
+
+    #[test]
+    fn sdk_decoder_rejects_empty_or_noncanonical_coverage_tables() {
+        let (_, _, mut sdk, _, _) = fixture();
+        sdk.coverage_thresholds.clear();
+        let mut empty = encode_sdk(&sdk).unwrap();
+        empty.extend_from_slice(b"COVR");
+        empty.extend_from_slice(&0_u64.to_le_bytes());
+        assert!(matches!(
+            decode_sdk(&empty),
+            Err(PortableSnapshotError::Malformed(
+                "SDK coverage threshold count"
+            ))
+        ));
+
+        let (_, _, sdk, _, _) = fixture();
+        let mut descending = encode_sdk(&sdk).unwrap();
+        let tag = descending
+            .windows(4)
+            .position(|window| window == b"COVR")
+            .expect("coverage tag");
+        let first_thread = tag + 12;
+        let second_thread = first_thread + 12;
+        descending[first_thread..first_thread + 4].copy_from_slice(&7_u32.to_le_bytes());
+        descending[second_thread..second_thread + 4].copy_from_slice(&2_u32.to_le_bytes());
+        assert!(matches!(
+            decode_sdk(&descending),
+            Err(PortableSnapshotError::Malformed("SDK coverage threshold"))
         ));
     }
 

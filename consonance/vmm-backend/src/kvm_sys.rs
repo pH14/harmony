@@ -982,6 +982,12 @@ impl Backend for KvmBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        // `KVM_SET_*` does not disarm completion state held in `kvm_run`.
+        // Reject before validation or mutation so an old IO/MMIO/MSR result can
+        // never commit over the restored registers on the next KVM_RUN.
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         // Fail closed *before any `SET_*` ioctl* (no half-mutation of the live
         // vCPU): the snapshot's MSR key set must equal the configured allow-stateful
         // indices, and the XSAVE image must be the host image size.
@@ -1012,8 +1018,6 @@ impl Backend for KvmBackend {
         // the restored timeline.  These host-side queues belong to the used
         // timeline and are not part of `VcpuState`; keeping one would inject an
         // interrupt after restore that a freshly composed target would not.
-        self.pending = Pending::None;
-        self.completion_staged = false;
         self.pending_irq = None;
         self.accepted_irq.clear();
         let _ = plan_irq_entry(self.run_page(), None);

@@ -13,11 +13,13 @@
 //!
 //! ## Verb semantics (seed-driven scope, task 58)
 //!
-//! - **`hello(caps)`** → the server's [`Caps`]: protocol 1, `Reproducer` blob
-//!   version exactly [`EnvSpec::BLOB_VERSION`], **empty/zero-width coverage
+//! - **`hello(caps)`** → the server's [`Caps`]: application protocol 10
+//!   (framing protocol 1), `Reproducer` blob version exactly
+//!   [`EnvSpec::BLOB_VERSION`], **empty/zero-width coverage
 //!   geometry** (no coverage producer exists yet) and — task 73 —
-//!   `GUEST_HAS_SDK` (the doorbell is serviced). Any other verb before `hello`
-//!   answers [`ControlError::Unsupported`].
+//!   `GUEST_HAS_SDK` (the doorbell is serviced). A mismatched application
+//!   version, or any other verb before a successful `hello`, answers
+//!   [`ControlError::Unsupported`].
 //! - **`snapshot`** → seal the current point (memory + `vm_state`) into the
 //!   engine and mint a pool-wide [`SnapId`]. Task 41's non-quiescent capture is
 //!   merged, so mid-workload points are sealable; the remaining fail-closed
@@ -208,6 +210,15 @@ pub enum RestoreMode {
 /// defers materialization so it can patch only changed pages.
 fn restore_defers_materialization(mode: RestoreMode) -> bool {
     mode == RestoreMode::InPlace
+}
+
+/// Only errors guaranteed to occur before `restore_vm_state` mutates the
+/// target may be returned as a recoverable `RestoreFailed` reply.
+fn restore_error_is_precommit(error: &VmmError) -> bool {
+    matches!(
+        error,
+        VmmError::ContractViolation(_) | VmmError::Snapshot(_) | VmmError::Vtime(_)
+    )
 }
 
 /// Classify the ordering relationship between adjacent sparse-page GFNs.
@@ -742,6 +753,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .snaps
             .get(&target.0)
             .ok_or(PortableSnapshotError::UnknownSnapshot(target.0))?;
+        let meta = self
+            .snapshot_meta
+            .get(&target.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(target.0))?;
+        // A complete portable import authenticates its whole-state hash but
+        // does not retain the source's canonical post-MEM state-blob suffix.
+        // Re-exporting it sparsely would discard that hash and leave a later
+        // importer unable to reconstruct the correct whole-state preimage.
+        if meta.state_blob_suffix.is_empty() {
+            return Err(PortableSnapshotError::Malformed(
+                "sparse export target lacks a canonical state-blob suffix",
+            ));
+        }
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
@@ -753,10 +777,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 pages.push((gfn, Arc::new(page)));
             }
         }
-        let meta = self
-            .snapshot_meta
-            .get(&target.0)
-            .ok_or(PortableSnapshotError::UnknownSnapshot(target.0))?;
         let vm_state = self.engine.vm_state_bytes(target_id)?;
         let sidecar = encode_sparse_sidecar(&SparsePortableSidecarRef {
             vm_state,
@@ -1082,10 +1102,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(ControlError::Unsupported));
         }
         match req {
-            Request::Hello(_client_caps) => {
-                // Version compatibility is detectable from Caps alone (task 25
-                // gate 4): the server answers its own capabilities and the
-                // client compares — no error reply is needed here.
+            Request::Hello(client_caps) => {
+                // Application semantics are not backward compatible across
+                // protocol versions. Reject during the handshake and do not
+                // open the session; discovering (for example) a READ_CAP
+                // disagreement on a later Read would be too late.
+                if client_caps.protocol_version != control_proto::APP_PROTOCOL_VERSION {
+                    return Ok(Err(ControlError::Unsupported));
+                }
                 self.hello_done = true;
                 Ok(Ok(Reply::Hello(server_caps())))
             }
@@ -1874,7 +1898,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Ok(()) => {}
             // Pre-commit rejection (a bad/foreign blob, mismatched wiring, or an
             // invalid clock config) — the fresh VM never mutated, so keep it.
-            Err(VmmError::ContractViolation(_) | VmmError::Snapshot(_) | VmmError::Vtime(_)) => {
+            Err(error) if restore_error_is_precommit(&error) => {
                 // Task 95 M2.2: on the remap path `fresh` is a restore-target
                 // shell (its RAM is the rejected snapshot's mapping; no booted
                 // guest, no entry state) — not a usable session VM. Replace it
@@ -1889,7 +1913,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Err(ControlError::RestoreFailed));
             }
             // Post-validation substrate breakage — the VM is unvouched; tear down.
-            Err(e) => return Err(e.into()),
+            Err(error) => return Err(error.into()),
         }
         // 4. Branch ⇒ fork the entropy stream. On this substrate `reseed_entropy`
         //    fails only if V-time is unwired — a composition bug (the factory must
@@ -2567,8 +2591,10 @@ mod tests {
     use super::host_minor_faults_with;
     use super::{
         ControlServer, ServeError, page_console, page_sdk_events, reseed_marker_requires_arrival,
-        restore_defers_materialization, server_caps, sparse_page_order_error,
+        restore_defers_materialization, restore_error_is_precommit, server_caps,
+        sparse_page_order_error,
     };
+    use crate::portable_snapshot::PortableSnapshotError;
     use crate::vendor::Vendor;
     use crate::vendor::x86::contract_vclock_config;
     use crate::vmm::{GuestRam, Vmm, VmmError, VtimeWiring};
@@ -3070,6 +3096,16 @@ mod tests {
     }
 
     #[test]
+    fn post_commit_restore_errors_are_never_recoverable_rejections() {
+        assert!(restore_error_is_precommit(&VmmError::ContractViolation(
+            "validation".to_owned()
+        )));
+        assert!(!restore_error_is_precommit(&VmmError::Backend(
+            vmm_backend::BackendError::Internal("already mutated")
+        )));
+    }
+
+    #[test]
     fn sparse_page_order_check_distinguishes_sorted_duplicate_and_descending() {
         assert!(sparse_page_order_error(None, 7).is_none());
         assert!(matches!(
@@ -3459,7 +3495,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 9,
+            caps.protocol_version, 10,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
@@ -3470,6 +3506,23 @@ mod tests {
             caps.flags.contains(CapFlags::GUEST_HAS_SDK),
             "task 73 services the doorbell, so GUEST_HAS_SDK is advertised"
         );
+    }
+
+    #[test]
+    fn hello_rejects_an_application_version_mismatch_before_opening_the_session() {
+        let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+        let mut old = server_caps();
+        old.protocol_version = old.protocol_version.checked_sub(1).unwrap();
+        assert_eq!(
+            s.handle(&Request::Hello(old)).unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::Unsupported),
+            "a rejected hello must not enable later verbs"
+        );
+        hello(&mut s);
     }
 
     /// The `SdkEvents` verb (task 73) is routed to the live VM's capture — a
@@ -4448,6 +4501,32 @@ mod tests {
             uninterrupted_next,
             "the restored payload suffix must reproduce the uninterrupted future"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "portable export/import materializes snapshot-store mappings through tempfile+mmap"
+    )]
+    fn fully_imported_snapshot_cannot_be_reexported_without_its_hash_suffix() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let sealed = snap(&mut source);
+        let mut artifact = Vec::new();
+        source
+            .export_portable_snapshot(sealed, &mut artifact)
+            .unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        let imported = destination
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        assert!(matches!(
+            destination.export_sparse_snapshot(imported.id, imported.id),
+            Err(PortableSnapshotError::Malformed(
+                "sparse export target lacks a canonical state-blob suffix"
+            ))
+        ));
     }
 
     #[test]

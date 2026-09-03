@@ -484,13 +484,14 @@ impl Backend for MockBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         // The mock has no host to reject the blob; it accepts any well-typed
         // `VcpuState` (the malformed-blob → `InvalidState` path is a `KvmBackend`
         // concern). `restore` then `save` reproduces an identical state by
         // construction.
         self.state = state.clone();
-        self.pending = Pending::None;
-        self.completion_staged = false;
         self.pending_irq = None;
         self.accepted_irq.clear();
         Ok(())

@@ -97,7 +97,8 @@ pub struct MockArm64Backend {
     script: VecDeque<Exit<Arm64>>,
     pending: Pending,
     /// Mock bookkeeping for a completion awaiting the next modeled entry.
-    /// Explicit retirement clears this marker without consuming `script`.
+    /// A normal modeled entry consumes it; explicit retirement fails closed,
+    /// matching the live backend's staged patched-sysreg disposition.
     completion_staged: bool,
     counts: ExitCounts,
     state: Arm64VcpuState,
@@ -374,14 +375,14 @@ impl Backend for MockArm64Backend {
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
-        // This mock has no architectural run page. Retire only the bookkeeping
-        // marker and leave the next scripted exit untouched.
+        // Match the live arm64 backend: its only staged subtype is a patched
+        // sysreg completion, for which no completion-only entry exists.
         if !self.completion_staged {
             return Ok(());
         }
-        self.completion_staged = false;
-        self.pending = Pending::None;
-        Ok(())
+        Err(BackendError::Unsupported {
+            what: "retire_pending_completion (arm64 sysreg)",
+        })
     }
 
     fn save(&self) -> Result<Arm64VcpuState> {
@@ -389,12 +390,13 @@ impl Backend for MockArm64Backend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         // The mock has no host to reject the blob; it accepts any well-typed
         // `Arm64VcpuState`. `restore` then `save` reproduces an identical
         // state by construction.
         self.state = *state;
-        self.pending = Pending::None;
-        self.completion_staged = false;
         self.pending_irq = None;
         self.accepted_irq.clear();
         Ok(())
@@ -439,21 +441,25 @@ mod tests {
     }
 
     #[test]
-    fn retirement_consumes_a_staged_completion_marker() {
+    fn retirement_matches_live_arm64_and_rejects_a_staged_completion() {
         let mut mock = configured();
         mock.pending = Pending::None;
         mock.completion_staged = true;
         mock.completions.push(Arm64MockCompletion::Ok);
 
-        mock.retire_pending_completion().unwrap();
-
-        assert!(!mock.completion_staged);
+        assert!(matches!(
+            mock.retire_pending_completion(),
+            Err(crate::BackendError::Unsupported {
+                what: "retire_pending_completion (arm64 sysreg)"
+            })
+        ));
+        assert!(mock.completion_staged);
         assert_eq!(mock.pending, Pending::None);
         assert_eq!(mock.completions, vec![Arm64MockCompletion::Ok]);
     }
 
     #[test]
-    fn restore_replaces_state_and_clears_displaced_host_bookkeeping() {
+    fn restore_rejects_completion_state_then_clears_interrupt_bookkeeping() {
         let mut mock = configured();
         let mut state = Arm64VcpuState::default();
         state.core.x[0] = 0x1234;
@@ -463,6 +469,16 @@ mod tests {
         mock.completion_staged = true;
         mock.pending_irq = Some(GicIntId(32));
         mock.accepted_irq.push_back(GicIntId(33));
+        assert!(matches!(
+            mock.restore(&state),
+            Err(crate::BackendError::PendingCompletion)
+        ));
+        mock.pending = Pending::None;
+        assert!(matches!(
+            mock.restore(&state),
+            Err(crate::BackendError::PendingCompletion)
+        ));
+        mock.completion_staged = false;
         mock.restore(&state).unwrap();
 
         assert_eq!(mock.save().unwrap(), state);

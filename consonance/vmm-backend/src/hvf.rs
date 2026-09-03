@@ -909,9 +909,13 @@ impl Backend for HvfBackend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        // HVF register writes cannot cancel an outstanding decoded exception.
+        // Keep the old exit from being applied to the restored state.
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
         if has_noncanonical_core_regs(&state.core)
             || state.mp_state != MpState::Runnable
-            || self.pending != Pending::None
             || !state.vtimer.masked
             || state.vtimer.offset != 0
             || state.vtimer.cntv_ctl_el0 & !0b11 != 0
