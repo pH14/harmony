@@ -132,7 +132,7 @@ exclude_re = [
     # getrusage path and its testable seam; macOS exercises this fallback in the
     # ordinary all-features gates. Pin the exact fallback line so the live Linux
     # accessor remains mutation-gated.
-    "consonance/vmm-core/src/control\\.rs:157:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
+    "consonance/vmm-core/src/control\\.rs:159:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
     # (b) Provably-equivalent disjoint-bit OR mutants in vmm-core: `a | b` ≡ `a ^ b`
     #     whenever a,b share no set bits — true of every bitwise-flag combine here
     #     (USER_SPACE_MSR_MASK = FILTER|UNKNOWN|INVAL; resolve_cpuid's clear-then-set
