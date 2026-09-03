@@ -3295,6 +3295,44 @@ mod tests {
         assert_eq!(s.last_restore_bytes_written(), RAM as u64);
     }
 
+    /// Once a source image exists, an unavailable dirty log is not safe: a
+    /// wholesale live write may have changed pages absent from the store diff.
+    /// The restore must take the fresh-VM fallback rather than accepting an
+    /// empty patch as an in-place success.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the fallback path materializes a snapshot-store mapping, which Miri cannot execute"
+    )]
+    fn in_place_restore_with_a_source_image_rejects_missing_dirty_log() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let target = snap(&mut s);
+        let expected_hash = s
+            .handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap();
+
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&vec![0xA5; RAM])
+            .unwrap();
+        assert_eq!(s.current_image, s.snaps.get(&target.0).copied());
+        s.set_restore_mode(super::RestoreMode::InPlace);
+        assert_eq!(s.handle(&Request::Replay(target)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.in_place_fallbacks(), 1);
+        assert_eq!(s.last_restore_bytes_written(), 0);
+        assert_eq!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            })
+            .unwrap(),
+            expected_hash
+        );
+    }
+
     /// A lost source image makes the optimization unavailable, so the restore
     /// uses the established fresh-VM path and records exactly one fallback.
     #[test]
@@ -4535,7 +4573,7 @@ mod tests {
         let decoded = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
         let malformed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
             vm_state: &decoded.vm_state,
-            sdk: decoded.sdk.as_ref(),
+            sdk: None,
             net: decoded.net.as_ref(),
             policy: &decoded.policy,
             at: decoded.at,

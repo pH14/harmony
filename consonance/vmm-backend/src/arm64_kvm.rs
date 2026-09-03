@@ -2723,6 +2723,28 @@ mod tests {
     }
 
     #[test]
+    fn ensure_runnable_rejects_each_staged_completion_latch_independently() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        b.completion_staged = true;
+        b.staged_read = None;
+        assert!(matches!(
+            b.ensure_runnable(),
+            Err(BackendError::PendingCompletion)
+        ));
+
+        b.completion_staged = false;
+        b.staged_read = Some([0xA5; 8]);
+        assert!(matches!(
+            b.ensure_runnable(),
+            Err(BackendError::PendingCompletion)
+        ));
+    }
+
+    #[test]
     fn only_mmio_writes_are_completed_during_exit_decode() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
@@ -3003,7 +3025,13 @@ mod tests {
     #[test]
     fn dirty_bitmap_decoder_ignores_padding_bits_in_the_final_word() {
         let mut gfns = Vec::new();
-        decode_dirty_bitmap(0x1000, 3 * 4096, &[(1 << 2) | (1 << 63)], &mut gfns).unwrap();
+        decode_dirty_bitmap(
+            0x1000,
+            3 * 4096,
+            &[(1 << 2) | (1 << 3) | (1 << 63)],
+            &mut gfns,
+        )
+        .unwrap();
         assert_eq!(gfns, vec![1 + 2]);
     }
 

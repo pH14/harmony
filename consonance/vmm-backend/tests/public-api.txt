@@ -619,15 +619,25 @@ pub fn vmm_backend::ExitCounts::entries(&self) -> [(vmm_backend::ExitReason, u64
 pub fn vmm_backend::ExitCounts::total(&self) -> u64
 pub struct vmm_backend::FakeKvm
 pub vmm_backend::FakeKvm::calls: alloc::vec::Vec<&'static str>
+pub vmm_backend::FakeKvm::dirty_bitmaps: alloc::collections::btree::map::BTreeMap<u32, alloc::vec::Vec<u64>>
+pub vmm_backend::FakeKvm::dirty_clear_calls: alloc::vec::Vec<(u32, u64, u64, u32, alloc::vec::Vec<u64>)>
+pub vmm_backend::FakeKvm::dirty_clear_fail_on_call: core::option::Option<usize>
+pub vmm_backend::FakeKvm::dirty_log_calls: alloc::vec::Vec<(u32, u64)>
+pub vmm_backend::FakeKvm::dirty_log_fail_on_call: core::option::Option<usize>
 pub vmm_backend::FakeKvm::last_mmio_data: core::option::Option<[u8; 8]>
+pub vmm_backend::FakeKvm::memslot_flags: alloc::vec::Vec<(u32, u32)>
 pub vmm_backend::FakeKvm::memslots: alloc::vec::Vec<(u32, u64, u64)>
 impl vmm_backend::FakeKvm
+pub fn vmm_backend::FakeKvm::fail_dirty_clear_on_call(&mut self, usize) -> &mut Self
+pub fn vmm_backend::FakeKvm::fail_dirty_log_on_call(&mut self, usize) -> &mut Self
 pub fn vmm_backend::FakeKvm::new() -> Self
 pub fn vmm_backend::FakeKvm::push_run(&mut self, vmm_backend::KvmRunView) -> &mut Self
 pub fn vmm_backend::FakeKvm::reg(&self, u64) -> core::option::Option<u64>
 pub fn vmm_backend::FakeKvm::set_accept_irqs(&mut self, bool) -> &mut Self
+pub fn vmm_backend::FakeKvm::set_dirty_bitmap(&mut self, u32, alloc::vec::Vec<u64>) -> &mut Self
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
 pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::FakeKvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
 pub fn vmm_backend::FakeKvm::get_one_reg(&self, u64) -> vmm_backend::Result<u64>
 pub fn vmm_backend::FakeKvm::get_one_reg128(&self, u64) -> vmm_backend::Result<[u8; 16]>
@@ -951,6 +961,7 @@ pub fn vmm_backend::arch::x86::X86Exit::reason(&self) -> vmm_backend::ExitReason
 pub fn vmm_backend::arch::x86::X86Exit::stages_completion(&self) -> bool
 pub trait vmm_backend::Arm64Kvm
 pub fn vmm_backend::Arm64Kvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::Arm64Kvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::Arm64Kvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
 pub fn vmm_backend::Arm64Kvm::get_one_reg(&self, u64) -> vmm_backend::Result<u64>
 pub fn vmm_backend::Arm64Kvm::get_one_reg128(&self, u64) -> vmm_backend::Result<[u8; 16]>
@@ -968,6 +979,7 @@ pub fn vmm_backend::Arm64Kvm::vcpu_init(&mut self) -> vmm_backend::Result<()>
 pub fn vmm_backend::Arm64Kvm::write_mmio_data(&mut self, [u8; 8]) -> vmm_backend::Result<()>
 impl vmm_backend::Arm64Kvm for vmm_backend::FakeKvm
 pub fn vmm_backend::FakeKvm::complete_mmio_exit(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::FakeKvm::get_dirty_log(&mut self, u32, u64) -> vmm_backend::Result<alloc::vec::Vec<u64>>
 pub fn vmm_backend::FakeKvm::get_mp_state(&self) -> vmm_backend::Result<vmm_backend::MpState>
 pub fn vmm_backend::FakeKvm::get_one_reg(&self, u64) -> vmm_backend::Result<u64>
 pub fn vmm_backend::FakeKvm::get_one_reg128(&self, u64) -> vmm_backend::Result<[u8; 16]>
