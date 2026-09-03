@@ -202,7 +202,9 @@ impl HostReport {
 }
 
 /// DMI vendor strings that name a virtual machine. Read on ACPI-booted arm64
-/// machines, which have neither the x86 CPUID flag nor a device tree.
+/// machines, which have neither the x86 CPUID flag nor a device tree. The
+/// list is only ever a positive signal: a vendor that is not on it says
+/// nothing about whether the machine is physical.
 const VM_DMI_VENDORS: &[&str] = &[
     "QEMU",
     "VMware",
@@ -218,21 +220,22 @@ const VM_DMI_VENDORS: &[&str] = &[
 
 /// Whether the host itself runs inside a VM.
 ///
-/// x86 reads the `hypervisor` CPUID flag out of /proc/cpuinfo. arm64 has no
-/// such flag, so the sources are the device tree (a virtualized machine
-/// carries a `/hypervisor` node) and, on ACPI-booted machines, the DMI vendor
-/// strings. macOS reads `kern.hv_vmm_present`. A source that is unreadable
-/// leaves the answer unknown rather than claiming bare metal.
+/// Each architecture answers from its own documented signal, and `No` is
+/// returned only where the absence of that signal is itself evidence of
+/// physical hardware. Everywhere else the answer is unknown, which callers
+/// treat as untested.
 fn detect_nested() -> Detected {
     match (std::env::consts::OS, Isa::current()) {
         ("linux", Isa::X86_64) => match std::fs::read_to_string("/proc/cpuinfo") {
-            Ok(info) => info
-                .lines()
-                .any(|l| l.starts_with("flags") && l.contains(" hypervisor"))
-                .into(),
+            Ok(info) => cpuinfo_nesting(&info),
             Err(_) => Detected::Unknown,
         },
-        ("linux", Isa::Arm64) => detect_nested_arm64(),
+        ("linux", Isa::Arm64) => arm64_nesting(
+            Path::new("/proc/device-tree/hypervisor").exists(),
+            std::fs::read_to_string("/sys/class/dmi/id/sys_vendor")
+                .ok()
+                .as_deref(),
+        ),
         ("macos", _) => match sysctl("kern.hv_vmm_present") {
             Some(value) => (value == "1").into(),
             None => Detected::Unknown,
@@ -241,17 +244,34 @@ fn detect_nested() -> Detected {
     }
 }
 
-fn detect_nested_arm64() -> Detected {
-    if Path::new("/proc/device-tree/hypervisor").exists() {
+/// The nesting answer for x86 from /proc/cpuinfo. The `hypervisor` flag is
+/// the architectural CPUID bit a hypervisor sets, so its absence on a CPU
+/// that reports flags at all is evidence of physical hardware.
+fn cpuinfo_nesting(cpuinfo: &str) -> Detected {
+    let mut flags = cpuinfo.lines().filter(|l| l.starts_with("flags"));
+    let Some(line) = flags.next() else {
+        // No flags line: this is not the x86 cpuinfo format the check reads.
+        return Detected::Unknown;
+    };
+    line.contains(" hypervisor").into()
+}
+
+/// The nesting answer for arm64 Linux from its two sources: whether the
+/// device tree advertises a hypervisor node, and the DMI vendor string where
+/// one can be read.
+///
+/// arm64 has no CPUID hypervisor flag, and neither source has a form that
+/// means "physical hardware" — a VM implementation this does not recognize
+/// looks exactly like a machine with no signal. So a positive signal answers
+/// yes and everything else is unknown; arm64 Linux is never reported as bare
+/// metal from detection alone.
+fn arm64_nesting(hypervisor_node: bool, dmi_vendor: Option<&str>) -> Detected {
+    if hypervisor_node {
         return Detected::Yes;
     }
-    // A device-tree machine that advertises no hypervisor node is bare metal.
-    if Path::new("/proc/device-tree/compatible").exists() {
-        return Detected::No;
-    }
-    match std::fs::read_to_string("/sys/class/dmi/id/sys_vendor") {
-        Ok(vendor) => VM_DMI_VENDORS.iter().any(|v| vendor.contains(v)).into(),
-        Err(_) => Detected::Unknown,
+    match dmi_vendor {
+        Some(vendor) if VM_DMI_VENDORS.iter().any(|v| vendor.contains(v)) => Detected::Yes,
+        _ => Detected::Unknown,
     }
 }
 
@@ -462,6 +482,59 @@ mod tests {
                 MatrixCell::Unsupported
             );
         }
+    }
+
+    /// arm64 has no signal that means "physical hardware", so only a
+    /// positive one answers. A vendor or a machine this does not recognize
+    /// stays unknown, which keeps it out of the proven cell.
+    #[test]
+    fn arm64_nesting_answers_only_from_positive_signals() {
+        assert_eq!(arm64_nesting(true, None), Detected::Yes);
+        assert_eq!(
+            arm64_nesting(true, Some("Raspberry Pi Foundation")),
+            Detected::Yes
+        );
+        for vendor in ["QEMU", "Amazon EC2", "Microsoft Corporation", "KVM"] {
+            assert_eq!(
+                arm64_nesting(false, Some(vendor)),
+                Detected::Yes,
+                "{vendor}"
+            );
+        }
+        for vendor in [
+            "Raspberry Pi Foundation",
+            "Ampere(R)",
+            "Some Unlisted Hypervisor Inc.",
+            "",
+        ] {
+            assert_eq!(
+                arm64_nesting(false, Some(vendor)),
+                Detected::Unknown,
+                "{vendor}"
+            );
+        }
+        // No device tree node and no readable DMI: still unknown.
+        assert_eq!(arm64_nesting(false, None), Detected::Unknown);
+    }
+
+    /// The x86 flag is architectural, so its absence from a real flags line
+    /// is evidence. Anything that is not that format stays unknown.
+    #[test]
+    fn cpuinfo_nesting_reads_the_hypervisor_flag() {
+        assert_eq!(
+            cpuinfo_nesting("processor\t: 0\nflags\t\t: fpu vme hypervisor lm\n"),
+            Detected::Yes
+        );
+        assert_eq!(
+            cpuinfo_nesting("processor\t: 0\nflags\t\t: fpu vme lm\n"),
+            Detected::No
+        );
+        // An arm64 cpuinfo has Features, not flags: the check does not apply.
+        assert_eq!(
+            cpuinfo_nesting("processor\t: 0\nFeatures\t: fp asimd\n"),
+            Detected::Unknown
+        );
+        assert_eq!(cpuinfo_nesting(""), Detected::Unknown);
     }
 
     #[test]

@@ -16,9 +16,11 @@
 
 use serde::Deserialize;
 use std::collections::BTreeSet;
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImageError {
@@ -204,7 +206,7 @@ fn blob_path(layout: &Path, digest: &str) -> Result<PathBuf, ImageError> {
     let relative = digest.replace(':', "/");
     // Check the digest's own path before it is prefixed, so an absolute
     // digest cannot hide behind the prefix.
-    check_relative(&relative)?;
+    check_relative(Path::new(&relative))?;
     if Path::new(&relative).components().next().is_none() {
         return Err(ImageError::UnsafePath(digest.to_string()));
     }
@@ -257,12 +259,12 @@ fn parse_runtime_config(blob: &[u8]) -> Result<RuntimeConfig, ImageError> {
 /// joined to. `..`, an absolute root, and a path prefix are refused rather
 /// than normalized away, because both `tar -x` and the whiteout deletions
 /// act on these names.
-fn check_relative(path: &str) -> Result<(), ImageError> {
-    for component in Path::new(path).components() {
+fn check_relative(path: &Path) -> Result<(), ImageError> {
+    for component in path.components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(ImageError::UnsafePath(path.to_string()));
+                return Err(ImageError::UnsafePath(path.to_string_lossy().into_owned()));
             }
         }
     }
@@ -275,7 +277,7 @@ fn check_relative(path: &str) -> Result<(), ImageError> {
 /// outside, which no lexical check can see. The resolved path is returned so
 /// the caller reads the location that was checked.
 fn contained_join(root: &Path, relative: &str) -> Result<PathBuf, ImageError> {
-    check_relative(relative)?;
+    check_relative(Path::new(relative))?;
     if Path::new(relative).components().next().is_none() {
         return Err(ImageError::UnsafePath(relative.to_string()));
     }
@@ -317,77 +319,386 @@ fn resolve_deepest(path: &Path) -> Result<PathBuf, ImageError> {
 
 /// The comparison key for a member name: its `Normal` components joined and
 /// ASCII-lowercased, so the member check also holds on a case-insensitive
-/// host filesystem, where `Link` and `link` are one directory entry.
-fn member_key(name: &str) -> String {
-    Path::new(name)
+/// host filesystem, where `Link` and `link` are one directory entry. The key
+/// stays bytes, so a name that is not UTF-8 is compared as stored.
+fn member_key(name: &Path) -> Vec<u8> {
+    let parts: Vec<&[u8]> = name
         .components()
         .filter_map(|c| match c {
-            Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+            Component::Normal(part) => Some(part.as_bytes()),
             _ => None,
         })
-        .collect::<Vec<_>>()
-        .join("/")
+        .collect();
+    parts.join(&b'/').to_ascii_lowercase()
 }
 
 /// Refuse a member set that could escape the directory it is extracted into.
 /// Names are checked lexically, and any member that another member is stored
-/// under must itself be a directory member: `tar` writing to `link/pwn` when
-/// the archive also carries `link` as a symlink writes wherever that link
-/// points. `tar` lists a directory member with a trailing slash, which is how
-/// the archive stores it.
-fn check_members(entries: &[String]) -> Result<(), ImageError> {
-    let mut directories: BTreeSet<String> = BTreeSet::new();
-    let mut names: BTreeSet<String> = BTreeSet::new();
-    let mut keys: Vec<(String, &String)> = Vec::new();
-    for entry in entries {
-        check_relative(entry)?;
-        let key = member_key(entry);
+/// under must be a directory in every entry that names it: `tar` writing to
+/// `link/pwn` when the archive also carries `link` as a symlink writes
+/// wherever that link points.
+///
+/// An archive may store the same name more than once, with a different type
+/// each time, and `tar` keeps the last one. Recording every non-directory
+/// entry and refusing a child of any of them makes the answer independent of
+/// archive order and of which duplicate wins.
+fn check_members(members: &[Member]) -> Result<(), ImageError> {
+    let mut non_directories: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut keys: Vec<(Vec<u8>, &Member)> = Vec::new();
+    for member in members {
+        check_relative(member.path())?;
+        let key = member_key(member.path());
         if key.is_empty() {
             continue;
         }
-        if entry.ends_with('/') {
-            directories.insert(key.clone());
+        if !member.is_dir {
+            non_directories.insert(key.clone());
         }
-        names.insert(key.clone());
-        keys.push((key, entry));
+        keys.push((key, member));
     }
-    for (key, entry) in &keys {
-        let mut prefix = String::new();
-        for part in key.split('/') {
-            if !prefix.is_empty() {
-                prefix.push('/');
-            }
-            prefix.push_str(part);
-            if prefix.len() == key.len() {
-                break;
-            }
-            if names.contains(&prefix) && !directories.contains(&prefix) {
-                return Err(ImageError::UnsafePath((*entry).clone()));
+    for (key, member) in &keys {
+        for (at, byte) in key.iter().enumerate() {
+            if *byte == b'/' && non_directories.contains(&key[..at]) {
+                return Err(ImageError::UnsafePath(member.shown()));
             }
         }
     }
     Ok(())
 }
 
-/// One `tar -tf` listing of an archive's member names.
-fn tar_listing(archive: &Path) -> Result<Vec<String>, ImageError> {
-    let out = Command::new("tar").arg("-tf").arg(archive).output()?;
-    if !out.status.success() {
-        return Err(ImageError::Tar(
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        ));
+const TAR_BLOCK: usize = 512;
+/// Ceilings on what a hostile archive can make this reader allocate.
+const MAX_MEMBERS: usize = 1 << 20;
+const MAX_HEADER_DATA: u64 = 1 << 16;
+
+/// One member of an archive: the name it is stored under and whether it is a
+/// directory.
+///
+/// Both come from the archive's own headers. A `tar -tf` listing answers
+/// neither: it has no type column, so a directory has to be guessed from a
+/// trailing slash that a symlink can carry too, and it renders names for
+/// display, escaping control characters and dropping bytes that are not
+/// UTF-8.
+struct Member {
+    name: Vec<u8>,
+    is_dir: bool,
+}
+
+impl Member {
+    fn path(&self) -> &Path {
+        Path::new(std::ffi::OsStr::from_bytes(&self.name))
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(str::to_string)
-        .collect())
+
+    fn shown(&self) -> String {
+        self.path().to_string_lossy().into_owned()
+    }
+}
+
+/// The archive's byte stream, decompressed when it carries a compression
+/// magic. OCI layers are gzip or zstd; `docker save` writes them
+/// uncompressed.
+struct ArchiveReader {
+    reader: Box<dyn Read>,
+    child: Option<std::process::Child>,
+}
+
+impl Read for ArchiveReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buf)
+    }
+}
+
+impl Drop for ArchiveReader {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        // Close the pipe first so a decompressor still producing output sees
+        // the reader go away instead of blocking.
+        self.reader = Box::new(std::io::empty());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
+    let mut magic = [0u8; 6];
+    let mut file = std::fs::File::open(archive)?;
+    let mut filled = 0;
+    while filled < magic.len() {
+        match file.read(&mut magic[filled..])? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    let magic = &magic[..filled];
+    let tool = if magic.starts_with(&[0x1f, 0x8b]) {
+        "gzip"
+    } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        "zstd"
+    } else if magic.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
+        "xz"
+    } else if magic.starts_with(b"BZh") {
+        "bzip2"
+    } else {
+        return Ok(ArchiveReader {
+            reader: Box::new(std::io::BufReader::with_capacity(
+                64 * 1024,
+                std::fs::File::open(archive)?,
+            )),
+            child: None,
+        });
+    };
+    let mut child = Command::new(tool)
+        .arg("-dc")
+        .arg(archive)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| ImageError::Tar(format!("{tool} is needed to read this layer: {err}")))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        ImageError::Tar(format!(
+            "{tool} produced no output for {}",
+            archive.display()
+        ))
+    })?;
+    Ok(ArchiveReader {
+        reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, stdout)),
+        child: Some(child),
+    })
+}
+
+/// Every member of `archive`, read from its headers.
+///
+/// Each header's checksum is verified, so a reader that lost sync with the
+/// archive fails instead of inventing names, and anything after the
+/// end-of-archive marker is refused, so this reader and `tar -x` cannot
+/// disagree about which members an archive has.
+fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
+    let mut stream = open_archive(archive)?;
+    let mut members: Vec<Member> = Vec::new();
+    let mut long_name: Option<Vec<u8>> = None;
+    let mut block = [0u8; TAR_BLOCK];
+    while read_block(&mut stream, &mut block)? {
+        if block.iter().all(|byte| *byte == 0) {
+            require_trailing_zeros(&mut stream)?;
+            return Ok(members);
+        }
+        verify_checksum(&block)?;
+        let size = parse_octal(&block[124..136])?;
+        match block[156] {
+            // GNU long name: this member's data is the next member's name,
+            // stored with a terminating NUL that is not part of it.
+            b'L' => {
+                let mut data = header_data(&mut stream, size)?;
+                data.truncate(
+                    data.iter()
+                        .position(|byte| *byte == 0)
+                        .unwrap_or(data.len()),
+                );
+                long_name = Some(data);
+            }
+            // GNU long link name: link targets are not part of the check.
+            b'K' => {
+                header_data(&mut stream, size)?;
+            }
+            // pax extended header: a `path` record renames the next member.
+            // A global header that renames every following member is a form
+            // this reader does not model, so it is refused rather than
+            // ignored.
+            typeflag @ (b'x' | b'g') => {
+                let path = pax_path(&header_data(&mut stream, size)?)?;
+                match (typeflag, path) {
+                    (b'x', Some(path)) => long_name = Some(path),
+                    (b'g', Some(_)) => {
+                        return Err(ImageError::Tar(
+                            "archive sets a global pax path record".into(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            typeflag => {
+                if members.len() == MAX_MEMBERS {
+                    return Err(ImageError::Tar(format!(
+                        "archive has more than {MAX_MEMBERS} members"
+                    )));
+                }
+                members.push(Member {
+                    name: long_name.take().unwrap_or_else(|| ustar_name(&block)),
+                    is_dir: typeflag == b'5',
+                });
+                skip(&mut stream, size + padding(size))?;
+            }
+        }
+    }
+    Err(ImageError::Tar("archive ends without a terminator".into()))
+}
+
+/// Fill `block`, reporting `false` at a clean end of stream.
+fn read_block(stream: &mut impl Read, block: &mut [u8; TAR_BLOCK]) -> Result<bool, ImageError> {
+    let mut filled = 0;
+    while filled < TAR_BLOCK {
+        match stream.read(&mut block[filled..])? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    match filled {
+        0 => Ok(false),
+        TAR_BLOCK => Ok(true),
+        _ => Err(ImageError::Tar("archive ends inside a header".into())),
+    }
+}
+
+fn padding(size: u64) -> u64 {
+    let block = TAR_BLOCK as u64;
+    (block - size % block) % block
+}
+
+fn skip(stream: &mut impl Read, bytes: u64) -> Result<(), ImageError> {
+    let skipped = std::io::copy(&mut stream.take(bytes), &mut std::io::sink())?;
+    if skipped == bytes {
+        Ok(())
+    } else {
+        Err(ImageError::Tar("archive ends inside a member".into()))
+    }
+}
+
+/// The data of a header that carries a name rather than file content.
+fn header_data(stream: &mut impl Read, size: u64) -> Result<Vec<u8>, ImageError> {
+    if size > MAX_HEADER_DATA {
+        return Err(ImageError::Tar(format!(
+            "archive has a {size}-byte name header"
+        )));
+    }
+    let mut data = vec![0u8; size as usize];
+    stream.read_exact(&mut data)?;
+    skip(stream, padding(size))?;
+    Ok(data)
+}
+
+fn require_trailing_zeros(stream: &mut impl Read) -> Result<(), ImageError> {
+    let mut buffer = [0u8; 8192];
+    loop {
+        match stream.read(&mut buffer)? {
+            0 => return Ok(()),
+            read if buffer[..read].iter().all(|byte| *byte == 0) => {}
+            _ => {
+                return Err(ImageError::Tar(
+                    "archive carries data after its terminator".into(),
+                ));
+            }
+        }
+    }
+}
+
+fn verify_checksum(block: &[u8; TAR_BLOCK]) -> Result<(), ImageError> {
+    let stored = parse_octal(&block[148..156])?;
+    // The checksum field counts as spaces in its own sum.
+    let sum: u32 = block
+        .iter()
+        .enumerate()
+        .map(|(at, byte)| {
+            u32::from(if (148..156).contains(&at) {
+                b' '
+            } else {
+                *byte
+            })
+        })
+        .sum();
+    if u64::from(sum) == stored {
+        Ok(())
+    } else {
+        Err(ImageError::Tar("tar header checksum mismatch".into()))
+    }
+}
+
+/// A numeric header field. `tar` writes them octal, and switches to a
+/// big-endian binary form marked by the high bit for sizes an octal field
+/// cannot hold.
+fn parse_octal(field: &[u8]) -> Result<u64, ImageError> {
+    if let Some(first) = field.first()
+        && first & 0x80 != 0
+    {
+        if *first != 0x80 {
+            return Err(ImageError::Tar("negative tar header field".into()));
+        }
+        return field[1..].iter().try_fold(0u64, |value, byte| {
+            value
+                .checked_mul(256)
+                .and_then(|value| value.checked_add(u64::from(*byte)))
+                .ok_or_else(|| ImageError::Tar("tar header field is too large".into()))
+        });
+    }
+    let digits = field.split(|byte| *byte == 0).next().unwrap_or_default();
+    let text = std::str::from_utf8(digits)
+        .map_err(|_| ImageError::Tar("tar header field is not octal".into()))?
+        .trim();
+    if text.is_empty() {
+        return Ok(0);
+    }
+    u64::from_str_radix(text, 8)
+        .map_err(|_| ImageError::Tar("tar header field is not octal".into()))
+}
+
+/// The stored name of a ustar header: `prefix/name`. The prefix field only
+/// holds a name in the POSIX ustar format; the GNU format reuses those bytes
+/// for timestamps.
+fn ustar_name(block: &[u8; TAR_BLOCK]) -> Vec<u8> {
+    let field = |from: usize, to: usize| {
+        block[from..to]
+            .split(|byte| *byte == 0)
+            .next()
+            .unwrap_or_default()
+            .to_vec()
+    };
+    let name = field(0, 100);
+    if &block[257..263] != b"ustar\0" {
+        return name;
+    }
+    let prefix = field(345, 500);
+    if prefix.is_empty() {
+        return name;
+    }
+    [prefix, vec![b'/'], name].concat()
+}
+
+/// The `path` record of a pax header, which renames the member it precedes.
+/// Records are `<length> <key>=<value>\n`, the length covering the whole
+/// record.
+fn pax_path(records: &[u8]) -> Result<Option<Vec<u8>>, ImageError> {
+    let malformed = || ImageError::Tar("malformed pax header".into());
+    let mut rest = records;
+    while !rest.is_empty() {
+        let space = rest
+            .iter()
+            .position(|byte| *byte == b' ')
+            .ok_or_else(malformed)?;
+        let length: usize = std::str::from_utf8(&rest[..space])
+            .map_err(|_| malformed())?
+            .parse()
+            .map_err(|_| malformed())?;
+        if length <= space || length > rest.len() {
+            return Err(malformed());
+        }
+        let record = &rest[space + 1..length];
+        if let Some(equals) = record.iter().position(|byte| *byte == b'=')
+            && &record[..equals] == b"path"
+        {
+            let value = &record[equals + 1..];
+            return Ok(Some(value.strip_suffix(b"\n").unwrap_or(value).to_vec()));
+        }
+        rest = &rest[length..];
+    }
+    Ok(None)
 }
 
 /// Extract `archive` into `dest`, which must be a fresh empty directory.
 /// Checked members landing in an empty tree cannot escape it: no member names
 /// a path outside, and no symlink stands in any member's path.
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
-    check_members(&tar_listing(archive)?)?;
+    check_members(&read_members(archive)?)?;
     untar(archive, dest)
 }
 
@@ -489,9 +800,9 @@ fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
 /// extracted over the rootfs directly: `tar` follows a symlink standing in a
 /// destination path, and a lower layer can leave one pointing anywhere.
 fn apply_layer(layer: &Path, rootfs: &Path) -> Result<(), ImageError> {
-    let entries = tar_listing(layer)?;
-    check_members(&entries)?;
-    apply_whiteouts(&entries, rootfs)?;
+    let members = read_members(layer)?;
+    check_members(&members)?;
+    apply_whiteouts(&members, rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
     let staged = tempfile::tempdir_in(staging)?;
     untar(layer, staged.path())?;
@@ -500,9 +811,9 @@ fn apply_layer(layer: &Path, rootfs: &Path) -> Result<(), ImageError> {
 
 /// Delete what this layer's whiteout entries mark, before its own content
 /// lands.
-fn apply_whiteouts(entries: &[String], rootfs: &Path) -> Result<(), ImageError> {
-    for entry in entries {
-        let path = Path::new(entry);
+fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> {
+    for member in members {
+        let path = member.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -517,7 +828,7 @@ fn apply_whiteouts(entries: &[String], rootfs: &Path) -> Result<(), ImageError> 
             // Clearing a directory that is really a symlink would clear the
             // link's target, which can sit outside the staging tree.
             if meta.is_symlink() {
-                return Err(ImageError::UnsafePath(entry.clone()));
+                return Err(ImageError::UnsafePath(member.shown()));
             }
             if meta.is_dir() {
                 std::fs::remove_dir_all(&dir)?;
@@ -778,33 +1089,67 @@ mod tests {
     /// member stored under it, so the planted-attack tests write the headers
     /// themselves. Members are `(name, typeflag, linkname)`; typeflag `0` is a
     /// regular file, `2` a symlink, `5` a directory.
-    fn raw_tar(dir: &Path, name: &str, members: &[(&str, u8, &str)]) -> PathBuf {
-        let mut archive: Vec<u8> = Vec::new();
-        for (member, typeflag, linkname) in members {
-            let mut header = [b'\0'; 512];
-            let mut put = |offset: usize, bytes: &[u8]| {
-                header[offset..offset + bytes.len()].copy_from_slice(bytes);
-            };
-            put(0, member.as_bytes());
-            put(100, b"0000644\0"); // mode
-            put(108, b"0000000\0"); // uid
-            put(116, b"0000000\0"); // gid
-            put(124, b"00000000000\0"); // size
-            put(136, b"00000000000\0"); // mtime
-            put(148, b"        "); // checksum field, spaces while summing
-            put(156, &[*typeflag]);
-            put(157, linkname.as_bytes());
-            put(257, b"ustar\0");
-            put(263, b"00");
-            let sum: u32 = header.iter().map(|b| u32::from(*b)).sum();
-            header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
-            archive.extend_from_slice(&header);
-        }
-        // The two zero blocks that end an archive.
-        archive.extend_from_slice(&[0u8; 1024]);
+    /// One member: a ustar header block, its data, and the padding to the
+    /// next block boundary. Building members by hand plants sequences no
+    /// `tar` command will produce.
+    fn raw_member(name: &[u8], typeflag: u8, linkname: &str, data: &[u8]) -> Vec<u8> {
+        let mut header = [b'\0'; 512];
+        let mut put = |offset: usize, bytes: &[u8]| {
+            header[offset..offset + bytes.len()].copy_from_slice(bytes);
+        };
+        put(0, &name[..name.len().min(100)]);
+        put(100, b"0000644\0"); // mode
+        put(108, b"0000000\0"); // uid
+        put(116, b"0000000\0"); // gid
+        put(124, format!("{:011o}\0", data.len()).as_bytes()); // size
+        put(136, b"00000000000\0"); // mtime
+        put(148, b"        "); // checksum field, spaces while summing
+        put(156, &[typeflag]);
+        put(157, linkname.as_bytes());
+        put(257, b"ustar\0");
+        put(263, b"00");
+        let sum: u32 = header.iter().map(|b| u32::from(*b)).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        let mut block = header.to_vec();
+        block.extend_from_slice(data);
+        block.resize(block.len().next_multiple_of(TAR_BLOCK), 0);
+        block
+    }
+
+    /// `body` followed by the two zero blocks that end an archive.
+    fn write_archive(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
         let tarball = dir.join(name);
-        std::fs::write(&tarball, archive).unwrap();
+        std::fs::write(&tarball, [body, &[0u8; 1024]].concat()).unwrap();
         tarball
+    }
+
+    /// A pax record, `<length> <key>=<value>\n`, whose length counts itself.
+    fn pax_record(key: &str, value: &str) -> String {
+        let mut length = key.len() + value.len() + 3;
+        loop {
+            let record = format!("{length} {key}={value}\n");
+            if record.len() == length {
+                return record;
+            }
+            length = record.len();
+        }
+    }
+
+    /// Recompute a header's checksum after editing it in place.
+    fn reseal(block: &mut [u8]) {
+        block[148..156].copy_from_slice(b"        ");
+        let sum: u32 = block[..TAR_BLOCK].iter().map(|b| u32::from(*b)).sum();
+        block[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+    }
+
+    fn raw_tar(dir: &Path, name: &str, members: &[(&str, u8, &str)]) -> PathBuf {
+        let body: Vec<u8> = members
+            .iter()
+            .flat_map(|(member, typeflag, linkname)| {
+                raw_member(member.as_bytes(), *typeflag, linkname, b"")
+            })
+            .collect();
+        write_archive(dir, name, &body)
     }
 
     fn tar_with_raw_name(dir: &Path, name: &str, member: &str) -> PathBuf {
@@ -939,6 +1284,269 @@ mod tests {
     /// The same attack inside one layer: the archive carries the symlink and
     /// the member stored under it, so no lower layer is needed. The layer is
     /// refused before `tar` runs.
+    /// The archive stores `link` twice: first as a directory, then as a
+    /// symlink out of the tree. `tar` keeps the last one, so `link/pwn`
+    /// lands in the victim directory unless the check reads every entry that
+    /// names `link`, not just the winning one.
+    #[test]
+    fn apply_layer_refuses_a_name_stored_as_both_a_directory_and_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rootfs, victim) = planted(dir.path());
+        let layer = raw_tar(
+            dir.path(),
+            "dup.tar",
+            &[
+                ("link/", b'5', ""),
+                ("link", b'2', "../../victim"),
+                ("link/pwn", b'0', ""),
+            ],
+        );
+        assert!(matches!(
+            apply_layer(&layer, &rootfs),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(victim.join("sentinel").exists());
+        assert!(!victim.join("pwn").exists());
+    }
+
+    /// The same trick spelled with different cases, which a case-insensitive
+    /// filesystem folds into one directory entry.
+    #[test]
+    fn apply_layer_refuses_a_case_folded_duplicate_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rootfs, victim) = planted(dir.path());
+        let layer = raw_tar(
+            dir.path(),
+            "case.tar",
+            &[
+                ("Link/", b'5', ""),
+                ("link", b'2', "../../victim"),
+                ("LINK/pwn", b'0', ""),
+            ],
+        );
+        assert!(matches!(
+            apply_layer(&layer, &rootfs),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(victim.join("sentinel").exists());
+        assert!(!victim.join("pwn").exists());
+    }
+
+    /// A symlink stored with a trailing slash is still a symlink: the member
+    /// type comes from the header, never from the shape of the name.
+    #[test]
+    fn apply_layer_refuses_a_symlink_stored_with_a_trailing_slash() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rootfs, victim) = planted(dir.path());
+        let layer = raw_tar(
+            dir.path(),
+            "slash.tar",
+            &[("link/", b'2', "../../victim"), ("link/pwn", b'0', "")],
+        );
+        assert!(matches!(
+            apply_layer(&layer, &rootfs),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(victim.join("sentinel").exists());
+        assert!(!victim.join("pwn").exists());
+    }
+
+    /// Member names as the archive stores them. A text listing renders names
+    /// for display: control characters come back escaped, and bytes that are
+    /// not UTF-8 do not survive a lossy conversion, so the name checked there
+    /// is not always the name extraction writes.
+    #[test]
+    fn read_members_reads_names_a_listing_cannot_show() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = [
+            raw_member(b"two\nlines", b'0', "", b""),
+            raw_member(b"caf\xc3\xa9", b'0', "", b""),
+            raw_member(b"raw\xff", b'0', "", b""),
+        ]
+        .concat();
+        let names: Vec<Vec<u8>> = read_members(&write_archive(dir.path(), "odd.tar", &body))
+            .unwrap()
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                b"two\nlines".to_vec(),
+                b"caf\xc3\xa9".to_vec(),
+                b"raw\xff".to_vec()
+            ]
+        );
+    }
+
+    /// A name containing a newline is one member, not two lines of text, and
+    /// the symlink stored beside it still refuses `link/pwn`.
+    #[test]
+    fn apply_layer_refuses_a_symlink_child_beside_a_newline_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rootfs, victim) = planted(dir.path());
+        let layer = raw_tar(
+            dir.path(),
+            "newline.tar",
+            &[
+                ("pad\nlink/", b'0', ""),
+                ("link", b'2', "../../victim"),
+                ("link/pwn", b'0', ""),
+            ],
+        );
+        assert!(matches!(
+            apply_layer(&layer, &rootfs),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(victim.join("sentinel").exists());
+        assert!(!victim.join("pwn").exists());
+    }
+
+    /// Names longer than the 100-byte header field: GNU stores them in an
+    /// `L` member, pax in an `x` member's `path` record. Both rename the
+    /// member that follows, so both have to be read to check it.
+    #[test]
+    fn read_members_reads_long_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = "d/".repeat(60) + "leaf";
+        let pax = pax_record("path", &long);
+        // GNU stores the name with a terminating NUL.
+        let gnu = [long.as_bytes(), b"\0"].concat();
+        let body = [
+            raw_member(b"././@LongLink", b'L', "", &gnu),
+            raw_member(b"truncated", b'0', "", b""),
+            raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes()),
+            raw_member(b"truncated", b'0', "", b""),
+        ]
+        .concat();
+        let names: Vec<Vec<u8>> = read_members(&write_archive(dir.path(), "long.tar", &body))
+            .unwrap()
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(names, vec![long.as_bytes().to_vec(); 2]);
+
+        // The same name through whichever long-name form the host tar picks.
+        let host = tar_layer(dir.path(), "long-host", &[(long.as_str(), b"x")]);
+        let names: Vec<String> = read_members(&host)
+            .unwrap()
+            .iter()
+            .map(Member::shown)
+            .collect();
+        assert!(names.contains(&long), "{names:?}");
+    }
+
+    /// A long name is checked as the name it renames the member to, not as
+    /// the `@LongLink` placeholder in its own header.
+    #[test]
+    fn apply_layer_refuses_a_traversing_long_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rootfs, victim) = planted(dir.path());
+        let long = format!("{}../../victim/pwn\0", "a/".repeat(50));
+        let body = [
+            raw_member(b"././@LongLink", b'L', "", long.as_bytes()),
+            raw_member(b"truncated", b'0', "", b""),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "longpath.tar", &body);
+        assert!(matches!(
+            apply_layer(&layer, &rootfs),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(victim.join("sentinel").exists());
+    }
+
+    /// An archive this reader cannot follow exactly is refused, so it can
+    /// never disagree with `tar -x` about which members were checked.
+    #[test]
+    fn read_members_refuses_archives_it_cannot_follow() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = raw_member(b"file", b'0', "", b"");
+
+        let mut corrupt = member.clone();
+        corrupt[148..156].copy_from_slice(b"000000\0 ");
+        let path = write_archive(dir.path(), "corrupt.tar", &corrupt);
+        assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+
+        let mut trailing = member.clone();
+        trailing.extend_from_slice(&[0u8; 1024]);
+        trailing.extend_from_slice(&raw_member(b"after", b'0', "", b""));
+        let path = write_archive(dir.path(), "trailing.tar", &trailing);
+        assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+
+        let path = dir.path().join("unterminated.tar");
+        std::fs::write(&path, &member).unwrap();
+        assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+
+        let path = dir.path().join("truncated.tar");
+        std::fs::write(&path, &member[..300]).unwrap();
+        assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+
+        let mut oversized = member.clone();
+        oversized[124..136].copy_from_slice(&[0xff; 12]);
+        reseal(&mut oversized);
+        let path = write_archive(dir.path(), "oversized.tar", &oversized);
+        assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+
+        let record = pax_record("path", "elsewhere");
+        let mut global = raw_member(b"pax_global_header", b'g', "", record.as_bytes());
+        global.extend_from_slice(&member);
+        let path = write_archive(dir.path(), "global.tar", &global);
+        assert!(matches!(read_members(&path), Err(ImageError::Tar(_))));
+    }
+
+    /// A size an octal field cannot hold is stored in binary. Refusing that
+    /// form would refuse a layer holding a file of 8 GiB or more.
+    #[test]
+    fn read_members_reads_a_binary_size_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut member = raw_member(b"big", b'0', "", b"data");
+        let mut size = [0u8; 12];
+        size[0] = 0x80;
+        size[11] = 4;
+        member[124..136].copy_from_slice(&size);
+        reseal(&mut member);
+        let path = write_archive(dir.path(), "binary-size.tar", &member);
+        let names: Vec<String> = read_members(&path)
+            .unwrap()
+            .iter()
+            .map(Member::shown)
+            .collect();
+        assert_eq!(names, vec!["big".to_string()]);
+    }
+
+    /// OCI layers arrive compressed; the member check reads them the same way
+    /// `tar -x` will.
+    #[test]
+    fn read_members_reads_compressed_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = tar_layer(dir.path(), "layer", &[("etc/passwd", b"root")]);
+        let expected: Vec<String> = read_members(&plain)
+            .unwrap()
+            .iter()
+            .map(Member::shown)
+            .collect();
+        assert!(expected.contains(&"etc/passwd".to_string()));
+        for tool in ["gzip", "zstd", "xz", "bzip2"] {
+            let compressed = dir.path().join(format!("layer.{tool}"));
+            let out = Command::new(tool)
+                .arg("-c")
+                .arg(&plain)
+                .stdout(std::fs::File::create(&compressed).unwrap())
+                .status();
+            // A host without the tool cannot exercise that format.
+            if !out.is_ok_and(|status| status.success()) {
+                continue;
+            }
+            let names: Vec<String> = read_members(&compressed)
+                .unwrap()
+                .iter()
+                .map(Member::shown)
+                .collect();
+            assert_eq!(names, expected, "{tool}");
+        }
+    }
+
     #[test]
     fn apply_layer_refuses_a_symlink_and_a_member_under_it_in_one_layer() {
         let dir = tempfile::tempdir().unwrap();
