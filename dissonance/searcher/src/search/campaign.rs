@@ -133,6 +133,19 @@ fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
     matches!(policy, None | Some(LEGACY_CAMPAIGN_SCHEDULE_POLICY))
 }
 
+/// Whether a recorded policy predates the corrected memory-budget
+/// maintenance.
+///
+/// Runs in the historical namespaces enforced the budget at different stream
+/// positions and charged the CLOCK sweep one visit per drop attempt rather
+/// than per examined entry. Both decide which entries an archive holds, so a
+/// budgeted stream from those runs replays against a different archive.
+/// Without a budget the maintenance step does nothing and the streams replay
+/// unchanged.
+fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
+    policy.is_none_or(|policy| policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))
+}
+
 /// Consecutive pre-execution duplicate skips after which a worker executes the
 /// next drawn job anyway and lets admission deduplicate, so a saturated archive
 /// cannot livelock selection.
@@ -3149,6 +3162,15 @@ where
     if !progress_policy_is_supported(header.progress_policy.as_deref()) {
         return Err("campaign stream progress policy is not recognized".into());
     }
+    if header.memory_budget_mib.is_some()
+        && schedule_policy_predates_budget_maintenance(header.schedule_policy.as_deref())
+    {
+        return Err(
+            "campaign stream recorded a memory budget under superseded maintenance and cannot be \
+             replayed"
+                .into(),
+        );
+    }
     if header.rom_sha256 != game.image_sha256() {
         return Err("campaign replay ROM does not match the recorded stream".into());
     }
@@ -3589,8 +3611,8 @@ mod tests {
         live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
         progress_policy_is_supported, record_compaction_elapsed, replay_splice,
         retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_legacy,
-        schedule_policy_is_supported, schedule_policy_window, uses_bounded_progress_curve,
-        worker_queue_is_idle,
+        schedule_policy_is_supported, schedule_policy_predates_budget_maintenance,
+        schedule_policy_window, uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -4023,6 +4045,22 @@ mod tests {
         counters.job_frames = 20;
         assert_eq!(counters.frames_to_first_victory, None);
         assert_eq!(counters.executions_to_first_victory, None);
+    }
+
+    #[test]
+    fn the_historical_namespaces_predate_the_corrected_budget_maintenance() {
+        let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
+        assert!(!schedule_policy_predates_budget_maintenance(Some(&current)));
+        assert!(!schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_64_per_worker_v2"
+        )));
+        assert!(schedule_policy_predates_budget_maintenance(None));
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            super::LEGACY_CAMPAIGN_SCHEDULE_POLICY
+        )));
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_4_per_worker_v1"
+        )));
     }
 
     #[test]

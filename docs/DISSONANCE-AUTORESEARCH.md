@@ -43,6 +43,11 @@ never decide a keeper.
 Determinism is a CI test, the paired same-seed stream comparison already in
 the searcher's test suite. A candidate that fails the test suite is discarded.
 
+Streams recorded in the `_per_worker_v1` namespace, and the older streams with
+no schedule policy at all, predate the corrected memory-budget maintenance.
+Replay refuses them when they recorded a budget, because which entries the
+archive holds would differ. Without a budget they replay unchanged.
+
 ## Progress record
 
 Fewest executions to each milestone on seed 20260905 at 24 workers from genesis:

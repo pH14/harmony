@@ -2257,8 +2257,8 @@ mod tests {
             "deterministic_window_64_per_worker_v1",
             1,
         );
-        // Rewriting only the namespace sends the same stream down the legacy
-        // all-future pinning path, which does not reproduce this run.
+        // Rewriting only the namespace claims a run recorded before the
+        // budget maintenance was corrected, which this stream is not.
         assert!(
             replay_smb_campaign_checkpointed(&rom, legacy_tagged.as_bytes(), None, None).is_err(),
             "the legacy path must not silently accept a live window-64 stream"
@@ -2266,10 +2266,67 @@ mod tests {
     }
 
     #[test]
+    fn a_budgeted_stream_in_a_historical_namespace_is_refused_rather_than_replayed() {
+        // Budgeted runs recorded before the maintenance correction enforced
+        // the budget at other stream positions and counted CLOCK work
+        // differently, so which entries survive differs. Replay must say so
+        // instead of running and diverging.
+        let rom = synthetic_nrom();
+        let mut config = genesis_config(0x5eed_ca44, 2, 128);
+        config.retention = crate::search::archive::RetentionPolicy::AdmitAlive;
+        config.memory_budget_mib = Some(4);
+        config.archive_entry_limit = 1;
+        let mut stream = Vec::new();
+        let live = run_smb_campaign(&rom, &config, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("budgeted live campaign");
+        assert!(
+            live.liveness_anchor_reactivations > 0,
+            "the budget must bind for this stream to be maintenance-sensitive"
+        );
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        replay_smb_campaign(&rom, recorded.as_bytes(), None).expect("its own namespace replays");
+
+        let refused = "campaign stream recorded a memory budget under superseded maintenance \
+                       and cannot be replayed";
+        for historical in [
+            recorded.replacen("_per_worker_v2", "_per_worker_v1", 1),
+            recorded.replacen(
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"",
+                "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
+                1,
+            ),
+            recorded.replacen(
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\",",
+                "",
+                1,
+            ),
+        ] {
+            let error = replay_smb_campaign(&rom, historical.as_bytes(), None)
+                .expect_err("a budgeted historical stream is refused");
+            assert_eq!(error.to_string(), refused);
+        }
+
+        // The same rewrite stays replayable without a budget, because the
+        // maintenance step does nothing there.
+        let unbudgeted = genesis_config(0x5eed_ca45, 2, 32);
+        let mut stream = Vec::new();
+        run_smb_campaign(&rom, &unbudgeted, &SmbCampaignOrigin::Genesis, &mut stream)
+            .expect("unbudgeted live campaign");
+        let recorded = String::from_utf8(stream).expect("stream is utf-8");
+        replay_smb_campaign(
+            &rom,
+            recorded
+                .replacen("_per_worker_v2", "_per_worker_v1", 1)
+                .as_bytes(),
+            None,
+        )
+        .expect("an unbudgeted historical stream still replays");
+    }
+
+    #[test]
     fn legacy_stream_omits_new_evaluator_payloads_on_replay() {
         let rom = synthetic_nrom();
-        let mut config = genesis_config(0x5eed_ca22, 1, 4);
-        config.memory_budget_mib = Some(4);
+        let config = genesis_config(0x5eed_ca22, 1, 4);
         let mut stream = Vec::new();
         let (live, live_checkpoint) = run_smb_campaign_checkpointed(
             &rom,
@@ -2290,11 +2347,11 @@ mod tests {
                 .expect("deterministic legacy policy replays");
         let (historical_replay_again, historical_checkpoint_again) =
             replay_smb_campaign_checkpointed(&rom, historical.as_bytes(), None, None)
-                .expect("budgeted legacy policy replays deterministically");
+                .expect("legacy policy replays deterministically");
         assert_eq!(historical_replay, historical_replay_again);
         assert_eq!(historical_checkpoint, historical_checkpoint_again);
         // Replacing only the schedule tag changes the stream digest by
-        // design; the budgeted archive and checkpoint must remain identical.
+        // design; the archive and checkpoint must remain identical.
         assert_eq!(historical_replay.archive, live.archive);
         assert_eq!(historical_checkpoint, live_checkpoint);
         assert_eq!(
