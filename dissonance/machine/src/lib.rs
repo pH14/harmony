@@ -46,14 +46,13 @@ struct SharedStateInner {
 ///
 /// `SharedState` has the same Serde representation as `Vec<u8>`: it is
 /// serialized as a sequence of bytes, with no chunk or sharing metadata on the
-/// wire. An exported state records the full allocation size of chunks it newly
-/// owns relative to its optional export base; a deserialized state has no base
-/// and therefore charges every allocated chunk. The charge is explicit and
-/// deterministic, and never depends on the process-global reference count.
+/// wire. Its memory charge is the full allocation size of every referenced
+/// chunk, including chunks shared with an export base. This deliberately
+/// conservative charge remains valid when that base leaves an archive; it is
+/// deterministic and never depends on the process-global reference count.
 #[derive(Clone)]
 pub struct SharedState {
     inner: Arc<SharedStateInner>,
-    newly_owned_bytes: usize,
 }
 
 impl fmt::Debug for SharedState {
@@ -62,7 +61,6 @@ impl fmt::Debug for SharedState {
             .debug_struct("SharedState")
             .field("len", &self.inner.len)
             .field("chunks", &self.inner.chunks.len())
-            .field("newly_owned_bytes", &self.newly_owned_bytes)
             .finish()
     }
 }
@@ -78,7 +76,6 @@ impl Eq for SharedState {}
 impl SharedState {
     pub(crate) fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
         let mut chunks = Vec::with_capacity(bytes.len().div_ceil(SHARED_STATE_CHUNK_SIZE));
-        let mut newly_owned_chunks = 0_usize;
         for (index, source) in bytes.chunks(SHARED_STATE_CHUNK_SIZE).enumerate() {
             let mut chunk = [0_u8; SHARED_STATE_CHUNK_SIZE];
             chunk[..source.len()].copy_from_slice(source);
@@ -88,10 +85,7 @@ impl SharedState {
                 .cloned();
             let chunk = match shared {
                 Some(existing) => existing,
-                None => {
-                    newly_owned_chunks = newly_owned_chunks.saturating_add(1);
-                    Arc::new(chunk)
-                }
+                None => Arc::new(chunk),
             };
             chunks.push(chunk);
         }
@@ -100,7 +94,6 @@ impl SharedState {
                 chunks,
                 len: bytes.len(),
             }),
-            newly_owned_bytes: newly_owned_chunks.saturating_mul(SHARED_STATE_CHUNK_SIZE),
         }
     }
 
@@ -114,7 +107,10 @@ impl SharedState {
     }
 
     pub(crate) fn memory_charge(&self) -> usize {
-        self.newly_owned_bytes
+        self.inner
+            .chunks
+            .len()
+            .saturating_mul(SHARED_STATE_CHUNK_SIZE)
     }
 }
 
@@ -419,9 +415,10 @@ pub trait Machine {
     /// Export a held snapshot into the archive representation.
     ///
     /// When `base` is supplied, an implementation may share identical
-    /// content with it. The resulting portable value owns the newly allocated
-    /// portion and reports that portion through
-    /// [`Machine::portable_memory_charge`].
+    /// content with it. Sharing may reduce physical memory, but the resulting
+    /// portable value must report a self-contained conservative resident
+    /// charge through [`Machine::portable_memory_charge`]. The charge must
+    /// remain valid if the base is evicted independently.
     ///
     /// # Errors
     ///
@@ -445,9 +442,10 @@ pub trait Machine {
 
     /// Return the deterministic bytes charged for this portable state.
     ///
-    /// For chunk-shared states this is the full allocation size of chunks
-    /// newly owned by the value at export time. A value reconstructed by
-    /// deserialization has no base and charges all of its allocated chunks.
+    /// For chunk-shared states this conservatively includes the full allocation
+    /// size of every referenced chunk. Charging shared chunks more than once
+    /// is intentional: archive entries can be evicted independently, so a
+    /// child's charge cannot rely on its base remaining resident.
     #[must_use]
     fn portable_memory_charge(portable: &Self::Portable) -> usize;
 
@@ -466,17 +464,17 @@ mod tests {
     use super::SharedState;
 
     #[test]
-    fn shared_state_charges_new_full_chunks_not_reference_counts() {
+    fn shared_state_charge_survives_independent_base_eviction() {
         let base = SharedState::from_bytes(vec![7_u8; 513], None);
         assert_eq!(base.memory_charge(), 2 * 512);
 
         let same = SharedState::from_bytes(vec![7_u8; 513], Some(&base));
-        assert_eq!(same.memory_charge(), 0);
+        assert_eq!(same.memory_charge(), 2 * 512);
 
         let mut changed_bytes = vec![7_u8; 513];
         changed_bytes[512] = 8;
         let changed = SharedState::from_bytes(changed_bytes.clone(), Some(&base));
-        assert_eq!(changed.memory_charge(), 512);
+        assert_eq!(changed.memory_charge(), 2 * 512);
         assert_eq!(changed.materialize(), changed_bytes);
     }
 }

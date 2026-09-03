@@ -337,13 +337,14 @@ impl ConsonanceProfile {
 /// `pages` contains only target pages that differ from the setup base, sorted
 /// by GFN.  `sidecar` is the opaque control-server VM/SDK state.  Page and
 /// sidecar chunks are shared with an optional export base in-process; sharing
-/// metadata is deliberately absent from the Serde representation.
+/// metadata is deliberately absent from the Serde representation. Its memory
+/// charge is the full self-contained footprint rather than only newly owned
+/// chunks, because archive eviction can remove the base before this value.
 pub struct ConsonancePortable {
     base: SnapId,
     image_identity: [u8; 32],
     pages: Vec<(u64, Arc<[u8; PAGE_SIZE]>)>,
     sidecar: crate::SharedState,
-    newly_owned_bytes: usize,
 }
 
 impl Clone for ConsonancePortable {
@@ -353,7 +354,6 @@ impl Clone for ConsonancePortable {
             image_identity: self.image_identity,
             pages: self.pages.clone(),
             sidecar: self.sidecar.clone(),
-            newly_owned_bytes: self.newly_owned_bytes,
         }
     }
 }
@@ -366,7 +366,6 @@ impl fmt::Debug for ConsonancePortable {
             .field("image_identity", &self.image_identity)
             .field("pages", &self.pages.len())
             .field("sidecar", &self.sidecar)
-            .field("newly_owned_bytes", &self.newly_owned_bytes)
             .finish()
     }
 }
@@ -394,7 +393,6 @@ impl ConsonancePortable {
             validate_portable_identity(export_base, base, image_identity)?;
         }
         validate_pages(&pages)?;
-        let mut owned_pages = 0_usize;
         let pages = pages
             .into_iter()
             .map(|(gfn, page)| {
@@ -410,10 +408,7 @@ impl ConsonancePortable {
                     .map(|(_, existing)| Arc::clone(existing));
                 match shared {
                     Some(existing) => (gfn, existing),
-                    None => {
-                        owned_pages = owned_pages.saturating_add(PAGE_SIZE);
-                        (gfn, page)
-                    }
+                    None => (gfn, page),
                 }
             })
             .collect::<Vec<_>>();
@@ -421,13 +416,11 @@ impl ConsonancePortable {
             sidecar.to_vec(),
             export_base.map(|portable| &portable.sidecar),
         );
-        let newly_owned_bytes = owned_pages.saturating_add(sidecar.memory_charge());
         Ok(Self {
             base,
             image_identity,
             pages,
             sidecar,
-            newly_owned_bytes,
         })
     }
 
@@ -461,10 +454,16 @@ impl ConsonancePortable {
         self.sidecar.materialize()
     }
 
-    /// Bytes newly owned by this value at export or deserialization time.
+    /// Conservative resident bytes referenced by this portable value.
+    ///
+    /// Shared chunks are charged in full so the bound remains valid if an
+    /// archive independently evicts the export base.
     #[must_use]
     pub fn memory_charge(&self) -> usize {
-        self.newly_owned_bytes
+        self.pages
+            .len()
+            .saturating_mul(PAGE_SIZE)
+            .saturating_add(self.sidecar.memory_charge())
     }
 }
 
@@ -528,14 +527,11 @@ impl<'de> Deserialize<'de> for ConsonancePortable {
             pages.push((page.gfn, Arc::new(bytes)));
         }
         validate_pages(&pages).map_err(|error| D::Error::custom(error.to_string()))?;
-        let page_charge = pages.len().saturating_mul(PAGE_SIZE);
-        let sidecar_charge = wire.sidecar.memory_charge();
         Ok(Self {
             base: SnapId(wire.base),
             image_identity: wire.image_identity,
             pages,
             sidecar: wire.sidecar,
-            newly_owned_bytes: page_charge.saturating_add(sidecar_charge),
         })
     }
 }
@@ -1756,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_pages_share_and_charge_without_dumping_bytes() {
+    fn portable_pages_share_but_charge_survives_base_eviction() {
         let mut first = [0_u8; PAGE_SIZE];
         first[0] = 1;
         let mut second = [0_u8; PAGE_SIZE];
@@ -1777,7 +1773,7 @@ mod tests {
             Some(&base),
         )
         .expect("child");
-        assert_eq!(child.memory_charge(), 0);
+        assert_eq!(child.memory_charge(), 2 * PAGE_SIZE + 2 * 512);
         assert_eq!(child, base);
         let debug = format!("{child:?}");
         assert!(!debug.contains("00000001"));

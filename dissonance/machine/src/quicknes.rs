@@ -1756,7 +1756,8 @@ mod tests {
             .expect("child portable");
         assert_eq!(
             <QuickNesMachine as Machine>::portable_memory_charge(&child_portable),
-            512
+            <QuickNesMachine as Machine>::portable_memory_charge(&base_portable),
+            "a child remains fully charged if its shared base is evicted"
         );
         let imported = machine.import(&child_portable).expect("portable import");
         machine.replay(imported).expect("portable restore");
