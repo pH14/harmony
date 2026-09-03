@@ -1525,13 +1525,17 @@ where
     /// Bring the logical charge back under the budget with a bounded amount
     /// of work: release unreferenced cache snapshots in CLOCK order, then
     /// drop unreferenced active entries in CLOCK order. Work left over is
-    /// finished by later admissions.
+    /// finished by later admissions, so being over the budget on return is
+    /// the normal case. Only a budget too small for the anchor itself is an
+    /// error.
     fn enforce_snapshot_memory_budget(&mut self) -> Result<(), &'static str> {
         let Some(limit) = self.memory_limit else {
             return Ok(());
         };
+        if self.liveness_anchor_memory_bytes() > limit {
+            return Err("memory budget cannot retain the executable liveness anchor");
+        }
         let mut visits = 0_usize;
-        let mut reclaimed = false;
         while self.resident_memory_bytes() > limit && visits < MAINTENANCE_QUANTUM {
             let Some(id) = self.resident_snapshot_order.pop_front() else {
                 break;
@@ -1551,7 +1555,6 @@ where
             }
             self.release_snapshot(id);
             self.snapshot_evictions = self.snapshot_evictions.saturating_add(1);
-            reclaimed = true;
         }
         while self.resident_memory_bytes() > limit
             && visits < MAINTENANCE_QUANTUM
@@ -1563,17 +1566,30 @@ where
             if !dropped {
                 break;
             }
-            reclaimed = true;
-        }
-        if self.resident_memory_bytes() > limit
-            && !reclaimed
-            && self.resident_snapshot_order.is_empty()
-            && self.active_count <= 1
-            && self.liveness_anchor.is_some()
-        {
-            return Err("memory budget cannot retain the executable liveness anchor");
         }
         Ok(())
+    }
+
+    /// Charge the anchor holds that no maintenance can release: its snapshot
+    /// and its own entry metadata.
+    ///
+    /// Everything charged above this is dead history, and compaction only
+    /// returns it once enough entries are droppable to fill a batch. Testing
+    /// the total instead would report an unaffordable anchor whenever that
+    /// batch is still filling.
+    fn liveness_anchor_memory_bytes(&self) -> usize {
+        let Some(index) = self.liveness_anchor.and_then(|id| self.index_of_id(id)) else {
+            return 0;
+        };
+        let entry = &self.entries[index];
+        entry
+            .snapshot
+            .as_deref()
+            .map_or(0, |snapshot| self.snapshot_charge(snapshot))
+            .saturating_add(Self::history_entry_memory_charge(
+                entry.input_suffix.len(),
+                0,
+            ))
     }
 
     /// Deactivate the next unreferenced active entry under the drop hand,
@@ -1613,14 +1629,21 @@ where
         (false, examined)
     }
 
-    /// Spend one maintenance quantum on the logical memory budget.
+    /// Spend one maintenance step on the logical memory budget.
     ///
     /// Retention already enforces the budget from every path that adds an
     /// entry. Selection accounting adds pooled barren counters to the same
     /// charge without inserting anything, so the coordinator calls this at
     /// the stream position where live and replay both finish accounting one
     /// record.
-    pub(crate) fn enforce_memory_budget(&mut self) -> Result<(), &'static str> {
+    ///
+    /// Compaction runs first because it is the only thing that returns
+    /// pooled barren counters and dead entry metadata to the charge, while
+    /// the bounded sweep only releases snapshots and deactivates entries.
+    /// Sweeping first would report the liveness anchor unaffordable while a
+    /// compaction still had room to reclaim.
+    pub(crate) fn maintain_memory_budget(&mut self) -> Result<(), &'static str> {
+        self.compact_history_if_needed()?;
         self.enforce_snapshot_memory_budget()
     }
 
@@ -4004,22 +4027,125 @@ mod tests {
             "selection accounting should have pushed the charge over the budget"
         );
 
-        // The maintenance the coordinator now spends at this stream position
+        // The maintenance step the coordinator spends at this stream position
         // is bounded per call, so convergence takes a bounded number of them.
         let mut quanta = 0_usize;
         while archive.resident_memory_bytes() > limit && quanta < 64 {
             archive
-                .enforce_memory_budget()
+                .maintain_memory_budget()
                 .expect("budget remains satisfiable");
-            archive
-                .compact_history_if_needed()
-                .expect("compaction succeeds");
             quanta = quanta.saturating_add(1);
         }
         assert!(
             archive.resident_memory_bytes() <= limit,
             "maintenance left {} bytes charged against a {limit} byte budget after {quanta} quanta",
             archive.resident_memory_bytes()
+        );
+    }
+
+    #[test]
+    fn a_run_of_skips_maintains_the_budget_without_a_false_anchor_error() {
+        // One pre-execution duplicate skip does exactly two things to the
+        // archive: it accounts a selection and it spends one maintenance
+        // step. This loop runs that pair and nothing else, because the order
+        // is what a false "cannot retain the anchor" error depends on.
+        //
+        // The archive holds fewer entries than HISTORY_COMPACTION_MIN_DROPS,
+        // so compaction declines for the whole loop. That is the shape a
+        // production archive has below the far larger production threshold,
+        // and it is the shape in which deferred reclamation must not be
+        // mistaken for an unaffordable anchor.
+        let entries = u8::try_from(HISTORY_COMPACTION_MIN_DROPS / 2).expect("half fits u8");
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive.selector_policy = SelectorPolicy::Energy(RetireThresholds {
+            entry: 1,
+            groups: vec![3, 4],
+        });
+        for index in 0_u8..entries {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        // Half the standing charge, so the sweep must deactivate down to the
+        // anchor and still leave the charge over the budget.
+        let limit = archive.resident_memory_bytes() / 2;
+        archive.memory_limit = Some(limit);
+        archive.establish_liveness_anchor(64);
+        let anchor = archive
+            .liveness_anchor
+            .expect("a budgeted run has an anchor");
+
+        let draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for step in 0..256 {
+            let parent = archive
+                .index_of_id(anchor)
+                .expect("the anchor stays resolvable across compaction");
+            archive.record_selection(parent, &draw);
+            archive
+                .maintain_memory_budget()
+                .unwrap_or_else(|error| panic!("skip {step} reported {error}"));
+        }
+        assert_eq!(
+            archive.history_compactions(),
+            0,
+            "the archive is below the compaction batch, so none should have run"
+        );
+        assert_eq!(archive.active_count, 1, "the sweep keeps only the anchor");
+        assert_eq!(
+            archive.liveness_anchor,
+            Some(anchor),
+            "the anchor stays resident across the whole run of skips"
+        );
+    }
+
+    #[test]
+    fn a_budget_below_the_anchor_itself_is_an_error() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        for index in 0_u8..4 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert entry")
+                .expect("retain entry");
+        }
+        archive.establish_liveness_anchor(64);
+        let anchor_bytes = archive.liveness_anchor_memory_bytes();
+        assert!(anchor_bytes > 0, "the anchor holds an irreducible charge");
+
+        archive.memory_limit = Some(anchor_bytes);
+        archive
+            .maintain_memory_budget()
+            .expect("a budget that fits the anchor is satisfiable");
+
+        archive.memory_limit = Some(anchor_bytes - 1);
+        assert_eq!(
+            archive.maintain_memory_budget(),
+            Err("memory budget cannot retain the executable liveness anchor")
         );
     }
 
@@ -4051,7 +4177,7 @@ mod tests {
         archive.drop_hand = 0;
         archive.memory_limit = Some(0);
         archive
-            .enforce_memory_budget()
+            .maintain_memory_budget()
             .expect("budget remains satisfiable");
         assert_eq!(
             archive.entry_drops(),

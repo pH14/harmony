@@ -2535,7 +2535,7 @@ where
                             draw_table_after,
                         }))?;
                         core.archive.record_selection(parent_index, &selector);
-                        core.archive.enforce_memory_budget()?;
+                        core.archive.maintain_memory_budget()?;
                         counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                         counters.skips_per_worker[worker as usize] =
                             counters.skips_per_worker[worker as usize].saturating_add(1);
@@ -2729,7 +2729,6 @@ where
                         new_slot_descendant,
                         new_cell_descendant,
                     );
-                    core.archive.enforce_memory_budget()?;
                     if let DrawMixture::Energy { .. } | DrawMixture::EnergySplice { .. } =
                         config.mixture
                     {
@@ -2770,7 +2769,7 @@ where
                     }
                     let compaction_started = profile_now(coordinator_profile.enabled);
                     let compactions_before = core.archive.history_compactions();
-                    core.archive.compact_history_if_needed()?;
+                    core.archive.maintain_memory_budget()?;
                     record_compaction_elapsed(
                         &mut coordinator_profile,
                         compactions_before,
@@ -3353,7 +3352,7 @@ where
                 }
                 verify_selector_annotation(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
-                core.archive.enforce_memory_budget()?;
+                core.archive.maintain_memory_budget()?;
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
@@ -3487,7 +3486,6 @@ where
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id)),
                 );
-                core.archive.enforce_memory_budget()?;
                 core.archive.unpin_metadata(job.parent_id);
                 if let Some(CampaignSpliceRecord::Tail {
                     donor_id,
@@ -3498,7 +3496,7 @@ where
                     core.archive.unpin_metadata(donor_id);
                     core.archive.unpin_metadata(leaf_id);
                 }
-                core.archive.compact_history_if_needed()?;
+                core.archive.maintain_memory_budget()?;
                 if !legacy_schedule {
                     for metadata_id in &replay_job_metadata[replay_job_slot] {
                         if let Some(uses) = replay_metadata_uses.get_mut(metadata_id) {

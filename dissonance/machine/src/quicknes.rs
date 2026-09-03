@@ -1137,6 +1137,14 @@ fn reset_capture_state() {
     });
 }
 
+/// Whether `added` more items fit a capture buffer holding `len` of
+/// `capacity`. A total that overflows never fits, including at the widest
+/// capacity, where a saturating sum would compare equal and report a fit.
+fn capture_buffer_fits(len: usize, added: usize, capacity: usize) -> bool {
+    len.checked_add(added)
+        .is_some_and(|total| total <= capacity)
+}
+
 /// Record the first callback failure of a run; `run_frame` reports it.
 fn note_callback_error(error: String) {
     CALLBACK_ERROR.with(|slot| {
@@ -1154,7 +1162,7 @@ extern "C" fn video_callback(data: *const c_void, width: u32, height: u32, pitch
     match copy_video_frame(data, width, height, pitch, PIXEL_FORMAT.with(Cell::get)) {
         Ok(frame) => CAPTURED_VIDEO.with(|frames| {
             let mut frames = frames.borrow_mut();
-            if frames.len() >= MAX_BUFFERED_VIDEO_FRAMES {
+            if !capture_buffer_fits(frames.len(), 1, MAX_BUFFERED_VIDEO_FRAMES) {
                 note_callback_error(format!(
                     "captured video exceeded {MAX_BUFFERED_VIDEO_FRAMES} undrained frames"
                 ));
@@ -1299,7 +1307,7 @@ fn convert_pixels(
 fn buffer_audio_samples(batch: &[i16]) {
     AUDIO_SAMPLES.with(|samples| {
         let mut samples = samples.borrow_mut();
-        if samples.len().saturating_add(batch.len()) > MAX_BUFFERED_AUDIO_SAMPLES {
+        if !capture_buffer_fits(samples.len(), batch.len(), MAX_BUFFERED_AUDIO_SAMPLES) {
             note_callback_error(format!(
                 "captured audio exceeded {MAX_BUFFERED_AUDIO_SAMPLES} undrained samples"
             ));
@@ -1562,15 +1570,16 @@ mod loopback {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUDIO_SAMPLES, CAPTURE_AUDIO, CAPTURE_VIDEO, CAPTURED_VIDEO, MAX_AUDIO_FRAMES_PER_BATCH,
-        MAX_BUFFERED_AUDIO_SAMPLES, MAX_BUFFERED_VIDEO_FRAMES, MAX_VIDEO_HEIGHT, MAX_VIDEO_PITCH,
-        MAX_VIDEO_WIDTH, PIXEL_FORMAT_RGB565, PIXEL_FORMAT_XRGB1555, PIXEL_FORMAT_XRGB8888,
-        QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QUICKNES_LIBRARY_VERSION,
-        QUICKNES_OPTION_TABLE, QUICKNES_OPTIONS, QUICKNES_REVISION, QuickNesMachine,
+        AUDIO_SAMPLES, CALLBACK_ERROR, CAPTURE_AUDIO, CAPTURE_VIDEO, CAPTURED_VIDEO,
+        MAX_AUDIO_FRAMES_PER_BATCH, MAX_BUFFERED_AUDIO_SAMPLES, MAX_BUFFERED_VIDEO_FRAMES,
+        MAX_VIDEO_HEIGHT, MAX_VIDEO_PITCH, MAX_VIDEO_WIDTH, PIXEL_FORMAT_RGB565,
+        PIXEL_FORMAT_XRGB1555, PIXEL_FORMAT_XRGB8888, QUICKNES_AUDIO_CHANNELS,
+        QUICKNES_AUDIO_SAMPLE_RATE, QUICKNES_LIBRARY_VERSION, QUICKNES_OPTION_TABLE,
+        QUICKNES_OPTIONS, QUICKNES_REVISION, QuickNesMachine,
         RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, RETRO_ENVIRONMENT_SET_PIXEL_FORMAT,
-        STATE_HEADER_LEN, VideoFrame, audio_batch_callback, audio_callback, convert_pixels,
-        copy_audio_batch, copy_video_frame, environment_callback, loopback, nes_to_libretro,
-        option_value, reset_capture_state, validate_sha256, video_callback,
+        STATE_HEADER_LEN, VideoFrame, audio_batch_callback, audio_callback, capture_buffer_fits,
+        convert_pixels, copy_audio_batch, copy_video_frame, environment_callback, loopback,
+        nes_to_libretro, option_value, reset_capture_state, validate_sha256, video_callback,
     };
     use crate::{Machine, Moment, StopConditions, StopReason, nes};
 
@@ -1751,28 +1760,54 @@ mod tests {
     }
 
     #[test]
-    fn undrained_capture_buffers_report_overflow_instead_of_growing() {
+    fn a_full_capture_buffer_refuses_more_instead_of_growing() {
+        assert!(capture_buffer_fits(0, 1, 1));
+        assert!(!capture_buffer_fits(1, 1, 1));
+        assert!(!capture_buffer_fits(0, 2, 1));
+        assert!(!capture_buffer_fits(
+            usize::MAX,
+            1,
+            MAX_BUFFERED_VIDEO_FRAMES
+        ));
+        // An overflowing total is refused even against the widest capacity.
+        assert!(!capture_buffer_fits(usize::MAX, 1, usize::MAX));
+        assert!(!capture_buffer_fits(usize::MAX, usize::MAX, usize::MAX));
+        assert!(capture_buffer_fits(usize::MAX, 0, usize::MAX));
+        assert!(!capture_buffer_fits(
+            MAX_BUFFERED_VIDEO_FRAMES,
+            1,
+            MAX_BUFFERED_VIDEO_FRAMES
+        ));
+        assert!(capture_buffer_fits(
+            MAX_BUFFERED_AUDIO_SAMPLES - 2,
+            2,
+            MAX_BUFFERED_AUDIO_SAMPLES
+        ));
+        assert!(!capture_buffer_fits(
+            MAX_BUFFERED_AUDIO_SAMPLES - 1,
+            2,
+            MAX_BUFFERED_AUDIO_SAMPLES
+        ));
+
+        // A full buffer refuses the callback's frame and records the error
+        // the next emulated frame reports.
         reset_capture_state();
         CAPTURE_VIDEO.with(|capture| capture.set(true));
         CAPTURED_VIDEO.with(|frames| {
             let mut frames = frames.borrow_mut();
-            for _ in 0..MAX_BUFFERED_VIDEO_FRAMES {
-                frames.push_back(VideoFrame {
+            frames.resize(
+                MAX_BUFFERED_VIDEO_FRAMES,
+                VideoFrame {
                     width: 1,
                     height: 1,
-                    rgb24: vec![0; 3],
-                });
-            }
+                    rgb24: Vec::new(),
+                },
+            );
         });
         let pixel = [0_u8, 0, 0, 0];
         video_callback(pixel.as_ptr().cast(), 1, 1, 4);
         CAPTURED_VIDEO.with(|frames| assert_eq!(frames.borrow().len(), MAX_BUFFERED_VIDEO_FRAMES));
-
-        CAPTURE_AUDIO.with(|capture| capture.set(true));
-        AUDIO_SAMPLES.with(|samples| samples.borrow_mut().resize(MAX_BUFFERED_AUDIO_SAMPLES, 0));
-        audio_callback(1, -1);
-        AUDIO_SAMPLES
-            .with(|samples| assert_eq!(samples.borrow().len(), MAX_BUFFERED_AUDIO_SAMPLES));
+        CALLBACK_ERROR.with(|error| assert!(error.borrow().is_some()));
         reset_capture_state();
     }
 
