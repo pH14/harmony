@@ -272,14 +272,17 @@ impl SnapshotEngine {
                 });
             }
             if let Some(prev) = previous {
-                if gfn == prev {
-                    return Err(SnapshotError::SparsePageDuplicate { gfn });
-                }
-                if gfn < prev {
-                    return Err(SnapshotError::SparsePagesNotSorted {
-                        previous: prev,
-                        current: gfn,
-                    });
+                match gfn.cmp(&prev) {
+                    std::cmp::Ordering::Equal => {
+                        return Err(SnapshotError::SparsePageDuplicate { gfn });
+                    }
+                    std::cmp::Ordering::Less => {
+                        return Err(SnapshotError::SparsePagesNotSorted {
+                            previous: prev,
+                            current: gfn,
+                        });
+                    }
+                    std::cmp::Ordering::Greater => {}
                 }
             }
             previous = Some(gfn);

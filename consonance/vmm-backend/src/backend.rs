@@ -316,3 +316,115 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).capabilities()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Backend;
+    use crate::arch::x86::{Injection, VcpuState, X86, X86Caps, X86Completion, X86Policy};
+    use crate::error::{BackendError, Result};
+    use crate::exit::{Capabilities, Exit, ExitCounts};
+    use crate::types::Gpa;
+
+    /// A deliberately minimal implementor that relies on the trait's default
+    /// retirement behavior. Keeping this separate from the mocks makes the
+    /// default fail-closed contract, and the boxed forward to that default,
+    /// directly observable.
+    #[derive(Default)]
+    struct DefaultRetireBackend;
+
+    impl Backend for DefaultRetireBackend {
+        type A = X86;
+
+        fn set_policy(&mut self, _policy: &X86Policy) -> Result<()> {
+            Ok(())
+        }
+
+        unsafe fn map_memory(&mut self, _gpa: Gpa, _host: &mut [u8]) -> Result<()> {
+            Err(BackendError::Unsupported {
+                what: "default-retire-test map_memory",
+            })
+        }
+
+        fn run(&mut self) -> Result<Exit<X86>> {
+            Err(BackendError::Unsupported {
+                what: "default-retire-test run",
+            })
+        }
+
+        fn inject(&mut self, _event: Injection) -> Result<()> {
+            Ok(())
+        }
+
+        fn set_pending_irq(&mut self, _id: Option<u8>) -> Result<()> {
+            Ok(())
+        }
+
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            None
+        }
+
+        fn complete_read(&mut self, _value: u64) -> Result<()> {
+            Err(BackendError::BadCompletion)
+        }
+
+        fn complete_fault(&mut self) -> Result<()> {
+            Err(BackendError::BadCompletion)
+        }
+
+        fn complete_ok(&mut self) -> Result<()> {
+            Err(BackendError::BadCompletion)
+        }
+
+        fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
+            Err(BackendError::BadCompletion)
+        }
+
+        fn complete_arch(&mut self, _completion: X86Completion) -> Result<()> {
+            Err(BackendError::BadCompletion)
+        }
+
+        fn save(&self) -> Result<VcpuState> {
+            Ok(VcpuState::default())
+        }
+
+        fn restore(&mut self, _state: &VcpuState) -> Result<()> {
+            Ok(())
+        }
+
+        fn exit_counts(&self) -> ExitCounts {
+            ExitCounts::default()
+        }
+
+        fn reset_exit_counts(&mut self) {}
+
+        fn capabilities(&self) -> Capabilities<X86Caps> {
+            Capabilities {
+                name: "default-retire-test",
+                deterministic_rng: false,
+                arch: X86Caps {
+                    deterministic_tsc: false,
+                    enforces_tsc_deadline_msr: false,
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn default_retirement_is_fail_closed_and_box_forwards_it() {
+        let mut plain = DefaultRetireBackend;
+        assert!(matches!(
+            plain.retire_pending_completion(),
+            Err(BackendError::Unsupported {
+                what: "retire_pending_completion"
+            })
+        ));
+
+        let mut boxed: Box<dyn Backend<A = X86>> = Box::new(DefaultRetireBackend);
+        assert!(matches!(
+            boxed.retire_pending_completion(),
+            Err(BackendError::Unsupported {
+                what: "retire_pending_completion"
+            })
+        ));
+    }
+}

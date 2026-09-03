@@ -126,9 +126,7 @@ pub trait Vendor: Arch + Sized {
     /// and is not part of VM state, hashes, or snapshots. The vendor owns the
     /// exact port/GPA and access direction (x86: dword `OUT` to `0x0CA1`, ARM:
     /// dword store to the reserved doorbell frame).
-    fn is_doorbell_exit(_exit: &Exit<Self>) -> bool {
-        false
-    }
+    fn is_doorbell_exit(exit: &Exit<Self>) -> bool;
 
     /// Vendor-specific work after the engine has published the exit's pvclock
     /// frame and before the next entry. ARM uses this to compare the published
@@ -178,9 +176,7 @@ pub trait Vendor: Arch + Sized {
 
     /// Restored timer deadline and interrupt identity for the host-only
     /// placement trace. This does not alter guest state or the timer fabric.
-    fn clockevent_trace_schedule<B: Backend<A = Self>>(_vmm: &Vmm<B>) -> Option<(u64, u32)> {
-        None
-    }
+    fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)>;
 
     /// [`next_timer_deadline_vns`](Vendor::next_timer_deadline_vns), filtered to
     /// timers whose fire would actually deliver — an armed-but-undeliverable

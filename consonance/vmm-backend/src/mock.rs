@@ -508,3 +508,26 @@ impl Backend for MockBackend {
         self.caps
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Completion, MockBackend, Pending};
+    use crate::backend::Backend;
+
+    #[test]
+    fn retirement_consumes_a_staged_completion_marker() {
+        let mut mock = MockBackend::new();
+        // This is the state left by `finish`: the architectural pending exit
+        // is already resolved, while the completion remains staged in the
+        // backend's userspace buffer until the next entry or explicit retire.
+        mock.pending = Pending::None;
+        mock.completion_staged = true;
+        mock.completions.push(Completion::Read(0x55));
+
+        mock.retire_pending_completion().unwrap();
+
+        assert!(!mock.completion_staged);
+        assert_eq!(mock.pending, Pending::None);
+        assert_eq!(mock.completions, vec![Completion::Read(0x55)]);
+    }
+}

@@ -247,6 +247,10 @@ impl RamBacking {
     }
 }
 
+fn valid_guest_ram_len(len: usize, page_size: usize) -> bool {
+    len != 0 && len.is_multiple_of(page_size)
+}
+
 /// Owned, pinned host backing for guest RAM. The backend registers a pointer
 /// **into this buffer** via the `unsafe` [`vmm_backend::Backend::map_memory`], and
 /// [`Vmm`] owns it so the backing **outlives every `run`** and [`Vmm::state_blob`]
@@ -1175,7 +1179,7 @@ where
             return Ok(());
         }
         let ram_len = self.ram.len();
-        if ram_len == 0 || !ram_len.is_multiple_of(PAGE_SIZE) {
+        if !valid_guest_ram_len(ram_len, PAGE_SIZE) {
             return Err(VmmError::ContractViolation(format!(
                 "write_guest_pages: guest RAM length {ram_len} is not a non-zero multiple of {PAGE_SIZE}"
             )));
@@ -1226,7 +1230,7 @@ where
                     "write_guest_pages: GFN {gfn} GPA overflows the guest address space"
                 ))
             })?;
-            if !gpa.is_multiple_of(PAGE_SIZE_U64) || gpa.checked_add(PAGE_SIZE_U64).is_none() {
+            if gpa.checked_add(PAGE_SIZE_U64).is_none() {
                 return Err(VmmError::ContractViolation(format!(
                     "write_guest_pages: GFN {gfn} has an invalid GPA range"
                 )));
@@ -4698,6 +4702,30 @@ mod tests {
         assert!(!vmm.host_dirty_wholesale);
     }
 
+    #[test]
+    fn guest_page_write_validation_covers_each_ram_and_gpa_boundary() {
+        assert!(!valid_guest_ram_len(0, 4096));
+        assert!(!valid_guest_ram_len(4095, 4096));
+        assert!(valid_guest_ram_len(4096, 4096));
+
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.ram_base_gpa = u64::MAX - 4095;
+        let before = vmm.guest_memory().to_vec();
+        assert!(matches!(
+            vmm.write_guest_pages(&[(0, [0xA5; 4096])]),
+            Err(VmmError::ContractViolation(message))
+                if message.contains("invalid GPA range")
+        ));
+        assert_eq!(vmm.guest_memory(), &before);
+    }
+
+    #[test]
+    fn doorbell_exit_counter_reports_the_exact_observed_count() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.doorbell_exits = 7;
+        assert_eq!(vmm.doorbell_exits(), 7);
+    }
+
     /// The seeded draw the `Entropy` hypercall service produces for `width` bytes,
     /// recomputed independently so the test pins the *value*, not just the path.
     fn expected_draw(seed: u64, width: u8) -> u64 {
@@ -7282,6 +7310,23 @@ mod tests {
             .unwrap(),
         );
         v
+    }
+
+    #[test]
+    fn x86_clockevent_trace_reports_only_an_armed_lapic_timer() {
+        let mut vmm = linux_vmm(Vec::new());
+        assert_eq!(<X86 as Vendor>::clockevent_trace_schedule(&vmm), None);
+
+        let lapic = vmm.devices.lapic.as_mut().unwrap();
+        lapic.mmio_write(lapic::APIC_SVR, 0x100, 0).unwrap();
+        lapic.mmio_write(lapic::APIC_LVT_TIMER, 0x41, 0).unwrap();
+        lapic.mmio_write(lapic::APIC_TMICT, 24_000, 0).unwrap();
+        let expected = (lapic.next_timer_deadline().unwrap(), 0x41);
+        assert_ne!(expected.0, 0);
+        assert_eq!(
+            <X86 as Vendor>::clockevent_trace_schedule(&vmm),
+            Some(expected)
+        );
     }
 
     #[test]

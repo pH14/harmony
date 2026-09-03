@@ -203,6 +203,27 @@ pub enum RestoreMode {
     Memcpy,
 }
 
+/// Whether restoring in `mode` requires materializing a complete snapshot
+/// mapping before the live VM is replaced. In-place restore deliberately
+/// defers materialization so it can patch only changed pages.
+fn restore_defers_materialization(mode: RestoreMode) -> bool {
+    mode == RestoreMode::InPlace
+}
+
+/// Classify the ordering relationship between adjacent sparse-page GFNs.
+/// Keeping this check separate from the store's own validation makes the
+/// control-plane error contract explicit before any layer is derived.
+fn sparse_page_order_error(previous: Option<u64>, current: u64) -> Option<SnapshotError> {
+    let previous = previous?;
+    if current < previous {
+        return Some(SnapshotError::SparsePagesNotSorted { previous, current });
+    }
+    if current == previous {
+        return Some(SnapshotError::SparsePageDuplicate { gfn: current });
+    }
+    None
+}
+
 /// An unrecoverable, session-fatal server failure — the loud half of the
 /// two-result-categories rule. [`ControlServer::serve`] returns it after which
 /// the transport is closed (the peer sees EOF and surfaces a transport error);
@@ -783,20 +804,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
         let mut previous = None;
         for (gfn, _) in pages {
-            if let Some(prev) = previous {
-                if *gfn == prev {
-                    return Err(PortableSnapshotError::Snapshot(
-                        SnapshotError::SparsePageDuplicate { gfn: *gfn },
-                    ));
-                }
-                if *gfn < prev {
-                    return Err(PortableSnapshotError::Snapshot(
-                        SnapshotError::SparsePagesNotSorted {
-                            previous: prev,
-                            current: *gfn,
-                        },
-                    ));
-                }
+            if let Some(error) = sparse_page_order_error(previous, *gfn) {
+                return Err(PortableSnapshotError::Snapshot(error));
             }
             if *gfn >= self.engine.mem_pages() {
                 return Err(PortableSnapshotError::Snapshot(
@@ -1734,7 +1743,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // the live VM. In-place restore deliberately defers materialization: a
         // successful patch must perform work proportional only to changed and
         // live-dirty pages.
-        let mut mapping = if self.restore_mode == RestoreMode::InPlace {
+        let mut mapping = if restore_defers_materialization(self.restore_mode) {
             None
         } else {
             let Ok(mapping) = self.engine.materialize(store_id) else {
@@ -2552,11 +2561,13 @@ mod tests {
 
     use proptest::prelude::*;
 
+    #[cfg(all(target_os = "linux", not(miri)))]
+    use super::host_minor_faults;
     #[cfg(target_os = "linux")]
     use super::host_minor_faults_with;
     use super::{
         ControlServer, ServeError, page_console, page_sdk_events, reseed_marker_requires_arrival,
-        server_caps,
+        restore_defers_materialization, server_caps, sparse_page_order_error,
     };
     use crate::vendor::Vendor;
     use crate::vendor::x86::contract_vclock_config;
@@ -2576,6 +2587,16 @@ mod tests {
             0
         });
         assert_eq!(faults, Some(77));
+    }
+
+    #[cfg(all(target_os = "linux", not(miri)))]
+    #[test]
+    fn host_minor_fault_counter_reports_the_live_process_counter() {
+        // The process has faulted in substantially more than one page by the
+        // time this test runs. Exact counts are host profiling data, but the
+        // public accessor must not collapse a successful getrusage call to a
+        // sentinel (`None`, `Some(0)`, or `Some(1)`).
+        assert!(host_minor_faults().is_some_and(|faults| faults > 1));
     }
 
     /// Guest RAM for the doorbell-driving tests (was a per-test `0x2_0000`):
@@ -3041,6 +3062,30 @@ mod tests {
         assert_eq!(s.restore_mode(), super::RestoreMode::Remap);
     }
 
+    #[test]
+    fn restore_mode_defers_materialization_only_for_in_place() {
+        assert!(restore_defers_materialization(super::RestoreMode::InPlace));
+        assert!(!restore_defers_materialization(super::RestoreMode::Remap));
+        assert!(!restore_defers_materialization(super::RestoreMode::Memcpy));
+    }
+
+    #[test]
+    fn sparse_page_order_check_distinguishes_sorted_duplicate_and_descending() {
+        assert!(sparse_page_order_error(None, 7).is_none());
+        assert!(matches!(
+            sparse_page_order_error(Some(3), 3),
+            Some(crate::snapshot::SnapshotError::SparsePageDuplicate { gfn: 3 })
+        ));
+        assert!(matches!(
+            sparse_page_order_error(Some(3), 1),
+            Some(crate::snapshot::SnapshotError::SparsePagesNotSorted {
+                previous: 3,
+                current: 1,
+            })
+        ));
+        assert!(sparse_page_order_error(Some(1), 3).is_none());
+    }
+
     /// The safety default: without backend dirty tracking every seal full-scans
     /// (base layers throughout) — nothing ever derives on an unvouched window.
     #[test]
@@ -3070,10 +3115,23 @@ mod tests {
         hello(&mut s);
         let a = snap(&mut s);
         let b = snap(&mut s);
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_host_fault(&EnvHostFault::CorruptMemory {
+                gpa: 2 * 4096 + 0x40,
+                mask: BitMask(0xABCD_1234),
+            })
+            .unwrap();
         let c = snap(&mut s);
         assert_eq!(chain_len(&s, a), 1);
         assert_eq!(chain_len(&s, b), 2, "under the bound: derive");
         assert_eq!(chain_len(&s, c), 1, "at the bound: flatten to a base");
+        assert_eq!(
+            s.last_seal_dirty_gfns(),
+            Some(&[2][..]),
+            "the bound seal drains and reports its exact dirty window"
+        );
     }
 
     /// A released parent (the client dropped the handle) makes the next seal
@@ -3088,6 +3146,14 @@ mod tests {
         hello(&mut s);
         let first = snap(&mut s);
         assert_eq!(s.handle(&Request::Drop(first)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(
+            s.current_image, None,
+            "dropping the tracked image clears it"
+        );
+        assert_eq!(
+            s.derive_parent, None,
+            "the dropped image cannot derive again"
+        );
         let second = snap(&mut s);
         assert_eq!(chain_len(&s, second), 1, "dead parent ⇒ full scan");
     }
@@ -3207,6 +3273,26 @@ mod tests {
             .unwrap(),
             expected_hash
         );
+    }
+
+    /// A fresh/untracked server has no source image and no readable dirty log.
+    /// The target diff is nevertheless complete, so in-place restore is safe
+    /// and must not fall back merely because the log is unavailable.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the fallback mutant would materialize a snapshot-store mapping, which Miri cannot execute"
+    )]
+    fn in_place_restore_without_source_image_accepts_missing_dirty_log() {
+        let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut s);
+        let target = snap(&mut s);
+
+        assert_eq!(s.current_image, None);
+        s.set_restore_mode(super::RestoreMode::InPlace);
+        assert_eq!(s.handle(&Request::Replay(target)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.in_place_fallbacks(), 0);
+        assert_eq!(s.last_restore_bytes_written(), RAM as u64);
     }
 
     /// A lost source image makes the optimization unavailable, so the restore
@@ -4442,6 +4528,27 @@ mod tests {
         let mut corrupted = exported.clone();
         corrupted.sidecar[0] ^= 1;
         assert_rejected(corrupted);
+
+        // A sidecar with no SDK channel cannot claim an SDK-event prefix. This
+        // exercises the explicit absent-channel contradiction rather than the
+        // present-channel length check above.
+        let decoded = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
+        let malformed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
+            vm_state: &decoded.vm_state,
+            sdk: decoded.sdk.as_ref(),
+            net: decoded.net.as_ref(),
+            policy: &decoded.policy,
+            at: decoded.at,
+            sdk_events: 1,
+            trace_events: decoded.trace_events,
+            trace_schedules: decoded.trace_schedules,
+            tainted: decoded.tainted,
+            state_blob_suffix: &decoded.state_blob_suffix,
+        })
+        .unwrap();
+        let mut sdk_count_without_channel = exported.clone();
+        sdk_count_without_channel.sidecar = malformed_sidecar;
+        assert_rejected(sdk_count_without_channel);
 
         // An x86 vm_state blob must not be accepted by an arm64 destination;
         // the vendor SnapshotRecords codec rejects it before the layer/handle.

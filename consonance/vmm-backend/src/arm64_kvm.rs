@@ -309,6 +309,13 @@ pub(crate) fn dirty_bitmap_words(size: u64) -> Result<usize> {
     usize::try_from(words).map_err(|_| BackendError::InvalidState)
 }
 
+/// Convert the maximum page span accepted by the KVM clear-dirty ABI to its
+/// bitmap-word limit. Kept as a small pure helper so the checked chunking rule
+/// is testable without allocating a multi-terabyte bitmap.
+fn dirty_clear_max_words(max_pages: u64) -> Result<usize> {
+    usize::try_from(max_pages / KVM_DIRTY_BITMAP_WORD_PAGES).map_err(|_| BackendError::InvalidState)
+}
+
 /// Validate one `KVM_CLEAR_DIRTY_LOG` request before it crosses the syscall
 /// seam. The kernel consumes one bitmap word per 64 pages; only a request that
 /// reaches the slot's final partial word may have a non-64-page length.
@@ -1249,15 +1256,14 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             ));
         }
         let slot_pages = size / KVM_PAGE_SIZE;
-        let max_words = usize::try_from(u64::from(u32::MAX) / KVM_DIRTY_BITMAP_WORD_PAGES)
-            .map_err(|_| BackendError::InvalidState)?;
+        let max_words = dirty_clear_max_words(u64::from(u32::MAX))?;
         let final_mask = if slot_pages.is_multiple_of(KVM_DIRTY_BITMAP_WORD_PAGES) {
             u64::MAX
         } else {
             (1u64 << (slot_pages % KVM_DIRTY_BITMAP_WORD_PAGES)) - 1
         };
         let nonzero = |index: usize| {
-            let mask = if index + 1 == words {
+            let mask = if index == words.saturating_sub(1) {
                 final_mask
             } else {
                 u64::MAX
@@ -1265,18 +1271,17 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             bitmap[index] & mask != 0
         };
 
-        let mut start = 0usize;
-        while start < words {
+        for start in 0..words {
             if !nonzero(start) {
-                start += 1;
                 continue;
             }
-            let mut end = start + 1;
-            while end < words && nonzero(end) {
-                end += 1;
+            if start > 0 && nonzero(start.saturating_sub(1)) {
+                continue;
             }
-            let mut chunk_start = start;
-            while chunk_start < end {
+            let end = (start..words)
+                .find(|&index| !nonzero(index))
+                .unwrap_or(words);
+            for chunk_start in (start..end).step_by(max_words) {
                 let chunk_end = end.min(
                     chunk_start
                         .checked_add(max_words)
@@ -1299,9 +1304,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
                 validate_clear_dirty_log(size, first_page, num_pages, slice)?;
                 self.kvm
                     .clear_dirty_log(slot, size, first_page, num_pages, slice)?;
-                chunk_start = chunk_end;
             }
-            start = end;
         }
         Ok(())
     }
@@ -2684,6 +2687,42 @@ mod tests {
     }
 
     #[test]
+    fn patched_sysreg_fault_and_ok_completions_resolve_their_pending_exit() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+
+        b.pending = Pending::SysregRead;
+        b.complete_fault().unwrap();
+        assert_eq!(b.pending, Pending::None);
+        assert!(b.completion_staged);
+
+        b.pending = Pending::SysregWrite;
+        b.completion_staged = false;
+        b.complete_ok().unwrap();
+        assert_eq!(b.pending, Pending::None);
+        assert!(b.completion_staged);
+    }
+
+    #[test]
+    fn arm64_retirement_rejects_a_staged_completion_without_data() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        b.completion_staged = true;
+        b.staged_read = None;
+
+        assert!(matches!(
+            b.retire_pending_completion(),
+            Err(BackendError::Unsupported {
+                what: "retire_pending_completion (arm64 sysreg)"
+            })
+        ));
+    }
+
+    #[test]
     fn only_mmio_writes_are_completed_during_exit_decode() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
@@ -2924,6 +2963,65 @@ mod tests {
             b.dirty_slots,
             vec![(0, 0x2_0000_0000, 2 * 4096), (1, 0x4_0000_0000, 4096)]
         );
+    }
+
+    #[test]
+    fn dirty_bitmap_helpers_pin_zero_alignment_and_word_arithmetic() {
+        assert!(matches!(
+            dirty_bitmap_words(0),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            dirty_bitmap_words(4097),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(dirty_bitmap_words(4096).unwrap(), 1);
+        assert_eq!(dirty_bitmap_words(65 * 4096).unwrap(), 2);
+
+        // This deliberately non-boundary value distinguishes quotient from
+        // remainder/product in the KVM clear-request chunk limit without a
+        // multi-terabyte allocation.
+        assert_eq!(dirty_clear_max_words(129).unwrap(), 2);
+    }
+
+    #[test]
+    fn clear_dirty_log_rejects_each_independent_alignment_guard() {
+        // Zero length is invalid even when the starting page is aligned.
+        assert!(matches!(
+            validate_clear_dirty_log(64 * 4096, 0, 0, &[]),
+            Err(BackendError::InvalidState)
+        ));
+        // An unaligned start is invalid even when a nonzero request reaches
+        // the slot's final page (so the final-partial-word rule cannot reject
+        // it for a different reason).
+        assert!(matches!(
+            validate_clear_dirty_log(64 * 4096, 1, 63, &[1]),
+            Err(BackendError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn dirty_bitmap_decoder_ignores_padding_bits_in_the_final_word() {
+        let mut gfns = Vec::new();
+        decode_dirty_bitmap(0x1000, 3 * 4096, &[(1 << 2) | (1 << 63)], &mut gfns).unwrap();
+        assert_eq!(gfns, vec![1 + 2]);
+    }
+
+    #[test]
+    fn dirty_clear_chunks_use_the_full_64_word_limit() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_dirty_bitmap(0, vec![u64::MAX; 64]);
+        let mut b = Arm64KvmBackend::new(fake);
+        b.set_policy(&Arm64Policy::default()).unwrap();
+        let mut ram = vec![0u8; 4096 * 64 * 64];
+        unsafe { b.map_memory(Gpa(0xA_0000_0000), &mut ram).unwrap() };
+
+        let dirty = b.drain_dirty_pages().unwrap();
+        assert_eq!(dirty.len(), 4096);
+        assert_eq!(b.kvm().dirty_clear_calls.len(), 1);
+        assert_eq!(b.kvm().dirty_clear_calls[0].2, 0);
+        assert_eq!(b.kvm().dirty_clear_calls[0].3, 4096);
     }
 
     #[test]

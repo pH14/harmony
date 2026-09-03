@@ -412,3 +412,78 @@ impl Backend for MockArm64Backend {
         self.caps
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Arm64MockCompletion, MockArm64Backend, Pending};
+    use crate::arch::arm64::{Arm64Policy, Arm64VcpuState, GicIntId};
+    use crate::backend::Backend;
+    use crate::exit::Capabilities;
+
+    fn configured() -> MockArm64Backend {
+        let mut mock = MockArm64Backend::new();
+        mock.set_policy(&Arm64Policy::default()).unwrap();
+        mock
+    }
+
+    #[test]
+    fn finish_resolves_pending_exit_and_stages_completion() {
+        let mut mock = configured();
+        mock.pending = Pending::SysregRead;
+
+        mock.finish(Arm64MockCompletion::Read(0x90));
+
+        assert_eq!(mock.pending, Pending::None);
+        assert!(mock.completion_staged);
+        assert_eq!(mock.completions, vec![Arm64MockCompletion::Read(0x90)]);
+    }
+
+    #[test]
+    fn retirement_consumes_a_staged_completion_marker() {
+        let mut mock = configured();
+        mock.pending = Pending::None;
+        mock.completion_staged = true;
+        mock.completions.push(Arm64MockCompletion::Ok);
+
+        mock.retire_pending_completion().unwrap();
+
+        assert!(!mock.completion_staged);
+        assert_eq!(mock.pending, Pending::None);
+        assert_eq!(mock.completions, vec![Arm64MockCompletion::Ok]);
+    }
+
+    #[test]
+    fn restore_replaces_state_and_clears_displaced_host_bookkeeping() {
+        let mut mock = configured();
+        let mut state = Arm64VcpuState::default();
+        state.core.x[0] = 0x1234;
+        state.core.pc = 0x4000;
+
+        mock.pending = Pending::SysregWrite;
+        mock.completion_staged = true;
+        mock.pending_irq = Some(GicIntId(32));
+        mock.accepted_irq.push_back(GicIntId(33));
+        mock.restore(&state).unwrap();
+
+        assert_eq!(mock.save().unwrap(), state);
+        assert_eq!(mock.pending, Pending::None);
+        assert!(!mock.completion_staged);
+        assert_eq!(mock.pending_irq, None);
+        assert!(mock.accepted_irq.is_empty());
+    }
+
+    #[test]
+    fn with_capabilities_preserves_the_supplied_capability_record() {
+        let caps = Capabilities {
+            name: "arm64-test",
+            deterministic_rng: false,
+            arch: crate::arch::arm64::Arm64Caps {
+                in_kernel_gic: true,
+                deterministic_cntvct: false,
+                enforces_cntv_cval: false,
+            },
+        };
+        let mock = MockArm64Backend::with_capabilities(caps);
+        assert_eq!(mock.capabilities(), caps);
+    }
+}
