@@ -4,9 +4,10 @@
 //!
 //! QuickNES's libretro wrapper stores the emulator and callbacks in globals.
 //! To keep workers independent without a lock, every machine loads a private
-//! copy of the same pinned shared object. Video and audio are hard-disabled;
-//! execution reads the core's 2 KiB system RAM directly and snapshots through
-//! libretro's fixed-buffer serialize API.
+//! copy of the same pinned shared object. Video and audio are hard-disabled
+//! unless a machine is built for capture; execution reads the core's 2 KiB
+//! system RAM directly and snapshots through libretro's fixed-buffer
+//! serialize API.
 
 use std::{
     cell::Cell,
@@ -118,8 +119,34 @@ const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: u32 = 67;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: u32 = 68;
 const RETRO_ENVIRONMENT_GET_TARGET_SAMPLE_RATE: u32 = 81 | RETRO_ENVIRONMENT_EXPERIMENTAL;
 
+const RETRO_PIXEL_FORMAT_0RGB1555: u32 = 0;
+const RETRO_PIXEL_FORMAT_XRGB8888: u32 = 1;
+const RETRO_PIXEL_FORMAT_RGB565: u32 = 2;
+
+/// Audio-video enable bits the frontend reports each frame: bit 0 enables
+/// video, bit 1 enables audio, bit 3 hard-disables audio.
+const AV_ENABLE_HEADLESS: i32 = 8;
+const AV_ENABLE_CAPTURE: i32 = 1 | 2;
+
 thread_local! {
     static INPUT_BITS: Cell<u16> = const { Cell::new(0) };
+    static CAPTURING: Cell<bool> = const { Cell::new(false) };
+    static PIXEL_FORMAT: Cell<u32> = const { Cell::new(RETRO_PIXEL_FORMAT_0RGB1555) };
+    static CAPTURED_VIDEO: std::cell::RefCell<Vec<CapturedFrame>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static CAPTURED_AUDIO: std::cell::RefCell<Vec<i16>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// One emulated video frame converted to 8-bit RGBA, rows tightly packed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapturedFrame {
+    /// Visible width in pixels.
+    pub width: u32,
+    /// Visible height in pixels.
+    pub height: u32,
+    /// `width * height * 4` bytes of RGBA.
+    pub rgba: Vec<u8>,
 }
 
 #[repr(C)]
@@ -440,6 +467,7 @@ pub struct QuickNesMachine {
     hold_remaining: u8,
     input: u8,
     vtime: u64,
+    capture: bool,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -470,6 +498,32 @@ impl QuickNesMachine {
         core_path: &Path,
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
+        Self::load(rom, core_path, core_sha256, false)
+    }
+
+    /// Load a ROM the same way as [`Self::from_rom_bytes`], with the core's
+    /// video and audio planes enabled so frames and samples reach the
+    /// thread's capture buffers.
+    ///
+    /// # Errors
+    ///
+    /// Same failures as [`Self::from_rom_bytes`].
+    #[cfg(not(miri))]
+    pub fn from_rom_bytes_capturing(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        Self::load(rom, core_path, core_sha256, true)
+    }
+
+    #[cfg(not(miri))]
+    fn load(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        capture: bool,
+    ) -> Result<Self, MachineError> {
         let identity = validate_sha256(core_sha256)?;
         let (library, actual) = Library::open_private(core_path)?;
         if actual != core_sha256 {
@@ -478,12 +532,17 @@ impl QuickNesMachine {
             ));
         }
         let api = load_api(&library)?;
-        let mut machine = Self::from_api(rom, identity, api)?;
+        let mut machine = Self::from_api_with(rom, identity, api, capture)?;
         machine._library = Some(library);
         Ok(machine)
     }
 
-    fn from_api(rom: &[u8], core_sha256: [u8; 64], api: CoreApi) -> Result<Self, MachineError> {
+    fn from_api_with(
+        rom: &[u8],
+        core_sha256: [u8; 64],
+        api: CoreApi,
+        capture: bool,
+    ) -> Result<Self, MachineError> {
         api.activate();
         validate_core_revision(api)?;
         // SAFETY: each callback has the exact libretro ABI and remains valid
@@ -543,8 +602,23 @@ impl QuickNesMachine {
             hold_remaining: 0,
             input: 0,
             vtime: 0,
+            capture,
             _not_sync: PhantomData,
         })
+    }
+
+    /// Take every video frame captured on this thread since the last drain.
+    ///
+    /// Frames arrive in emulation order. A capturing machine buffers them
+    /// without bound, so a long replay must drain as it runs.
+    pub fn drain_frames(&mut self) -> Vec<CapturedFrame> {
+        CAPTURED_VIDEO.with(|frames| std::mem::take(&mut *frames.borrow_mut()))
+    }
+
+    /// Take every interleaved stereo sample captured on this thread since the
+    /// last drain.
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        CAPTURED_AUDIO.with(|audio| std::mem::take(&mut *audio.borrow_mut()))
     }
 
     /// Total frames emulated by this instance; restores do not change it.
@@ -696,9 +770,11 @@ impl QuickNesMachine {
         self.api.activate();
         let bits = nes_to_libretro(self.input);
         INPUT_BITS.with(|input| input.set(bits));
+        CAPTURING.with(|capturing| capturing.set(self.capture));
         // SAFETY: construction initialized and loaded the private core; all
         // callbacks are installed and the call is confined to this owner.
         unsafe { (self.api.run)() };
+        CAPTURING.with(|capturing| capturing.set(false));
         INPUT_BITS.with(|input| input.set(0));
         self.vtime = self.vtime.saturating_add(1);
     }
@@ -712,7 +788,7 @@ impl QuickNesMachine {
     #[cfg(any(test, feature = "test-loopback"))]
     pub fn loopback_for_tests(rom: &[u8]) -> Result<Self, MachineError> {
         let identity = validate_sha256(&"a".repeat(64))?;
-        Self::from_api(rom, identity, loopback::api())
+        Self::from_api_with(rom, identity, loopback::api(), false)
     }
 }
 
@@ -906,8 +982,16 @@ fn nes_to_libretro(buttons: u8) -> u16 {
 
 extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
     match command {
-        RETRO_ENVIRONMENT_SET_PIXEL_FORMAT
-        | RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS
+        RETRO_ENVIRONMENT_SET_PIXEL_FORMAT => {
+            if !data.is_null() {
+                // SAFETY: libretro supplies a readable retro_pixel_format
+                // enum, which the ABI fixes at unsigned width.
+                let format = unsafe { *data.cast::<u32>() };
+                PIXEL_FORMAT.with(|current| current.set(format));
+            }
+            true
+        }
+        RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS
         | RETRO_ENVIRONMENT_SET_VARIABLES
         | RETRO_ENVIRONMENT_SET_MEMORY_MAPS
         | RETRO_ENVIRONMENT_SET_CORE_OPTIONS
@@ -921,10 +1005,16 @@ extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
             true
         }
         RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE if !data.is_null() => {
-            // Hard-disable audio (bit 3); leaving video/audio bits clear also
-            // selects QuickNES's skip-frame path and suppresses callbacks.
+            // Headless hard-disables audio (bit 3); leaving video/audio bits
+            // clear also selects QuickNES's skip-frame path and suppresses
+            // callbacks. Capture asks for both planes instead.
+            let flags = if CAPTURING.with(Cell::get) {
+                AV_ENABLE_CAPTURE
+            } else {
+                AV_ENABLE_HEADLESS
+            };
             // SAFETY: libretro supplies a writable int for this command.
-            unsafe { *data.cast::<i32>() = 8 };
+            unsafe { *data.cast::<i32>() = flags };
             true
         }
         RETRO_ENVIRONMENT_GET_TARGET_SAMPLE_RATE if !data.is_null() => {
@@ -955,9 +1045,91 @@ fn option_value(key: &[u8]) -> Option<&'static [u8]> {
         .find_map(|(fixed_key, value)| (*fixed_key == key).then_some(*value))
 }
 
-extern "C" fn video_callback(_: *const c_void, _: u32, _: u32, _: usize) {}
+extern "C" fn video_callback(data: *const c_void, width: u32, height: u32, pitch: usize) {
+    if !CAPTURING.with(Cell::get) || data.is_null() || width == 0 || height == 0 {
+        return;
+    }
+    let format = PIXEL_FORMAT.with(Cell::get);
+    let bytes_per_pixel = match format {
+        RETRO_PIXEL_FORMAT_XRGB8888 => 4,
+        RETRO_PIXEL_FORMAT_0RGB1555 | RETRO_PIXEL_FORMAT_RGB565 => 2,
+        _ => return,
+    };
+    let (Ok(columns), Ok(rows)) = (usize::try_from(width), usize::try_from(height)) else {
+        return;
+    };
+    if pitch < columns * bytes_per_pixel {
+        return;
+    }
+    let mut rgba = vec![0_u8; columns * rows * 4];
+    for row in 0..rows {
+        // SAFETY: libretro guarantees `height` rows of `pitch` bytes starting
+        // at `data`, and this offset stays inside the last row's stride.
+        let line = unsafe { data.cast::<u8>().add(row * pitch) };
+        for column in 0..columns {
+            // SAFETY: `column * bytes_per_pixel` stays within the row checked
+            // against `pitch` above.
+            let pixel = unsafe { line.add(column * bytes_per_pixel) };
+            let (red, green, blue) = match format {
+                RETRO_PIXEL_FORMAT_XRGB8888 => {
+                    // SAFETY: four readable bytes; libretro packs XRGB8888 in
+                    // host byte order.
+                    let word = unsafe { pixel.cast::<u32>().read_unaligned() };
+                    (
+                        ((word >> 16) & 0xff) as u8,
+                        ((word >> 8) & 0xff) as u8,
+                        (word & 0xff) as u8,
+                    )
+                }
+                RETRO_PIXEL_FORMAT_RGB565 => {
+                    // SAFETY: two readable bytes in host byte order.
+                    let word = unsafe { pixel.cast::<u16>().read_unaligned() };
+                    (
+                        expand(((word >> 11) & 0x1f) as u8, 5),
+                        expand(((word >> 5) & 0x3f) as u8, 6),
+                        expand((word & 0x1f) as u8, 5),
+                    )
+                }
+                _ => {
+                    // SAFETY: two readable bytes in host byte order.
+                    let word = unsafe { pixel.cast::<u16>().read_unaligned() };
+                    (
+                        expand(((word >> 10) & 0x1f) as u8, 5),
+                        expand(((word >> 5) & 0x1f) as u8, 5),
+                        expand((word & 0x1f) as u8, 5),
+                    )
+                }
+            };
+            let out = (row * columns + column) * 4;
+            rgba[out] = red;
+            rgba[out + 1] = green;
+            rgba[out + 2] = blue;
+            rgba[out + 3] = 0xff;
+        }
+    }
+    CAPTURED_VIDEO.with(|frames| {
+        frames.borrow_mut().push(CapturedFrame {
+            width,
+            height,
+            rgba,
+        });
+    });
+}
+
+/// Widen a `bits`-wide color channel to eight bits by bit replication.
+fn expand(value: u8, bits: u32) -> u8 {
+    let shift = 8 - bits;
+    (value << shift) | (value >> (bits - shift))
+}
+
 extern "C" fn audio_callback(_: i16, _: i16) {}
-extern "C" fn audio_batch_callback(_: *const i16, frames: usize) -> usize {
+extern "C" fn audio_batch_callback(data: *const i16, frames: usize) -> usize {
+    if CAPTURING.with(Cell::get) && !data.is_null() && frames > 0 {
+        // SAFETY: libretro guarantees `frames` interleaved stereo pairs, so
+        // `2 * frames` readable samples, live for this call.
+        let samples = unsafe { std::slice::from_raw_parts(data, frames * 2) };
+        CAPTURED_AUDIO.with(|audio| audio.borrow_mut().extend_from_slice(samples));
+    }
     frames
 }
 extern "C" fn input_poll_callback() {}
@@ -1238,8 +1410,9 @@ mod tests {
         assert!(machine.take_snapshot(fixed_again).is_err());
 
         let foreign_identity = validate_sha256(&"b".repeat(64)).expect("foreign identity");
-        let mut foreign = QuickNesMachine::from_api(&[0], foreign_identity, loopback::api())
-            .expect("foreign core");
+        let mut foreign =
+            QuickNesMachine::from_api_with(&[0], foreign_identity, loopback::api(), false)
+                .expect("foreign core");
         let imported = foreign.import_snapshot(&canonical);
         assert!(foreign.replay(imported).is_err());
     }

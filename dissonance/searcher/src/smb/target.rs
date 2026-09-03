@@ -132,7 +132,7 @@ impl SmbSnapshot {
 /// controller inputs: the title screen settles, Start is pressed once, and
 /// the pre-level sequence plays out. Target setup rather than model-visible
 /// search guidance.
-const BOOT_WALK: [ButtonChord; 4] = [
+const BOOT_WALK: [ButtonChord; 2] = [
     ButtonChord {
         buttons: 0,
         hold_frames: 120,
@@ -141,15 +141,16 @@ const BOOT_WALK: [ButtonChord; 4] = [
         buttons: 0x08,
         hold_frames: 1,
     },
-    ButtonChord {
-        buttons: 0,
-        hold_frames: 120,
-    },
-    ButtonChord {
-        buttons: 0,
-        hold_frames: 120,
-    },
 ];
+
+/// Longest wait, in frames, from the Start press to the first frame of play.
+const BOOT_PLAY_WAIT_FRAMES: u32 = 900;
+/// Operating mode byte and the value the game holds during play.
+const OPER_MODE_OFFSET: usize = 0x0770;
+const OPER_MODE_PLAY: u8 = 1;
+/// Operating mode task byte and the value that hands control to the player.
+const OPER_MODE_TASK_OFFSET: usize = 0x0772;
+const OPER_MODE_TASK_PLAY: u8 = 3;
 
 /// Machine-backed target used by the Super Mario Bros campaigns.
 #[derive(Debug)]
@@ -168,6 +169,24 @@ impl SmbTarget {
         machine.branch(power_on, &nes::reproducer(&BOOT_WALK))?;
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(power_on)?;
+        // Genesis is the first frame of play, found by stepping one frame at
+        // a time after Start, so the searcher starts before the game moves.
+        let idle = [ButtonChord {
+            buttons: 0,
+            hold_frames: 1,
+        }];
+        for _ in 0..BOOT_PLAY_WAIT_FRAMES {
+            let wram = wram_array(&machine)?;
+            if wram[OPER_MODE_OFFSET] == OPER_MODE_PLAY
+                && wram[OPER_MODE_TASK_OFFSET] == OPER_MODE_TASK_PLAY
+            {
+                break;
+            }
+            let here = machine.snapshot()?;
+            machine.branch(here, &nes::reproducer(&idle))?;
+            machine.run(StopConditions::default(), None)?;
+            machine.drop_snapshot(here)?;
+        }
         let genesis = machine.snapshot()?;
         let wram = wram_array(&machine)?;
         let observation = SmbObservations {
@@ -204,6 +223,31 @@ impl SmbTarget {
     ) -> Result<Self, MachineError> {
         let machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
         Self::from_machine(machine)
+    }
+
+    /// Load SMB exactly as [`Self::from_smb_rom_bytes_headless`] does, with
+    /// the core's video and audio planes enabled so a replay can be filmed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a machine error if the core, ROM, bootstrap, or snapshot fails.
+    pub fn from_smb_rom_bytes_capturing(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let machine = QuickNesMachine::from_rom_bytes_capturing(rom, core_path, core_sha256)?;
+        Self::from_machine(machine)
+    }
+
+    /// Take the video frames emulated since the last drain.
+    pub fn drain_frames(&mut self) -> Vec<machine::quicknes::CapturedFrame> {
+        self.machine.drain_frames()
+    }
+
+    /// Take the interleaved stereo samples emulated since the last drain.
+    pub fn drain_audio(&mut self) -> Vec<i16> {
+        self.machine.drain_audio()
     }
 
     #[cfg(test)]
