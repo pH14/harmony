@@ -144,7 +144,13 @@ jobs:
         run: |
           cargo fmt --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all -- --check
           cargo clippy --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
-          cargo test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features
+          # The static QuickNES feature needs the pinned external archive that
+          # the Nova guest workflow supplies. Exercise the portable library
+          # with all features, then the integration and Linux binary tests
+          # through the archive-free dynamic-core profile. Cargo otherwise
+          # links every binary while preparing an integration-test target.
+          cargo test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features --lib
+          cargo test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --no-default-features --test agent --bin play-agent
           cargo deny --manifest-path consonance/harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --bin play-agent
       # M2's arm64 TetaNES agent is another standalone guest workspace. Its

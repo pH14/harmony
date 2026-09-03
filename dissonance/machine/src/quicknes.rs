@@ -4,12 +4,13 @@
 //!
 //! QuickNES's libretro wrapper stores the emulator and callbacks in globals.
 //! To keep workers independent without a lock, every machine loads a private
-//! copy of the same pinned shared object. Video and audio are hard-disabled;
-//! execution reads the core's 2 KiB system RAM directly and snapshots through
+//! copy of the same pinned shared object. Search keeps video and audio
+//! hard-disabled; an explicit replay-only mode copies frames and PCM samples.
+//! Execution reads the core's 2 KiB system RAM directly and snapshots through
 //! libretro's fixed-buffer serialize API.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
     ffi::{CStr, c_char, c_void},
     marker::PhantomData,
@@ -100,9 +101,12 @@ const QUICKNES_BLOCK_HEADER_LEN: usize = 8;
 const QUICKNES_PPU_STATE_LEN: usize = 52;
 const QUICKNES_PPU_UNUSED2_OFFSET: usize = 49;
 const QUICKNES_PPU_UNUSED2_LEN: usize = 3;
+const RETRO_MEMORY_SAVE_RAM: u32 = 0;
 const RETRO_MEMORY_SYSTEM_RAM: u32 = 2;
+const MAX_SAVE_RAM_SIZE: usize = 64 * 1024;
 const RETRO_DEVICE_JOYPAD: u32 = 1;
 const RETRO_DEVICE_ID_JOYPAD_MASK: u32 = 256;
+const RETRO_ENVIRONMENT_GET_CAN_DUPE: u32 = 3;
 const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: u32 = 10;
 const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: u32 = 11;
 const RETRO_ENVIRONMENT_GET_VARIABLE: u32 = 15;
@@ -117,9 +121,37 @@ const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL: u32 = 54;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: u32 = 67;
 const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: u32 = 68;
 const RETRO_ENVIRONMENT_GET_TARGET_SAMPLE_RATE: u32 = 81 | RETRO_ENVIRONMENT_EXPERIMENTAL;
+const PIXEL_FORMAT_XRGB1555: u32 = 0;
+const PIXEL_FORMAT_XRGB8888: u32 = 1;
+const PIXEL_FORMAT_RGB565: u32 = 2;
+const MAX_VIDEO_WIDTH: usize = 4_096;
+const MAX_VIDEO_HEIGHT: usize = 4_096;
+const MAX_VIDEO_PITCH: usize = MAX_VIDEO_WIDTH * 4;
+/// Sample rate fixed by [`QUICKNES_OPTIONS`].
+pub const QUICKNES_AUDIO_SAMPLE_RATE: u32 = 48_000;
+/// Libretro audio is interleaved stereo.
+pub const QUICKNES_AUDIO_CHANNELS: u8 = 2;
+const MAX_AUDIO_FRAMES_PER_BATCH: usize = 1_048_576;
 
 thread_local! {
     static INPUT_BITS: Cell<u16> = const { Cell::new(0) };
+    static CAPTURE_VIDEO: Cell<bool> = const { Cell::new(false) };
+    static CAPTURE_AUDIO: Cell<bool> = const { Cell::new(false) };
+    static PIXEL_FORMAT: Cell<u32> = const { Cell::new(PIXEL_FORMAT_XRGB1555) };
+    static LAST_FRAME: RefCell<Option<VideoFrame>> = const { RefCell::new(None) };
+    static AUDIO_SAMPLES: RefCell<Vec<i16>> = const { RefCell::new(Vec::new()) };
+    static CALLBACK_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// One tightly packed RGB24 frame copied from the libretro video callback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoFrame {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Row-major RGB bytes.
+    pub rgb24: Vec<u8>,
 }
 
 #[repr(C)]
@@ -440,6 +472,8 @@ pub struct QuickNesMachine {
     hold_remaining: u8,
     input: u8,
     vtime: u64,
+    capture_video: bool,
+    capture_audio: bool,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -485,6 +519,7 @@ impl QuickNesMachine {
 
     fn from_api(rom: &[u8], core_sha256: [u8; 64], api: CoreApi) -> Result<Self, MachineError> {
         api.activate();
+        reset_capture_state();
         validate_core_revision(api)?;
         // SAFETY: each callback has the exact libretro ABI and remains valid
         // for the process lifetime. The API belongs to this private image.
@@ -543,6 +578,8 @@ impl QuickNesMachine {
             hold_remaining: 0,
             input: 0,
             vtime: 0,
+            capture_video: false,
+            capture_audio: false,
             _not_sync: PhantomData,
         })
     }
@@ -571,6 +608,99 @@ impl QuickNesMachine {
             std::ptr::copy_nonoverlapping(memory, wram.as_mut_ptr(), WRAM_SIZE);
         }
         Ok(wram)
+    }
+
+    /// Copy the cartridge-backed save RAM exposed by the core.
+    ///
+    /// The returned length is mapper-owned, so it is validated before the
+    /// core pointer is made into a slice. Nova uses this region for durable
+    /// completion, unlock, collectible, and carried-ability observations.
+    pub fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
+        self.api.activate();
+        // SAFETY: both calls are synchronous libretro memory queries on this
+        // machine's exclusively owned core image. The pointer is checked and
+        // copied before another core call can invalidate it.
+        let (memory, length) = unsafe {
+            (
+                (self.api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
+                (self.api.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
+            )
+        };
+        if memory.is_null() || length == 0 || length > MAX_SAVE_RAM_SIZE {
+            return Err(MachineError::Backend(format!(
+                "QuickNES supplied invalid save RAM length {length}"
+            )));
+        }
+        // SAFETY: the checked non-null region is readable for the bounded
+        // length reported by the same core and is copied immediately.
+        Ok(unsafe { std::slice::from_raw_parts(memory, length) }.to_vec())
+    }
+
+    /// Replace one bounded range of the cartridge-backed save RAM.
+    ///
+    /// This is a workload-setup seam, not a search action. Game adapters use
+    /// it before sealing genesis to construct a source-grounded save-file
+    /// fixture such as an independently selectable campaign level.
+    pub fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
+        self.api.activate();
+        // SAFETY: both calls are synchronous libretro memory queries on this
+        // machine's exclusively owned core image. The reported range is fully
+        // validated before the source bytes are copied into it.
+        let (memory, length) = unsafe {
+            (
+                (self.api.get_memory_data)(RETRO_MEMORY_SAVE_RAM).cast::<u8>(),
+                (self.api.get_memory_size)(RETRO_MEMORY_SAVE_RAM),
+            )
+        };
+        let end = offset.checked_add(bytes.len()).ok_or_else(|| {
+            MachineError::Backend("QuickNES save RAM write range overflowed".to_owned())
+        })?;
+        if memory.is_null() || length == 0 || length > MAX_SAVE_RAM_SIZE || end > length {
+            return Err(MachineError::Backend(format!(
+                "QuickNES rejected save RAM write {offset}..{end} for length {length}"
+            )));
+        }
+        // SAFETY: `memory` is non-null and `offset..end` is within the bounded
+        // region reported by the core. `bytes` is a distinct immutable Rust
+        // slice and the copy completes before another core call.
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.add(offset), bytes.len()) };
+        Ok(())
+    }
+
+    /// Enable or disable bounded frame copying for replay-only rendering.
+    pub fn set_video_capture(&mut self, enabled: bool) {
+        self.capture_video = enabled;
+        self.api.activate();
+        CAPTURE_VIDEO.with(|capture| capture.set(enabled));
+        LAST_FRAME.with(|frame| {
+            frame.borrow_mut().take();
+        });
+        CALLBACK_ERROR.with(|error| {
+            error.borrow_mut().take();
+        });
+    }
+
+    /// Take the most recently copied video frame, if one was produced.
+    pub fn take_video_frame(&mut self) -> Option<VideoFrame> {
+        self.api.activate();
+        LAST_FRAME.with(|frame| frame.borrow_mut().take())
+    }
+
+    /// Enable or disable replay-only copying of native stereo PCM samples.
+    pub fn set_audio_capture(&mut self, enabled: bool) {
+        self.capture_audio = enabled;
+        self.api.activate();
+        CAPTURE_AUDIO.with(|capture| capture.set(enabled));
+        AUDIO_SAMPLES.with(|samples| samples.borrow_mut().clear());
+        CALLBACK_ERROR.with(|error| {
+            error.borrow_mut().take();
+        });
+    }
+
+    /// Take all interleaved stereo samples copied since the previous call.
+    pub fn take_audio_samples(&mut self) -> Vec<i16> {
+        self.api.activate();
+        AUDIO_SAMPLES.with(|samples| std::mem::take(&mut *samples.borrow_mut()))
     }
 
     /// Move a held snapshot out of the machine without cloning its fixed
@@ -692,8 +822,10 @@ impl QuickNesMachine {
         Ok(())
     }
 
-    fn run_frame(&mut self) {
+    fn run_frame(&mut self) -> Result<(), MachineError> {
         self.api.activate();
+        CAPTURE_VIDEO.with(|capture| capture.set(self.capture_video));
+        CAPTURE_AUDIO.with(|capture| capture.set(self.capture_audio));
         let bits = nes_to_libretro(self.input);
         INPUT_BITS.with(|input| input.set(bits));
         // SAFETY: construction initialized and loaded the private core; all
@@ -701,6 +833,10 @@ impl QuickNesMachine {
         unsafe { (self.api.run)() };
         INPUT_BITS.with(|input| input.set(0));
         self.vtime = self.vtime.saturating_add(1);
+        CALLBACK_ERROR.with(|error| match error.borrow_mut().take() {
+            Some(detail) => Err(MachineError::Backend(detail)),
+            None => Ok(()),
+        })
     }
 
     /// Construct a deterministic in-process loopback core for downstream unit
@@ -783,6 +919,7 @@ fn validate_canonical_quicknes_state(state: &[u8]) -> Result<(), MachineError> {
 impl Drop for QuickNesMachine {
     fn drop(&mut self) {
         self.api.activate();
+        reset_capture_state();
         // SAFETY: this machine exclusively owns one initialized, loaded core
         // image, and Drop runs these operations exactly once.
         unsafe {
@@ -848,7 +985,7 @@ impl Machine for QuickNesMachine {
                 self.input = chord.buttons;
                 self.hold_remaining = chord.bounded_hold_frames();
             }
-            self.run_frame();
+            self.run_frame()?;
             self.hold_remaining -= 1;
             if self.hold_remaining == 0 {
                 self.input = 0;
@@ -906,8 +1043,24 @@ fn nes_to_libretro(buttons: u8) -> u16 {
 
 extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
     match command {
-        RETRO_ENVIRONMENT_SET_PIXEL_FORMAT
-        | RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS
+        RETRO_ENVIRONMENT_GET_CAN_DUPE if !data.is_null() => {
+            // SAFETY: libretro supplies a writable bool for this command.
+            unsafe { *data.cast::<bool>() = true };
+            true
+        }
+        RETRO_ENVIRONMENT_SET_PIXEL_FORMAT if !data.is_null() => {
+            // SAFETY: libretro supplies a readable unsigned pixel-format id.
+            let format = unsafe { *data.cast::<u32>() };
+            if !matches!(
+                format,
+                PIXEL_FORMAT_XRGB1555 | PIXEL_FORMAT_XRGB8888 | PIXEL_FORMAT_RGB565
+            ) {
+                return false;
+            }
+            PIXEL_FORMAT.with(|pixel_format| pixel_format.set(format));
+            true
+        }
+        RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS
         | RETRO_ENVIRONMENT_SET_VARIABLES
         | RETRO_ENVIRONMENT_SET_MEMORY_MAPS
         | RETRO_ENVIRONMENT_SET_CORE_OPTIONS
@@ -921,15 +1074,20 @@ extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
             true
         }
         RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE if !data.is_null() => {
-            // Hard-disable audio (bit 3); leaving video/audio bits clear also
-            // selects QuickNES's skip-frame path and suppresses callbacks.
+            // Search requests hard-disabled audio (bit 3) and no video.
+            // Replay explicitly enables video (bit 0) and audio (bit 1).
             // SAFETY: libretro supplies a writable int for this command.
-            unsafe { *data.cast::<i32>() = 8 };
+            unsafe {
+                let video = CAPTURE_VIDEO.with(Cell::get);
+                let audio = CAPTURE_AUDIO.with(Cell::get);
+                *data.cast::<i32>() =
+                    i32::from(video) | (i32::from(audio) << 1) | (i32::from(!audio) << 3);
+            }
             true
         }
         RETRO_ENVIRONMENT_GET_TARGET_SAMPLE_RATE if !data.is_null() => {
             // SAFETY: libretro supplies a writable unsigned for this command.
-            unsafe { *data.cast::<u32>() = 48_000 };
+            unsafe { *data.cast::<u32>() = QUICKNES_AUDIO_SAMPLE_RATE };
             true
         }
         RETRO_ENVIRONMENT_GET_VARIABLE if !data.is_null() => {
@@ -955,10 +1113,201 @@ fn option_value(key: &[u8]) -> Option<&'static [u8]> {
         .find_map(|(fixed_key, value)| (*fixed_key == key).then_some(*value))
 }
 
-extern "C" fn video_callback(_: *const c_void, _: u32, _: u32, _: usize) {}
-extern "C" fn audio_callback(_: i16, _: i16) {}
-extern "C" fn audio_batch_callback(_: *const i16, frames: usize) -> usize {
-    frames
+fn reset_capture_state() {
+    CAPTURE_VIDEO.with(|capture| capture.set(false));
+    CAPTURE_AUDIO.with(|capture| capture.set(false));
+    LAST_FRAME.with(|frame| {
+        frame.borrow_mut().take();
+    });
+    AUDIO_SAMPLES.with(|samples| samples.borrow_mut().clear());
+    CALLBACK_ERROR.with(|error| {
+        error.borrow_mut().take();
+    });
+}
+
+extern "C" fn video_callback(data: *const c_void, width: u32, height: u32, pitch: usize) {
+    if data.is_null() || !CAPTURE_VIDEO.with(Cell::get) {
+        return;
+    }
+    match copy_video_frame(data, width, height, pitch, PIXEL_FORMAT.with(Cell::get)) {
+        Ok(frame) => LAST_FRAME.with(|slot| *slot.borrow_mut() = Some(frame)),
+        Err(error) => CALLBACK_ERROR.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(error);
+            }
+        }),
+    }
+}
+
+fn copy_video_frame(
+    data: *const c_void,
+    width: u32,
+    height: u32,
+    pitch: usize,
+    format: u32,
+) -> Result<VideoFrame, String> {
+    let width = usize::try_from(width).map_err(|_| "video width does not fit usize")?;
+    let height = usize::try_from(height).map_err(|_| "video height does not fit usize")?;
+    if width == 0
+        || height == 0
+        || width > MAX_VIDEO_WIDTH
+        || height > MAX_VIDEO_HEIGHT
+        || pitch > MAX_VIDEO_PITCH
+    {
+        return Err(format!(
+            "invalid video geometry {width}x{height} pitch={pitch}"
+        ));
+    }
+    let bytes_per_pixel = if format == PIXEL_FORMAT_XRGB8888 {
+        4
+    } else if matches!(format, PIXEL_FORMAT_XRGB1555 | PIXEL_FORMAT_RGB565) {
+        2
+    } else {
+        return Err(format!("unsupported video pixel format {format}"));
+    };
+    let row_bytes = width
+        .checked_mul(bytes_per_pixel)
+        .ok_or_else(|| "video row length overflow".to_owned())?;
+    if pitch < row_bytes {
+        return Err(format!(
+            "video pitch {pitch} is shorter than row {row_bytes}"
+        ));
+    }
+    let source_len = pitch
+        .checked_mul(height)
+        .ok_or_else(|| "video source length overflow".to_owned())?;
+    // SAFETY: the libretro callback contract supplies `data` readable for
+    // `pitch * height` bytes. Geometry and arithmetic are bounded above.
+    let source = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), source_len) };
+    let rgb24 = convert_pixels(source, width, height, pitch, format)?;
+    Ok(VideoFrame {
+        width: u32::try_from(width).map_err(|_| "video width conversion failed")?,
+        height: u32::try_from(height).map_err(|_| "video height conversion failed")?,
+        rgb24,
+    })
+}
+
+fn convert_pixels(
+    source: &[u8],
+    width: usize,
+    height: usize,
+    pitch: usize,
+    format: u32,
+) -> Result<Vec<u8>, String> {
+    let output_len = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "video output length overflow".to_owned())?;
+    let mut output = Vec::with_capacity(output_len);
+    for row_index in 0..height {
+        let start = row_index
+            .checked_mul(pitch)
+            .ok_or_else(|| "video row offset overflow".to_owned())?;
+        let end = start
+            .checked_add(pitch)
+            .ok_or_else(|| "video row end overflow".to_owned())?;
+        let row = source
+            .get(start..end)
+            .ok_or_else(|| "video row is out of bounds".to_owned())?;
+        for column in 0..width {
+            if format == PIXEL_FORMAT_XRGB8888 {
+                let offset = column
+                    .checked_mul(4)
+                    .ok_or_else(|| "video pixel offset overflow".to_owned())?;
+                let end = offset
+                    .checked_add(4)
+                    .ok_or_else(|| "video pixel end overflow".to_owned())?;
+                let bytes: [u8; 4] = row
+                    .get(offset..end)
+                    .ok_or_else(|| "short XRGB8888 pixel".to_owned())?
+                    .try_into()
+                    .map_err(|_| "short XRGB8888 pixel".to_owned())?;
+                let pixel = u32::from_ne_bytes(bytes);
+                output.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8]);
+            } else {
+                let offset = column
+                    .checked_mul(2)
+                    .ok_or_else(|| "video pixel offset overflow".to_owned())?;
+                let end = offset
+                    .checked_add(2)
+                    .ok_or_else(|| "video pixel end overflow".to_owned())?;
+                let bytes: [u8; 2] = row
+                    .get(offset..end)
+                    .ok_or_else(|| "short 16-bit pixel".to_owned())?
+                    .try_into()
+                    .map_err(|_| "short 16-bit pixel".to_owned())?;
+                let pixel = u16::from_ne_bytes(bytes);
+                let (red, green, blue) = if format == PIXEL_FORMAT_RGB565 {
+                    (
+                        ((pixel >> 11) & 0x1f) as u8,
+                        ((pixel >> 5) & 0x3f) as u8,
+                        (pixel & 0x1f) as u8,
+                    )
+                } else {
+                    (
+                        ((pixel >> 10) & 0x1f) as u8,
+                        ((pixel >> 5) & 0x1f) as u8,
+                        (pixel & 0x1f) as u8,
+                    )
+                };
+                output.extend_from_slice(&[
+                    (red << 3) | (red >> 2),
+                    if format == PIXEL_FORMAT_RGB565 {
+                        (green << 2) | (green >> 4)
+                    } else {
+                        (green << 3) | (green >> 2)
+                    },
+                    (blue << 3) | (blue >> 2),
+                ]);
+            }
+        }
+    }
+    if output.len() != output_len {
+        return Err("video conversion produced the wrong byte length".to_owned());
+    }
+    Ok(output)
+}
+extern "C" fn audio_callback(left: i16, right: i16) {
+    if CAPTURE_AUDIO.with(Cell::get) {
+        AUDIO_SAMPLES.with(|samples| samples.borrow_mut().extend_from_slice(&[left, right]));
+    }
+}
+
+extern "C" fn audio_batch_callback(data: *const i16, frames: usize) -> usize {
+    if !CAPTURE_AUDIO.with(Cell::get) {
+        return frames;
+    }
+    match copy_audio_batch(data, frames) {
+        Ok(batch) => {
+            AUDIO_SAMPLES.with(|samples| samples.borrow_mut().extend_from_slice(&batch));
+            frames
+        }
+        Err(error) => {
+            CALLBACK_ERROR.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(error);
+                }
+            });
+            0
+        }
+    }
+}
+
+fn copy_audio_batch(data: *const i16, frames: usize) -> Result<Vec<i16>, String> {
+    if frames == 0 {
+        return Ok(Vec::new());
+    }
+    if data.is_null() || frames > MAX_AUDIO_FRAMES_PER_BATCH {
+        return Err(format!("invalid audio batch of {frames} stereo frames"));
+    }
+    let samples = frames
+        .checked_mul(usize::from(QUICKNES_AUDIO_CHANNELS))
+        .ok_or_else(|| "audio sample count overflow".to_owned())?;
+    // SAFETY: libretro supplies `frames * 2` readable interleaved stereo
+    // samples for the synchronous callback. The frame count is bounded.
+    Ok(unsafe { std::slice::from_raw_parts(data, samples) }.to_vec())
 }
 extern "C" fn input_poll_callback() {}
 extern "C" fn input_state_callback(port: u32, device: u32, index: u32, id: u32) -> i16 {
@@ -988,7 +1337,7 @@ mod loopback {
     use super::{
         AudioBatchCallback, AudioCallback, CoreApi, EnvironmentCallback, InputPollCallback,
         InputStateCallback, QUICKNES_BLOCK_HEADER_LEN, QUICKNES_FILE_MAGIC, QUICKNES_PPU_STATE_LEN,
-        RetroGameInfo, RetroSystemInfo, VideoCallback,
+        RETRO_MEMORY_SAVE_RAM, RetroGameInfo, RetroSystemInfo, VideoCallback,
     };
     use crate::nes::WRAM_SIZE;
 
@@ -1002,6 +1351,7 @@ mod loopback {
     struct State {
         byte: u8,
         wram: [u8; WRAM_SIZE],
+        save_ram: [u8; 8 * 1024],
     }
 
     thread_local! {
@@ -1048,6 +1398,7 @@ mod loopback {
             *state = State {
                 byte: 0,
                 wram: [0; WRAM_SIZE],
+                save_ram: [0; 8 * 1024],
             };
         })
         .is_some()
@@ -1118,12 +1469,19 @@ mod loopback {
         })
         .unwrap_or(false)
     }
-    unsafe extern "C" fn memory_data(_: u32) -> *mut c_void {
-        with_state_mut(|state| (&raw mut state.wram).cast::<c_void>())
-            .unwrap_or(std::ptr::null_mut())
+    unsafe extern "C" fn memory_data(region: u32) -> *mut c_void {
+        with_state_mut(|state| match region {
+            RETRO_MEMORY_SAVE_RAM => (&raw mut state.save_ram).cast::<c_void>(),
+            _ => (&raw mut state.wram).cast::<c_void>(),
+        })
+        .unwrap_or(std::ptr::null_mut())
     }
-    unsafe extern "C" fn memory_size(_: u32) -> usize {
-        WRAM_SIZE
+    unsafe extern "C" fn memory_size(region: u32) -> usize {
+        if region == RETRO_MEMORY_SAVE_RAM {
+            8 * 1024
+        } else {
+            WRAM_SIZE
+        }
     }
 
     pub(super) fn api() -> CoreApi {
@@ -1138,6 +1496,7 @@ mod loopback {
                 Box::new(State {
                     byte: 0,
                     wram: [0; WRAM_SIZE],
+                    save_ram: [0; 8 * 1024],
                 }),
             );
         });
@@ -1167,9 +1526,13 @@ mod loopback {
 #[cfg(test)]
 mod tests {
     use super::{
-        QUICKNES_LIBRARY_VERSION, QUICKNES_OPTION_TABLE, QUICKNES_OPTIONS, QUICKNES_REVISION,
-        QuickNesMachine, STATE_HEADER_LEN, loopback, nes_to_libretro, option_value,
-        validate_sha256,
+        AUDIO_SAMPLES, CAPTURE_AUDIO, CAPTURE_VIDEO, MAX_AUDIO_FRAMES_PER_BATCH,
+        PIXEL_FORMAT_RGB565, PIXEL_FORMAT_XRGB8888, QUICKNES_AUDIO_CHANNELS,
+        QUICKNES_AUDIO_SAMPLE_RATE, QUICKNES_LIBRARY_VERSION, QUICKNES_OPTION_TABLE,
+        QUICKNES_OPTIONS, QUICKNES_REVISION, QuickNesMachine,
+        RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, STATE_HEADER_LEN, audio_batch_callback,
+        audio_callback, convert_pixels, copy_audio_batch, copy_video_frame, environment_callback,
+        loopback, nes_to_libretro, option_value, reset_capture_state, validate_sha256,
     };
     use crate::{Machine, Moment, StopConditions, StopReason, nes};
 
@@ -1205,6 +1568,75 @@ mod tests {
     }
 
     #[test]
+    fn video_conversion_is_tightly_packed_and_respects_pitch() {
+        let xrgb = [0x33, 0x22, 0x11, 0, 0x66, 0x55, 0x44, 0, 9, 9, 9, 9];
+        assert_eq!(
+            convert_pixels(&xrgb, 2, 1, 12, PIXEL_FORMAT_XRGB8888).expect("XRGB frame"),
+            [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+        );
+        let rgb565 = [0x00, 0xf8, 0xe0, 0x07];
+        assert_eq!(
+            convert_pixels(&rgb565, 2, 1, 4, PIXEL_FORMAT_RGB565).expect("RGB565 frame"),
+            [255, 0, 0, 0, 255, 0]
+        );
+    }
+
+    #[test]
+    fn invalid_video_geometry_is_rejected_before_pointer_access() {
+        let result = copy_video_frame(
+            std::ptr::dangling::<u8>().cast(),
+            256,
+            240,
+            255,
+            PIXEL_FORMAT_XRGB8888,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn replay_audio_callbacks_copy_bounded_interleaved_stereo() {
+        reset_capture_state();
+        CAPTURE_AUDIO.with(|capture| capture.set(true));
+        audio_callback(1, -2);
+        let batch = [3_i16, -4, 5, -6];
+        assert_eq!(audio_batch_callback(batch.as_ptr(), 2), 2);
+        AUDIO_SAMPLES.with(|samples| {
+            assert_eq!(&*samples.borrow(), &[1, -2, 3, -4, 5, -6]);
+        });
+        assert_eq!(copy_audio_batch(std::ptr::null(), 0), Ok(Vec::new()));
+        assert!(copy_audio_batch(std::ptr::null(), 1).is_err());
+        assert!(
+            copy_audio_batch(
+                std::ptr::dangling(),
+                MAX_AUDIO_FRAMES_PER_BATCH.saturating_add(1)
+            )
+            .is_err()
+        );
+        assert_eq!(QUICKNES_AUDIO_SAMPLE_RATE, 48_000);
+        assert_eq!(QUICKNES_AUDIO_CHANNELS, 2);
+        reset_capture_state();
+    }
+
+    #[test]
+    fn search_hard_disables_media_and_replay_enables_both() {
+        reset_capture_state();
+        let mut value = 0_i32;
+        assert!(environment_callback(
+            RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE,
+            (&raw mut value).cast()
+        ));
+        assert_eq!(value, 8);
+        CAPTURE_VIDEO.with(|capture| capture.set(true));
+        CAPTURE_AUDIO.with(|capture| capture.set(true));
+        assert!(environment_callback(
+            RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE,
+            (&raw mut value).cast()
+        ));
+        assert_eq!(value, 3);
+        reset_capture_state();
+    }
+
+    #[test]
     fn ffi_boundary_runs_snapshots_ram_and_restore_fixpoint() {
         let mut machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
         let base = machine.snapshot().expect("snapshot");
@@ -1217,6 +1649,16 @@ mod tests {
         );
         assert_eq!(machine.read(0, 1).expect("read"), vec![3]);
         assert_eq!(machine.read_wram().expect("fixed RAM read")[0], 3);
+        assert_eq!(machine.read_save_ram().expect("save RAM").len(), 8 * 1024);
+        machine
+            .write_save_ram(7, &[1, 2, 3])
+            .expect("bounded save RAM write");
+        assert_eq!(
+            &machine.read_save_ram().expect("written save RAM")[7..10],
+            &[1, 2, 3]
+        );
+        assert!(machine.write_save_ram(8 * 1024, &[1]).is_err());
+        assert!(machine.write_save_ram(usize::MAX, &[1]).is_err());
         machine.replay(base).expect("restore");
         assert_eq!(machine.read(0, 1).expect("read restored"), vec![0]);
         let fixed = machine.snapshot().expect("fixed snapshot");
