@@ -617,6 +617,7 @@ pub type vmm_core::vendor::Vendor::Snapshot: vm_state::records::SnapshotRecords
 pub fn vmm_core::vendor::Vendor::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &Self::VcpuState) -> Self::Snapshot
 pub fn vmm_core::vendor::Vendor::check_sealable_vcpu(&Self::VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
+pub fn vmm_core::vendor::Vendor::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_core::vendor::Vendor::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_core::vendor::Vendor::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_core::vendor::Vendor::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -651,6 +652,7 @@ pub type vmm_backend::arch::arm64::Arm64::Snapshot = vm_state::arm64::Arm64VmSta
 pub fn vmm_backend::arch::arm64::Arm64::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &vmm_backend::arch::arm64::state::Arm64VcpuState) -> vm_state::arm64::Arm64VmState
 pub fn vmm_backend::arch::arm64::Arm64::check_sealable_vcpu(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
+pub fn vmm_backend::arch::arm64::Arm64::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_backend::arch::arm64::Arm64::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::arm64::Arm64::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::arm64::Arm64::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -685,6 +687,7 @@ pub type vmm_backend::arch::x86::X86::Snapshot = vm_state::VmState
 pub fn vmm_backend::arch::x86::X86::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &vmm_backend::arch::x86::state::VcpuState) -> vm_state::VmState
 pub fn vmm_backend::arch::x86::X86::check_sealable_vcpu(&vmm_backend::arch::x86::state::VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
+pub fn vmm_backend::arch::x86::X86::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_backend::arch::x86::X86::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::x86::X86::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::x86::X86::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
