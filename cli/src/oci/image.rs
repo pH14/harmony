@@ -12,7 +12,7 @@
 //! whiteouts (`.wh.` entries) between layers.
 
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +29,8 @@ pub enum ImageError {
     Unrecognized(PathBuf),
     #[error("image has no config/rootfs for this architecture")]
     NoConfig,
+    #[error("image names a path outside its layout or rootfs: {0}")]
+    UnsafePath(String),
     #[error("tar: {0}")]
     Tar(String),
     #[error(transparent)]
@@ -166,8 +168,12 @@ fn docker_save_layers(layout: &Path) -> Result<(Vec<PathBuf>, Vec<u8>), ImageErr
     let manifest: Vec<DockerSaveManifestEntry> =
         serde_json::from_slice(&std::fs::read(layout.join("manifest.json"))?)?;
     let entry = manifest.into_iter().next().ok_or(ImageError::NoConfig)?;
-    let layers = entry.layers.iter().map(|l| layout.join(l)).collect();
-    let config = std::fs::read(layout.join(&entry.config))?;
+    let layers = entry
+        .layers
+        .iter()
+        .map(|l| contained_join(layout, l))
+        .collect::<Result<_, _>>()?;
+    let config = std::fs::read(contained_join(layout, &entry.config)?)?;
     Ok((layers, config))
 }
 
@@ -185,21 +191,24 @@ struct OciManifest {
     layers: Vec<OciDescriptor>,
 }
 
-fn blob_path(layout: &Path, digest: &str) -> PathBuf {
-    layout.join("blobs").join(digest.replace(':', "/"))
+/// The blob a descriptor digest names. The digest is untrusted input, so the
+/// `algorithm/hex` path it expands to is checked for containment under
+/// `blobs/` before it is read.
+fn blob_path(layout: &Path, digest: &str) -> Result<PathBuf, ImageError> {
+    contained_join(&layout.join("blobs"), &digest.replace(':', "/"))
 }
 
 fn oci_layout_layers(layout: &Path) -> Result<(Vec<PathBuf>, Vec<u8>), ImageError> {
     let index: OciIndex = serde_json::from_slice(&std::fs::read(layout.join("index.json"))?)?;
     let first = index.manifests.first().ok_or(ImageError::NoConfig)?;
     let manifest: OciManifest =
-        serde_json::from_slice(&std::fs::read(blob_path(layout, &first.digest))?)?;
+        serde_json::from_slice(&std::fs::read(blob_path(layout, &first.digest)?)?)?;
     let layers = manifest
         .layers
         .iter()
         .map(|l| blob_path(layout, &l.digest))
-        .collect();
-    let config = std::fs::read(blob_path(layout, &manifest.config.digest))?;
+        .collect::<Result<_, _>>()?;
+    let config = std::fs::read(blob_path(layout, &manifest.config.digest)?)?;
     Ok((layers, config))
 }
 
@@ -229,6 +238,55 @@ fn parse_runtime_config(blob: &[u8]) -> Result<RuntimeConfig, ImageError> {
         .unwrap_or_default())
 }
 
+/// Reject a path taken from an image (a tar member name, a manifest layer
+/// reference, a blob digest) that could resolve outside the directory it is
+/// joined to. `..`, an absolute root, and a path prefix are refused rather
+/// than normalized away, because both `tar -x` and the whiteout deletions
+/// act on these names.
+fn check_relative(path: &str) -> Result<(), ImageError> {
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(ImageError::UnsafePath(path.to_string()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Join an image-supplied relative path under `root` after checking it.
+fn contained_join(root: &Path, relative: &str) -> Result<PathBuf, ImageError> {
+    check_relative(relative)?;
+    if Path::new(relative).components().next().is_none() {
+        return Err(ImageError::UnsafePath(relative.to_string()));
+    }
+    Ok(root.join(relative))
+}
+
+/// The real path a whiteout entry names under `rootfs`, or `None` when
+/// nothing is there to delete. The parent is resolved through symlinks and
+/// checked against the real staging root: a lower layer can leave a symlink
+/// pointing outside the staging tree, and a whiteout naming a path through it
+/// would otherwise delete the symlink's target.
+fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, ImageError> {
+    let Ok(real_root) = rootfs.canonicalize() else {
+        return Ok(None);
+    };
+    let Some(name) = relative.file_name() else {
+        // The layer's own root, named by a top-level opaque whiteout.
+        return Ok(Some(real_root));
+    };
+    let parent = rootfs.join(relative.parent().unwrap_or(Path::new("")));
+    let Ok(real_parent) = parent.canonicalize() else {
+        return Ok(None);
+    };
+    if !real_parent.starts_with(&real_root) {
+        return Err(ImageError::UnsafePath(relative.display().to_string()));
+    }
+    Ok(Some(real_parent.join(name)))
+}
+
 fn untar(tarball: &Path, dest: &Path, extra: &[&str]) -> Result<(), ImageError> {
     let out = Command::new("tar")
         .arg("-xf")
@@ -256,24 +314,46 @@ fn apply_layer(layer: &Path, rootfs: &Path) -> Result<(), ImageError> {
             String::from_utf8_lossy(&listing.stderr).into_owned(),
         ));
     }
-    for entry in String::from_utf8_lossy(&listing.stdout).lines() {
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    // Validate every member before acting on any of them: a layer that names
+    // a path outside the staging root is refused whole, never half-applied.
+    for entry in listing.lines() {
+        check_relative(entry)?;
+    }
+    for entry in listing.lines() {
         let path = Path::new(entry);
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
         if name == ".wh..wh..opq" {
-            if let Some(parent) = path.parent() {
-                let dir = rootfs.join(parent);
-                if dir.is_dir() {
-                    std::fs::remove_dir_all(&dir)?;
-                    std::fs::create_dir_all(&dir)?;
-                }
+            let parent = path.parent().unwrap_or(Path::new(""));
+            let Some(dir) = resolve_under(rootfs, parent)? else {
+                continue;
+            };
+            let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                continue;
+            };
+            // Clearing a directory that is really a symlink would clear the
+            // link's target, which can sit outside the staging tree.
+            if meta.is_symlink() {
+                return Err(ImageError::UnsafePath(entry.to_string()));
+            }
+            if meta.is_dir() {
+                std::fs::remove_dir_all(&dir)?;
+                std::fs::create_dir_all(&dir)?;
             }
         } else if let Some(hidden) = name.strip_prefix(".wh.") {
-            let target = rootfs.join(path.with_file_name(hidden));
-            if target.is_dir() {
+            let Some(target) = resolve_under(rootfs, &path.with_file_name(hidden))? else {
+                continue;
+            };
+            // Read the target's own type, never the type it points at: a
+            // whiteout deletes the entry, not what a symlink resolves to.
+            let Ok(meta) = std::fs::symlink_metadata(&target) else {
+                continue;
+            };
+            if meta.is_dir() {
                 std::fs::remove_dir_all(&target)?;
-            } else if target.exists() {
+            } else {
                 std::fs::remove_file(&target)?;
             }
         }
@@ -315,9 +395,50 @@ mod tests {
     #[test]
     fn blob_path_splits_the_digest() {
         assert_eq!(
-            blob_path(Path::new("/l"), "sha256:abc"),
+            blob_path(Path::new("/l"), "sha256:abc").unwrap(),
             Path::new("/l/blobs/sha256/abc")
         );
+    }
+
+    /// A digest is untrusted: an OCI layout from anywhere can name one that
+    /// walks out of `blobs/`.
+    #[test]
+    fn blob_path_refuses_a_traversing_digest() {
+        for digest in ["sha256:../../etc/passwd", "..:..", "/etc:passwd", ""] {
+            assert!(
+                matches!(
+                    blob_path(Path::new("/l"), digest),
+                    Err(ImageError::UnsafePath(_))
+                ),
+                "{digest} was accepted"
+            );
+        }
+    }
+
+    /// The same for a docker-save manifest, whose layer and config entries
+    /// are plain strings read out of the tarball.
+    #[test]
+    fn docker_save_manifest_refuses_traversing_references() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            br#"[{"Config":"c.json","Layers":["../../outside.tar"]}]"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            docker_save_layers(dir.path()),
+            Err(ImageError::UnsafePath(_))
+        ));
+
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            br#"[{"Config":"/etc/passwd","Layers":[]}]"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            docker_save_layers(dir.path()),
+            Err(ImageError::UnsafePath(_))
+        ));
     }
 
     #[test]
@@ -390,6 +511,124 @@ mod tests {
         untar(&tarball, &dest, &[]).unwrap();
         assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"hi");
         assert!(untar(Path::new("/nonexistent.tar"), &dest, &[]).is_err());
+    }
+
+    /// A one-entry ustar archive whose member name is stored verbatim. `tar
+    /// -cf` will not produce a traversing member name, so the planted-attack
+    /// tests write the header themselves.
+    fn tar_with_raw_name(dir: &Path, name: &str, member: &str) -> PathBuf {
+        let mut header = [b'\0'; 512];
+        let mut put = |offset: usize, bytes: &[u8]| {
+            header[offset..offset + bytes.len()].copy_from_slice(bytes);
+        };
+        put(0, member.as_bytes());
+        put(100, b"0000644\0"); // mode
+        put(108, b"0000000\0"); // uid
+        put(116, b"0000000\0"); // gid
+        put(124, b"00000000000\0"); // size
+        put(136, b"00000000000\0"); // mtime
+        put(148, b"        "); // checksum field, spaces while summing
+        put(156, b"0"); // typeflag: regular file
+        put(257, b"ustar\0");
+        put(263, b"00");
+        let sum: u32 = header.iter().map(|b| u32::from(*b)).sum();
+        let checksum = format!("{sum:06o}\0 ");
+        header[148..156].copy_from_slice(checksum.as_bytes());
+
+        // Header, then the two zero blocks that end an archive.
+        let mut archive = header.to_vec();
+        archive.extend_from_slice(&[0u8; 1024]);
+        let tarball = dir.join(name);
+        std::fs::write(&tarball, archive).unwrap();
+        tarball
+    }
+
+    /// A layer member that walks out of the rootfs is refused, and nothing
+    /// outside the staging tree is touched. Both whiteout forms are planted:
+    /// the opaque marker (`remove_dir_all`) and the sibling delete
+    /// (`remove_file`).
+    #[test]
+    fn apply_layer_refuses_traversing_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("sentinel"), b"survives").unwrap();
+
+        for (n, member) in [
+            "../victim/.wh..wh..opq",
+            "../../victim/.wh..wh..opq",
+            "../victim/.wh.sentinel",
+            "/victim/.wh.sentinel",
+            "./../victim/.wh.sentinel",
+            "../victim/payload",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let layer = tar_with_raw_name(dir.path(), &format!("evil{n}.tar"), member);
+            let err = apply_layer(&layer, &rootfs).unwrap_err();
+            assert!(
+                matches!(err, ImageError::UnsafePath(_)),
+                "{member} gave {err:?}"
+            );
+            assert!(
+                victim.join("sentinel").is_file(),
+                "{member} deleted outside"
+            );
+            assert!(victim.is_dir(), "{member} removed the directory outside");
+        }
+    }
+
+    /// A whiteout that reaches outside through a symlink a lower layer left
+    /// behind is refused: the deletion resolves the parent and checks it
+    /// against the real staging root.
+    #[test]
+    fn apply_layer_refuses_whiteouts_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("sentinel"), b"survives").unwrap();
+        std::os::unix::fs::symlink(&victim, rootfs.join("link")).unwrap();
+
+        for (n, member) in ["link/.wh.sentinel", "link/.wh..wh..opq"]
+            .iter()
+            .enumerate()
+        {
+            let layer = tar_with_raw_name(dir.path(), &format!("sym{n}.tar"), member);
+            let err = apply_layer(&layer, &rootfs).unwrap_err();
+            assert!(
+                matches!(err, ImageError::UnsafePath(_)),
+                "{member} gave {err:?}"
+            );
+            assert!(
+                victim.join("sentinel").is_file(),
+                "{member} deleted outside"
+            );
+        }
+        // The symlink itself is still a whiteout-able entry in the rootfs.
+        assert!(std::fs::symlink_metadata(rootfs.join("link")).is_ok());
+    }
+
+    /// A whiteout naming a symlink deletes the link, never what it points at.
+    #[test]
+    fn whiteout_of_a_symlink_removes_only_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::create_dir_all(&victim).unwrap();
+        std::fs::write(victim.join("sentinel"), b"survives").unwrap();
+        std::os::unix::fs::symlink(&victim, rootfs.join("link")).unwrap();
+
+        let layer = tar_with_raw_name(dir.path(), "wh-link.tar", ".wh.link");
+        apply_layer(&layer, &rootfs).unwrap();
+        assert!(std::fs::symlink_metadata(rootfs.join("link")).is_err());
+        assert!(victim.join("sentinel").is_file());
+        assert!(victim.is_dir());
     }
 
     #[test]

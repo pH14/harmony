@@ -63,11 +63,36 @@ pub struct RunArgs {
 /// Base initramfs variants that can host an injected bundle, best first:
 /// the dedicated oci runner, then the container-class images that carry
 /// busybox (+ runc).
-const BASE_INITRAMFS: &[&str] = &[
+pub const BASE_INITRAMFS: &[&str] = &[
     "initramfs-oci.cpio.gz",
     "initramfs-docker.cpio.gz",
     "initramfs-postgres.cpio.gz",
 ];
+
+/// Whether a drive loop for this host exists in this build, and the hosts
+/// that have one. `harmony preflight` reports readiness against the same
+/// predicate `execute` is compiled under.
+pub use runner::{HOST_SUPPORTED, SUPPORTED_HOSTS};
+
+/// The best base initramfs among the installed ones, in `BASE_INITRAMFS`
+/// order. `None` means no installed initramfs can host an injected bundle.
+pub fn select_base_initramfs(installed: &[PathBuf]) -> Option<&PathBuf> {
+    BASE_INITRAMFS.iter().find_map(|name| {
+        installed
+            .iter()
+            .find(|p| p.file_name().is_some_and(|f| f == *name))
+    })
+}
+
+/// The refusal naming what a host without an accepted base initramfs is
+/// missing.
+pub fn missing_base_initramfs() -> String {
+    format!(
+        "no container-capable guest initramfs found (looked for {}); build one with \
+         `make -C consonance/harmony-linux <arm64-oci-image|docker-image>`",
+        BASE_INITRAMFS.join(", ")
+    )
+}
 
 #[derive(serde::Serialize)]
 struct RunRecord {
@@ -93,6 +118,13 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if !host.hypervisor.available() {
         return Err("hypervisor unavailable: run `harmony preflight`".into());
     }
+    // Refuse before staging: acquiring the image costs a registry pull.
+    if !HOST_SUPPORTED {
+        return Err(format!(
+            "no run loop for this host in this build; wired hosts are {SUPPORTED_HOSTS}"
+        )
+        .into());
+    }
     match host.cell {
         MatrixCell::Proven => {}
         MatrixCell::Expected if args.allow_untested => {}
@@ -108,21 +140,7 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let Some(kernel_path) = guest.kernel.as_ref() else {
         return Err("guest artifacts not found: run `harmony preflight`".into());
     };
-    let base_path = BASE_INITRAMFS
-        .iter()
-        .find_map(|name| {
-            guest
-                .initramfs
-                .iter()
-                .find(|p| p.file_name().is_some_and(|f| f == *name))
-        })
-        .ok_or_else(|| {
-            format!(
-                "no container-capable guest initramfs found (looked for {}); build one with \
-                 `make -C consonance/harmony-linux <arm64-oci-image|docker-image>`",
-                BASE_INITRAMFS.join(", ")
-            )
-        })?;
+    let base_path = select_base_initramfs(&guest.initramfs).ok_or_else(missing_base_initramfs)?;
 
     let kernel = std::fs::read(kernel_path)?;
     let base = std::fs::read(base_path)?;
@@ -235,6 +253,41 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The base initramfs is chosen by preference order, not by the order
+    /// the guest directory listed its files.
+    #[test]
+    fn base_initramfs_follows_preference_order() {
+        let dir = std::path::Path::new("/g");
+        let installed: Vec<PathBuf> = ["initramfs-postgres.cpio.gz", "initramfs-oci.cpio.gz"]
+            .iter()
+            .map(|n| dir.join(n))
+            .collect();
+        assert_eq!(
+            select_base_initramfs(&installed),
+            Some(&dir.join("initramfs-oci.cpio.gz"))
+        );
+        let only_postgres = vec![dir.join("initramfs-postgres.cpio.gz")];
+        assert_eq!(
+            select_base_initramfs(&only_postgres),
+            Some(&dir.join("initramfs-postgres.cpio.gz"))
+        );
+    }
+
+    /// An installed initramfs that is not a container-capable base is not a
+    /// base: `harmony oci run` cannot inject a bundle into it.
+    #[test]
+    fn base_initramfs_rejects_unaccepted_names() {
+        let installed = vec![
+            PathBuf::from("/g/initramfs.cpio.gz"),
+            PathBuf::from("/g/initramfs-minimal.cpio.gz"),
+        ];
+        assert_eq!(select_base_initramfs(&installed), None);
+        assert_eq!(select_base_initramfs(&[]), None);
+        assert!(missing_base_initramfs().contains("initramfs-oci.cpio.gz"));
+    }
+
     #[test]
     fn container_rc_parses_last_marker() {
         let serial = b"noise\nHARMONY_OCI_EXIT rc=3\ntail\nHARMONY_OCI_EXIT rc=0\n";

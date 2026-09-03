@@ -21,6 +21,17 @@ use std::time::Duration;
 ))]
 use std::time::Instant;
 
+/// Whether this build has a drive loop for the host it is running on.
+/// `execute` and `harmony preflight` must agree on the answer, so both read
+/// it here rather than repeating the cfg predicate.
+pub const HOST_SUPPORTED: bool = cfg!(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+));
+
+/// The hosts a drive loop exists for, for refusal messages.
+pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM)";
+
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
     #[cfg(not(any(
@@ -357,6 +368,18 @@ mod tests {
             ],
         );
         assert_eq!(out, b"abc\n");
+    }
+
+    /// The advertised predicate must match the drive loop this build
+    /// actually has, on whichever host the suite runs.
+    #[test]
+    fn host_supported_matches_the_compiled_drive_loop() {
+        let wired = cfg!(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        ));
+        assert_eq!(super::HOST_SUPPORTED, wired);
+        assert!(super::SUPPORTED_HOSTS.contains("Linux/x86-64"));
     }
 
     #[test]

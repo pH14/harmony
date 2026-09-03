@@ -112,14 +112,8 @@ fn start_script(image: &RuntimeConfig, cmd_override: &[String]) -> String {
     script
 }
 
-/// PID-1 for the run: mount the pseudo-filesystems, start the container via
-/// runc (or chroot when the base initramfs has no runc), report its exit
-/// status on the serial console, and power off. `panic=-1` + forced reboot in
-/// the kernel cmdline turn any failure here into a terminal exit, never a
-/// hang.
-#[cfg(target_arch = "x86_64")]
-const INIT: &str = r#"#!/bin/sh
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+/// Mount the pseudo-filesystems both container start paths need.
+const INIT_MOUNTS: &str = r#"export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
@@ -127,15 +121,22 @@ mkdir -p /dev/pts /dev/shm /run /tmp
 mount -t devpts devpts /dev/pts 2>/dev/null
 mount -t tmpfs tmpfs /run 2>/dev/null
 mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
-echo HARMONY_OCI: start
-cd /harmony-oci
-runc run --bundle /harmony-oci harmony-c1
-rc=$?
-case $rc in
+"#;
+
+/// Start the container and report its exit status on the console.
+///
+/// The start path is chosen by probing runc, before the workload runs. The
+/// probe's 127 means no runc in this guest image; the workload's own 127
+/// means the workload could not find its command, and reading that as an
+/// absent runc would start the workload a second time. The minimal ash has no
+/// `test` or `command` builtin, so `case` on the probe's status is the
+/// available form.
+const INIT_START: &str = r#"echo HARMONY_OCI: start
+runc --version >/dev/null 2>&1
+case $? in
 127)
     # No runc in this guest image: chroot start (same determinism, thinner
-    # isolation). The minimal ash has no `test`/`command` builtins, so runc's
-    # absence is detected by its 127 exit status.
+    # isolation).
     echo HARMONY_OCI: via chroot
     mount -t proc proc /harmony-oci/rootfs/proc 2>/dev/null
     mount -t devtmpfs devtmpfs /harmony-oci/rootfs/dev 2>/dev/null
@@ -149,63 +150,53 @@ case $rc in
     rc=$?
     ;;
 *)
-    cat /tmp/.runc-stderr
     echo HARMONY_OCI: via runc
+    cd /harmony-oci
+    runc run --bundle /harmony-oci harmony-c1
+    rc=$?
     ;;
 esac
 echo HARMONY_OCI_EXIT rc=$rc
-poweroff -f
+"#;
+
+/// Power off. `panic=-1` + forced reboot in the x86 kernel cmdline turn any
+/// failure before here into a terminal exit, never a hang; the sysrq write is
+/// the last resort if both commands are unavailable.
+const INIT_POWEROFF: &str = r#"poweroff -f
 reboot -f
 echo o > /proc/sysrq-trigger
 "#;
 
-/// arm64: the harness DTB's pl011 node is frozen without the primecell/clock
-/// properties the console driver needs to probe, so there is no /dev/console
-/// tty. All run output goes through /bin/mmio-console (shipped in
-/// initramfs-oci), which writes the PL011 data register directly via
-/// /dev/mem — the transport the postgres guest image proved.
-#[cfg(not(target_arch = "x86_64"))]
-const INIT: &str = r#"#!/bin/sh
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-mount -t proc proc /proc 2>/dev/null
-mount -t sysfs sysfs /sys 2>/dev/null
-mount -t devtmpfs devtmpfs /dev 2>/dev/null
-mkdir -p /dev/pts /dev/shm /run /tmp
-mount -t devpts devpts /dev/pts 2>/dev/null
-mount -t tmpfs tmpfs /run 2>/dev/null
-mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
-{
-    echo HARMONY_OCI: start
-    cd /harmony-oci
-    runc run --bundle /harmony-oci harmony-c1 2>/tmp/.runc-stderr
-    rc=$?
-    case $rc in
-    127)
-        # No runc in this guest image: chroot start (same determinism, thinner
-        # isolation). The minimal ash has no `test`/`command` builtins, so
-        # runc's absence is detected by its 127 exit status.
-        echo HARMONY_OCI: via chroot
-        mount -t proc proc /harmony-oci/rootfs/proc 2>/dev/null
-        mount -t devtmpfs devtmpfs /harmony-oci/rootfs/dev 2>/dev/null
-        mkdir -p /harmony-oci/rootfs/dev/shm /harmony-oci/rootfs/dev/pts
-        mount -t tmpfs tmpfs /harmony-oci/rootfs/dev/shm 2>/dev/null
-        mount -t devpts devpts /harmony-oci/rootfs/dev/pts 2>/dev/null
-        mount -t sysfs sysfs /harmony-oci/rootfs/sys 2>/dev/null
-        mount -t tmpfs tmpfs /harmony-oci/rootfs/tmp 2>/dev/null
-        mount -t tmpfs tmpfs /harmony-oci/rootfs/run 2>/dev/null
-        chroot /harmony-oci/rootfs /bin/sh /.harmony-start.sh
-        rc=$?
-        ;;
-    *)
-        cat /tmp/.runc-stderr
-        echo HARMONY_OCI: via runc
-        ;;
-    esac
-    echo HARMONY_OCI_EXIT rc=$rc
-} 2>&1 | /bin/mmio-console
-poweroff -f
-reboot -f
-"#;
+/// Where the init's output goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Console {
+    /// x86: the kernel's console device on ttyS0.
+    Serial,
+    /// arm64: the harness DTB's pl011 node is frozen without the
+    /// primecell/clock properties the console driver needs to probe, so there
+    /// is no /dev/console tty. Output goes through /bin/mmio-console (shipped
+    /// in initramfs-oci), which writes the PL011 data register directly via
+    /// /dev/mem — the transport the postgres guest image proved.
+    Mmio,
+}
+
+/// PID-1 for the run: mount the pseudo-filesystems, start the container,
+/// report its exit status on the console, and power off.
+fn init_script(console: Console) -> String {
+    let start = match console {
+        Console::Serial => INIT_START.to_string(),
+        Console::Mmio => format!("{{\n{INIT_START}}} 2>&1 | /bin/mmio-console\n"),
+    };
+    format!("#!/bin/sh\n{INIT_MOUNTS}{start}{INIT_POWEROFF}")
+}
+
+fn init() -> String {
+    init_script(if cfg!(target_arch = "x86_64") {
+        Console::Serial
+    } else {
+        Console::Mmio
+    })
+}
 
 /// Assemble the gzip-compressed rootfs initramfs segment: the unpacked image
 /// tree under `harmony-oci/rootfs`. A pure function of the tree, so it is
@@ -227,7 +218,7 @@ pub fn build_control_segment(
     cmd_override: &[String],
 ) -> Result<Vec<u8>, BundleError> {
     let mut w = Writer::new();
-    w.file("harmony-oci-init", 0o755, INIT.as_bytes());
+    w.file("harmony-oci-init", 0o755, init().as_bytes());
     w.dir("harmony-oci", 0o755);
     w.file(
         "harmony-oci/config.json",
@@ -338,6 +329,53 @@ mod tests {
         assert!(script.contains("export PGDATA='/var/lib/postgresql/data'\n"));
         assert!(script.contains("cd '/app' || exit 125\n"));
         assert!(script.contains("exec 'docker-entrypoint.sh' 'postgres'\n"));
+    }
+
+    /// The start path must come from a probe of runc, never from the
+    /// workload's exit status: a container that legitimately exits 127 would
+    /// otherwise be started a second time through the chroot fallback.
+    #[test]
+    fn init_selects_the_start_path_before_running_the_workload() {
+        let probe = INIT_START.find("runc --version").expect("runc probe");
+        let switch = INIT_START.find("case $? in").expect("probe status switch");
+        let runc = INIT_START.find("runc run --bundle").expect("runc start");
+        let chroot = INIT_START
+            .find("chroot /harmony-oci/rootfs")
+            .expect("chroot start");
+        assert!(probe < switch, "the probe must precede the switch");
+        assert!(switch < runc && switch < chroot, "both paths sit under it");
+        // Each start path appears once, so the workload runs exactly once.
+        assert_eq!(INIT_START.matches("runc run --bundle").count(), 1);
+        assert_eq!(INIT_START.matches("chroot /harmony-oci/rootfs").count(), 1);
+        // Nothing branches on the workload's own status.
+        assert!(!INIT_START.contains("case $rc"));
+        assert_eq!(INIT_START.matches("rc=$?").count(), 2);
+        assert!(INIT_START.rfind("rc=$?").unwrap() < INIT_START.find("HARMONY_OCI_EXIT").unwrap());
+    }
+
+    /// Both console variants must parse as POSIX shell: the guest runs them
+    /// as PID 1, where a syntax error is an unbootable run.
+    #[test]
+    fn init_variants_are_valid_shell() {
+        for console in [Console::Serial, Console::Mmio] {
+            let script = init_script(console);
+            let mut file = tempfile::NamedTempFile::new().unwrap();
+            std::io::Write::write_all(&mut file, script.as_bytes()).unwrap();
+            let out = Command::new("/bin/sh")
+                .arg("-n")
+                .arg(file.path())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{console:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(script.starts_with("#!/bin/sh\n"));
+        }
+        // Only the arm64 variant routes output through the mmio console.
+        assert!(init_script(Console::Mmio).contains("| /bin/mmio-console"));
+        assert!(!init_script(Console::Serial).contains("mmio-console"));
     }
 
     /// Both segment builders must produce real gzip members (the kernel

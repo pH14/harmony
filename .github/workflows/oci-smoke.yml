@@ -8,7 +8,7 @@ name: oci-smoke
 #
 # The guest kernel + initramfs build takes ~30 minutes cold, so it is cached
 # across runs keyed by its build inputs; a cache hit makes the whole job a
-# CLI build plus three guest runs.
+# CLI build plus four guest runs.
 on:
   pull_request:
     paths:
@@ -111,12 +111,15 @@ jobs:
         run: ./target/release/harmony preflight
       - name: Determinism smoke
         run: |
+          # The workload reads guest randomness so the digest depends on the
+          # seed: the same seed must reproduce it, a different seed must not.
           # timeout(1) backstops the CLI's own wall budget: the Linux drive
           # loop cannot yet interrupt a vCPU that stops exiting (issue filed),
           # and a hung run must fail the lane, not the job timeout.
           run() {
             timeout 660 ./target/release/harmony oci run alpine:3 --seed "$1" \
-              --timeout 600 --out "run-$2" -- /bin/echo oci-smoke \
+              --timeout 600 --out "run-$2" -- /bin/sh -c \
+              'echo oci-smoke; head -c 16 /dev/urandom | od -An -tx1' \
               | tee "run-$2/console.txt"
           }
           mkdir -p run-a run-b run-c run-d
@@ -125,12 +128,29 @@ jobs:
           run 7 c
           run 7 d
           digest() { awk '/^digest/{print $2}' "run-$1/console.txt"; }
+          # A missing digest must fail here rather than compare equal to
+          # another missing one.
+          for r in a b c d; do
+            d=$(digest "$r")
+            [[ "$d" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "run-$r: no digest in the console output (got '$d')"
+              exit 1
+            }
+          done
+          # The workload ran, and it emitted the guest randomness the
+          # seed-divergence check reads.
           grep -q oci-smoke run-a/console.txt
+          grep -Eq '^ [0-9a-f]{2} ' run-a/console.txt
           [ "$(digest a)" = "$(digest b)" ]
           [ "$(digest c)" = "$(digest d)" ]
+          [ "$(digest a)" != "$(digest c)" ]
           cmp run-a/serial.log run-b/serial.log
           cmp run-c/serial.log run-d/serial.log
-          echo "seed 0 reproduced $(digest a); seed 7 reproduced $(digest c)"
+          if cmp -s run-a/serial.log run-c/serial.log; then
+            echo "seed 0 and seed 7 produced identical serial output"
+            exit 1
+          fi
+          echo "seed 0 reproduced $(digest a); seed 7 reproduced $(digest c); seeds diverged"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
