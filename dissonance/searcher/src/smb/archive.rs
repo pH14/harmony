@@ -408,19 +408,26 @@ pub const NES_PRESSABLE_BUTTON_MASKS: [u8; 36] = [
     0x60, 0x61, 0x62, 0x63,
 ];
 
+/// Shortest and longest hold of the short stratum, drawn for control.
+pub const SHORT_HOLD_FRAMES: (u8, u8) = (2, 12);
+/// Shortest and longest hold of the long stratum, drawn for time.
+pub const LONG_HOLD_FRAMES: (u8, u8) = (96, 120);
+
 /// Draw one chord: a uniform mask and a hold from one of two strata, short
-/// (2..=12 frames) for control and long (96..=120 frames) for time.
+/// for control and long for time.
 pub(crate) fn sample_chord_from_masks(
     rand: &mut RomuDuoJrRand,
     masks: &[u8],
 ) -> Result<ButtonChord, Box<dyn Error>> {
     let buttons =
         masks[rand.below(NonZeroUsize::new(masks.len()).ok_or("empty SMB button vocabulary")?)];
-    let hold_frames = if rand.below(NonZeroUsize::new(2).ok_or("invalid stratum odds")?) == 0 {
-        u8::try_from(2 + rand.below(NonZeroUsize::new(11).ok_or("invalid short hold span")?))?
+    let (low, high) = if rand.below(NonZeroUsize::new(2).ok_or("invalid stratum odds")?) == 0 {
+        SHORT_HOLD_FRAMES
     } else {
-        u8::try_from(96 + rand.below(NonZeroUsize::new(25).ok_or("invalid long hold span")?))?
+        LONG_HOLD_FRAMES
     };
+    let span = NonZeroUsize::new(usize::from(high - low) + 1).ok_or("invalid hold span")?;
+    let hold_frames = u8::try_from(usize::from(low) + rand.below(span))?;
     Ok(ButtonChord::new(buttons, hold_frames))
 }
 

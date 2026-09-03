@@ -20,12 +20,15 @@ pub const SUFFIX_ONE_TO_SIX_IDENTIFIER: &str = "one_to_six";
 
 /// Identifier recorded for the one-to-six suffix shape cut at the rollout
 /// time bound.
-pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str = "one_to_six_within_360_full_hold";
+pub const SUFFIX_ONE_TO_SIX_BOUNDED_IDENTIFIER: &str =
+    "one_to_six_within_3_longest_actions_full_hold";
 
-/// Action time one job's suffix may reach. The action that reaches the
-/// bound runs in full and ends the suffix, so a job never runs longer than
-/// the bound plus one action.
-pub const SUFFIX_TIME_BOUND: u64 = 360;
+/// Action time one job's suffix may reach, as a multiple of the target's
+/// longest single action. The action that reaches the bound runs in full and
+/// ends the suffix, so a job never runs longer than the bound plus one
+/// action. Bounding every job to a few actions' worth of time keeps one long
+/// job from stalling ordered admission for the other workers.
+pub const SUFFIX_TIME_BOUND_LONGEST_ACTIONS: u64 = 3;
 
 /// How many actions one job appends to its parent's input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -35,21 +38,24 @@ pub enum SuffixShape {
     /// A uniform draw of one to six actions.
     OneToSix,
     /// A uniform draw of one to six actions, cut after the action that
-    /// reaches `SUFFIX_TIME_BOUND`; a spliced tail is cut the same way.
+    /// reaches `SUFFIX_TIME_BOUND_LONGEST_ACTIONS` times the target's longest
+    /// action; a spliced tail is cut the same way.
     #[default]
     OneToSixBounded,
 }
 
 impl SuffixShape {
-    /// Cut a suffix after the action that reaches the shape's time bound.
-    pub fn bound_time<A>(self, suffix: &mut Vec<A>, time: fn(&A) -> u64) {
+    /// Cut a suffix after the action that reaches the shape's time bound,
+    /// `SUFFIX_TIME_BOUND_LONGEST_ACTIONS` times `longest_action_time`.
+    pub fn bound_time<A>(self, suffix: &mut Vec<A>, time: fn(&A) -> u64, longest_action_time: u64) {
         if self != Self::OneToSixBounded {
             return;
         }
+        let bound = SUFFIX_TIME_BOUND_LONGEST_ACTIONS.saturating_mul(longest_action_time);
         let mut total = 0_u64;
         let reached = suffix.iter().position(|action| {
             total = total.saturating_add(time(action));
-            total >= SUFFIX_TIME_BOUND
+            total >= bound
         });
         if let Some(index) = reached {
             suffix.truncate(index.saturating_add(1));
@@ -353,17 +359,18 @@ mod tests {
     #[test]
     fn the_bounded_shape_cuts_a_suffix_after_the_action_that_reaches_the_bound() {
         let time = |action: &u64| *action;
+        let longest = 120;
         let mut suffix = vec![100, 200, 60, 5, 5];
-        SuffixShape::OneToSixBounded.bound_time(&mut suffix, time);
+        SuffixShape::OneToSixBounded.bound_time(&mut suffix, time, longest);
         assert_eq!(suffix, vec![100, 200, 60]);
         let mut short = vec![100, 200, 59];
-        SuffixShape::OneToSixBounded.bound_time(&mut short, time);
+        SuffixShape::OneToSixBounded.bound_time(&mut short, time, longest);
         assert_eq!(short, vec![100, 200, 59]);
         let mut one = vec![1_000, 1];
-        SuffixShape::OneToSixBounded.bound_time(&mut one, time);
+        SuffixShape::OneToSixBounded.bound_time(&mut one, time, longest);
         assert_eq!(one, vec![1_000]);
         let mut unbounded = vec![100, 200, 60, 5, 5];
-        SuffixShape::OneToSix.bound_time(&mut unbounded, time);
+        SuffixShape::OneToSix.bound_time(&mut unbounded, time, longest);
         assert_eq!(unbounded.len(), 5);
     }
 

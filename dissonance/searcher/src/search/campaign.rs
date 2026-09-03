@@ -211,6 +211,9 @@ pub trait Game: Sync {
     fn max_action_limit(&self) -> usize;
     /// Time-accounting function handed to the archive.
     fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
+    /// Time of the longest single action the target can draw; the suffix
+    /// time bound is a multiple of it.
+    fn longest_action_time(&self) -> u64;
     /// Deterministic logical memory charge for one resident snapshot.
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
     /// Fixed logical-memory reserve withheld from the recorded global budget
@@ -2355,6 +2358,7 @@ where
     let mut coordinator_profile =
         live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
     let action_time = game.action_time_fn();
+    let longest_action_time = game.longest_action_time();
 
     let max_actions = config.action_limit;
     let retention = config.retention;
@@ -2476,7 +2480,9 @@ where
                             mutation_seed,
                         )?,
                     };
-                    config.suffix.bound_time(&mut suffix, action_time);
+                    config
+                        .suffix
+                        .bound_time(&mut suffix, action_time, longest_action_time);
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
@@ -3140,6 +3146,7 @@ where
     let replay_mixture = draw_mixture_from_identifier(&header.mixture_policy)?;
     let replay_run = game.resolve_recorded(&header.game_policies)?;
     let action_time = game.action_time_fn();
+    let longest_action_time = game.longest_action_time();
     if let Some(checkpoint) = origin_checkpoint {
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
@@ -3292,7 +3299,7 @@ where
                         skip.mutation_seed,
                     )?,
                 };
-                replay_suffix.bound_time(&mut suffix, action_time);
+                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
                 if !core.all_prefixes_archived(parent_index, &suffix) {
                     return Err("recorded skip is not a duplicate at its stream position".into());
                 }
@@ -3364,7 +3371,7 @@ where
                         job.mutation_seed,
                     )?,
                 };
-                replay_suffix.bound_time(&mut suffix, action_time);
+                replay_suffix.bound_time(&mut suffix, action_time, longest_action_time);
                 let job_frames_before = game.frames_clocked(&target);
                 let result = game.execute_job(
                     &replay_run,

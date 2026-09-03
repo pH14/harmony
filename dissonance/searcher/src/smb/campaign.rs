@@ -1013,6 +1013,10 @@ impl Game for SmbGame {
         chord_time
     }
 
+    fn longest_action_time(&self) -> u64 {
+        u64::from(crate::smb::archive::LONG_HOLD_FRAMES.1)
+    }
+
     fn snapshot_memory_charge(snapshot: &SmbSnapshot) -> usize {
         snapshot.resident_memory_charge()
     }
