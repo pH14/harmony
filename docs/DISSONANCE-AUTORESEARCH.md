@@ -56,22 +56,23 @@ Anything that changes how stale the archive is when a parent is selected
 (in-flight reservation depth, prefetch, admission order) is a search change and
 is scored like every other candidate. Throughput never justifies a lower score.
 
-An execution's cost is its emulated frames. Under the one-to-six draw a
-rollout runs at most six holds (up to 720 frames), a replay from the last
-keyframe averages 150 frames and takes 6% of all frames, and a splice tail
-runs up to 128 actions; splice jobs are a fifth of jobs and half of all
-frames. The score in executions assumes every job costs about the same, so a
-candidate that changes the job shape is also reported in frames to the
-victory event and in wall seconds to it.
+An execution's cost is its emulated frames. The default bounded one-to-six
+draw cuts a suffix after the action that reaches 360 frames of action time,
+three times SMB's 120-frame longest hold. That crossing action runs in full,
+so a suffix runs at most 479 frames over at most six actions. A spliced tail
+is cut the same way, under the same 128-action cap. A replay from the last
+keyframe averages 150 frames and takes 6% of all frames; splice jobs are a
+fifth of jobs and half of all frames. The score in executions assumes every
+job costs about the same, so a candidate that changes the job shape is also
+reported in frames to the victory event and in wall seconds to it.
 
 Frames to the victory event is the report's `frames_to_first_victory`: the
 bootstrap walk plus every job's frames through the ordered admission that
 first reached the success predicate. It is absent from a run that never
-reached it. `frames_emulated` counts the whole run, including the jobs that
-were already reserved when the win was admitted and drained afterwards, so it
-overshoots by an amount that grows with the admission window. Compare
-candidates on `frames_to_first_victory`; use `frames_emulated` for
-throughput.
+reached it, and it is the frame figure a job-shape candidate reports.
+`frames_emulated` counts the whole run, including the jobs already reserved
+when the win was admitted and drained afterwards, so it overshoots by an
+amount that grows with the admission window; use it for throughput only.
 
 ## Loop
 
