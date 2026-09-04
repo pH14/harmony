@@ -12,7 +12,33 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 require_linux_amd64
-require_tools cc make gzip cpio readelf cargo
+require_tools cc make gzip cpio readelf cargo cmp mktemp
+
+# GNU cpio 2.14+ makes newc archives independent of the source filesystem's
+# inode, device, and directory-link metadata. Those fields reach the initramfs
+# hash recorded in every Nova stream, so silently accepting another cpio
+# implementation would make cross-runner streams diverge before guest boot.
+case "$(cpio --version 2>/dev/null || true)" in
+    *"GNU cpio"*) ;;
+    *)
+        echo "FAIL: Nova image reproducibility requires GNU cpio 2.14 or newer" >&2
+        exit 1
+        ;;
+esac
+case "$(cpio --help 2>&1 || true)" in
+    *"--reproducible"*) ;;
+    *)
+        echo "FAIL: host GNU cpio does not support --reproducible (need 2.14 or newer)" >&2
+        exit 1
+        ;;
+esac
+case "$(cpio --help 2>&1 || true)" in
+    *"--ignore-dirnlink"*) ;;
+    *)
+        echo "FAIL: host GNU cpio does not normalize directory links (need 2.14 or newer)" >&2
+        exit 1
+        ;;
+esac
 
 : "${HARMONY_NOVA_ROM:?set HARMONY_NOVA_ROM to the pinned built nova.nes}"
 : "${HARMONY_NOVA_CORE_STATIC:?set HARMONY_NOVA_CORE_STATIC to the pinned QuickNES archive}"
@@ -68,7 +94,33 @@ install -m 0755 "$LINUX_DIR/nova-game-init.sh" "$NOVA_ROOT/init"
 
 echo "== Nova game image: packing reproducible initramfs (ROM $ROM_SHA)"
 find "$NOVA_ROOT" -mindepth 1 -exec touch -hcd @0 {} +
-( cd "$NOVA_ROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --owner=0:0 --quiet ) \
-    | gzip -n -9 >"$ART_DIR/initramfs-nova.cpio.gz"
-echo "ok: $ART_DIR/initramfs-nova.cpio.gz ($(du -h "$ART_DIR/initramfs-nova.cpio.gz" | cut -f1))"
+
+pack_initramfs() {
+    local root=$1
+    local output=$2
+    ( cd "$root" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
+        | cpio --null -o -H newc --owner=0:0 --reproducible --quiet ) \
+        | gzip -n -9 >"$output"
+}
+
+INITRAMFS=$ART_DIR/initramfs-nova.cpio.gz
+pack_initramfs "$NOVA_ROOT" "$INITRAMFS"
+
+# Repack an inode-distinct clone and require exact bytes. This catches removal
+# or weakening of any metadata normalization in the actual production path.
+REPRO_CHECK=$(mktemp -d "$BUILD_ROOT/nova-game-repro.XXXXXX")
+cleanup_repro_check() {
+    rm -rf -- "${REPRO_CHECK:?}"
+}
+trap cleanup_repro_check EXIT
+mkdir "$REPRO_CHECK/root"
+cp -a "$NOVA_ROOT/." "$REPRO_CHECK/root/"
+pack_initramfs "$REPRO_CHECK/root" "$REPRO_CHECK/initramfs-nova.cpio.gz"
+if ! cmp -s "$INITRAMFS" "$REPRO_CHECK/initramfs-nova.cpio.gz"; then
+    echo "FAIL: Nova initramfs differs when packed from an inode-distinct rootfs" >&2
+    exit 1
+fi
+cleanup_repro_check
+trap - EXIT
+
+echo "ok: $INITRAMFS ($(du -h "$INITRAMFS" | cut -f1), sha256 $(sha256_of "$INITRAMFS"))"

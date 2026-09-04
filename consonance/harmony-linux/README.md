@@ -82,6 +82,10 @@ apt-get install -y build-essential flex bison libelf-dev libssl-dev bc cpio \
   kmod wget qemu-system-x86 xz-utils bzip2 shellcheck
 ```
 
+The x86 Nova image requires GNU cpio 2.14 or newer: its `--reproducible`
+mode normalizes inode, device, and directory-link metadata before the
+initramfs hash is recorded in deterministic campaign streams.
+
 On macOS, run the Linux gate in a Linux/amd64 container as documented in
 `docs/BUILDING.md`; it fails fast instead of skipping. The compatibility-library
 gate itself is portable and uses the host C compiler.
