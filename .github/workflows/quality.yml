@@ -479,6 +479,11 @@ jobs:
   # is a hard failure, and it prints the snapshot each crate was compared
   # against plus a final N/N count, so this job's log shows green-by-CHECKING
   # rather than green-by-skipping (AGENTS.md review rule 4, "Gate vacuity").
+  # That N is DISCOVERED FROM THE TREE — every `*/tests/public-api*.txt` — and
+  # reconciled against the script's crate list in both directions before any
+  # comparison runs, so the count cannot be satisfied by shrinking the list and
+  # a crate that gains a snapshot without gaining an entry fails here instead of
+  # going silently unfrozen.
   public-api-aarch64:
     name: public-api-aarch64
     runs-on: ubuntu-latest

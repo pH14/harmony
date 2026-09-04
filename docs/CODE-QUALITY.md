@@ -240,7 +240,11 @@ until it is added to that list**.
   instead of drifting in silently. Unlike the in-tree guards it has **no skip branch**: a
   missing toolchain, target, tool or snapshot is a hard failure, and it prints the snapshot
   each crate was compared against plus a final N/N count, so the job's log shows
-  green-by-checking rather than green-by-skipping. Refresh an aarch64 snapshot with
+  green-by-checking rather than green-by-skipping. That N is **discovered from the tree**
+  (every `*/tests/public-api*.txt`) rather than taken from the script's own crate list, and
+  the two are reconciled in both directions before any comparison runs: **a crate that gains
+  a snapshot without gaining a list entry fails this gate rather than going silently
+  unfrozen**. Refresh an aarch64 snapshot with
   `UPDATE_PUBLIC_API=1 scripts/check-public-api-aarch64.sh`; an arch-neutral API change moves
   the x86 snapshot only, an arch-divergent one moves both.
 - **No new crate dependencies:** the guard invokes the installed `cargo-public-api` *binary*

@@ -22,6 +22,11 @@
 # or a missing snapshot is a hard failure, and every crate prints the snapshot it
 # was compared against, so the job's own log shows the comparison happening.
 #
+# And the set of crates it must compare is DISCOVERED FROM THE TREE, never taken
+# on the crate list's word — see "Coverage" below. A gate that checks its own
+# work against its own list can be silenced by shrinking the list; this one
+# cannot.
+#
 # Usage:
 #   scripts/check-public-api-aarch64.sh            # check (CI, and locally)
 #   UPDATE_PUBLIC_API=1 scripts/check-public-api-aarch64.sh   # refresh goldens
@@ -46,6 +51,12 @@ cd "${repo_root}"
 # `-p` list of the `public-api` job. The aarch64 leg covers ALL of them, not
 # just the two that currently diverge: a crate that grows its first
 # aarch64-only `pub` item must fail here rather than drift in silently.
+#
+# This list carries the cargo SELECTOR (in-workspace `-p` vs the out-of-workspace
+# `--manifest-path`), which is why it is written out rather than derived. It is
+# NOT trusted to define coverage: the "Coverage" block below reconciles it
+# against the snapshots actually present in the tree, in both directions, and
+# fails if the two disagree.
 #
 #   <snapshot dir>|<cargo selector>
 CRATES=(
@@ -87,6 +98,96 @@ rustup target list --installed --toolchain "${PINNED_NIGHTLY}" 2>/dev/null |
      rustup target add ${TARGET} --toolchain ${PINNED_NIGHTLY}"
 
 echo "public-api aarch64 leg: target ${TARGET}, toolchain ${PINNED_NIGHTLY}, $(cargo "+${PINNED_NIGHTLY}" public-api --version)"
+
+# --- Coverage. Discovered from the tree, never asserted against CRATES. ------
+#
+# CRATES above is hand-maintained and duplicated from the x86 `public-api` job's
+# `-p` list, so it can go stale — that set has already grown once, 2 crates to
+# 15. Checking the loop's work against `${#CRATES[@]}` would not notice, because
+# emptying or truncating the list shrinks BOTH sides of that comparison at once:
+# an empty list would compare nothing and report "0/0 ... no drift", and a crate
+# that gains a snapshot without gaining an entry here would have its aarch64
+# surface frozen nowhere, with nothing anywhere saying so.
+#
+# So the expected set comes from the tree instead. The committed snapshots are
+# the source of truth: a crate carrying `tests/public-api*.txt` is a crate whose
+# public surface this project freezes, and this leg owes it a comparison. Three
+# reconciliations, none of which a shrinking CRATES can satisfy:
+#
+#   (a) every discovered snapshot must be covered by CRATES  — catches a stale
+#       list, which is the realistic failure: crate 16 lands, nobody edits here;
+#   (b) every CRATES entry must have a discovered snapshot   — catches the
+#       reverse, an entry left behind by a crate whose golden was removed;
+#   (c) the final compared-count is checked against the DISCOVERED total.
+#
+# Discovery deliberately walks the working tree rather than `git ls-files`: an
+# uncommitted golden is still a golden this leg must not silently ignore.
+# `target/` (a restored build cache) and `.git` are pruned; nothing under either
+# is a frozen contract.
+discovered=()
+discovered_dirs=" "
+while IFS= read -r snapshot_path; do
+    [ -n "${snapshot_path}" ] || continue
+    case "${snapshot_path}" in
+        */tests/public-api*.txt) ;;
+        *) die "public-API snapshot in an unexpected place: ${snapshot_path}
+     this leg discovers goldens at <crate-dir>/tests/public-api*.txt. Teach the
+     discovery about this one rather than leaving its surface unfrozen." ;;
+    esac
+    dir=${snapshot_path%/tests/public-api*.txt}
+    # vmm-backend and vmm-core each carry two goldens (x86 + aarch64); one crate.
+    case "${discovered_dirs}" in
+        *" ${dir} "*) continue ;;
+    esac
+    discovered+=("${dir}")
+    discovered_dirs="${discovered_dirs}${dir} "
+done < <(find . \( -name target -o -name .git \) -prune -o \
+             -name 'public-api*.txt' -print | sed 's|^\./||' | sort)
+
+discovered_count=${#discovered[@]}
+[ "${discovered_count}" -gt 0 ] ||
+    die "discovered no tests/public-api*.txt anywhere under ${repo_root}
+     Either coverage discovery is broken or the frozen-API goldens are gone.
+     Either way this gate has nothing to check and must not report success."
+
+covered_dirs=" "
+for entry in "${CRATES[@]}"; do
+    covered_dirs="${covered_dirs}${entry%%|*} "
+done
+
+uncovered=()
+for dir in "${discovered[@]}"; do
+    case "${covered_dirs}" in
+        *" ${dir} "*) ;;
+        *) uncovered+=("${dir}") ;;
+    esac
+done
+if [ ${#uncovered[@]} -ne 0 ]; then
+    for dir in "${uncovered[@]}"; do
+        echo "  UNCOVERED ${dir}: freezes a public API that this leg never compares" >&2
+    done
+    die "${#uncovered[@]} crate(s) carry a frozen public-API snapshot the aarch64 leg does not cover: ${uncovered[*]}
+     Their aarch64 surface is frozen NOWHERE, which is the drift this gate
+     exists to catch. Add each to CRATES above with its cargo selector (and to
+     the \`public-api\` job's -p list in .github/workflows/quality.yml if it is
+     missing there too)."
+fi
+
+stale=()
+for entry in "${CRATES[@]}"; do
+    dir=${entry%%|*}
+    case "${discovered_dirs}" in
+        *" ${dir} "*) ;;
+        *) stale+=("${dir}") ;;
+    esac
+done
+if [ ${#stale[@]} -ne 0 ]; then
+    die "${#stale[@]} CRATES entry(ies) name a crate with no tests/public-api*.txt: ${stale[*]}
+     The list is stale. Drop the entry if that crate's surface is deliberately
+     no longer frozen; restore its golden if it is not."
+fi
+
+echo "coverage: ${discovered_count} crate(s) in the tree carry a frozen public-API snapshot, and the crate list covers all ${discovered_count}"
 echo
 
 work=$(mktemp -d)
@@ -180,8 +281,11 @@ if [ ${#failed[@]} -ne 0 ]; then
 fi
 
 # Guard the gate against itself: a silently-emptied crate list, or a loop that
-# never executed, must not report success.
-[ "${compared}" -eq "${#CRATES[@]}" ] ||
-    die "expected ${#CRATES[@]} crates compared, got ${compared} — the gate did not run in full"
+# never executed, must not report success. The expected count is the number of
+# snapshot crates DISCOVERED IN THE TREE, not `${#CRATES[@]}` — comparing the
+# loop's work against the list that drove it is self-referential and both sides
+# shrink together.
+[ "${compared}" -eq "${discovered_count}" ] ||
+    die "expected ${discovered_count} crates compared, one per snapshot discovered in the tree, got ${compared} — the gate did not run in full"
 
-echo "public-api aarch64 leg: ${compared}/${#CRATES[@]} crates compared against the frozen aarch64 surface, no drift"
+echo "public-api aarch64 leg: ${compared}/${discovered_count} crates compared against the frozen aarch64 surface, no drift"
