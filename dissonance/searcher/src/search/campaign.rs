@@ -77,10 +77,12 @@ const ORIGIN_ARCHIVE: &str = "archive";
 /// overshoot to a small number of jobs per core.
 const WINDOW_JOBS_PER_WORKER: usize = 64;
 
-/// Already-reserved jobs buffered in each physical executor. This is smaller
-/// than the logical reorder window and changes only overlap: logical worker
-/// identity, selection, and admission remain coordinator-owned.
-const EXECUTOR_PREFETCH_JOBS: usize = 8;
+/// Result-bearing jobs allowed per physical executor. A worker receives its
+/// next reservation only after the coordinator admits its previous result,
+/// bounding unadmitted whole-VM snapshots to one job per worker. This changes
+/// only physical overlap: logical worker identity, selection, and admission
+/// remain coordinator-owned.
+const RESULT_JOBS_PER_PHYSICAL_WORKER: usize = 1;
 
 /// Ordered admissions processed before the coordinator returns to completed
 /// physical workers. This bounds refill latency without changing admission
@@ -1994,10 +1996,15 @@ struct PendingJob {
 /// One finished window slot, held until every earlier reservation can be
 /// admitted in deterministic order.
 struct CompletedJob<G: Game + ?Sized> {
+    physical_worker: u32,
     pending: PendingJob,
     result: CampaignJobResult<G>,
     frames: u64,
     result_sha256: String,
+}
+
+fn completed_results_within_bound(completed: usize, workers: usize) -> bool {
+    completed <= workers.saturating_mul(RESULT_JOBS_PER_PHYSICAL_WORKER)
 }
 
 fn replay_splice<G: Game>(
@@ -2504,7 +2511,7 @@ where
                 queued_specs.push_back(spec);
             }
             let mut physical_queued = vec![0_usize; workers];
-            'prefill: for _ in 0..EXECUTOR_PREFETCH_JOBS {
+            'prefill: for _ in 0..RESULT_JOBS_PER_PHYSICAL_WORKER {
                 for worker in 0..config.workers {
                     let Some(spec) = queued_specs.pop_front() else {
                         break 'prefill;
@@ -2556,6 +2563,7 @@ where
                         .insert(
                             reservation,
                             CompletedJob {
+                                physical_worker,
                                 pending: pending_job,
                                 result,
                                 frames,
@@ -2566,16 +2574,10 @@ where
                     {
                         return Err("campaign worker completed one reservation twice".into());
                     }
-
-                    // Refill every executor whose reply is already queued
-                    // before ordered admission. Physical completion order is
-                    // unrecorded; reservations and admissions remain stable.
-                    if let Some(spec) = queued_specs.pop_front() {
-                        pool.send(physical_worker, spec)?;
-                        physical_queued[physical_index] =
-                            physical_queued[physical_index].saturating_add(1);
-                    } else if worker_queue_is_idle(physical_queued[physical_index]) {
-                        idle_workers.push_back(physical_worker);
+                    if !completed_results_within_bound(completed.len(), workers) {
+                        return Err(
+                            "campaign buffered more than one result-bearing job per worker".into(),
+                        );
                     }
                     ready_reply = pool.try_receive()?;
                 }
@@ -2589,6 +2591,7 @@ where
                     let result = completed_job.result;
                     let frames = completed_job.frames;
                     let result_sha256 = completed_job.result_sha256;
+                    let physical_worker = completed_job.physical_worker;
                     let victories_before = core.victories;
                     let admission_started = profile_now(coordinator_profile.enabled);
                     let (sequence, decisions) =
@@ -2690,6 +2693,16 @@ where
                     counters.jobs_per_worker[worker_index] =
                         counters.jobs_per_worker[worker_index].saturating_add(1);
                     counters.job_frames = counters.job_frames.saturating_add(frames);
+                    if !worker_queue_is_idle(
+                        *physical_queued
+                            .get(usize::try_from(physical_worker)?)
+                            .ok_or("admitted result names an unknown physical worker")?,
+                    ) {
+                        return Err(
+                            "admitted result's physical worker still has queued work".into()
+                        );
+                    }
+                    idle_workers.push_back(physical_worker);
                     if let Some(sink) = progress.as_deref_mut() {
                         // Count-based boundaries keep sidecar presence
                         // independent of host speed; the timestamp below is
@@ -3380,7 +3393,8 @@ mod tests {
         CampaignJobResult, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
         CoordinatorCore, EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile,
         MAX_PROGRESS_CURVE_POINTS, SPLICE_ACTION_CAP, archive_entry_limit_is_valid,
-        compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
+        compact_progress_curve, completed_results_within_bound,
+        draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
         replay_splice, retained_archive_indexes, stop_reservations_after_victory,
@@ -3756,6 +3770,14 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn unadmitted_result_jobs_are_bounded_to_one_per_physical_worker() {
+        assert!(completed_results_within_bound(0, 0));
+        assert!(completed_results_within_bound(4, 4));
+        assert!(!completed_results_within_bound(5, 4));
+        assert!(!completed_results_within_bound(1, 0));
     }
 
     #[test]
