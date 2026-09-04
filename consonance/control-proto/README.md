@@ -28,7 +28,7 @@ re-seeds, while `Replay` restores verbatim.
 Frames contain `magic("CTL1")`, a framing version, sequence number, body
 length, and a tagged body. Header and body integers are little-endian. Variable
 length values use `u32` lengths, and the body is capped at `MAX_FRAME_LEN`
-(16 MiB). `Read` requests are capped at `READ_CAP` (64 KiB).
+(16 MiB). `Read` requests are capped at `READ_CAP` (256 KiB).
 
 Encoding is canonical: fixed field order, one representation per value, and no
 unordered data. Decoding is strict and total. A partial frame returns

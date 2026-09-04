@@ -17,8 +17,9 @@ search campaign.
 geometry, and capability flags.
 
 Compatibility must be established before use. `Hello` is the first operation
-in a session. Before it, other operations are unsupported. Each peer can decide
-from the returned capabilities whether the session is usable.
+in a session. Before it, other operations are unsupported. The server rejects a
+mismatched protocol version there rather than opening the session, and a client
+checks the returned capabilities before issuing another operation.
 
 ## State plane
 

@@ -881,6 +881,15 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
     }
 
+    /// Restored paravirtual clockevent state for the host-only placement trace.
+    pub(crate) fn clockevent_trace_schedule_arm64(&self) -> Option<(u64, u32)> {
+        self.devices
+            .clockevent
+            .deadline
+            .and_then(|deadline| self.guest_clock_deadline_vns(deadline).ok())
+            .map(|deadline_vns| (deadline_vns, super::board::PVCLOCK_PPI))
+    }
+
     /// [`Self::next_timer_deadline_vns_arm64`], filtered to timers whose fire
     /// would actually deliver — an armed-but-undeliverable timer is no wake.
     pub(crate) fn deliverable_timer_deadline_vns_arm64(&self) -> Option<u64> {

@@ -802,6 +802,12 @@ impl Backend for HvfBackend {
         match completion {}
     }
 
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        // HVF applies its arm64 register completions synchronously; there is no
+        // userspace run-page completion left to retire at this boundary.
+        Ok(())
+    }
+
     fn save(&self) -> Result<Arm64VcpuState> {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
@@ -903,9 +909,13 @@ impl Backend for HvfBackend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        // HVF register writes cannot cancel an outstanding decoded exception.
+        // Keep the old exit from being applied to the restored state.
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
         if has_noncanonical_core_regs(&state.core)
             || state.mp_state != MpState::Runnable
-            || self.pending != Pending::None
             || !state.vtimer.masked
             || state.vtimer.offset != 0
             || state.vtimer.cntv_ctl_el0 & !0b11 != 0
@@ -993,6 +1003,11 @@ impl Backend for HvfBackend {
         hv("hv_vcpu_set_pending_interrupt(FIQ)", unsafe {
             hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_FIQ, state.interrupts.fiq)
         })?;
+        // The restored architectural IRQ/FIQ state above is authoritative;
+        // these userspace arbitration/report slots belong to the displaced
+        // timeline and must be re-derived by the VMM before the next entry.
+        self.pending_irq = None;
+        self.accepted_irq = None;
         Ok(())
     }
 

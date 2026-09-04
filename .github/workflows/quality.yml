@@ -186,6 +186,9 @@ jobs:
             exit 0
           fi
           cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
+          # Default-feature Linux builds must not auto-build a Consonance-only
+          # binary whose optional machine backend is absent.
+          cargo build --locked --manifest-path dissonance/Cargo.toml --release
           cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
           cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
           cargo deny --manifest-path dissonance/Cargo.toml check

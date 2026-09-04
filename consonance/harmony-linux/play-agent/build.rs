@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Link the pinned QuickNES archive only for the static Nova guest profile.
 
-use std::{env, path::Path, process, process::Command};
+use std::{env, path::Path, process};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=HARMONY_QUICKNES_STATIC_LIB");
@@ -32,30 +32,12 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", archive.display());
     println!("cargo:rustc-link-search=native={}", parent.display());
-    let compiler_lib = Command::new("c++")
-        .arg("-print-file-name=libstdc++.a")
-        .output();
-    let Ok(compiler_lib) = compiler_lib else {
-        eprintln!("static-quicknes could not query c++ for libstdc++.a");
-        process::exit(1);
-    };
-    let compiler_lib = String::from_utf8_lossy(&compiler_lib.stdout);
-    let compiler_lib = Path::new(compiler_lib.trim());
-    if !compiler_lib.is_absolute() || !compiler_lib.is_file() {
-        eprintln!("c++ did not locate a usable libstdc++.a: {compiler_lib:?}");
-        process::exit(1);
-    }
-    let Some(compiler_lib_dir) = compiler_lib.parent() else {
-        eprintln!("c++ did not report an absolute libstdc++.a path: {compiler_lib:?}");
-        process::exit(1);
-    };
-    println!(
-        "cargo:rustc-link-search=native={}",
-        compiler_lib_dir.display()
-    );
+    // The archive is compiled with exceptions and RTTI disabled and carries
+    // its tiny C++ ABI shim (operator new/delete and __cxa_pure_virtual).
+    // Do not discover or link the build host's libstdc++ here: a glibc
+    // libstdc++.a contains glibc-only entry points such as __isoc23_strtol,
+    // which cannot be resolved by a static musl target. The target linker
+    // supplies libc and the compiler builtins for the selected architecture.
     println!("cargo:rustc-link-lib=static=quicknes_libretro");
-    println!("cargo:rustc-link-lib=static=stdc++");
-    println!("cargo:rustc-link-lib=static=gcc_eh");
-    println!("cargo:rustc-link-lib=static=gcc");
     println!("cargo:rustc-link-lib=m");
 }

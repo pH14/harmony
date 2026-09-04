@@ -365,6 +365,66 @@ fn apply_complete_fault_and_ok_set_msr_error() {
     ));
 }
 
+#[test]
+fn retire_staged_completion_is_a_noop_without_a_stage() {
+    let s = SynRun::new();
+    let mut pending = Pending::None;
+    let mut staged = false;
+    let mut entries = 0;
+    retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+        entries += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(entries, 0, "a no-pending retirement must not enter KVM");
+    assert!(!staged);
+    assert_eq!(pending, Pending::None);
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
+#[test]
+fn retire_staged_completion_uses_one_immediate_entry_and_preserves_next_exit() {
+    let s = SynRun::new();
+    let mut pending = Pending::IoIn {
+        data_offset: PIO_OFF as u64,
+        size: 1,
+    };
+    let mut staged = true;
+    let mut entries = 0;
+    let mut next_scripted_exit = Some(KVM_EXIT_HLT);
+    retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+        entries += 1;
+        assert_eq!(s.page().immediate_exit(), 1);
+        assert_eq!(next_scripted_exit, Some(KVM_EXIT_HLT));
+        Err(std::io::Error::from_raw_os_error(libc::EINTR))
+    })
+    .unwrap();
+    assert_eq!(entries, 1);
+    assert_eq!(next_scripted_exit.take(), Some(KVM_EXIT_HLT));
+    assert!(!staged);
+    assert_eq!(pending, Pending::None);
+    assert_eq!(s.page().immediate_exit(), 0);
+}
+
+#[test]
+fn retire_staged_completion_error_clears_one_shot_and_keeps_stage() {
+    let s = SynRun::new();
+    let mut pending = Pending::None;
+    let mut staged = true;
+    let error = retire_staged_completion(s.page(), &mut pending, &mut staged, || {
+        assert_eq!(s.page().immediate_exit(), 1);
+        Err(std::io::Error::from_raw_os_error(libc::EIO))
+    })
+    .expect_err("a non-EINTR completion entry must fail closed");
+    assert!(matches!(error, BackendError::Io(_)));
+    assert_eq!(s.page().immediate_exit(), 0);
+    assert!(
+        staged,
+        "an uncertain completion remains conservatively staged"
+    );
+    assert_eq!(pending, Pending::None);
+}
+
 // ---------------------------------------------------------------------------
 // Config / snapshot helpers.
 // ---------------------------------------------------------------------------
