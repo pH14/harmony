@@ -152,10 +152,10 @@ jobs:
               )
           if summary.get("memory_budget_mib") != 2048:
               raise SystemExit("campaign did not enforce the 2048 MiB process budget")
-          if summary.get("archive_memory_budget_mib") != 1088:
-              raise SystemExit("campaign archive budget did not reserve worker VM memory")
-          if summary.get("process_memory_reserve_mib") != 960:
-              raise SystemExit("campaign process reserve did not match four workers")
+          if summary.get("archive_memory_budget_mib") != 64:
+              raise SystemExit("campaign archive budget did not retain the RSS cushion")
+          if summary.get("process_memory_reserve_mib") != 1984:
+              raise SystemExit("campaign process reserve did not include the RSS cushion")
           peak_rss = summary.get("peak_rss_bytes")
           if not isinstance(peak_rss, int) or peak_rss <= 0:
               raise SystemExit(f"campaign did not record process peak RSS: {peak_rss!r}")

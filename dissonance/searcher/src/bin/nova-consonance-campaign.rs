@@ -61,6 +61,14 @@ mod real {
     // Reserve a conservative, deterministic amount for non-archive process
     // allocations, rounded up from measured campaign overhead.
     const NON_ARCHIVE_PROCESS_OVERHEAD_MIB: usize = 448;
+    // Sparse snapshots share page allocations, so reducing their conservative
+    // full-footprint charge does not reduce RSS byte for byte. Four exact-head
+    // hardware replicas with a 1,088 MiB archive converged at 2,290--2,291 MiB
+    // peak RSS. Cap this whole-VM campaign's archive at the already accepted
+    // twelve-worker size and reserve the remainder for VM backing, allocator
+    // retention, and other process state. The cap is deterministic: host RSS
+    // never influences search or eviction decisions.
+    const ARCHIVE_MEMORY_BUDGET_MIB: usize = 64;
 
     struct MemoryBudget {
         archive_memory_budget_mib: usize,
@@ -174,16 +182,26 @@ mod real {
             return Err("workers must be greater than zero".into());
         }
         let workers = usize::try_from(workers).map_err(|_| "worker count does not fit usize")?;
-        let process_memory_reserve_mib = process_memory_reserve_mib(workers)?;
-        if memory_budget_mib <= process_memory_reserve_mib {
+        let base_process_memory_reserve_mib = process_memory_reserve_mib(workers)?;
+        if memory_budget_mib <= base_process_memory_reserve_mib {
             return Err(format!(
-                "memory-budget-mib must be greater than the {process_memory_reserve_mib} MiB process reserve"
+                "memory-budget-mib must be greater than the {base_process_memory_reserve_mib} MiB base process reserve"
             )
             .into());
         }
-        let archive_memory_budget_mib = memory_budget_mib
-            .checked_sub(process_memory_reserve_mib)
+        let base_archive_memory_budget_mib = memory_budget_mib
+            .checked_sub(base_process_memory_reserve_mib)
             .ok_or("archive memory budget underflow")?;
+        if base_archive_memory_budget_mib < ARCHIVE_MEMORY_BUDGET_MIB {
+            return Err(format!(
+                "memory-budget-mib must leave {ARCHIVE_MEMORY_BUDGET_MIB} MiB for archive snapshots"
+            )
+            .into());
+        }
+        let archive_memory_budget_mib = ARCHIVE_MEMORY_BUDGET_MIB;
+        let process_memory_reserve_mib = memory_budget_mib
+            .checked_sub(archive_memory_budget_mib)
+            .ok_or("process memory reserve underflow")?;
         Ok(MemoryBudget {
             archive_memory_budget_mib,
             process_memory_reserve_mib,
@@ -411,7 +429,7 @@ mod real {
     #[cfg(test)]
     mod tests {
         use super::{
-            Args, NON_ARCHIVE_PROCESS_OVERHEAD_MIB, OsString, bytes_to_mib_ceil,
+            ARCHIVE_MEMORY_BUDGET_MIB, Args, OsString, bytes_to_mib_ceil,
             memory_budget_for_workers, parse_peak_rss_bytes, process_memory_reserve_mib,
         };
 
@@ -447,21 +465,17 @@ mod real {
         }
 
         #[test]
-        fn effective_archive_budget_accounts_for_each_worker_vm() {
-            for (workers, expected_archive_budget_mib) in
-                [(1, 1_472), (4, 1_088), (8, 576), (12, 64)]
-            {
+        fn effective_archive_budget_accounts_for_workers_and_rss_cushion() {
+            for workers in [1, 4, 8, 12] {
                 let budget = memory_budget_for_workers(2_048, workers)
                     .expect("requested process budget should fit");
-                assert_eq!(
-                    budget.archive_memory_budget_mib,
-                    expected_archive_budget_mib
-                );
+                assert_eq!(budget.archive_memory_budget_mib, ARCHIVE_MEMORY_BUDGET_MIB);
                 assert_eq!(
                     budget.process_memory_reserve_mib,
-                    NON_ARCHIVE_PROCESS_OVERHEAD_MIB + 128 * workers as usize
+                    2_048 - ARCHIVE_MEMORY_BUDGET_MIB
                 );
             }
+            assert_eq!(ARCHIVE_MEMORY_BUDGET_MIB, 64);
         }
 
         #[test]
@@ -473,6 +487,11 @@ mod real {
         fn budget_must_exceed_process_reserve() {
             assert!(memory_budget_for_workers(576, 1).is_err());
             assert!(memory_budget_for_workers(575, 1).is_err());
+            assert!(memory_budget_for_workers(639, 1).is_err());
+            assert!(memory_budget_for_workers(2_048, 13).is_err());
+            let minimum = memory_budget_for_workers(640, 1).expect("minimum process budget");
+            assert_eq!(minimum.archive_memory_budget_mib, 64);
+            assert_eq!(minimum.process_memory_reserve_mib, 576);
         }
 
         #[test]
