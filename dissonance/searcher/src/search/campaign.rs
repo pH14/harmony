@@ -994,6 +994,10 @@ fn draw_state_memory_is_within_reserve(bytes: usize, reserve: usize) -> bool {
     bytes <= reserve
 }
 
+fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usize>) -> bool {
+    memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
+}
+
 fn worker_queue_is_idle(queued: usize) -> bool {
     queued == 0
 }
@@ -2276,6 +2280,13 @@ where
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
     drop(bootstrap_target);
+    let bootstrap_memory_bytes = core
+        .archive
+        .resident_memory_bytes()
+        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+    if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
+        return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
+    }
 
     let workers = config.workers as usize;
     let mut rands = Vec::with_capacity(workers);
@@ -3143,6 +3154,15 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    let bootstrap_memory_bytes = core
+        .archive
+        .resident_memory_bytes()
+        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+    if !resident_memory_is_within_budget(bootstrap_memory_bytes, header.memory_budget_mib) {
+        return Err(
+            "campaign replay bootstrap state exceeds its deterministic memory budget".into(),
+        );
+    }
 
     // Live execution keeps exactly one deterministic reservation window of
     // parent snapshots in flight. Recreate those pins so budget eviction in
@@ -3397,8 +3417,9 @@ mod tests {
         draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        replay_splice, retained_archive_indexes, stop_reservations_after_victory,
-        uses_bounded_progress_curve, uses_deterministic_window_schedule, worker_queue_is_idle,
+        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
+        stop_reservations_after_victory, uses_bounded_progress_curve,
+        uses_deterministic_window_schedule, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3792,6 +3813,12 @@ mod tests {
         assert!(draw_state_memory_is_within_reserve(1, 2));
         assert!(draw_state_memory_is_within_reserve(2, 2));
         assert!(!draw_state_memory_is_within_reserve(2, 1));
+        assert!(resident_memory_is_within_budget(usize::MAX, None));
+        assert!(resident_memory_is_within_budget(64 * 1024 * 1024, Some(64)));
+        assert!(!resident_memory_is_within_budget(
+            64 * 1024 * 1024 + 1,
+            Some(64)
+        ));
 
         assert!(progress_policy_is_supported(None));
         assert!(progress_policy_is_supported(Some(
