@@ -61,6 +61,17 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
     fi
 fi
 
+# The aarch64 leg of the public-API gate (scripts/check-public-api-aarch64.sh)
+# cross-targets the generator, so it needs the pinned nightly plus that target's
+# std. Suggest it rather than forcing the download; the script itself prints the
+# same command when the target is missing.
+if ! rustup target list --installed --toolchain nightly-2026-06-16 2>/dev/null |
+        grep -qx aarch64-unknown-linux-gnu; then
+    echo "== note: for the aarch64 public-API leg, add the cross target:"
+    echo "     rustup toolchain install nightly-2026-06-16"
+    echo "     rustup target add aarch64-unknown-linux-gnu --toolchain nightly-2026-06-16"
+fi
+
 # Miri runs only in CI (nightly.yml), but the unsafe⇒Miri review rule (AGENTS.md)
 # means reviewers run it locally on crates whose diff touches `unsafe`.
 # Suggest the toolchain (don't force a multi-hundred-MB download on every tool install).
