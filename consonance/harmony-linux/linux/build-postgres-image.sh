@@ -88,8 +88,11 @@ mkdir -p "$PGROOT/lib/x86_64-linux-gnu" "$PGROOT/usr/lib/x86_64-linux-gnu"
 install_libvoidstar "$PGROOT"
 
 cp "$BBOBJ/busybox" "$PGROOT/bin/busybox"
+# chroot: the harmony CLI can select this image as the base for an injected
+# OCI bundle, whose init falls back to a chroot start when runc is absent.
 for a in sh mount umount mkdir chown chmod sleep printf seq setuidgid cat echo ls \
-         head tee env losetup poweroff reboot ln rm cp true false test expr sync id; do
+         head tee env losetup poweroff reboot ln rm cp true false test expr sync id \
+         chroot; do
     ln -sf busybox "$PGROOT/bin/$a"
 done
 

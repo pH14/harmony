@@ -18,6 +18,16 @@ both an emulator and consonance. The supported determinism claim is narrower
 than arbitrary software on arbitrary hardware; [Determinism](docs/DETERMINISM.md)
 defines its scope.
 
+## Try the CLI
+
+```sh
+cargo build --release -p harmony-cli
+./target/release/harmony preflight
+```
+
+The CLI runs OCI workloads with `harmony oci run IMAGE -- COMMAND`.
+See [CLI documentation](cli/README.md) for prerequisites and run artifacts.
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) describes the system and its ownership

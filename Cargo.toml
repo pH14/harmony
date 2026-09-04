@@ -8,7 +8,7 @@ resolver = "2"
 # retired v1 tree of the same name, which they never should have lived under —
 # consonance is their only consumer). The v1 dissonance searcher was removed;
 # its rebuild lives in the standalone `dissonance/` workspace.
-members = ["consonance/*"]
+members = ["cli", "consonance/*"]
 # consonance/harmony-linux/ contains standalone Linux-side crates; the acceptance-suite
 # payloads use custom targets/linker flags. Neither belongs to this workspace.
 # dissonance/ is a standalone workspace root by design (the searcher rebuild);
