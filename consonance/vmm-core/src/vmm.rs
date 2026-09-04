@@ -128,7 +128,7 @@ pub enum VmmError {
     ///
     /// The cause is carried **opaquely**: which loaders a machine has is per-vendor
     /// (an ARM vendor loads an `Image` + DTB, and Multiboot is deleted for it, not
-    /// ported — `docs/ARCH-BOUNDARY.md` §B), so the engine's error type must not
+    /// ported — `docs/ARCHITECTURE.md`), so the engine's error type must not
     /// enumerate one vendor's loaders. Construct it with
     /// [`VmmError::vendor_boot`]; the typed cause is still reachable through
     /// [`std::error::Error::source`] and `downcast_ref`.
@@ -138,7 +138,7 @@ pub enum VmmError {
     /// backend-dependent RDTSC/RDRAND, or an MSR access with no V-time backing).
     #[error("contract violation: {0}")]
     ContractViolation(String),
-    /// The physical host fails one or more CPU-MSR-CONTRACT §1.1 host-homogeneity
+    /// The physical host fails one or more x86 CPU contract host-homogeneity
     /// assertions (family/model/stepping, microcode, MXCSR-mask, MAXPHYADDR,
     /// RTM-disabled, or a variance-instruction absence). `boot` refuses to install
     /// the frozen policy or enter the guest on such a host — same-seed runs on a
@@ -410,7 +410,7 @@ impl VtimeWiring {
     }
 }
 
-/// A V-time snapshot for mid-run save/restore (INTEGRATION.md §4): the effective
+/// A V-time snapshot for mid-run save/restore (docs/ARCHITECTURE.md): the effective
 /// V-time in whole nanoseconds, the `IA32_TSC_ADJUST` register, and the entropy
 /// stream position. On restore `vns` becomes the clock's new starting value, so
 /// the guest clock continues exactly, the offset is re-applied, and the RNG
@@ -531,7 +531,7 @@ pub(crate) struct NetChannel {
     decisions: Vec<(u64, u64, environment::Answer)>,
 }
 
-/// The paravirtual clock channel (`docs/PARAVIRT-CLOCK.md`):
+/// The paravirtual clock channel (`consonance/vtime/README.md`):
 /// the host side of the materialized clock page. Offered per composition by
 /// [`Vmm::enable_pvclock`]; the **guest** opts in by publishing its page GPA
 /// over the hypercall doorbell ([`hypercall_proto::ServiceId::Pvclock`]), after
@@ -675,7 +675,7 @@ where
     /// The vendor's device state ([`Vendor::Devices`]) — the interrupt fabric,
     /// the platform shims, and the serial device. The engine never names one; it
     /// reaches them only through [`Vendor`], which is what makes the engine
-    /// compiler-provably arch-blind (`docs/ARCH-BOUNDARY.md` §B).
+    /// compiler-provably arch-blind (`docs/ARCHITECTURE.md`).
     pub(crate) devices: <B::A as Vendor>::Devices,
     /// Guest frame numbers written **host-side** since the last
     /// [`Vmm::reset_dirty_tracking`] / [`Vmm::drain_dirty_pages`] drain (task 95
@@ -1270,7 +1270,7 @@ where
     /// consumed FIFO by the guest's serial shell as it reads the RBR; while any are
     /// queued, the COM1 receive line asserts (so an interrupt-driven console picks
     /// them up). **No determinism guarantee**: `exec` taints its timeline by ruling
-    /// (git history's `docs/RESOLUTION.md`), so this input is never recorded, hashed, or
+    /// (`docs/PROTOCOL.md`), so this input is never recorded, hashed, or
     /// snapshotted. Inert for every run that never calls it.
     pub fn inject_serial_input(&mut self, bytes: &[u8]) {
         <B::A as Vendor>::inject_serial_input(&mut self.devices, bytes);
@@ -1332,7 +1332,7 @@ where
     /// guest RAM size. On the box, KVM reads the guest through this same backing, so
     /// the restored memory is live on the next `KVM_RUN` — the host-side restore the
     /// memslot-remap optimization (task 08, below the trait) supersedes for O(dirty)
-    /// latency (see `IMPLEMENTATION.md`); correctness is identical either way.
+    /// latency; correctness is identical either way.
     ///
     /// # Errors
     /// [`VmmError::ContractViolation`] if `image.len()` is not the guest RAM size.
@@ -1354,7 +1354,7 @@ where
         Ok(())
     }
 
-    /// Capture the V-time + entropy state for a mid-run snapshot (INTEGRATION.md
+    /// Capture the V-time + entropy state for a mid-run snapshot (docs/ARCHITECTURE.md
     /// §4). `Ok(None)` if V-time is unwired (nothing to capture). Pair with
     /// [`Vmm::restore_vtime`] (and the backend's `save`/`restore` + guest memory)
     /// to resume an identical timeline after a restore.
@@ -1374,7 +1374,7 @@ where
     ///
     /// **V-time-exactness invariant (must hold).** Unlike the hash, a snapshot's
     /// `vns` must be the **exact** effective V-time at the snapshot point — restore
-    /// resumes the TSC from it (INTEGRATION.md §4), so an off-by-post-intercept-work
+    /// resumes the TSC from it (docs/ARCHITECTURE.md), so an off-by-post-intercept-work
     /// `vns` is a *silently-wrong* restore (the next `RDTSC` reads low by the missed
     /// work). The exact V-time is known **only at a V-time intercept** — the
     /// synchronized, deterministic point where `assigned_clock` *is* the current
@@ -1571,7 +1571,7 @@ where
     // --- full vm_state snapshot / restore (task 39) ------------------------
 
     /// Capture the **non-memory** machine state as a canonical [`vm_state::VmState`]
-    /// (INTEGRATION.md §4) — pair with [`Vmm::guest_memory`] +
+    /// (docs/ARCHITECTURE.md) — pair with [`Vmm::guest_memory`] +
     /// [`crate::snapshot::SnapshotEngine`] for the memory half. The vmm-core adapter
     /// that fills `vm-state`'s plain-data structs from the live machine and
     /// `VmState::encode`s them (task 39 Phase 1).
@@ -1874,7 +1874,7 @@ where
     }
 
     /// **Branch**: reseed the entropy stream after a restore so the continuation
-    /// draws a *divergent* RDRAND/RDSEED sequence from its parent (INTEGRATION.md §4:
+    /// draws a *divergent* RDRAND/RDSEED sequence from its parent (docs/ARCHITECTURE.md:
     /// "after a restore intended to branch, vmm-core reseeds/perturbs the entropy
     /// service explicitly"). `branch(snap, seed') = restore(snap) + reseed(seed')`;
     /// the V-time clock and memory continue from the snapshot, only the entropy
@@ -1954,7 +1954,7 @@ where
         // in-service exactly once KVM accepted it. (The legacy serial vector takes no
         // LAPIC transition — it is EOI'd at the 8259.)
         <B::A as Vendor>::complete_irq_delivery(self);
-        // The two-level dispatch (`docs/ARCH-BOUNDARY.md` §A). The engine matches
+        // The two-level dispatch (`docs/ARCHITECTURE.md`). The engine matches
         // the **common** exits exhaustively and hands every **arch** exit to that
         // vendor's own dispatch, which matches its enum exhaustively — so an
         // unhandled arch exit can never fall through an engine-written wildcard
@@ -2470,7 +2470,7 @@ where
     }
 
     /// Offer the paravirtual clock page to the guest
-    /// (`docs/PARAVIRT-CLOCK.md`). Offering alone changes nothing: the page
+    /// (`consonance/vtime/README.md`). Offering alone changes nothing: the page
     /// engages only when the guest publishes a page GPA over the doorbell
     /// ([`hypercall_proto::ServiceId::Pvclock`], op 1), and registration is
     /// accepted only when virtual time is wired.
@@ -2510,7 +2510,7 @@ where
     }
 
     /// Is a doorbell `service` id **offered** by this composition? The generic
-    /// dispatcher contract (INTEGRATION.md §1) is that an unoffered service
+    /// dispatcher contract (docs/ARCHITECTURE.md) is that an unoffered service
     /// answers `UnknownService` for **any** request — before opcode or payload
     /// classification, so a composition that keeps the doorbell alive for one
     /// channel never advertises another by grading its requests `UnknownOpcode`
@@ -3198,7 +3198,7 @@ where
             // must not leak the pvclock service's existence by grading its
             // requests (`BadRequest` for a malformed payload, `UnknownOpcode` for
             // a bad op) when the service is not there at all. That is the generic
-            // dispatcher's contract (INTEGRATION.md §1) and the same posture Event
+            // dispatcher's contract (docs/ARCHITECTURE.md) and the same posture Event
             // / Sdk / Entropy / Net take below.
             if !self.pvclock_available() {
                 let n = encode_error(
@@ -9173,7 +9173,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task 110: the paravirt exit-count-derived clock page (docs/PARAVIRT-CLOCK.md).
+    // Task 110: the paravirt exit-count-derived clock page (consonance/vtime/README.md).
     // Portable halves of the G1/G2 gates + the registration transport,
     // driven by the scripted MockBackend — no /dev/kvm, runs on every platform.
     // -----------------------------------------------------------------------

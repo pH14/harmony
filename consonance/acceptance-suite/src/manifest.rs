@@ -13,7 +13,7 @@ use crate::oracle::OracleKind;
 use serde::{Deserialize, Serialize};
 
 /// One registered workload — **one cell of the acceptance matrix**
-/// (`docs/TESTING.md`, rung 5). The axes are the fields: workload
+/// (`docs/TESTING.md`). The axes are the fields: workload
 /// (`name`/`kind`/`source`) × oracle set (`oracles`) × host (`hosts`) × virt
 /// level (`virt`).
 ///
@@ -47,15 +47,14 @@ pub struct CorpusItem {
 /// A host the acceptance matrix can run a cell on. Closed by design: an
 /// unrecognized token is a loud parse error rather than a cell that silently
 /// never runs. Adding a box means adding a variant here **and** a runner label
-/// in `.github/workflows/box.yml` (`docs/TESTING.md`, "the runner-label
-/// scheme").
+/// in `.github/workflows/box.yml`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostId {
     /// Any developer machine or hosted CI runner: no `/dev/kvm`, no pinned
     /// core, no chip baseline. The toy registry serves these cells.
     Portable,
     /// The x86 determinism box — the `det-cfl-v1` chip baseline
-    /// (`docs/CPU-MSR-CONTRACT.md` §2), patched KVM, pinned cores.
+    /// (`consonance/vmm-core/contracts/x86/README.md`), patched KVM, pinned cores.
     DetCflV1,
     /// The arm64 box.
     Msr1,
@@ -115,7 +114,7 @@ impl VirtLevel {
 }
 
 /// Which corpus family a [`CorpusItem`] belongs to. See
-/// `docs/DETERMINISM-CORPUS.md` (C1/C2/C3).
+/// `docs/TESTING.md` (C1/C2/C3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CorpusKind {
     /// C1 — a tiny bare-metal instruction/MSR payload.

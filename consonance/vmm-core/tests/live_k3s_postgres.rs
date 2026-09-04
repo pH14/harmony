@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **Postgres-on-k3s, client pod -> server pod, intra-guest** gates
 //! (`#[cfg(target_os = "linux")]` **and `#[ignore]`**, on `ssh <det-box>` with the
-//! LOADED patched KVM modules, CPU-pinned per `docs/BOX-PINNING.md`). Task 49 — the
+//! LOADED patched KVM modules, CPU-pinned per `.github/workflows/box.yml`). Task 49 — the
 //! determinism stress test at full stack height: a single guest VM (single-vCPU)
 //! runs a **single-node lightweight Kubernetes cluster (k3s)**, a `postgres` Pod
 //! serves the task-42 workload, and a separate `client` Pod connects to it **over
@@ -183,7 +183,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -192,7 +192,7 @@ fn require_kvm() {
 fn require_host_baseline() {
     let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
-    eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
+    eprintln!("[host-assert] x86 CPU contract baseline:");
     for o in &report {
         eprintln!(
             "[host-assert]   {}  {}: expected {}, observed {}",
@@ -206,7 +206,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per docs/BOX-PINNING.md."
+         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 

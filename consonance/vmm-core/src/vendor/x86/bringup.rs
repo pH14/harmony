@@ -30,7 +30,7 @@ use crate::vmm::{GuestRam, RamBacking, Vmm, VmmError};
 const IA32_EFER: u32 = 0xC000_0080;
 
 /// LAPIC-timer input frequency (Hz) the userspace xAPIC is configured with — the
-/// frozen core-crystal clock (CPUID `0x15`) per `docs/CPU-MSR-CONTRACT.md` §5. The
+/// frozen core-crystal clock (CPUID `0x15`) described by the x86 contract. The
 /// exact value only governs the timer **deadline** arithmetic, which is moot until
 /// interrupt injection lands (the bring-up `KvmBackend::inject` is `Unsupported`);
 /// it is fixed here so the value is deterministic and documented. Non-zero
@@ -67,7 +67,7 @@ pub fn boot<B: Backend<A = X86>>(
     payload: &[u8],
     guest_ram_len: usize,
 ) -> Result<Vmm<B>, VmmError> {
-    // 0. Enforce the CPU-MSR-CONTRACT §1.1 host-homogeneity baseline FIRST —
+    // 0. Enforce the x86 CPU contract host-homogeneity baseline FIRST —
     //    before installing any policy or entering the guest. A host outside the
     //    frozen det-cfl-v1 determinism domain (wrong family/model/stepping or
     //    microcode, MXCSR-mask, MAXPHYADDR, an un-disabled RTM, or a variance
@@ -497,7 +497,7 @@ pub fn boot_linux_selected(
 }
 
 /// The Linux composition for **assigned-at-exit (virtual_time) V-time on the
-/// stock backend** (`docs/VM-EXIT-COUNT-VTIME.md`): the stock `KvmBackend` with
+/// stock backend** (`docs/DETERMINISM.md`): the stock `KvmBackend` with
 /// [`VtimeWiring::new_virtual_time`](crate::vmm::VtimeWiring::new_virtual_time)
 /// wired, so V-time is a pure function of the serviced exit stream and the
 /// production [`LiveVirtualTimeTrace`](crate::virtual_time::LiveVirtualTimeTrace)

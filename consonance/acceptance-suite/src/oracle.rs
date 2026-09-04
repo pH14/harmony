@@ -11,7 +11,7 @@ use unison::{
     compare_runs,
 };
 
-/// Which oracle a corpus item participates in. See `docs/DETERMINISM-CORPUS.md`.
+/// Which oracle a corpus item participates in. See `docs/TESTING.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OracleKind {
     /// O1: two runs at the same seed are bit-identical (localized on failure).
@@ -175,7 +175,7 @@ pub fn check_determinism<F: SubjectFactory>(
 /// is a `Fail` with a detail, never a panic.
 ///
 /// O2 pins the **guest-observable conformance output** — the bytes the guest
-/// deliberately emits — exactly as O3 does (`docs/DETERMINISM-CORPUS.md`), not the
+/// deliberately emits — exactly as O3 does (`docs/TESTING.md`), not the
 /// full `state_hash` (which also folds latent, seed-derived state that is brittle to
 /// pin as a golden). Every [`Subject`](unison::Subject) states its own observable
 /// output — the accessor has no default, precisely so a machine cannot silently

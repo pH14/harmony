@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **non-quiescent snapshot** gates (task 41 — `#[cfg(target_os = "linux")]`
 //! **and `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules,
-//! CPU-pinned per `docs/BOX-PINNING.md`, reverted to stock after). The substrate
+//! CPU-pinned per `.github/workflows/box.yml`, reverted to stock after). The substrate
 //! unlock: make a **running, interrupt-driven** guest (Postgres + the LAPIC timer)
 //! snapshottable **mid-execution**, where task 40 measured **0 of 8392** snapshottable
 //! because task 39's codec dropped the in-flight CPU event/interrupt state.
@@ -27,7 +27,7 @@
 //! architecturally-don't-care fields KVM perturbs across a snapshot/restore — the
 //! `type` of *unusable* data segments and the inert `kvm_vcpu_events` modifier residuals
 //! — are canonicalized in `encode_segment`/`encode_events`, so the FULL hash matches; see
-//! IMPLEMENTATION.md.) Both run the remaining workload to `GUEST_READY` + the guest's
+//! README.md.) Both run the remaining workload to `GUEST_READY` + the guest's
 //! clean power-off `Hlt`. Restore is exact at a non-quiescent point — *same state ⇒ same
 //! future, while the system is doing work.*
 //!
@@ -124,7 +124,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md (taskset -c 4)."
+         patched KVM modules, CPU-pinned per .github/workflows/box.yml (taskset -c 4)."
     );
 }
 
@@ -132,7 +132,7 @@ fn require_kvm() {
 fn require_host_baseline() {
     let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
-    eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
+    eprintln!("[host-assert] x86 CPU contract baseline:");
     for o in &report {
         eprintln!(
             "[host-assert]   {}  {}: expected {}, observed {}",
@@ -146,7 +146,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — the frozen contract cannot run here. Run on the \
-         determinism box (i9-9900K) per docs/BOX-PINNING.md."
+         determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 
@@ -320,7 +320,7 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
             // residuals; a genuine in-flight kvm_vcpu_events *injection* does not reliably
             // land at a synchronized boundary, so its capture→exact-restore is proven by the
             // constructed `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact`
-            // test instead (see IMPLEMENTATION.md "what gate 2 proves / does not prove").
+            // test instead.
             // `genuine` (a vector pending in the LAPIC IRR, or a kve active-injection bit) is
             // tracked only as BONUS evidence: the LAPIC IRR was already serialized by task
             // 39, so an IRR-only point is NOT a task-39 win.
@@ -764,7 +764,7 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
     //     down to the **full state_hash** (after canonicalizing the two
     //     architecturally-don't-care fields — unusable-segment `type` + inert
     //     `kvm_vcpu_events` residuals — in `encode_segment`/`encode_events`; see
-    //     IMPLEMENTATION.md). Guest-observable output (serial + report stream) too. ---
+    //     README.md). Guest-observable output (serial + report stream) too. ---
     assert_eq!(
         r1, live_reason,
         "restored continuation must reach the same terminal reason as the un-snapshotted run"

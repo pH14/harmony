@@ -33,7 +33,7 @@ pub const PL011: (u64, u64) = (0x0900_0000, 0x0000_1000);
 /// The PL011's SPI interrupt line (QEMU virt UART0 = SPI 1 ⇒ GIC INTID 33).
 pub const PL011_SPI: u32 = 1;
 
-/// The reserved-MMIO GPA of the **hypercall doorbell** (`docs/ARCH-BOUNDARY.md`
+/// The reserved-MMIO GPA of the **hypercall doorbell** (`docs/ARCHITECTURE.md`
 /// §4: on arm64 the doorbell is a reserved-MMIO store surfacing as
 /// `KVM_EXIT_MMIO`, not a port `OUT`). A one-page hole below RAM, recognized
 /// by [`super::dispatch`]'s MMIO routing and handled as the doorbell.

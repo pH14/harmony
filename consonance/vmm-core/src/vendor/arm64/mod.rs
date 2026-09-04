@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **arm64 vendor** (`docs/ARCH-BOUNDARY.md` §B/§D, `tasks/112`):
+//! The **arm64 vendor** described in `docs/ARCHITECTURE.md`:
 //! everything in the deterministic VMM that names the arm64 ISA — the
 //! CPU-contract policy skeleton ([`contract`]), the exit dispatch and the
 //! device models ([`dispatch`], [`devices`]), and the `vm_state` record set
@@ -460,7 +460,7 @@ impl Vendor for Arm64 {
         exit: Arm64Exit,
     ) -> Result<Step, VmmError> {
         // Exhaustive over `Arm64Exit` — no wildcard arm (default-deny stays
-        // structural; `docs/ARCH-BOUNDARY.md` §A).
+        // structural; `docs/ARCHITECTURE.md`).
         match exit {
             Arm64Exit::Sysreg { sysreg, write } => vmm.dispatch_sysreg(sysreg, write),
         }

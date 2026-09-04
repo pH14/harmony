@@ -1,7 +1,7 @@
 x86: harmony_pvclock — exit-count-derived paravirt clocksource (task 110)
 
 Kernel side of the harmony deterministic hypervisor's paravirt exit-count-derived
-clock page (HARMONY_PVCLOCK_ABI 1; docs/PARAVIRT-CLOCK.md in the harmony repo
+clock page (HARMONY_PVCLOCK_ABI 1; consonance/vtime/README.md in the harmony repo
 is the layout authority): a kvmclock-shaped clocksource with the interpolation
 deleted (.read() = a seqlock page load returning materialized V-time),
 sched_clock routed through the same read, TSC marked unstable once the page is
@@ -394,7 +394,7 @@ the flag, so pinned images restore without observable effect.
 +/*
 + * harmony_pvclock — clocksource + sched_clock over the harmony deterministic
 + * hypervisor's materialized, exit-count-derived clock page (HARMONY_PVCLOCK_ABI 1;
-+ * docs/PARAVIRT-CLOCK.md in the harmony repo is the layout authority).
++ * consonance/vtime/README.md in the harmony repo is the layout authority).
 + *
 + * This file is Linux-kernel code and ships ONLY as part of the kernel diff
 + * under consonance/harmony-linux/linux/patches/ (the repo's GPL-2.0 kernel-patch exception —
@@ -415,7 +415,7 @@ the flag, so pinned images restore without observable effect.
 + * other host, which is what lets one kernel image serve as both the page-on
 + * and page-off arm of the perf measurement.
 + *
-+ * Registration transport: the hypercall doorbell (harmony INTEGRATION.md §1)
++ * Registration transport: the hypercall doorbell (harmony docs/ARCHITECTURE.md)
 + * — stage a request frame at REQ_GPA (0xE000), OUT the frame length to port
 + * 0x0CA1 (one OUT = the whole exchange, serviced while this vCPU is paused),
 + * read the response frame at RESP_GPA (0xF000). The request is service 7
@@ -440,7 +440,7 @@ the flag, so pinned images restore without observable effect.
 +#include <asm/paravirt.h>
 +#include <asm/tsc.h>
 +
-+/* ---- the clock page (PARAVIRT-CLOCK.md §1, ABI v1) ---------------------- */
++/* ---- the clock page (paravirtual clock interface, ABI v1) ---------------------- */
 +
 +#define HARMONY_PVCLOCK_ABI		1u
 +#define HARMONY_FLAG_MATERIALIZED	(1u << 0)
@@ -471,7 +471,7 @@ the flag, so pinned images restore without observable effect.
 + */
 +static struct harmony_pvclock_page harmony_page __aligned(PAGE_SIZE);
 +
-+/* ---- the hypercall doorbell (INTEGRATION.md §1) ------------------------- */
++/* ---- the hypercall doorbell (docs/ARCHITECTURE.md) ------------------------- */
 +
 +#define HARMONY_DOORBELL_PORT	0x0CA1
 +#define HARMONY_REQ_GPA		0xE000UL
@@ -701,7 +701,7 @@ the flag, so pinned images restore without observable effect.
 +		return 0;
 +	}
 +	/*
-+	 * The REGISTRATION HANDSHAKE (harmony PARAVIRT-CLOCK.md §3.1, the r8
++	 * The REGISTRATION HANDSHAKE (harmony paravirtual clock interface, the r8
 +	 * ruling). On an rdtsc-intercepting host the doorbell OUT above only
 +	 * records a *pending* registration; the host lays down the first
 +	 * (canonical) page stamp **only** at the
@@ -728,7 +728,7 @@ the flag, so pinned images restore without observable effect.
 +
 +	/*
 +	 * An ABI mismatch is a hard fault, never a silent reinterpret
-+	 * (PARAVIRT-CLOCK.md §1): refuse the page entirely — and loudly —
++	 * (paravirtual clock interface): refuse the page entirely — and loudly —
 +	 * rather than read fields whose layout this reader does not know.
 +	 * The trap backstop keeps time correct meanwhile. (The page is now
 +	 * stamped by the handshake above, so these reads see the real values.)

@@ -2,7 +2,7 @@
 #![no_std]
 //! # lapic — userspace xAPIC register file + V-time timer
 //!
-//! In the deterministic hypervisor, ruling **R1** (`docs/R1-DEVICE-MODEL.md`)
+//! In the deterministic hypervisor, ruling **R1** (`consonance/lapic/README.md`)
 //! settled that `vmm-core` runs each VM with **no in-kernel interrupt
 //! controller** (`KVM_IRQCHIP_NONE`) and emulates the Local APIC **in userspace
 //! as an xAPIC** — an MMIO page at `0xFEE0_0000` — with its timer driven by
@@ -30,7 +30,7 @@
 //!
 //! ## The register model (xAPIC only)
 //!
-//! Per R1 and `docs/CPU-MSR-CONTRACT.md` §5, this is **xAPIC only** — 32-bit MMIO
+//! Per R1 and `consonance/vmm-core/contracts/x86/README.md`, this is **xAPIC only** — 32-bit MMIO
 //! registers at 16-byte-aligned offsets, no x2APIC MSR interface. The Version
 //! register reports [`APIC_VERSION_VALUE`] (`0x0005_0014`: version `0x14`,
 //! max-LVT = 5), so the **six** LVT entries are Timer, Thermal, PerfMon, LINT0,
@@ -39,7 +39,7 @@
 //! **silently dropped** (deny-ignore-write — the contract's disposition;
 //! `vmm-core` logs the drop); only a misaligned or out-of-range offset is a
 //! [`LapicError::BadOffset`]. The full register map is cited against the SDM
-//! (Vol. 3A §11.x) in `consonance/lapic/IMPLEMENTATION.md`.
+//! (Vol. 3A §11.x) in `consonance/lapic/README.md`.
 //!
 //! ## The timer (V-time-driven, the heart of the crate)
 //!

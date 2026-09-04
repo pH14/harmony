@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The x86-64 vendor's **state records** (`docs/ARCH-BOUNDARY.md` §B): the pure,
+//! The x86-64 vendor's **state records** (`docs/ARCHITECTURE.md`): the pure,
 //! bidirectional conversions between the live machine's x86 register record set
 //! (`vmm_backend::arch::x86`) and `vm-state`'s plain-data records, plus the
 //! vmm-core-owned **device blob** (the `vm_state::DeviceBlob` payload) carrying
@@ -34,7 +34,7 @@ use crate::snapshot::SnapshotError;
 // The still-dropped `kvm_sregs2` `flags`/`pdptrs` (PAE-only; the long-mode /
 // paging-off determinism guest never uses the PAE PDPTRs) and `debugregs.flags` are
 // zero at any V-time point, so refusing a (non-existent) non-zero value there only
-// guards misuse. This is documented in IMPLEMENTATION.md.
+// guards misuse.
 // ===========================================================================
 
 /// `VcpuState.regs` → `vm_state::VcpuRegs` (identical field set, flat copy).
@@ -629,7 +629,7 @@ pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
 //
 // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,
 // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or
-// `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and
+// `IA32_TSC_ADJUST`. docs/ARCHITECTURE.md places all of those in the snapshot, and
 // task 09 carries the device section as an opaque, length-delimited placeholder
 // "the vmm-core adapter passes through whatever the device models emit". This is
 // that emission: a small, versioned, little-endian TLV that vmm-core owns end to
@@ -1868,7 +1868,7 @@ mod tests {
         // SIPI-vector gating), so a stale `error_code` / `payload` never reaches the canonical
         // blob or the `state_hash` (KVM would not apply it; replaying untrusted residual bytes
         // would diverge a save → restore → save). Exact-value, per the audit table in
-        // IMPLEMENTATION.md.
+        // README.md.
 
         // exception_error_code is gated on exception_has_error_code:
         let stale_ec = canonical_events(&vmm_backend::VcpuEvents {

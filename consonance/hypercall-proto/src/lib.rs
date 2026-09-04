@@ -5,7 +5,7 @@
 //! # Services and opcodes (the wire ABI)
 //!
 //! Every request names a [`ServiceId`] and a service-specific `opcode`. The
-//! registered services and their opcodes (mirrored in `docs/INTEGRATION.md` §1):
+//! registered services and their opcodes (mirrored in `docs/ARCHITECTURE.md`):
 //!
 //! | Service | id | opcode(s) |
 //! |---------|----|-----------|
@@ -122,7 +122,7 @@ pub enum ServiceId {
     /// its `Environment::decide` seam at the surfacing `Moment`.
     Sdk = 6,
     /// Paravirt virtual-time clock registration (task 110,
-    /// `docs/PARAVIRT-CLOCK.md` §3.1): the guest publishes the guest-physical
+    /// `consonance/vtime/README.md`): the guest publishes the guest-physical
     /// address of its 4 KiB clock page (op 1, `pvclock_register` — an 8-byte
     /// little-endian GPA). The host validates the GPA (page-aligned, inside
     /// guest RAM, clear of the doorbell frame pages and of any device-MMIO

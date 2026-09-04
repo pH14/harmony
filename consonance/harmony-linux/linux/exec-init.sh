@@ -15,7 +15,7 @@
 # mode, and the shell runs each line.
 #
 # This is a **deliberately crude, off-record** transport — `exec` taints its
-# timeline by ruling (docs/RESOLUTION.md §Improvisations), so nothing here needs to
+# timeline by ruling (docs/PROTOCOL.md), so nothing here needs to
 # be deterministic. The image exists purely to give gate 2 a shell to talk to; the
 # taint guard (gate 3) and gate 2's determinism half hold against ANY image.
 set -e

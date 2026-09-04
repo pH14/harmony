@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The engine/vendor seam (`docs/ARCH-BOUNDARY.md` §B): everything in this crate
+//! The engine/vendor seam (`docs/ARCHITECTURE.md`): everything in this crate
 //! **outside** this module is the arch-neutral **engine** — the run-loop
 //! skeleton, guest RAM, the snapshot engine, the state-hash *framework*
 //! (canonical chunk list → hash), the control server, the corpus adapter, the
@@ -18,7 +18,7 @@
 //! arms; default-deny stays structural).
 //!
 //! **Module split, not crate split**: the reserved engine/vendor *crate* names
-//! activate with the ARM window (`docs/GLOSSARY.md` "Reserved — consonance");
+//! activate with the ARM window (`docs/ARCHITECTURE.md` "Reserved — consonance");
 //! until then the boundary is this trait and these module lines.
 //!
 //! Like [`Backend`], this trait is **designed, not frozen** — the AA-3
@@ -43,7 +43,7 @@ pub enum InterruptReject {
     NoFabric,
     /// The identity lies outside this vendor's identity space entirely (x86: past
     /// the xAPIC's 8 bits). The wire field is a `u32` precisely because identities
-    /// are per-arch and a GIC INTID exceeds 8 bits (`docs/ARCH-BOUNDARY.md` §C).
+    /// are per-arch and a GIC INTID exceeds 8 bits (`docs/ARCHITECTURE.md`).
     OutOfRange,
     /// The identity is architecturally **reserved** on this vendor and cannot be
     /// raised (x86: vectors `< 16`) — a request error the client can fix. The
@@ -75,7 +75,7 @@ pub trait Vendor: Arch + Sized {
     /// arch-neutral [`vm_state::SnapshotRecords`] surface — encode on seal,
     /// `decode` + arch-tag gate on restore, and the neutral V-time / timer /
     /// entropy blocks — and never names a register record
-    /// (`docs/ARCH-BOUNDARY.md` §D, the one ruled spine exception, landed
+    /// (`docs/ARCHITECTURE.md`, the one ruled spine exception, landed
     /// with `hm-cbt`).
     ///
     /// designed-not-frozen (AA-6 owns the arm64 record set; this seam is the
@@ -98,7 +98,7 @@ pub trait Vendor: Arch + Sized {
     /// see while the guest's own reads went to a device — a silently-wrong clock
     /// (cross-model r5 P2). Naming which addresses those are is vendor knowledge,
     /// so it lives behind this seam rather than in the engine
-    /// (`docs/ARCH-BOUNDARY.md`).
+    /// (`docs/ARCHITECTURE.md`).
     fn mmio_holes() -> &'static [(u64, u64)];
 
     // --- run-loop dispatch ---------------------------------------------------
@@ -199,7 +199,7 @@ pub trait Vendor: Arch + Sized {
     ) -> Result<(), InterruptReject>;
 
     /// Raise the wire-format interrupt `vector` (a `u32` — identities are
-    /// per-arch, ARCH-BOUNDARY §C) into the fabric so normal arbitration delivers
+    /// per-arch, architecture boundary) into the fabric so normal arbitration delivers
     /// it. Fails loud on an identity outside this vendor's range, or with no
     /// fabric wired.
     fn inject_wire_interrupt<B: Backend<A = Self>>(

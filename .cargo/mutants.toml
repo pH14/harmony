@@ -6,9 +6,8 @@
 #
 # Mutation testing mutates the source (flip `<` to `<=`, replace a return value
 # with Default, etc.) and checks whether the test suite notices. A surviving
-# mutant is a line the tests execute but do not actually constrain. See
-# docs/CODE-QUALITY.md and consonance/unison/IMPLEMENTATION.md ("Mutation
-# testing").
+# mutant is a line the tests execute but do not actually constrain. The test
+# strategy is summarized in `docs/TESTING.md`.
 
 # Run the nextest suite (process-isolated, faster) as the mutation oracle and
 # build/test with all features so the `cli`-gated code is included.
@@ -65,8 +64,8 @@ exclude_globs = [
     # needs a real `/dev/kvm` + patched KVM + a built guest image, so the
     # no-`--ignored` mutation oracle can never run it — every mutant here is
     # structurally unkillable ("missed"), not a real gap. Verified instead by
-    # the box gates recorded in `dissonance/campaign-runner/IMPLEMENTATION.md`;
-    # mirrors the coverage job's `--ignore-filename-regex` exclusion of the
+    # the hardware box gates; this mirrors the coverage job's
+    # `--ignore-filename-regex` exclusion of the
     # same file.
     "**/boxrun.rs",
     # `consonance/acceptance-suite`'s real-VMM registry — the same category as
@@ -224,7 +223,7 @@ exclude_re = [
     #     an explicit, eager `drop`. The `stop`/`drop` bodies themselves stay
     #     mutation-gated (killed by `dropping_the_server_stops_the_listener`, which
     #     asserts a dropped server stops accepting); only this one Drop-shadowed
-    #     mutant is excluded. See consonance/telemetry/IMPLEMENTATION.md.
+    #     mutant is excluded.
     "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
     # (j) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
     #     PREEMPTION_TRACE_CAP` → `<=` (task 52): the idle-resume dual of (j), identical

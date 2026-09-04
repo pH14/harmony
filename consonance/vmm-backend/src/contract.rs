@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The **`Backend` contract tests** — the shared exam every implementor of the
-//! [`Backend`](crate::Backend) trait must pass (`docs/TESTING.md`, rung 2).
+//! [`Backend`](crate::Backend) trait must pass (`docs/TESTING.md`).
 //!
 //! The trait's doc comments already *state* the contract. This module makes them
 //! executable: one exam, written once, generic over the trait, run against every
@@ -12,7 +12,7 @@
 //! ## The three categories — and there is no fourth
 //!
 //! Every obligation here is **ordering**, **exactness**, or **fixpoint**
-//! (`docs/GLOSSARY.md`, testing addendum):
+//! (`docs/ARCHITECTURE.md`, testing addendum):
 //!
 //! * **ordering** — operations happen in the contract's order, and an
 //!   out-of-order one fails closed instead of silently mis-servicing the guest.
@@ -158,7 +158,7 @@ impl Completion {
 pub trait BackendFixture {
     /// The backend under examination. Pinned to the x86 vendor: the exam's
     /// scenarios are written in x86 exits, and a second vendor gets its own
-    /// vendor-shaped exam beside this one (`docs/ARCH-BOUNDARY.md`).
+    /// vendor-shaped exam beside this one (`docs/ARCHITECTURE.md`).
     type B: Backend<A = X86>;
 
     /// A short, stable name for the report (`"mock"`, `"kvm-stock"`, …).

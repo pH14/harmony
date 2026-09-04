@@ -2,7 +2,7 @@
 //! # gicv3 — deterministic userspace GICv3 + generic-timer model
 //!
 //! The arm64 interrupt fabric of the deterministic hypervisor, in the ruled
-//! pure shape (`docs/ARCH-BOUNDARY.md` §B, ARM row — the same seam the `lapic`
+//! pure shape (`docs/ARCHITECTURE.md`, ARM row — the same seam the `lapic`
 //! crate proved): **V-time nanoseconds in, deadlines and deliverable INTIDs
 //! out.** Every method that needs time takes `now_vns: u64`; the crate never
 //! reads a clock, holds no dependency on `vtime` (the vmm run loop joins
@@ -11,7 +11,7 @@
 //!
 //! ## What is modeled (single vCPU, single security state, ARE=1)
 //!
-//! - **The INTID space** (`docs/ARCH-BOUNDARY.md` / GICv3 architecture): SGIs
+//! - **The INTID space** (`docs/ARCHITECTURE.md` / GICv3 architecture): SGIs
 //!   `0..16` (deliverable — never x86's reserved-vector rule), PPIs `16..32`,
 //!   SPIs `32..32+impl_spis` where `impl_spis` is the distributor-configured
 //!   implementation limit (`GICD_TYPER.ITLinesNumber`; architectural max

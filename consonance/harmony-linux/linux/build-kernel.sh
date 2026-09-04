@@ -4,7 +4,7 @@
 # (kata/, the container-host base) + the **determinism overlay** (config-fragment),
 # merged on top so it wins, out-of-tree at a fixed O= path, with all reproducibility
 # levers set (see lib-build.sh). Task 36 rebased the base from `tinyconfig` to Kata's
-# config; the overlay is unchanged in intent. See consonance/harmony-linux/linux/IMPLEMENTATION.md.
+# config; the overlay is unchanged in intent. See consonance/harmony-linux/linux/README.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -111,7 +111,7 @@ fi
 echo "== kernel: building bzImage"
 make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 
-# Task 110: the counter-opcode reachability gate (PARAVIRT-CLOCK.md §3.3, x86
+# Task 110: the counter-opcode reachability gate (paravirtual clock interface, x86
 # half) — every rdtsc/rdtscp left in the image must match a reviewed,
 # trap-backstopped allowlist entry (function + exact instruction count). Scans
 # the uncompressed vmlinux (symbols); self-tests its own ability to fail

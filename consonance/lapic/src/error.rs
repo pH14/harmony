@@ -4,7 +4,7 @@
 /// Errors returned by the [`Lapic`](crate::Lapic) state machine.
 ///
 /// The set is deliberately small: per the CPU/MSR contract's `deny-ignore-write`
-/// rule (`docs/CPU-MSR-CONTRACT.md` §5), a guest write to a read-only or
+/// rule (`consonance/vmm-core/contracts/x86/README.md`), a guest write to a read-only or
 /// reserved-but-in-range register is *dropped*, not an error — so the only way an
 /// MMIO access produces an error is a structurally malformed offset
 /// ([`LapicError::BadOffset`]). The other two variants guard the [`raise`] and

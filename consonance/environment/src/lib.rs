@@ -110,7 +110,7 @@ pub enum Outcome {
 /// ([`HostFault`]: memory/clock/CPU/IRQ) have no service point — the guest never
 /// asks for them — so they never flow through [`decide`](Environment::decide); the
 /// frontier applies them imperatively at a [`Moment`] (see [`HostFault`] and
-/// `tasks/45-host-control-plane.md`). Both planes nonetheless record into one
+/// `consonance/environment/README.md`). Both planes nonetheless record into one
 /// [`Moment`]-keyed reproducer ([`EnvSpec`]) as the merged [`Action`].
 pub trait Environment {
     /// Answer one **guest** [`DecisionPoint`] with an [`Answer`]. Deterministic
