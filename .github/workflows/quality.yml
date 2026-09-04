@@ -452,3 +452,58 @@ jobs:
           # `-p` list above — freeze its public surface on its own manifest.
           cargo test --manifest-path consonance/harmony-linux/sdk/Cargo.toml \
             --test public_api -- --ignored --nocapture
+
+  # Gating: the aarch64-linux leg of the frozen public-API gate (quality-d).
+  #
+  # WHY A SECOND LEG. The `public-api` job above freezes the **x86-64 Linux**
+  # surface. `vmm-backend` and `vmm-core` gate part of their public surface on
+  # `target_arch`, and their `tests/public_api.rs` guards return early on any
+  # other target — so the aarch64-linux-only surface (`vmm_backend::LiveKvm`,
+  # including a `pub unsafe fn`, and
+  # `vmm_core::vendor::arm64::bringup::{boot_selected, boot_selected_control}`)
+  # was frozen NOWHERE, and drift in it merged green. Measured when this landed:
+  # of the 15 crates carrying a snapshot, exactly those two have a surface that
+  # differs between the targets; the other 13 are arch-neutral and the script
+  # asserts that against their existing x86 snapshot, so a crate that grows its
+  # first aarch64-only `pub` item fails here instead of drifting in silently.
+  #
+  # This runner is x86-64 and the generator is CROSS-TARGETED — the mirror image
+  # of the macOS recipe in docs/CODE-QUALITY.md. Nothing aarch64 is linked or
+  # run, exactly like the "cross-check aarch64" clippy step in `gates`, and
+  # CARGO_FEATURE_NO_NEON is carried for the same reason: blake3's build script
+  # wants an aarch64 C toolchain we do not ship. It was verified not to affect
+  # the generated surface (snapshot-store, the only blake3 dependent, is
+  # byte-identical with and without it), so the snapshots stay reproducible.
+  #
+  # The script has NO skip branch: a missing toolchain, target, tool or snapshot
+  # is a hard failure, and it prints the snapshot each crate was compared
+  # against plus a final N/N count, so this job's log shows green-by-CHECKING
+  # rather than green-by-skipping (AGENTS.md review rule 4, "Gate vacuity").
+  public-api-aarch64:
+    name: public-api-aarch64
+    runs-on: ubuntu-latest
+    env:
+      # Keep in sync with the `public-api` job, each tests/public_api.rs, the
+      # script, and docs/CODE-QUALITY.md.
+      PINNED_NIGHTLY: nightly-2026-06-16
+      CARGO_FEATURE_NO_NEON: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchains (stable default + pinned nightly + aarch64 target)
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
+          # rustdoc-JSON for the aarch64 surface needs that target's std on the
+          # pinned nightly. No linker is involved — this is a docs pass.
+          rustup target add aarch64-unknown-linux-gnu --toolchain "${PINNED_NIGHTLY}"
+      - uses: Swatinem/rust-cache@v2
+      # Same pin and same reason as the x86 leg: cargo-public-api's snapshot
+      # formatting is version-dependent, so an unpinned upgrade could flip a
+      # byte-identical surface to a spurious diff.
+      - name: Install CI cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api@0.52.0
+      - name: public-api snapshots (aarch64-unknown-linux-gnu)
+        run: scripts/check-public-api-aarch64.sh

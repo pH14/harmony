@@ -228,6 +228,21 @@ until it is added to that list**.
   `cargo +nightly-2026-06-16 public-api -p <crate> --all-features --target x86_64-unknown-linux-gnu -sss --color never > <crate>/tests/public-api.txt`.
   Confirm it reproduces the committed baseline byte-for-byte *before* applying your change, so a
   toolchain difference cannot masquerade as an API diff.
+- **The aarch64-linux leg** (`scripts/check-public-api-aarch64.sh`, CI job `public-api-aarch64`).
+  The guards above freeze the *x86-64* Linux surface, so the aarch64-only surface —
+  `vmm_backend::LiveKvm` (including a `pub unsafe fn`) and
+  `vmm_core::vendor::arm64::bringup::{boot_selected, boot_selected_control}` — was frozen
+  nowhere. The script cross-targets the generator from the x86-64 runner (nothing aarch64 is
+  linked or run) and covers **all 15 snapshot crates**: the two that actually diverge
+  (`vmm-backend`, `vmm-core`) against their own `tests/public-api-aarch64.txt`, and the other
+  13 against their existing `tests/public-api.txt` — which is the assertion that they really
+  are arch-neutral, so a crate growing its first aarch64-only `pub` item fails the gate
+  instead of drifting in silently. Unlike the in-tree guards it has **no skip branch**: a
+  missing toolchain, target, tool or snapshot is a hard failure, and it prints the snapshot
+  each crate was compared against plus a final N/N count, so the job's log shows
+  green-by-checking rather than green-by-skipping. Refresh an aarch64 snapshot with
+  `UPDATE_PUBLIC_API=1 scripts/check-public-api-aarch64.sh`; an arch-neutral API change moves
+  the x86 snapshot only, an arch-divergent one moves both.
 - **No new crate dependencies:** the guard invokes the installed `cargo-public-api` *binary*
   (Convention rule-5 tool exemption) rather than adding the `public-api`/`rustdoc-json` library
   crates. On a box lacking the nightly or the tool, the test **skips loudly** (keeps a plain
