@@ -175,7 +175,8 @@ case "$arm64_profile" in
         assert_off BINFMT_SCRIPT PROC_FS FUTEX DEVMEM
         ;;
     game)
-        assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU SHMEM TMPFS
+        assert_y BINFMT_SCRIPT PROC_FS PROC_PAGE_MONITOR FUTEX DEVMEM MMU SHMEM TMPFS \
+            HUGETLBFS
         assert_off STRICT_DEVMEM
         ;;
     postgres)

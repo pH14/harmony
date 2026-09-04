@@ -6,7 +6,7 @@
 //! [`Event`]. The contract is **read-only** — `emit` takes `&Event` and returns
 //! `()`, so an observer can neither draw entropy, advance `work`, nor mutate any
 //! guest/VMM state. Determinism is therefore preserved *by construction*:
-//! attaching any observer cannot change the run (see `docs/INTEGRATION.md` §8).
+//! attaching any observer cannot change the run (see `docs/ARCHITECTURE.md`).
 //!
 //! [`NullObserver`] is the **default** (a no-op), so M1/M2/corpus/Linux goldens
 //! stay byte-identical unless an operator opts a real sink in. [`NdjsonRecorder`]

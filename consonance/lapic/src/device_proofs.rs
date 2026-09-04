@@ -16,7 +16,7 @@
 //!   explodes the instance. The timer divisions (`÷ timer_hz`,
 //!   `÷ (divide·1e9)`) and the `N·divide·1e9` / `Δ·timer_hz` products are
 //!   `u128`, so the harnesses pin `timer_hz` to a concrete representative
-//!   (25 MHz — the frozen crystal of `docs/CPU-MSR-CONTRACT.md`, or 1 for the
+//!   (25 MHz — the frozen crystal of `consonance/vmm-core/contracts/x86/README.md`, or 1 for the
 //!   no-panic / huge-period harnesses) and either pin the divide config or
 //!   iterate it over **concrete** values. Each product then has a constant
 //!   operand and each division a constant divisor, which CBMC folds into cheap
@@ -32,8 +32,6 @@
 //! ([`divide_value_total`]), so the concrete-divisor arithmetic harnesses
 //! compose to "for every legal divisor".
 //!
-//! Harness runtimes are recorded in `IMPLEMENTATION.md`.
-
 use super::*;
 
 /// Tight bound (12 bits) for the symbolic `N`/`Δ` operands in the exact-equality
@@ -42,7 +40,7 @@ use super::*;
 const EXACT_BOUND: u64 = (1 << 12) - 1;
 
 /// Representative concrete timer frequency: 25 MHz, the frozen core-crystal /
-/// LAPIC-timer input clock of `docs/CPU-MSR-CONTRACT.md` §5.
+/// LAPIC-timer input clock of `consonance/vmm-core/contracts/x86/README.md`
 const PROOF_TIMER_HZ: u64 = 25_000_000;
 
 /// The eight divide-config encodings (bit 2 cleared) that map to the eight

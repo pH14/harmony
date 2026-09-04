@@ -1,5 +1,5 @@
 # Guest Linux image (task 04 Part B). Linux-only; on macOS run inside a
-# linux/amd64 container (docs/BUILDING.md). The heavy lifting lives in the
+# linux/amd64 container (CONTRIBUTING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
 .PHONY: kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image exec-image postgres-image campaign-image docker-image k3s-image game-image nova-game-image maze-image test test-linux clean-artifacts

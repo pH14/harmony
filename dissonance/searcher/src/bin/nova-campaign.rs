@@ -7,7 +7,7 @@ use std::{
     error::Error,
     ffi::OsString,
     fs,
-    io::{self, BufWriter, Write},
+    io::{BufWriter, Write},
     path::PathBuf,
     process::Command,
 };
@@ -41,6 +41,9 @@ struct Args {
     action_limit: usize,
     level: NovaLevel,
     marketing_soak: bool,
+    fixed_execution_soak: bool,
+    host: String,
+    memory_budget_mib: Option<usize>,
 }
 
 struct RenderedMedia {
@@ -51,6 +54,13 @@ struct RenderedMedia {
 
 impl Args {
     fn parse() -> Result<Self, Box<dyn Error>> {
+        Self::parse_from(env::args_os().skip(1))
+    }
+
+    fn parse_from<I>(values: I) -> Result<Self, Box<dyn Error>>
+    where
+        I: IntoIterator<Item = OsString>,
+    {
         let mut core = None;
         let mut rom = None;
         let mut output = None;
@@ -60,10 +70,19 @@ impl Args {
         let mut action_limit = 512_usize;
         let mut level_number = 1_u8;
         let mut marketing_soak = false;
-        let mut args = env::args_os().skip(1);
+        let mut fixed_execution_soak = false;
+        let mut host = "github-actions".to_owned();
+        let mut memory_budget_mib = None;
+        let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
                 marketing_soak = true;
+                continue;
+            }
+            if flag == "--fixed-execution-soak" {
+                // Throughput acceptance runs must reach their exact budget
+                // even when ordinary search finds a victory first.
+                fixed_execution_soak = true;
                 continue;
             }
             let value = args
@@ -78,6 +97,12 @@ impl Args {
                 "--workers" => workers = parse_number("workers", value)?,
                 "--action-limit" => action_limit = parse_number("action-limit", value)?,
                 "--level" => level_number = parse_number("level", value)?,
+                "--host" => {
+                    host = value.into_string().map_err(|_| "host is not UTF-8")?;
+                }
+                "--memory-budget-mib" => {
+                    memory_budget_mib = Some(parse_number("memory-budget-mib", value)?);
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -91,6 +116,9 @@ impl Args {
             action_limit,
             level: NovaLevel::from_number(level_number)?,
             marketing_soak,
+            fixed_execution_soak,
+            host,
+            memory_budget_mib,
         })
     }
 }
@@ -113,15 +141,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
     let game = NovaGame::new_at_level(&rom, &args.core, &core_sha256, args.level);
-    let config = NovaCampaignConfig {
+    let config = campaign_config(&args);
+    if args.marketing_soak {
+        run_marketing_soak(&game, &config, &args.output)
+    } else {
+        run_qualified_campaign(&game, &config, &args.output)
+    }
+}
+
+fn campaign_config(args: &Args) -> NovaCampaignConfig {
+    NovaCampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,
         execution_budget: args.executions,
         action_limit: args.action_limit,
-        host: "github-actions".to_owned(),
+        host: args.host.clone(),
         wall_budget: None,
+        continue_after_victory: args.fixed_execution_soak,
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
-        memory_budget_mib: None,
+        memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::AdmitAlive,
         selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
@@ -131,12 +169,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         suffix: SuffixShape::OneToSix,
         mixture: DrawMixture::AlphabetOnly,
         victory_input_path: Some(args.output.join("victory-input.json")),
-    };
-
-    if args.marketing_soak {
-        run_marketing_soak(&game, &config, &args.output)
-    } else {
-        run_qualified_campaign(&game, &config, &args.output)
     }
 }
 
@@ -145,7 +177,7 @@ fn run_marketing_soak(
     config: &NovaCampaignConfig,
     output: &std::path::Path,
 ) -> Result<(), Box<dyn Error>> {
-    let mut stream = io::sink();
+    let mut stream = BufWriter::new(fs::File::create(output.join("stream.jsonl"))?);
     let mut progress = BufWriter::new(fs::File::create(output.join("progress.jsonl"))?);
     let (live, checkpoint) = run_nova_campaign_checkpointed(
         game,
@@ -154,6 +186,8 @@ fn run_marketing_soak(
         &mut stream,
         Some(&mut progress),
     )?;
+    stream.flush()?;
+    drop(stream);
     progress.flush()?;
     drop(progress);
     drop(checkpoint);
@@ -164,13 +198,19 @@ fn run_marketing_soak(
         .unwrap_or(&live.archive.champion_input)
         .clone();
     let campaign = json!({
-        "mode": "marketing_soak",
+        "mode": if config.continue_after_victory {
+            "direct_quicknes_fixed_execution_soak"
+        } else {
+            "marketing_soak"
+        },
+        "fixed_execution_soak": config.continue_after_victory,
         "verification": "champion_endpoint_reported",
         "level": game.level().number(),
         "campaign_seed": live.campaign_seed,
         "workers": live.workers,
         "execution_budget": live.execution_budget,
         "executions": live.executions_completed,
+        "execution_budget_exact": live.executions_completed == live.execution_budget,
         "frames_emulated": live.frames_emulated,
         "stream_sha256": &live.stream_sha256,
         "archive_entries": live.archive.entries.len(),
@@ -185,6 +225,10 @@ fn run_marketing_soak(
         "first_reached": live.archive.first_reached,
         "progress_curve": &live.archive.progress_curve,
     });
+    fs::write(
+        output.join("archive.json"),
+        serde_json::to_vec_pretty(&live.archive)?,
+    )?;
     drop(live);
 
     let best_endpoint = write_best_observation(game, &best_input, output)?;
@@ -263,12 +307,20 @@ fn run_qualified_campaign(
         return Err("video-enabled replay changed Nova's decoded input endpoint".into());
     }
     let verdict = json!({
+        "mode": if config.continue_after_victory {
+            "direct_quicknes_fixed_execution_soak"
+        } else {
+            "qualified_campaign"
+        },
+        "fixed_execution_soak": config.continue_after_victory,
         "replay_verified": replay_verified,
         "level": game.level().number(),
         "stream_sha256": live.stream_sha256,
         "report_sha256": sha256(&report_bytes),
         "checkpoint_sha256": sha256(&checkpoint_bytes),
+        "execution_budget": live.execution_budget,
         "executions": live.executions_completed,
+        "execution_budget_exact": live.executions_completed == live.execution_budget,
         "retained_representatives": live.archive.entries.len(),
         "progress": live.archive.progress_watermark,
         "milestones": live.archive.milestones,
@@ -398,4 +450,44 @@ fn render_video(
 
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, OsString, campaign_config};
+
+    fn required_args(extra: &[&str]) -> Vec<OsString> {
+        let mut args = ["--core", "core", "--rom", "rom", "--output", "output"]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        args.extend(extra.iter().map(OsString::from));
+        args
+    }
+
+    #[test]
+    fn fixed_execution_soak_is_explicit_and_valueless() {
+        let ordinary = Args::parse_from(required_args(&[])).expect("ordinary arguments parse");
+        assert!(!ordinary.fixed_execution_soak);
+
+        let soak = Args::parse_from(required_args(&["--fixed-execution-soak", "--seed", "42"]))
+            .expect("soak arguments parse");
+        assert!(soak.fixed_execution_soak);
+        assert_eq!(soak.seed, 42);
+    }
+
+    #[test]
+    fn unknown_arguments_are_rejected() {
+        assert!(Args::parse_from(required_args(&["--unknown", "value"])).is_err());
+    }
+
+    #[test]
+    fn fixed_execution_soak_wires_campaign_config() {
+        let ordinary = Args::parse_from(required_args(&[])).expect("ordinary arguments parse");
+        assert!(!campaign_config(&ordinary).continue_after_victory);
+
+        let soak = Args::parse_from(required_args(&["--fixed-execution-soak"]))
+            .expect("soak arguments parse");
+        assert!(campaign_config(&soak).continue_after_victory);
+    }
 }

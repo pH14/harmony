@@ -423,7 +423,7 @@ fn serve_recording(stream: &mut TcpStream, opts: &Arc<ServerOptions>) -> io::Res
 /// subscribed": the flush is a release that the client's header read acquires, so
 /// the subscribe happens-before any event the client emits in response. That
 /// happens-before is what closes the `streams_events_as_sse_frames` race (see
-/// `IMPLEMENTATION.md`). The reorder changes no wire bytes — the header and every
+/// `README.md`). The reorder changes no wire bytes — the header and every
 /// frame are byte-identical.
 fn serve_events(
     mut stream: TcpStream,

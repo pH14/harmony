@@ -242,6 +242,9 @@ pub struct SmbCampaignConfig {
     pub host: String,
     /// Optional live-only wall cutoff that stops issuing new reservations.
     pub wall_budget: Option<std::time::Duration>,
+    /// Live-only: continue issuing reservations after the first victory until
+    /// another live limit stops the run. Never recorded or used by replay.
+    pub continue_after_victory: bool,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
     /// Reservations held ahead of ordered admission per worker, recorded in
@@ -281,6 +284,7 @@ impl SmbCampaignConfig {
             action_limit: self.action_limit,
             host: self.host.clone(),
             wall_budget: self.wall_budget,
+            continue_after_victory: self.continue_after_victory,
             archive_entry_limit: self.archive_entry_limit,
             reservations_per_worker: self.reservations_per_worker,
             memory_budget_mib: self.memory_budget_mib,
@@ -1600,6 +1604,7 @@ mod tests {
             action_limit: 96,
             host: "unit-test".to_owned(),
             wall_budget: None,
+            continue_after_victory: false,
             archive_entry_limit: 32_768,
             reservations_per_worker: DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: None,

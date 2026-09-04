@@ -3,7 +3,7 @@
 These are the **upstream Kata Containers guest-kernel config fragments**, vendored
 verbatim. They are the container-host *base* the guest kernel is built from (task 36);
 `consonance/harmony-linux/linux/config-fragment` is then merged on top as the **determinism overlay** and
-wins every conflict. See `consonance/harmony-linux/linux/IMPLEMENTATION.md` for the rebase rationale.
+wins every conflict. See `consonance/harmony-linux/linux/README.md` for the rebase rationale.
 
 ## Pin
 

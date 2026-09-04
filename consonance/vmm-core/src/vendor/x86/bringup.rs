@@ -30,7 +30,7 @@ use crate::vmm::{GuestRam, RamBacking, Vmm, VmmError};
 const IA32_EFER: u32 = 0xC000_0080;
 
 /// LAPIC-timer input frequency (Hz) the userspace xAPIC is configured with — the
-/// frozen core-crystal clock (CPUID `0x15`) per `docs/CPU-MSR-CONTRACT.md` §5. The
+/// frozen core-crystal clock (CPUID `0x15`) described by the x86 contract. The
 /// exact value only governs the timer **deadline** arithmetic, which is moot until
 /// interrupt injection lands (the bring-up `KvmBackend::inject` is `Unsupported`);
 /// it is fixed here so the value is deterministic and documented. Non-zero
@@ -67,7 +67,7 @@ pub fn boot<B: Backend<A = X86>>(
     payload: &[u8],
     guest_ram_len: usize,
 ) -> Result<Vmm<B>, VmmError> {
-    // 0. Enforce the CPU-MSR-CONTRACT §1.1 host-homogeneity baseline FIRST —
+    // 0. Enforce the x86 CPU contract host-homogeneity baseline FIRST —
     //    before installing any policy or entering the guest. A host outside the
     //    frozen det-cfl-v1 determinism domain (wrong family/model/stepping or
     //    microcode, MXCSR-mask, MAXPHYADDR, an un-disabled RTM, or a variance
@@ -296,16 +296,30 @@ pub(crate) fn compose_linux<B: Backend<A = X86>>(
 /// `MAP_PRIVATE` does the rest — guest writes stay private to this VM, and
 /// untouched pages fault lazily instead of being copied eagerly.
 pub fn compose_restore_target<B: Backend<A = X86>>(
+    backend: B,
+    mapping: snapshot_store::Mapping,
+    wire_lapic: bool,
+) -> Result<Vmm<B>, VmmError> {
+    compose_restore_target_with_policy(
+        backend,
+        mapping,
+        wire_lapic,
+        X86Policy {
+            cpuid: contract::cpuid_model(),
+            msr_filter: contract::msr_filter_allow(),
+        },
+    )
+}
+
+fn compose_restore_target_with_policy<B: Backend<A = X86>>(
     mut backend: B,
     mut mapping: snapshot_store::Mapping,
     wire_lapic: bool,
+    policy: X86Policy,
 ) -> Result<Vmm<B>, VmmError> {
     // 1. Install policy through the trait, before the first run (same order as
     //    `compose`/`compose_linux`: policy precedes any entry).
-    backend.set_policy(&X86Policy {
-        cpuid: contract::cpuid_model(),
-        msr_filter: contract::msr_filter_allow(),
-    })?;
+    backend.set_policy(&policy)?;
 
     // 2. The mapping IS the guest RAM. `map_memory` requires page-aligned length
     //    (the mmap base is page-aligned by construction); a store sized per
@@ -337,6 +351,35 @@ pub fn compose_restore_target<B: Backend<A = X86>>(
         .map_err(|e| VmmError::ContractViolation(format!("lapic init: {e}")))?;
         vmm.wire_lapic(lapic);
     }
+    Ok(vmm)
+}
+
+/// Composes a stock-KVM virtual-time restore target around a snapshot mapping.
+///
+/// This mirrors [`boot_linux_stock_virtual_time`] without loading the kernel or
+/// initramfs: it preserves that source's hardware-RNG-hidden CPUID contract,
+/// userspace xAPIC, V-time wiring, and paravirtual clock registration while the
+/// control server restores the remaining VM state from the snapshot.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn compose_stock_virtual_time_restore_target(
+    mapping: snapshot_store::Mapping,
+    seed: u64,
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
+    let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::KvmBackend::new()?);
+    let mut vmm = compose_restore_target_with_policy(
+        backend,
+        mapping,
+        true,
+        X86Policy {
+            cpuid: contract::cpuid_model_hw_rng_hidden(),
+            msr_filter: contract::msr_filter_allow(),
+        },
+    )?;
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
+        super::contract_vclock_config(),
+        seed,
+    )?);
+    vmm.enable_pvclock();
     Ok(vmm)
 }
 
@@ -454,7 +497,7 @@ pub fn boot_linux_selected(
 }
 
 /// The Linux composition for **assigned-at-exit (virtual_time) V-time on the
-/// stock backend** (`docs/VM-EXIT-COUNT-VTIME.md`): the stock `KvmBackend` with
+/// stock backend** (`docs/DETERMINISM.md`): the stock `KvmBackend` with
 /// [`VtimeWiring::new_virtual_time`](crate::vmm::VtimeWiring::new_virtual_time)
 /// wired, so V-time is a pure function of the serviced exit stream and the
 /// production [`LiveVirtualTimeTrace`](crate::virtual_time::LiveVirtualTimeTrace)

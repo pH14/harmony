@@ -130,7 +130,7 @@ const E820_RESERVED: u32 = 2;
 /// left as a memslot hole by the backend, so the guest's LAPIC accesses fault to the
 /// userspace deterministic xAPIC model (`KVM_EXIT_MMIO`) instead of being serviced
 /// from RAM — the seam that lets the V-time LAPIC timer actually tick (see
-/// `docs/CPU-MSR-CONTRACT.md` §6 / the LAPIC-timer rows). The IOAPIC page
+/// `consonance/vmm-core/contracts/x86/README.md` / the LAPIC-timer rows). The IOAPIC page
 /// (`0xFEC00000`) is deliberately NOT reserved: Linux runs in virtual-wire mode (no
 /// MADT) and never uses it.
 pub(crate) const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;

@@ -6,7 +6,7 @@
 //! events ([`Arm64Injection`]), the GICv3 interrupt identity ([`GicIntId`]),
 //! and the capability flags ([`Arm64Caps`]).
 //!
-//! This is the `docs/ARCH-BOUNDARY.md` §D pre-build skeleton (`hm-cbt`): built
+//! This is the `docs/ARCHITECTURE.md` pre-build skeleton (`hm-cbt`): built
 //! against the *unfrozen* trait (designed-not-frozen — AA-3's trait-freeze memo
 //! owns the freeze), trusted only once M4's native msr1 validation returns GO.
 //! Every measured constant is a named `TODO(AA-N)`,
@@ -26,7 +26,7 @@ pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;
 
-/// The arm64 vendor (a zero-sized type; `docs/ARCH-BOUNDARY.md` §A/§D).
+/// The arm64 vendor (a zero-sized type; see `docs/ARCHITECTURE.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64;
 
@@ -138,7 +138,7 @@ pub enum Arm64Injection {
 /// (before the first run) through [`Backend::set_policy`](crate::Backend).
 ///
 /// **A policy *skeleton*** (spec non-goal 5): the shapes are ruled
-/// (`docs/ARCH-BOUNDARY.md` §B, ARM row — "ID-reg freeze + trapped-sysreg
+/// (`docs/ARCHITECTURE.md`, ARM row — "ID-reg freeze + trapped-sysreg
 /// table, same data-driven table→model→enforce shape"), but the concrete row
 /// set is `TODO(AA-6)` (the enforcement-mechanism truth table) and the trap
 /// *enforcement* is `TODO(patched-abi)` (AA-3). It does not claim enforcement
@@ -194,7 +194,7 @@ pub struct Arm64Caps {
     /// snapshot. `false` means interrupt state is userspace-owned or absent.
     pub in_kernel_gic: bool,
     /// Guest reads of the virtual counter resolve to V-time — on arm64 via the
-    /// paravirt virtual-time clock page (`docs/PARAVIRT-CLOCK.md` §4.2: no
+    /// paravirt virtual-time clock page (`consonance/vtime/README.md`: no
     /// `CNTVCT` trap exists on reachable silicon, so closure is contract-level,
     /// never interception). `TODO(AA-5)`: validated on silicon; **honestly
     /// `false` for the stock backend.**

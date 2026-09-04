@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // campaign-super — a supervised process with a PLANTED, fault-triggerable bug
-// (task 60). The added component of the Postgres-campaign workload image; see
-// consonance/harmony-linux/linux/IMPLEMENTATION.md §"The planted bug" and
-// dissonance/conductor/IMPLEMENTATION.md §"Task 60".
+// (task 60). The added component of the Postgres-campaign workload image.
 //
 // The bug in one sentence: the process keeps a small "ledger" (a canary + a
 // retry budget) in a FIXED-address, mlock'd guest page and runs a bounded,

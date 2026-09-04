@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // order-super — benchmark bug (ii): an ORDERING / INTERRUPT-TIMING bug (task 69).
 // The second planted bug of the seeded-bug benchmark, beside task 60's
-// campaign-super.c (bug i). See dissonance/benchmark (BugClass::OrderingInterrupt)
-// and consonance/harmony-linux/linux/IMPLEMENTATION.md §"The benchmark bugs".
+// campaign-super.c (bug i). See dissonance/benchmark (BugClass::OrderingInterrupt).
 //
 // The bug in one sentence: a supervised process maintains a two-word invariant
 // `mirror == ~primary` that it updates NON-ATOMICALLY inside a small, fixed

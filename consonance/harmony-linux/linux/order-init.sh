@@ -8,7 +8,7 @@
 # ordering invariant is only violable when an injected interrupt preempts it
 # mid-update. A verbatim clone of campaign-init.sh (bug 1) with the
 # supervisor/markers swapped. See consonance/harmony-linux/linux/order-super.c and
-# consonance/harmony-linux/linux/IMPLEMENTATION.md.
+# consonance/harmony-linux/linux/README.md.
 #
 # The base snapshot is sealed at the `ORDER_READY` marker `order-super` prints
 # right before its ordering-sensitive loop (mid-workload, post-readiness). When an

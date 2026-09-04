@@ -388,7 +388,7 @@ oracles = [\"conformance\"]
 
 /// The real acceptance matrix, relative to this crate's directory (cargo runs a
 /// test with the crate root as its working directory).
-const REAL_MANIFEST: &str = "../../docs/corpus-manifest.toml";
+const REAL_MANIFEST: &str = "corpus-manifest.toml";
 
 /// **The CI smoke test for the packaged entry point.** The `acceptance-suite`
 /// binary must run *every* portable cell of the real matrix on any machine —

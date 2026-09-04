@@ -9,7 +9,7 @@
 //!
 //! Nothing here is ever hashed, folded into `observable_digest`, or fed back to
 //! the guest — telemetry is for the human operator; the hashes remain the source
-//! of truth (see `docs/INTEGRATION.md` §8).
+//! of truth (see `docs/ARCHITECTURE.md`).
 
 use serde::{Deserialize, Serialize};
 

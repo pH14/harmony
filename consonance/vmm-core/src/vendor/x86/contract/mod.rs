@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! CPUID model + MSR-filter **policy** (the *what*), built from the ratified
-//! `docs/CPU-MSR-CONTRACT.md` data (its canonical mirror
-//! `docs/cpu-msr-contract.toml`, embedded at compile time).
+//! CPUID model and MSR-filter policy built from the checked-in x86 contract in
+//! `consonance/vmm-core/contracts/x86/intel.toml`.
 //!
 //! `vmm-core` owns the policy; the install *mechanism* (`KVM_SET_CPUID2`,
 //! `KVM_X86_SET_MSR_FILTER`, `KVM_CAP_X86_USER_SPACE_MSR`) is KVM-specific and
@@ -30,21 +29,16 @@ mod parse;
 
 use parse::{Contract, Subleaf, VendorId};
 
-/// The ratified **Intel** contract artifact (`docs/cpu-msr-contract.toml`, the
-/// `det-cfl-v1`/`GenuineIntel` column), embedded at compile time. The path is
-/// relative to this source file; a docs/ move breaks the build loudly (intended —
-/// the contract is a hard input, not optional).
-const CONTRACT_TOML: &str = include_str!("../../../../../../docs/cpu-msr-contract.toml");
+/// The active Intel contract artifact, embedded at compile time.
+const CONTRACT_TOML: &str = include_str!("../../../../contracts/x86/intel.toml");
 
-/// The **AMD draft** column (`docs/cpu-msr-contract-amd-draft.toml`, the
-/// `det-zenN-v1`/`AuthenticAMD` column), embedded **only under `cfg(test)`**. This
+/// The AMD draft column, embedded **only under `cfg(test)`**. This
 /// is the structural draft-only guard (Deliverable 7/8): no live VM construction
 /// path can name this constant, so the draft is unreachable from `boot`/`bringup`.
 /// It is loadable + canonicalizable (its own `contract_hash`) but wired into no
 /// enforcement path — every enforcement cell is `verify-on-silicon` pending AE-4.
 #[cfg(test)]
-const CONTRACT_AMD_DRAFT_TOML: &str =
-    include_str!("../../../../../../docs/cpu-msr-contract-amd-draft.toml");
+const CONTRACT_AMD_DRAFT_TOML: &str = include_str!("../../../../contracts/x86/amd-draft.toml");
 
 /// The parsed **Intel** contract (the live policy path), built once on first use.
 /// Loaded under the `GenuineIntel` vendor axis: a vendor-mismatched or mixed-vendor
@@ -71,7 +65,7 @@ fn contract_amd_draft() -> &'static Contract {
 }
 
 // ---------------------------------------------------------------------------
-// MSR user-space exit mask (CPU-MSR-CONTRACT §1).
+// MSR user-space exit mask (x86 CPU contract).
 // ---------------------------------------------------------------------------
 
 /// `KVM_MSR_EXIT_REASON_FILTER` bit value (bit 0). Written `1` rather than `1 << 0`
@@ -83,7 +77,7 @@ pub const MSR_EXIT_REASON_UNKNOWN: u64 = 1 << 1;
 pub const MSR_EXIT_REASON_INVAL: u64 = 1 << 2;
 
 /// The mask `vmm-backend` must enable on `KVM_CAP_X86_USER_SPACE_MSR` **before
-/// installing the MSR filter** (CPU-MSR-CONTRACT §1; api.rst §4.97 ordering):
+/// installing the MSR filter** (x86 CPU contract; api.rst §4.97 ordering):
 /// `FILTER | UNKNOWN | INVAL`. Enabling the cap first is load-bearing — otherwise
 /// a denied/unknown/invalid MSR becomes a silent in-kernel `#GP` instead of a loud
 /// `KVM_EXIT_X86_RDMSR/WRMSR`.
@@ -91,7 +85,7 @@ pub const USER_SPACE_MSR_MASK: u64 =
     MSR_EXIT_REASON_FILTER | MSR_EXIT_REASON_UNKNOWN | MSR_EXIT_REASON_INVAL;
 
 // ---------------------------------------------------------------------------
-// MSR disposition vocabulary (CPU-MSR-CONTRACT §3).
+// MSR disposition vocabulary (x86 CPU contract).
 // ---------------------------------------------------------------------------
 
 /// Per-direction disposition of an MSR access (the §3 vocabulary the skeleton
@@ -104,7 +98,7 @@ pub enum MsrDisposition {
     AllowStateful,
     /// Read returns this constant (read-only rows); write is denied.
     AllowFixed(u64),
-    /// `emulate-vtime` rows (CPU-MSR-CONTRACT §3): `MSR_IA32_TSC` (0x10) and
+    /// `emulate-vtime` rows (x86 CPU contract): `MSR_IA32_TSC` (0x10) and
     /// `MSR_IA32_TSC_ADJUST` (0x3b), read **and** write — serviced from V-time.
     /// V-time is not wired in this skeleton, so an actual `0x10`/`0x3b` access is
     /// a loud `ContractViolation` until V-time lands; the audited M1/M2 payloads
@@ -134,7 +128,7 @@ fn hex64(s: &str) -> u64 {
     u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0)
 }
 
-/// The host-baseline expectations vmm-core enforces at VM start (CPU-MSR-CONTRACT
+/// The host-baseline expectations vmm-core enforces at VM start (x86 CPU contract
 /// §1.1/§1.2), extracted from the ratified contract for the [`crate::hostassert`]
 /// checker. The §6 `guest-ucode-rev` and `cr4-force-reserved` records are part of
 /// the hashed canonical form but are **not** host probes — one is the
@@ -262,7 +256,7 @@ pub(crate) fn clockevent_period_vns() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// CPUID model (CPU-MSR-CONTRACT §2).
+// CPUID model (x86 CPU contract).
 // ---------------------------------------------------------------------------
 
 /// The frozen CPUID model from §2 of the contract, in canonical (leaf, subleaf)
@@ -356,7 +350,7 @@ pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {
 }
 
 // ---------------------------------------------------------------------------
-// MSR filter allow set (CPU-MSR-CONTRACT §3 — the allow-stateful rows).
+// MSR filter allow set (x86 CPU contract — the allow-stateful rows).
 // ---------------------------------------------------------------------------
 
 /// The MSR-filter allow set: exactly the `allow-stateful` rows — the only MSRs
@@ -394,7 +388,7 @@ pub fn msr_filter_allow() -> MsrFilter {
 }
 
 // ---------------------------------------------------------------------------
-// Contract hash (CPU-MSR-CONTRACT §6).
+// Contract hash (x86 CPU contract).
 // ---------------------------------------------------------------------------
 
 /// SHA-256 of the canonical serialized contract this policy was built from (§6
@@ -402,7 +396,7 @@ pub fn msr_filter_allow() -> MsrFilter {
 /// [`canonical::serialize`] from the same parsed tables the runtime policy uses,
 /// so policy can never drift from the ratified contract.
 ///
-/// As of v3 (det-cfl-v1) the §6 registry is committed: `docs/cpu-msr-contract.toml`
+/// As of v3 (det-cfl-v1) the §6 registry is committed: `consonance/vmm-core/contracts/x86/intel.toml`
 /// `[contract] contract_hash` carries the hash of exactly these bytes, and the
 /// `contract_hash() == toml field` gate ([`tests::contract_hash_matches_committed_registry`])
 /// is live and green.
@@ -648,7 +642,7 @@ mod tests {
     }
 
     /// Gate-6 anti-drift assertion: `contract_hash()` must equal the hash the §6
-    /// registry pins in `docs/cpu-msr-contract.toml` `[contract] contract_hash`.
+    /// registry pins in `contracts/x86/intel.toml` `[contract] contract_hash`.
     /// Live as of v3 (det-cfl-v1): the field is committed, so this gate is no
     /// longer `#[ignore]`d — computed-from-the-parsed-artifact must equal committed.
     /// Miri-ignored on the same grounds as its §6 siblings above (a ~97 s
@@ -662,8 +656,8 @@ mod tests {
         assert_eq!(
             committed.as_deref(),
             Some(computed.as_str()),
-            "contract_hash() must equal the committed §6 registry hash. Pending: foreman commits \
-             `contract_hash = \"{computed}\"` to docs/cpu-msr-contract.toml [contract]."
+            "contract_hash() must equal the committed registry hash. Update \
+             `contract_hash = \"{computed}\"` in contracts/x86/intel.toml."
         );
     }
 
@@ -914,7 +908,7 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
             amd.contract_hash.as_deref(),
             Some(computed.as_str()),
             "AMD draft contract_hash() must equal the committed hash in \
-             docs/cpu-msr-contract-amd-draft.toml [contract]. Regenerate with \
+             contracts/x86/amd-draft.toml [contract]. Regenerate with \
              contract::tests::regen_amd_golden then commit `contract_hash = \"{computed}\"`."
         );
     }
@@ -1493,7 +1487,7 @@ host-assert = \"on-silicon-pending-AE4\"\n";
     }
 
     /// Prints the computed §6 canonical form size + the current `contract_hash` so the
-    /// foreman can commit it to `docs/cpu-msr-contract.toml`. Run with:
+    /// maintainer can commit it to `contracts/x86/intel.toml`. Run with:
     /// `cargo test -p vmm-core contract::tests::report_contract_hash -- --nocapture`.
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
@@ -1527,7 +1521,7 @@ host-assert = \"on-silicon-pending-AE4\"\n";
     /// never runs in the normal suite. Run deliberately on a reviewed AMD-column
     /// change (e.g. AE-0 pinning `det-zenN-v1`) after bumping the AMD `[contract]
     /// version`, then commit the new `contract_hash` to
-    /// `docs/cpu-msr-contract-amd-draft.toml`:
+    /// `contracts/x86/amd-draft.toml`:
     /// `cargo test -p vmm-core contract::tests::regen_amd_golden -- --ignored --nocapture`.
     #[test]
     #[ignore = "writes testdata/canonical-amd-draft.txt; run manually on a reviewed AMD-column change"]

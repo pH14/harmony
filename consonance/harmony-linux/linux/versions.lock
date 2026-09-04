@@ -101,7 +101,7 @@ K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2c
 # unheadered libretro glue under a bare GPL-2 LICENSE — a GPL-2.0-only
 # reading, AGPL-3-incompatible) and over Mesen (GPL-3, clean, but the
 # heaviest core — throughput matters at box branch rates); see
-# consonance/harmony-linux/play-agent/IMPLEMENTATION.md. Determinism comes from the VM, not the
+# consonance/harmony-linux/play-agent/README.md. Determinism comes from the VM, not the
 # core. The SAME pin provisions task 87's host-side film renderer, which is
 # what makes savestate replay 1:1. Pinned 2026-07-09 (master head). Verify:
 # shasum -a 256 <tarball>.
@@ -116,6 +116,6 @@ FCEUMM_LICENSE=GPL-2.0-or-later
 # kvm.ko/kvm-intel.ko with vermagic 6.18.35-… — see that dir's BUILD.md. 0001-0003
 # are the RDTSC/RDRAND/RDSEED exiting+emulation ABI.
 # Pinned 2026-06-30. Verify with: shasum -a 256 <patch>.
-KVM_PATCH_0001_SHA256=3cd29fd0e54d46e943d8435125230cd38b32436263d498fa315dc0a7bf53f4ee
-KVM_PATCH_0002_SHA256=522d94b4fdf3e7736a7fb33cc075a53baf60a169b139b5ac3139853ca868aafa
-KVM_PATCH_0003_SHA256=72742b1f74b7dcc250f6cd2c1d44f27fa0413b393a8bdacd6277827a4b4124b3
+KVM_PATCH_0001_SHA256=499267ffd42bbf5688efe9827a43f696125cc9b640b7045b300df85883bb38a7
+KVM_PATCH_0002_SHA256=fefa4d8ce76d1af38ed8049914f16a164474cfd132a4739649225441e9bc49d6
+KVM_PATCH_0003_SHA256=db587a6a0cd799597f23232fba100e241a1f91c6a2e45e07ebece71b2b64c02d

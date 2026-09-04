@@ -8,7 +8,7 @@ name: quality
 # the ARM64 pre-build apparatus incl. its Miri gate. None of them need bare metal
 # — a cache-thrashed slower run produces the same artifact and the same hash, so the
 # runner's microarchitecture and contention do not affect the verdict
-# (docs/BOX-PINNING.md, "CI runner isolation": "Correctness gates are contention-
+# (.github/workflows/box.yml, "CI runner isolation": "Correctness gates are contention-
 # immune").
 #
 # What STAYS on the box (NOT in this workflow, and never was): the ~23
@@ -84,7 +84,7 @@ jobs:
         run: |
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py self-test
           python3 consonance/harmony-linux/scripts/n6-instruction-sweep.py listing > /tmp/n6-listing.tsv
-          cmp /tmp/n6-listing.tsv docs/determinism-instructions.generated.tsv
+          cmp /tmp/n6-listing.tsv consonance/acceptance-suite/instruction-contract.generated.tsv
           python3 consonance/harmony-linux/scripts/n6-llsc-boundary.py
           python3 consonance/vmm-backend/kvm-patches/n6-tripwire-audit.py
       - name: V-time cost fitter self-test
@@ -167,7 +167,7 @@ jobs:
           cargo deny --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml check --config deny.toml licenses
           rustup target add aarch64-unknown-linux-gnu
           cargo check --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --target aarch64-unknown-linux-gnu
-      # consonance/harmony-linux/libvoidstar (task 43) is a C subtree with its own Makefile — the
+      # consonance/harmony-linux/libvoidstar is a C subtree with its own Makefile — the
       # root cargo gates never see it, and nothing else in CI builds it, so a change
       # that broke the clean-room ABI shim would merge green. `make test-libvoidstar`
       # builds the .so under the strict warning set (-Werror -Wconversion -Wpedantic),
@@ -188,27 +188,18 @@ jobs:
             exit 0
           fi
           cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
+          # Default-feature Linux builds must not auto-build a Consonance-only
+          # binary whose optional machine backend is absent.
+          cargo build --locked --manifest-path dissonance/Cargo.toml --release
           cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
           cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
           cargo deny --manifest-path dissonance/Cargo.toml check
 
-  # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
-  # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
-  # under PR concurrency the Miri run was OOM/timeout-flaky (SIGKILL/137) and
-  # *blocked merges on resource limits, not bugs* — and across this project's history
-  # it has not caught a UB bug (most `unsafe` here is `cfg(linux)` KVM/perf syscalls +
-  # the doorbell `asm!`, which Miri cannot run; the real bugs came from the cross-model
-  # review pass, mutants, the contract audit, and the box determinism gates). Miri stays
-  # a UB *safety net*, just nightly + manually-dispatchable, not a per-PR gate.
-  # The unsafe⇒Miri review-bar rule (AGENTS.md / pr-review) still applies: when a PR's
-  # diff adds/changes `unsafe`, run Miri locally on that crate
-  # (`cargo +nightly-2026-06-16 miri test -p <crate>`) and quote it in the review.
-  # (The OOM/timeout flakiness was a shared-box-contention artifact; a dedicated 16 GB
-  # GHA runner may make Miri MORE reliable — hm-w9s tracks re-measuring it.)
+  # Miri validation for crates containing `unsafe` runs in the nightly workflow.
+  # Changes to `unsafe` should also run the matching crate's Miri suite before merge.
 
-  # Gating: region-coverage floor measured from reality (docs/CODE-QUALITY.md,
-  # "Coverage baseline"). Ratchet FLOOR up as coverage improves; never pick a
-  # round number. Hardened by quality-b.
+  # Gating: region-coverage floor. The checked-in value is the required floor;
+  # raise it when sustained coverage improves.
   coverage:
     name: coverage
     runs-on: ubuntu-latest
@@ -248,7 +239,7 @@ jobs:
       # coverage-gated set is the portable, platform-agnostic logic the splits
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
       # (`mock`/`run_loop`) and vmm-core's V-time
-      # completion. See the crates' IMPLEMENTATION.md.
+      # completion. The owning crate READMEs describe those boundaries.
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
@@ -278,7 +269,7 @@ jobs:
   # `concurrency` cancel at those marks (that path logs only "The operation was
   # canceled", with every job in the run stopping at the same instant). Two
   # no-cost defenses back up the sharding; a costed self-hosted/larger-runner
-  # comparison for the residual is in docs/history/IMPLEMENTATION-task139.md.
+  # comparison for the residual is in docs/DETERMINISM.md.
   #   * an explicit `timeout-minutes` well above the ~59-min window and far below
   #     the 6h hosted-runner ceiling: a pathologically slow shard fails cleanly
   #     instead of burning hours (and doubles as a "this shard got too big,
@@ -371,8 +362,7 @@ jobs:
   # Linux-only, so this job runs on a Linux runner. The proof files are
   # `cfg(kani)`-only (not compiled by the normal test suite, excluded from the
   # mutation gate in `.cargo/mutants.toml`), so this job is their *only* CI check
-  # — every crate with proofs must appear below. See each crate's
-  # IMPLEMENTATION.md ("Formal proofs (Kani)").
+  # — every crate with proofs must appear below.
   kani:
     name: kani
     runs-on: ubuntu-latest
@@ -410,9 +400,8 @@ jobs:
   # Gating: frozen public-API snapshots (quality-d). The per-crate
   # `public_api` tests regenerate each crate's public surface with
   # `cargo public-api` on the pinned nightly and diff it against the committed
-  # `tests/public-api.txt`; any drift in a frozen contract
-  # (AGENTS.md, "Frozen surfaces are contracts") fails here. Keep PINNED_NIGHTLY in sync
-  # with the tests, the miri job, and docs/CODE-QUALITY.md.
+  # `tests/public-api.txt`; any drift fails here. Keep PINNED_NIGHTLY in sync
+  # with the tests and the Miri job.
   public-api:
     name: public-api
     runs-on: ubuntu-latest

@@ -21,7 +21,7 @@ use crate::error::EnvError;
 /// effective virtual nanoseconds) — the same axis as `run(deadline)`, snapshot
 /// addressing, and `state_hash` points. Retired-instruction work counts are the
 /// *derivation* of this axis, not its unit (they coincide only at clock ratio 1);
-/// see the integrator ruling in `docs/INTEGRATION.md` §6b. Every override — host
+/// see `docs/ARCHITECTURE.md`. Every override — host
 /// *and* guest — is keyed by a `Moment`, which is what lets the search loop treat
 /// them as one ordered timeline (`(Moment, opaque Action)`) without learning an
 /// override's plane. Virtual time (whose durations are [`Span`]s) is a *derived view* of this same
@@ -95,7 +95,7 @@ pub enum HostFault {
     /// Delivery-timing perturbation: inject interrupt `vector`.
     ///
     /// The vector is a `u32` because interrupt identities are per-arch: x86
-    /// vectors fit 8 bits, but GIC INTIDs exceed them (`docs/ARCH-BOUNDARY.md`
+    /// vectors fit 8 bits, but GIC INTIDs exceed them (`docs/ARCHITECTURE.md`
     /// §C). The enforcing vendor rejects a vector outside its own range.
     InjectInterrupt {
         /// The interrupt vector to deliver.

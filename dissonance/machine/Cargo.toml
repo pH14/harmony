@@ -6,9 +6,19 @@ license.workspace = true
 
 [features]
 test-loopback = []
+consonance = [
+    "dep:control-proto",
+    "dep:environment",
+    "dep:vmm-backend",
+    "dep:vmm-core",
+]
 
 [dependencies]
 # Pinned for reproducibility; upgrade deliberately.
 libc = "=0.2.189"
 serde = { version = "=1.0.228", features = ["derive"] }
 sha2 = "=0.10.9"
+control-proto = { path = "../../consonance/control-proto", version = "=0.1.0", optional = true }
+environment = { path = "../../consonance/environment", version = "=0.1.0", optional = true }
+vmm-backend = { path = "../../consonance/vmm-backend", version = "=0.1.0", optional = true }
+vmm-core = { path = "../../consonance/vmm-core", version = "=0.1.0", optional = true }

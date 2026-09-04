@@ -2,7 +2,7 @@
 //! Box-only corpus gate (`#[cfg(target_os = "linux")]` **and `#[ignore]`d**): run
 //! the C1 conformance corpus on the **patched** backend as a `acceptance-suite`
 //! `Subject` — the proof point the whole corpus box-integration (task 28) exists
-//! for. For every **conformance** item in `docs/corpus-manifest.toml` it drives the
+//! for. For every **conformance** item in `consonance/acceptance-suite/corpus-manifest.toml` it drives the
 //! VMM-backed [`vmm_core::corpus::CorpusMachine`] and asserts:
 //!
 //! - **O1 (determinism):** `acceptance_suite::check_determinism` — two runs at one seed
@@ -107,7 +107,7 @@ fn payload_path(name: &str) -> PathBuf {
 fn golden_path(item: &CorpusItem) -> PathBuf {
     let rel = item.golden.as_deref().unwrap_or_else(|| {
         panic!(
-            "conformance item `{}` has no `golden` in docs/corpus-manifest.toml \
+            "conformance item `{}` has no `golden` in consonance/acceptance-suite/corpus-manifest.toml \
              (acceptance-suite validate should have rejected this)",
             item.name
         )
@@ -145,7 +145,7 @@ fn require_box() {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on the patched determinism box with the \
          patched KVM modules loaded (consonance/vmm-backend/kvm-patches/BUILD.md), CPU-pinned per \
-         docs/BOX-PINNING.md."
+         .github/workflows/box.yml."
     );
 }
 
@@ -320,8 +320,10 @@ fn aggregate(verdicts: &[ItemVerdict]) -> String {
             run on the box with `-- --ignored --nocapture`"]
 fn c1_corpus_o1_o2_on_the_patched_backend() {
     require_box();
-    let manifest = std::fs::read_to_string(repo_root().join("docs/corpus-manifest.toml"))
-        .expect("read docs/corpus-manifest.toml");
+    let manifest = std::fs::read_to_string(
+        repo_root().join("consonance/acceptance-suite/corpus-manifest.toml"),
+    )
+    .expect("read consonance/acceptance-suite/corpus-manifest.toml");
     let items = load_manifest(&manifest).expect("parse corpus manifest");
     assert!(!items.is_empty(), "the corpus manifest must not be empty");
 
@@ -374,8 +376,10 @@ fn c1_corpus_o1_o2_on_the_patched_backend() {
             `-- --ignored --nocapture`"]
 fn c1_corpus_o1_diagnostic() {
     require_box();
-    let manifest = std::fs::read_to_string(repo_root().join("docs/corpus-manifest.toml"))
-        .expect("read docs/corpus-manifest.toml");
+    let manifest = std::fs::read_to_string(
+        repo_root().join("consonance/acceptance-suite/corpus-manifest.toml"),
+    )
+    .expect("read consonance/acceptance-suite/corpus-manifest.toml");
     let items = load_manifest(&manifest).expect("parse corpus manifest");
 
     for item in &items {

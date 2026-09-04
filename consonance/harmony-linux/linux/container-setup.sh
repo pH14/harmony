@@ -10,7 +10,7 @@
 # command — a Go/exec-fifo handshake that needs a free-running clock the V-time
 # model doesn't provide). `unshare`/`mount`/`chroot`/`setpriv` are plain
 # syscalls, and once postgres is running its cooperative psql loop advances
-# V-time exactly as task 37's did. See consonance/harmony-linux/linux/IMPLEMENTATION.md.
+# V-time exactly as task 37's did. See consonance/harmony-linux/linux/README.md.
 #
 # `--network none`: the fresh net namespace has only loopback and no veth, so the
 # container has no external connectivity; the workload reaches postgres over the

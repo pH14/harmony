@@ -3,7 +3,7 @@
 //! real *second* implementor of `Vendor`/`Backend`/`Arch` — instantiates every
 //! method the engine calls, and the engine drives it through exactly the same
 //! generic types it drives x86 through. This is the structural check no
-//! cross-compile gate can perform (`docs/ARCH-BOUNDARY.md` §D: on the aarch64
+//! cross-compile gate can perform (`docs/ARCHITECTURE.md`: on the aarch64
 //! CI leg no vendor exists to *instantiate* the trait, so a signature only a
 //! second implementor could refute stays invisible until this vendor exists).
 //!

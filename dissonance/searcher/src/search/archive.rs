@@ -1431,6 +1431,23 @@ where
             .map_or(0, |charge| charge(snapshot))
     }
 
+    fn reclaim_inactive_snapshot(&mut self, id: usize) {
+        if self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+            return;
+        }
+        let has_future_use = self
+            .preserved_snapshot_uses
+            .as_ref()
+            .is_none_or(|uses| uses.contains_key(&self.entries[id].id));
+        let worker_holds_snapshot = self.entries[id]
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1);
+        if (!self.preserve_inactive_snapshots || !has_future_use) && !worker_holds_snapshot {
+            self.entries[id].snapshot.take();
+        }
+    }
+
     /// Replay bucket of one input length.
     fn replay_bucket(input_len: usize) -> usize {
         input_len / REPLAY_DISTANCE_ACTIONS
@@ -1508,17 +1525,7 @@ where
         self.snapshot_selectable[id] = false;
         self.resident_snapshots = self.resident_snapshots.saturating_sub(1);
         self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_sub(charge);
-        let has_future_use = self
-            .preserved_snapshot_uses
-            .as_ref()
-            .is_none_or(|uses| uses.contains_key(&self.entries[id].id));
-        let worker_holds_snapshot = self.entries[id]
-            .snapshot
-            .as_ref()
-            .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1);
-        if (!self.preserve_inactive_snapshots || !has_future_use) && !worker_holds_snapshot {
-            self.entries[id].snapshot.take();
-        }
+        self.reclaim_inactive_snapshot(id);
         true
     }
 
@@ -1950,6 +1957,12 @@ where
         };
         if remove {
             self.metadata_pins.remove(&id);
+            // Budget eviction may have found the worker's Arc still in flight.
+            // Its final metadata unpin is the first deterministic point where
+            // that temporary ownership is guaranteed to have ended.
+            if let Some(index) = self.index_of_id(id) {
+                self.reclaim_inactive_snapshot(index);
+            }
         }
     }
 
@@ -3794,6 +3807,99 @@ mod tests {
         assert!(archive.release_snapshot(0));
         assert!(archive.entries[0].snapshot.is_some());
         assert_eq!(Arc::strong_count(&in_flight), 2);
+    }
+
+    #[test]
+    fn metadata_unpin_reclaims_budget_evicted_worker_snapshot() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        for index in 0_u8..2 {
+            archive
+                .insert(
+                    None,
+                    u64::from(index),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert budgeted entry")
+                .expect("retain budgeted entry");
+        }
+
+        let stable_id = archive.stable_id(0).expect("stable id");
+        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(1));
+        archive
+            .pin_metadata(stable_id)
+            .expect("pin worker metadata");
+        let worker = Arc::clone(
+            archive.entries[0]
+                .snapshot
+                .as_ref()
+                .expect("resident snapshot"),
+        );
+        archive.enforce_snapshot_memory_budget();
+        assert!(!archive.snapshot_selectable[0]);
+        assert!(archive.entries[0].snapshot.is_some());
+        let logical_counters = (
+            archive.active_count(),
+            archive.resident_snapshot_count(),
+            archive.resident_snapshot_bytes(),
+            archive.snapshot_evictions(),
+        );
+
+        drop(worker);
+        archive.unpin_metadata(stable_id);
+
+        assert!(archive.entries[0].snapshot.is_none());
+        assert_eq!(
+            (
+                archive.active_count(),
+                archive.resident_snapshot_count(),
+                archive.resident_snapshot_bytes(),
+                archive.snapshot_evictions(),
+            ),
+            logical_counters
+        );
+    }
+
+    #[test]
+    fn metadata_unpin_keeps_explicitly_preserved_inactive_snapshot() {
+        let mut archive = flat_archive::<3>(&[[1, 2, 3, 4]]);
+        let stable_id = archive.stable_id(0).expect("stable id");
+        archive.preserve_inactive_snapshots(true);
+        archive
+            .pin_metadata(stable_id)
+            .expect("pin replay metadata");
+        let worker = Arc::clone(
+            archive.entries[0]
+                .snapshot
+                .as_ref()
+                .expect("resident snapshot"),
+        );
+        assert!(archive.release_snapshot(0));
+        let logical_counters = (
+            archive.active_count(),
+            archive.resident_snapshot_count(),
+            archive.resident_snapshot_bytes(),
+            archive.snapshot_evictions(),
+        );
+
+        drop(worker);
+        archive.unpin_metadata(stable_id);
+
+        assert!(archive.entries[0].snapshot.is_some());
+        assert_eq!(
+            (
+                archive.active_count(),
+                archive.resident_snapshot_count(),
+                archive.resident_snapshot_bytes(),
+                archive.snapshot_evictions(),
+            ),
+            logical_counters
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Static counter-opcode scan of the built guest kernel — the x86 half of the
-# PARAVIRT-CLOCK.md §3.3 reachability gate (the task-100 LL/SC-scan discipline
+# paravirtual clock interface reachability gate (the task-100 LL/SC-scan discipline
 # transposed to counter reads: rdtsc `0F 31`, rdtscp `0F 01 F9`).
 #
 # WHAT IT PROVES on x86: every raw counter read left in the image is a KNOWN,
@@ -65,7 +65,7 @@
 # so an executed site feeds true entropy no contract can replay. The frozen
 # CPUID hides both features from the guest (stock virtual_time composition);
 # this scan is the audit that every site left in the image sits behind the
-# feature check that hiding turns off — the CPU-MSR-CONTRACT §2.4 x86
+# feature check that hiding turns off — the x86 CPU contract x86
 # RDRAND/RDSEED disposition's enforcement.
 #
 # Usage: scan-counter-opcodes.sh <vmlinux> [allowlist] [rng-allowlist]

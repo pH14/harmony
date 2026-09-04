@@ -2,7 +2,7 @@
 //! Portable configuration POD installed once before the first run.
 //!
 //! vmm-core builds both [`CpuidModel`] and [`MsrFilter`] from
-//! `docs/CPU-MSR-CONTRACT.md`; the backend never invents the data, it only
+//! `consonance/vmm-core/contracts/x86/README.md`; the backend never invents the data, it only
 //! installs what it is handed (`KVM_SET_CPUID2` / `KVM_X86_SET_MSR_FILTER` on
 //! KVM). Defining them here keeps vmm-core impl-agnostic: it pushes policy
 //! through the trait rather than reaching for a KVM ioctl. No `cfg`, no `unsafe`.

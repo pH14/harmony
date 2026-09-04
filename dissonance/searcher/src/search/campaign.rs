@@ -154,6 +154,9 @@ const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 /// Curve sampling interval in admitted executions.
 const CURVE_INTERVAL: u64 = 100;
 
+/// Fixed sidecar checkpoint interval in completed executions.
+const PROGRESS_CHECKPOINT_INTERVAL: u64 = 100;
+
 /// Maximum deterministic progress samples retained in a live campaign.
 const MAX_PROGRESS_CURVE_POINTS: usize = 1_024;
 
@@ -172,8 +175,15 @@ fn compact_progress_curve<M, P>(
     next_interval
 }
 
-/// Seconds between sidecar observations.
-const PROGRESS_INTERVAL_SECONDS: u64 = 60;
+/// Whether a sidecar checkpoint is due for the completed execution count.
+///
+/// Progress sidecars are observations, but their checkpoint boundaries are
+/// part of deterministic run diagnostics: every same-seed run must emit the
+/// same execution series regardless of host speed. The Unix timestamp in a
+/// record remains informational only.
+fn progress_checkpoint_due(executions: u64) -> bool {
+    executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
+}
 
 /// Identifier recorded for the resume rule: the source archive's whole
 /// retained tree is imported, and the header's resume input is the frontier
@@ -201,7 +211,9 @@ pub type GamePolicies = BTreeMap<String, String>;
 /// share the context, hence `Sync`.
 pub trait Game: Sync {
     /// Emulated game instance a worker drives.
-    type Target: Send;
+    /// The pool constructs, uses, and drops each target on its worker thread;
+    /// targets are never transferred between threads.
+    type Target;
     /// One recorded input action.
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     /// Archive key.
@@ -606,6 +618,9 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     /// It never enters campaign state: the stream that was recorded up to the
     /// cutoff still replays exactly.
     pub wall_budget: Option<Duration>,
+    /// Live-only: continue issuing reservations after the first victory until
+    /// another live limit stops the run. Never recorded or used by replay.
+    pub continue_after_victory: bool,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
     /// Reservations held ahead of ordered admission per logical worker,
@@ -778,7 +793,7 @@ pub struct CampaignJobRecord {
     pub mutation_seed: u64,
     /// Frames the job emulated, admission probes included.
     pub frames: u64,
-    /// SHA-256 of the serialized job result, snapshots included.
+    /// SHA-256 of the game's deterministic job-result projection.
     pub result_sha256: String,
     /// Ordered admission decisions for the job's candidates.
     pub decisions: Vec<CampaignAdmissionDecision>,
@@ -1091,6 +1106,10 @@ fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
     policy == Some(CAMPAIGN_PROGRESS_POLICY)
 }
 
+fn stop_reservations_after_victory(continue_after_victory: bool, victory_found: bool) -> bool {
+    victory_found && !continue_after_victory
+}
+
 /// One candidate boundary inside a job result.
 #[derive(Serialize)]
 #[serde(bound = "")]
@@ -1193,8 +1212,9 @@ impl<G: Game + ?Sized> Debug for CampaignActionResult<G> {
     }
 }
 
-/// Complete result of one executed job; its serialization is digested into the
-/// stream so replay verifies byte-exact re-execution, snapshots included.
+/// Complete result of one executed job. Games choose the deterministic
+/// projection they digest into the stream; [`postcard_result_sha256`] uses the
+/// complete serialization, including snapshots.
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: Game + ?Sized> {
@@ -2074,10 +2094,12 @@ impl postcard::ser_flavors::Flavor for PostcardSha256 {
 pub(crate) fn postcard_result_sha256<G: Game + ?Sized>(
     result: &CampaignJobResult<G>,
 ) -> Result<String, Box<dyn Error>> {
-    postcard_sha256(result)
+    postcard_value_sha256(result)
 }
 
-fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
+pub(crate) fn postcard_value_sha256<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
         PostcardSha256(Sha256::new()),
@@ -2410,11 +2432,6 @@ where
     #[allow(clippy::disallowed_methods)] // not order-observable: reservation cutoff only.
     let started = config.wall_budget.map(|_| std::time::Instant::now());
 
-    // Sidecar cadence. Held outside the worker scope so one clock covers the run.
-    #[allow(clippy::disallowed_methods)]
-    let progress_started = std::time::Instant::now();
-    let mut next_progress = 0_u64;
-
     let mut reserved = 0_u64;
     let mut coordinator_profile =
         live_coordinator_profile(std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some());
@@ -2463,7 +2480,12 @@ where
                           reserved: &mut u64,
                           worker: u32|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
-                if *reserved >= config.execution_budget || core.victory_input.is_some() {
+                if *reserved >= config.execution_budget
+                    || stop_reservations_after_victory(
+                        config.continue_after_victory,
+                        core.victory_input.is_some(),
+                    )
+                {
                     return Ok(None);
                 }
                 if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
@@ -2831,15 +2853,10 @@ where
                         counters.note_first_victory(sequence);
                     }
                     if let Some(sink) = progress.as_deref_mut() {
-                        // Wall-clock controls the sidecar only. It selects nothing and
-                        // enters no recorded artifact, so its nondeterminism cannot
-                        // reach the stream.
-                        #[allow(clippy::disallowed_methods)]
-                        let elapsed = progress_started.elapsed().as_secs();
-                        if elapsed >= next_progress {
-                            next_progress = elapsed
-                                .saturating_add(PROGRESS_INTERVAL_SECONDS)
-                                .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+                        // Count-based boundaries keep sidecar presence
+                        // independent of host speed; the timestamp below is
+                        // informational only.
+                        if progress_checkpoint_due(sequence) {
                             #[allow(clippy::disallowed_methods)]
                             let unix_time = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -2851,6 +2868,9 @@ where
                                 .unwrap_or((None, 0, 0));
                             let line = serde_json::to_string(&CampaignProgressRecord {
                                 unix_time,
+                                // `sequence` is the one-based count returned by admission;
+                                // the sidecar must report completed executions, not the
+                                // zero-based reservation/admission index.
                                 executions: sequence,
                                 frames_emulated: counters
                                     .bootstrap_frames
@@ -3608,11 +3628,12 @@ mod tests {
         EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
         SPLICE_ACTION_CAP, admission_window_depth, archive_entry_limit_is_valid,
         compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
-        live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
-        progress_policy_is_supported, record_compaction_elapsed, replay_splice,
-        retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_legacy,
-        schedule_policy_is_supported, schedule_policy_predates_budget_maintenance,
-        schedule_policy_window, uses_bounded_progress_curve, worker_queue_is_idle,
+        live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
+        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
+        replay_splice, retained_archive_indexes, schedule_policy_identifier,
+        schedule_policy_is_legacy, schedule_policy_is_supported,
+        schedule_policy_predates_budget_maintenance, schedule_policy_window,
+        stop_reservations_after_victory, uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3674,7 +3695,7 @@ mod tests {
         let value = (17_u64, vec![0_u8, 1, 15, 16, 255], Some("deterministic"));
         let encoded = postcard::to_allocvec(&value).expect("fixture encodes");
         let expected = format!("{:x}", Sha256::digest(encoded));
-        let actual = postcard_sha256(&value).expect("incremental digest succeeds");
+        let actual = postcard_value_sha256(&value).expect("incremental digest succeeds");
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 64);
@@ -3772,6 +3793,24 @@ mod tests {
         core.compact_progress_curve_if_needed();
         assert_eq!(core.curve.len(), MAX_PROGRESS_CURVE_POINTS / 2);
         assert_eq!(core.curve_interval, 200);
+    }
+
+    #[test]
+    fn sidecar_checkpoint_boundaries_use_completed_execution_count() {
+        let checkpoints = (1..=200)
+            .filter(|&executions| progress_checkpoint_due(executions))
+            .collect::<Vec<_>>();
+        assert_eq!(checkpoints, vec![1, 100, 200]);
+        for executions in [0, 2, 99, 101] {
+            assert!(!progress_checkpoint_due(executions));
+        }
+    }
+
+    #[test]
+    fn reservations_continue_after_victory_only_when_requested() {
+        assert!(stop_reservations_after_victory(false, true));
+        assert!(!stop_reservations_after_victory(true, true));
+        assert!(!stop_reservations_after_victory(false, false));
     }
 
     #[test]

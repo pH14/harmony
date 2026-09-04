@@ -8,7 +8,7 @@
 //! the same bytes wrapped in a valid header so the body parser is reached far
 //! more often than random magic would allow.
 //!
-//! Run (needs the pinned nightly + cargo-fuzz, per the crate IMPLEMENTATION.md):
+//! Run (needs the pinned nightly + cargo-fuzz, per the crate README.md):
 //!   cargo +nightly-2026-06-16 fuzz run decode_frame
 
 #![no_main]

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# `hypercall-proto` is depended on deliberately (rule-2 exception, see IMPLEMENTATION.md):
+# `hypercall-proto` is depended on deliberately (rule-2 exception, see README.md):
 # this crate exists to implement that crate's `Transport` so a `Client<VmcallTransport>`
 # composes. Pull only the guest-side, no_std items in the library build.
 [dependencies]

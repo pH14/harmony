@@ -48,6 +48,9 @@ path = "src/main.rs"
 harmony-sdk = { path = "../sdk", version = "0.1.0" }
 # The guest-side hypercall client + Transport trait the SDK is generic over.
 hypercall-proto = { path = "../../hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
+# Architecture-native guest doorbell: x86 stays on the kernel-owned
+# `/dev/harmony` ioctl while arm64 uses the board's MMIO doorbell.
+hypercall-doorbell = { path = "../../hypercall-doorbell", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 
 # Guest-resident Linux glue: the libretro dlopen FFI, the `/dev/harmony` ioctl

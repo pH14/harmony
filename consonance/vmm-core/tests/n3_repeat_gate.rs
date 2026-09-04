@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! SPIKE(nested-x86): N-3 repeat gate — **spike-branch-only apparatus**, not
-//! production surface (see `docs/NESTED-X86.md` §N-3).
+//! production surface (see `consonance/vmm-core/contracts/x86/README.md`).
 //!
 //! Runs ONE corpus payload to terminal at ONE seed, N times, each on a fresh
 //! patched-backend VM, and requires every repetition's `state_hash` **and**
@@ -120,7 +120,7 @@ fn n3_repeat_gate() {
     assert!(
         mismatches.is_empty() && identical == attempted,
         "N-3 repeat gate: {} mismatches over {} attempts — any silent divergence is NO-GO \
-         (docs/NESTED-X86.md §N-3)",
+         (consonance/vmm-core/contracts/x86/README.md)",
         mismatches.len(),
         attempted
     );

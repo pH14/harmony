@@ -21,10 +21,10 @@
 //!   `RestoreMode::Memcpy` and `RestoreMode::Remap` (the mapping **is** the
 //!   memslot backing — `ram_backing_is_snapshot()` asserted) and run the same
 //!   suffix → identical stop + `state_hash`.
-//! - **(d)** — every `[GATE-D]` line is a number for `docs/history/IMPLEMENTATION-task95.md`:
+//! - **(d)** — every `[GATE-D]` line is a number for `consonance/snapshot-store/README.md`:
 //!   base-seal vs derive-seal wall time, and memcpy vs remap branch wall time.
 //!
-//! Run (per `docs/BOX-PINNING.md` — lease a core via `box-window.sh`; serialize
+//! Run (per `.github/workflows/box.yml` — lease a core via `box-window.sh`; serialize
 //! with other frontier gates):
 //!
 //! ```sh
@@ -117,7 +117,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on the determinism box with the \
-         LOADED patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+         LOADED patched KVM modules, CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -359,7 +359,7 @@ fn capture_arm(
 /// → bit-identical `state_hash` at the same V-time stop.
 #[test]
 #[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
-            run per docs/BOX-PINNING.md"]
+            run per .github/workflows/box.yml"]
 fn a0_dirty_logging_is_guest_inert() {
     require_kvm();
     require_host_baseline();
@@ -399,7 +399,7 @@ fn a0_dirty_logging_is_guest_inert() {
 /// **proven engaged** (chain_len 2) and the (d) seal-cost numbers printed.
 #[test]
 #[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
-            run per docs/BOX-PINNING.md"]
+            run per .github/workflows/box.yml"]
 fn a_harvested_derive_matches_full_scan_capture() {
     require_kvm();
     require_host_baseline();
@@ -443,7 +443,7 @@ fn a_harvested_derive_matches_full_scan_capture() {
 /// plus the (d) restore-cost numbers.
 #[test]
 #[ignore = "box-only task-95 gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
-            run per docs/BOX-PINNING.md"]
+            run per .github/workflows/box.yml"]
 fn b_remap_and_memcpy_restores_agree() {
     require_kvm();
     require_host_baseline();

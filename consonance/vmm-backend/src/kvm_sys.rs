@@ -131,6 +131,12 @@ pub struct KvmBackend {
     cpuid_installed: bool,
     msr_filter_installed: bool,
     pending: Pending,
+    /// `true` after a completion has been written to `kvm_run` and before a
+    /// `KVM_RUN` consumes it. This is separate from `pending`: the latter is
+    /// cleared as soon as the VMM supplies the completion value, while this
+    /// marker keeps restore-in-place from carrying the old run-page transaction
+    /// across a snapshot restore.
+    completion_staged: bool,
     /// The single pending maskable IRQ vector ([`Backend::set_pending_irq`]),
     /// `None` if none. Held (not issued eagerly) so [`Self::enter_guest`] runs the
     /// userspace-irqchip handshake against the *current* post-exit
@@ -170,6 +176,16 @@ impl KvmBackend {
     /// above the `Backend` trait branches on which constructor ran.
     pub(crate) fn build(deterministic_intercepts: bool) -> Result<KvmBackend> {
         let kvm = Kvm::new().map_err(kvm_err)?;
+        // A staged I/O/MMIO/MSR completion is retired by setting
+        // `kvm_run.immediate_exit` and issuing exactly one `KVM_RUN`.  Without
+        // this capability KVM ignores that field, so the vCPU could execute
+        // guest instructions before returning and make an in-place restore
+        // depend on host signal timing.  Refuse such a host at construction.
+        if !kvm.check_extension(Cap::ImmediateExit) {
+            return Err(BackendError::Capability {
+                cap: "KVM_CAP_IMMEDIATE_EXIT",
+            });
+        }
         let vm = kvm.create_vm().map_err(kvm_err)?;
         if deterministic_intercepts {
             // Opt into RDTSC/RDTSCP/RDRAND/RDSEED → KVM_EXIT_DETERMINISM. MUST
@@ -218,6 +234,7 @@ impl KvmBackend {
             cpuid_installed: false,
             msr_filter_installed: false,
             pending: Pending::None,
+            completion_staged: false,
             pending_irq: None,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
@@ -260,6 +277,25 @@ impl KvmBackend {
         unsafe { RunPage::new(self.run, self.mmap_size) }
     }
 
+    /// Retire a completion already staged in `kvm_run` without entering guest
+    /// code. The helper deliberately bypasses [`Self::enter_guest`]: that loop
+    /// injects pending IRQs and accepts ordinary exits, both of which are wrong
+    /// for restore-in-place.
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        let page = self.run_page();
+        let fd = self.vcpu.as_raw_fd();
+        retire_staged_completion(page, &mut self.pending, &mut self.completion_staged, || {
+            // SAFETY (raw ioctl seam): this is the one completion-only
+            // `KVM_RUN` on the owned vCPU; `page` is its mapped run page.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
+    }
+
     /// Issue `KVM_RUN`, then map the raw exit via the pure [`decode_exit`]. Retries
     /// on `EINTR` and on the internally-consumed run-loop control exits — including
     /// `KVM_EXIT_IRQ_WINDOW_OPEN`, on which the pending IRQ becomes injectable and
@@ -296,6 +332,10 @@ impl KvmBackend {
                 }
                 return Err(BackendError::Io(err));
             }
+            // A successful entry consumed the previous userspace completion.
+            // This happens before decoding the newly returned exit, including
+            // control exits that this loop consumes internally.
+            self.completion_staged = false;
             match decode_exit(self.run_page())? {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
@@ -874,22 +914,26 @@ impl Backend for KvmBackend {
             let aux = if rdtscp { self.read_tsc_aux()? } else { 0 };
             apply_complete_determinism(self.run_page(), self.pending, value, aux)?;
             self.pending = Pending::None;
+            self.completion_staged = true;
             return Ok(());
         }
         apply_complete_read(self.run_page(), self.pending, value)?;
         self.pending = Pending::None;
+        self.completion_staged = true;
         Ok(())
     }
 
     fn complete_fault(&mut self) -> Result<()> {
         apply_complete_fault(self.run_page(), self.pending)?;
         self.pending = Pending::None;
+        self.completion_staged = true;
         Ok(())
     }
 
     fn complete_ok(&mut self) -> Result<()> {
         apply_complete_ok(self.run_page(), self.pending)?;
         self.pending = Pending::None;
+        self.completion_staged = true;
         Ok(())
     }
 
@@ -903,6 +947,10 @@ impl Backend for KvmBackend {
         // Stock KVM answers CPUID in-kernel from the installed table; it never
         // surfaces X86Exit::Cpuid, so there is never an arch completion to apply.
         Err(BackendError::BadCompletion)
+    }
+
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        KvmBackend::retire_pending_completion(self)
     }
 
     fn save(&self) -> Result<VcpuState> {
@@ -934,6 +982,12 @@ impl Backend for KvmBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        // `KVM_SET_*` does not disarm completion state held in `kvm_run`.
+        // Reject before validation or mutation so an old IO/MMIO/MSR result can
+        // never commit over the restored registers on the next KVM_RUN.
+        if self.pending != Pending::None || self.completion_staged {
+            return Err(BackendError::PendingCompletion);
+        }
         // Fail closed *before any `SET_*` ioctl* (no half-mutation of the live
         // vCPU): the snapshot's MSR key set must equal the configured allow-stateful
         // indices, and the XSAVE image must be the host image size.
@@ -959,6 +1013,14 @@ impl Backend for KvmBackend {
         self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
         self.restore_xsave(&state.xsave)?;
         self.restore_msrs(state)?;
+
+        // The architectural interrupt/event state above is authoritative for
+        // the restored timeline.  These host-side queues belong to the used
+        // timeline and are not part of `VcpuState`; keeping one would inject an
+        // interrupt after restore that a freshly composed target would not.
+        self.pending_irq = None;
+        self.accepted_irq.clear();
+        let _ = plan_irq_entry(self.run_page(), None);
         Ok(())
     }
 

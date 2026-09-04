@@ -6,9 +6,8 @@
 #
 # Mutation testing mutates the source (flip `<` to `<=`, replace a return value
 # with Default, etc.) and checks whether the test suite notices. A surviving
-# mutant is a line the tests execute but do not actually constrain. See
-# docs/CODE-QUALITY.md and consonance/unison/IMPLEMENTATION.md ("Mutation
-# testing").
+# mutant is a line the tests execute but do not actually constrain. The test
+# strategy is summarized in `docs/TESTING.md`.
 
 # Run the nextest suite (process-isolated, faster) as the mutation oracle and
 # build/test with all features so the `cli`-gated code is included.
@@ -65,8 +64,8 @@ exclude_globs = [
     # needs a real `/dev/kvm` + patched KVM + a built guest image, so the
     # no-`--ignored` mutation oracle can never run it — every mutant here is
     # structurally unkillable ("missed"), not a real gap. Verified instead by
-    # the box gates recorded in `dissonance/campaign-runner/IMPLEMENTATION.md`;
-    # mirrors the coverage job's `--ignore-filename-regex` exclusion of the
+    # the hardware box gates; this mirrors the coverage job's
+    # `--ignore-filename-regex` exclusion of the
     # same file.
     "**/boxrun.rs",
     # `consonance/acceptance-suite`'s real-VMM registry — the same category as
@@ -126,6 +125,13 @@ exclude_re = [
     #     in the gate. (Matches both `… in probe::evaluate` statement mutants and
     #     `replace probe::fmt_hex -> …` function-return mutants.)
     "probe::",
+    # The non-Linux/Miri fallback for the out-of-band minor-fault profiler is
+    # cfg-excluded from the Linux mutation oracle, so replacing its `None` with
+    # a sentinel `Some` cannot affect that build. Linux exercises the real
+    # getrusage path and its testable seam; macOS exercises this fallback in the
+    # ordinary all-features gates. Pin the exact fallback line so the live Linux
+    # accessor remains mutation-gated.
+    "consonance/vmm-core/src/control\\.rs:159:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
     # (b) Provably-equivalent disjoint-bit OR mutants in vmm-core: `a | b` ≡ `a ^ b`
     #     whenever a,b share no set bits — true of every bitwise-flag combine here
     #     (USER_SPACE_MSR_MASK = FILTER|UNKNOWN|INVAL; resolve_cpuid's clear-then-set
@@ -191,10 +197,11 @@ exclude_re = [
     # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
     # OR and XOR are identical for this compile-time constant expression.
     "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",
-    # `FLAG_SDK` is `1 << 0`; shifting either direction by zero is exactly the
-    # identity operation. The neighboring NET/TAINTED shifts remain gated and
-    # are caught by the exact wire-value and round-trip tests.
-    "consonance/vmm-core/src/portable_snapshot\\.rs:24:25: replace << with >>",
+    # `FLAG_SDK` and `SPARSE_FLAG_SDK` are both `1 << 0`; shifting either
+    # direction by zero is exactly the identity operation. The neighboring
+    # NET/TAINTED shifts remain gated and are caught by the exact wire-value
+    # and round-trip tests.
+    "consonance/vmm-core/src/portable_snapshot\\.rs:(26:25|37:32): replace << with >>",
     # (g) `impl Backend for Box<B>`'s `inject` forward (task 21): `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
@@ -216,7 +223,7 @@ exclude_re = [
     #     an explicit, eager `drop`. The `stop`/`drop` bodies themselves stay
     #     mutation-gated (killed by `dropping_the_server_stops_the_listener`, which
     #     asserts a dropped server stops accepting); only this one Drop-shadowed
-    #     mutant is excluded. See consonance/telemetry/IMPLEMENTATION.md.
+    #     mutant is excluded.
     "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
     # (j) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
     #     PREEMPTION_TRACE_CAP` → `<=` (task 52): the idle-resume dual of (j), identical

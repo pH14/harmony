@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The **real-VMM registry** — the `acceptance-suite` binary's hardware
-//! composition root (`docs/TESTING.md`, rung 5).
+//! composition root (`docs/TESTING.md`).
 //!
 //! Where the toy registry maps a cell's `source` to a generated `unison`
 //! program, this maps it to the item's **built payload**, booted on the patched
@@ -13,7 +13,7 @@
 //! one. A hardware cell and a portable cell differ **only** in that choice.
 //!
 //! Linux/x86-64 only, behind the `real-vmm` feature — gated on the **arch** as
-//! well as the OS (AGENTS.md, cross-arch discipline), because
+//! well as the OS, because
 //! `boot_patched_corpus` names the x86 vendor's patched backend. Every function
 //! here needs a real `/dev/kvm`, the loaded patched KVM modules, and built
 //! payloads, so no portable test can drive it; its evidence is the hardware lane
