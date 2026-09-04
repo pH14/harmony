@@ -80,6 +80,11 @@ pub(crate) const KVM_SYSTEM_EVENT_CRASH: u32 = 3;
 /// `NOT_SUPPORTED`, so a headless determinism guest can never cleanly power off.
 /// Unlike the vGIC **delivery** fabric there is no AA-6 deferral rationale for
 /// it — a guest that cannot `SYSTEM_OFF` cannot end a run.
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
 pub(crate) const KVM_ARM_VCPU_PSCI_0_2: u32 = 2;
 
 // The in-kernel vGICv3 migration/injection groups used by both the portable
@@ -128,6 +133,11 @@ const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
 /// `EL1_32BIT`, `PMU_V3`, `SVE`, `PTRAUTH*` are AA-6 / port decisions). A pure
 /// function so `LiveKvm` and the portable [`FakeKvm`] derive the **identical**
 /// bitmap — the live path's request is exactly what the fake pins.
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
 pub(crate) fn vcpu_init_features() -> [u32; 7] {
     let mut features = [0u32; 7];
     features[0] = 1 << KVM_ARM_VCPU_PSCI_0_2;

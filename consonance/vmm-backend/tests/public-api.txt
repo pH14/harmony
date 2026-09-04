@@ -667,6 +667,7 @@ pub struct vmm_backend::IdRegModel
 pub vmm_backend::IdRegModel::regs: alloc::collections::btree::map::BTreeMap<u32, u64>
 pub struct vmm_backend::KvmBackend
 impl vmm_backend::KvmBackend
+pub fn vmm_backend::KvmBackend::cancellation_flag(&self) -> alloc::sync::Arc<core::sync::atomic::AtomicBool>
 pub fn vmm_backend::KvmBackend::new() -> vmm_backend::Result<vmm_backend::KvmBackend>
 pub fn vmm_backend::KvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::set_dirty_log_enabled(&mut self, bool)

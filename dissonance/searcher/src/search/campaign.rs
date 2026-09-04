@@ -3665,8 +3665,8 @@ mod tests {
         draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
-        replay_splice, resident_memory_is_within_budget, retained_archive_indexes, schedule_policy_identifier,
-        schedule_policy_is_legacy, schedule_policy_is_supported,
+        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
+        schedule_policy_identifier, schedule_policy_is_legacy, schedule_policy_is_supported,
         schedule_policy_predates_budget_maintenance, schedule_policy_window,
         stop_reservations_after_victory, uses_bounded_progress_curve, worker_queue_is_idle,
     };

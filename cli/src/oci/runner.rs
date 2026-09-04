@@ -34,10 +34,13 @@ pub const SUPPORTED_HOSTS: &str = "macOS/arm64 (HVF), Linux/x86-64 (KVM)";
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64"),
-    )))]
+    #[cfg(any(
+        miri,
+        not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64"),
+        ))
+    ))]
     #[error("this host is not wired yet ({0}); supported: macOS/arm64 (HVF), Linux/x86-64 (KVM)")]
     UnsupportedHost(&'static str),
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -57,7 +60,11 @@ pub enum RunError {
         "wall budget of {budget_s}s exhausted before the guest reached a terminal state \
          ({steps} exits serviced)"
     )]
-    WallBudget { budget_s: u64, steps: u64 },
+    WallBudget {
+        budget_s: u64,
+        steps: u64,
+        serial: Vec<u8>,
+    },
 }
 
 pub struct Outcome {
@@ -187,13 +194,13 @@ pub fn cmdline() -> &'static str {
     if cfg!(target_arch = "x86_64") {
         "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 \
          nokaslr nosmp maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all printk.time=0 \
-         rdinit=/harmony-oci-init"
+         harmony_pvclock random.trust_bootloader=on rdinit=/harmony-oci-init"
     } else {
         "console=ttyAMA0 earlycon=pl011,0x09000000 rdinit=/harmony-oci-init nohlt"
     }
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     if spec.seed != 0 {
         return Err(RunError::SeedNotWired);
@@ -218,11 +225,12 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watchdog_done = std::sync::Arc::clone(&done);
     let budget = spec.wall_budget;
+    // Host deadline only; never used as guest time.
+    #[allow(clippy::disallowed_methods)]
+    let start = Instant::now();
     let watchdog = std::thread::spawn(move || {
         // Wall clock bounds only how long the host waits; nothing here feeds
         // guest state.
-        #[allow(clippy::disallowed_methods)]
-        let start = Instant::now();
         while !watchdog_done.load(std::sync::atomic::Ordering::Acquire) {
             if start.elapsed() > budget {
                 let _ = exit_handle.request_exit();
@@ -230,15 +238,15 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
             std::thread::sleep(Duration::from_millis(200));
         }
     });
-    let outcome = drive(vmm, spec);
+    let outcome = drive(vmm, spec, start);
     done.store(true, std::sync::atomic::Ordering::Release);
     let _ = watchdog.join();
     outcome
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
 pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
-    let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(
+    let mut vmm = vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time_cancellable(
         spec.kernel,
         spec.initramfs,
         spec.guest_ram_len,
@@ -248,13 +256,23 @@ pub fn execute(spec: &RunSpec) -> Result<Outcome, RunError> {
     .map_err(|e| RunError::Vmm(e.to_string()))?;
     vmm.defer_virtual_time_checkpoint_hashes()
         .map_err(|e| RunError::Vmm(e.to_string()))?;
-    drive(vmm, spec)
+    // Host deadline only; never used as guest time.
+    #[allow(clippy::disallowed_methods)]
+    let start = Instant::now();
+    let watchdog = super::watchdog::Watchdog::start(spec.wall_budget, vmm.kvm_cancellation_flag())
+        .map_err(|e| RunError::Vmm(format!("cannot arm KVM timeout: {e}")))?;
+    let outcome = drive(vmm, spec, start);
+    drop(watchdog);
+    outcome
 }
 
-#[cfg(not(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_arch = "x86_64"),
-)))]
+#[cfg(any(
+    miri,
+    not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    ))
+))]
 pub fn execute(_spec: &RunSpec) -> Result<Outcome, RunError> {
     Err(RunError::UnsupportedHost(std::env::consts::ARCH))
 }
@@ -266,16 +284,13 @@ pub fn execute(_spec: &RunSpec) -> Result<Outcome, RunError> {
 fn drive<B: vmm_backend::Backend>(
     mut vmm: vmm_core::vmm::Vmm<B>,
     spec: &RunSpec,
+    start: Instant,
 ) -> Result<Outcome, RunError>
 where
     B::A: vmm_core::vendor::Vendor,
 {
     use vmm_core::vmm::Step;
 
-    // Wall clock bounds only how long the host waits; it feeds nothing into
-    // guest state (the guest sees virtual time exclusively).
-    #[allow(clippy::disallowed_methods)]
-    let start = Instant::now();
     let mut steps: u64 = 0;
     let mut filter = StreamFilter::new(spec.stream);
     let mut stdout = std::io::stdout();
@@ -285,6 +300,7 @@ where
             return Err(RunError::WallBudget {
                 budget_s: spec.wall_budget.as_secs(),
                 steps,
+                serial: vmm.serial_output().to_vec(),
             });
         }
         let step = match vmm.step() {
@@ -297,6 +313,7 @@ where
                     return Err(RunError::WallBudget {
                         budget_s: spec.wall_budget.as_secs(),
                         steps,
+                        serial: vmm.serial_output().to_vec(),
                     });
                 }
                 return Err(RunError::Vmm(e.to_string()));
@@ -387,6 +404,12 @@ mod tests {
         assert!(cmdline().contains("rdinit=/harmony-oci-init"));
         if cfg!(target_arch = "x86_64") {
             assert!(cmdline().contains("console=ttyS0"));
+            assert!(
+                cmdline()
+                    .split_whitespace()
+                    .any(|arg| arg == "harmony_pvclock")
+            );
+            assert!(cmdline().contains("random.trust_bootloader=on"));
         } else {
             assert!(cmdline().contains("console=ttyAMA0"));
         }

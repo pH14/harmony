@@ -151,10 +151,14 @@ fn sysctl(name: &str) -> Option<String> {
         .args(["-n", name])
         .output()
         .ok()?;
-    if !out.status.success() {
+    sysctl_value(out.status.success(), &out.stdout)
+}
+
+fn sysctl_value(success: bool, stdout: &[u8]) -> Option<String> {
+    if !success {
         return None;
     }
-    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let value = String::from_utf8_lossy(stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
 }
 
@@ -304,8 +308,12 @@ const HOST_INIT_NAMES: &[&str] = &[
 /// host's row. Any positive signal answers yes; only a recognized host init
 /// answers no.
 fn detect_container() -> Detected {
-    match std::env::consts::OS {
-        "linux" => detect_container_linux(),
+    detect_container_for(std::env::consts::OS, detect_container_linux)
+}
+
+fn detect_container_for(os: &str, linux: impl FnOnce() -> Detected) -> Detected {
+    match os {
+        "linux" => linux(),
         // Hypervisor.framework is not reachable from a Linux container, so
         // the HVF rows have no container variant.
         "macos" => Detected::No,
@@ -314,13 +322,17 @@ fn detect_container() -> Detected {
 }
 
 fn detect_container_linux() -> Detected {
+    detect_container_linux_at(Path::new("/"))
+}
+
+fn detect_container_linux_at(root: &Path) -> Detected {
     // Marker files written by the docker and podman runtimes.
-    if Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists() {
+    if root.join(".dockerenv").exists() || root.join("run/.containerenv").exists() {
         return Detected::Yes;
     }
     // PID 1's cgroup names the engine under cgroup v1, and under cgroup v2
     // whenever the container did not get its own cgroup namespace.
-    let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") else {
+    let Ok(cgroup) = std::fs::read_to_string(root.join("proc/1/cgroup")) else {
         return Detected::Unknown;
     };
     if CONTAINER_CGROUPS
@@ -331,8 +343,8 @@ fn detect_container_linux() -> Detected {
     }
     // PID 1's name: `comm` on any kernel that exposes it, `sched` (whose
     // first line starts with the same name) as the fallback.
-    match std::fs::read_to_string("/proc/1/comm")
-        .or_else(|_| std::fs::read_to_string("/proc/1/sched"))
+    match std::fs::read_to_string(root.join("proc/1/comm"))
+        .or_else(|_| std::fs::read_to_string(root.join("proc/1/sched")))
     {
         Ok(name) => host_init_name(&name),
         Err(_) => Detected::Unknown,
@@ -562,5 +574,59 @@ mod tests {
     fn matrix_cell_is_serializable() {
         let s = serde_json::to_string(&MatrixCell::Proven).unwrap();
         assert_eq!(s, "\"proven\"");
+    }
+}
+
+#[cfg(test)]
+mod acceptance_regressions {
+    use super::*;
+
+    #[test]
+    fn sysctl_output_handles_status_whitespace_and_empty_values() {
+        assert_eq!(sysctl_value(true, b" 17\n"), Some("17".into()));
+        assert_eq!(sysctl_value(false, b"17"), None);
+        assert_eq!(sysctl_value(true, b" \n"), None);
+        let key = if cfg!(target_os = "macos") {
+            "kern.ostype"
+        } else {
+            "kernel.ostype"
+        };
+        let expected = if cfg!(target_os = "macos") {
+            "Darwin"
+        } else {
+            "Linux"
+        };
+        assert_eq!(sysctl(key).as_deref(), Some(expected));
+        assert_eq!(sysctl("harmony.nonexistent.acceptance_key"), None);
+    }
+
+    #[test]
+    fn container_dispatch_preserves_each_platform_answer() {
+        for answer in [Detected::Yes, Detected::No, Detected::Unknown] {
+            assert_eq!(detect_container_for("linux", || answer), answer);
+        }
+        assert_eq!(
+            detect_container_for("macos", || panic!("Linux probe on macOS")),
+            Detected::No
+        );
+        assert_eq!(
+            detect_container_for("other", || panic!("Linux probe on unsupported OS")),
+            Detected::Unknown
+        );
+        assert_eq!(
+            detect_container(),
+            detect_container_for(std::env::consts::OS, detect_container_linux)
+        );
+    }
+
+    #[test]
+    fn either_container_marker_is_sufficient_without_proc() {
+        for marker in [".dockerenv", "run/.containerenv"] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(root.path().join("run")).unwrap();
+            assert_eq!(detect_container_linux_at(root.path()), Detected::Unknown);
+            std::fs::write(root.path().join(marker), b"").unwrap();
+            assert_eq!(detect_container_linux_at(root.path()), Detected::Yes);
+        }
     }
 }

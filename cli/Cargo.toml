@@ -20,5 +20,8 @@ tempfile = "3"
 vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
 
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

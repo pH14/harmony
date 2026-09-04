@@ -113,9 +113,7 @@ jobs:
         run: |
           # The workload reads guest randomness so the digest depends on the
           # seed: the same seed must reproduce it, a different seed must not.
-          # timeout(1) backstops the CLI's own wall budget: the Linux drive
-          # loop cannot yet interrupt a vCPU that stops exiting (issue filed),
-          # and a hung run must fail the lane, not the job timeout.
+          # timeout(1) is an independent backstop for the CLI watchdog.
           run() {
             timeout 660 ./target/release/harmony oci run alpine:3 --seed "$1" \
               --timeout 600 --out "run-$2" -- /bin/sh -c \
@@ -151,6 +149,18 @@ jobs:
             exit 1
           fi
           echo "seed 0 reproduced $(digest a); seed 7 reproduced $(digest c); seeds diverged"
+      - name: Blocked-vCPU timeout regression
+        run: |
+          mkdir -p run-timeout
+          set +e
+          timeout 45 ./target/release/harmony oci run alpine:3 --seed 0 \
+            --timeout 15 --out run-timeout -- /bin/sh -c 'while :; do :; done' \
+            >run-timeout/console.txt 2>&1
+          status=$?
+          set -e
+          [ "$status" -ne 0 ] && [ "$status" -ne 124 ]
+          grep -q 'wall budget of 15s exhausted' run-timeout/console.txt
+          grep -q 'HARMONY_OCI: start' run-timeout/serial.log
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

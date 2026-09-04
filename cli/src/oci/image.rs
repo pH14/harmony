@@ -422,16 +422,9 @@ impl Drop for ArchiveReader {
 }
 
 fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
-    let mut magic = [0u8; 6];
-    let mut file = std::fs::File::open(archive)?;
-    let mut filled = 0;
-    while filled < magic.len() {
-        match file.read(&mut magic[filled..])? {
-            0 => break,
-            read => filled += read,
-        }
-    }
-    let magic = &magic[..filled];
+    let file = std::fs::File::open(archive)?;
+    let mut magic = Vec::with_capacity(6);
+    file.take(6).read_to_end(&mut magic)?;
     let tool = if magic.starts_with(&[0x1f, 0x8b]) {
         "gzip"
     } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
@@ -552,18 +545,13 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
 
 /// Fill `block`, reporting `false` at a clean end of stream.
 fn read_block(stream: &mut impl Read, block: &mut [u8; TAR_BLOCK]) -> Result<bool, ImageError> {
-    let mut filled = 0;
-    while filled < TAR_BLOCK {
-        match stream.read(&mut block[filled..])? {
-            0 => break,
-            read => filled += read,
-        }
+    if stream.read(&mut block[..1])? == 0 {
+        return Ok(false);
     }
-    match filled {
-        0 => Ok(false),
-        TAR_BLOCK => Ok(true),
-        _ => Err(ImageError::Tar("archive ends inside a header".into())),
-    }
+    stream
+        .read_exact(&mut block[1..])
+        .map_err(|e| ImageError::Tar(format!("archive ends inside a header: {e}")))?;
+    Ok(true)
 }
 
 fn padding(size: u64) -> u64 {
@@ -753,6 +741,12 @@ fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
 /// checked as it is used: a lower layer can leave a symlink where this layer
 /// has a directory, and descending through it would write outside the
 /// staging tree.
+// Layer installation temporarily grants the owner traversal and write access,
+// while preserving group/other and special bits until the final mode is restored.
+fn writable_layer_mode(mode: u32) -> u32 {
+    mode | 0o700
+}
+
 fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
     let mut entries: Vec<_> = std::fs::read_dir(staged)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
@@ -783,7 +777,7 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
             // because moving an entry out of a directory needs write
             // permission on it. The target takes the layer's mode afterwards.
             let mode = meta.permissions().mode() & 0o7777;
-            let open = std::fs::Permissions::from_mode(mode | 0o700);
+            let open = std::fs::Permissions::from_mode(writable_layer_mode(mode));
             std::fs::set_permissions(&source, open.clone())?;
             std::fs::set_permissions(&target, open)?;
             merge_layer(&source, &target)?;
@@ -1904,5 +1898,148 @@ mod tests {
         assert!(!rootfs.join("d/old").exists());
         assert_eq!(std::fs::read(rootfs.join("d/new")).unwrap(), b"new");
         assert!(!rootfs.join("d/.wh..wh..opq").exists());
+    }
+}
+
+#[cfg(test)]
+mod acceptance_regressions {
+    use super::*;
+
+    #[test]
+    fn block_reader_distinguishes_empty_complete_and_truncated_headers() {
+        let mut block = [0; TAR_BLOCK];
+        assert!(!read_block(&mut &b""[..], &mut block).unwrap());
+        assert!(read_block(&mut &[3; TAR_BLOCK][..], &mut block).unwrap());
+        assert_eq!(block, [3; TAR_BLOCK]);
+        assert!(read_block(&mut &[3; TAR_BLOCK - 1][..], &mut block).is_err());
+    }
+
+    #[test]
+    fn name_header_limit_accepts_exact_bound_and_rejects_one_more() {
+        for size in [0, 1, MAX_HEADER_DATA - 1, MAX_HEADER_DATA] {
+            let source = vec![7; (size + padding(size)) as usize];
+            assert_eq!(
+                header_data(&mut source.as_slice(), size).unwrap(),
+                vec![7; size as usize]
+            );
+        }
+        assert!(header_data(&mut &b""[..], MAX_HEADER_DATA + 1).is_err());
+    }
+
+    #[test]
+    fn gnu_header_does_not_treat_timestamp_field_as_ustar_prefix() {
+        let mut block = [0; TAR_BLOCK];
+        block[..4].copy_from_slice(b"file");
+        block[345..348].copy_from_slice(b"123");
+        assert_eq!(ustar_name(&block), b"file");
+        block[257..263].copy_from_slice(b"ustar\0");
+        assert_eq!(ustar_name(&block), b"123/file");
+    }
+
+    #[test]
+    fn pax_lengths_are_bounded_and_unrelated_metadata_is_allowed() {
+        for record in [b"0 a=b\n".as_slice(), b"99 a=b\n"] {
+            assert!(parse_pax(record, &mut Pax::default()).is_err());
+        }
+        parse_pax(b"11 uid=123\n", &mut Pax::default()).unwrap();
+        parse_pax(b"10 uid=12\n", &mut Pax::default()).unwrap();
+        assert!(parse_pax(b"22 GNU.sparse.size=1\n", &mut Pax::default()).is_err());
+    }
+
+    #[test]
+    fn layers_replace_files_with_directories_and_directories_with_files() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("entry"), b"old").unwrap();
+        std::fs::create_dir(staged.path().join("entry")).unwrap();
+        std::fs::write(staged.path().join("entry/child"), b"child").unwrap();
+        merge_layer(staged.path(), root.path()).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("entry/child")).unwrap(),
+            b"child"
+        );
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::write(staged.path().join("entry"), b"replacement").unwrap();
+        merge_layer(staged.path(), root.path()).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("entry")).unwrap(),
+            b"replacement"
+        );
+    }
+
+    #[test]
+    fn resolution_propagates_symlink_loop_instead_of_treating_it_as_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let link = root.path().join("loop");
+        std::os::unix::fs::symlink("loop", &link).unwrap();
+        assert!(resolve_deepest(&link).is_err());
+    }
+
+    #[test]
+    fn dropping_archive_reader_reaps_its_decompressor() {
+        let mut child = Command::new("sh")
+            .args(["-c", "exec cat"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take().unwrap();
+        let reader = child.stdout.take().unwrap();
+        let pid = child.id();
+        drop(ArchiveReader {
+            reader: Box::new(reader),
+            child: Some(child),
+        });
+        let exists = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(!exists.success(), "decompressor was not reaped");
+        drop(input);
+    }
+}
+
+#[cfg(test)]
+mod reader_regressions {
+    use super::*;
+    #[test]
+    fn archive_reader_forwards_bytes_count_and_eof() {
+        let mut reader = ArchiveReader {
+            reader: Box::new(std::io::Cursor::new(b"hello")),
+            child: None,
+        };
+        let mut bytes = [0; 8];
+        assert_eq!(reader.read(&mut bytes).unwrap(), 5);
+        assert_eq!(&bytes[..5], b"hello");
+        assert_eq!(reader.read(&mut bytes).unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod trailing_eof_regression {
+    use super::*;
+    #[test]
+    fn trailing_padding_stops_at_first_eof() {
+        struct Once(bool);
+        impl Read for Once {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                assert!(!self.0, "reader was polled again after EOF");
+                self.0 = true;
+                Ok(0)
+            }
+        }
+        require_trailing_zeros(&mut Once(false)).unwrap();
+        require_trailing_zeros(&mut &b"\0\0"[..]).unwrap();
+        assert!(require_trailing_zeros(&mut &b"\0x"[..]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod layer_mode_tests {
+    #[test]
+    fn owner_access_is_added_without_removing_existing_permissions() {
+        for (mode, expected) in [(0, 0o700), (0o700, 0o700), (0o2555, 0o2755), (0o077, 0o777)] {
+            assert_eq!(super::writable_layer_mode(mode), expected);
+        }
     }
 }

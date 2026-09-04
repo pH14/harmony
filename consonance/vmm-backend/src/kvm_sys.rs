@@ -154,6 +154,7 @@ pub struct KvmBackend {
     /// single-source operation; a `VecDeque` for robustness.)
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
+    cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl KvmBackend {
@@ -238,7 +239,16 @@ impl KvmBackend {
             pending_irq: None,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
+            cancel_run: std::sync::Arc::default(),
         })
+    }
+
+    /// Host-only cancellation latch for abandoning this VM. Set it before
+    /// interrupting the vCPU thread with a signal. Every entry and EINTR retry
+    /// checks the latch; cancellation never becomes a guest event or advances
+    /// virtual time. A canceled VM must be discarded, not resumed.
+    pub fn cancellation_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.cancel_run)
     }
 
     /// Enable/disable `KVM_MEM_LOG_DIRTY_PAGES` on memslots registered by
@@ -302,6 +312,9 @@ impl KvmBackend {
     /// is queued on the next loop iteration.
     fn enter_guest(&mut self) -> Result<Exit<X86>> {
         loop {
+            if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(BackendError::Internal("KVM run canceled by host"));
+            }
             // Userspace-irqchip injection handshake (KVM_IRQCHIP_NONE): if a
             // maskable IRQ is queued, deliver it now when the guest can take it,
             // else arm the interrupt window so KVM exits the instant it can. That

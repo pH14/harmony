@@ -13,6 +13,8 @@ mod cache;
 mod cpio;
 mod image;
 mod runner;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod watchdog;
 
 use crate::host::{HostReport, MatrixCell};
 use crate::preflight::GuestArtifacts;
@@ -165,7 +167,27 @@ pub fn run(args: RunArgs) -> Result<ExitCode, Box<dyn std::error::Error>> {
         },
     };
     eprintln!("booting ({} MiB RAM, seed {}) ...", args.ram_mib, args.seed);
-    let outcome = runner::execute(&spec)?;
+    let outcome = match runner::execute(&spec) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            #[cfg(any(
+                all(target_os = "linux", target_arch = "x86_64"),
+                all(target_os = "macos", target_arch = "aarch64")
+            ))]
+            if let runner::RunError::WallBudget { serial, .. } = &error {
+                let out_dir = args.out.clone().unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("harmony-run-{}", std::process::id()))
+                });
+                std::fs::create_dir_all(&out_dir)?;
+                std::fs::write(out_dir.join("serial.log"), serial)?;
+                eprintln!(
+                    "partial serial log: {}",
+                    out_dir.join("serial.log").display()
+                );
+            }
+            return Err(error.into());
+        }
+    };
 
     let container_rc = parse_container_rc(&outcome.serial);
     let record = RunRecord {

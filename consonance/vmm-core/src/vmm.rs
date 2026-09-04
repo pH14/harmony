@@ -4189,6 +4189,14 @@ where
     }
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl Vmm<vmm_backend::KvmBackend> {
+    /// Host-only cancellation latch; see `KvmBackend::cancellation_flag`.
+    pub fn kvm_cancellation_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.backend.cancellation_flag()
+    }
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
 impl Vmm<vmm_backend::HvfBackend> {
     /// Handle for the host-only liveness monitor to abort a stuck HVF entry.

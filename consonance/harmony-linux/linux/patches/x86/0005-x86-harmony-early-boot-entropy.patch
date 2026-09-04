@@ -1,0 +1,41 @@
+x86: select deterministic entropy timing before setup_data seeds the CRNG
+
+Linux consumes SETUP_RNG_SEED before parse_early_param(). Crediting that seed
+calls extract_entropy(), which also mixes random_get_entropy(). Waiting for
+the harmony_pvclock early_param hook therefore leaks native RDTSC into the
+first CRNG key even when all later timing reads use the virtual clock page.
+
+Recognize the token in the already-populated boot_command_line on this early
+path. The existing early_param hook still pins the remaining runtime flags.
+A non-Harmony boot retains the native entropy path. Same-seed OCI urandom
+replay exercises this ordering; supplying a boot seed alone does not pass it.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/arch/x86/kernel/harmony_pvclock.c
++++ b/arch/x86/kernel/harmony_pvclock.c
+@@ -29,6 +29,7 @@
+ #include <linux/string.h>
+ #include <linux/unaligned.h>
+ 
++#include <asm/cmdline.h>
+ #include <asm/harmony_pvclock.h>
+ #include <asm/io.h>
+ #include <asm/msr.h>
+@@ -111,7 +112,13 @@
+ 
+ bool harmony_pvclock_requested(void)
+ {
+-	return pvclock_requested;
++	/* setup_data RNG credit precedes parse_early_param(). Its first
++	 * extract_entropy() must already avoid native timing. The boot command
++	 * line has been populated before setup_data is parsed.
++	 */
++	return pvclock_requested ||
++		cmdline_find_option_bool(boot_command_line,
++					"harmony_pvclock") > 0;
+ }
+ EXPORT_SYMBOL_GPL(harmony_pvclock_requested);
+ 

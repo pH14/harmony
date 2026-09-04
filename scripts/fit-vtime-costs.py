@@ -42,13 +42,13 @@ ROW_RE = re.compile(
 NON_CONSTANT_CLASSES = {"idle", "terminal"}
 
 # The frozen execution-tick duration, mirroring `vtime-execution-tick-vns` in
-# docs/cpu-msr-contract.toml (and EXECUTION_TICK_VNS in vendor/arm64/contract.rs).
+# consonance/vmm-core/contracts/x86/intel.toml (and EXECUTION_TICK_VNS in vendor/arm64/contract.rs).
 # Ticks are indistinguishable from other paravirtual-MMIO events except by their
 # V-time delta, so a stale value here silently reports zero ticks. `--self-test`
 # compares it against the contract.
 EXECUTION_TICK_VNS = 100_000
 
-CONTRACT_TOML = Path(__file__).resolve().parent.parent / "docs" / "cpu-msr-contract.toml"
+CONTRACT_TOML = Path(__file__).resolve().parent.parent / "consonance" / "vmm-core" / "contracts" / "x86" / "intel.toml"
 
 
 def parse_log(path: Path) -> list[tuple[str, int, int]]:

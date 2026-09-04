@@ -3840,7 +3840,9 @@ mod tests {
                 .as_ref()
                 .expect("resident snapshot"),
         );
-        archive.enforce_snapshot_memory_budget();
+        archive
+            .enforce_snapshot_memory_budget()
+            .expect("budget maintenance");
         assert!(!archive.snapshot_selectable[0]);
         assert!(archive.entries[0].snapshot.is_some());
         let logical_counters = (
@@ -3869,7 +3871,9 @@ mod tests {
     fn metadata_unpin_keeps_explicitly_preserved_inactive_snapshot() {
         let mut archive = flat_archive::<3>(&[[1, 2, 3, 4]]);
         let stable_id = archive.stable_id(0).expect("stable id");
-        archive.preserve_inactive_snapshots(true);
+        archive
+            .preserve_inactive_snapshots(true)
+            .expect("preserve snapshots");
         archive
             .pin_metadata(stable_id)
             .expect("pin replay metadata");

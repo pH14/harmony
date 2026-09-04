@@ -64,6 +64,10 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p hypercall-doorbell
       - name: miri — vm-state
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
+      # Only watchdog contains CLI unsafe; native signal syscalls sit behind
+      # cfg(not(miri)), while cancellation ordering runs with a loopback kick.
+      - name: miri — CLI watchdog
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p harmony-cli --bin harmony oci::watchdog::tests
       - name: miri — vmm-backend
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
       # snapshot-store uses --lib because the

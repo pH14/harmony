@@ -394,3 +394,23 @@ mod tests {
         assert_eq!(control, build_control_segment(&config(), &[]).unwrap());
     }
 }
+
+#[cfg(test)]
+mod acceptance_regressions {
+    use super::*;
+    #[test]
+    fn native_init_dispatch_and_control_segment_contain_the_executable_script() {
+        let script = init();
+        assert_eq!(
+            script,
+            init_script(if cfg!(target_arch = "x86_64") {
+                Console::Serial
+            } else {
+                Console::Mmio
+            })
+        );
+        assert!(script.starts_with("#!/bin/sh\n"));
+        assert!(script.contains("HARMONY_OCI_EXIT rc=$rc"));
+        assert!(script.contains("poweroff -f"));
+    }
+}

@@ -439,6 +439,25 @@ fn write_at(
     Ok(())
 }
 
+/// Supply Linux SETUP_RNG_SEED (type 9) before the first run. The 80-byte
+/// record occupies unused low RAM after the command-line page. Linux reserves
+/// setup_data before reusing low RAM, mixes these bytes into its CRNG and credits
+/// them with random.trust_bootloader=on (the pinned kernel's default).
+/// The caller supplies bytes from the VM's seeded entropy stream, never the host.
+pub(crate) fn write_rng_seed(mem: &mut [u8], seed: &[u8; 64]) -> Result<(), LinuxLoadError> {
+    const RNG_GPA: u64 = 0x9000;
+    let error = LinuxLoadError::RamTooSmall {
+        ram: mem.len() as u64,
+    };
+    let mut record = [0u8; 80];
+    record[8..12].copy_from_slice(&9u32.to_le_bytes());
+    record[12..16].copy_from_slice(&64u32.to_le_bytes());
+    record[16..].copy_from_slice(seed);
+    write_at(mem, RNG_GPA, &record, error)?;
+    // load() owns and zero-initializes this list: it has no previous records.
+    write_at(mem, BOOT_PARAMS_GPA + 0x250, &RNG_GPA.to_le_bytes(), error)
+}
+
 // ---------------------------------------------------------------------------
 // Header parsing.
 // ---------------------------------------------------------------------------
@@ -1778,5 +1797,35 @@ mod tests {
             .expect_err("must not fit");
             assert!(matches!(err, LinuxLoadError::InitramfsDoesNotFit { .. }));
         }
+    }
+}
+
+#[cfg(test)]
+mod rng_seed_tests {
+    use super::*;
+
+    #[test]
+    fn seed_record_has_linux_layout_and_preserves_surroundings() {
+        let mut mem = vec![0xa5; 0xa000];
+        let seed = std::array::from_fn(|i| i as u8);
+        write_rng_seed(&mut mem, &seed).unwrap();
+        assert_eq!(&mem[0x7250..0x7258], &0x9000u64.to_le_bytes());
+        assert_eq!(&mem[0x9000..0x9008], &[0; 8]);
+        assert_eq!(&mem[0x9008..0x9010], &[9, 0, 0, 0, 64, 0, 0, 0]);
+        assert_eq!(&mem[0x9010..0x9050], &seed);
+        assert_eq!(mem[0x8fff], 0xa5);
+        assert_eq!(mem[0x9050], 0xa5);
+    }
+
+    #[test]
+    fn seed_record_rejects_short_ram() {
+        for len in [0, 0x7257, 0x9000, 0x904f] {
+            let mut mem = vec![0; len];
+            assert_eq!(
+                write_rng_seed(&mut mem, &[0; 64]),
+                Err(LinuxLoadError::RamTooSmall { ram: len as u64 })
+            );
+        }
+        write_rng_seed(&mut vec![0; 0x9050], &[0; 64]).unwrap();
     }
 }
