@@ -45,3 +45,7 @@ nix run .#guest-images -- --output "$PWD/guest-output"
 The guest transport is synchronous and serialized by the kernel driver. Guest
 entropy comes from the host-provided seeded service; the compatibility library
 does not provide a host-randomness fallback.
+
+The x86 Nova image requires GNU cpio 2.14 or newer. Its `--reproducible`
+mode normalizes inode, device, and directory-link metadata before the
+initramfs hash is recorded in deterministic campaign streams.
