@@ -7,7 +7,7 @@
 //! instantiate every `Backend` method the engine calls, proving the seam is
 //! genuinely additive in a way no cross-compile gate can (a signature only a
 //! second implementor could refute stays invisible until one exists —
-//! `docs/ARCH-BOUNDARY.md` §D). It is scripted with a queue of [`Exit`]s and
+//! `docs/ARCHITECTURE.md`). It is scripted with a queue of [`Exit`]s and
 //! enforces the same run-loop / completion contract as the x86 mock:
 //! fail-closed `NotConfigured` until the policy is installed,
 //! `PendingCompletion` on a missed completion, and

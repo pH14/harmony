@@ -7,8 +7,8 @@ description = "Deterministic userspace xAPIC register file + V-time timer (pure 
 
 [features]
 # Off by default: the core state machine compiles and passes every gate with no
-# features. `serde` derives Serialize/Deserialize on `LapicState` only — the seam
-# task 09 (`vm-state`) consumes. See tasks/13-lapic.md "Public API".
+# features. `serde` derives Serialize/Deserialize on `LapicState` only for use
+# by `vm-state`.
 default = []
 serde = ["dep:serde"]
 

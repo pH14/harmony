@@ -1,5 +1,5 @@
 # Reviewed raw-counter-read sites in the built guest kernel (task 110, the
-# PARAVIRT-CLOCK.md §3.3 reachability gate, x86 half — see
+# paravirtual clock interface reachability gate, x86 half — see
 # scan-counter-opcodes.sh). One `artifact:symbol+0xOFFSET` entry per line — the
 # artifact, containing function, and the rdtsc/rdtscp instruction's byte OFFSET
 # within it (cross-model r10 P1). Per-SITE, not per-function-count: a NEW read is
@@ -45,7 +45,7 @@
 #            "entropy" is itself exit-count-derived and deterministic
 #   [time]   boot calibration / clocksource / sched_clock / delay paths —
 #            unselectable or backstopped once harmony_pvclock is active (the
-#            delay decision is recorded in docs/history/IMPLEMENTATION-task110.md)
+#            delay decision is encoded by the clock-source implementation)
 #   [entry]  syscall/irqentry/fork kstack-offset randomization — trapped,
 #            deterministic offsets
 #   [perf]   the perf "msr" software event (tsc pseudo-event)

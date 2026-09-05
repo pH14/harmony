@@ -244,7 +244,7 @@ fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment
 /// The interrupt-identity range the mutation generator draws from.
 ///
 /// The wire field is a `u32` because interrupt identities are **per-arch** — a GIC
-/// INTID exceeds 8 bits (`docs/ARCH-BOUNDARY.md` §C). But a *generator* must mint
+/// INTID exceeds 8 bits (`docs/ARCHITECTURE.md`). But a *generator* must mint
 /// identities the machine under test can actually **accept**: one outside the
 /// machine's identity space is refused at stage time, so it is a wasted mutation,
 /// not a fault. **Widening the storage must not widen the generated range.** Today
@@ -385,7 +385,7 @@ mod tests {
         );
     }
 
-    /// The regression the ARCH-BOUNDARY §C widening nearly introduced: the wire
+    /// The regression the architecture boundary widening nearly introduced: the wire
     /// field is a `u32`, but the mutation generator must stay inside the identity
     /// space the machine under test can accept. An unrestricted `u32` draw would
     /// mint an out-of-range identity with probability 1 − 2⁻²⁴ — every one of them

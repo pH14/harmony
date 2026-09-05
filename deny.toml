@@ -1,26 +1,16 @@
-# cargo-deny policy — enforces the *mechanizable* half of Convention rule-5
-# dependency hygiene (tasks/00-CONVENTIONS.md): RustSec advisories, a permissive
-# license allowlist, crates.io-only sources, and no wildcard versions.
-#
-# It does NOT hard-gate the rule-5 *crate* whitelist itself: there is no
-# `[bans] allow = [...]` allowlist, so an advisory-clean, permissively-licensed
-# crate would pass `cargo deny check`. A real allowlist would gate CI on the
-# unfixable transitive-version churn that `multiple-versions = "warn"` (below)
-# deliberately tolerates. The crate whitelist therefore stays a review-time gate
-# — "ask-by-comment for a new dep" — which a reviewer enforces by reading the
-# Cargo.toml diff (this repo does not track Cargo.lock), where any new direct
-# dependency is visible first.
+# cargo-deny policy: RustSec advisories, license compatibility, crates.io-only
+# sources, and wildcard-version rejection. Direct-dependency review remains a
+# source-review concern because cargo-deny has no practical direct-crate
+# allowlist that tolerates transitive version changes.
 
 [advisories]
 # RustSec advisory DB: fail on known vulnerabilities and unmaintained crates.
 version = 2
 yanked = "deny"
-# Both ignores are *unmaintained* notices (not vulnerabilities), pulled only
+# Both ignores are unmaintained notices rather than vulnerabilities, pulled only
 # through `timely` 0.30 / `differential-dataflow` 0.24 — the observation-plane
-# runtime (ruling and spike record in git history: docs/DISSONANCE-STRATEGY.md,
-# tasks/120–121). No upgrade
-# exists: every current timely/DD release depends on both. Re-evaluate at any
-# timely/DD version bump.
+# runtime. No available timely/DD release removes both dependencies. Re-evaluate
+# these entries at each timely/DD version change.
 ignore = [
     # bincode 1.3.3 (timely's serialization): unmaintained upstream.
     "RUSTSEC-2025-0141",

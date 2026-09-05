@@ -4,7 +4,7 @@
 //! `tests/bench.rs` measures the store at a 32 MiB toy shape. This file measures it at
 //! the shape production actually runs: a 2 GiB guest, i.e. 524,288 frames, on a
 //! synthetic *booted-guest* image (mostly zeros, some duplicate
-//! page contents). Every number printed here goes into `IMPLEMENTATION.md`.
+//! page contents). Every number printed here goes into `README.md`.
 //!
 //! Run with:
 //!   cargo test -p snapshot-store --release --test bench_production_shape -- --ignored --nocapture

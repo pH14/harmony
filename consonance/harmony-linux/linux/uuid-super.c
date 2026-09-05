@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // uuid-super — benchmark bug (iii): a RARE-ENTROPY-VALUE bug (task 69). The third
 // planted bug of the seeded-bug benchmark, beside campaign-super.c (bug i) and
-// order-super.c (bug ii). See dissonance/benchmark (BugClass::RareEntropy) and
-// consonance/harmony-linux/linux/IMPLEMENTATION.md §"The benchmark bugs".
+// order-super.c (bug ii). See dissonance/benchmark (BugClass::RareEntropy).
 //
 // The bug in one sentence: the process draws a value from the guest's seeded
 // entropy source (the deterministic `gen_random_uuid()`-style draw the VMM

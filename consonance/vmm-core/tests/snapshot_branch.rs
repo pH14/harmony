@@ -151,7 +151,7 @@ fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     // `state_hash` equals the source's. Task 39 dropped this state (0/N snapshottable);
     // task 41 captures every field and round-trips it bit-for-bit — proven here WITHOUT
     // relying on the live workload ever presenting such a point at a synchronized boundary
-    // (it reliably does not; see `live_nonquiescent_snapshot.rs` + IMPLEMENTATION.md).
+    // (it reliably does not; see `live_nonquiescent_snapshot.rs` + README.md).
     let in_flight = VcpuEvents {
         exception_injected: 1,
         exception_nr: 13, // #GP

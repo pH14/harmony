@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The x86-64 vendor's exit dispatch, contract dispositions, interrupt fabric,
-//! and platform device models (`docs/ARCH-BOUNDARY.md` §B's vendor column).
+//! and platform device models (`docs/ARCHITECTURE.md`'s vendor column).
 //!
 //! Everything here names x86: the port-I/O and MMIO maps, the MSR/CPUID
 //! dispositions, the xAPIC + 8259/PIT/PCI legacy platform, the 8250 UART, and
@@ -71,8 +71,8 @@ pub(crate) const COM1_IRQ: u8 = 4;
 /// `ISA_IRQ_VECTOR(4) = 0x30 + 4 = 0x34`. The VMM injects this vector (via the
 /// `KVM_INTERRUPT` legacy-injection seam, exactly as a PIC `INTR`/`ExtINT` would)
 /// when the 8250 raises its THRE interrupt; the guest IRQ-4 handler then drains
-/// the userspace TX and EOIs the 8259. (Verified against the boot log: the guest
-/// uses the 8259 in virtual-wire mode, no IO-APIC — see IMPLEMENTATION.md.)
+/// the userspace TX and EOIs the 8259. The guest uses the 8259 in virtual-wire
+/// mode and has no IO-APIC.
 pub(crate) const COM1_IRQ_VECTOR: u8 = 0x34;
 
 /// `IA32_TSC` — the architectural time-stamp-counter MSR. The contract marks it
@@ -84,7 +84,7 @@ pub(crate) const IA32_TSC: u32 = 0x10;
 /// Also `emulate-vtime`; backs [`VtimeWiring::tsc_adjust`].
 pub(crate) const IA32_TSC_ADJUST: u32 = 0x3b;
 
-/// The hypercall **doorbell** port (task 73 / INTEGRATION.md §1): an `OUT` here
+/// The hypercall **doorbell** port (task 73 / docs/ARCHITECTURE.md): an `OUT` here
 /// is a cooperating guest SDK ringing a hypercall. Mirrors
 /// `hypercall_doorbell::DOORBELL_PORT` (conventions rule 2 — the guest/host
 /// protocol pattern; deliberately distinct from the task-04 report channel at
@@ -448,7 +448,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     /// arbitration delivers it — the [`InjectInterrupt`] apply. Fails loud if the
     /// LAPIC is unwired (there is no arbitration path to assert through), the
     /// vector exceeds the xAPIC's 8-bit identity space (the wire field is u32;
-    /// per-arch identities exceed 8 bits, ARCH-BOUNDARY §C), or the vector is
+    /// per-arch identities exceed 8 bits, architecture boundary), or the vector is
     /// architecturally reserved (`< 16`).
     ///
     /// [`InjectInterrupt`]: environment::HostFault::InjectInterrupt
@@ -850,7 +850,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     snapshot_vns: vt.clock.vns(),
                 };
                 // The entropy PRNG position rides the `hypercall` section
-                // (INTEGRATION.md §4: `Dispatcher::save_state()`, "notably the
+                // (`Dispatcher::save_state()`, notably the
                 // entropy PRNG position") — vmm-core's hypercall RNG and RDRAND draw
                 // from this one stream.
                 s.hypercall = vt.entropy.save_state();
@@ -914,7 +914,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         s: &vm_state::VmState,
     ) -> Result<(VcpuState, u64, X86RestorePrep), VmmError> {
         // Contract: a blob taken under a different CPUID/MSR contract would silently
-        // diverge on restore (INTEGRATION.md §4 `contract_hash`).
+        // diverge on restore (docs/ARCHITECTURE.md `contract_hash`).
         if s.contract_hash != contract::contract_hash() {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
@@ -1022,7 +1022,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
 
 /// A modeled byte port (the 8250 UART block and isa-debug-exit) is
 /// **byte-addressed**; a wider access (`size != 1`) is unmodeled by the M1/M2
-/// payloads and must **fail closed** (CPU-MSR-CONTRACT default-deny), never a
+/// payloads and must **fail closed** (x86 CPU contract default-deny), never a
 /// silent `value as u8` truncation — an `outl $x, $0xF4` must not become a fake
 /// debug-exit `PASS`, and a wide UART write must not drop its high bytes.
 fn require_byte_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
@@ -1052,7 +1052,7 @@ fn require_dword_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
 }
 
 /// Loud host-side log of an MSR access, emitted **before** any architectural
-/// effect and never perturbing guest-visible state (CPU-MSR-CONTRACT §1
+/// effect and never perturbing guest-visible state (x86 CPU contract
 /// loud-event policy). §1 mandates the full context: access direction, the KVM
 /// exit reason, the MSR index, the WRMSR data (`n/a` on a read), the guest RIP at
 /// the faulting instruction, the current V-time, and the disposition applied.
@@ -1274,7 +1274,7 @@ fn encode_events(v: &mut Vec<u8>, raw: &vmm_backend::VcpuEvents) {
     ]);
 }
 
-/// The frozen V-time clock config (CPU-MSR-CONTRACT: the guest TSC is **2.0 GHz**,
+/// The frozen V-time clock config (x86 CPU contract: the guest TSC is **2.0 GHz**,
 /// leaf `0x15`). The current exit-count accumulator is measured directly in
 /// nanoseconds, so `tsc(vns) = 2 · vns` ticks with integer-only conversion.
 pub fn contract_vclock_config() -> VClockConfig {
@@ -1300,7 +1300,7 @@ impl MsrDir {
             MsrDir::Write => "WRMSR",
         }
     }
-    /// The KVM exit reason this direction surfaces as (CPU-MSR-CONTRACT §1).
+    /// The KVM exit reason this direction surfaces as (x86 CPU contract).
     pub(crate) fn exit_reason(self) -> &'static str {
         match self {
             MsrDir::Read => "KVM_EXIT_X86_RDMSR",

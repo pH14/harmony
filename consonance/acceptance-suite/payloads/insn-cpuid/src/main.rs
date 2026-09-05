@@ -1,5 +1,5 @@
 //! `insn-cpuid`: CPUID sweep over the **frozen contract model** (every concrete
-//! leaf/subleaf in `contract-data`, generated from `docs/cpu-msr-contract.toml`).
+//! leaf/subleaf in `contract-data`, generated from `consonance/vmm-core/contracts/x86/intel.toml`).
 //!
 //! In-guest it asserts the environment-independent invariant — CPUID is stable
 //! (two reads of every leaf are byte-identical) — and reports each leaf's live

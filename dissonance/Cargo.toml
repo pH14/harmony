@@ -1,5 +1,5 @@
 # Standalone workspace root, deliberately outside the harmony root workspace.
-# See CLAUDE.md in this directory before working here.
+# See AGENTS.md in this directory before working here.
 [workspace]
 resolver = "2"
 members = ["machine", "searcher"]

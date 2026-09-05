@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The trap apparatus, decoupled behind the [`Backend`] trait (ruling
 //! R-Backend), generic over the ISA it traps (the [`Arch`] seam,
-//! `docs/ARCH-BOUNDARY.md`). `vmm-backend` is the lower half of the
-//! `docs/BRINGUP.md` crate split: it owns the thing that holds the vCPU and
+//! `docs/ARCHITECTURE.md`). `vmm-backend` is the lower half of the
+//! `docs/ARCHITECTURE.md` crate split: it owns the thing that holds the vCPU and
 //! surfaces VM-exits, while the deterministic VMM above it (vmm-core) — the
 //! CPU/MSR-contract dispositions, V-time, hypercalls, snapshot/restore, the
 //! userspace interrupt-fabric models — compiles against this trait **alone**
@@ -22,7 +22,7 @@ mod error;
 mod exit;
 mod types;
 
-// The `Backend` contract tests (`docs/TESTING.md`, rung 2): the shared exam
+// The `Backend` contract tests (`docs/TESTING.md`): the shared exam
 // every implementor must pass, generic over the trait and driven through a
 // caller-supplied fixture. Behind the non-default `contract-tests` feature and
 // NOT `#[cfg(test)]` — a `#[cfg(test)]` item is invisible downstream, and the
@@ -54,7 +54,7 @@ mod mock_arm64;
 // The **stock KVM/arm64 backend**, split like the x86 backend. `arm64_kvm` is
 // the PURE half — the `KVM_RUN`⇄`Exit` decode, the register-ID save/restore
 // table, and the `Backend` orchestration over the `Arm64Kvm` syscall seam
-// (`docs/ARCH-BOUNDARY.md` §D; `tasks/112` M4). It carries no `kvm_bindings`
+// (`docs/ARCHITECTURE.md`; `tasks/112` M4). It carries no `kvm_bindings`
 // dependency, so it compiles + unit/Miri-tests on macOS against the recording
 // `FakeKvm` (portable mechanism attestation — no `/dev/kvm`).
 mod arm64_kvm;
@@ -76,7 +76,7 @@ mod arm64_kvm_sys;
 // `kvm_regs`/`kvm_sregs` on each arch, so this code is not merely Linux-only, it is
 // x86-64-only: gating it on the OS alone made the crate fail to even `cargo check`
 // on `aarch64-unknown-linux-gnu`, which would have blocked the additive ARM backend
-// the `Arch` seam exists to enable (`docs/ARCH-BOUNDARY.md` §D). An ARM vendor adds
+// the `Arch` seam exists to enable (`docs/ARCHITECTURE.md`). An ARM vendor adds
 // its own `kvm_arm64`/`kvm_arm64_sys` pair beside these under its own arch gate.
 //
 // `kvm` is the pure KVM exit-mapping + state-conversion logic (covered + mutation-

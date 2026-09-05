@@ -715,7 +715,7 @@ pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
 /// determinism fields are honestly `true`. `enforces_tsc_deadline_msr` stays
 /// `false`: the determinism patch touches only the four instruction intercepts,
 /// not the `0x6E0` WRMSR fastpath (the contract hides `IA32_TSC_DEADLINE`
-/// instead — INTEGRATION.md §7 / R1, no in-kernel LAPIC).
+/// instead — docs/ARCHITECTURE.md / R1, no in-kernel LAPIC).
 pub(crate) fn patched_capabilities() -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-patched",

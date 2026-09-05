@@ -14,7 +14,7 @@
 //!
 //! ## Two digests, two oracles
 //!
-//! The bridge keeps the O2/O3 distinction (`docs/DETERMINISM-CORPUS.md`): O1
+//! The bridge keeps the O2/O3 distinction (`docs/TESTING.md`): O1
 //! (determinism) compares [`Subject::state_hash`] — the full V-time/RAM/entropy
 //! state (`Vmm::state_hash`, unchanged from #45) **folded with the report-stream
 //! `observable_digest`**, so O1 also catches a divergence confined to the report

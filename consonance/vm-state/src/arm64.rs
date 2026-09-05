@@ -7,14 +7,14 @@
 //! small named EL1 system-register file, and the arch-neutral engine blocks —
 //! enough to encode/decode a trivial vCPU state and round-trip it through the
 //! container. **Which sysregs an arm64 snapshot must carry is M4's measured
-//! decision** (`docs/VM-EXIT-COUNT-VTIME.md`); the full record set is
+//! decision** (`docs/DETERMINISM.md`); the full record set is
 //! `TODO(AA-6)` and
 //! lands under a bumped section layout, never guessed here.
 //! designed-not-frozen (AA-3).
 //!
 //! The section tags below are the *arm64* record set's own tag space — tags
 //! are meaningful only under this container arch tag, exactly why the v2
-//! header carries one (`docs/ARCH-BOUNDARY.md` step 4). A blob with a foreign
+//! header carries one (`docs/ARCHITECTURE.md`). A blob with a foreign
 //! arch tag is rejected loudly ([`VmStateError::UnsupportedArch`]), never
 //! reinterpreted.
 

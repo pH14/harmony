@@ -1,13 +1,21 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
 # Harmony `libvoidstar.so`
 
-This clean-room compatibility library implements the public ABI used by Antithesis SDKs.
-It sends SDK JSON to `/dev/harmony`, obtains deterministic entropy with the driver's
-one-byte write/eight-byte read transaction, and turns instrumented basic-block
-callbacks into thresholded SDK yields. Each logical thread has an explicit stable id,
-a per-thread counter, and a threshold prescribed by the host's preceding response;
-crossing it performs command 1's 17-byte request/12-byte response transaction. The
-response supplies both the next threshold and an index in the declared runnable set.
+`libvoidstar.so` is the clean-room compatibility library for the public SDK
+ABI used by guest workloads. It sends SDK JSON to `/dev/harmony`, obtains
+seeded entropy through the driver's fixed transaction, and exposes the legacy
+coverage and sanitizer callback symbols expected by instrumented programs.
 
-Build and test it with `make -C consonance/harmony-linux/libvoidstar check`. Linux images install
-the resulting library as `/usr/lib/libvoidstar.so`; the device path is fixed at the ABI
-path `/dev/harmony` (the R-L3 fixed-transport ruling — it is not configurable).
+Device exchanges are serialized per process. The library keeps explicit thread
+identities and counters for callback thresholding. Device errors fail closed:
+an event is dropped and entropy returns zero rather than using host randomness.
+
+Build and test it with:
+
+```sh
+make -C consonance/harmony-linux/libvoidstar check
+```
+
+Linux images install the result at `/usr/lib/libvoidstar.so` and use the fixed
+device path `/dev/harmony`.

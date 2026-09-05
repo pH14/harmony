@@ -10,7 +10,7 @@ TSC_AUX, and a CF success flag in; RNG destination GPR out), and the
 opt-in capability KVM_CAP_X86_DETERMINISTIC_INTERCEPTS.  No behavior
 change on its own.
 
-Co-developed-for: harmony PatchedKvmBackend (docs/R-BACKEND.md)
+Co-developed-for: harmony PatchedKvmBackend (consonance/vmm-backend/README.md)
 ---
  include/uapi/linux/kvm.h | 17 +++++++++++++++++
  1 file changed, 17 insertions(+)

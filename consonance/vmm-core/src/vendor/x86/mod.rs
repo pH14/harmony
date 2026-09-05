@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **x86-64 vendor** (`docs/ARCH-BOUNDARY.md` §B): everything in the
+//! The **x86-64 vendor** (`docs/ARCHITECTURE.md`): everything in the
 //! deterministic VMM that names the x86 ISA — the CPU/MSR contract and its
 //! installed policy ([`contract`]), the exit dispatch and dispositions
 //! ([`dispatch`]), the boot loaders and entry state ([`multiboot`],
@@ -58,7 +58,7 @@ impl Vendor for X86 {
         exit: X86Exit,
     ) -> Result<Step, VmmError> {
         // Exhaustive over `X86Exit` — no wildcard arm (default-deny stays
-        // structural; `docs/ARCH-BOUNDARY.md` §A).
+        // structural; `docs/ARCHITECTURE.md`).
         match exit {
             X86Exit::Io {
                 port,

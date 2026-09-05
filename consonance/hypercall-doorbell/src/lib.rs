@@ -3,7 +3,7 @@
 //! Guest-side hypercall-doorbell transport for the Harmony hypercall channel.
 //!
 //! Task 01 (`hypercall-proto`) defined the wire protocol and a `Client<T: Transport>` but left
-//! the `Transport` abstract. This crate implements that `Transport` over the **INTEGRATION.md §1
+//! the `Transport` abstract. This crate implements that `Transport` over the **docs/ARCHITECTURE.md
 //! hypercall-doorbell ABI**: it marshals a request frame into a shared, page-aligned
 //! guest-physical request page, rings the architecture's one-exit doorbell (x86 port I/O or
 //! arm64 MMIO) through [`IoDoorbell`], and reads the host's response frame back out of the response page — its length
@@ -59,7 +59,7 @@ use core::{mem::size_of, ptr};
 use hypercall_proto::HEADER_LEN;
 
 /// The magic 16-bit I/O port the guest rings to signal a hypercall (the **doorbell**). An `OUT` to
-/// this port is surfaced by **stock KVM** as `KVM_EXIT_IO` (INTEGRATION.md §1) — unlike `VMCALL`,
+/// this port is surfaced by **stock KVM** as `KVM_EXIT_IO` (docs/ARCHITECTURE.md) — unlike `VMCALL`,
 /// which stock KVM services in-kernel and never forwards to userspace for our magic number. Chosen
 /// to avoid the legacy ISA/PCI port map (PIT `0x40`–`0x43`, PIC `0x20`/`0xA0`, PS/2 `0x60`/`0x64`,
 /// PCI-config `0xCF8`/`0xCFC`, …); the VMM reserves it. Because it is `> 0xFF` the real doorbell
@@ -247,7 +247,7 @@ impl IoDoorbell for RealIoDoorbell {
     /// so the real doorbell is unavailable there. This is sound for the Miri gate because the
     /// gate's purpose is the *pointer/bound-check* logic in [`VmcallTransport::exchange`], which
     /// the loopback [`IoDoorbell`] impls drive with no asm; the privileged instruction itself is
-    /// out of Miri's scope by construction (see this crate's IMPLEMENTATION.md, "Miri").
+    /// out of Miri's scope by construction (see this crate's README.md, "Miri").
     #[cfg(all(target_arch = "x86_64", not(miri)))]
     unsafe fn ring(&mut self, port: u16, req_len: u32) {
         // SAFETY: a single `out` traps to the host, which reads the request page and writes the

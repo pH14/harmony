@@ -12,9 +12,9 @@
 # gate's deterministic anchor) and locale/TZ are pinned so the uuid/timestamp text
 # renders stably. Determinism of the *execution* (TSC, RNG, fork order, the clock) is
 # enforced from below by the patched KVM backend + V-time — see
-# consonance/harmony-linux/linux/IMPLEMENTATION.md.
+# consonance/harmony-linux/linux/README.md.
 #
-# Two consonance-VMM realities shape the control flow (see IMPLEMENTATION.md):
+# Two Consonance VMM properties shape the control flow:
 #   * The VMM terminates the run on the first guest HLT and does not wake a
 #     blocked `nanosleep` (no clock-event device is set up). So readiness/shutdown
 #     are awaited COOPERATIVELY — a blocking psql connect / the shell's `wait`

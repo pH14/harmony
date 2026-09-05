@@ -926,7 +926,7 @@ fn pvclock_register_round_trips_the_abi_version() {
 
 /// A host with no pvclock service answers `UnknownService`, so a guest probing
 /// for the clock page gets a clean "not offered", never a panic — the pure
-/// opt-in posture of `docs/PARAVIRT-CLOCK.md`.
+/// opt-in posture of `consonance/vtime/README.md`.
 #[test]
 fn pvclock_register_without_service_is_a_clean_status() {
     let mut dispatcher = Dispatcher::new();

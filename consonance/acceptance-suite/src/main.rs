@@ -36,8 +36,8 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use unison::toy::ZERO_SEED_STATE;
 
-// The real-VMM composition root. Gated on the **arch** as well as the OS
-// (AGENTS.md, cross-arch discipline): `boot_patched_corpus` names the x86
+// The real-VMM composition root is gated on the architecture as well as the OS.
+// `boot_patched_corpus` names the x86
 // vendor's patched backend, so this is x86-64-Linux-only, not merely
 // Linux-only. Absent everywhere else, where a hardware host is refused loudly.
 #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "real-vmm"))]
@@ -151,7 +151,7 @@ fn run_cell<G: Fn(&str) -> Option<String> + Copy>(
         .into()),
         HostId::Msr1 => Err(format!(
             "cell {:?} needs host msr1; the arm64 registry does not exist yet \
-             (docs/TESTING.md rung 1 — CPU qualification comes first)",
+             (docs/TESTING.md — CPU qualification comes first)",
             item.name
         )
         .into()),

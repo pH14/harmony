@@ -21,7 +21,7 @@
 #
 # Linux + root only (as build-postgres-image.sh — mke2fs -d bakes uid-70
 # ownership). On macOS run it in a linux/amd64 container as root; see
-# docs/BUILDING.md.
+# CONTRIBUTING.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -152,7 +152,7 @@ setpriv --reuid="$BUILD_UID" --regid="$BUILD_UID" --clear-groups env LC_ALL=C.UT
     || { cat "$BUILD_ROOT/campaign-initdb.log"; exit 1; }
 cat >>"$STAGEFS/pgdata/postgresql.conf" <<EOF
 
-# --- task 37 determinism overlay (see consonance/harmony-linux/linux/IMPLEMENTATION.md) ---
+# --- task 37 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = ''
 unix_socket_directories = '/tmp'
 fsync = on

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! # vmm-core — the deterministic VMM above the `Backend` trait
 //!
-//! `vmm-core` is the upper half of the `docs/BRINGUP.md` crate split: everything
+//! `vmm-core` is the upper half of the `docs/ARCHITECTURE.md` crate split: everything
 //! that sits **above** the [`vmm_backend::Backend`] trait and compiles against
 //! that trait **alone**. It **never issues `KVM_RUN` itself** — that lives below
 //! the trait in `vmm-backend`'s `KvmBackend`. Nothing here branches on which
@@ -9,7 +9,7 @@
 //! pair is named is a vendor's own composition root
 //! ([`vendor::x86::bringup`]).
 //!
-//! It is split in two along the ISA seam (`docs/ARCH-BOUNDARY.md` §B):
+//! It is split in two along the ISA seam (`docs/ARCHITECTURE.md`):
 //!
 //! - **The engine** — everything outside [`vendor`]: the **event loop** ([`vmm`])
 //!   that drives the vCPU through [`vmm_backend::Backend::run`] and dispatches the
@@ -58,7 +58,7 @@ pub mod session_trace;
 pub mod snapshot;
 /// Architecture-neutral assigned-at-exit virtual time and its independent oracles.
 pub mod virtual_time;
-// The engine/vendor seam (`docs/ARCH-BOUNDARY.md` §B): every module OUTSIDE
+// The engine/vendor seam (`docs/ARCHITECTURE.md`): every module OUTSIDE
 // `vendor` is the arch-neutral engine; everything x86 lives under `vendor::x86`
 // (the CPU contract, exit dispatch + dispositions, the boot loaders + entry
 // state, the interrupt fabric + platform devices, the host-homogeneity probe,

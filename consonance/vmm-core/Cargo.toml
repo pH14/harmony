@@ -9,7 +9,7 @@ description = "The deterministic VMM above the Backend trait: Multiboot loader, 
 workspace = true
 
 [dependencies]
-# Rule-2 exception (declared in tasks/15-vmm-core-skeleton.md): vmm-core is the
+# Rule-2 exception (declared in consonance/vmm-core/README.md): vmm-core is the
 # deterministic VMM *above* the `Backend` trait, so it depends on its sibling
 # `vmm-backend` for the trait + value types. Re-declaring the trait locally would
 # produce a different trait the binary's `KvmBackend` does not implement. NO

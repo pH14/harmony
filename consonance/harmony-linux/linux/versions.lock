@@ -101,7 +101,7 @@ K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2c
 # unheadered libretro glue under a bare GPL-2 LICENSE — a GPL-2.0-only
 # reading, AGPL-3-incompatible) and over Mesen (GPL-3, clean, but the
 # heaviest core — throughput matters at box branch rates); see
-# consonance/harmony-linux/play-agent/IMPLEMENTATION.md. Determinism comes from the VM, not the
+# consonance/harmony-linux/play-agent/README.md. Determinism comes from the VM, not the
 # core. The SAME pin provisions task 87's host-side film renderer, which is
 # what makes savestate replay 1:1. Pinned 2026-07-09 (master head). Verify:
 # shasum -a 256 <tarball>.

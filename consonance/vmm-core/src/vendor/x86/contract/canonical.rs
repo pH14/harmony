@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The CPU-MSR-CONTRACT §6 canonical serializer: emit the deterministic UTF-8 /
+//! The x86 CPU contract canonical serializer: emit the deterministic UTF-8 /
 //! LF byte string [`super::contract_hash`] is taken over, from the parsed tables.
 //!
 //! **Rendering decisions (normative §6 + the spelling this implementation fixes;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only task-110 gates for the paravirt exit-count-derived clock
-//! (`docs/PARAVIRT-CLOCK.md` §6): **G1** same-seed bit-identical `state_hash`
+//! (`consonance/vtime/README.md`): **G1** same-seed bit-identical `state_hash`
 //! with the page on, **G2** page-stamp == RDTSC-trap-oracle function equality
 //! at refresh Moments, and the **N-4-style perf measurement** (RDTSC-exit
 //! rate page-off vs page-on, boot
@@ -15,7 +15,7 @@
 //!
 //! - **Host**: the determinism box (`ssh hetzner`), det-cfl-v1 CPU, LOADED
 //!   patched KVM modules (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), perf_event;
-//!   CPU-pinned per `docs/BOX-PINNING.md`:
+//!   CPU-pinned per `.github/workflows/box.yml`:
 //!   `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored --test-threads=1`
 //! - **Kernel image**: the task-110 pvclock build —
 //!   `make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux kernel` (applies the kernel
@@ -75,7 +75,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on the determinism box with the \
-         LOADED patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+         LOADED patched KVM modules, CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -748,9 +748,7 @@ fn n4_perf_rdtsc_exit_rate_page_off_vs_page_on() {
     assert!(on.vns > 0 && off.vns > 0, "virtual time did not advance");
 }
 
-/// Steady-state exit rates over a bounded Postgres window (the workload half
-/// of the §6 numbers; the full acceptance-suite + campaign smoke runs via the
-/// existing box_corpus / campaign-runner tooling — see IMPLEMENTATION.md).
+/// Steady-state exit rates over a bounded Postgres window.
 #[test]
 #[ignore = "box-only (see g0); long — run after g0/g1; needs initramfs-postgres.cpio.gz"]
 fn n4_perf_postgres_window_page_off_vs_page_on() {

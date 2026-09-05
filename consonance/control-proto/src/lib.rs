@@ -10,7 +10,7 @@
 //! verb→backend binding, and the stage-and-re-enter run suspension are frontier
 //! (vmm-core), built later against these types.
 //!
-//! Two design rules from git history's `docs/DISSONANCE.md` are load-bearing here:
+//! Two design rules from `docs/EXPLORATION.md` are load-bearing here:
 //!
 //! - **No bare `restore`.** Every restore is [`Replay`](Request::Replay)
 //!   (verbatim — the determinism-gate / repro path) or [`Branch`](Request::Branch)
@@ -25,7 +25,7 @@
 //! outcome is a [`StopReason`] (data); a VM/transport failure is a
 //! [`ControlError`] (a loud protocol error). Neither is ever reported as the
 //! other. The encoding is **bit-deterministic and versioned from day one**, and
-//! the [decoder](decode_request) is a `docs/CODE-QUALITY.md` Tier-1 fuzz target:
+//! the [decoder](decode_request) has a dedicated fuzz target:
 //! it never panics, never reads out of bounds, and rejects an over-cap frame
 //! length before buffering its body. Nothing here observes wall-clock time, host
 //! entropy, `HashMap`/`HashSet` iteration order, or floating point.

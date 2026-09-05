@@ -14,7 +14,7 @@
 //! the `vtime` / `lapic` harnesses to pin operands to concrete representatives, so
 //! every harness here runs over **full symbolic `u64`** inputs — under only a
 //! no-overflow `assume` (the regime in which the saturating adds are exact) — with
-//! no value-range bounding. Harness runtimes are recorded in `IMPLEMENTATION.md`.
+//! no value-range bounding.
 
 use super::*;
 

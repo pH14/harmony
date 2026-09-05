@@ -275,7 +275,7 @@ fn golden_recorded_blob_with_host_overrides() {
         assert_eq!(
             hex,
             // "DEV2"(44455632) + version(0700, the payload-tape extension over
-            // the ARCH-BOUNDARY §C v6) +
+            // the architecture boundary v6) +
             // variant(01) + seed(00 x8) +
             // length-prefixed policy(FPL1 magic + version 0300, baseline, len 0x36=54:
             //   three empty classes 0x2a=42 + trailing buggify section

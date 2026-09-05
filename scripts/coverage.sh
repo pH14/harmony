@@ -6,7 +6,7 @@
 #   - lcov.info            machine-readable LCOV (for CI / badges)
 #   - html/index.html      human-readable HTML report
 #
-# Region coverage is the project's chosen metric (see docs/CODE-QUALITY.md);
+# Region coverage is the project's chosen metric (see CONTRIBUTING.md);
 # this script only *reports* — the gating floor lives in
 # .github/workflows/quality.yml. Runs on macOS and Linux; no /dev/kvm needed.
 set -euo pipefail

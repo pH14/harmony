@@ -26,7 +26,7 @@
 //! The KVM-specific mechanics this builds on — the dirty-log drain that yields the
 //! per-snapshot dirty set, and the memslot remap that makes restore O(dirty) rather
 //! than O(image) — live **below the `Backend` trait** in `vmm-backend` (task 08's
-//! measured mechanism); see `IMPLEMENTATION.md`. The engine here is portable and
+//! measured mechanism). The engine here is portable and
 //! Mac/Miri-testable against plain memory, exactly as `snapshot-store` is.
 
 use snapshot_store::{Mapping, PAGE_SIZE, SnapStats, SnapshotId, Store, StoreConfig, StoreStats};
@@ -94,7 +94,7 @@ pub enum SnapshotError {
     DeviceRestore(&'static str),
     /// The snapshot was taken under a different ratified CPU/MSR contract than the
     /// one this VMM enforces, so its CPUID/MSR behavior would silently diverge on
-    /// restore. Refused loudly (INTEGRATION.md §4 `contract_hash`).
+    /// restore. Refused loudly (docs/ARCHITECTURE.md `contract_hash`).
     #[error("contract hash mismatch: snapshot taken under a different CPU/MSR contract")]
     ContractMismatch,
 }
@@ -331,7 +331,7 @@ impl SnapshotEngine {
     /// engine never reads a record: `S::decode` is the vendor codec, and its
     /// arch-tag gate rejects a foreign blob loudly
     /// ([`vm_state::VmStateError::UnsupportedArch`]) rather than
-    /// reinterpreting it — the `docs/ARCH-BOUNDARY.md` §D snapshot seam.
+    /// reinterpreting it — the `docs/ARCHITECTURE.md` snapshot seam.
     pub fn vm_state<S: SnapshotRecords>(&self, snap: SnapshotId) -> Result<S, SnapshotError> {
         Ok(S::decode(self.store.vm_state(snap)?)?)
     }

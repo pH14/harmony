@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Property tests for the paravirt clock page stamping functions
-//! (`docs/PARAVIRT-CLOCK.md` §1/§1.1): the page bytes are a pure function of
+//! (`consonance/vtime/README.md`): the page bytes are a pure function of
 //! the published value stream (never of the refresh schedule), the canonical
 //! form is a total function of the values, and the reader round-trips every
 //! stamp.

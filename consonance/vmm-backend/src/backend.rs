@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `Backend` trait — the trap apparatus decoupled from the deterministic VMM
 //! above it (ruling R-Backend), generic over the ISA it traps
-//! (`docs/ARCH-BOUNDARY.md` §A).
+//! (`docs/ARCHITECTURE.md`).
 //!
 //! One impl per (substrate, arch) pair; **nothing above this trait may branch on
 //! which substrate is in use, and nothing above the arch seam may branch on
@@ -175,7 +175,7 @@ pub trait Backend {
     fn complete_ok(&mut self) -> Result<()>;
 
     /// Set the hypercall return slot (the response-frame length per
-    /// INTEGRATION.md §1, or 0 on transport error) for a pending `Hypercall`.
+    /// docs/ARCHITECTURE.md, or 0 on transport error) for a pending `Hypercall`.
     /// Which guest register carries the return is the backend's per-arch
     /// knowledge (x86: `RAX`). Errors if none pending.
     fn complete_hypercall(&mut self, ret: u64) -> Result<()>;

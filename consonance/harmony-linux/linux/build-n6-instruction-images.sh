@@ -16,7 +16,7 @@ extract_kernel # usr/gen_init_cpio.c is the deterministic packer.
 repo_root=$(cd ../../.. && pwd)
 generator=$repo_root/consonance/harmony-linux/scripts/n6-instruction-sweep.py
 entropy_scan=$repo_root/consonance/harmony-linux/scripts/n6-entropy-scan.py
-table=$repo_root/docs/determinism-instructions.toml
+table=$repo_root/consonance/acceptance-suite/instruction-contract.toml
 n6_root=$BUILD_ROOT/n6-instruction-sweep
 mkdir -p "$n6_root"
 

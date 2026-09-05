@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A tiny, total TOML-subset reader for `docs/cpu-msr-contract.toml` and the
+//! A tiny, total TOML-subset reader for `consonance/vmm-core/contracts/x86/intel.toml` and the
 //! typed [`Contract`] it produces.
 //!
 //! The contract artifact is **trusted, compile-time-embedded** data (`include_str!`
@@ -13,7 +13,7 @@
 //!
 //! `vmm-core` owns the canonical serialization (`super::canonical`): the same
 //! parsed tables feed both the runtime policy (`super`) and the §6 `contract_hash`,
-//! so what is hashed is what is enforced (CPU-MSR-CONTRACT §6), with no second
+//! so what is hashed is what is enforced (x86 CPU contract), with no second
 //! hand-maintained copy.
 
 use std::collections::BTreeMap;
@@ -23,10 +23,10 @@ use std::collections::BTreeMap;
 // ---------------------------------------------------------------------------
 
 /// The x86 vendor a contract file is a column for. Both Intel and AMD are the
-/// **same `Arch`** (x86-64, `docs/ARCH-BOUNDARY.md`); the vendor is a first-class
+/// **same `Arch`** (x86-64, `docs/ARCHITECTURE.md`); the vendor is a first-class
 /// axis *inside* `vendor/x86/contract/`, not a second `Arch`. The `GenuineIntel`
-/// column (`docs/cpu-msr-contract.toml`, `det-cfl-v1`) is current truth; the
-/// `AuthenticAMD` column (`docs/cpu-msr-contract-amd-draft.toml`, `det-zenN-v1`)
+/// column (`consonance/vmm-core/contracts/x86/intel.toml`, `det-cfl-v1`) is current truth; the
+/// `AuthenticAMD` column (`consonance/vmm-core/contracts/x86/amd-draft.toml`, `det-zenN-v1`)
 /// is a draft, `verify-on-silicon` pending AE-4.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VendorId {

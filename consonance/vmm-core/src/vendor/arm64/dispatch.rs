@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The arm64 vendor's exit dispatch, interrupt-fabric seams, and snapshot
-//! record glue (`docs/ARCH-BOUNDARY.md` §B's vendor column, arm64 row).
+//! record glue (`docs/ARCHITECTURE.md`'s vendor column, arm64 row).
 //!
 //! Everything here names arm64: the PL011 device state, the `PSTATE.I`
 //! interruptibility test, the sysreg-trap dispositions (fail-closed skeleton),
@@ -397,7 +397,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
 
     /// Route an MMIO access over the [`board`](super::board) memory map: the
     /// PL011 console frame → the UART device; the reserved doorbell GPA → the
-    /// hypercall doorbell (`docs/ARCH-BOUNDARY.md` §4: on arm64 a doorbell
+    /// hypercall doorbell (`docs/ARCHITECTURE.md`: on arm64 a doorbell
     /// surfaces as `KVM_EXIT_MMIO`, recognized here — default-deny without an
     /// SDK channel, exactly as x86's `DOORBELL_PORT`); the GICv3 frames → the
     /// wired fabric, or a loud "GIC unwired (delivery AA-6-gated)" when it is

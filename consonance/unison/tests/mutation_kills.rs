@@ -2,7 +2,7 @@
 //! Tests that exist specifically to kill mutants `cargo mutants -p unison`
 //! left surviving — lines the rest of the suite executes but does not actually
 //! constrain. Each test names the mutant(s) it removes (file:line, see
-//! `unison/IMPLEMENTATION.md` "Mutation testing").
+//! `unison/README.md` "Mutation testing").
 //!
 //! The recurring gap these close: the existing suite asserts *verdicts* and
 //! *upper bounds* (e.g. `runs_executed <= bound`) but rarely an *exact count*,

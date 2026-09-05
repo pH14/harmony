@@ -943,7 +943,9 @@ def self_test(rows: list[Row]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--table", type=Path, default=Path("docs/determinism-instructions.toml")
+        "--table",
+        type=Path,
+        default=Path("consonance/acceptance-suite/instruction-contract.toml"),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("listing")

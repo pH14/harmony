@@ -3,7 +3,7 @@
 //!
 //! `unison` is a generic, domain-free divergence bisector over a
 //! [`unison::Subject`]. This crate turns that primitive into the three
-//! determinism oracles of `docs/DETERMINISM-CORPUS.md` — O1 determinism
+//! determinism oracles of `docs/TESTING.md` — O1 determinism
 //! ([`check_determinism`]), O2 conformance ([`check_conformance`]), and O3
 //! seed-sensitivity ([`check_seed_sensitivity`]) — plus a [corpus
 //! manifest](load_manifest) that records which oracles apply to which workload,
@@ -12,9 +12,8 @@
 //! machine and is pointed at the real `Vmm<B>` at integration with no API
 //! change.
 //!
-//! O4 (backend-equivalence) is intentionally absent: it needs two real backends
-//! and is trivially `unison::compare_runs(F_kvm, F_patched, …)` once they exist
-//! — see `IMPLEMENTATION.md`.
+//! O4 (backend equivalence) is absent because it requires two real backends.
+//! Once both are available, it can use `unison::compare_runs` directly.
 
 #![warn(missing_docs)]
 

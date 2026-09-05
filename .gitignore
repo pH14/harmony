@@ -9,9 +9,7 @@
 /.claude/skills/pr-review-workspace/
 .agent-prompt.md
 .env
-# Spikes are worktrees on spike/* branches, never directories on main
-# (AGENTS.md, Conventions). Historical spike trees live on the spike/*
-# branches; local spike checkouts and build litter stay untracked here.
+# Spike worktrees and their build output remain untracked on the main checkout.
 spikes/
 /mutants.out
 /mutants.out.old

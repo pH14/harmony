@@ -33,7 +33,7 @@
 //!
 //! ## What this crate deliberately does *not* hold
 //!
-//! - **No armed-but-unfired injection plan.** INTEGRATION.md §4 requires vmm-core
+//! - **No armed-but-unfired injection plan.** docs/ARCHITECTURE.md requires vmm-core
 //!   to snapshot only at a quiescent point and to enforce that with an assertion;
 //!   there is therefore no plan field to serialize.
 //! - **`contract_hash` is carried, not verified.** The 32-byte hash round-trips
@@ -75,7 +75,7 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 ///
 /// **v3** removes the retired instruction-count conversion ratio from the
 /// virtual-time section; virtual time is now accumulated directly from VM exits.
-/// **v2** (`docs/ARCH-BOUNDARY.md` step 4) added the container header's **arch
+/// **v2** (`docs/ARCHITECTURE.md`) added the container header's **arch
 /// tag**: the register/sysreg record set a blob carries is per-architecture, and
 /// the record *tags* alone cannot tell an x86 `REGS` section from an arm64 one —
 /// two different record sets would decode into each other's fields. The tag makes
@@ -85,7 +85,7 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 pub const VM_STATE_VERSION: u16 = 3;
 
 /// The **arch tag** of the x86-64 record set ([`VmState`])
-/// (`docs/ARCH-BOUNDARY.md` §B — "arm64 record set; same TLV container;
+/// (`docs/ARCHITECTURE.md` — "arm64 record set; same TLV container;
 /// `VM_STATE_VERSION` bump + arch tag in the header"). A vendor's records are
 /// only ever decoded under its own tag; an unknown tag is
 /// [`VmStateError::UnsupportedArch`], never a reinterpretation of foreign bytes.
@@ -131,7 +131,7 @@ pub struct VmState {
     /// LAPIC + PIC + PIT device state — a placeholder; see [`DeviceBlob`].
     pub devices: DeviceBlob,
     /// SHA-256 of the ratified CPU/MSR contract this snapshot was taken under
-    /// (CPU-MSR-CONTRACT §6). Carried so the restorer can reject a blob whose
+    /// (x86 CPU contract). Carried so the restorer can reject a blob whose
     /// CPUID/MSR behavior has since changed; **compared by vmm-core, not here**.
     pub contract_hash: [u8; 32],
 }
