@@ -34,7 +34,7 @@ kernel-tag = "v6.18.35"
 cpuid-baseline = "det-zenN-v1"
 # §6 anti-drift anchor: sha256 of this column's canonical serialized form (computed
 # by vmm-core's serializer, never hand-written). Re-derive on any body change + a
-# version bump — including the AE-0 det-zenN-v1 pinning.
+# version bump — including the baseline selection det-zenN-v1 pinning.
 contract_hash = "f2944970ab883c47ecdfb1f994eb5c449ff385cbd1381c1299cb8b2e8b8b3a22"
 # mxcsr-mask: the architectural FXSAVE-area MXCSR_MASK (ISA-level; the same on any
 # SSE-capable x86-64 part), carried unchanged.
