@@ -795,6 +795,11 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// pins never affect selection or logical-budget decisions; they only
     /// defer physical reclamation until a bounded in-flight use completes.
     metadata_pins: BTreeMap<u64, u32>,
+    // The deterministic reservation window owns these snapshots until ordered
+    // admission, even when retention has replaced their archive entries.
+    inflight_snapshot_pins: BTreeMap<u64, u32>,
+    inflight_snapshot_charges: BTreeMap<u64, usize>,
+    inflight_snapshot_bytes: usize,
     /// Number of entry snapshots still resident, maintained in constant time.
     resident_snapshots: usize,
     /// Whether each entry's snapshot belongs to the selectable breeding
@@ -1339,6 +1344,9 @@ where
             preserve_inactive_snapshots: false,
             preserved_snapshot_uses: None,
             metadata_pins: BTreeMap::new(),
+            inflight_snapshot_pins: BTreeMap::new(),
+            inflight_snapshot_charges: BTreeMap::new(),
+            inflight_snapshot_bytes: 0,
             resident_snapshots: 0,
             snapshot_selectable: Vec::new(),
             keyframe: Vec::new(),
@@ -1432,7 +1440,11 @@ where
     }
 
     fn reclaim_inactive_snapshot(&mut self, id: usize) {
-        if self.snapshot_selectable.get(id).copied().unwrap_or(false) {
+        if self.snapshot_selectable.get(id).copied().unwrap_or(false)
+            || self
+                .inflight_snapshot_pins
+                .contains_key(&self.entries[id].id)
+        {
             return;
         }
         let has_future_use = self
@@ -1522,6 +1534,11 @@ where
             .snapshot
             .as_deref()
             .map_or(0, |snapshot| self.snapshot_charge(snapshot));
+        let stable_id = self.entries[id].id;
+        if self.inflight_snapshot_pins.contains_key(&stable_id) {
+            self.inflight_snapshot_charges.insert(stable_id, charge);
+            self.inflight_snapshot_bytes = self.inflight_snapshot_bytes.saturating_add(charge);
+        }
         self.snapshot_selectable[id] = false;
         self.resident_snapshots = self.resident_snapshots.saturating_sub(1);
         self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_sub(charge);
@@ -1748,6 +1765,7 @@ where
             .map(|(index, entry)| {
                 self.active.get(index).copied().unwrap_or(false)
                     || self.metadata_pins.contains_key(&entry.id)
+                    || self.inflight_snapshot_pins.contains_key(&entry.id)
                     || (self.keyframe[index] && self.keyframe_dependents[index] > 0)
                     || (self.preserve_inactive_snapshots && entry.snapshot.is_some())
                     || (self.liveness_anchor == Some(entry.id) && entry.snapshot.is_some())
@@ -2027,6 +2045,45 @@ where
             .materialize(entry.input_node, entry.input_len)
             .ok_or("archive input length disagrees with its prefix path")?;
         Ok(Input { actions })
+    }
+
+    /// Reserve the actual restore snapshot, which may belong to the parent's
+    /// keyframe rather than the parent. Stable ids survive history compaction.
+    pub(crate) fn pin_job_origin(
+        &mut self,
+        id: usize,
+    ) -> Result<(Arc<S>, Vec<A>, u64), &'static str> {
+        let (snapshot, replay) = self.job_origin(id)?;
+        let snapshot_id = if self.snapshot_selectable[id] {
+            self.entries[id].id
+        } else {
+            self.keyframe_id[id]
+        };
+        let pins = self.inflight_snapshot_pins.entry(snapshot_id).or_default();
+        *pins = pins
+            .checked_add(1)
+            .ok_or("archive snapshot pin count overflow")?;
+        Ok((snapshot, replay, snapshot_id))
+    }
+
+    /// End a reservation at ordered admission, never at physical worker
+    /// completion. Replay releases the same pins at the same logical boundary.
+    pub(crate) fn unpin_job_origin(&mut self, id: u64) {
+        let remove = if let Some(pins) = self.inflight_snapshot_pins.get_mut(&id) {
+            *pins = pins.saturating_sub(1);
+            *pins == 0
+        } else {
+            false
+        };
+        if remove {
+            self.inflight_snapshot_pins.remove(&id);
+            if let Some(charge) = self.inflight_snapshot_charges.remove(&id) {
+                self.inflight_snapshot_bytes = self.inflight_snapshot_bytes.saturating_sub(charge);
+            }
+            if let Some(index) = self.index_of_id(id) {
+                self.reclaim_inactive_snapshot(index);
+            }
+        }
     }
 
     /// The snapshot a job for this entry restores and the actions it replays
@@ -3384,6 +3441,7 @@ where
     #[must_use]
     pub fn resident_snapshot_bytes(&self) -> usize {
         self.resident_snapshot_bytes
+            .saturating_add(self.inflight_snapshot_bytes)
     }
 
     /// Snapshots displaced solely by the global memory budget.
@@ -3480,7 +3538,7 @@ where
     #[must_use]
     pub fn resident_memory_bytes(&self) -> usize {
         self.history_memory_bytes()
-            .saturating_add(self.resident_snapshot_bytes)
+            .saturating_add(self.resident_snapshot_bytes())
     }
 
     /// Unique action-prefix nodes retained by duplicate detection.
@@ -3807,6 +3865,58 @@ mod tests {
         assert!(archive.release_snapshot(0));
         assert!(archive.entries[0].snapshot.is_some());
         assert_eq!(Arc::strong_count(&in_flight), 2);
+    }
+
+    #[test]
+    fn retired_origins_stay_charged_until_the_last_ordered_admission() {
+        let mut archive = Archive::<u8, FlatKey<3>, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 11);
+        for index in 0_u8..3 {
+            archive
+                .insert(
+                    None,
+                    index.into(),
+                    ArchiveCandidate {
+                        suffix: vec![index],
+                        key: FlatKey([index.into(), index.into(), 0, 0]),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .unwrap()
+                .unwrap();
+        }
+        assert!(archive.pin_job_origin(99).is_err());
+        let (first, replay, id) = archive.pin_job_origin(1).unwrap();
+        assert!(replay.is_empty());
+        let (second, _, same_id) = archive.pin_job_origin(1).unwrap();
+        assert_eq!(id, same_id);
+        assert_eq!(archive.resident_snapshot_bytes(), 33);
+        archive.deactivate(1);
+        assert!(!archive.release_snapshot(1));
+        assert_eq!(archive.resident_snapshot_bytes(), 33);
+        assert_eq!(archive.inflight_snapshot_bytes, 11);
+        // Worker completion is deliberately not an accounting event.
+        drop(first);
+        drop(second);
+        archive.compact_history(true).unwrap();
+        assert!(archive.index_of_id(id).is_some());
+        assert_eq!(archive.resident_snapshot_bytes(), 33);
+        archive.unpin_job_origin(id);
+        assert_eq!(archive.inflight_snapshot_bytes, 11);
+        archive.unpin_job_origin(id);
+        assert_eq!(archive.resident_snapshot_bytes(), 22);
+        assert_eq!(archive.inflight_snapshot_bytes, 0);
+        assert!(
+            archive.entries[archive.index_of_id(id).unwrap()]
+                .snapshot
+                .is_none()
+        );
+        archive.unpin_job_origin(id);
+        archive.unpin_job_origin(u64::MAX);
+        assert_eq!(archive.resident_snapshot_bytes(), 22);
+        assert!(archive.inflight_snapshot_pins.is_empty());
+        assert!(archive.inflight_snapshot_charges.is_empty());
     }
 
     #[test]
@@ -4517,6 +4627,14 @@ mod tests {
         assert_eq!(archive.entry_drops(), 0);
         assert!(archive.entries[0].snapshot.is_some());
 
+        let (pinned, path, origin_id) = archive.pin_job_origin(3).unwrap();
+        assert_eq!(origin_id, archive.stable_id(0).unwrap());
+        assert_eq!(path, vec![1, 2, 3]);
+        assert_eq!(archive.inflight_snapshot_pins.get(&origin_id), Some(&1));
+        drop(pinned);
+        archive.unpin_job_origin(origin_id);
+        assert!(archive.inflight_snapshot_pins.is_empty());
+
         let (origin, replay) = archive.job_origin(3).expect("replay from the keyframe");
         assert!(Arc::ptr_eq(
             &origin,
@@ -4526,6 +4644,7 @@ mod tests {
                 .expect("keyframe snapshot")
         ));
         assert_eq!(replay, vec![1, 2, 3]);
+        drop(origin);
         let (_, replay) = archive.job_origin(0).expect("keyframe is its own origin");
         assert!(replay.is_empty());
 
@@ -4538,6 +4657,16 @@ mod tests {
             seen.insert(selected);
         }
         assert_eq!(seen.len(), 4, "entries without a snapshot stay selectable");
+        let (held, _, keyframe_id) = archive.pin_job_origin(3).unwrap();
+        archive.release_snapshot(0);
+        drop(held);
+        assert_eq!(archive.resident_snapshot_bytes(), 1);
+        // Releasing the selected child is not releasing its restore keyframe.
+        archive.unpin_job_origin(archive.stable_id(3).unwrap());
+        assert!(archive.entries[0].snapshot.is_some());
+        archive.unpin_job_origin(keyframe_id);
+        assert!(archive.entries[0].snapshot.is_none());
+        assert_eq!(archive.resident_snapshot_bytes(), 0);
     }
 
     #[test]

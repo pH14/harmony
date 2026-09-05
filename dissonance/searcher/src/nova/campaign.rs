@@ -410,20 +410,14 @@ fn admission_is_viable<M: Machine>(
     Ok(viable)
 }
 
-fn execute_job<M: NovaMachineKind>(
+fn execute_suffix<M: NovaMachineKind>(
     target: &mut NovaTarget<M>,
-    origin_snapshot: &NovaSnapshot<M::Portable>,
-    replay: &[ButtonChord],
     parent_actions: usize,
     parent_milestones: NovaMilestones,
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
 ) -> Result<NovaCampaignJobResult<M>, Box<dyn Error>> {
-    target.restore(origin_snapshot)?;
-    for action in replay {
-        target.apply(action);
-    }
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -679,10 +673,12 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
         max_actions: usize,
         retention: RetentionPolicy,
     ) -> Result<NovaCampaignJobResult<M>, Box<dyn Error>> {
-        execute_job(
+        target.restore(origin_snapshot)?;
+        for action in replay {
+            target.apply(action);
+        }
+        execute_suffix(
             target,
-            origin_snapshot,
-            replay,
             parent_actions,
             parent_milestones,
             suffix,

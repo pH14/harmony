@@ -15,7 +15,12 @@ resulting ordering and retains bounded representatives. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay.
+for replay. Reserved jobs pin the snapshot they actually restore, including a
+parent's keyframe. If retention removes that snapshot from the active population,
+its memory stays charged until the last reservation is admitted. Live execution
+and serial replay release these pins at the same recorded boundary, independent
+of worker completion timing. Budgeted streams before schedule version 3 are
+rejected because they used different snapshot accounting.
 
 ## Workload adapters
 

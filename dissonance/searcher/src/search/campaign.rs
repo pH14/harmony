@@ -94,12 +94,13 @@ const fn admission_window_depth(workers: usize, reservations_per_worker: usize) 
     workers.saturating_mul(reservations_per_worker)
 }
 
-/// Namespace a live windowed run records. The `_v1` namespace it replaces
-/// collides with [`LEGACY_CAMPAIGN_SCHEDULE_POLICY`] at window 64, which
-/// would send a live window-64 stream down the legacy replay path.
-const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
+/// Namespace of live windowed runs. Version 3 charges reserved restore
+/// snapshots through ordered admission; version 2 could remove their charge
+/// while their worker window still owned the allocation.
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v3";
 /// Namespace of windowed streams recorded before the collision was closed.
 const HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v1";
+const UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
 const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
 
 /// The schedule policy a run records: the per-worker window is part of the
@@ -123,6 +124,7 @@ fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
     let window = policy.strip_prefix(SCHEDULE_POLICY_WINDOW_PREFIX)?;
     let window = window
         .strip_suffix(SCHEDULE_POLICY_WINDOW_SUFFIX)
+        .or_else(|| window.strip_suffix(UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX))
         .or_else(|| window.strip_suffix(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))?;
     window.parse().ok().filter(|window| *window >= 1)
 }
@@ -143,9 +145,12 @@ fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
 /// than per examined entry. Both decide which entries an archive holds, so a
 /// budgeted stream from those runs replays against a different archive.
 /// Without a budget the maintenance step does nothing and the streams replay
-/// unchanged.
+/// unchanged. Version 2 also predates in-flight snapshot accounting.
 fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
-    policy.is_none_or(|policy| policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))
+    policy.is_none_or(|policy| {
+        policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX)
+            || policy.ends_with(UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX)
+    })
 }
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
@@ -2129,6 +2134,7 @@ type SelectedJob<G> = (JobSpec<G>, PendingJob);
 
 /// What the coordinator remembers about a worker's in-flight job.
 struct PendingJob {
+    snapshot_id: u64,
     worker: u32,
     parent_id: u64,
     mutation_seed: u64,
@@ -2619,7 +2625,8 @@ where
                         core.archive.pin_metadata(*donor_id)?;
                         core.archive.pin_metadata(*leaf_id)?;
                     }
-                    let (snapshot, replay) = core.archive.job_origin(parent_index)?;
+                    let (snapshot, replay, snapshot_id) =
+                        core.archive.pin_job_origin(parent_index)?;
                     let entry = &core.archive.entries[parent_index];
                     return Ok(Some((
                         JobSpec {
@@ -2631,6 +2638,7 @@ where
                             suffix,
                         },
                         PendingJob {
+                            snapshot_id,
                             worker,
                             parent_id,
                             mutation_seed,
@@ -2819,6 +2827,7 @@ where
                             "live draw state exceeds its deterministic memory reserve".into()
                         );
                     }
+                    core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
                     if let Some(CampaignSpliceRecord::Tail {
                         donor_id,
@@ -3365,7 +3374,8 @@ where
             .unwrap_or(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
     );
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
-    let mut replay_job_snapshots = BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>)>::new();
+    let mut replay_job_snapshots =
+        BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
     if legacy_schedule {
         core.archive
             .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
@@ -3386,7 +3396,7 @@ where
                 .archive
                 .index_of_id(*parent_id)
                 .ok_or("initial replay job names a parent the archive does not hold")?;
-            replay_job_snapshots.insert(job_slot, core.archive.job_origin(parent_index)?);
+            replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
             for metadata_id in &replay_job_metadata[job_slot] {
                 let uses = replay_metadata_uses.entry(*metadata_id).or_default();
                 *uses = uses
@@ -3459,7 +3469,7 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let ((snapshot, replay), parent_actions, parent_milestones) = {
+                let ((snapshot, replay, snapshot_id), parent_actions, parent_milestones) = {
                     let entry = core
                         .archive
                         .entries
@@ -3467,7 +3477,8 @@ where
                         .ok_or("recorded job names a parent the archive does not hold")?;
                     (
                         if legacy_schedule {
-                            core.archive.job_origin(parent_index)?
+                            let (snapshot, replay) = core.archive.job_origin(parent_index)?;
+                            (snapshot, replay, job.parent_id)
                         } else {
                             replay_job_snapshots
                                 .remove(&replay_job_slot)
@@ -3575,6 +3586,9 @@ where
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id)),
                 );
+                if !legacy_schedule {
+                    core.archive.unpin_job_origin(snapshot_id);
+                }
                 core.archive.unpin_metadata(job.parent_id);
                 if let Some(CampaignSpliceRecord::Tail {
                     donor_id,
@@ -3604,7 +3618,7 @@ where
                             .index_of_id(*parent_id)
                             .ok_or("next replay job names a parent the archive does not hold")?;
                         replay_job_snapshots
-                            .insert(next_slot, core.archive.job_origin(parent_index)?);
+                            .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
                         for metadata_id in &replay_job_metadata[next_slot] {
                             let uses = replay_metadata_uses.entry(*metadata_id).or_default();
                             *uses = uses
@@ -4126,7 +4140,7 @@ mod tests {
         let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
         assert!(!schedule_policy_predates_budget_maintenance(Some(&current)));
         assert!(!schedule_policy_predates_budget_maintenance(Some(
-            "deterministic_window_64_per_worker_v2"
+            "deterministic_window_64_per_worker_v3"
         )));
         assert!(schedule_policy_predates_budget_maintenance(None));
         assert!(schedule_policy_predates_budget_maintenance(Some(
@@ -4140,11 +4154,18 @@ mod tests {
     #[test]
     fn schedule_policy_dispatch_accepts_windowed_and_legacy_only() {
         let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
-        assert_eq!(current, "deterministic_window_1_per_worker_v2");
+        assert_eq!(current, "deterministic_window_1_per_worker_v3");
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
+            Some(4)
+        );
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_4_per_worker_v2"
+        )));
         assert!(schedule_policy_is_supported(None));
         assert!(schedule_policy_is_supported(Some(&current)));
         assert!(schedule_policy_is_supported(Some(
-            "deterministic_window_4_per_worker_v2"
+            "deterministic_window_4_per_worker_v3"
         )));
         assert!(schedule_policy_is_supported(Some(
             "deterministic_window_4_per_worker_v1"
@@ -4154,11 +4175,11 @@ mod tests {
         )));
         assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
         assert!(!schedule_policy_is_supported(Some(
-            "deterministic_window_0_per_worker_v2"
+            "deterministic_window_0_per_worker_v3"
         )));
         assert_eq!(schedule_policy_window(Some(&current)), Some(1));
         assert_eq!(
-            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v3")),
             Some(4)
         );
         assert_eq!(

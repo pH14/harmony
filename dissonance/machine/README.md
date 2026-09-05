@@ -31,3 +31,10 @@ snapshots in an ordered handle table and resets staged input when restoring.
 
 The libretro FFI is Unix-specific. The pure machine types and test loopback
 allow the boundary and its bounds checks to run without a shared object.
+
+The Consonance adapter releases completed control-server virtual-time trace
+segments at each successful branch or replay. Its public evidence is the action
+observations and portable snapshot state; it does not expose accumulated exit
+traces. Retiring these host-only buffers bounds memory across long campaigns
+without changing guest state, snapshot bytes, or result digests. Direct
+control-server users can still retain and export full session traces.

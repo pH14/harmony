@@ -3018,6 +3018,7 @@ mod tests {
     )]
     fn taking_the_session_trace_returns_and_drains_completed_segments() {
         let mut server = accumulated_session_server();
+        let before = server.vmm().unwrap().state_hash();
         let viewed = server.session_virtual_time_trace().unwrap();
         let taken = server.take_session_virtual_time_trace().unwrap();
         assert_eq!(taken, viewed);
@@ -3028,6 +3029,11 @@ mod tests {
         let live_only = server.take_session_virtual_time_trace().unwrap();
         assert_eq!(live_only.segments().len(), 1);
         assert_eq!(live_only.segments()[0], taken.segments()[2]);
+        assert_eq!(server.vmm().unwrap().state_hash(), before);
+        for _ in 0..8 {
+            assert_eq!(server.take_session_virtual_time_trace().unwrap(), live_only);
+            assert_eq!(server.vmm().unwrap().state_hash(), before);
+        }
     }
 
     // ---- task 95 M2: O(dirty) capture + remap restore -------------------------

@@ -977,6 +977,12 @@ fn drive_profiled(
             server.last_restore_bytes_written(),
             server.in_place_fallbacks(),
         );
+        // This Machine exposes observations and portable snapshots, not the
+        // control server's normalized exit trace. A restore closes its previous
+        // trace segment; retire that host-only evidence here instead of retaining
+        // every segment for the whole campaign. The newly restored live segment
+        // is still available, and guest state, snapshots and hashes are unchanged.
+        drop(server.take_session_virtual_time_trace());
     }
     match result {
         Ok(Ok(reply)) => Ok(reply),

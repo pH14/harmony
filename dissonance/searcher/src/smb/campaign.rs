@@ -2183,7 +2183,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"")
+                .contains("\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"")
         );
     }
 
@@ -2248,7 +2248,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v2\""),
+                .contains("\"schedule_policy\":\"deterministic_window_64_per_worker_v3\""),
             "unexpected header: {}",
             recorded.lines().next().unwrap_or_default()
         );
@@ -2258,7 +2258,7 @@ mod tests {
         assert_eq!(live, replay);
         assert_eq!(live_checkpoint, replay_checkpoint);
         let legacy_tagged = recorded.replacen(
-            "deterministic_window_64_per_worker_v2",
+            "deterministic_window_64_per_worker_v3",
             "deterministic_window_64_per_worker_v1",
             1,
         );
@@ -2294,14 +2294,14 @@ mod tests {
         let refused = "campaign stream recorded a memory budget under superseded maintenance \
                        and cannot be replayed";
         for historical in [
-            recorded.replacen("_per_worker_v2", "_per_worker_v1", 1),
+            recorded.replacen("_per_worker_v3", "_per_worker_v1", 1),
             recorded.replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"",
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"",
                 "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
                 1,
             ),
             recorded.replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\",",
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
                 "",
                 1,
             ),
@@ -2321,7 +2321,7 @@ mod tests {
         replay_smb_campaign(
             &rom,
             recorded
-                .replacen("_per_worker_v2", "_per_worker_v1", 1)
+                .replacen("_per_worker_v3", "_per_worker_v1", 1)
                 .as_bytes(),
             None,
         )
@@ -2343,7 +2343,7 @@ mod tests {
         .expect("new campaign");
         let recorded = String::from_utf8(stream).expect("stream is utf-8");
         let historical = recorded.replacen(
-            "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\"",
+            "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\"",
             "\"schedule_policy\":\"deterministic_window_64_per_worker_v1\"",
             1,
         );
@@ -2365,7 +2365,7 @@ mod tests {
         );
         let legacy = recorded
             .replacen(
-                "\"schedule_policy\":\"deterministic_window_1_per_worker_v2\",",
+                "\"schedule_policy\":\"deterministic_window_1_per_worker_v3\",",
                 "",
                 1,
             )
@@ -2876,7 +2876,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
-            ("deterministic_window_1_per_worker_v2", "unknown_order_v9"),
+            ("deterministic_window_1_per_worker_v3", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(
