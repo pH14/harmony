@@ -1,65 +1,37 @@
 name: nightly
 
-# Nightly safety-net jobs (Miri UB validation) that are too slow to gate every PR on.
-# Now on GITHUB-HOSTED runners (ubuntu-latest) — harmony is public, so hosted minutes
-# are free; the box no longer runs CI. Also manually dispatchable. Moving Miri off the
-# per-PR path (2026-06-24): under PR concurrency on the shared box `ci.slice` it was
-# OOM/timeout-flaky and blocked merges on resource limits, not bugs — it stays a UB
-# safety net, off the critical path. See the note in quality.yml.
-#
-# TIMEOUT BUDGETS BELOW ARE PROVISIONAL. The timeout-minutes ceilings were calibrated
-# to the i9-9900K@5GHz box + ci.slice contention, NOT a 4-vCPU/16GB hosted runner —
-# they are raised here with headroom (GHA's hard job cap is 360 min) so the first
-# hosted nightlies stay green, and are to be re-derived from measured hosted wall-time.
-# Tracked by hm-w9s (benchmark GHA vs box CI). Do NOT treat these as measured.
+# Nightly Miri validation for crates containing `unsafe`. The jobs are also
+# manually dispatchable. Timeouts include headroom for hosted-runner variance.
 on:
   schedule:
-    # 08:00 UTC daily — outside typical PR-CI hours so Miri gets the box's full memory.
+    # 08:00 UTC daily.
     - cron: "0 8 * * *"
   workflow_dispatch: {}
 
 jobs:
-  # vmm-core is the long pole (Miri interprets serially, so its wall time is the
-  # SUM of its per-test costs — a full run is tens of minutes even after the
-  # task-98/hm-d8o tail shrink), so it gets its OWN job and its own measured
-  # budget instead of sharing the other crates' ceiling. With a second runner
-  # slot the two jobs run in parallel; on a single-slot runner they serialize —
-  # either way each command must fit ITS OWN checked-in timeout.
+  # vmm-core runs separately because its interpreted suite is substantially
+  # longer than the other crate suites.
   #
   # vmm-core's UB surface is the two `Backend::map_memory` pointer seams in
   # `bringup`, and BOTH are exercised by a running Miri test:
   #   - boot path: `compose`/`compose_linux` over owned `GuestRam` —
   #     `bringup::tests::compose_drives_guestram_and_unsafe_map_memory` (and every
   #     mock boot).
-  #   - restore path (task 95 M2.2): `compose_restore_target` maps a
+  #   - restore path: `compose_restore_target` maps a
   #     `snapshot_store::Mapping` moved into the returned `Vmm` — a different
   #     ownership/lifetime obligation, covered by
   #     `bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping`,
   #     which drives the same seam over the 4-KiB-aligned `Mapping::anonymous`
   #     buffer through a pointer-retaining backend double (the retained raw
   #     pointer is read AFTER the move, so Miri checks the liveness obligation).
-  # Task 98: the `ControlServer` restore-driving tests (`Branch`/`Replay`/
+  # The `ControlServer` restore-driving tests (`Branch`/`Replay`/
   # `engine.materialize()`) are `#[cfg_attr(miri, ignore)]`d — they hit
   # `snapshot-store`'s tempfile+mmap, which Miri can't execute; their rationale
   # strings cite the dedicated restore-target test above. Job-level
   # `-Zmiri-permissive-provenance` only — no disable-isolation.
-  # See consonance/vmm-core/IMPLEMENTATION.md (task 98).
-  # Budget (task 98, measured): the exact command below runs in ~34 min real on
-  # an M-class Mac after the hm-d8o tail shrink (pre-shrink: ~92 min, the round-2
-  # bug). First box run (2026-07-13, dispatch on the task branch): 49 min 38 s
-  # while CO-RUNNING with the sibling miri job on the second runner slot (and
-  # 47:46 on the repeat, run 29236400380). A third, midday dispatch (29251169490)
-  # hit a 3-way-contended box (quality storms; every step ran ~2x its quiet-hour
-  # cost) and timed out at 90 — so the ceiling is 120: ~2.5x the measured
-  # quiet-hour wall, absorbing a 2x-contention morning without going red. NOTE
-  # when re-measuring: under Miri WITHOUT -Zmiri-disable-isolation, libtest's
-  # "finished in" prints the interpreter's deterministic VIRTUAL clock (~2x real
-  # on the Mac) — time the command externally.
   miri-vmm-core:
     name: miri — vmm-core (UB safety net, own job)
     runs-on: ubuntu-latest
-    # Provisional (was 120 on the box): raised for the slower hosted runner pending
-    # hm-w9s. Box quiet-hour wall was ~34-49 min; ceiling was 2.5x that.
     timeout-minutes: 240
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
@@ -76,16 +48,6 @@ jobs:
   miri:
     name: miri (unsafe crates, UB safety net)
     runs-on: ubuntu-latest
-    # Budget (task 98, measured on the box, run 29236400380): vmcall 13.2 +
-    # vm-state 2.4 + vmm-backend 15.9 + snapshot-store 0.8 = ~32 min co-tenant
-    # with the vmm-core job, plus the play-agent step (task 86, landed on main
-    # under this measurement — minutes not tens). The film, flow-agent, and
-    # campaign-runner steps were removed with the v1 dissonance tree; the
-    # ceiling below predates that removal and is generous — re-derive it from
-    # measured hosted wall-time when re-measuring (hm-w9s), never upward from
-    # this comment.
-    # Provisional (was 155 on the box): raised for the slower hosted runner pending
-    # hm-w9s; GHA's hard job cap is 360.
     timeout-minutes: 320
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
@@ -102,9 +64,13 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p hypercall-doorbell
       - name: miri — vm-state
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
+      # Only watchdog contains CLI unsafe; native signal syscalls sit behind
+      # cfg(not(miri)), while cancellation ordering runs with a loopback kick.
+      - name: miri — CLI watchdog
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p harmony-cli --bin harmony oci::watchdog::tests
       - name: miri — vmm-backend
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
-      # snapshot-store (task 95 M1 merge-time item, PR #91): --lib only — the
+      # snapshot-store uses --lib because the
       # mapping/materialize tests need real file-backed mmap, which Miri cannot
       # execute (they are cfg(not(miri))). The lib tests need disable-isolation
       # for tempfile creation on top of the job-level permissive-provenance.
@@ -116,7 +82,7 @@ jobs:
       # drives the same function-pointer, fixed-buffer, and direct-RAM logic.
       - name: miri — machine
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path dissonance/Cargo.toml -p machine
-      # consonance/harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest): its
+      # consonance/harmony-linux/play-agent is out-of-workspace (its own manifest): its
       # ONLY unsafe is the binary's cfg(linux) libretro dlopen FFI + the hugetlb/
       # pagemap/mlock billboard pinning + the /dev/mem doorbell — real syscalls
       # Miri cannot execute, cfg-gated off non-Linux hosts. This run is the UB
@@ -124,7 +90,7 @@ jobs:
       # billboard writer, the mock-core agent loop) PLUS the hoisted FFI-edge
       # logic (lib.rs glue: callback responses, joypad-bit mapping, work-RAM
       # copy bounds, hugetlb length bound, pagemap decode) + the agent
-      # integration suite. `--bins` (round-9 P1) additionally builds the binary
+      # integration suite. `--bins` additionally builds the binary
       # itself on this job's Linux host — where the cfg(linux) modules COMPILE
       # under Miri — and executes the bin's own unit tests, which drive the one
       # residual value-carrying unsafe (env_cb's bool store) through a real

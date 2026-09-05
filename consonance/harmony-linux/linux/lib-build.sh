@@ -15,7 +15,7 @@
 require_linux_amd64() {
     if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
         echo "FAIL: the guest Linux image builds and tests only on Linux/x86_64." >&2
-        echo "      On macOS run it in a linux/amd64 container — see docs/BUILDING.md." >&2
+        echo "      On macOS run it in a linux/amd64 container — see CONTRIBUTING.md." >&2
         exit 1
     fi
 }
@@ -39,7 +39,7 @@ require_tools() {
     done
     if [ -n "$missing" ]; then
         echo "FAIL: missing host tools:$missing" >&2
-        echo "      see consonance/harmony-linux/README.md for the package list (Debian: apt-get install ...)" >&2
+        echo "      install the required Debian build packages before retrying" >&2
         exit 1
     fi
 }

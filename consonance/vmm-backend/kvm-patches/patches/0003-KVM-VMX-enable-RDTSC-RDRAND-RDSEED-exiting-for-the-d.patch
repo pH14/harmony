@@ -17,7 +17,7 @@ without displacing the offset/scaling or deadline paths.  Advertised as
 available on all VMX CPUs (RDTSC-exiting is architectural); the RNG
 controls are gated by cpu_has_vmx_rdrand()/rdseed() at set time.
 
-Co-developed-for: harmony PatchedKvmBackend (docs/R-BACKEND.md)
+Co-developed-for: harmony PatchedKvmBackend (consonance/vmm-backend/README.md)
 ---
  arch/x86/kvm/vmx/vmx.c | 37 +++++++++++++++++++++++++++++++++++--
  1 file changed, 35 insertions(+), 2 deletions(-)

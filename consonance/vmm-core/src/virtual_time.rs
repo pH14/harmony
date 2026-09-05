@@ -485,6 +485,40 @@ impl LiveVirtualTimeTrace {
         Ok(())
     }
 
+    /// Rebase the host-only clockevent schedule at a restored VM boundary.
+    ///
+    /// Restore starts a new control-session trace segment but can reinstate an
+    /// armed guest timer. The timer record is snapshot state; this trace index
+    /// is not. Seed a fresh eligibility epoch so the first post-restore delivery
+    /// is still checked against the restored deadline.
+    pub(crate) fn restore_clockevent_schedule(
+        &mut self,
+        restored: Option<(u64, u32)>,
+    ) -> Result<(), &'static str> {
+        if self.pending.is_some() {
+            return Err("virtual_time trace restore occurred during an active event");
+        }
+        let event = u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX);
+        self.cancel_clockevent_at(event)?;
+        let Some((deadline_vns, interrupt_id)) = restored else {
+            return Ok(());
+        };
+        let schedule_index = self.next_schedule_index;
+        self.next_schedule_index = self
+            .next_schedule_index
+            .checked_add(1)
+            .ok_or("virtual_time restored schedule index exhausted")?;
+        self.schedule.push(ScheduledInterrupt {
+            deadline_vns,
+            schedule_index,
+            armed_for_event: event,
+            canceled_at_event: None,
+            interrupt_id,
+        });
+        self.active_clockevent_schedule = Some(schedule_index);
+        Ok(())
+    }
+
     pub(crate) fn cancel_clockevent(&mut self) -> Result<(), &'static str> {
         let event = self.current_event_index()?;
         self.cancel_clockevent_at(event)
@@ -1215,6 +1249,27 @@ mod live_trace_tests {
 
         check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
         assert_eq!(trace.normalized.events[1].interrupts.len(), 1);
+    }
+
+    #[test]
+    fn restored_timer_seeds_the_new_trace_segment_before_delivery() {
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_clockevent_schedule(Some((4, 20))).unwrap();
+        trace
+            .begin(
+                ExitReason::Mmio,
+                "first restored exit".to_string(),
+                NormalizedEventClass::DeviceMmio(DeviceClass::Serial),
+                vec![5],
+            )
+            .unwrap();
+        trace.deliver_clockevent().unwrap();
+        trace.finish(4, None).unwrap();
+
+        check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
+        assert_eq!(trace.schedule.len(), 1);
+        assert_eq!(trace.schedule[0].armed_for_event, 0);
+        assert_eq!(trace.normalized.events[0].interrupts.len(), 1);
     }
 
     #[test]

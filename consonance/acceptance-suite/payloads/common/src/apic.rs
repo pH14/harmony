@@ -2,7 +2,7 @@
 //!
 //! The contract pins the LAPIC to xAPIC mode (CPUID x2APIC bit = 0; the x2APIC
 //! MSR range `0x800-0x8FF` is deny-gp) with the register file at the
-//! architectural MMIO base `0xFEE00000` (`docs/cpu-msr-contract.toml` `[mmio]`
+//! architectural MMIO base `0xFEE00000` (`consonance/vmm-core/contracts/x86/intel.toml` `[mmio]`
 //! region `xapic`; R1 device model). The boot shim identity-maps the 4th GiB so
 //! these accesses resolve. The timer is driven by the initial-count register
 //! (`TIMER_ICR`, offset 0x380): on the deterministic VMM a write becomes a

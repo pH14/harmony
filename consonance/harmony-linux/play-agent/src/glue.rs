@@ -93,8 +93,9 @@ pub fn copy_work_ram(core_ram: &[u8], out: &mut [u8]) -> bool {
 
 // --- billboard pinning: hugetlb length + pagemap decode ---------------------
 
-/// One hugetlb page: 2 MiB on x86-64 (the guest kernel's default hugepage
-/// size; `game-init.sh` reserves it via `nr_hugepages`).
+/// One hugetlb page: 2 MiB on both supported guest architectures (the guest
+/// kernel's default hugepage size; the image init reserves it via
+/// `nr_hugepages`).
 pub const HUGE_PAGE: usize = 2 << 20;
 
 /// Validate the billboard length against the single-hugepage mapping the
@@ -204,6 +205,7 @@ mod tests {
 
     #[test]
     fn billboard_len_bounds_are_enforced() {
+        assert_eq!(HUGE_PAGE, 2 * 1024 * 1024);
         assert!(validate_billboard_len(0).is_err());
         assert!(validate_billboard_len(1).is_ok());
         assert!(validate_billboard_len(HUGE_PAGE).is_ok());

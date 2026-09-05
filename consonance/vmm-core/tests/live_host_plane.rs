@@ -6,14 +6,14 @@
 //! `Machine` adapter deliberately cannot express `perturb`, so this gate speaks the
 //! server in-process.
 //!
-//! The spec's box gate (`tasks/59-host-plane-enforcement.md`):
+//! The spec's box gate (`consonance/environment/README.md`):
 //!   (a) the same host-fault schedule run twice ⇒ bit-identical `state_hash`;
 //!   (b) `replay` of the emitted `Recorded` env ⇒ the same hash again (record →
 //!       replay closure);
 //!   (c) a schedule-absent control run differs (the faults are actually landing).
 //!
 //! Run on `ssh <det-box>` with the LOADED patched KVM modules + the built Postgres
-//! image, CPU-pinned per `docs/BOX-PINNING.md` (lease a core via `box-window.sh`):
+//! image, CPU-pinned per `.github/workflows/box.yml` (lease a core via `box-window.sh`):
 //! ```text
 //! make -C consonance/harmony-linux fetch && make -C consonance/harmony-linux/linux postgres-image     # or copy a prebuilt image
 //! taskset -c <core> cargo test -p vmm-core --release --test live_host_plane -- --ignored --nocapture
@@ -71,7 +71,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -182,7 +182,7 @@ fn wire(fault: HostFault) -> WireHostFault {
 
 #[test]
 #[ignore = "box-only host-plane enforcement gate (LOADED patched KVM + built Postgres image + \
-            det-cfl-v1 host); run per docs/BOX-PINNING.md"]
+            det-cfl-v1 host); run per .github/workflows/box.yml"]
 fn host_plane_record_replay_closure() {
     require_kvm();
     require_host_baseline();

@@ -13,7 +13,7 @@ output_dir=${1:-"$repo_root/dissonance/nova-build"}
 mkdir -p "$output_dir"
 output_dir=$(CDPATH='' cd -- "$output_dir" && pwd)
 
-for tool in curl sha256sum tar ca65 ld65; do
+for tool in curl sha256sum tar ca65 ld65 python3; do
     command -v "$tool" >/dev/null || {
         echo "missing required tool: $tool" >&2
         exit 1
@@ -35,6 +35,22 @@ printf '%s  %s\n' "$NOVA_SHA256" "$archive.part" | sha256sum --check --status ||
 mv "$archive.part" "$archive"
 tar -xzf "$archive" -C "$work_dir"
 source_dir="$work_dir/NovaTheSquirrel-$NOVA_COMMIT"
+
+# Nova displays a project-day value computed from ca65's host-clock `.TIME`.
+# Replace that single expression before assembly so the pinned source produces
+# the same ROM on every calendar day and still fails closed if the source drifts.
+python3 - "$source_dir/src/options.s" "$NOVA_BUILD_EPOCH" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+source = path.read_text()
+needle = "(.TIME / 86400) - 16611"
+replacement = f"({sys.argv[2]} / 86400) - 16611"
+if source.count(needle) != 1:
+    raise SystemExit("Nova project-day source expression drifted")
+path.write_text(source.replace(needle, replacement))
+PY
 
 (
     cd "$source_dir"

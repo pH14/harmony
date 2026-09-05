@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only live Linux boot gates (`#[cfg(target_os = "linux")]` **and
-//! `#[ignore]`**, on `ssh <det-box>`, CPU-pinned per `docs/BOX-PINNING.md`).
+//! `#[ignore]`**, on `ssh <det-box>`, CPU-pinned per `.github/workflows/box.yml`).
 //!
 //! **Phase A — Linux runs in consonance (THE milestone).**
 //! [`a_linux_boots_to_userspace_stock`] boots the committed `consonance/harmony-linux/linux/bzImage` +
@@ -137,7 +137,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` (Intel VMX, perf_event), \
-         CPU-pinned per docs/BOX-PINNING.md."
+         CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -146,7 +146,7 @@ fn require_kvm() {
 fn require_host_baseline() {
     let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
-    eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
+    eprintln!("[host-assert] x86 CPU contract baseline:");
     for o in &report {
         eprintln!(
             "[host-assert]   {}  {}: expected {}, observed {}",
@@ -160,7 +160,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per docs/BOX-PINNING.md."
+         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 
@@ -381,7 +381,7 @@ fn gate3_linux_guest_ready_and_clean_poweroff() {
         out.guest_ready,
         "Gate 3 (milestone): the serial console must contain GUEST_READY (the guest announced \
          readiness). Reached userspace={}, terminal={:?}. Until Phase B (KvmBackend::inject) lets \
-         the 8250 TX drain, userspace console output never reaches the wire — see IMPLEMENTATION.md.",
+         the 8250 TX drain, userspace console output never reaches the wire.",
         out.reached_userspace, out.reason,
     );
     assert!(
@@ -403,7 +403,7 @@ fn gate3_linux_guest_ready_and_clean_poweroff() {
 /// construction). The boot reaches `GUEST_READY` because the i8042 controller
 /// probe now fails fast (`devices::LegacyPlatform` reports the i8042 status
 /// OBF-set) instead of spinning a jiffies timeout under patched V-time — see
-/// task 34 / `IMPLEMENTATION.md`.
+/// task 34 / `README.md`.
 #[test]
 #[ignore = "box-only determinism gate (LOADED patched KVM + built guest image + det-cfl-v1 host); \
             run on `ssh <det-box>` with `-- --ignored --nocapture`"]

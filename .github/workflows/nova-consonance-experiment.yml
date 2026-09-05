@@ -11,6 +11,7 @@ on:
       - consonance/harmony-linux/play-agent/**
       - consonance/vmm-core/src/bin/kvm_x86_nova_probe.rs
       - dissonance/Cargo.lock
+      - dissonance/machine/**
       - dissonance/searcher/**
 
 permissions:
@@ -28,7 +29,14 @@ jobs:
   whole-vm-search-campaign:
     name: Dissonance search · QuickNES guest · Consonance snapshots
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # GitHub-hosted x86 runners draw from both Intel and AMD pools. Keep
+      # every draw's oracle and campaign evidence separate so either vendor's
+      # result remains inspectable after the runner disappears.
+      matrix:
+        replica: [1, 2, 3, 4]
     env:
       NOVA_BUILD: dissonance/nova-build
       HARMONY_QUICKNES_BUILD_JOBS: "2"
@@ -71,18 +79,47 @@ jobs:
       - name: Build the Consonance-backed Dissonance campaign
         run: |
           cargo build --locked --release --manifest-path dissonance/Cargo.toml \
-            -p searcher --features consonance --bin nova-consonance-campaign
+            -p searcher --features consonance \
+            --bin nova-consonance-campaign \
+            --bin nova-consonance-observation-oracle
+      - name: Build the x86 in-place restore oracle
+        run: cargo build --locked --release -p vmm-core --bin kvm_x86_nova_probe
       - name: Grant nested KVM access
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
-          grep -m1 'model name' /proc/cpuinfo
+          mkdir -p nova-consonance-report
+          grep -m1 'model name' /proc/cpuinfo | tee nova-consonance-report/runner.txt
+      - name: Verify x86 in-place restore oracle
+        env:
+          HARMONY_CONSONANCE_RESTORE_ORACLE: "1"
+        run: |
+          timeout -k 10 600 \
+            target/release/kvm_x86_nova_probe \
+              nix-guest-output/x86_64/bzImage \
+              consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+            2>&1 | tee nova-consonance-report/restore-oracle.txt
+          grep -Eq 'NOVA_CONSONANCE_RESTORE_ORACLE_OK equal=200 tree_actions=50 .* fallbacks=0$' \
+            nova-consonance-report/restore-oracle.txt
+      - name: Compare direct and whole-VM Nova observations
+        run: |
+          timeout -k 10 300 \
+            dissonance/target/release/nova-consonance-observation-oracle \
+              --kernel nix-guest-output/x86_64/bzImage \
+              --initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz \
+              --rom "${NOVA_BUILD}/nova.nes" \
+              --core "${NOVA_BUILD}/quicknes_libretro.so" \
+              --seed 20260901 \
+              --sequences 4 \
+              --actions-per-sequence 4 \
+            2>&1 | tee nova-consonance-report/observation-oracle.txt
+          grep -Eq 'NOVA_CONSONANCE_OBSERVATION_ORACLE_OK sequences=4 actions=[1-9][0-9]* seed=0000000001352825 stream_sha256=[0-9a-f]{64}$' \
+            nova-consonance-report/observation-oracle.txt
       - name: Search Nova through whole-VM Consonance branches
         run: |
-          mkdir -p nova-consonance-report
-          timeout -k 10 19800 \
+          timeout -k 10 3300 \
             dissonance/target/release/nova-consonance-campaign \
               --kernel nix-guest-output/x86_64/bzImage \
               --initramfs consonance/harmony-linux/build/initramfs-nova.cpio.gz \
@@ -91,10 +128,46 @@ jobs:
               --output nova-consonance-report \
               --seed 20260901 \
               --executions 10000 \
-              --workers 1 \
+              --workers 4 \
+              --fixed-execution-soak \
               --action-limit 512 \
-              --wall-seconds 14400 \
+              --wall-seconds 3000 \
+              --memory-budget-mib 2048 \
             2>&1 | tee nova-consonance-report/campaign.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          summary_path = Path("nova-consonance-report/campaign-summary.json")
+          summary = json.loads(summary_path.read_text())
+          if summary.get("workers") != 4:
+              raise SystemExit(f"campaign used {summary.get('workers')} workers")
+          if summary.get("execution_budget") != 10000:
+              raise SystemExit(
+                  f"campaign budget was {summary.get('execution_budget')}, not 10000"
+              )
+          if summary.get("executions") != 10000:
+              raise SystemExit(
+                  f"campaign completed {summary.get('executions')} executions, not 10000"
+              )
+          if summary.get("memory_budget_mib") != 2048:
+              raise SystemExit("campaign did not enforce the 2048 MiB process budget")
+          if summary.get("archive_memory_budget_mib") != 64:
+              raise SystemExit("campaign archive budget did not retain the RSS cushion")
+          if summary.get("process_memory_reserve_mib") != 1984:
+              raise SystemExit("campaign process reserve did not include the RSS cushion")
+          peak_rss = summary.get("peak_rss_bytes")
+          if not isinstance(peak_rss, int) or peak_rss <= 0:
+              raise SystemExit(f"campaign did not record process peak RSS: {peak_rss!r}")
+          budget_bytes = summary["memory_budget_mib"] * 1024 * 1024
+          if peak_rss > budget_bytes:
+              raise SystemExit(
+                  f"campaign peak RSS {peak_rss} exceeded process budget {budget_bytes}"
+              )
+          video = summary.get("video") or {}
+          if not video.get("mp4_sha256"):
+              raise SystemExit("campaign did not produce a hashed film")
+          PY
           cp nix-guest-output/MANIFEST.sha256 nova-consonance-report/guest-kernel-manifest.sha256
           sha256sum \
             consonance/harmony-linux/build/initramfs-nova.cpio.gz \
@@ -115,7 +188,57 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: nova-consonance-campaign-${{ github.run_id }}
+          name: nova-consonance-campaign-${{ github.run_id }}-${{ matrix.replica }}
           path: nova-consonance-report
           if-no-files-found: warn
           retention-days: 30
+
+  compare-replicas:
+    name: Compare deterministic campaign hashes across replicas
+    needs: whole-vm-search-campaign
+    if: ${{ always() && needs.whole-vm-search-campaign.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nova-consonance-campaign-${{ github.run_id }}-*
+          path: replicas
+      - name: Require cross-replica stream and audio equality
+        # The x86 X3 contract normalizes Intel/AMD guest-visible execution, and
+        # QuickNES' integer work/audio stream has no documented vendor carveout.
+        # A differing hash is therefore a regression, not permitted variance.
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          summaries = sorted(Path("replicas").glob("**/campaign-summary.json"))
+          if len(summaries) != 4:
+              raise SystemExit(f"expected 4 campaign summaries, found {len(summaries)}")
+
+          rows = []
+          for summary_path in summaries:
+              summary = json.loads(summary_path.read_text())
+              runner_path = summary_path.with_name("runner.txt")
+              runner = runner_path.read_text().strip() if runner_path.exists() else "unknown CPU"
+              rows.append((
+                  summary_path,
+                  runner,
+                  summary.get("stream_sha256"),
+                  (summary.get("video") or {}).get("audio_pcm_sha256"),
+              ))
+
+          for field_index, field_name in [(2, "stream_sha256"), (3, "audio_pcm_sha256")]:
+              values = {row[field_index] for row in rows}
+              if None in values or "" in values:
+                  raise SystemExit(f"a replica omitted {field_name}: {rows!r}")
+              if len(values) != 1:
+                  details = "\n".join(
+                      f"{path.parent.name}: {runner}: {value}"
+                      for path, runner, stream, audio in rows
+                      for value in [stream if field_index == 2 else audio]
+                  )
+                  raise SystemExit(f"cross-replica {field_name} divergence:\n{details}")
+
+          print("all four replicas have identical stream_sha256 and audio_pcm_sha256")
+          PY

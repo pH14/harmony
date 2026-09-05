@@ -17,7 +17,7 @@ proptest = "1"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 # Not `workspace = true`: this crate additionally denies float arithmetic
-# (tasks/05-vtime.md), and Cargo cannot combine workspace lints with
+# (consonance/vtime/README.md), and Cargo cannot combine workspace lints with
 # crate-local additions. `all = deny` mirrors the workspace table.
 [lints.clippy]
 all = { level = "deny", priority = -1 }

@@ -57,7 +57,7 @@ fn config(native_cases: u32) -> ProptestConfig {
 /// hardware shares one physical page between guest and host. Owning the only path as a raw,
 /// provenance-exposed allocation models that faithfully and lets both writers and the final
 /// `dealloc` coexist — while Miri still catches genuine UB (the injected-OOB non-vacuity check in
-/// IMPLEMENTATION.md confirms an out-of-bounds read past the page is flagged). This is the
+/// README.md confirms an out-of-bounds read past the page is flagged). This is the
 /// production shape too: a real guest page is raw identity-mapped RAM, not a Rust `Box`.
 struct Page {
     ptr: *mut u8,

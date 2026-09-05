@@ -6,7 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 # Conformance tables (CPUID model, allowed/denied MSRs, frozen frequencies)
-# generated at build time from docs/cpu-msr-contract.toml by build.rs — so a
+# generated at build time from consonance/vmm-core/contracts/x86/intel.toml by build.rs — so a
 # contract bump surfaces as a payload diff, never a silent drift. Shared verbatim
 # between the bare-metal sweep payloads (no_std) and host-side tests, exactly like
 # compute-core. No dependencies: build.rs parses the contract's strict grammar

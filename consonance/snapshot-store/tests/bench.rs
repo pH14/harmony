@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 6 (informational, not pass/fail): timing numbers for IMPLEMENTATION.md.
+//! Gate 6 (informational, not pass/fail): timing numbers for README.md.
 //! Run with:
 //!   cargo test -p snapshot-store --release --test bench -- --ignored --nocapture
 

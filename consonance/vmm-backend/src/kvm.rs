@@ -292,6 +292,24 @@ impl RunPage {
         unsafe { (*self.run).ready_for_interrupt_injection }
     }
 
+    /// Read `kvm_run.immediate_exit`, the one-shot entry guard used to let KVM
+    /// consume a staged userspace completion and return before guest
+    /// instruction execution.
+    #[cfg(test)]
+    pub(crate) fn immediate_exit(&self) -> u8 {
+        // SAFETY: `run` is a valid `kvm_run` (constructor contract); this is a
+        // plain, always-initialized top-level field.
+        unsafe { (*self.run).immediate_exit }
+    }
+
+    /// Set `kvm_run.immediate_exit` for a completion-only entry.
+    pub(crate) fn set_immediate_exit(&self, on: bool) {
+        // SAFETY: as above; in-place write of a plain top-level field.
+        unsafe {
+            (*self.run).immediate_exit = u8::from(on);
+        }
+    }
+
     /// Set `kvm_run.request_interrupt_window` (user → kernel): when non-zero, the
     /// next `KVM_RUN` exits with `KVM_EXIT_IRQ_WINDOW_OPEN` as soon as the guest is
     /// injectable, so a vector that could not be delivered immediately is retried
@@ -553,6 +571,47 @@ pub(crate) fn apply_complete_ok(page: RunPage, pending: Pending) -> Result<()> {
     }
 }
 
+/// Consume one already-staged userspace completion without entering the guest.
+///
+/// The caller supplies the one raw-entry operation so this pure state/RunPage
+/// seam can be exercised with a synthetic page. KVM's contract for this path is
+/// deliberately strict: one entry is issued with `immediate_exit` set, and it
+/// must return `EINTR` after consuming the completion. Any other result fails
+/// closed. The one-shot flag is cleared on every return path; a failed entry
+/// leaves the staged marker and pending state untouched so the caller can
+/// retry or abandon the backend conservatively.
+pub(crate) fn retire_staged_completion<F>(
+    page: RunPage,
+    pending: &mut Pending,
+    staged: &mut bool,
+    mut enter: F,
+) -> Result<()>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    if !*staged {
+        return Ok(());
+    }
+
+    page.set_immediate_exit(true);
+    let result = enter();
+    // The completion-only arm is a one-shot control bit. It must not leak into
+    // a later normal entry, including after an ioctl failure.
+    page.set_immediate_exit(false);
+
+    match result {
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+            *staged = false;
+            *pending = Pending::None;
+            Ok(())
+        }
+        Err(error) => Err(BackendError::Io(error)),
+        Ok(()) => Err(BackendError::Internal(
+            "completion-only KVM_RUN returned without EINTR",
+        )),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Configuration / snapshot helpers (pure — gated by the unit tests below).
 // ---------------------------------------------------------------------------
@@ -656,7 +715,7 @@ pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
 /// determinism fields are honestly `true`. `enforces_tsc_deadline_msr` stays
 /// `false`: the determinism patch touches only the four instruction intercepts,
 /// not the `0x6E0` WRMSR fastpath (the contract hides `IA32_TSC_DEADLINE`
-/// instead — INTEGRATION.md §7 / R1, no in-kernel LAPIC).
+/// instead — docs/ARCHITECTURE.md / R1, no in-kernel LAPIC).
 pub(crate) fn patched_capabilities() -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-patched",

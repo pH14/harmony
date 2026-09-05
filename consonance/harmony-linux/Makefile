@@ -3,7 +3,7 @@
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: test test-linux test-libvoidstar libvoidstar fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image postgres-image campaign-image docker-image game-image nova-game-image clean
+.PHONY: test test-linux test-libvoidstar libvoidstar fetch kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image postgres-image campaign-image docker-image game-image nova-game-image clean
 
 test: test-libvoidstar test-linux
 
@@ -18,7 +18,7 @@ ifeq ($(UNAME_S),Linux)
 	$(MAKE) -C linux test
 else
 	@echo 'FAIL: harmony-linux images build and test only on Linux.' >&2
-	@echo '      Run it in a linux/amd64 container — see docs/BUILDING.md (from the repo root):' >&2
+	@echo '      Run it in a linux/amd64 container — see CONTRIBUTING.md (from the repo root):' >&2
 	@echo '        docker run --rm -it --platform linux/amd64 -v "$$PWD":/work -w /work debian:stable bash' >&2
 	@echo '        # inside: apt-get update && apt-get install -y <deps from consonance/harmony-linux/README.md>' >&2
 	@echo '        make -C consonance/harmony-linux test-linux' >&2
@@ -30,11 +30,11 @@ endif
 fetch:
 	scripts/fetch.sh
 
-kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image postgres-image campaign-image docker-image game-image nova-game-image maze-image:
+kernel initramfs image arm64-kernel arm64-initramfs arm64-image arm64-game-kernel arm64-game-image arm64-postgres-kernel arm64-postgres-image arm64-oci-image postgres-image campaign-image docker-image game-image nova-game-image maze-image:
 ifeq ($(UNAME_S),Linux)
 	$(MAKE) -C linux $@
 else
-	@echo "FAIL: 'make $@' needs Linux — see docs/BUILDING.md for the container invocation." >&2
+	@echo "FAIL: 'make $@' needs Linux — see CONTRIBUTING.md for the container invocation." >&2
 	@exit 1
 endif
 

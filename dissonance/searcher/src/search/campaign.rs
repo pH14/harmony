@@ -72,10 +72,12 @@ const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
 
-/// Already-reserved jobs buffered in each physical executor. It changes only
-/// overlap: logical worker identity, selection, and admission remain
-/// coordinator-owned.
-const EXECUTOR_PREFETCH_JOBS: usize = 8;
+/// Result-bearing jobs allowed per physical executor. A worker receives its
+/// next reservation only after the coordinator admits its previous result,
+/// bounding unadmitted whole-VM snapshots to one job per worker. This changes
+/// only physical overlap: logical worker identity, selection, and admission
+/// remain coordinator-owned.
+const RESULT_JOBS_PER_PHYSICAL_WORKER: usize = 1;
 
 /// Reservations held ahead of ordered admission per logical worker when the
 /// run does not set its own.
@@ -92,12 +94,13 @@ const fn admission_window_depth(workers: usize, reservations_per_worker: usize) 
     workers.saturating_mul(reservations_per_worker)
 }
 
-/// Namespace a live windowed run records. The `_v1` namespace it replaces
-/// collides with [`LEGACY_CAMPAIGN_SCHEDULE_POLICY`] at window 64, which
-/// would send a live window-64 stream down the legacy replay path.
-const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
+/// Namespace of live windowed runs. Version 3 charges reserved restore
+/// snapshots through ordered admission; version 2 could remove their charge
+/// while their worker window still owned the allocation.
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v3";
 /// Namespace of windowed streams recorded before the collision was closed.
 const HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v1";
+const UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_per_worker_v2";
 const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "deterministic_window_";
 
 /// The schedule policy a run records: the per-worker window is part of the
@@ -121,6 +124,7 @@ fn schedule_policy_window(policy: Option<&str>) -> Option<usize> {
     let window = policy.strip_prefix(SCHEDULE_POLICY_WINDOW_PREFIX)?;
     let window = window
         .strip_suffix(SCHEDULE_POLICY_WINDOW_SUFFIX)
+        .or_else(|| window.strip_suffix(UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX))
         .or_else(|| window.strip_suffix(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))?;
     window.parse().ok().filter(|window| *window >= 1)
 }
@@ -141,9 +145,12 @@ fn schedule_policy_is_legacy(policy: Option<&str>) -> bool {
 /// than per examined entry. Both decide which entries an archive holds, so a
 /// budgeted stream from those runs replays against a different archive.
 /// Without a budget the maintenance step does nothing and the streams replay
-/// unchanged.
+/// unchanged. Version 2 also predates in-flight snapshot accounting.
 fn schedule_policy_predates_budget_maintenance(policy: Option<&str>) -> bool {
-    policy.is_none_or(|policy| policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX))
+    policy.is_none_or(|policy| {
+        policy.ends_with(HISTORICAL_SCHEDULE_POLICY_WINDOW_SUFFIX)
+            || policy.ends_with(UNCHARGED_SCHEDULE_POLICY_WINDOW_SUFFIX)
+    })
 }
 
 /// Consecutive pre-execution duplicate skips after which a worker executes the
@@ -153,6 +160,9 @@ const CONSECUTIVE_SKIP_LIMIT: u64 = 1_024;
 
 /// Curve sampling interval in admitted executions.
 const CURVE_INTERVAL: u64 = 100;
+
+/// Fixed sidecar checkpoint interval in completed executions.
+const PROGRESS_CHECKPOINT_INTERVAL: u64 = 100;
 
 /// Maximum deterministic progress samples retained in a live campaign.
 const MAX_PROGRESS_CURVE_POINTS: usize = 1_024;
@@ -172,8 +182,15 @@ fn compact_progress_curve<M, P>(
     next_interval
 }
 
-/// Seconds between sidecar observations.
-const PROGRESS_INTERVAL_SECONDS: u64 = 60;
+/// Whether a sidecar checkpoint is due for the completed execution count.
+///
+/// Progress sidecars are observations, but their checkpoint boundaries are
+/// part of deterministic run diagnostics: every same-seed run must emit the
+/// same execution series regardless of host speed. The Unix timestamp in a
+/// record remains informational only.
+fn progress_checkpoint_due(executions: u64) -> bool {
+    executions > 0 && (executions == 1 || executions.is_multiple_of(PROGRESS_CHECKPOINT_INTERVAL))
+}
 
 /// Identifier recorded for the resume rule: the source archive's whole
 /// retained tree is imported, and the header's resume input is the frontier
@@ -201,7 +218,9 @@ pub type GamePolicies = BTreeMap<String, String>;
 /// share the context, hence `Sync`.
 pub trait Game: Sync {
     /// Emulated game instance a worker drives.
-    type Target: Send;
+    /// The pool constructs, uses, and drops each target on its worker thread;
+    /// targets are never transferred between threads.
+    type Target;
     /// One recorded input action.
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     /// Archive key.
@@ -606,6 +625,9 @@ pub struct CampaignConfig<G: Game + ?Sized> {
     /// It never enters campaign state: the stream that was recorded up to the
     /// cutoff still replays exactly.
     pub wall_budget: Option<Duration>,
+    /// Live-only: continue issuing reservations after the first victory until
+    /// another live limit stops the run. Never recorded or used by replay.
+    pub continue_after_victory: bool,
     /// Archive entry bound for this run, recorded in the header and report.
     pub archive_entry_limit: usize,
     /// Reservations held ahead of ordered admission per logical worker,
@@ -778,7 +800,7 @@ pub struct CampaignJobRecord {
     pub mutation_seed: u64,
     /// Frames the job emulated, admission probes included.
     pub frames: u64,
-    /// SHA-256 of the serialized job result, snapshots included.
+    /// SHA-256 of the game's deterministic job-result projection.
     pub result_sha256: String,
     /// Ordered admission decisions for the job's candidates.
     pub decisions: Vec<CampaignAdmissionDecision>,
@@ -1064,6 +1086,10 @@ fn draw_state_memory_is_within_reserve(bytes: usize, reserve: usize) -> bool {
     bytes <= reserve
 }
 
+fn resident_memory_is_within_budget(bytes: usize, memory_budget_mib: Option<usize>) -> bool {
+    memory_budget_mib.is_none_or(|budget_mib| bytes <= budget_mib.saturating_mul(1024 * 1024))
+}
+
 fn worker_queue_is_idle(queued: usize) -> bool {
     queued == 0
 }
@@ -1089,6 +1115,10 @@ fn progress_policy_is_supported(policy: Option<&str>) -> bool {
 
 fn uses_bounded_progress_curve(policy: Option<&str>) -> bool {
     policy == Some(CAMPAIGN_PROGRESS_POLICY)
+}
+
+fn stop_reservations_after_victory(continue_after_victory: bool, victory_found: bool) -> bool {
+    victory_found && !continue_after_victory
 }
 
 /// One candidate boundary inside a job result.
@@ -1193,8 +1223,9 @@ impl<G: Game + ?Sized> Debug for CampaignActionResult<G> {
     }
 }
 
-/// Complete result of one executed job; its serialization is digested into the
-/// stream so replay verifies byte-exact re-execution, snapshots included.
+/// Complete result of one executed job. Games choose the deterministic
+/// projection they digest into the stream; [`postcard_result_sha256`] uses the
+/// complete serialization, including snapshots.
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: Game + ?Sized> {
@@ -2074,10 +2105,12 @@ impl postcard::ser_flavors::Flavor for PostcardSha256 {
 pub(crate) fn postcard_result_sha256<G: Game + ?Sized>(
     result: &CampaignJobResult<G>,
 ) -> Result<String, Box<dyn Error>> {
-    postcard_sha256(result)
+    postcard_value_sha256(result)
 }
 
-fn postcard_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
+pub(crate) fn postcard_value_sha256<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
         PostcardSha256(Sha256::new()),
@@ -2101,6 +2134,7 @@ type SelectedJob<G> = (JobSpec<G>, PendingJob);
 
 /// What the coordinator remembers about a worker's in-flight job.
 struct PendingJob {
+    snapshot_id: u64,
     worker: u32,
     parent_id: u64,
     mutation_seed: u64,
@@ -2114,10 +2148,15 @@ struct PendingJob {
 /// One finished window slot, held until every earlier reservation can be
 /// admitted in deterministic order.
 struct CompletedJob<G: Game + ?Sized> {
+    physical_worker: u32,
     pending: PendingJob,
     result: CampaignJobResult<G>,
     frames: u64,
     result_sha256: String,
+}
+
+fn completed_results_within_bound(completed: usize, workers: usize) -> bool {
+    completed <= workers.saturating_mul(RESULT_JOBS_PER_PHYSICAL_WORKER)
 }
 
 fn replay_splice<G: Game>(
@@ -2395,6 +2434,13 @@ where
         .frames_clocked(&bootstrap_target)
         .saturating_sub(frames_before);
     drop(bootstrap_target);
+    let bootstrap_memory_bytes = core
+        .archive
+        .resident_memory_bytes()
+        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+    if !resident_memory_is_within_budget(bootstrap_memory_bytes, config.memory_budget_mib) {
+        return Err("campaign bootstrap state exceeds its deterministic memory budget".into());
+    }
 
     let workers = config.workers as usize;
     let mut rands = Vec::with_capacity(workers);
@@ -2409,11 +2455,6 @@ where
     // reservations and never enters campaign state.
     #[allow(clippy::disallowed_methods)] // not order-observable: reservation cutoff only.
     let started = config.wall_budget.map(|_| std::time::Instant::now());
-
-    // Sidecar cadence. Held outside the worker scope so one clock covers the run.
-    #[allow(clippy::disallowed_methods)]
-    let progress_started = std::time::Instant::now();
-    let mut next_progress = 0_u64;
 
     let mut reserved = 0_u64;
     let mut coordinator_profile =
@@ -2463,7 +2504,12 @@ where
                           reserved: &mut u64,
                           worker: u32|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
-                if *reserved >= config.execution_budget || core.victory_input.is_some() {
+                if *reserved >= config.execution_budget
+                    || stop_reservations_after_victory(
+                        config.continue_after_victory,
+                        core.victory_input.is_some(),
+                    )
+                {
                     return Ok(None);
                 }
                 if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
@@ -2579,7 +2625,8 @@ where
                         core.archive.pin_metadata(*donor_id)?;
                         core.archive.pin_metadata(*leaf_id)?;
                     }
-                    let (snapshot, replay) = core.archive.job_origin(parent_index)?;
+                    let (snapshot, replay, snapshot_id) =
+                        core.archive.pin_job_origin(parent_index)?;
                     let entry = &core.archive.entries[parent_index];
                     return Ok(Some((
                         JobSpec {
@@ -2591,6 +2638,7 @@ where
                             suffix,
                         },
                         PendingJob {
+                            snapshot_id,
                             worker,
                             parent_id,
                             mutation_seed,
@@ -2644,7 +2692,7 @@ where
                 queued_specs.push_back(spec);
             }
             let mut physical_queued = vec![0_usize; workers];
-            'prefill: for _ in 0..EXECUTOR_PREFETCH_JOBS {
+            'prefill: for _ in 0..RESULT_JOBS_PER_PHYSICAL_WORKER {
                 for worker in 0..config.workers {
                     let Some(spec) = queued_specs.pop_front() else {
                         break 'prefill;
@@ -2696,6 +2744,7 @@ where
                         .insert(
                             reservation,
                             CompletedJob {
+                                physical_worker,
                                 pending: pending_job,
                                 result,
                                 frames,
@@ -2706,16 +2755,10 @@ where
                     {
                         return Err("campaign worker completed one reservation twice".into());
                     }
-
-                    // Refill every executor whose reply is already queued
-                    // before ordered admission. Physical completion order is
-                    // unrecorded; reservations and admissions remain stable.
-                    if let Some(spec) = queued_specs.pop_front() {
-                        pool.send(physical_worker, spec)?;
-                        physical_queued[physical_index] =
-                            physical_queued[physical_index].saturating_add(1);
-                    } else if worker_queue_is_idle(physical_queued[physical_index]) {
-                        idle_workers.push_back(physical_worker);
+                    if !completed_results_within_bound(completed.len(), workers) {
+                        return Err(
+                            "campaign buffered more than one result-bearing job per worker".into(),
+                        );
                     }
                     ready_reply = pool.try_receive()?;
                 }
@@ -2726,6 +2769,7 @@ where
                     let result = completed_job.result;
                     let frames = completed_job.frames;
                     let result_sha256 = completed_job.result_sha256;
+                    let physical_worker = completed_job.physical_worker;
                     let victories_before = core.victories;
                     let admission_started = profile_now(coordinator_profile.enabled);
                     let (sequence, decisions) =
@@ -2783,6 +2827,7 @@ where
                             "live draw state exceeds its deterministic memory reserve".into()
                         );
                     }
+                    core.archive.unpin_job_origin(pending_job.snapshot_id);
                     core.archive.unpin_metadata(pending_job.parent_id);
                     if let Some(CampaignSpliceRecord::Tail {
                         donor_id,
@@ -2830,16 +2875,21 @@ where
                     if victories_before == 0 && core.victories > 0 {
                         counters.note_first_victory(sequence);
                     }
+                    if !worker_queue_is_idle(
+                        *physical_queued
+                            .get(usize::try_from(physical_worker)?)
+                            .ok_or("admitted result names an unknown physical worker")?,
+                    ) {
+                        return Err(
+                            "admitted result's physical worker still has queued work".into()
+                        );
+                    }
+                    idle_workers.push_back(physical_worker);
                     if let Some(sink) = progress.as_deref_mut() {
-                        // Wall-clock controls the sidecar only. It selects nothing and
-                        // enters no recorded artifact, so its nondeterminism cannot
-                        // reach the stream.
-                        #[allow(clippy::disallowed_methods)]
-                        let elapsed = progress_started.elapsed().as_secs();
-                        if elapsed >= next_progress {
-                            next_progress = elapsed
-                                .saturating_add(PROGRESS_INTERVAL_SECONDS)
-                                .saturating_sub(elapsed % PROGRESS_INTERVAL_SECONDS);
+                        // Count-based boundaries keep sidecar presence
+                        // independent of host speed; the timestamp below is
+                        // informational only.
+                        if progress_checkpoint_due(sequence) {
                             #[allow(clippy::disallowed_methods)]
                             let unix_time = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -2851,6 +2901,9 @@ where
                                 .unwrap_or((None, 0, 0));
                             let line = serde_json::to_string(&CampaignProgressRecord {
                                 unix_time,
+                                // `sequence` is the one-based count returned by admission;
+                                // the sidecar must report completed executions, not the
+                                // zero-based reservation/admission index.
                                 executions: sequence,
                                 frames_emulated: counters
                                     .bootstrap_frames
@@ -3301,6 +3354,16 @@ where
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_frames = game.frames_clocked(&target).saturating_sub(frames_before);
+    let bootstrap_memory_bytes = core
+        .archive
+        .resident_memory_bytes()
+        .saturating_add(game.draw_state_memory_bytes(&draw_state));
+    if !resident_memory_is_within_budget(bootstrap_memory_bytes, header.memory_budget_mib) {
+        return Err(
+            "campaign replay bootstrap state exceeds its deterministic memory budget".into(),
+        );
+    }
+
     if !legacy_schedule {
         core.archive.establish_liveness_anchor(header.action_limit);
     }
@@ -3311,7 +3374,8 @@ where
             .unwrap_or(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER),
     );
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
-    let mut replay_job_snapshots = BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>)>::new();
+    let mut replay_job_snapshots =
+        BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
     if legacy_schedule {
         core.archive
             .preserve_recorded_snapshot_uses(recorded_snapshot_uses);
@@ -3332,7 +3396,7 @@ where
                 .archive
                 .index_of_id(*parent_id)
                 .ok_or("initial replay job names a parent the archive does not hold")?;
-            replay_job_snapshots.insert(job_slot, core.archive.job_origin(parent_index)?);
+            replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
             for metadata_id in &replay_job_metadata[job_slot] {
                 let uses = replay_metadata_uses.entry(*metadata_id).or_default();
                 *uses = uses
@@ -3405,7 +3469,7 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let ((snapshot, replay), parent_actions, parent_milestones) = {
+                let ((snapshot, replay, snapshot_id), parent_actions, parent_milestones) = {
                     let entry = core
                         .archive
                         .entries
@@ -3413,7 +3477,8 @@ where
                         .ok_or("recorded job names a parent the archive does not hold")?;
                     (
                         if legacy_schedule {
-                            core.archive.job_origin(parent_index)?
+                            let (snapshot, replay) = core.archive.job_origin(parent_index)?;
+                            (snapshot, replay, job.parent_id)
                         } else {
                             replay_job_snapshots
                                 .remove(&replay_job_slot)
@@ -3521,6 +3586,9 @@ where
                         .iter()
                         .any(|id| core.archive.opened_new_cell(*id)),
                 );
+                if !legacy_schedule {
+                    core.archive.unpin_job_origin(snapshot_id);
+                }
                 core.archive.unpin_metadata(job.parent_id);
                 if let Some(CampaignSpliceRecord::Tail {
                     donor_id,
@@ -3550,7 +3618,7 @@ where
                             .index_of_id(*parent_id)
                             .ok_or("next replay job names a parent the archive does not hold")?;
                         replay_job_snapshots
-                            .insert(next_slot, core.archive.job_origin(parent_index)?);
+                            .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
                         for metadata_id in &replay_job_metadata[next_slot] {
                             let uses = replay_metadata_uses.entry(*metadata_id).or_default();
                             *uses = uses
@@ -3607,12 +3675,14 @@ mod tests {
         CampaignStreamRecord, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
         EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
         SPLICE_ACTION_CAP, admission_window_depth, archive_entry_limit_is_valid,
-        compact_progress_curve, draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
-        live_coordinator_profile, postcard_sha256, profile_elapsed, profile_now,
-        progress_policy_is_supported, record_compaction_elapsed, replay_splice,
-        retained_archive_indexes, schedule_policy_identifier, schedule_policy_is_legacy,
-        schedule_policy_is_supported, schedule_policy_predates_budget_maintenance,
-        schedule_policy_window, uses_bounded_progress_curve, worker_queue_is_idle,
+        compact_progress_curve, completed_results_within_bound,
+        draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
+        live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
+        progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
+        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
+        schedule_policy_identifier, schedule_policy_is_legacy, schedule_policy_is_supported,
+        schedule_policy_predates_budget_maintenance, schedule_policy_window,
+        stop_reservations_after_victory, uses_bounded_progress_curve, worker_queue_is_idle,
     };
     use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
     use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -3674,7 +3744,7 @@ mod tests {
         let value = (17_u64, vec![0_u8, 1, 15, 16, 255], Some("deterministic"));
         let encoded = postcard::to_allocvec(&value).expect("fixture encodes");
         let expected = format!("{:x}", Sha256::digest(encoded));
-        let actual = postcard_sha256(&value).expect("incremental digest succeeds");
+        let actual = postcard_value_sha256(&value).expect("incremental digest succeeds");
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 64);
@@ -3772,6 +3842,24 @@ mod tests {
         core.compact_progress_curve_if_needed();
         assert_eq!(core.curve.len(), MAX_PROGRESS_CURVE_POINTS / 2);
         assert_eq!(core.curve_interval, 200);
+    }
+
+    #[test]
+    fn sidecar_checkpoint_boundaries_use_completed_execution_count() {
+        let checkpoints = (1..=200)
+            .filter(|&executions| progress_checkpoint_due(executions))
+            .collect::<Vec<_>>();
+        assert_eq!(checkpoints, vec![1, 100, 200]);
+        for executions in [0, 2, 99, 101] {
+            assert!(!progress_checkpoint_due(executions));
+        }
+    }
+
+    #[test]
+    fn reservations_continue_after_victory_only_when_requested() {
+        assert!(stop_reservations_after_victory(false, true));
+        assert!(!stop_reservations_after_victory(true, true));
+        assert!(!stop_reservations_after_victory(false, false));
     }
 
     #[test]
@@ -4052,7 +4140,7 @@ mod tests {
         let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
         assert!(!schedule_policy_predates_budget_maintenance(Some(&current)));
         assert!(!schedule_policy_predates_budget_maintenance(Some(
-            "deterministic_window_64_per_worker_v2"
+            "deterministic_window_64_per_worker_v3"
         )));
         assert!(schedule_policy_predates_budget_maintenance(None));
         assert!(schedule_policy_predates_budget_maintenance(Some(
@@ -4066,11 +4154,18 @@ mod tests {
     #[test]
     fn schedule_policy_dispatch_accepts_windowed_and_legacy_only() {
         let current = schedule_policy_identifier(DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER);
-        assert_eq!(current, "deterministic_window_1_per_worker_v2");
+        assert_eq!(current, "deterministic_window_1_per_worker_v3");
+        assert_eq!(
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
+            Some(4)
+        );
+        assert!(schedule_policy_predates_budget_maintenance(Some(
+            "deterministic_window_4_per_worker_v2"
+        )));
         assert!(schedule_policy_is_supported(None));
         assert!(schedule_policy_is_supported(Some(&current)));
         assert!(schedule_policy_is_supported(Some(
-            "deterministic_window_4_per_worker_v2"
+            "deterministic_window_4_per_worker_v3"
         )));
         assert!(schedule_policy_is_supported(Some(
             "deterministic_window_4_per_worker_v1"
@@ -4080,11 +4175,11 @@ mod tests {
         )));
         assert!(!schedule_policy_is_supported(Some("unknown-schedule")));
         assert!(!schedule_policy_is_supported(Some(
-            "deterministic_window_0_per_worker_v2"
+            "deterministic_window_0_per_worker_v3"
         )));
         assert_eq!(schedule_policy_window(Some(&current)), Some(1));
         assert_eq!(
-            schedule_policy_window(Some("deterministic_window_4_per_worker_v2")),
+            schedule_policy_window(Some("deterministic_window_4_per_worker_v3")),
             Some(4)
         );
         assert_eq!(
@@ -4123,6 +4218,14 @@ mod tests {
     }
 
     #[test]
+    fn unadmitted_result_jobs_are_bounded_to_one_per_physical_worker() {
+        assert!(completed_results_within_bound(0, 0));
+        assert!(completed_results_within_bound(4, 4));
+        assert!(!completed_results_within_bound(5, 4));
+        assert!(!completed_results_within_bound(1, 0));
+    }
+
+    #[test]
     fn recorded_resource_bounds_and_progress_policies_validate_at_boundaries() {
         let max = crate::search::archive::MAX_ARCHIVE_ENTRIES;
         assert!(!archive_entry_limit_is_valid(0));
@@ -4134,6 +4237,12 @@ mod tests {
         assert!(draw_state_memory_is_within_reserve(1, 2));
         assert!(draw_state_memory_is_within_reserve(2, 2));
         assert!(!draw_state_memory_is_within_reserve(2, 1));
+        assert!(resident_memory_is_within_budget(usize::MAX, None));
+        assert!(resident_memory_is_within_budget(64 * 1024 * 1024, Some(64)));
+        assert!(!resident_memory_is_within_budget(
+            64 * 1024 * 1024 + 1,
+            Some(64)
+        ));
 
         assert!(progress_policy_is_supported(None));
         assert!(progress_policy_is_supported(Some(

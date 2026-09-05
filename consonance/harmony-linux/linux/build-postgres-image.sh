@@ -6,14 +6,14 @@
 # fixed insert/select workload loop. The companion kernel is the *unchanged*
 # task-36 container-class bzImage (this task needs no kernel change — ext4, loop,
 # brd, tmpfs, AF_UNIX, SysV-IPC are all already built in; see the §capability
-# audit in consonance/harmony-linux/linux/IMPLEMENTATION.md). See that file for the determinism
+# audit in consonance/harmony-linux/linux/README.md). See that file for the determinism
 # closure (locale/TZ pinning, pre-baked PGDATA, pg_strong_random → seeded CRNG).
 #
 # Linux + root only: `mke2fs -d` bakes the cluster owned by the guest postgres uid
 # (needs root), `initdb` runs as a non-root build user (postgres refuses uid 0),
 # and the runtime shared-library closure is copied from THIS host's /lib (the
 # determinism box is the pinned build environment). On macOS run it in a
-# linux/amd64 container as root — see docs/BUILDING.md.
+# linux/amd64 container as root — see CONTRIBUTING.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -88,8 +88,11 @@ mkdir -p "$PGROOT/lib/x86_64-linux-gnu" "$PGROOT/usr/lib/x86_64-linux-gnu"
 install_libvoidstar "$PGROOT"
 
 cp "$BBOBJ/busybox" "$PGROOT/bin/busybox"
+# chroot: the harmony CLI can select this image as the base for an injected
+# OCI bundle, whose init falls back to a chroot start when runc is absent.
 for a in sh mount umount mkdir chown chmod sleep printf seq setuidgid cat echo ls \
-         head tee env losetup poweroff reboot ln rm cp true false test expr sync id; do
+         head tee env losetup poweroff reboot ln rm cp true false test expr sync id \
+         chroot; do
     ln -sf busybox "$PGROOT/bin/$a"
 done
 
@@ -138,7 +141,7 @@ setpriv --reuid="$BUILD_UID" --regid="$BUILD_UID" --clear-groups env LC_ALL=C.UT
     || { cat "$BUILD_ROOT/initdb.log"; exit 1; }
 cat >>"$STAGEFS/pgdata/postgresql.conf" <<EOF
 
-# --- task 37 determinism overlay (see consonance/harmony-linux/linux/IMPLEMENTATION.md) ---
+# --- task 37 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = ''            # unix socket only — no networking nondeterminism
 unix_socket_directories = '/tmp'
 fsync = on                       # exercised; instant + deterministic on RAM storage

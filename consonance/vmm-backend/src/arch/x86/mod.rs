@@ -17,7 +17,7 @@ pub use state::{
 use crate::arch::{Arch, ArchCaps, ArchExit};
 use crate::exit::ExitReason;
 
-/// The x86-64 vendor (a zero-sized type; `docs/ARCH-BOUNDARY.md` §A).
+/// The x86-64 vendor (a zero-sized type; `docs/ARCHITECTURE.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct X86;
 

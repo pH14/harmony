@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Install the external code-quality binaries used by the quality gates
 # (.github/workflows/quality.yml, .pre-commit-config.yaml, and
-# docs/CODE-QUALITY.md).
+# CONTRIBUTING.md).
 #
 # These are *tools*, not crate dependencies — they are exempt from the
-# Dependency-whitelist exemption for quality binaries (AGENTS.md, Conventions).
+# These quality binaries are developer tools rather than crate dependencies.
 #
 # Idempotent: `cargo install` is a no-op when the requested version is already
 # present, so re-running is a fast success. Safe to run on macOS and Linux.

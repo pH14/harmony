@@ -1,6 +1,6 @@
 # Example corpus manifest — the schema `load_manifest` / `to_manifest` speak.
 #
-# The canonical registry is docs/corpus-manifest.toml. This smaller file documents
+# The canonical registry is consonance/acceptance-suite/corpus-manifest.toml. This smaller file documents
 # the schema beside the runner. Each [[item]] declares which oracles apply to a workload;
 # a diff to such a file is how "we added/changed a determinism test" is reviewed.
 #
@@ -16,7 +16,7 @@
 #                "portable" | "det-cfl-v1" | "msr1"   (default: ["portable"])
 #   virt     = "l1" (guest on bare metal) | "l2" (nested)   (default: "l1")
 #
-# A row IS one cell of the acceptance matrix (docs/TESTING.md, rung 5):
+# A row IS one cell of the acceptance matrix (docs/TESTING.md):
 # (workload) x (oracle set) x (host) x (virt level). `acceptance-suite run
 # --host <id>` selects which cells execute.
 
