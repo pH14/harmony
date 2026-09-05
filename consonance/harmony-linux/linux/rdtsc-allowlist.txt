@@ -13,7 +13,7 @@
 # entry, so the same symbol name in two artifacts (`startup_32` is in two) cannot
 # spend the other's budget. As of the baseline below, `setup` and `decompressor`
 # contain ZERO counter reads — confirmed both by symbol-attributed disassembly
-# (4,846 and 5,988 instructions scanned) and, because the real-mode setup's
+# (4,842 and 5,988 instructions scanned) and, because the real-mode setup's
 # 16-bit stream could in principle decode differently, by a raw byte search of
 # their executable images for `0F 31` / `0F 01 F9` (zero occurrences of each).
 # They therefore contribute no entries, and the scan's stale-entry check keeps
@@ -25,13 +25,15 @@
 # read is survivable-by-trap, never a determinism hole). The armed scan fails
 # the kernel build on any drift, in either direction.
 #
-# BASELINE: captured 2026-07-15 from the box build of linux-6.18.35 (the r8
-# registration-handshake kernel, bzImage e4591ea8), reviewed against the
-# extracted source. Offsets are relative to the containing function, so a
-# different compiler version (or a change to a function's earlier code) shifts
-# them — such a drift fails the armed scan loudly; re-review the drifted sites
-# against that build's capture and commit the delta. For a FULL re-baseline
-# (a kernel version bump), add a line starting with `# GATE-UNARMED` — the
+# BASELINE: captured from the box build of linux-6.18.35 under the x86 harmony
+# patch series 0001-0004 (bzImage e7c3c780), reviewed against the extracted
+# source. Offsets are relative to the containing function, so a different
+# compiler version shifts them — and so does the patch series itself, because
+# the pvclock guards inline into these very functions and can move a read
+# between functions by flipping an inlining decision. Such a drift fails the
+# armed scan loudly; re-review the drifted sites against that build's capture
+# and commit the delta. For a FULL re-baseline (a kernel version bump), add a
+# line starting with `# GATE-UNARMED` — the
 # scan then prints the new capture and FAILS the build until the reviewed
 # baseline is committed and the marker removed (fail-closed; it can never
 # ship a silently-green scan).
@@ -56,8 +58,6 @@
 #   [fs]     ext4 mballoc criteria timing (mb_stats path) — trapped
 #
 # .altinstr_replacement # [alt]
-vmlinux:.altinstr_replacement+0x1c7b
-vmlinux:.altinstr_replacement+0x1c7d
 vmlinux:.altinstr_replacement+0x1c83
 vmlinux:.altinstr_replacement+0x1c85
 vmlinux:.altinstr_replacement+0x1c8b
@@ -66,6 +66,8 @@ vmlinux:.altinstr_replacement+0x1c93
 vmlinux:.altinstr_replacement+0x1c95
 vmlinux:.altinstr_replacement+0x1c9b
 vmlinux:.altinstr_replacement+0x1c9d
+vmlinux:.altinstr_replacement+0x1ca3
+vmlinux:.altinstr_replacement+0x1ca5
 vmlinux:.altinstr_replacement+0x318
 vmlinux:.altinstr_replacement+0x31a
 vmlinux:.altinstr_replacement+0x320
@@ -74,16 +76,16 @@ vmlinux:.altinstr_replacement+0x328
 vmlinux:.altinstr_replacement+0x32a
 vmlinux:.altinstr_replacement+0x57c
 vmlinux:.altinstr_replacement+0x57e
-vmlinux:.altinstr_replacement+0x86c
-vmlinux:.altinstr_replacement+0x86e
-vmlinux:.altinstr_replacement+0x874
-vmlinux:.altinstr_replacement+0x876
-vmlinux:.altinstr_replacement+0x8f2
-vmlinux:.altinstr_replacement+0x8f4
-vmlinux:.altinstr_replacement+0x90f
-vmlinux:.altinstr_replacement+0x911
-vmlinux:.altinstr_replacement+0x917
-vmlinux:.altinstr_replacement+0x919
+vmlinux:.altinstr_replacement+0x869
+vmlinux:.altinstr_replacement+0x86b
+vmlinux:.altinstr_replacement+0x871
+vmlinux:.altinstr_replacement+0x873
+vmlinux:.altinstr_replacement+0x8ef
+vmlinux:.altinstr_replacement+0x8f1
+vmlinux:.altinstr_replacement+0x90c
+vmlinux:.altinstr_replacement+0x90e
+vmlinux:.altinstr_replacement+0x914
+vmlinux:.altinstr_replacement+0x916
 # __dmar_enable_qi # [iommu]
 vmlinux:__dmar_enable_qi+0x84
 vmlinux:__dmar_enable_qi+0xa0
@@ -94,11 +96,11 @@ vmlinux:__iommu_flush_context+0x93
 vmlinux:__iommu_flush_iotlb+0x9a
 vmlinux:__iommu_flush_iotlb+0xa8
 # add_device_randomness # [rng]
-vmlinux:add_device_randomness+0x1b
+vmlinux:add_device_randomness+0x24
 # add_interrupt_randomness # [rng]
-vmlinux:add_interrupt_randomness+0x5
+vmlinux:add_interrupt_randomness+0x16
 # add_timer_randomness # [rng]
-vmlinux:add_timer_randomness+0x1e
+vmlinux:add_timer_randomness+0x2b
 # check_tsc_warp # [time] tsc_sync
 vmlinux:check_tsc_warp+0x4c
 vmlinux:check_tsc_warp+0xe
@@ -115,20 +117,18 @@ vmlinux:dmar_disable_qi+0x79
 vmlinux:dmar_disable_qi+0xa8
 vmlinux:dmar_disable_qi+0xc4
 # do_syscall_64 # [entry] kstack offset
-vmlinux:do_syscall_64+0x129
+vmlinux:do_syscall_64+0x14f
 # ecmd_submit_sync # [iommu]
 vmlinux:ecmd_submit_sync+0x60
 vmlinux:ecmd_submit_sync+0x7b
-# entropy_timer # [rng]
-vmlinux:entropy_timer+0x15
 # ext4_mb_generate_buddy # [fs]
 vmlinux:ext4_mb_generate_buddy+0x1c1
 vmlinux:ext4_mb_generate_buddy+0x2d
 # extract_entropy.constprop.0 # [rng]
-vmlinux:extract_entropy.constprop.0+0xc1
+vmlinux:extract_entropy.constprop.0+0xce
 # harmony_pvclock_init # [harmony] the two deliberate reads (pre-ring anchor freshener + post-registration clock advance; see patches/README.md)
-vmlinux:harmony_pvclock_init+0x1b4
-vmlinux:harmony_pvclock_init+0xf6
+vmlinux:harmony_pvclock_init+0x1a5
+vmlinux:harmony_pvclock_init+0xe7
 # hpet_enable # [time] calibration (hpet off at runtime)
 vmlinux:hpet_enable+0x232
 vmlinux:hpet_enable+0x251
@@ -161,7 +161,7 @@ vmlinux:iommu_set_root_entry+0x86
 # irqentry_exit_to_user_mode # [entry] kstack offset
 vmlinux:irqentry_exit_to_user_mode+0x66
 # jent_get_nstime # [rng] jitter entropy
-vmlinux:jent_get_nstime+0x4
+vmlinux:jent_get_nstime+0xd
 # lapic_cal_handler # [time] APIC calibration
 vmlinux:lapic_cal_handler+0x1a
 # lapic_next_deadline # [time] TSC-deadline programming
@@ -172,22 +172,22 @@ vmlinux:msr_event_add+0x18
 vmlinux:msr_event_start+0xc
 # msr_event_update # [perf]
 vmlinux:msr_event_update+0x1d
+# native_calibrate_cpu_early # [time] calibration — quick_pit_calibrate's PIT-msb polling, inlined here
+vmlinux:native_calibrate_cpu_early+0x87
+vmlinux:native_calibrate_cpu_early+0xa9
+vmlinux:native_calibrate_cpu_early+0xd2
+vmlinux:native_calibrate_cpu_early+0xf5
 # native_sched_clock # [time] sched_clock until pvclock routes it
 vmlinux:native_sched_clock+0x2
 # pit_hpet_ptimer_calibrate_cpu # [time] calibration
-vmlinux:pit_hpet_ptimer_calibrate_cpu+0xa2
-vmlinux:pit_hpet_ptimer_calibrate_cpu+0xc3
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xb2
+vmlinux:pit_hpet_ptimer_calibrate_cpu+0xd3
 # pvclock_clocksource_read # [guest] kvmclock reader (inert)
 vmlinux:pvclock_clocksource_read+0x10
 # pvclock_clocksource_read_nowd # [guest] kvmclock reader (inert)
 vmlinux:pvclock_clocksource_read_nowd+0xa
-# quick_pit_calibrate # [time] calibration
-vmlinux:quick_pit_calibrate+0x38
-vmlinux:quick_pit_calibrate+0x5a
-vmlinux:quick_pit_calibrate+0x83
-vmlinux:quick_pit_calibrate+0xa6
-# random_init # [rng]
-vmlinux:random_init+0x13
+# random_get_entropy # [rng] the accessor's raw arm; the pvclock arm is taken whenever the clock page is live
+vmlinux:random_get_entropy+0x9
 # read_current_timer # [time]
 vmlinux:read_current_timer+0xd
 # read_tsc # [time] the tsc clocksource (unselectable when active)
@@ -202,12 +202,8 @@ vmlinux:timer_irq_works+0x3a
 vmlinux:timer_irq_works+0x48
 # trace_clock_x86_tsc # [time] trace clock
 vmlinux:trace_clock_x86_tsc+0x0
-# try_to_generate_entropy # [rng]
-vmlinux:try_to_generate_entropy+0x1bb
-vmlinux:try_to_generate_entropy+0x39
-vmlinux:try_to_generate_entropy+0x59
 # tsc_enable_sched_clock # [time]
-vmlinux:tsc_enable_sched_clock+0x30
+vmlinux:tsc_enable_sched_clock+0x3b
 # tsc_read_refs # [time] calibration
 vmlinux:tsc_read_refs+0x2b
 vmlinux:tsc_read_refs+0x42

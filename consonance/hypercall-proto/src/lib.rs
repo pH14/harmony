@@ -17,12 +17,14 @@
 //! | [`Sdk`](ServiceId::Sdk)         | 6 | `1` = `buggify_decide`; `2` = `coverage_yield` (round-trips the next coverage threshold and runnable selection) |
 //! | [`Pvclock`](ServiceId::Pvclock) | 7 | `1` = `pvclock_register` (publishes the guest clock-page GPA) |
 //! | [`Payload`](ServiceId::Payload) | 8 | `1` = consume one exact-length staged payload entry |
+//! | [`Standing`](ServiceId::Standing) | 9 | `1` = `standing_poll` (the standing faults active at this `Moment`) |
 //!
 //! Id **5** is the task-61 `Net` vertical (the first guest-plane fault path); the
 //! task-73 SDK control service ([`Sdk`](ServiceId::Sdk)) takes id **6**; the
 //! task-110 paravirt virtual-time clock registration ([`Pvclock`](ServiceId::Pvclock))
 //! takes id **7**; the ordered cooperating-workload payload service takes id
-//! **8**. An
+//! **8**; the standing-fault poll service ([`Standing`](ServiceId::Standing))
+//! takes id **9**. An
 //! unregistered service id or an opcode a service does not implement is a
 //! [`Status::UnknownService`] / [`Status::UnknownOpcode`], never a silent drop.
 //!
@@ -150,6 +152,18 @@ pub enum ServiceId {
     /// is that entry verbatim. Exhaustion is [`Status::OutOfRange`]; a length
     /// mismatch is [`Status::BadRequest`] and consumes nothing.
     Payload = 8,
+    /// Standing-fault poll service: the guest fault agent asks which
+    /// V-time-windowed standing faults are active right now (op 1,
+    /// `standing_poll`). The request payload is empty. The response carries the
+    /// `u64` doorbell `Moment`, a `u32` entry count, then each entry as
+    /// `u16 class`, `u16 target_len`, `target_len` target bytes, `u64` window
+    /// start and `u64` window end. Only entries whose half-open window contains
+    /// the `Moment` are returned, in the reproducer's canonical order. A list
+    /// that would not fit one frame answers [`Status::OutOfRange`].
+    ///
+    /// The service is offered exactly when the SDK channel is wired, like
+    /// [`Event`](ServiceId::Event) and [`Sdk`](ServiceId::Sdk).
+    Standing = 9,
 }
 
 impl ServiceId {
@@ -654,6 +668,15 @@ mod guest {
                 return Err(ClientError::Protocol(ProtoError::BadPayload));
             }
             Ok(out[0] != 0)
+        }
+
+        /// Poll the host for the standing faults active at the current
+        /// `Moment` ([`ServiceId::Standing`], op 1). The request payload is
+        /// empty; the response bytes are copied into `out` and the copied
+        /// length returned. Decode them with [`parse_standing`]. A response
+        /// that does not fit `out` is a protocol error.
+        pub fn standing_poll(&mut self, out: &mut [u8]) -> Result<usize, ClientError<T::Error>> {
+            self.call_copy(ServiceId::Standing, 1, &[], out)
         }
 
         /// Surface one crossed instrumented-coverage threshold (SDK op 2).
@@ -1858,3 +1881,77 @@ pub use host::{
     ConsoleSink, Dispatcher, EventSink, MemBlockDevice, NetDecider, NetFlowPoint, PvclockRegistrar,
     SdkBuggify, SeededEntropy, Service,
 };
+
+/// One standing fault in a [`ServiceId::Standing`] response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StandingEntry<'a> {
+    /// The `DecisionClass` discriminant this fault perturbs.
+    pub class: u16,
+    /// Opaque, class-interpreted target bytes.
+    pub target: &'a [u8],
+    /// The half-open V-time window `[start, end)`.
+    pub window: (u64, u64),
+}
+
+/// Borrowing iterator over the entries of a standing-poll response.
+#[derive(Clone, Debug)]
+pub struct StandingIter<'a> {
+    buf: &'a [u8],
+    offset: usize,
+    remaining: u32,
+}
+
+impl<'a> Iterator for StandingIter<'a> {
+    type Item = StandingEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        let class = read_u16(self.buf, self.offset).ok()?;
+        let len = read_u16(self.buf, self.offset + 2).ok()? as usize;
+        let start = self.offset + 4;
+        let target = self.buf.get(start..start + len)?;
+        let window = (
+            read_u64(self.buf, start + len).ok()?,
+            read_u64(self.buf, start + len + 8).ok()?,
+        );
+        self.offset = start + len + 16;
+        Some(StandingEntry {
+            class,
+            target,
+            window,
+        })
+    }
+}
+
+/// Decode a standing-poll response into its `Moment` and its entries.
+///
+/// The entry count and every length are validated against the buffer up front,
+/// so the returned iterator never yields a truncated entry.
+pub fn parse_standing(buf: &[u8]) -> Result<(u64, StandingIter<'_>), ProtoError> {
+    let moment = read_u64(buf, 0)?;
+    let count = read_u32(buf, 8)?;
+    let mut offset = 12;
+    for _ in 0..count {
+        let len = read_u16(buf, offset + 2)? as usize;
+        offset = offset
+            .checked_add(4 + len + 16)
+            .ok_or(ProtoError::BadPayload)?;
+        if offset > buf.len() {
+            return Err(ProtoError::BadPayload);
+        }
+    }
+    if offset != buf.len() {
+        return Err(ProtoError::BadPayload);
+    }
+    Ok((
+        moment,
+        StandingIter {
+            buf,
+            offset: 12,
+            remaining: count,
+        },
+    ))
+}

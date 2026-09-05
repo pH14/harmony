@@ -107,6 +107,64 @@ fn golden_request_bytes_for_every_service_opcode() {
     payload.extend_from_slice(&0_u32.to_le_bytes());
     payload.extend_from_slice(&le32(2));
     assert_eq!(enc_req(ServiceId::Payload, 1, 14, &le32(2)), payload);
+
+    // The standing-fault poll (ServiceId::Standing = 9, op 1): an empty request.
+    let mut standing = b"HCP1".to_vec();
+    standing.extend_from_slice(&[1, 0, 9, 0, 1, 0, 0, 0]);
+    standing.extend_from_slice(&le32(15)); // seq
+    standing.extend_from_slice(&le32(0)); // payload len
+    standing.extend_from_slice(&le32(0)); // reserved
+    assert_eq!(enc_req(ServiceId::Standing, 1, 15, &[]), standing);
+}
+
+/// The standing-poll response body: `u64` moment, `u32` count, then each entry
+/// as `u16` class, `u16` target length, target bytes, `u64` window start and
+/// `u64` window end. Pinned as bytes, then round-tripped through the decoder.
+#[test]
+fn golden_standing_poll_response_body() {
+    let mut body = Vec::new();
+    body.extend_from_slice(&le64(4_096)); // moment
+    body.extend_from_slice(&le32(2)); // entry count
+    // Entry 0: class 6, target "ab", window [100, 200).
+    body.extend_from_slice(&6_u16.to_le_bytes());
+    body.extend_from_slice(&2_u16.to_le_bytes());
+    body.extend_from_slice(b"ab");
+    body.extend_from_slice(&le64(100));
+    body.extend_from_slice(&le64(200));
+    // Entry 1: class 6, empty target, window [0, u64::MAX).
+    body.extend_from_slice(&6_u16.to_le_bytes());
+    body.extend_from_slice(&0_u16.to_le_bytes());
+    body.extend_from_slice(&le64(0));
+    body.extend_from_slice(&le64(u64::MAX));
+
+    let (moment, entries) = hypercall_proto::parse_standing(&body).unwrap();
+    assert_eq!(moment, 4_096);
+    let entries: Vec<_> = entries.collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].class, 6);
+    assert_eq!(entries[0].target, b"ab");
+    assert_eq!(entries[0].window, (100, 200));
+    assert_eq!(entries[1].class, 6);
+    assert_eq!(entries[1].target, b"");
+    assert_eq!(entries[1].window, (0, u64::MAX));
+
+    // An empty list is a well-formed 12-byte body.
+    let mut empty = le64(7).to_vec();
+    empty.extend_from_slice(&le32(0));
+    let (moment, entries) = hypercall_proto::parse_standing(&empty).unwrap();
+    assert_eq!(moment, 7);
+    assert_eq!(entries.count(), 0);
+
+    // Truncation, a short header, and trailing bytes all reject — never panic.
+    for len in 0..body.len() {
+        assert!(
+            hypercall_proto::parse_standing(&body[..len]).is_err(),
+            "len {len}"
+        );
+    }
+    let mut trailing = body.clone();
+    trailing.push(0);
+    assert!(hypercall_proto::parse_standing(&trailing).is_err());
 }
 
 #[test]

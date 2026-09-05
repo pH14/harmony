@@ -193,6 +193,29 @@ impl EnvSpec {
         }
     }
 
+    /// The correlated, V-time-windowed standing faults (empty for
+    /// [`Seeded`](EnvSpec::Seeded)). The frontier applies these imperatively;
+    /// the guest reads the currently-active subset through the standing-poll
+    /// service.
+    pub fn standing(&self) -> &[StandingFault] {
+        match self {
+            Self::Recorded { standing, .. } => standing,
+            Self::Seeded { .. } => &[],
+        }
+    }
+
+    /// Replace the standing-fault list. A non-empty list promotes a seeded spec
+    /// to its recorded form; an empty one clears the list without otherwise
+    /// changing an already-recorded reproducer.
+    pub fn set_standing(&mut self, standing: Vec<StandingFault>) {
+        if !standing.is_empty() {
+            self.promote();
+        }
+        if let Self::Recorded { standing: s, .. } = self {
+            *s = standing;
+        }
+    }
+
     /// Replace the ordered payload tape. Supplying `Some` promotes a seeded
     /// spec to its recorded form; `None` clears a tape without otherwise
     /// changing an already-recorded reproducer.
@@ -424,6 +447,7 @@ impl EnvSpec {
             self.policy().clone(),
             guest,
             self.payloads().map(<[Vec<u8>]>::to_vec),
+            self.standing().to_vec(),
         )
     }
 }
@@ -522,6 +546,7 @@ pub struct RecordedEnv {
     moment: Moment,
     payloads: Option<Vec<Vec<u8>>>,
     payload_cursor: usize,
+    standing: Vec<StandingFault>,
 }
 
 impl RecordedEnv {
@@ -531,6 +556,7 @@ impl RecordedEnv {
         policy: FaultPolicy,
         overrides: BTreeMap<Moment, Answer>,
         payloads: Option<Vec<Vec<u8>>>,
+        standing: Vec<StandingFault>,
     ) -> Self {
         Self {
             base: SeededEnv::new(seed, policy),
@@ -538,7 +564,28 @@ impl RecordedEnv {
             moment: 0,
             payloads,
             payload_cursor: 0,
+            standing,
         }
+    }
+
+    /// The standing faults whose half-open window contains `at`, in canonical
+    /// order. The standing-poll service answers from this.
+    pub fn active_at(&self, at: Moment) -> Vec<&StandingFault> {
+        self.standing
+            .iter()
+            .filter(|s| s.window.0 <= at && at < s.window.1)
+            .collect()
+    }
+
+    /// Replace the standing-fault list. The frontier restores this alongside the
+    /// policy when it seals, branches, or replays.
+    pub fn set_standing(&mut self, standing: Vec<StandingFault>) {
+        self.standing = standing;
+    }
+
+    /// The full standing-fault list, for capture at seal.
+    pub fn standing(&self) -> &[StandingFault] {
+        &self.standing
     }
 
     /// Whether this environment offers an ordered payload tape. An exhausted

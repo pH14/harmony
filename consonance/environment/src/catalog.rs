@@ -86,9 +86,18 @@ impl DecisionClass {
         !self.is_supply()
     }
 
-    /// The wire discriminant.
-    pub(crate) fn as_u16(self) -> u16 {
+    /// The wire discriminant. Public because the standing-poll service frames
+    /// it for the guest.
+    #[must_use]
+    pub fn as_u16(self) -> u16 {
         self as u16
+    }
+
+    /// Decode a wire discriminant, rejecting unknown values. Public because
+    /// snapshot decoding validates a standing fault's class.
+    #[must_use]
+    pub fn from_wire(v: u16) -> Option<Self> {
+        Self::from_u16(v)
     }
 
     /// Decode a discriminant, rejecting unknown values.
@@ -346,6 +355,11 @@ pub enum Fault {
     /// (`16`) is disjoint from every earlier tag so a stale blob can never
     /// reinterpret into it.
     BuggifyFire,
+    /// Run the guest-side hook with this id once. The hook is a workload-defined
+    /// command the fault agent spawns; its identity is the `u32`, interpreted by
+    /// the guest's bundle. Under [`DecisionClass::Process`] because it perturbs
+    /// the node's process plane.
+    RunHook(u32),
 }
 
 impl Fault {
@@ -360,7 +374,9 @@ impl Fault {
             Self::BlockEio | Self::BlockLatency(_) | Self::BlockTorn(_) | Self::BlockNospc => {
                 DecisionClass::BlockIo
             }
-            Self::ProcPause(_) | Self::ProcKill | Self::ProcRestart => DecisionClass::Process,
+            Self::ProcPause(_) | Self::ProcKill | Self::ProcRestart | Self::RunHook(_) => {
+                DecisionClass::Process
+            }
             Self::BuggifyFire => DecisionClass::Buggify,
         }
     }

@@ -126,6 +126,7 @@ pub struct control_proto::CapFlags(pub u32)
 impl control_proto::CapFlags
 pub const control_proto::CapFlags::GUEST_HAS_SDK: Self
 pub const control_proto::CapFlags::NONE: Self
+pub const control_proto::CapFlags::STANDING_POLL: Self
 pub fn control_proto::CapFlags::contains(self, control_proto::CapFlags) -> bool
 pub fn control_proto::CapFlags::with(self, control_proto::CapFlags) -> Self
 pub struct control_proto::Caps

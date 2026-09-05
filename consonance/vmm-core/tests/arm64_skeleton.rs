@@ -781,6 +781,65 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     assert!(format!("{err}").contains("ACK while its PPI is not asserted"));
 }
 
+/// A clockevent armed across a seal must come back armed in the restored VM's
+/// schedule: the deadline rides the device blob while the trace starts empty.
+#[test]
+fn arm64_clockevent_armed_across_a_seal_is_rearmed_on_restore() {
+    use vmm_backend::Gpa;
+    use vmm_core::vendor::arm64::board::{PVCLOCK, PVCLOCK_PPI};
+
+    // Two 10,000-vns MMIO exits register the page and arm tick 2,000 (32,000
+    // vns at 62.5 MHz) — past the seal, so the deadline survives into the fork.
+    let read_pvclock = || {
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 8),
+            size: 4,
+            write: None,
+        })
+    };
+    let mut v = vmm(vec![
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0),
+            size: 8,
+            write: Some(0x1000),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(2_000),
+        }),
+    ]);
+    wire_virtual_time_clock(&mut v);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert_eq!(v.step().unwrap(), Step::Continued);
+    assert!(!v.has_pending_guest_interrupt().unwrap(), "not yet due");
+    let snapshot = v.save_vm_state().unwrap();
+
+    let mut restored = vmm(vec![read_pvclock(), read_pvclock()]);
+    wire_virtual_time_clock(&mut restored);
+    restored
+        .restore_snapshot(v.guest_memory(), &snapshot)
+        .unwrap();
+
+    let schedule = restored
+        .virtual_time_trace()
+        .expect("virtual_time trace wired")
+        .schedule();
+    assert_eq!(schedule.len(), 1, "one re-armed record for the survivor");
+    assert_eq!(schedule[0].deadline_vns, 32_000);
+    assert_eq!(schedule[0].interrupt_id, PVCLOCK_PPI);
+    assert_eq!(schedule[0].armed_for_event, 0);
+
+    assert_eq!(restored.step().unwrap(), Step::Continued); // 30,000 vns: short
+    assert_eq!(restored.step().unwrap(), Step::Continued); // 40,000 vns: due
+    assert!(restored.has_pending_guest_interrupt().unwrap());
+    let trace = restored
+        .virtual_time_trace()
+        .expect("virtual_time trace wired");
+    vmm_core::virtual_time::check_delivery_placement(trace.schedule(), trace.normalized_log())
+        .expect("the delivery sits at the first event whose V-time covers the deadline");
+}
+
 /// A due clockevent remains only a deadline while IRQs are masked. The first
 /// explicit post-unmask exit is the sole delivery boundary, so HVF and KVM
 /// cannot choose different instructions from an implementation-defined

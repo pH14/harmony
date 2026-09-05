@@ -235,7 +235,7 @@ pub fn server_caps() -> Caps {
         // cooperating guest SDK — assertions surface `StopReason::Assertion`,
         // `setup_complete` surfaces `StopReason::SnapshotPoint`, and buggify
         // decisions are answered — so `GUEST_HAS_SDK` is advertised.
-        flags: control_proto::CapFlags::GUEST_HAS_SDK,
+        flags: control_proto::CapFlags::GUEST_HAS_SDK.with(control_proto::CapFlags::STANDING_POLL),
     }
 }
 
@@ -1270,6 +1270,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // recorded reproducer below so `recorded_env()` re-emits it and a replay
         // reproduces the buggify decisions. `None` for a verbatim replay.
         let mut env_policy: Option<FaultPolicy> = None;
+        let mut standing: Vec<environment::StandingFault> = Vec::new();
         let seed = match env {
             None => None,
             Some(env) => {
@@ -1307,19 +1308,25 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 // overrides, so the reproducer still round-trips a later
                 // branch/replay). A block/process fault (no decide-seam yet) is
                 // still rejected. A **guest override** (a pinned per-Moment answer)
-                // and a **standing** fault remain unsupported — the net path is
-                // driven by the seeded policy, not by pinned overrides.
-                let has_standing = matches!(
-                    &spec,
-                    EnvSpec::Recorded { standing, .. } if !standing.is_empty()
-                );
+                // remains unsupported — the net path is driven by the seeded
+                // policy, not by pinned overrides.
+                //
+                // **Standing faults** are accepted when every entry is
+                // `Process`-class: the guest fault agent polls them through the
+                // standing service and applies them itself, so they replay from
+                // the reproducer. Any other class has no enforcer yet.
+                let standing_ok = spec
+                    .standing()
+                    .iter()
+                    .all(|s| s.class == environment::DecisionClass::Process);
                 let has_guest = spec
                     .overrides()
                     .values()
                     .any(|a| a.guest_answer().is_some());
-                if has_guest || has_standing || !spec.policy().is_enforceable_only() {
+                if has_guest || !standing_ok || !spec.policy().is_enforceable_only() {
                     return Ok(Err(ControlError::Unsupported));
                 }
+                standing = spec.standing().to_vec();
                 host = spec.host_faults().collect();
                 reseeds = spec.reseeds().clone();
                 payloads = spec.payloads().map(<[Vec<u8>]>::to_vec);
@@ -1549,6 +1556,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .and_then(|snap| snap.channel.remaining_payloads())
         };
         self.recorded.set_payloads(active_payloads);
+        // A branch stages its supplied standing faults; a replay takes the
+        // seal-time list back from the SDK channel snapshot below.
+        if seed.is_some() {
+            self.recorded.set_standing(standing);
+        }
         let sdk_env = self.recorded.materialize();
         let sdk_policy = self.recorded.policy().clone();
         self.vmm
@@ -2823,7 +2835,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 9,
+            caps.protocol_version, 11,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
@@ -2833,6 +2845,10 @@ mod tests {
         assert!(
             caps.flags.contains(CapFlags::GUEST_HAS_SDK),
             "task 73 services the doorbell, so GUEST_HAS_SDK is advertised"
+        );
+        assert!(
+            caps.flags.contains(CapFlags::STANDING_POLL),
+            "the doorbell offers the standing-fault poll service"
         );
     }
 
@@ -3401,7 +3417,7 @@ mod tests {
         miri,
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
-    fn branch_accepts_host_overrides_but_rejects_guest_or_standing_or_policy() {
+    fn branch_accepts_host_overrides_and_process_standing_but_rejects_guest_or_policy() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
@@ -3468,6 +3484,53 @@ mod tests {
             .unwrap(),
             Err(ControlError::Unsupported),
             "a non-none fault policy is unenforceable until task 59/61"
+        );
+
+        // A Process-class standing fault is accepted: the guest fault agent
+        // polls it through the standing service and applies it itself.
+        let mut process_spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        process_spec.set_standing(vec![environment::StandingFault {
+            class: environment::DecisionClass::Process,
+            target: environment::process_target(0, &environment::Fault::ProcKill),
+            window: (100, 200),
+        }]);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: Reproducer {
+                    blob_version: EnvSpec::BLOB_VERSION,
+                    bytes: process_spec.encode(),
+                },
+            })
+            .unwrap(),
+            Ok(Reply::Unit),
+            "a Process-class standing fault has a guest-side enforcer"
+        );
+
+        // Any other standing class still has no enforcer.
+        let mut net_spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        net_spec.set_standing(vec![environment::StandingFault {
+            class: environment::DecisionClass::NetFlow,
+            target: vec![1, 2],
+            window: (100, 200),
+        }]);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: Reproducer {
+                    blob_version: EnvSpec::BLOB_VERSION,
+                    bytes: net_spec.encode(),
+                },
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported),
+            "a non-Process standing class has no enforcer"
         );
     }
 
@@ -3878,6 +3941,132 @@ mod tests {
         assert_eq!(h1, h1_again, "same seed ⇒ same branched state");
         assert_ne!(h1, h2, "distinct seeds ⇒ divergent futures");
         assert_ne!(h1, h_base, "a branch is not the verbatim replay");
+    }
+
+    /// An xAPIC register store, as the guest's MMIO exit.
+    fn apic_write(offset: u32, value: u64) -> Exit<X86> {
+        Exit::Common(CommonExit::Mmio {
+            gpa: vmm_backend::Gpa(crate::vendor::x86::dispatch::APIC_MMIO_BASE + u64::from(offset)),
+            size: 4,
+            write: Some(value),
+        })
+    }
+
+    /// A session whose sealed VM has the LAPIC one-shot timer armed, and whose
+    /// forks read the xAPIC once — one virtual_time event, enough to cross the
+    /// 84-vns deadline the arm produced.
+    fn armed_timer_server() -> ControlServer<MockBackend> {
+        let mut live = vmm_at_sync(
+            vec![
+                apic_write(lapic::APIC_SVR, 0x1FF),
+                apic_write(lapic::APIC_LVT_TIMER, 0x40),
+                apic_write(lapic::APIC_TMICT, 1),
+                Exit::Common(CommonExit::Idle),
+            ],
+            500,
+            0xBA5E,
+        );
+        for _ in 0..3 {
+            assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
+        }
+        let factory = Box::new(move || {
+            let mut m = MockBackend::with_exits(vec![
+                Exit::Common(CommonExit::Mmio {
+                    gpa: vmm_backend::Gpa(
+                        crate::vendor::x86::dispatch::APIC_MMIO_BASE + u64::from(lapic::APIC_ISR),
+                    ),
+                    size: 4,
+                    write: None,
+                }),
+                Exit::Common(CommonExit::Idle),
+            ]);
+            m.set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+            let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap());
+            v.wire_snapshot_hashing();
+            v.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            Ok(v)
+        });
+        ControlServer::new(live, factory)
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
+    )]
+    fn branch_and_replay_run_a_timer_armed_across_the_seal() {
+        // The seal-once-and-branch model over a guest with a live timer: the
+        // armed LAPIC rides the snapshot into a fork whose trace starts empty,
+        // and its first fire must land on a schedule record.
+        let mut s = armed_timer_server();
+        hello(&mut s);
+        let base = snap(&mut s);
+
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        let stop_replay = run_all(&mut s);
+        let h_replay = hash(&mut s);
+
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(run_all(&mut s), stop_replay);
+        assert_eq!(hash(&mut s), h_replay, "replay is verbatim");
+
+        let mut branch_run = |seed: u64| -> (StopReason, [u8; 32]) {
+            s.handle(&Request::Branch {
+                snap: base,
+                env: seeded_env(seed),
+            })
+            .unwrap()
+            .unwrap();
+            (run_all(&mut s), hash(&mut s))
+        };
+        let (stop_1, h_1) = branch_run(0x1111);
+        let (stop_1_again, h_1_again) = branch_run(0x1111);
+        assert_eq!(stop_1, stop_1_again);
+        assert_eq!(h_1, h_1_again, "same seed ⇒ bit-identical branch");
+        assert_eq!(
+            stop_1, stop_replay,
+            "the fired timer stops both the same way"
+        );
+
+        // The fork's trace carries the re-armed deadline and its delivery.
+        let trace = s
+            .session_virtual_time_trace()
+            .expect("the session accumulates production traces");
+        let last = trace.segments().last().expect("a branched segment");
+        assert!(
+            matches!(
+                last.start(),
+                crate::session_trace::SessionTraceStart::Branch { .. }
+            ),
+            "the final segment is the branch"
+        );
+        let schedule = last.schedule();
+        assert_eq!(schedule.len(), 1, "one re-armed record for the survivor");
+        assert_eq!(schedule[0].interrupt_id, 0x40);
+        assert_eq!(
+            schedule[0].armed_for_event, 0,
+            "eligible from the first event"
+        );
+        crate::virtual_time::check_delivery_placement(schedule, last.normalized_log())
+            .expect("the delivery sits at the first event whose V-time covers the deadline");
+        assert!(
+            last.normalized_log()
+                .events
+                .iter()
+                .any(|e| !e.interrupts.is_empty()),
+            "the surviving timer actually fired after the branch"
+        );
     }
 
     #[test]

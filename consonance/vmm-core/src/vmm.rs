@@ -604,6 +604,9 @@ pub struct SdkSnapshot {
     /// in RAM; these host-side expectations govern whether its next callback is
     /// accepted, so both sides are replay-relevant.
     pub(crate) coverage_thresholds: BTreeMap<u32, u64>,
+    /// The standing faults the guest fault agent polls. Replay-relevant: the
+    /// standing-poll answers shape which faults the guest applies.
+    pub(crate) standing: Vec<environment::StandingFault>,
 }
 
 impl SdkSnapshot {
@@ -2359,6 +2362,7 @@ where
                 .sdk
                 .as_ref()
                 .is_some_and(|sdk| sdk.env.payload_configured()),
+            s if s == ServiceId::Standing as u16 => self.sdk.is_some(),
             s if s == ServiceId::Pvclock as u16 => self.pvclock_available(),
             _ => false,
         }
@@ -2795,6 +2799,7 @@ where
             pending_snapshot: s.pending_snapshot,
             payloads: s.env.remaining_payloads(),
             coverage_thresholds: s.coverage_thresholds.clone(),
+            standing: s.env.standing().to_vec(),
         })
     }
 
@@ -2814,6 +2819,7 @@ where
             s.pending_snapshot = snap.pending_snapshot;
             s.env.restore_payloads(snap.payloads.clone());
             s.coverage_thresholds = snap.coverage_thresholds.clone();
+            s.env.set_standing(snap.standing.clone());
         }
     }
 
@@ -3174,6 +3180,79 @@ where
                     (n, None)
                 }
             };
+        }
+        // The Standing service (id 9, op 1): answer the standing faults whose
+        // half-open window contains this doorbell `Moment`. Read-only — it
+        // touches no seeded stream, so an inert guest's state hash is
+        // unchanged. Availability is checked before opcode and payload
+        // classification, matching every other service.
+        if header.service == ServiceId::Standing as u16 {
+            if !self.doorbell_service_offered(header.service) {
+                let n = encode_error(
+                    header.service,
+                    header.opcode,
+                    header.seq,
+                    Status::UnknownService,
+                    resp,
+                );
+                return (n, None);
+            }
+            if header.opcode != 1 {
+                let n = encode_error(
+                    header.service,
+                    header.opcode,
+                    header.seq,
+                    Status::UnknownOpcode,
+                    resp,
+                );
+                return (n, None);
+            }
+            if !payload.is_empty() {
+                let n = encode_response(
+                    ServiceId::Standing,
+                    1,
+                    header.seq,
+                    Status::BadRequest,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
+            let active = self
+                .sdk
+                .as_ref()
+                .expect("standing availability requires SDK")
+                .env
+                .active_at(moment);
+            let mut body = Vec::with_capacity(12);
+            body.extend_from_slice(&moment.to_le_bytes());
+            body.extend_from_slice(
+                &u32::try_from(active.len())
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            let mut overflow = active.len() > u32::MAX as usize;
+            for entry in active {
+                let Ok(len) = u16::try_from(entry.target.len()) else {
+                    overflow = true;
+                    break;
+                };
+                body.extend_from_slice(&entry.class.as_u16().to_le_bytes());
+                body.extend_from_slice(&len.to_le_bytes());
+                body.extend_from_slice(&entry.target);
+                body.extend_from_slice(&entry.window.0.to_le_bytes());
+                body.extend_from_slice(&entry.window.1.to_le_bytes());
+            }
+            let status = if overflow || body.len() > MAX_PAYLOAD {
+                Status::OutOfRange
+            } else {
+                Status::Ok
+            };
+            let framed: &[u8] = if status == Status::Ok { &body } else { &[] };
+            let n = encode_response(ServiceId::Standing, 1, header.seq, status, framed, resp)
+                .unwrap_or(0);
+            return (n, None);
         }
         // The Event service (id 4, op 1): capture the `Moment`-stamped emission
         // and, for an assert violation / `setup_complete`, arm a stop.
@@ -7703,6 +7782,34 @@ mod tests {
     }
 
     #[test]
+    fn restored_armed_timer_fires_against_a_rearmed_schedule() {
+        // A timer armed at the snapshot point rides the device blob into the
+        // restored VM, whose trace starts empty. The restore must re-arm the
+        // schedule from that surviving deadline, or the first post-restore fire
+        // has no record to bind to.
+        let mut exits = arm_timer_exits(1);
+        exits.push(Exit::Common(CommonExit::Shutdown));
+        let mut a = virtual_time_lapic_vmm(configured_mock(exits));
+        step_n(&mut a, 3);
+        let s = a.save_vm_state().expect("synchronized boundary");
+
+        let mut b = virtual_time_lapic_vmm(configured_mock(vec![
+            read_mmio(isr_gpa(0x40)),
+            Exit::Common(CommonExit::Shutdown),
+        ]));
+        b.restore_vm_state(&s).expect("restore");
+        b.run()
+            .expect("the restored timer fires against a re-armed schedule");
+
+        let trace = b.virtual_time_trace().expect("virtual_time trace wired");
+        let schedule = trace.schedule();
+        assert_eq!(schedule.len(), 1, "one re-armed record for the survivor");
+        assert_eq!(schedule[0].interrupt_id, 0x40);
+        crate::virtual_time::check_delivery_placement(schedule, trace.normalized_log())
+            .expect("the delivery sits at the first event whose V-time covers the deadline");
+    }
+
+    #[test]
     fn virtual_time_lapic_timer_disarm_cancels_the_schedule() {
         // Arm far in the future, then write TMICT=0: the disarm must cancel
         // the schedule record, and the placement oracle must accept the log
@@ -9811,5 +9918,236 @@ mod tests {
         // The pvclock service itself still works on the same composition.
         let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
+    }
+
+    /// The standing-fault poll service (id 9, op 1) answers exactly the faults
+    /// whose half-open window contains the doorbell `Moment`, framed in the
+    /// reproducer's canonical order.
+    #[test]
+    fn standing_poll_answers_the_window_active_at_the_moment() {
+        use environment::{
+            DecisionClass, EnvSpec, Fault, FaultPolicy, StandingFault, process_target,
+        };
+
+        let kill = StandingFault {
+            class: DecisionClass::Process,
+            target: process_target(0, &Fault::ProcKill),
+            window: (100, 200),
+        };
+        let hook = StandingFault {
+            class: DecisionClass::Process,
+            target: process_target(1, &Fault::RunHook(7)),
+            window: (150, 300),
+        };
+        let mut spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        spec.set_standing(vec![kill.clone(), hook.clone()]);
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+
+        let poll = |vmm: &mut Vmm<MockBackend>, moment: u64| {
+            let mut req = [0_u8; HC_PAGE];
+            let n =
+                hypercall_proto::encode_request(ServiceId::Standing, 1, 1, &[], &mut req).unwrap();
+            let mut resp = [0_u8; HC_PAGE];
+            let (len, stop) = vmm.dispatch_doorbell(moment, &req[..n], &mut resp);
+            assert!(stop.is_none(), "a poll never arms a stop");
+            let (header, payload) = decode(&resp[..len]).unwrap();
+            (header.status, payload.to_vec())
+        };
+
+        let expect = |vmm: &mut Vmm<MockBackend>, moment: u64, want: Vec<&StandingFault>| {
+            let (status, body) = poll(vmm, moment);
+            assert_eq!(status, Status::Ok as u16);
+            let (echoed, entries) = hypercall_proto::parse_standing(&body).unwrap();
+            assert_eq!(echoed, moment, "the response echoes the polled Moment");
+            let got: Vec<_> = entries.collect();
+            assert_eq!(got.len(), want.len(), "at moment {moment}");
+            for (entry, expected) in got.iter().zip(want) {
+                assert_eq!(entry.class, expected.class.as_u16());
+                assert_eq!(entry.target, expected.target.as_slice());
+                assert_eq!(entry.window, expected.window);
+            }
+        };
+
+        // Before either window, and at each half-open boundary.
+        expect(&mut vmm, 99, vec![]);
+        expect(&mut vmm, 100, vec![&kill]);
+        expect(&mut vmm, 149, vec![&kill]);
+        expect(&mut vmm, 150, vec![&kill, &hook]);
+        expect(&mut vmm, 199, vec![&kill, &hook]);
+        expect(&mut vmm, 200, vec![&hook]);
+        expect(&mut vmm, 299, vec![&hook]);
+        expect(&mut vmm, 300, vec![]);
+
+        // A bad opcode and a non-empty payload are graded, never silently dropped.
+        let mut req = [0_u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Standing, 2, 1, &[], &mut req).unwrap();
+        let mut resp = [0_u8; HC_PAGE];
+        let (len, _) = vmm.dispatch_doorbell(150, &req[..n], &mut resp);
+        assert_eq!(
+            decode(&resp[..len]).unwrap().0.status,
+            Status::UnknownOpcode as u16
+        );
+
+        let n = hypercall_proto::encode_request(ServiceId::Standing, 1, 1, &[0], &mut req).unwrap();
+        let (len, _) = vmm.dispatch_doorbell(150, &req[..n], &mut resp);
+        assert_eq!(
+            decode(&resp[..len]).unwrap().0.status,
+            Status::BadRequest as u16
+        );
+    }
+
+    /// A composition with no SDK channel does not offer the standing service:
+    /// every request answers `UnknownService`, before opcode or payload
+    /// classification.
+    #[test]
+    fn standing_poll_is_unknown_without_an_sdk_channel() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let mut resp = [0_u8; HC_PAGE];
+        for (opcode, payload) in [(1_u16, &[][..]), (2, &[][..]), (1, &[0_u8][..])] {
+            let mut req = [0_u8; HC_PAGE];
+            let n =
+                hypercall_proto::encode_request(ServiceId::Standing, opcode, 1, payload, &mut req)
+                    .unwrap();
+            let (len, _) = vmm.dispatch_doorbell(150, &req[..n], &mut resp);
+            assert_eq!(
+                decode(&resp[..len]).unwrap().0.status,
+                Status::UnknownService as u16
+            );
+        }
+    }
+
+    /// The poll is read-only: it consumes no seeded stream, so an otherwise
+    /// inert guest's SDK channel state is byte-unchanged across any number of
+    /// polls.
+    #[test]
+    fn standing_poll_leaves_the_sdk_channel_state_unchanged() {
+        use environment::{
+            DecisionClass, EnvSpec, Fault, FaultPolicy, StandingFault, process_target,
+        };
+
+        let mut spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        spec.set_standing(vec![StandingFault {
+            class: DecisionClass::Process,
+            target: process_target(0, &Fault::ProcKill),
+            window: (0, u64::MAX),
+        }]);
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+        let before = encode_sdk_channel(vmm.sdk.as_ref().unwrap());
+        let mut resp = [0_u8; HC_PAGE];
+        for moment in 0..8 {
+            let mut req = [0_u8; HC_PAGE];
+            let n =
+                hypercall_proto::encode_request(ServiceId::Standing, 1, 1, &[], &mut req).unwrap();
+            let (len, _) = vmm.dispatch_doorbell(moment, &req[..n], &mut resp);
+            assert_eq!(decode(&resp[..len]).unwrap().0.status, Status::Ok as u16);
+        }
+        assert_eq!(encode_sdk_channel(vmm.sdk.as_ref().unwrap()), before);
+    }
+
+    /// A standing list too large for one frame answers `OutOfRange` rather than
+    /// truncating.
+    #[test]
+    fn standing_poll_refuses_a_list_that_does_not_fit_one_frame() {
+        use environment::{DecisionClass, EnvSpec, FaultPolicy, StandingFault};
+
+        let mut spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        // Each entry frames as 4 + target + 16 bytes; enough of them overflow the
+        // single-page payload.
+        let entries = (0..64)
+            .map(|n| StandingFault {
+                class: DecisionClass::Process,
+                target: vec![n as u8; 128],
+                window: (0, u64::MAX),
+            })
+            .collect();
+        spec.set_standing(entries);
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+        let mut req = [0_u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Standing, 1, 1, &[], &mut req).unwrap();
+        let mut resp = [0_u8; HC_PAGE];
+        let (len, _) = vmm.dispatch_doorbell(0, &req[..n], &mut resp);
+        let (header, payload) = decode(&resp[..len]).unwrap();
+        assert_eq!(header.status, Status::OutOfRange as u16);
+        assert!(payload.is_empty());
+    }
+
+    /// A verbatim replay answers the same standing list the snapshot sealed:
+    /// `sdk_snapshot` captures it and `sdk_restore` puts it back, so a poll
+    /// after the restore is byte-identical to one before it.
+    #[test]
+    fn replay_restores_the_sealed_standing_list() {
+        use environment::{
+            DecisionClass, EnvSpec, Fault, FaultPolicy, StandingFault, process_target,
+        };
+
+        let sealed = vec![
+            StandingFault {
+                class: DecisionClass::Process,
+                target: process_target(0, &Fault::ProcKill),
+                window: (100, 200),
+            },
+            StandingFault {
+                class: DecisionClass::Process,
+                target: process_target(1, &Fault::RunHook(3)),
+                window: (150, 300),
+            },
+        ];
+        let mut spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        spec.set_standing(sealed.clone());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+
+        let poll = |vmm: &mut Vmm<MockBackend>, moment: u64| {
+            let mut req = [0_u8; HC_PAGE];
+            let n =
+                hypercall_proto::encode_request(ServiceId::Standing, 1, 1, &[], &mut req).unwrap();
+            let mut resp = [0_u8; HC_PAGE];
+            let (len, _) = vmm.dispatch_doorbell(moment, &req[..n], &mut resp);
+            resp[..len].to_vec()
+        };
+        let before: Vec<_> = (0..400).step_by(37).map(|m| poll(&mut vmm, m)).collect();
+
+        let snap = vmm.sdk_snapshot().unwrap();
+        assert_eq!(snap.standing, sealed, "the seal captures the standing list");
+
+        // A fresh VM whose env carries no standing faults answers empty…
+        let bare = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        let mut restored = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        restored.enable_sdk(bare.materialize(), bare.policy());
+        assert_ne!(
+            (0..400)
+                .step_by(37)
+                .map(|m| poll(&mut restored, m))
+                .collect::<Vec<_>>(),
+            before
+        );
+
+        // …until the snapshot is restored, after which every poll matches.
+        restored.sdk_restore(&snap);
+        assert_eq!(
+            (0..400)
+                .step_by(37)
+                .map(|m| poll(&mut restored, m))
+                .collect::<Vec<_>>(),
+            before
+        );
     }
 }

@@ -137,3 +137,10 @@ jobs:
       # Miri-safe fallback entry point.
       - name: miri — consonance/harmony-linux/tetanes-agent (out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --lib --bins
+
+      # consonance/harmony-linux/fault-agent carries unsafe (the /dev/harmony
+      # ioctl and process-group signalling), so it runs under Miri like the other
+      # guest manifests. The transport is cfg-gated to x86-64 Linux; --bins still
+      # compiles the Miri-safe entry point.
+      - name: miri — consonance/harmony-linux/fault-agent (out-of-workspace manifest)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path consonance/harmony-linux/fault-agent/Cargo.toml --lib --bins

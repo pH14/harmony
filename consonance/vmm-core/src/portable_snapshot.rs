@@ -265,6 +265,17 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
             out.extend_from_slice(&threshold.to_le_bytes());
         }
     }
+    if !sdk.standing.is_empty() {
+        out.extend_from_slice(b"STND");
+        put_vec_len(&mut out, sdk.standing.len());
+        for fault in &sdk.standing {
+            out.extend_from_slice(&fault.class.as_u16().to_le_bytes());
+            put_vec_len(&mut out, fault.target.len());
+            out.extend_from_slice(&fault.target);
+            out.extend_from_slice(&fault.window.0.to_le_bytes());
+            out.extend_from_slice(&fault.window.1.to_le_bytes());
+        }
+    }
     check_len("sdk", out.len(), MAX_SDK_LEN)?;
     Ok(out)
 }
@@ -300,18 +311,48 @@ fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
         }
         _ => return Err(PortableSnapshotError::Malformed("SDK payload option")),
     };
+    // Optional trailing sections, each tagged and written in a fixed order:
+    // `COVR` then `STND`. Both are omitted when empty, so a blob that predates
+    // either decodes unchanged.
     let mut coverage_thresholds = BTreeMap::new();
-    if input.remaining() != 0 {
-        if input.take(4)? != b"COVR" {
-            return Err(PortableSnapshotError::Malformed("SDK coverage tag"));
-        }
-        let count = input.count("SDK coverage threshold count", 12)?;
-        for _ in 0..count {
-            let thread = input.u32()?;
-            let threshold = input.u64()?;
-            if threshold == 0 || coverage_thresholds.insert(thread, threshold).is_some() {
-                return Err(PortableSnapshotError::Malformed("SDK coverage threshold"));
+    let mut standing = Vec::new();
+    // A tail shorter than a tag is not a section; `finish` rejects it.
+    while input.remaining() >= 4 {
+        match input.take(4)? {
+            b"COVR" => {
+                let count = input.count("SDK coverage threshold count", 12)?;
+                if count == 0 {
+                    return Err(PortableSnapshotError::Malformed(
+                        "SDK coverage threshold count",
+                    ));
+                }
+                let mut previous_thread = None;
+                for _ in 0..count {
+                    let thread = input.u32()?;
+                    let threshold = input.u64()?;
+                    if threshold == 0 || previous_thread.is_some_and(|previous| thread <= previous)
+                    {
+                        return Err(PortableSnapshotError::Malformed("SDK coverage threshold"));
+                    }
+                    previous_thread = Some(thread);
+                    coverage_thresholds.insert(thread, threshold);
+                }
             }
+            b"STND" => {
+                let count = input.count("SDK standing count", 28)?;
+                for _ in 0..count {
+                    let class = environment::DecisionClass::from_wire(input.u16()?)
+                        .ok_or(PortableSnapshotError::Malformed("SDK standing class"))?;
+                    let target = input.bytes()?;
+                    let window = (input.u64()?, input.u64()?);
+                    standing.push(environment::StandingFault {
+                        class,
+                        target,
+                        window,
+                    });
+                }
+            }
+            _ => return Err(PortableSnapshotError::Malformed("SDK section tag")),
         }
     }
     input.finish("SDK")?;
@@ -321,6 +362,7 @@ fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
         pending_snapshot,
         payloads,
         coverage_thresholds,
+        standing,
     })
 }
 
@@ -574,6 +616,11 @@ mod tests {
             pending_snapshot: true,
             payloads: Some(vec![vec![4, 5], Vec::new()]),
             coverage_thresholds: BTreeMap::from([(2, 9), (7, 14)]),
+            standing: vec![environment::StandingFault {
+                class: environment::DecisionClass::Process,
+                target: environment::process_target(1, &environment::Fault::ProcKill),
+                window: (100, 200),
+            }],
         };
         let net = NetSnapshot {
             decisions: vec![(13, 17, Answer::Nominal)],

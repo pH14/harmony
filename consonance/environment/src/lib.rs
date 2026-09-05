@@ -49,6 +49,7 @@ mod error;
 mod host;
 mod policy;
 mod prng;
+mod process;
 mod recorded;
 mod seeded;
 
@@ -57,6 +58,7 @@ pub use envcodec::EnvCodec;
 pub use error::EnvError;
 pub use host::{Action, BitMask, HostFault, Moment, Ratio};
 pub use policy::FaultPolicy;
+pub use process::{decode_process_target, process_target};
 pub use recorded::{EnvSpec, RecordedEnv, StandingFault};
 pub use seeded::SeededEnv;
 
@@ -75,8 +77,9 @@ pub use seeded::SeededEnv;
 /// (discriminant `7`) and the [`Fault::BuggifyFire`] fault (byte tag `16`) — both
 /// additive with stable discriminants, so a recorded blob whose bytes predate
 /// them still replays, while a blob that names them fails loudly on an older
-/// reader (unknown class / undefined tag).
-pub const CATALOG_VERSION: u16 = 4;
+/// reader (unknown class / undefined tag). Bumped to `5` for the additive
+/// [`Fault::RunHook`] (byte tag `17`).
+pub const CATALOG_VERSION: u16 = 5;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service

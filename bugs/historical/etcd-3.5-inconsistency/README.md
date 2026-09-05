@@ -1,6 +1,6 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: spec only — workload not yet built.**
+**Status: workload built; nominal control pending a patched-KVM host.**
 
 ## The bug
 
@@ -58,3 +58,47 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
 Single binary, no kernel or version gymnastics, kill-at-Moment is a fault surface Harmony has
 today, the oracle is cheap, and it's the highest-recognition corruption bug in modern infra
 (it shook Kubernetes). It also has a natural sibling (the defrag bug) once this lands.
+
+## Workload as built
+
+Built by `consonance/harmony-linux/linux/build-faultlab-image.sh` into
+`initramfs-faultlab-etcd.cpio.gz`. etcd and etcdctl come from the official
+3.5.2 linux/amd64 release tarball, pinned by sha256 in `versions.lock` and
+cross-checked against the release's own `SHA256SUMS`. No source patching, as
+the triple requires.
+
+Boot with `rdinit=/etcd-init`. Bundle `/bundle/etcd`:
+
+| item | what it runs |
+|---|---|
+| node 0 `etcd` | single member, data dir on tmpfs, `--backend-batch-interval` (default 1ms) |
+| ready | `etcdctl endpoint health` |
+| hook 1 | 200 puts through etcdctl, each acked key appended to a journal on tmpfs |
+| hook 2 | read every journaled key back; `@always 1 0` on any missing key |
+
+The journal is the client's record of what the server acknowledged, so a key
+that is in the journal and absent after a restart is a durability violation by
+definition. That is the single-member ground truth the upstream postmortem
+notes nobody had a tool for.
+
+Command-line knobs, so a campaign can widen or shrink the window without
+rebuilding: `faultlab.puts` (default 200) and `faultlab.batch_interval`
+(default 1ms).
+
+The guest kernel is `bzImage-faultlab`, built by `build-faultlab-kernel.sh`.
+etcd is Go, and the Go runtime reads the timestamp counter directly, so it
+faults instantly on the default kernel; see `x86-faultlab-config-fragment`.
+That variant is only deterministic on a host with the patched KVM loaded.
+
+## Status
+
+Smoke tested on stock KVM: the member starts, all 200 puts are acknowledged,
+the read-back finds every journaled key and the oracle stays silent
+(`@always 1 1`). Roughly 51 s of guest time per run.
+
+The nominal control is **not** yet recorded. Two runs on stock KVM produce
+different serial bytes and different state hashes, which is expected there and
+is not evidence of an image defect: without RDTSC exiting the Go runtime reads
+the raw host counter, and its scheduling decisions vary with it. The control
+belongs on a host with the patched KVM loaded, and the result goes here once
+that run happens.

@@ -557,6 +557,9 @@ impl CapFlags {
     /// The guest carries a cooperating SDK (decisions/assertions/snapshot points
     /// can surface).
     pub const GUEST_HAS_SDK: Self = CapFlags(1);
+    /// The doorbell offers the standing-fault poll service, so a `Branch` may
+    /// carry `Process`-class standing faults for the guest fault agent to apply.
+    pub const STANDING_POLL: Self = CapFlags(2);
 
     /// Whether every bit in `other` is set in `self`.
     pub fn contains(self, other: CapFlags) -> bool {

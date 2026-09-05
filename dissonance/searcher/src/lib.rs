@@ -2,6 +2,8 @@
 
 //! Deterministic Dissonance search library.
 
+#[cfg(feature = "consonance")]
+pub mod faultlab;
 pub mod nova;
 pub mod search;
 pub mod smb;

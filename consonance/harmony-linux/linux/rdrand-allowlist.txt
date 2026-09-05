@@ -8,7 +8,18 @@
 # Selected by build-kernel.sh via HARMONY_RDRAND_ALLOWLIST (default: this
 # file); the x86-vtime workflow selects the runner-toolchain baseline
 # rdrand-allowlist-gha.txt instead.
-#
-# No box capture exists yet (the marker below keeps box builds fail-closed);
-# capturing and reviewing it is part of the box re-baseline issue.
-# GATE-UNARMED
+
+# extract_entropy's block loop tries arch_get_random_seed_longs (rdseed) then
+# arch_get_random_longs (rdrand). Each is reached only through an
+# .altinstr_aux testb on boot_cpu_data's RDSEED / RDRAND capability bits.
+vmlinux:extract_entropy.constprop.0+0xa0
+vmlinux:extract_entropy.constprop.0+0xb3
+
+# random_init_early's seeding loop, same seed-then-random inline pair, same
+# capability-bit gating.
+vmlinux:random_init_early+0x3a
+vmlinux:random_init_early+0x4e
+
+# The RDRAND self-test; it returns unless cpu_has(c, X86_FEATURE_RDRAND)
+# (test $0x40000000 on the feature word).
+vmlinux:x86_init_rdrand+0x17

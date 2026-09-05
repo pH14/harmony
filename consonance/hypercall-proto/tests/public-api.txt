@@ -24,6 +24,7 @@ pub hypercall_proto::ServiceId::Net = 5
 pub hypercall_proto::ServiceId::Payload = 8
 pub hypercall_proto::ServiceId::Pvclock = 7
 pub hypercall_proto::ServiceId::Sdk = 6
+pub hypercall_proto::ServiceId::Standing = 9
 #[repr(u16)] pub enum hypercall_proto::Status
 pub hypercall_proto::Status::BadRequest = 1
 pub hypercall_proto::Status::Internal = 5
@@ -44,6 +45,7 @@ pub fn hypercall_proto::Client<T>::net_decide(&mut self, u32, u32, u64, u16, &mu
 pub fn hypercall_proto::Client<T>::new(T) -> Self
 pub fn hypercall_proto::Client<T>::payload_fetch(&mut self, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::pvclock_register(&mut self, u64) -> core::result::Result<u32, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
+pub fn hypercall_proto::Client<T>::standing_poll(&mut self, &mut [u8]) -> core::result::Result<usize, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub struct hypercall_proto::ConsoleSink
 impl hypercall_proto::ConsoleSink
 pub fn hypercall_proto::ConsoleSink::bytes(&self) -> &[u8]
@@ -129,6 +131,14 @@ impl hypercall_proto::Service for hypercall_proto::SeededEntropy
 pub fn hypercall_proto::SeededEntropy::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::SeededEntropy::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::SeededEntropy::save_state(&self) -> alloc::vec::Vec<u8>
+pub struct hypercall_proto::StandingEntry<'a>
+pub hypercall_proto::StandingEntry::class: u16
+pub hypercall_proto::StandingEntry::target: &'a [u8]
+pub hypercall_proto::StandingEntry::window: (u64, u64)
+pub struct hypercall_proto::StandingIter<'a>
+impl<'a> core::iter::traits::iterator::Iterator for hypercall_proto::StandingIter<'a>
+pub type hypercall_proto::StandingIter<'a>::Item = hypercall_proto::StandingEntry<'a>
+pub fn hypercall_proto::StandingIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
 pub const hypercall_proto::HEADER_LEN: usize
 pub const hypercall_proto::MAX_FRAME: usize
 pub const hypercall_proto::MAX_PAYLOAD: usize
@@ -175,3 +185,4 @@ pub fn hypercall_proto::decode(&[u8]) -> core::result::Result<(hypercall_proto::
 pub fn hypercall_proto::encode_error(u16, u16, u32, hypercall_proto::Status, &mut [u8]) -> usize
 pub fn hypercall_proto::encode_request(hypercall_proto::ServiceId, u16, u32, &[u8], &mut [u8]) -> core::result::Result<usize, hypercall_proto::ProtoError>
 pub fn hypercall_proto::encode_response(hypercall_proto::ServiceId, u16, u32, hypercall_proto::Status, &[u8], &mut [u8]) -> core::result::Result<usize, hypercall_proto::ProtoError>
+pub fn hypercall_proto::parse_standing(&[u8]) -> core::result::Result<(u64, hypercall_proto::StandingIter<'_>), hypercall_proto::ProtoError>

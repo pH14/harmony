@@ -33,6 +33,8 @@ pub environment::DecisionClass::Payload = 2
 pub environment::DecisionClass::Process = 6
 pub environment::DecisionClass::Scheduler = 3
 impl environment::DecisionClass
+pub fn environment::DecisionClass::as_u16(self) -> u16
+pub fn environment::DecisionClass::from_wire(u16) -> core::option::Option<Self>
 pub fn environment::DecisionClass::is_fault(self) -> bool
 pub fn environment::DecisionClass::is_supply(self) -> bool
 pub enum environment::DecisionPoint
@@ -89,6 +91,8 @@ pub fn environment::EnvSpec::record_reseed(&mut self, environment::Moment, u64)
 pub fn environment::EnvSpec::reseeds(&self) -> &alloc::collections::btree::map::BTreeMap<environment::Moment, u64>
 pub fn environment::EnvSpec::seed(&self) -> u64
 pub fn environment::EnvSpec::set_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>)
+pub fn environment::EnvSpec::set_standing(&mut self, alloc::vec::Vec<environment::StandingFault>)
+pub fn environment::EnvSpec::standing(&self) -> &[environment::StandingFault]
 pub enum environment::Fault
 pub environment::Fault::BlockEio
 pub environment::Fault::BlockLatency(environment::Span)
@@ -105,6 +109,7 @@ pub environment::Fault::NetThrottle::bps: u32
 pub environment::Fault::ProcKill
 pub environment::Fault::ProcPause(environment::Span)
 pub environment::Fault::ProcRestart
+pub environment::Fault::RunHook(u32)
 impl environment::Fault
 pub fn environment::Fault::class(&self) -> environment::DecisionClass
 #[repr(u16)] pub enum environment::FlowEvent
@@ -150,6 +155,7 @@ pub fn environment::Ratio::new(u64, u64) -> core::option::Option<Self>
 pub fn environment::Ratio::num(self) -> u64
 pub struct environment::RecordedEnv
 impl environment::RecordedEnv
+pub fn environment::RecordedEnv::active_at(&self, environment::Moment) -> alloc::vec::Vec<&environment::StandingFault>
 pub fn environment::RecordedEnv::moment(&self) -> environment::Moment
 pub fn environment::RecordedEnv::payload_configured(&self) -> bool
 pub fn environment::RecordedEnv::pull_payload(&mut self, u32) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, u32>
@@ -157,6 +163,8 @@ pub fn environment::RecordedEnv::remaining_payloads(&self) -> core::option::Opti
 pub fn environment::RecordedEnv::restore_payloads(&mut self, core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>)
 pub fn environment::RecordedEnv::restore_stream_state(&mut self, &[u8; 16])
 pub fn environment::RecordedEnv::set_moment(&mut self, environment::Moment)
+pub fn environment::RecordedEnv::set_standing(&mut self, alloc::vec::Vec<environment::StandingFault>)
+pub fn environment::RecordedEnv::standing(&self) -> &[environment::StandingFault]
 pub fn environment::RecordedEnv::stream_state(&self) -> [u8; 16]
 impl environment::Environment for environment::RecordedEnv
 pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
@@ -180,4 +188,6 @@ impl environment::Environment for environment::RecordedEnv
 pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
 impl environment::Environment for environment::SeededEnv
 pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+pub fn environment::decode_process_target(&[u8]) -> core::option::Option<(u16, environment::Fault)>
+pub fn environment::process_target(u16, &environment::Fault) -> alloc::vec::Vec<u8>
 pub type environment::Moment = u64

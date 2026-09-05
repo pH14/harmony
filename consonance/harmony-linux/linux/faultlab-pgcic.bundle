@@ -1,0 +1,6 @@
+node postgres /w/pg-node.sh
+ready /w/pg-ready.sh
+hook 1 /w/pg-hooks.sh 1
+hook 2 /w/pg-hooks.sh 2
+hook 3 /w/pg-hooks.sh 3
+hook 4 /w/pg-hooks.sh 4

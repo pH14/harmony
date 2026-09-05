@@ -1,0 +1,4 @@
+node etcd /w/etcd-node.sh
+ready /w/etcd-ready.sh
+hook 1 /w/etcd-hooks.sh 1
+hook 2 /w/etcd-hooks.sh 2

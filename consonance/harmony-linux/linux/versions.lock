@@ -116,6 +116,34 @@ FCEUMM_LICENSE=GPL-2.0-or-later
 # kvm.ko/kvm-intel.ko with vermagic 6.18.35-… — see that dir's BUILD.md. 0001-0003
 # are the RDTSC/RDRAND/RDSEED exiting+emulation ABI.
 # Pinned 2026-06-30. Verify with: shasum -a 256 <patch>.
-KVM_PATCH_0001_SHA256=3cd29fd0e54d46e943d8435125230cd38b32436263d498fa315dc0a7bf53f4ee
-KVM_PATCH_0002_SHA256=522d94b4fdf3e7736a7fb33cc075a53baf60a169b139b5ac3139853ca868aafa
-KVM_PATCH_0003_SHA256=72742b1f74b7dcc250f6cd2c1d44f27fa0413b393a8bdacd6277827a4b4124b3
+KVM_PATCH_0001_SHA256=499267ffd42bbf5688efe9827a43f696125cc9b640b7045b300df85883bb38a7
+KVM_PATCH_0002_SHA256=fefa4d8ce76d1af38ed8049914f16a164474cfd132a4739649225441e9bc49d6
+KVM_PATCH_0003_SHA256=db587a6a0cd799597f23232fba100e241a1f91c6a2e45e07ebece71b2b64c02d
+
+# --- fault library: etcd + the PostgreSQL CIC pair --------------------------
+# Two historical database bugs are reproduced from their exact affected
+# releases, so these versions are part of the specimen, not a packaging
+# choice: etcd 3.5.2 carries the consistent-index-ahead-of-data window
+# (bugs/historical/etcd-3.5-inconsistency), PostgreSQL 14.3 carries the
+# CREATE INDEX CONCURRENTLY xmin-horizon race, and 14.4 is the fixed release
+# that serves as that bug's control arm
+# (bugs/historical/postgres-cic-corruption). Do not bump any of the three.
+#
+# etcd ships an official static linux/amd64 release tarball; the bug spec
+# requires building FROM that binary with no source patching. Hash
+# cross-checked against the release's own SHA256SUMS at pin time.
+ETCD_VERSION=3.5.2
+ETCD_URL=https://github.com/etcd-io/etcd/releases/download/v3.5.2/etcd-v3.5.2-linux-amd64.tar.gz
+ETCD_SHA256=256cad725542d6fd463e81b8a19b86ead4cdfe113f7fb8a1eabc6c32c25d068b
+ETCD_LICENSE=Apache-2.0
+
+# Both PostgreSQL trees are built from the project's official source tarballs
+# (contrib amcheck + pg_amcheck are needed for the oracle and are not in the
+# Debian server package). Hashes cross-checked against the .sha256 files
+# published beside each tarball at pin time.
+PG_CIC_VERSION=14.3
+PG_CIC_URL=https://ftp.postgresql.org/pub/source/v14.3/postgresql-14.3.tar.bz2
+PG_CIC_SHA256=279057368bf59a919c05ada8f95c5e04abb43e74b9a2a69c3d46a20e07a9af38
+PG_CIC_CONTROL_VERSION=14.4
+PG_CIC_CONTROL_URL=https://ftp.postgresql.org/pub/source/v14.4/postgresql-14.4.tar.bz2
+PG_CIC_CONTROL_SHA256=c23b6237c5231c791511bdc79098617d6852e9e3bdf360efd8b5d15a1a3d8f6a

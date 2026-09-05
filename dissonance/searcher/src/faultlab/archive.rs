@@ -1,0 +1,437 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! Fault-library archive key, milestones, and report shape.
+
+use std::{error::Error, num::NonZeroUsize};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    faultlab::{
+        bundle::FaultVocabulary,
+        target::{FaultAction, FaultObservations},
+    },
+    search::{
+        archive::{
+            ArchiveEntryReport, ArchiveKey, ProgressPoint, SelectorAccounting, entries_by_suffix,
+        },
+        rand::RomuDuoJrRand,
+    },
+};
+
+pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
+
+/// Recorded archive-key policy.
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v1";
+/// Recorded same-slot replacement policy.
+pub const REPLACEMENT_IDENTIFIER: &str = "fewest_horizons";
+/// Recorded action-duration policy: every action costs exactly one horizon.
+pub const DURATION_IDENTIFIER: &str = "fixed_horizon_v1";
+
+/// Pooled identity handed to the generic selector.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct FaultArchiveGroup {
+    sometimes: u64,
+    hooks_finished: u64,
+    alive: u64,
+}
+
+/// Quality-diversity key for one fault-library endpoint: which `sometimes`
+/// sites the workload reached, how much of the workload completed, and which
+/// nodes are running.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct FaultArchiveKey {
+    /// Bitmap of `sometimes` sites hit.
+    pub sometimes: u64,
+    /// Hooks that ran to completion.
+    pub hooks_finished: u64,
+    /// Bitmap of live nodes.
+    pub alive: u64,
+}
+
+impl ArchiveKey for FaultArchiveKey {
+    type Group = FaultArchiveGroup;
+
+    fn groups() -> usize {
+        3
+    }
+
+    /// Depth 0 is the whole key, depth 1 drops node liveness so the same
+    /// workload progress under different survivor sets pools, and depth 2 is
+    /// the reached-site set alone.
+    fn group(self, depth: usize) -> Self::Group {
+        let full = FaultArchiveGroup {
+            sometimes: self.sometimes,
+            hooks_finished: self.hooks_finished,
+            alive: self.alive,
+        };
+        match depth {
+            0 => full,
+            1 => FaultArchiveGroup { alive: 0, ..full },
+            _ => FaultArchiveGroup {
+                sometimes: self.sometimes,
+                ..FaultArchiveGroup::default()
+            },
+        }
+    }
+
+    fn slot_capacity() -> usize {
+        1
+    }
+
+    type Lineage = ();
+
+    fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+        self
+    }
+
+    fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+}
+
+/// The archive key of one endpoint.
+#[must_use]
+pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
+    FaultArchiveKey {
+        sometimes: observations.sometimes_bitmap(),
+        hooks_finished: observations.hooks_finished,
+        alive: observations.alive,
+    }
+}
+
+/// Strongest rungs a campaign reached.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultMilestones {
+    /// Union of every `sometimes` bitmap observed.
+    pub sometimes: u64,
+    /// Greatest completed-hook count.
+    pub hooks_finished: u64,
+    /// Whether any endpoint found a bug.
+    pub bug: bool,
+}
+
+/// Decode milestones from one endpoint.
+#[must_use]
+pub fn milestones(observations: &FaultObservations) -> FaultMilestones {
+    FaultMilestones {
+        sometimes: observations.sometimes_bitmap(),
+        hooks_finished: observations.hooks_finished,
+        bug: observations.is_bug(),
+    }
+}
+
+/// Merge the strongest of each rung.
+pub fn merge_milestones(into: &mut FaultMilestones, from: FaultMilestones) {
+    into.sometimes |= from.sometimes;
+    into.hooks_finished = into.hooks_finished.max(from.hooks_finished);
+    into.bug |= from.bug;
+}
+
+/// Stable champion order: sites reached first, then workload progress.
+#[must_use]
+pub fn milestone_key(value: FaultMilestones) -> (u32, u64) {
+    (value.sometimes.count_ones(), value.hooks_finished)
+}
+
+/// Route-agnostic progress watermark.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct FaultProgressWatermark {
+    /// Greatest number of distinct `sometimes` sites reached.
+    pub sometimes_sites: u32,
+    /// Greatest completed-hook count.
+    pub hooks_finished: u64,
+    /// Greatest agent tick count.
+    pub ticks: u64,
+}
+
+/// Fold one endpoint's observations into a progress watermark.
+pub fn merge_progress_watermark(
+    watermark: &mut FaultProgressWatermark,
+    observations: &[FaultObservations],
+) {
+    for observation in observations {
+        *watermark = (*watermark).max(FaultProgressWatermark {
+            sometimes_sites: observation.sometimes_bitmap().count_ones(),
+            hooks_finished: observation.hooks_finished,
+            ticks: observation.ticks,
+        });
+    }
+}
+
+/// Every action costs exactly one horizon, so route cost is action count.
+#[must_use]
+pub fn action_time(_action: &FaultAction) -> u64 {
+    1
+}
+
+/// Pause durations in agent ticks.
+pub const PAUSE_TICKS: [u32; 4] = [1, 5, 25, 100];
+/// Interrupt vectors the vocabulary may inject.
+pub const VECTORS: [u32; 2] = [0x20, 0x30];
+
+/// Draw one action from the bundle's vocabulary. A bundle that declares no
+/// hook cannot draw one, so that arm yields `Wait` rather than an action the
+/// guest agent would skip.
+///
+/// # Errors
+///
+/// Returns an error when a draw bound is invalid.
+pub fn sample_action(
+    rand: &mut RomuDuoJrRand,
+    vocabulary: &FaultVocabulary,
+) -> Result<FaultAction, Box<dyn Error>> {
+    let pick = |rand: &mut RomuDuoJrRand, len: usize| -> Result<usize, Box<dyn Error>> {
+        Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault-library vocabulary alternative")?))
+    };
+    let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
+    match pick(rand, 6)? {
+        0 => Ok(FaultAction::Wait),
+        1 => Ok(FaultAction::Kill(node)),
+        2 => Ok(FaultAction::Pause(
+            node,
+            PAUSE_TICKS[pick(rand, PAUSE_TICKS.len())?],
+        )),
+        3 => Ok(FaultAction::Restart(node)),
+        4 => match vocabulary.hooks() {
+            [] => Ok(FaultAction::Wait),
+            hooks => Ok(FaultAction::Hook(hooks[pick(rand, hooks.len())?])),
+        },
+        _ => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
+    }
+}
+
+/// Fault-library progress-curve point.
+pub type FaultProgressPoint = ProgressPoint<FaultMilestones, FaultProgressWatermark>;
+/// Fault-library archive entry report.
+pub type FaultArchiveEntryReport =
+    ArchiveEntryReport<FaultAction, FaultArchiveKey, FaultMilestones>;
+/// Fault-library input.
+pub type FaultInput = crate::search::archive::Input<FaultAction>;
+
+/// Largest number of bugs one campaign records in its report, so a run whose
+/// workload asserts on every branch still holds bounded memory.
+pub const MAX_RECORDED_BUGS: usize = 64;
+
+/// One bug an execution found.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultBugRecord {
+    /// Ordered admission position of the execution that found it.
+    pub execution: u64,
+    /// The input that reaches it.
+    pub input: FaultInput,
+    /// The terminal endpoint's observations.
+    pub observations: FaultObservations,
+}
+
+/// The campaign outcome a bug list implies: how many bugs were found and the
+/// admission position of the first.
+#[must_use]
+pub fn bug_outcome(bugs: &[FaultBugRecord]) -> (u64, Option<u64>) {
+    (
+        bugs.len() as u64,
+        bugs.iter().map(|bug| bug.execution).min(),
+    )
+}
+
+/// Complete deterministic report for one fault-library campaign.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaultArchiveReport {
+    /// Campaign seed.
+    pub seed: u64,
+    /// The sealed setup `Moment` every action window is measured from; zero
+    /// when the run never booted a target.
+    pub root_seal: u64,
+    /// Admitted executions.
+    pub executions: u64,
+    /// Strongest milestones.
+    pub milestones: FaultMilestones,
+    /// Strongest route-agnostic progress.
+    pub progress_watermark: FaultProgressWatermark,
+    /// Best input under the adapter's progress order.
+    pub champion_input: FaultInput,
+    /// Retained representatives.
+    #[serde(with = "entries_by_suffix")]
+    pub entries: Vec<FaultArchiveEntryReport>,
+    /// Fixed-interval progress curve.
+    pub progress_curve: Vec<FaultProgressPoint>,
+    /// Candidates admitted.
+    pub retained: u64,
+    /// Candidates rejected or superseded.
+    pub rejected: u64,
+    /// Terminal endpoints observed.
+    pub deaths: u64,
+    /// Bugs found, in admission order, bounded by [`MAX_RECORDED_BUGS`].
+    pub bugs: Vec<FaultBugRecord>,
+    /// Generic selector accounting.
+    #[serde(default)]
+    pub selector: SelectorAccounting,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+    use crate::faultlab::target::FaultStop;
+
+    fn endpoint(sometimes: &[u32], hooks_finished: u64, alive: u64) -> FaultObservations {
+        FaultObservations {
+            sometimes: sometimes.iter().copied().collect::<BTreeSet<_>>(),
+            hooks_finished,
+            alive,
+            ..FaultObservations::default()
+        }
+    }
+
+    #[test]
+    fn the_key_is_the_sites_the_progress_and_the_survivors() {
+        let key = archive_key(&endpoint(&[0, 5], 3, 0b11));
+        assert_eq!(
+            key,
+            FaultArchiveKey {
+                sometimes: 0b10_0001,
+                hooks_finished: 3,
+                alive: 0b11,
+            }
+        );
+    }
+
+    #[test]
+    fn liveness_separates_slots_but_pools_one_depth_up() {
+        let survived = archive_key(&endpoint(&[1], 2, 0b11));
+        let lost_a_node = archive_key(&endpoint(&[1], 2, 0b01));
+        assert_ne!(survived.group(0), lost_a_node.group(0));
+        assert_eq!(survived.group(1), lost_a_node.group(1));
+        assert_eq!(survived.group(2), lost_a_node.group(2));
+        assert_eq!(FaultArchiveKey::slot_capacity(), 1);
+    }
+
+    #[test]
+    fn hook_progress_separates_the_middle_depth() {
+        let early = archive_key(&endpoint(&[1], 1, 0b1));
+        let late = archive_key(&endpoint(&[1], 4, 0b1));
+        assert_ne!(early.group(1), late.group(1));
+        assert_eq!(early.group(2), late.group(2));
+    }
+
+    #[test]
+    fn milestones_union_the_sites_and_latch_the_bug() {
+        let mut aggregate = milestones(&endpoint(&[0], 1, 1));
+        merge_milestones(&mut aggregate, milestones(&endpoint(&[3], 5, 1)));
+        assert_eq!(aggregate.sometimes, 0b1001);
+        assert_eq!(aggregate.hooks_finished, 5);
+        assert!(!aggregate.bug);
+        let bug = FaultObservations {
+            stop: FaultStop::Crash,
+            ..FaultObservations::default()
+        };
+        merge_milestones(&mut aggregate, milestones(&bug));
+        assert!(aggregate.bug);
+        assert_eq!(aggregate.hooks_finished, 5, "a bug never lowers a rung");
+        assert!(milestone_key(aggregate) > milestone_key(FaultMilestones::default()));
+    }
+
+    #[test]
+    fn the_watermark_keeps_the_strongest_of_every_endpoint() {
+        let mut watermark = FaultProgressWatermark::default();
+        merge_progress_watermark(
+            &mut watermark,
+            &[endpoint(&[0, 1, 2], 1, 1), endpoint(&[0], 7, 1)],
+        );
+        assert_eq!(watermark.sometimes_sites, 3);
+        assert_eq!(
+            watermark.hooks_finished, 1,
+            "the watermark is lexicographic"
+        );
+    }
+
+    fn vocabulary() -> FaultVocabulary {
+        FaultVocabulary::new(1, vec![1, 2]).expect("vocabulary")
+    }
+
+    #[test]
+    fn the_vocabulary_only_draws_declared_nodes_hooks_and_vectors() {
+        let vocabulary = vocabulary();
+        let mut rand = RomuDuoJrRand::with_seed(11);
+        let mut kinds = BTreeSet::new();
+        let kind = |action: &FaultAction| match action {
+            FaultAction::Wait => 0,
+            FaultAction::Kill(_) => 1,
+            FaultAction::Pause(..) => 2,
+            FaultAction::Restart(_) => 3,
+            FaultAction::Hook(_) => 4,
+            FaultAction::Interrupt(_) => 5,
+        };
+        for _ in 0..2_000 {
+            let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
+            kinds.insert(kind(&action));
+            match action {
+                FaultAction::Wait => {}
+                FaultAction::Kill(node) | FaultAction::Restart(node) => {
+                    assert!(node < vocabulary.nodes());
+                }
+                FaultAction::Pause(node, ticks) => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(PAUSE_TICKS.contains(&ticks));
+                }
+                FaultAction::Hook(id) => assert!(vocabulary.hooks().contains(&id)),
+                FaultAction::Interrupt(vector) => assert!(VECTORS.contains(&vector)),
+            }
+        }
+        assert_eq!(kinds.len(), 6, "every action kind is reachable");
+    }
+
+    #[test]
+    fn a_wider_bundle_widens_the_node_range() {
+        let wide = FaultVocabulary::new(3, vec![9]).expect("vocabulary");
+        let mut rand = RomuDuoJrRand::with_seed(3);
+        let mut seen = BTreeSet::new();
+        for _ in 0..2_000 {
+            if let FaultAction::Kill(node) = sample_action(&mut rand, &wide).expect("draw") {
+                seen.insert(node);
+            }
+        }
+        assert_eq!(seen, BTreeSet::from([0, 1, 2]));
+    }
+
+    #[test]
+    fn a_bundle_with_no_hook_never_draws_one() {
+        let hookless = FaultVocabulary::new(1, Vec::new()).expect("vocabulary");
+        let mut rand = RomuDuoJrRand::with_seed(4);
+        for _ in 0..2_000 {
+            let action = sample_action(&mut rand, &hookless).expect("draw");
+            assert!(!matches!(action, FaultAction::Hook(_)));
+        }
+    }
+
+    #[test]
+    fn the_vocabulary_is_a_function_of_the_seed() {
+        let draw = |seed| {
+            let mut rand = RomuDuoJrRand::with_seed(seed);
+            (0..64)
+                .map(|_| sample_action(&mut rand, &vocabulary()).expect("draw"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(draw(5), draw(5));
+        assert_ne!(draw(5), draw(6));
+    }
+
+    #[test]
+    fn the_outcome_counts_the_bugs_and_dates_the_first() {
+        assert_eq!(bug_outcome(&[]), (0, None));
+        let bug = |execution| FaultBugRecord {
+            execution,
+            input: FaultInput::default(),
+            observations: FaultObservations {
+                stop: FaultStop::Crash,
+                ..FaultObservations::default()
+            },
+        };
+        assert_eq!(bug_outcome(&[bug(9), bug(4)]), (2, Some(4)));
+    }
+
+    #[test]
+    fn every_action_costs_one_horizon() {
+        assert_eq!(action_time(&FaultAction::Wait), 1);
+        assert_eq!(action_time(&FaultAction::Kill(4)), 1);
+    }
+}
