@@ -5,7 +5,7 @@
 # inside the deterministic guest, with a CLIENT pod making calls to a POSTGRES
 # server pod over the in-guest CNI, deterministic-twice).
 #
-# **What runs (see consonance/harmony-linux/linux/IMPLEMENTATION.md + tasks/49-*).** One single-vCPU
+# **What runs (see consonance/harmony-linux/linux/README.md + tasks/49-*).** One single-vCPU
 # guest boots `k3s` (a lightweight Kubernetes distro: ONE static Go binary that
 # bundles containerd + runc + the flannel/bridge/host-local CNI + kube-proxy +
 # kubectl, with a sqlite datastore). `k3s-init.sh` brings the cluster up, then:
@@ -38,7 +38,7 @@
 # live in the initramfs tmpfs (RAM) -> deterministic VM-memory writes.
 #
 # Linux + root only (mounts, cgroup, chroot, the static layout assume a Linux
-# build host; the box is the pinned build environment). See docs/BUILDING.md.
+# build host; the box is the pinned build environment). See CONTRIBUTING.md.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -207,7 +207,7 @@ trap - EXIT
 # a POD IP (10.42.x.x), the witness that the path stayed INTRA-GUEST over the CNI.
 cat >>"$PGSTAGE$PGDATA_REL/postgresql.conf" <<EOF
 
-# --- task 49 determinism overlay (see consonance/harmony-linux/linux/IMPLEMENTATION.md) ---
+# --- task 49 determinism overlay (see consonance/harmony-linux/linux/README.md) ---
 listen_addresses = '*'           # TCP: the client pod connects across the CNI
 port = 5432
 unix_socket_directories = '/tmp' # writable in the container (no /run/postgresql)

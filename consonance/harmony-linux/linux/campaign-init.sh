@@ -6,7 +6,7 @@
 # Postgres insert/select workload to completion (the image's determinism
 # pedigree), stop postgres, then run the supervised process whose bookkeeping
 # invariant is only violable under an injected host fault. See
-# consonance/harmony-linux/linux/campaign-super.c and consonance/harmony-linux/linux/IMPLEMENTATION.md.
+# consonance/harmony-linux/linux/campaign-super.c and consonance/harmony-linux/linux/README.md.
 #
 # The base snapshot the campaign seals is taken at the `CAMPAIGN_READY` marker
 # `campaign-super` prints right before its fault-sensitive loop (mid-workload,

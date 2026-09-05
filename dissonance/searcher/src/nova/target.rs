@@ -6,13 +6,13 @@
 //! controller actions, opaque keys, observations, and snapshots; every Nova
 //! address and interpretation stays here.
 
-use std::{error::Error, io::Write, mem::size_of, path::Path, sync::Arc};
+use std::{error::Error, io::Write, path::Path};
 
 use machine::{
     Machine, MachineError, SnapId, StopConditions, nes,
     quicknes::{QUICKNES_AUDIO_CHANNELS, QUICKNES_AUDIO_SAMPLE_RATE, QuickNesMachine},
 };
-use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
+use serde::{Deserialize, Serialize};
 
 use crate::target::{ExitKind, Target};
 
@@ -29,12 +29,12 @@ const NEED_LEVEL_RELOAD: usize = 0xa9;
 const CHIP_COUNT: usize = 0x508;
 const CHIPS_NEEDED: usize = 0x509;
 const SAVE_RAM_BASE: usize = 0x6000;
+const SAVE_RAM_SIZE: usize = 0x2000;
 const PLAYER_ABILITY: usize = 0x7200 - SAVE_RAM_BASE;
 const LEVEL_CLEARED: usize = 0x7f1f - SAVE_RAM_BASE;
 const LEVEL_AVAILABLE: usize = 0x7f27 - SAVE_RAM_BASE;
 const COLLECTIBLE_BITS: usize = 0x7f2f - SAVE_RAM_BASE;
 const PERSISTENT_BITMAP_LEN: usize = 8;
-const STATE_CHUNK_SIZE: usize = 512;
 
 /// Number of ordinary world levels exposed by Nova's source-defined campaign.
 pub const NOVA_CAMPAIGN_LEVEL_COUNT: u8 = 40;
@@ -182,101 +182,20 @@ pub struct NovaVideoMetadata {
     pub input_endpoint: NovaMechanicalState,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct SharedStateInner {
-    chunks: Vec<Arc<[u8; STATE_CHUNK_SIZE]>>,
-    len: usize,
-}
-
-/// Copy-on-write emulator bytes with the same Serde form as `Vec<u8>`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct SharedState(Arc<SharedStateInner>);
-
-impl SharedState {
-    fn from_bytes(bytes: Vec<u8>, base: Option<&Self>) -> Self {
-        let mut chunks = Vec::with_capacity(bytes.len().div_ceil(STATE_CHUNK_SIZE));
-        for (index, source) in bytes.chunks(STATE_CHUNK_SIZE).enumerate() {
-            let mut chunk = [0_u8; STATE_CHUNK_SIZE];
-            chunk[..source.len()].copy_from_slice(source);
-            let shared = base
-                .and_then(|state| state.0.chunks.get(index))
-                .filter(|existing| existing.as_ref() == &chunk)
-                .cloned()
-                .unwrap_or_else(|| Arc::new(chunk));
-            chunks.push(shared);
-        }
-        Self(Arc::new(SharedStateInner {
-            chunks,
-            len: bytes.len(),
-        }))
-    }
-
-    fn materialize(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.0.len);
-        for chunk in &self.0.chunks {
-            let remaining = self.0.len.saturating_sub(bytes.len());
-            bytes.extend_from_slice(&chunk[..remaining.min(STATE_CHUNK_SIZE)]);
-        }
-        bytes
-    }
-}
-
-impl Serialize for SharedState {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut sequence = serializer.serialize_seq(Some(self.0.len))?;
-        for index in 0..self.0.len {
-            sequence.serialize_element(
-                &self.0.chunks[index / STATE_CHUNK_SIZE][index % STATE_CHUNK_SIZE],
-            )?;
-        }
-        sequence.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for SharedState {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<u8>::deserialize(deserializer).map(|bytes| Self::from_bytes(bytes, None))
-    }
-}
-
 /// Complete state needed to resume a Nova prefix exactly.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NovaSnapshot {
-    emulator_state: SharedState,
-    observation: NovaObservations,
-    failed: bool,
+pub struct NovaSnapshot<P = machine::SharedState> {
+    pub(crate) emulator_state: P,
+    pub(crate) observation: NovaObservations,
+    pub(crate) wram: Vec<u8>,
+    pub(crate) failed: bool,
 }
 
-impl NovaSnapshot {
+impl<P> NovaSnapshot<P> {
     /// Decoded endpoint state carried by this snapshot.
     #[must_use]
     pub fn state(&self) -> NovaMechanicalState {
         self.observation.decoded
-    }
-
-    pub(crate) fn resident_memory_charge(&self) -> usize {
-        size_of::<Self>()
-            .saturating_add(self.emulator_state.0.len)
-            .saturating_add(
-                self.emulator_state
-                    .0
-                    .chunks
-                    .len()
-                    .saturating_mul(size_of::<Arc<[u8; STATE_CHUNK_SIZE]>>()),
-            )
-            .saturating_add(
-                self.observation
-                    .changed_indices
-                    .len()
-                    .saturating_mul(size_of::<u16>()),
-            )
-            .saturating_add(self.observation.log_line.len())
     }
 }
 
@@ -352,20 +271,63 @@ const MAIN_MENU_TO_GAMEPLAY: [ButtonChord; 12] = [
     },
 ];
 
-/// QuickNES-backed target used by Nova campaigns.
+/// Machine-backed target used by Nova campaigns.
 #[derive(Debug)]
-pub struct NovaTarget {
-    machine: QuickNesMachine,
+pub struct NovaTarget<M: Machine = QuickNesMachine> {
+    machine: M,
     genesis: SnapId,
+    current: SnapId,
+    genesis_observation: NovaObservations,
+    genesis_wram: [u8; WRAM_SIZE],
+    current_wram: [u8; WRAM_SIZE],
     observation: NovaObservations,
     action_observations: Vec<NovaObservations>,
     failed: bool,
-    snapshot_base: Option<SharedState>,
+    snapshot_base: Option<M::Portable>,
     genesis_cleared: u8,
 }
 
-impl NovaTarget {
-    fn from_machine(
+impl<M: Machine> NovaTarget<M> {
+    /// Seal a machine that is already stopped at Nova gameplay genesis.
+    ///
+    /// The constructor reads the two NES memory windows through the machine
+    /// boundary, validates that they contain a live player state, and retains
+    /// one snapshot handle for deterministic reset. The machine must already
+    /// have completed all title, menu, and level-select setup.
+    pub fn from_machine(mut machine: M) -> Result<Self, MachineError> {
+        let (wram, save_ram) = read_memory(&machine)?;
+        let state = decode_state(&wram, &save_ram)?;
+        if state.health == 0 || state.x == 0 || state.y == 0 {
+            return Err(MachineError::Backend(
+                "Nova machine is not at live gameplay genesis".to_owned(),
+            ));
+        }
+        let power_on = machine.snapshot()?;
+        let observation = NovaObservations {
+            frame_count: 0,
+            decoded: state,
+            changed_indices: Vec::new(),
+            dead: false,
+            log_line: "frame=0 changed=[]".to_owned(),
+        };
+        Ok(Self {
+            machine,
+            genesis: power_on,
+            current: power_on,
+            genesis_observation: observation.clone(),
+            genesis_wram: wram,
+            current_wram: wram,
+            action_observations: vec![observation.clone()],
+            observation,
+            failed: false,
+            snapshot_base: None,
+            genesis_cleared: state.cleared_count(),
+        })
+    }
+}
+
+impl NovaTarget<QuickNesMachine> {
+    fn from_quicknes_machine(
         mut machine: QuickNesMachine,
         selected_level: NovaLevel,
     ) -> Result<Self, MachineError> {
@@ -388,7 +350,6 @@ impl NovaTarget {
         machine.branch(main_menu, &nes::reproducer(&MAIN_MENU_TO_GAMEPLAY))?;
         machine.run(StopConditions::default(), None)?;
         machine.drop_snapshot(main_menu)?;
-        let genesis = machine.snapshot()?;
         let (wram, save_ram) = read_memory(&machine)?;
         let state = decode_state(&wram, &save_ram)?;
         if state.health == 0
@@ -405,22 +366,7 @@ impl NovaTarget {
                 state.started_level,
             )));
         }
-        let observation = NovaObservations {
-            frame_count: 0,
-            decoded: state,
-            changed_indices: Vec::new(),
-            dead: false,
-            log_line: "frame=0 changed=[]".to_owned(),
-        };
-        Ok(Self {
-            machine,
-            genesis,
-            action_observations: vec![observation.clone()],
-            observation,
-            failed: false,
-            snapshot_base: None,
-            genesis_cleared: state.cleared_count(),
-        })
+        Self::from_machine(machine)
     }
 
     /// Load Nova and seal gameplay genesis through the pinned QuickNES core.
@@ -440,12 +386,14 @@ impl NovaTarget {
         core_sha256: &str,
         selected_level: NovaLevel,
     ) -> Result<Self, MachineError> {
-        Self::from_machine(
+        Self::from_quicknes_machine(
             QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
             selected_level,
         )
     }
+}
 
+impl<M: Machine> NovaTarget<M> {
     /// Current decoded state.
     #[must_use]
     pub fn mechanical_state(&self) -> NovaMechanicalState {
@@ -481,61 +429,107 @@ impl NovaTarget {
         if self.failed || self.is_dead() || self.cleared_a_level() {
             return false;
         }
-        let Ok(start) = self.machine.snapshot() else {
-            self.failed = true;
+        if frames == 0 {
             return false;
-        };
+        }
         let mut actions = Vec::new();
         let mut remaining = frames;
         while remaining > 0 {
             let hold = remaining.min(u16::from(MAX_HOLD_FRAMES));
             let Ok(hold) = u8::try_from(hold) else {
                 self.failed = true;
-                let _ = self.machine.drop_snapshot(start);
                 return false;
             };
             actions.push(ButtonChord::new(buttons, hold));
             remaining -= u16::from(hold);
         }
+        let current = self.current;
         if self
             .machine
-            .branch(start, &nes::reproducer(&actions))
+            .branch(current, &nes::reproducer(&actions))
             .is_err()
         {
             self.failed = true;
-            let _ = self.machine.drop_snapshot(start);
             return false;
         }
+        let requested_frames = usize::from(frames);
+        let mut observed_frames = 0_usize;
         let mut survived = true;
-        while let Ok(advanced) = self.run_one_frame() {
-            if !advanced {
+        while observed_frames < requested_frames {
+            let stop = self.machine.run(StopConditions::default(), None);
+            if matches!(stop, Ok(machine::StopReason::Deadline { .. })) {
+                // The Consonance deadline is a host-side per-run safety budget,
+                // not a game death or a successful partial action.
+                self.failed = true;
+                survived = false;
                 break;
             }
-            let Ok((wram, save_ram)) = read_memory(&self.machine) else {
+            let produced = self.machine.frames();
+            if produced.is_empty() {
+                survived = false;
+                break;
+            }
+            let remaining = requested_frames.saturating_sub(observed_frames);
+            let take = produced.len().min(remaining);
+            let save_ram = match self
+                .machine
+                .read(SAVE_RAM_BASE as u64, SAVE_RAM_SIZE as u32)
+            {
+                Ok(save_ram) => save_ram,
+                Err(_) => {
+                    self.failed = true;
+                    survived = false;
+                    Vec::new()
+                }
+            };
+            if !survived {
+                break;
+            }
+            let acceptable_stop = matches!(
+                stop,
+                Ok(machine::StopReason::SnapshotPoint { .. }
+                    | machine::StopReason::Quiescent { .. })
+            );
+            if !acceptable_stop {
                 self.failed = true;
                 survived = false;
                 break;
-            };
-            let Ok(state) = decode_state(&wram, &save_ram) else {
-                self.failed = true;
-                survived = false;
+            }
+            for wram in produced.iter().take(take) {
+                match decode_state(wram, &save_ram) {
+                    Ok(state) if state.health != 0 => {}
+                    Ok(_) => {
+                        survived = false;
+                        break;
+                    }
+                    Err(_) => {
+                        self.failed = true;
+                        survived = false;
+                        break;
+                    }
+                }
+            }
+            observed_frames = observed_frames.saturating_add(take);
+            if !survived || observed_frames >= requested_frames {
                 break;
-            };
-            if state.health == 0 {
-                survived = false;
-                break;
+            }
+            match stop {
+                Ok(machine::StopReason::SnapshotPoint { .. }) => {}
+                Ok(machine::StopReason::Quiescent { .. }) | Ok(_) | Err(_) => {
+                    survived = false;
+                    break;
+                }
             }
         }
-        let restore = self.machine.replay(start);
-        let drop = self.machine.drop_snapshot(start);
-        if restore.is_err() || drop.is_err() {
+        if self.machine.replay(current).is_err() {
             self.failed = true;
-            false
-        } else {
-            survived
+            return false;
         }
+        survived
     }
+}
 
+impl NovaTarget<QuickNesMachine> {
     /// Replay an input from gameplay genesis and write RGB24 video and S16LE
     /// stereo audio.
     ///
@@ -662,7 +656,9 @@ impl NovaTarget {
             }
         }
     }
+}
 
+impl<M: Machine> NovaTarget<M> {
     fn make_observation(
         &self,
         frame_count: u64,
@@ -690,21 +686,26 @@ impl NovaTarget {
     }
 }
 
-impl Target for NovaTarget {
+impl<M: Machine> Target for NovaTarget<M> {
     type Action = ButtonChord;
     type Observations = NovaObservations;
-    type Snapshot = NovaSnapshot;
+    type Snapshot = NovaSnapshot<M::Portable>;
 
     fn reset(&mut self) {
-        self.failed = self.machine.replay(self.genesis).is_err();
-        self.snapshot_base = None;
-        if let Ok((wram, save_ram)) = read_memory(&self.machine)
-            && let Ok(state) = decode_state(&wram, &save_ram)
-        {
-            self.observation = self.make_observation(0, state, &wram, &[0; WRAM_SIZE]);
-        } else {
-            self.failed = true;
+        let mut handle_error = false;
+        if self.current != self.genesis {
+            if self.machine.drop_snapshot(self.current).is_err() {
+                handle_error = true;
+            }
+            if !handle_error {
+                self.current = self.genesis;
+            }
         }
+        let replay_error = self.machine.replay(self.genesis).is_err();
+        self.failed = handle_error || replay_error;
+        self.snapshot_base = None;
+        self.current_wram = self.genesis_wram;
+        self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
     }
 
@@ -713,79 +714,114 @@ impl Target for NovaTarget {
         if self.failed || self.is_dead() || self.cleared_a_level() {
             return;
         }
-        let Ok((mut prior_wram, prior_save)) = read_memory(&self.machine) else {
-            self.failed = true;
-            return;
-        };
-        let Ok(mut prior_state) = decode_state(&prior_wram, &prior_save) else {
-            self.failed = true;
-            return;
-        };
-        let Ok(start) = self.machine.snapshot() else {
-            self.failed = true;
-            return;
-        };
+        let prior_wram = self.current_wram;
+        let prior_state = self.observation.decoded;
+        let start = self.current;
         if self
             .machine
             .branch(start, &nes::reproducer(std::slice::from_ref(action)))
             .is_err()
         {
             self.failed = true;
-            let _ = self.machine.drop_snapshot(start);
             return;
         }
-        let _ = self.machine.drop_snapshot(start);
-        let mut executed_frames = 0_u64;
-        for _ in 0..action.bounded_hold_frames() {
-            match self.run_one_frame() {
-                Ok(true) => {}
-                Ok(false) | Err(()) => break,
+        let run = self.machine.run(StopConditions::default(), None);
+        if matches!(run, Ok(machine::StopReason::Deadline { .. })) {
+            // Exhausting the Consonance safety budget is infrastructure
+            // failure. Do not decode cached RAM and report it as a game death.
+            self.failed = true;
+            return;
+        }
+        if !matches!(
+            run,
+            Ok(machine::StopReason::Quiescent { .. } | machine::StopReason::SnapshotPoint { .. })
+        ) {
+            self.failed = true;
+            return;
+        }
+
+        let save_ram = match self
+            .machine
+            .read(SAVE_RAM_BASE as u64, SAVE_RAM_SIZE as u32)
+        {
+            Ok(save_ram) => save_ram,
+            Err(_) => {
+                self.failed = true;
+                return;
             }
-            executed_frames = executed_frames.saturating_add(1);
-            let Ok((wram, save_ram)) = read_memory(&self.machine) else {
+        };
+        let frames = self.machine.frames();
+        if frames.is_empty() {
+            self.failed = true;
+            return;
+        }
+        let mut prior_wram = prior_wram;
+        let mut prior_state = prior_state;
+        let mut emitted = false;
+        for (offset, wram) in frames.iter().enumerate() {
+            let Ok(state) = decode_state(wram, &save_ram) else {
                 self.failed = true;
-                break;
-            };
-            let Ok(state) = decode_state(&wram, &save_ram) else {
-                self.failed = true;
-                break;
+                return;
             };
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
                 || state.level_reload_pending != prior_state.level_reload_pending;
             if boundary {
-                let observation = self.make_observation(
-                    self.observation.frame_count.saturating_add(executed_frames),
+                let frame_count = self
+                    .observation
+                    .frame_count
+                    .saturating_add(u64::try_from(offset).unwrap_or(u64::MAX).saturating_add(1));
+                self.action_observations.push(self.make_observation(
+                    frame_count,
                     state,
-                    &wram,
+                    wram,
                     &prior_wram,
-                );
-                prior_wram = wram;
+                ));
+                prior_wram = *wram;
                 prior_state = state;
-                self.action_observations.push(observation);
-            }
-            if state.health == 0 || state.cleared_count() > self.genesis_cleared {
-                break;
+                emitted = true;
             }
         }
-        let endpoint_frame = self.observation.frame_count.saturating_add(executed_frames);
-        if !self
-            .action_observations
-            .last()
-            .is_some_and(|observation| observation.frame_count == endpoint_frame)
-            && let Ok((wram, save_ram)) = read_memory(&self.machine)
-            && let Ok(state) = decode_state(&wram, &save_ram)
+        let endpoint_wram = frames.last().copied().unwrap_or(prior_wram);
+        let endpoint_frame = self
+            .observation
+            .frame_count
+            .saturating_add(u64::try_from(frames.len()).unwrap_or(u64::MAX));
+        if !emitted
+            || !self
+                .action_observations
+                .last()
+                .is_some_and(|observation| observation.frame_count == endpoint_frame)
         {
+            let endpoint_state = decode_state(&endpoint_wram, &save_ram);
+            let Ok(endpoint_state) = endpoint_state else {
+                self.failed = true;
+                return;
+            };
             self.action_observations.push(self.make_observation(
                 endpoint_frame,
-                state,
-                &wram,
+                endpoint_state,
+                &endpoint_wram,
                 &prior_wram,
             ));
         }
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
         }
+        self.current_wram = endpoint_wram;
+        let next = match self.machine.snapshot() {
+            Ok(next) => next,
+            Err(_) => {
+                self.failed = true;
+                return;
+            }
+        };
+        if start != self.genesis && self.machine.drop_snapshot(start).is_err() {
+            let _ = self.machine.drop_snapshot(next);
+            self.failed = true;
+            return;
+        }
+        self.current = next;
     }
 
     fn observe(&self) -> Self::Observations {
@@ -809,34 +845,53 @@ impl Target for NovaTarget {
     }
 
     fn snapshot(&mut self) -> Option<Self::Snapshot> {
-        let snap = match self.machine.snapshot() {
-            Ok(snap) => snap,
+        if self.failed {
+            return None;
+        }
+        let emulator_state = match self
+            .machine
+            .export(self.current, self.snapshot_base.as_ref())
+        {
+            Ok(state) => state,
             Err(_) => {
                 self.failed = true;
                 return None;
             }
         };
-        let bytes = match self.machine.take_snapshot(snap) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                self.failed = true;
-                return None;
-            }
-        };
-        let emulator_state = SharedState::from_bytes(bytes, self.snapshot_base.as_ref());
         self.snapshot_base = Some(emulator_state.clone());
         Some(NovaSnapshot {
             emulator_state,
             observation: self.observation.clone(),
+            wram: self.current_wram.to_vec(),
             failed: self.failed,
         })
     }
 
     fn restore(&mut self, snapshot: &Self::Snapshot) -> Result<(), Box<dyn Error>> {
-        self.machine
-            .restore_bytes(&snapshot.emulator_state.materialize())
+        let restored_wram: [u8; WRAM_SIZE] = snapshot
+            .wram
+            .clone()
+            .try_into()
+            .map_err(|_| "Nova snapshot work RAM has an invalid length")?;
+        let imported = self
+            .machine
+            .import(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
+        if let Err(error) = self.machine.replay(imported) {
+            let _ = self.machine.drop_snapshot(imported);
+            let _ = self.machine.replay(self.current);
+            return Err(error.to_string().into());
+        }
+        if self.current != self.genesis
+            && let Err(error) = self.machine.drop_snapshot(self.current)
+        {
+            let _ = self.machine.drop_snapshot(imported);
+            let _ = self.machine.replay(self.current);
+            return Err(error.to_string().into());
+        }
+        self.current = imported;
         self.snapshot_base = Some(snapshot.emulator_state.clone());
+        self.current_wram = restored_wram;
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
@@ -844,8 +899,27 @@ impl Target for NovaTarget {
     }
 }
 
-fn read_memory(machine: &QuickNesMachine) -> Result<([u8; WRAM_SIZE], Vec<u8>), MachineError> {
-    Ok((machine.read_wram()?, machine.read_save_ram()?))
+impl<M: Machine> Drop for NovaTarget<M> {
+    fn drop(&mut self) {
+        if self.current != self.genesis {
+            let _ = self.machine.drop_snapshot(self.current);
+        }
+        let _ = self.machine.drop_snapshot(self.genesis);
+    }
+}
+
+fn read_memory<M: Machine>(machine: &M) -> Result<([u8; WRAM_SIZE], Vec<u8>), MachineError> {
+    let wram = machine.read(0, WRAM_SIZE as u32)?;
+    let wram = wram.try_into().map_err(|_| {
+        MachineError::Backend("Nova work RAM window has an invalid length".to_owned())
+    })?;
+    let save_ram = machine.read(SAVE_RAM_BASE as u64, SAVE_RAM_SIZE as u32)?;
+    if save_ram.len() != SAVE_RAM_SIZE {
+        return Err(MachineError::Backend(
+            "Nova save RAM window has an invalid length".to_owned(),
+        ));
+    }
+    Ok((wram, save_ram))
 }
 
 fn read_byte(bytes: &[u8], address: usize) -> Result<u8, MachineError> {
@@ -865,56 +939,6 @@ fn read_bitmap(bytes: &[u8], address: usize) -> Result<[u8; PERSISTENT_BITMAP_LE
 
 fn fixed_point_pixels(high: u8, low: u8) -> u16 {
     u16::from(high) * 16 + u16::from(low >> 4)
-}
-
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    target_arch = "x86_64",
-    not(miri)
-))]
-fn prefix_bitmap(count: u8) -> [u8; PERSISTENT_BITMAP_LEN] {
-    let mut bitmap = [0_u8; PERSISTENT_BITMAP_LEN];
-    for index in 0..usize::from(count.min((PERSISTENT_BITMAP_LEN * 8) as u8)) {
-        bitmap[index / 8] |= 1 << (index % 8);
-    }
-    bitmap
-}
-
-/// Decode the guest billboard plus SDK-published persistent counters.
-#[cfg(all(
-    feature = "consonance",
-    target_os = "linux",
-    target_arch = "x86_64",
-    not(miri)
-))]
-pub(super) fn decode_consonance_state(
-    wram: &[u8],
-    ability: u8,
-    cleared: u8,
-    available: u8,
-    collectibles: u8,
-) -> Result<NovaMechanicalState, MachineError> {
-    Ok(NovaMechanicalState {
-        level: read_byte(wram, LEVEL_NUMBER)?,
-        started_level: read_byte(wram, STARTED_LEVEL_NUMBER)?,
-        x: fixed_point_pixels(
-            read_byte(wram, PLAYER_X_HIGH)?,
-            read_byte(wram, PLAYER_X_LOW)?,
-        ),
-        y: fixed_point_pixels(
-            read_byte(wram, PLAYER_Y_HIGH)?,
-            read_byte(wram, PLAYER_Y_LOW)?,
-        ),
-        health: read_byte(wram, PLAYER_HEALTH)?,
-        chips: read_byte(wram, CHIP_COUNT)?,
-        chips_needed: read_byte(wram, CHIPS_NEEDED)?,
-        ability,
-        level_reload_pending: read_byte(wram, NEED_LEVEL_RELOAD)? != 0,
-        levels_cleared: prefix_bitmap(cleared),
-        levels_available: prefix_bitmap(available),
-        collectibles: prefix_bitmap(collectibles),
-    })
 }
 
 /// Decode Nova's work/save-RAM observations from bounded external slices.
@@ -962,7 +986,402 @@ pub fn preference_tuple(state: NovaMechanicalState) -> (u8, u8, u8, bool, u8, u8
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        cell::Cell,
+        collections::{BTreeMap, VecDeque},
+    };
+
     use super::*;
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct FakePortable(Vec<u8>);
+
+    #[derive(Debug)]
+    struct FakeMachine {
+        state: Vec<u8>,
+        snapshots: BTreeMap<u64, Vec<u8>>,
+        next_snapshot: u64,
+        staged: Vec<ButtonChord>,
+        frames: Vec<[u8; WRAM_SIZE]>,
+        vtime: u64,
+        snapshot_calls: usize,
+        drop_calls: usize,
+        branch_calls: usize,
+        replay_calls: usize,
+        run_calls: usize,
+        read_calls: Cell<usize>,
+        export_calls: usize,
+        export_base_calls: usize,
+        import_calls: usize,
+        run_stops: VecDeque<machine::StopReason>,
+        max_chords_per_run: Option<usize>,
+        append_sentinel: bool,
+        zero_frames: bool,
+        fail_next_drop: bool,
+        lifecycle: Vec<&'static str>,
+    }
+
+    impl FakeMachine {
+        fn new() -> Self {
+            let mut state = vec![0_u8; SAVE_RAM_BASE + SAVE_RAM_SIZE];
+            state[PLAYER_X_HIGH] = 1;
+            state[PLAYER_Y_HIGH] = 1;
+            state[PLAYER_HEALTH] = 4;
+            state[LEVEL_NUMBER] = 1;
+            state[STARTED_LEVEL_NUMBER] = 0;
+            Self {
+                state,
+                snapshots: BTreeMap::new(),
+                next_snapshot: 0,
+                staged: Vec::new(),
+                frames: Vec::new(),
+                vtime: 0,
+                snapshot_calls: 0,
+                drop_calls: 0,
+                branch_calls: 0,
+                replay_calls: 0,
+                run_calls: 0,
+                read_calls: Cell::new(0),
+                export_calls: 0,
+                export_base_calls: 0,
+                import_calls: 0,
+                run_stops: VecDeque::new(),
+                max_chords_per_run: None,
+                append_sentinel: false,
+                zero_frames: false,
+                fail_next_drop: false,
+                lifecycle: Vec::new(),
+            }
+        }
+
+        fn insert_snapshot(&mut self, bytes: Vec<u8>) -> SnapId {
+            let id = SnapId(self.next_snapshot);
+            self.next_snapshot = self.next_snapshot.saturating_add(1);
+            self.snapshots.insert(id.0, bytes);
+            id
+        }
+    }
+
+    impl Machine for FakeMachine {
+        type Portable = FakePortable;
+
+        fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            self.lifecycle.push("snapshot");
+            self.snapshot_calls = self.snapshot_calls.saturating_add(1);
+            Ok(self.insert_snapshot(self.state.clone()))
+        }
+
+        fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.lifecycle.push("drop");
+            self.drop_calls = self.drop_calls.saturating_add(1);
+            if self.fail_next_drop {
+                self.fail_next_drop = false;
+                return Err(MachineError::Backend("injected drop failure".to_owned()));
+            }
+            self.snapshots
+                .remove(&snap.0)
+                .map(|_| ())
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+
+        fn branch(&mut self, snap: SnapId, env: &machine::Reproducer) -> Result<(), MachineError> {
+            self.lifecycle.push("branch");
+            self.branch_calls = self.branch_calls.saturating_add(1);
+            self.state = self
+                .snapshots
+                .get(&snap.0)
+                .cloned()
+                .ok_or(MachineError::UnknownSnapshot)?;
+            self.staged = nes::actions_of(env)?;
+            if self.append_sentinel {
+                self.staged.push(ButtonChord::new(0, 1));
+            }
+            Ok(())
+        }
+
+        fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.replay_calls = self.replay_calls.saturating_add(1);
+            self.state = self
+                .snapshots
+                .get(&snap.0)
+                .cloned()
+                .ok_or(MachineError::UnknownSnapshot)?;
+            self.staged.clear();
+            Ok(())
+        }
+
+        fn run(
+            &mut self,
+            _until: StopConditions,
+            _resolve: Option<&machine::Answer>,
+        ) -> Result<machine::StopReason, MachineError> {
+            self.lifecycle.push("run");
+            self.run_calls = self.run_calls.saturating_add(1);
+            self.frames.clear();
+            let chord_count = self
+                .max_chords_per_run
+                .unwrap_or(self.staged.len())
+                .min(self.staged.len());
+            for action in self.staged.drain(..chord_count).collect::<Vec<_>>() {
+                for _ in 0..action.bounded_hold_frames() {
+                    self.state[0] = self.state[0].wrapping_add(1);
+                    if !self.zero_frames {
+                        let mut wram = [0_u8; WRAM_SIZE];
+                        wram.copy_from_slice(
+                            self.state
+                                .get(..WRAM_SIZE)
+                                .ok_or(MachineError::Backend("short fake state".to_owned()))?,
+                        );
+                        self.frames.push(wram);
+                    }
+                    self.vtime = self.vtime.saturating_add(1);
+                }
+            }
+            Ok(self
+                .run_stops
+                .pop_front()
+                .unwrap_or(machine::StopReason::Quiescent {
+                    vtime: machine::Moment(self.vtime),
+                }))
+        }
+
+        fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
+            self.read_calls.set(self.read_calls.get().saturating_add(1));
+            let end = addr
+                .checked_add(u64::from(len))
+                .ok_or(MachineError::ReadOutOfBounds)?;
+            let (start, finish) = if addr == 0 && end == WRAM_SIZE as u64 {
+                (0, WRAM_SIZE)
+            } else if addr == SAVE_RAM_BASE as u64 && end == (SAVE_RAM_BASE + SAVE_RAM_SIZE) as u64
+            {
+                (SAVE_RAM_BASE, SAVE_RAM_BASE + SAVE_RAM_SIZE)
+            } else {
+                return Err(MachineError::ReadOutOfBounds);
+            };
+            self.state
+                .get(start..finish)
+                .map(ToOwned::to_owned)
+                .ok_or(MachineError::ReadOutOfBounds)
+        }
+
+        fn export(
+            &mut self,
+            snap: SnapId,
+            base: Option<&Self::Portable>,
+        ) -> Result<Self::Portable, MachineError> {
+            self.export_calls = self.export_calls.saturating_add(1);
+            if base.is_some() {
+                self.export_base_calls = self.export_base_calls.saturating_add(1);
+            }
+            self.snapshots
+                .get(&snap.0)
+                .cloned()
+                .map(FakePortable)
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+
+        fn import(&mut self, portable: &Self::Portable) -> Result<SnapId, MachineError> {
+            self.import_calls = self.import_calls.saturating_add(1);
+            Ok(self.insert_snapshot(portable.0.clone()))
+        }
+
+        fn portable_memory_charge(portable: &Self::Portable) -> usize {
+            portable.0.len()
+        }
+
+        fn now(&self) -> machine::Moment {
+            machine::Moment(self.vtime)
+        }
+
+        fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+            &self.frames
+        }
+    }
+
+    #[test]
+    fn generic_action_runs_once_and_observes_returned_frames() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        let action = ButtonChord::new(0x81, 3);
+
+        target.apply(&action);
+        assert_eq!(target.machine.branch_calls, 1);
+        assert_eq!(target.machine.run_calls, 1);
+        assert_eq!(target.machine.snapshot_calls, 2);
+        assert_eq!(target.machine.drop_calls, 0);
+        assert_eq!(target.machine.read_calls.get(), 3);
+        assert_eq!(target.observe().frame_count, 3);
+        assert_eq!(target.observe().changed_indices, vec![0]);
+
+        let before = (
+            target.machine.branch_calls,
+            target.machine.run_calls,
+            target.machine.snapshot_calls,
+            target.machine.drop_calls,
+            target.machine.read_calls.get(),
+        );
+        target.apply(&action);
+        assert_eq!(target.machine.branch_calls, before.0 + 1);
+        assert_eq!(target.machine.run_calls, before.1 + 1);
+        assert_eq!(target.machine.snapshot_calls, before.2 + 1);
+        assert_eq!(target.machine.drop_calls, before.3 + 1);
+        assert_eq!(target.observe().frame_count, 6);
+        assert_eq!(target.machine.snapshots.len(), 2);
+
+        let before_probe = (
+            target.machine.snapshot_calls,
+            target.machine.drop_calls,
+            target.machine.branch_calls,
+            target.machine.run_calls,
+            target.machine.replay_calls,
+            target.machine.snapshots.len(),
+        );
+        assert!(target.survives_probe(0, 2));
+        assert_eq!(target.machine.snapshot_calls, before_probe.0);
+        assert_eq!(target.machine.drop_calls, before_probe.1);
+        assert_eq!(target.machine.branch_calls, before_probe.2 + 1);
+        assert_eq!(target.machine.run_calls, before_probe.3 + 1);
+        assert_eq!(target.machine.replay_calls, before_probe.4 + 1);
+        assert_eq!(target.machine.snapshots.len(), before_probe.5);
+    }
+
+    #[test]
+    fn generic_snapshot_restore_and_reset_keep_handles_bounded() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.apply(&ButtonChord::new(0x01, 2));
+        let snapshot = target.snapshot().expect("portable snapshot");
+        assert_eq!(target.machine.export_base_calls, 0);
+        let same = target.snapshot().expect("shared portable snapshot");
+        assert_eq!(target.machine.export_calls, 2);
+        assert_eq!(target.machine.export_base_calls, 1);
+        assert_eq!(
+            <FakeMachine as Machine>::portable_memory_charge(&snapshot.emulator_state),
+            <FakeMachine as Machine>::portable_memory_charge(&same.emulator_state)
+        );
+        assert_eq!(target.machine.snapshots.len(), 2);
+
+        target.apply(&ButtonChord::new(0x02, 2));
+        assert_eq!(target.machine.snapshots.len(), 2);
+        target
+            .restore(&snapshot)
+            .expect("restore portable snapshot");
+        assert_eq!(target.machine.import_calls, 1);
+        assert_eq!(target.machine.replay_calls, 1);
+        assert_eq!(target.machine.snapshots.len(), 2);
+        assert_eq!(target.observe().frame_count, 2);
+
+        target.reset();
+        assert_eq!(target.machine.snapshots.len(), 1);
+        assert_eq!(target.machine.drop_calls, 3);
+        assert_eq!(target.observe().frame_count, 0);
+    }
+
+    #[test]
+    fn child_is_sealed_before_derive_parent_is_dropped() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.apply(&ButtonChord::new(0x01, 2));
+        target.machine.lifecycle.clear();
+
+        target.apply(&ButtonChord::new(0x02, 2));
+
+        assert_eq!(
+            target.machine.lifecycle,
+            ["branch", "run", "snapshot", "drop"]
+        );
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        assert_eq!(target.machine.snapshots.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_point_is_a_successful_action_and_probe_boundary() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target
+            .machine
+            .run_stops
+            .push_back(machine::StopReason::SnapshotPoint {
+                vtime: machine::Moment(3),
+            });
+        target.apply(&ButtonChord::new(0x81, 3));
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        assert_eq!(target.observe().frame_count, 3);
+
+        let mut probe = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        probe
+            .machine
+            .run_stops
+            .push_back(machine::StopReason::SnapshotPoint {
+                vtime: machine::Moment(2),
+            });
+        assert!(probe.survives_probe(0, 2));
+        assert_eq!(probe.exit_kind(), ExitKind::Ok);
+    }
+
+    #[test]
+    fn infrastructure_deadline_is_a_failure_not_a_game_death() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target
+            .machine
+            .run_stops
+            .push_back(machine::StopReason::Deadline {
+                vtime: machine::Moment(3),
+            });
+        let reads_before = target.machine.read_calls.get();
+        target.apply(&ButtonChord::new(0x81, 3));
+
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+        assert!(!target.is_dead());
+        assert_eq!(target.machine.read_calls.get(), reads_before);
+        assert_eq!(target.machine.snapshot_calls, 1);
+        assert!(target.last_action_observations().is_empty());
+    }
+
+    #[test]
+    fn zero_frame_action_and_probe_are_rejected() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.machine.zero_frames = true;
+        target.apply(&ButtonChord::new(0x81, 3));
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+        assert_eq!(target.machine.run_calls, 1);
+        assert_eq!(target.machine.snapshots.len(), 1);
+
+        target.reset();
+        assert!(!target.survives_probe(0, 3));
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        assert_eq!(target.machine.run_calls, 2);
+        assert_eq!(target.machine.snapshots.len(), 1);
+    }
+
+    #[test]
+    fn probe_spans_chords_without_consuming_following_sentinel() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.machine.max_chords_per_run = Some(1);
+        target.machine.append_sentinel = true;
+        target.machine.run_stops.extend([
+            machine::StopReason::SnapshotPoint {
+                vtime: machine::Moment(120),
+            },
+            machine::StopReason::SnapshotPoint {
+                vtime: machine::Moment(121),
+            },
+        ]);
+        assert!(target.survives_probe(0, u16::from(MAX_HOLD_FRAMES) + 1));
+        assert_eq!(target.machine.run_calls, 2);
+        assert_eq!(target.machine.replay_calls, 1);
+        assert_eq!(target.machine.state[0], 0);
+        assert_eq!(target.machine.staged.len(), 0);
+    }
+
+    #[test]
+    fn reset_replays_genesis_even_when_current_drop_fails() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.apply(&ButtonChord::new(0x81, 2));
+        let replay_calls = target.machine.replay_calls;
+        target.machine.fail_next_drop = true;
+        target.reset();
+        assert_eq!(target.machine.replay_calls, replay_calls + 1);
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+        assert_eq!(target.observe().frame_count, 0);
+        assert_eq!(target.machine.snapshots.len(), 2);
+    }
 
     #[test]
     fn level_fixture_uses_one_based_campaign_levels() {

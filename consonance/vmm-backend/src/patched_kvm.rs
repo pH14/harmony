@@ -130,6 +130,10 @@ impl Backend for PatchedKvmBackend {
         self.inner.complete_arch(completion)
     }
 
+    fn retire_pending_completion(&mut self) -> Result<()> {
+        self.inner.retire_pending_completion()
+    }
+
     fn save(&self) -> Result<VcpuState> {
         self.inner.save()
     }

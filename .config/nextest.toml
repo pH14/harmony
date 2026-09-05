@@ -17,3 +17,10 @@ filter = 'test(control::tests::arbitrary_schedule_applied_twice_is_identical) | 
 # 55s under full hosted-shard load). Checkpoint mutants can otherwise leave
 # both loops running after a direct truth-table test has already killed them.
 slow-timeout = { period = "75s", terminate-after = 1 }
+
+[[profile.mutants.overrides]]
+filter = 'package(harmony-cli)'
+# These process/reader tests normally finish in under a second. A mutant that
+# removes EOF or watchdog termination must fail the test before cargo-mutants'
+# 180-second minimum suite timeout, including when another test already failed.
+slow-timeout = { period = "15s", terminate-after = 1 }

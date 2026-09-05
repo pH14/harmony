@@ -38,7 +38,7 @@ hittable when `zfs_dmu_offset_next_sync=1` became the default in **2.1.4**.
   `cp` it (sparse-aware) → checksum copy vs source. Upstream repro uses ~1000×1MB files across
   several concurrent instances and hits in seconds-to-minutes under load.
 - **Fault surface**: **none** — this is the marquee pure-timing entry. The race is between a
-  writer/copier thread and txg sync. Dissonance searches schedules (vtime/preemption
+  writer/copier thread and txg sync. dissonance searches schedules (vtime/preemption
   perturbation, SMP interleaving from task 56) to land `SEEK_DATA` inside the mid-sync window.
   No injected fault, no crash: if Harmony finds this, schedule search works on real software.
 - **Oracle**: per-copy checksum mismatch against source; corrupted regions are zero-filled

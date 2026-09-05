@@ -21,7 +21,7 @@
 //! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
 //! host. `#[ignore]`d out of the default lane (like `live_m1_m2.rs`): default CI
 //! shows it **not-run**, never a vacuous green. Run on `ssh <det-box>`, CPU-pinned
-//! per `docs/BOX-PINNING.md`, with the patched modules loaded:
+//! per `.github/workflows/box.yml`, with the patched modules loaded:
 //!
 //! ```sh
 //! taskset -c 2 cargo test -p vmm-core --test live_determinism -- --ignored --test-threads=1
@@ -182,7 +182,7 @@ fn boot_patched_or_panic() -> vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A 
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the patched KVM \
-         modules loaded (see consonance/vmm-backend/kvm-patches/BUILD.md), CPU-pinned per docs/BOX-PINNING.md."
+         modules loaded (see consonance/vmm-backend/kvm-patches/BUILD.md), CPU-pinned per .github/workflows/box.yml."
     );
     match boot_selected(BackendKind::Patched, &payload_image(), GUEST_RAM_LEN, SEED) {
         Ok(vmm) => vmm,

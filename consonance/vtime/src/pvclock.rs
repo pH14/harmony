@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The paravirt **exit-count-derived clock page** — layout and stamping functions
-//! (`docs/PARAVIRT-CLOCK.md` §1, ABI v1).
+//! (`consonance/vtime/README.md`, ABI v1).
 //!
 //! One 4 KiB guest page carries **materialized** V-time: the already-computed
 //! `vns` / `guest_clock` values as of the last refresh, seqlock-versioned so a

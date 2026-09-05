@@ -3,7 +3,7 @@
 //! logic that turns "run a command at the serial shell" into an injected byte
 //! stream plus a completion detector. Task 81.
 //!
-//! `exec` is an **improvisation** (git history's `docs/RESOLUTION.md` §Improvisations): a
+//! `exec` is an **improvisation** (`docs/PROTOCOL.md`): a
 //! one-off command run inside a *forked* guest, **never recorded into any
 //! `Environment`** and carrying **no determinism guarantee**. The transport is
 //! deliberately crude — raw bytes on the guest's 8250 serial input, as if typed

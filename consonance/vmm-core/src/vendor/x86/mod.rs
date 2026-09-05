@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **x86-64 vendor** (`docs/ARCH-BOUNDARY.md` §B): everything in the
+//! The **x86-64 vendor** (`docs/ARCHITECTURE.md`): everything in the
 //! deterministic VMM that names the x86 ISA — the CPU/MSR contract and its
 //! installed policy ([`contract`]), the exit dispatch and dispositions
 //! ([`dispatch`]), the boot loaders and entry state ([`multiboot`],
@@ -29,7 +29,7 @@ pub mod records;
 
 use control_proto::RegsView;
 use vm_state::VmState;
-use vmm_backend::{Backend, Gpa, X86, X86Exit};
+use vmm_backend::{Backend, Exit, Gpa, X86, X86Exit};
 
 pub use dispatch::{X86Devices, contract_vclock_config};
 
@@ -58,7 +58,7 @@ impl Vendor for X86 {
         exit: X86Exit,
     ) -> Result<Step, VmmError> {
         // Exhaustive over `X86Exit` — no wildcard arm (default-deny stays
-        // structural; `docs/ARCH-BOUNDARY.md` §A).
+        // structural; `docs/ARCHITECTURE.md`).
         match exit {
             X86Exit::Io {
                 port,
@@ -101,6 +101,17 @@ impl Vendor for X86 {
         vmm.dispatch_mmio(gpa, size, write)
     }
 
+    fn is_doorbell_exit(exit: &Exit<Self>) -> bool {
+        matches!(
+            exit,
+            Exit::Arch(X86Exit::Io {
+                port: dispatch::DOORBELL_PORT,
+                size: 4,
+                write: Some(_),
+            })
+        )
+    }
+
     fn normalize_virtual_time_exit(
         exit: &vmm_backend::Exit<Self>,
     ) -> Option<(crate::virtual_time::NormalizedEventClass, Vec<u8>)> {
@@ -137,6 +148,14 @@ impl Vendor for X86 {
 
     fn next_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
         vmm.devices().lapic.as_ref()?.next_timer_deadline()
+    }
+
+    fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)> {
+        let lapic = vmm.devices().lapic.as_ref()?;
+        Some((
+            lapic.next_timer_deadline()?,
+            u32::from(lapic.timer_vector()),
+        ))
     }
 
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
@@ -300,5 +319,39 @@ impl Vendor for X86 {
 
     fn commit_restore<B: Backend<A = Self>>(vmm: &mut Vmm<B>, prep: Self::RestorePrep) {
         vmm.commit_restore_x86(prep);
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn doorbell_classifier_accepts_only_the_exact_out() {
+        let ring = Exit::Arch(X86Exit::Io {
+            port: dispatch::DOORBELL_PORT,
+            size: 4,
+            write: Some(7),
+        });
+        assert!(<X86 as Vendor>::is_doorbell_exit(&ring));
+        for exit in [
+            Exit::Arch(X86Exit::Io {
+                port: dispatch::DOORBELL_PORT,
+                size: 1,
+                write: Some(7),
+            }),
+            Exit::Arch(X86Exit::Io {
+                port: dispatch::DOORBELL_PORT,
+                size: 4,
+                write: None,
+            }),
+            Exit::Arch(X86Exit::Io {
+                port: dispatch::DOORBELL_PORT.wrapping_add(1),
+                size: 4,
+                write: Some(7),
+            }),
+        ] {
+            assert!(!<X86 as Vendor>::is_doorbell_exit(&exit));
+        }
     }
 }

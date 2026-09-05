@@ -678,13 +678,13 @@ fn err_read_too_large() {
     check_reply(
         50,
         Err(ControlError::ReadTooLarge {
-            len: 0x2_0000,
+            len: 0x8_0000,
             cap: control_proto::READ_CAP,
         }),
         &[
             0x01, 0x12, // RESULT_ERR, CE_READ_TOO_LARGE
-            0x00, 0x00, 0x02, 0x00, // len = 0x20000
-            0x00, 0x00, 0x01, 0x00, // cap = 0x10000 (READ_CAP = 64 KiB)
+            0x00, 0x00, 0x08, 0x00, // len = 0x80000
+            0x00, 0x00, 0x04, 0x00, // cap = 0x40000 (READ_CAP = 256 KiB)
         ],
     );
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **Postgres-via-real-`runc`** gates (`#[cfg(target_os = "linux")]` **and
 //! `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules,
-//! CPU-pinned per `docs/BOX-PINNING.md`). Task 48 — **the money-shot**: the actual
+//! CPU-pinned per `.github/workflows/box.yml`). Task 48 — **the money-shot**: the actual
 //! `runc` binary (the real Go container runtime, *not* the task-38
 //! `unshare`/`chroot`/`setpriv` shim) launches the official postgres OCI container,
 //! the task-42 `gen_random_uuid()`/`clock_timestamp()` workload runs against it, and
@@ -19,7 +19,7 @@
 //! the loop's stdout/stderr stream to `ttyS0`.
 //!
 //! **The unlock (vs task 38's `unshare` workaround — see
-//! `consonance/harmony-linux/linux/IMPLEMENTATION.md` + `tasks/47-deterministic-preemption-timer.md`).**
+//! `consonance/harmony-linux/linux/README.md` + `consonance/vtime/README.md`).**
 //! Under task 38's single-vCPU / V-time model, V-time advanced only at natural
 //! VM-exits; `runc`/its Go container-init busy-spin (`procyield`/`osyield`) with no
 //! exit → V-time froze → the LAPIC tick never fired → the Go scheduler never ran →
@@ -186,7 +186,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -195,7 +195,7 @@ fn require_kvm() {
 fn require_host_baseline() {
     let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
-    eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
+    eprintln!("[host-assert] x86 CPU contract baseline:");
     for o in &report {
         eprintln!(
             "[host-assert]   {}  {}: expected {}, observed {}",
@@ -209,7 +209,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per docs/BOX-PINNING.md."
+         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 

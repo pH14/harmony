@@ -69,6 +69,14 @@ pub enum StoreError {
         /// The offending buffer length.
         len: usize,
     },
+    /// A full guest-memory image had a length other than the configured image size.
+    #[error("memory image is {got} bytes, expected {expected}")]
+    BadMemoryLength {
+        /// The offending image length.
+        got: usize,
+        /// The configured image length.
+        expected: usize,
+    },
     /// Resident bytes no longer match the content address sealed for a page.
     #[error("snapshot page integrity check failed at gfn {gfn}")]
     PageIntegrity {
@@ -265,6 +273,103 @@ impl Store {
         })
     }
 
+    /// Seal a new flat base containing the logical image of `parent` plus the
+    /// pages in `dirty` that changed after `parent` was sealed.
+    ///
+    /// This is the bounded-chain flattening path. A normal base walk examines every
+    /// page in the configured image. Flattening instead walks the page sets in the
+    /// chain rooted at `parent`, adds the newly dirtied frames, then reads only that
+    /// union from `memory`. The base builder still performs the canonical zero-page
+    /// check, so a page that was changed back to zero is omitted from the flat layer
+    /// and resolves to the implicit zero page. `dirty` must be complete when supplied
+    /// (the vmm-core caller only passes a successful dirty-log drain).
+    ///
+    /// The resulting layer is an independent base (`parent = None`) and therefore
+    /// has `chain_len == 1`. Its capture cost is O(number of page-set entries since
+    /// the chain root + newly dirtied pages), rather than O(logical image size).
+    pub fn flatten_base(
+        &mut self,
+        parent: SnapshotId,
+        memory: &[u8],
+        dirty: &[u64],
+        vm_state: Vec<u8>,
+    ) -> Result<SnapshotId, StoreError> {
+        let expected = self
+            .cfg
+            .mem_pages
+            .checked_mul(PAGE_SIZE as u64)
+            .and_then(|len| usize::try_from(len).ok())
+            .ok_or(StoreError::BadMemoryLength {
+                got: memory.len(),
+                expected: usize::MAX,
+            })?;
+        if memory.len() != expected {
+            return Err(StoreError::BadMemoryLength {
+                got: memory.len(),
+                expected,
+            });
+        }
+
+        // Validate the parent before collecting its chain. Every ancestor of a live
+        // layer is resident, so the walk is total once this check succeeds.
+        self.live_layer(parent)?;
+        // Resolve the parent's logical image only over the keys the chain ever
+        // wrote. Keeping the resolved PageRef lets the new base retain existing
+        // page-address entries directly; unchanged root pages therefore avoid both
+        // a RAM read and a second BLAKE3 hash.
+        let mut inherited: BTreeMap<u64, PageRef> = BTreeMap::new();
+        let mut cur = Some(parent.0);
+        while let Some(id) = cur {
+            let Some(layer) = self.layers.get(&id) else {
+                debug_assert!(false, "dangling parent link");
+                break;
+            };
+            for (&gfn, &pref) in &layer.pages {
+                inherited.entry(gfn).or_insert(pref);
+            }
+            cur = layer.parent;
+        }
+        let mut candidates: BTreeSet<u64> = inherited.keys().copied().collect();
+        let mut dirty_set = BTreeSet::new();
+        for &gfn in dirty {
+            if gfn >= self.cfg.mem_pages {
+                return Err(StoreError::GfnOutOfRange {
+                    gfn,
+                    mem_pages: self.cfg.mem_pages,
+                });
+            }
+            candidates.insert(gfn);
+            dirty_set.insert(gfn);
+        }
+
+        let mem_pages = self.cfg.mem_pages;
+        let mut builder = self.begin_base();
+        for gfn in candidates {
+            // The image length and gfn bound above make this checked offset
+            // arithmetic infallible, while retaining a total error path if the
+            // representation is ever changed independently.
+            let inherited = inherited.get(&gfn).copied().unwrap_or(PageRef::Zero);
+            if !dirty_set.contains(&gfn) {
+                // No write has occurred since `parent`, so the parent's resolved
+                // content is already the current content. Reuse the content address
+                // without touching the (potentially very large) RAM image.
+                builder.core.insert_page_ref(gfn, inherited)?;
+                continue;
+            }
+            let offset = usize::try_from(gfn)
+                .ok()
+                .and_then(|gfn| gfn.checked_mul(PAGE_SIZE))
+                .ok_or(StoreError::GfnOutOfRange { gfn, mem_pages })?;
+            let end = offset
+                .checked_add(PAGE_SIZE)
+                .ok_or(StoreError::GfnOutOfRange { gfn, mem_pages })?;
+            builder
+                .core
+                .write_page_against(gfn, &memory[offset..end], inherited)?;
+        }
+        Ok(builder.seal(vm_state))
+    }
+
     /// Read one page of `snap`'s logical memory image into `out` (length
     /// [`PAGE_SIZE`]), resolving through the layer chain; zero page if never written.
     pub fn read_page(&self, snap: SnapshotId, gfn: u64, out: &mut [u8]) -> Result<(), StoreError> {
@@ -288,6 +393,99 @@ impl Store {
             },
         }
         Ok(())
+    }
+
+    /// Return the target contents for every page that may differ between two
+    /// snapshots.
+    ///
+    /// The result is sorted by guest frame number. For `Some(from)`, it contains
+    /// the union of the page keys recorded on the two chains, stopping at their
+    /// nearest common ancestor; each returned page is resolved from `to`, so a
+    /// page that is absent there is returned as an all-zero page. When `from` is
+    /// `None`, every logical page is returned, including pages resolved to zero.
+    /// Both snapshot ids must still be live.
+    pub fn diff_pages(
+        &self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+    ) -> Result<Vec<(u64, [u8; PAGE_SIZE])>, StoreError> {
+        self.live_layer(to)?;
+
+        let Some(from) = from else {
+            let mut pages = Vec::new();
+            for gfn in 0..self.cfg.mem_pages {
+                let mut page = [0u8; PAGE_SIZE];
+                self.read_page(to, gfn, &mut page)?;
+                pages.push((gfn, page));
+            }
+            return Ok(pages);
+        };
+
+        self.live_layer(from)?;
+
+        // Find the nearest common ancestor by recording `from`'s complete chain
+        // and walking `to` toward its root. BTreeSet keeps the traversal's
+        // membership checks deterministic; the set is not part of the output.
+        let mut from_ancestors = BTreeSet::new();
+        let mut cur = Some(from.0);
+        while let Some(id) = cur {
+            if !from_ancestors.insert(id) {
+                // A cycle cannot be produced by the sealed-builder API. Treat
+                // corrupted internal topology as an unknown snapshot rather
+                // than risking an unbounded walk.
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+            }
+            let Some(layer) = self.layers.get(&id) else {
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+            };
+            cur = layer.parent;
+        }
+
+        let mut common = None;
+        let mut to_visited = BTreeSet::new();
+        cur = Some(to.0);
+        while let Some(id) = cur {
+            if !to_visited.insert(id) {
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+            }
+            if from_ancestors.contains(&id) {
+                common = Some(id);
+                break;
+            }
+            let Some(layer) = self.layers.get(&id) else {
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+            };
+            cur = layer.parent;
+        }
+
+        // Collect page keys from each side, excluding the common ancestor. A
+        // cycle guard makes this total even if an internal link is corrupted.
+        let mut changed_gfns = BTreeSet::new();
+        for start in [from.0, to.0] {
+            let mut side_visited = BTreeSet::new();
+            cur = Some(start);
+            while let Some(id) = cur {
+                if Some(id) == common {
+                    break;
+                }
+                if !side_visited.insert(id) {
+                    return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+                }
+                let Some(layer) = self.layers.get(&id) else {
+                    return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+                };
+                changed_gfns.extend(layer.pages.keys().copied());
+                cur = layer.parent;
+            }
+        }
+
+        let mut pages = Vec::with_capacity(changed_gfns.len());
+        for gfn in changed_gfns {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(to, gfn, &mut page)?;
+            pages.push((gfn, page));
+        }
+        Ok(pages)
     }
 
     /// The opaque vCPU/device blob recorded at seal time.
@@ -623,6 +821,53 @@ impl BuilderCore<'_> {
         Ok(())
     }
 
+    /// Retain an already-interned page reference in this builder. Used by chain
+    /// flattening for frames that did not change after the parent seal, avoiding a
+    /// RAM copy and a redundant content hash.
+    fn insert_page_ref(&mut self, gfn: u64, pref: PageRef) -> Result<(), StoreError> {
+        if let PageRef::Data(hash) = pref {
+            let Some(entry) = self.store.pages.get_mut(&hash) else {
+                return Err(StoreError::PageIntegrity { gfn });
+            };
+            entry.refs = entry.refs.saturating_add(1);
+        }
+        if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
+            self.store.release_page_ref(old);
+        }
+        Ok(())
+    }
+
+    /// Record a page only when its bytes differ from `inherited`.
+    ///
+    /// A dirty log may conservatively report a write that stores the same bytes.
+    /// Comparing against the existing interned page (or the implicit zero page)
+    /// avoids hashing such a false positive and keeps flattening proportional to
+    /// pages whose content actually changed since the chain root.
+    fn write_page_against(
+        &mut self,
+        gfn: u64,
+        data: &[u8],
+        inherited: PageRef,
+    ) -> Result<(), StoreError> {
+        if data.len() != PAGE_SIZE {
+            return Err(StoreError::BadPageLength { len: data.len() });
+        }
+        let unchanged = match inherited {
+            PageRef::Zero => data == &ZERO_PAGE[..],
+            PageRef::Data(hash) => {
+                let Some(entry) = self.store.pages.get(&hash) else {
+                    return Err(StoreError::PageIntegrity { gfn });
+                };
+                entry.data.as_ref() == data
+            }
+        };
+        if unchanged {
+            self.insert_page_ref(gfn, inherited)
+        } else {
+            self.write_page(gfn, data)
+        }
+    }
+
     fn seal(mut self, vm_state: Vec<u8>) -> SnapshotId {
         let vm_state_hash = *blake3::hash(&vm_state).as_bytes();
         let pages = std::mem::take(&mut self.pages); // leaves Drop nothing to undo
@@ -822,6 +1067,76 @@ mod tests {
     }
 
     #[test]
+    fn flatten_base_walks_chain_and_preserves_zero_transitions() {
+        let mut store = Store::new(cfg(8));
+        let mut base_image = vec![0u8; 8 * PAGE_SIZE];
+        base_image[..PAGE_SIZE].fill(1);
+        base_image[PAGE_SIZE..2 * PAGE_SIZE].fill(2);
+        let mut builder = store.begin_base();
+        for (gfn, frame) in base_image.as_chunks::<PAGE_SIZE>().0.iter().enumerate() {
+            builder.write_page(gfn as u64, frame).unwrap();
+        }
+        let base = builder.seal(Vec::new());
+
+        // Page 0 changes to zero and page 2 changes from implicit zero to 3.
+        let mut child_image = base_image.clone();
+        child_image[..PAGE_SIZE].fill(0);
+        child_image[2 * PAGE_SIZE..3 * PAGE_SIZE].fill(3);
+        let mut builder = store.derive(base).unwrap();
+        builder.write_page(0, &child_image[..PAGE_SIZE]).unwrap();
+        builder
+            .write_page(2, &child_image[2 * PAGE_SIZE..3 * PAGE_SIZE])
+            .unwrap();
+        let child = builder.seal(Vec::new());
+
+        // Page 1 changes to zero, then the current image dirties page 5 to 9.
+        let mut grand_image = child_image.clone();
+        grand_image[PAGE_SIZE..2 * PAGE_SIZE].fill(0);
+        let mut builder = store.derive(child).unwrap();
+        builder
+            .write_page(1, &grand_image[PAGE_SIZE..2 * PAGE_SIZE])
+            .unwrap();
+        let grand = builder.seal(Vec::new());
+        let mut current = grand_image;
+        current[5 * PAGE_SIZE..6 * PAGE_SIZE].fill(9);
+
+        let flat = store
+            .flatten_base(grand, &current, &[5], Vec::new())
+            .unwrap();
+        assert_eq!(store.stats(flat).unwrap().chain_len, 1);
+        // Only page 2 and the newly dirty page 5 are non-zero in the candidate
+        // union. Pages 0 and 1 are explicitly zero and remain implicit in a base.
+        assert_eq!(store.stats(flat).unwrap().owned_pages, 2);
+        let mut page = [0u8; PAGE_SIZE];
+        for gfn in 0..8 {
+            store.read_page(flat, gfn, &mut page).unwrap();
+            assert_eq!(
+                page,
+                current[gfn as usize * PAGE_SIZE..(gfn as usize + 1) * PAGE_SIZE]
+            );
+        }
+    }
+
+    #[test]
+    fn flatten_base_rejects_wrong_image_and_dirty_gfn() {
+        let mut store = Store::new(cfg(2));
+        let base = store.begin_base().seal(Vec::new());
+        assert!(matches!(
+            store.flatten_base(base, &[0; PAGE_SIZE], &[], Vec::new()),
+            Err(StoreError::BadMemoryLength { got, expected })
+                if got == PAGE_SIZE && expected == 2 * PAGE_SIZE
+        ));
+        let memory = vec![0u8; 2 * PAGE_SIZE];
+        assert!(matches!(
+            store.flatten_base(base, &memory, &[2], Vec::new()),
+            Err(StoreError::GfnOutOfRange {
+                gfn: 2,
+                mem_pages: 2
+            })
+        ));
+    }
+
+    #[test]
     fn abandoned_builder_leaks_nothing() {
         let mut store = Store::new(cfg(8));
         let mut b = store.begin_base();
@@ -945,6 +1260,97 @@ mod tests {
         // a second read hits the memo (observable only as identical results)
         store.read_page(leaf, 0, &mut out).unwrap();
         assert_eq!(out, [9u8; PAGE_SIZE]);
+    }
+
+    #[test]
+    fn diff_pages_sibling_branches_are_sorted_and_target_resolved() {
+        let mut store = Store::new(cfg(4));
+        let base = store.begin_base().seal(vec![]);
+
+        let mut left_builder = store.derive(base).unwrap();
+        left_builder.write_page(1, &[0x11; PAGE_SIZE]).unwrap();
+        let left = left_builder.seal(vec![]);
+
+        let mut right_builder = store.derive(base).unwrap();
+        right_builder.write_page(2, &[0x22; PAGE_SIZE]).unwrap();
+        let right = right_builder.seal(vec![]);
+
+        // Page 1 is present only on the source side, so the target's implicit
+        // zero is returned. Page 2 is present on the target side. The common
+        // ancestor's (empty) page set is not included.
+        assert_eq!(
+            store.diff_pages(Some(left), right).unwrap(),
+            vec![(1, [0u8; PAGE_SIZE]), (2, [0x22u8; PAGE_SIZE])]
+        );
+    }
+
+    #[test]
+    fn diff_pages_ancestor_descendant_handles_explicit_and_implicit_zero() {
+        let mut store = Store::new(cfg(4));
+        let mut base_builder = store.begin_base();
+        base_builder.write_page(0, &[0x10; PAGE_SIZE]).unwrap();
+        let base = base_builder.seal(vec![]);
+
+        let mut child_builder = store.derive(base).unwrap();
+        child_builder.write_page(0, &[0u8; PAGE_SIZE]).unwrap();
+        child_builder.write_page(2, &[0x20; PAGE_SIZE]).unwrap();
+        let child = child_builder.seal(vec![]);
+
+        assert_eq!(
+            store.diff_pages(Some(base), child).unwrap(),
+            vec![(0, [0u8; PAGE_SIZE]), (2, [0x20u8; PAGE_SIZE])]
+        );
+        assert_eq!(
+            store.diff_pages(Some(child), base).unwrap(),
+            vec![(0, [0x10u8; PAGE_SIZE]), (2, [0u8; PAGE_SIZE])]
+        );
+    }
+
+    #[test]
+    fn diff_pages_identical_snapshots_are_empty() {
+        let mut store = Store::new(cfg(4));
+        let base = store.begin_base().seal(vec![]);
+        let child = store.derive(base).unwrap().seal(vec![]);
+
+        assert!(store.diff_pages(Some(base), base).unwrap().is_empty());
+        assert!(store.diff_pages(Some(base), child).unwrap().is_empty());
+    }
+
+    #[test]
+    fn diff_pages_from_none_returns_full_resolved_image() {
+        let mut store = Store::new(cfg(4));
+        let mut base_builder = store.begin_base();
+        base_builder.write_page(1, &[0x11; PAGE_SIZE]).unwrap();
+        let base = base_builder.seal(vec![]);
+        let mut child_builder = store.derive(base).unwrap();
+        child_builder.write_page(2, &[0x22; PAGE_SIZE]).unwrap();
+        let child = child_builder.seal(vec![]);
+
+        assert_eq!(
+            store.diff_pages(None, child).unwrap(),
+            vec![
+                (0, [0u8; PAGE_SIZE]),
+                (1, [0x11u8; PAGE_SIZE]),
+                (2, [0x22u8; PAGE_SIZE]),
+                (3, [0u8; PAGE_SIZE]),
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_pages_rejects_unknown_ids() {
+        let mut store = Store::new(cfg(1));
+        let base = store.begin_base().seal(vec![]);
+        let unknown = SnapshotId(u64::MAX);
+
+        assert!(matches!(
+            store.diff_pages(Some(unknown), base),
+            Err(StoreError::UnknownSnapshot(id)) if id == unknown
+        ));
+        assert!(matches!(
+            store.diff_pages(Some(base), unknown),
+            Err(StoreError::UnknownSnapshot(id)) if id == unknown
+        ));
     }
 
     #[test]

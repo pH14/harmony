@@ -20,7 +20,7 @@ VMX exit handlers call:
 The result is written and RIP advanced on re-entry via the standard
 complete_userspace_io path, mirroring the KVM_EXIT_X86_RDMSR round-trip.
 
-Co-developed-for: harmony PatchedKvmBackend (docs/R-BACKEND.md)
+Co-developed-for: harmony PatchedKvmBackend (consonance/vmm-backend/README.md)
 ---
  arch/x86/include/asm/kvm_host.h |   5 ++
  arch/x86/kvm/x86.c              | 145 ++++++++++++++++++++++++++++++++

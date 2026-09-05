@@ -23,7 +23,7 @@ pub const ISA_DEBUG_EXIT_PORT: u16 = 0x00F4;
 /// captures the stream for the O2 conformance oracle. Distinct from #44's
 /// hypercall doorbell at `0x0CA1` (adjacent, but its own dedicated port so a
 /// reported value can never be mistaken for a doorbell ring). Documented in
-/// `docs/INTEGRATION.md` ("report channel") and `docs/cpu-msr-contract.toml`
+/// `docs/ARCHITECTURE.md` and `consonance/vmm-core/contracts/x86/intel.toml`
 /// `[ports]`; it carries no per-host input, so it is **not** a §6-hashed row.
 pub const REPORT_PORT: u16 = 0x0CA2;
 /// `LCR.DLAB` (bit 7). When set, `UART_PORT_BASE` (+1) address the divisor latch

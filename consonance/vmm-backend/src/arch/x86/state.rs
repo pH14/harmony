@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use crate::types::MpState;
 
 /// Full guest-visible vCPU state for snapshot/restore. The per-vCPU input to the
-/// M2 state hash (`docs/BRINGUP.md` step 6).
+/// M2 state hash (`docs/ARCHITECTURE.md`).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct VcpuState {
     /// GPRs, `RIP`, `RFLAGS` (`KVM_GET_REGS`).
@@ -184,7 +184,7 @@ pub struct DebugRegs {
 
 /// Pending-event and interrupt-shadow state (`KVM_GET_VCPU_EVENTS` /
 /// `kvm_vcpu_events`). A representative subset is modeled; fields KVM may add are
-/// left default on restore (documented in `IMPLEMENTATION.md`). Flat POD.
+/// left default on restore. Flat POD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct VcpuEvents {
     /// A pending exception is injected.
@@ -293,7 +293,7 @@ const SSE_MXCSR: std::ops::Range<usize> = 24..28;
 /// `MXCSR_MASK` in the legacy area: a host capability constant `FXSAVE`/`XSAVE`
 /// write into the image, not guest state, and the restore path ignores it.
 const MXCSR_MASK: std::ops::Range<usize> = 28..32;
-/// The frozen contract's pinned `MXCSR_MASK` (`docs/CPU-MSR-CONTRACT.md` §2,
+/// The frozen contract's pinned `MXCSR_MASK` (`consonance/vmm-core/contracts/x86/README.md`,
 /// "FPU/XSAVE save-image determinism"). Intel parts report this value; AMD
 /// parts report `0x0002FFFF` (bit 17, misaligned-SSE), so an un-pinned image
 /// diverges across vendors.

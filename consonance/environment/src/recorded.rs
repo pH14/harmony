@@ -130,7 +130,7 @@ impl EnvSpec {
     /// encodings of the same logical policy (v3 is longer), so they must NOT share
     /// an outer version. A `v4` blob is therefore rejected outright at the version
     /// gate in [`decode`](EnvSpec::decode), never parsed with the v5 policy reader.
-    /// Bumped to `6` by the ARCH-BOUNDARY §C interrupt-identity widening:
+    /// Bumped to `6` by the architecture boundary interrupt-identity widening:
     /// [`HostFault::InjectInterrupt`](crate::HostFault::InjectInterrupt)'s
     /// `vector` payload widened `u8 → u32` (GIC INTIDs exceed 8 bits), so a v5
     /// action table carrying one no longer parses under the v6 reader. Bumped

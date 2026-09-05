@@ -1,0 +1,103 @@
+# Acceptance corpus registry.
+#
+# Each row identifies a workload, the oracles applied to it, and the host and
+# virtualization level required to execute it. `golden` names the committed
+# observable digest for conformance rows.
+#
+# Kinds: `micro`, `workload`, `fuzz_seed`.
+# Oracles: `determinism`, `conformance`, `seed_sensitivity:rng`, and
+# `seed_sensitivity:pure`.
+# Hosts: `portable`, `det-cfl-v1`, and `msr1`.
+# Virtualization levels: `l1` and `l2`.
+#
+# `acceptance-suite run --host <id>` selects matching rows. A row for which no
+# selected host is available is reported as unrun.
+
+[[item]]
+name = "insn-rdtsc"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/insn-rdtsc"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "consonance/acceptance-suite/golden/insn-rdtsc.digest"
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "insn-rng"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/insn-rng"
+oracles = ["determinism", "seed_sensitivity:rng", "conformance"]
+golden = "consonance/acceptance-suite/golden/insn-rng.digest"
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "insn-cpuid"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/insn-cpuid"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "consonance/acceptance-suite/golden/insn-cpuid.digest"
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "insn-rdpmc"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/insn-rdpmc"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "consonance/acceptance-suite/golden/insn-rdpmc.digest"
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "msr-allowed"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/msr-allowed"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "consonance/acceptance-suite/golden/msr-allowed.digest"
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "msr-denied"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/msr-denied"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "consonance/acceptance-suite/golden/msr-denied.digest"
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+# --- O2-deferred: payloads that can't reach a clean PASS on today's event loop
+#     (timer/IRQ: insn-hlt/irq-landing/pit-pic-stub; MONITOR/MWAIT: insn-mwait) ---
+
+[[item]]
+name = "insn-hlt"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/insn-hlt"
+oracles = ["determinism", "seed_sensitivity:pure"]
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "insn-mwait"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/insn-mwait"
+oracles = ["determinism", "seed_sensitivity:pure"]
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "irq-landing"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/irq-landing"
+oracles = ["determinism", "seed_sensitivity:pure"]
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"
+
+[[item]]
+name = "pit-pic-stub"
+kind = "micro"
+source = "consonance/acceptance-suite/payloads/pit-pic-stub"
+oracles = ["determinism", "seed_sensitivity:pure"]
+hosts = ["portable", "det-cfl-v1"]
+virt = "l1"

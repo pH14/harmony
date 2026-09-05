@@ -1,12 +1,10 @@
-//! Generate the conformance tables from `docs/cpu-msr-contract.toml`.
+//! Generate the conformance tables from the active x86 contract.
 //!
-//! The contract is the normative, hashed surface (the `cpuid-model.md` fragment
-//! is explicitly non-normative and, post `det-cfl-v1` re-baseline, stale). Its
-//! grammar is mechanically canonical (file header §6), so a small line-oriented
-//! parser — std only, no TOML crate — extracts exactly what the sweep payloads
-//! pin: the frozen CPUID model, the allowed/denied MSR sets and the allow-fixed
-//! values, plus the frozen frequency scalars. Emitting these means a contract
-//! bump regenerates the tables and surfaces as a payload/golden diff.
+//! The contract is the normative, hashed surface. Its grammar is mechanically
+//! canonical, so a small line-oriented parser extracts the frozen CPUID model,
+//! the allowed and denied MSR sets, fixed values, and frequency scalars. A
+//! contract change therefore regenerates the tables and surfaces as a payload
+//! or golden diff.
 
 use std::env;
 use std::fmt::Write as _;
@@ -126,7 +124,7 @@ fn msr_indices(b: &Block) -> Vec<(u32, u32)> {
 
 fn main() {
     let manifest = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let contract = Path::new(&manifest).join("../../../../docs/cpu-msr-contract.toml");
+    let contract = Path::new(&manifest).join("../../../vmm-core/contracts/x86/intel.toml");
     let text = fs::read_to_string(&contract)
         .unwrap_or_else(|e| panic!("read {}: {e}", contract.display()));
     println!("cargo:rerun-if-changed={}", contract.display());
@@ -235,7 +233,7 @@ fn main() {
     }
 
     let out = format!(
-        "// @generated from docs/cpu-msr-contract.toml by build.rs — do not edit.\n\
+        "// @generated from consonance/vmm-core/contracts/x86/intel.toml by build.rs — do not edit.\n\
          /// Contract `version` this table was generated from.\n\
          pub const CONTRACT_VERSION: u32 = {version};\n\
          /// Frozen TSC frequency (Hz).\n\

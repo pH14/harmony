@@ -9,7 +9,7 @@
 # socket, streaming its stdout/stderr to ttyS0, to a clean terminal.
 #
 # **Why this works now where task 38 had to use `unshare` (the unlock — see
-# consonance/harmony-linux/linux/IMPLEMENTATION.md + tasks/47-deterministic-preemption-timer.md).**
+# consonance/harmony-linux/linux/README.md + consonance/vtime/README.md).**
 # `runc`/its Go container-init busy-spin (`procyield`/`osyield`) with no natural
 # VM-exit; under task 38's single-vCPU / V-time model that froze V-time → the LAPIC
 # tick never fired → the Go scheduler never ran → the container reached "created"

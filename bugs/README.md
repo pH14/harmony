@@ -1,7 +1,7 @@
 # bugs — the end-to-end bug collection
 
 Workloads with **known bugs** that Harmony's finder (dissonance) is expected to catch. This is
-the fuzzer-validation corpus called for in `docs/REVIEW-2026-07.md`: prove the finder against
+the finder-validation corpus: prove the finder against
 seeded bugs with known ground truth before investing in search cleverness. Task 60 is the first
 consumer (a single planted bug); this directory generalizes it into a permanent regression
 suite for the *finder* — when consonance/dissonance improve, the collection measures whether
@@ -39,9 +39,8 @@ Each entry is a directory containing:
 - A **nominal control**: every entry must define a no-fault configuration under which the bug
   never fires. False-positive rate is measured, not assumed.
 
-Rules of the house apply (`tasks/00-CONVENTIONS.md`): determinism discipline in any host-side
-harness code, dependency whitelist, portable gates where logic is portable, box gates for
-anything needing `/dev/kvm`.
+Harnesses use portable gates where their logic is portable and hardware gates
+for checks that require `/dev/kvm`.
 
 Ground truth is sacred: for `historical/` entries, affected versions, trigger, and fix commit
 must be verified against primary sources (the issue, the fixing commit, the postmortem) and

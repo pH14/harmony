@@ -17,6 +17,10 @@ memmap2 = "0.9"
 tempfile = "3"
 thiserror = "2"
 
+[[bin]]
+name = "page-cost"
+path = "src/bin/page_cost.rs"
+
 [dev-dependencies]
 proptest = "1"
 proptest-state-machine = "0.3"

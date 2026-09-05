@@ -1,9 +1,8 @@
 name: box
 
-# The HARDWARE lane (docs/TESTING.md, "the runner-label scheme for hardware
-# lanes"). Everything in `quality.yml` is a CONTENT check that a hosted runner
-# can answer; the gates here need bare metal — a real /dev/kvm, the patched KVM
-# modules and quiet pinned cores.
+# The hardware lane contains checks that require bare metal. The checks in
+# `quality.yml` run on hosted runners; the gates here need a real `/dev/kvm`,
+# the patched KVM modules, and quiet pinned cores.
 #
 # Every job here must have a REGISTERED runner. A job whose label set matches
 # no registered runner does not skip — GitHub leaves it queued (for about a
@@ -51,7 +50,7 @@ env:
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 
 jobs:
-  # The arm64 box: the CPU-qualification lane (docs/TESTING.md, rung 1).
+  # The arm64 box: the CPU-qualification lane (docs/TESTING.md).
   #
   # The qualification suite does not exist yet — it is specified in TESTING.md
   # and built in a later PR. Until then this lane runs the portable arm64 checks
@@ -66,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Placeholder — the CPU-qualification suite is not built yet
         run: |
-          echo "CPU qualification (docs/TESTING.md, rung 1) is SPECIFIED, NOT BUILT."
+          echo "CPU qualification (docs/TESTING.md) is SPECIFIED, NOT BUILT."
           echo "This lane exists so the day the suite lands it has a runner and a home."
           echo
           echo "What rung 1 must answer on this chip, once built:"
@@ -75,7 +74,7 @@ jobs:
           echo "  * exit normalization and virtual-time constants for this chip"
           echo "  * per-chip save/restore fixpoint over the full vCPU state"
           echo "  * FIRST QUESTION for this box: is FEAT_ECV present? The"
-          echo "    paravirtualized-clock design (docs/PARAVIRT-CLOCK.md) exists"
+          echo "    paravirtualized-clock design (consonance/vtime/README.md) exists"
           echo "    to survive its absence, so this is an output, not an"
           echo "    assumption."
           echo

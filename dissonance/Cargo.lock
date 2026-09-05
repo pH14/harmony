@@ -610,9 +610,13 @@ dependencies = [
 name = "machine"
 version = "0.1.0"
 dependencies = [
+ "control-proto",
+ "environment",
  "libc",
  "serde",
  "sha2",
+ "vmm-backend",
+ "vmm-core",
 ]
 
 [[package]]
@@ -1066,6 +1070,7 @@ dependencies = [
  "gicv3",
  "hypercall-proto",
  "lapic",
+ "libc",
  "memmap2",
  "sha2",
  "snapshot-store",

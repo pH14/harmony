@@ -1,48 +1,58 @@
-# Guest-kernel patches (Linux diffs — the GPL-2.0 kernel-patch exception)
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-This directory is the **designated guest-kernel patch directory**: everything
-under it is a **diff against the pinned Linux kernel tree**
-(`versions.lock: KERNEL_VERSION`), applied by the architecture-specific kernel
-build right after `extract_kernel`, before the config merge.
+# Guest-kernel patches
 
-**Arch-scoped layout.** Patches are split by target architecture into
-`patches/x86/` and `patches/arm64/`. Each vendor's kernel build consumes **only
-its own subdirectory**, so the two series apply independently and never collide
-on a patch number (both arches carry a `0002-*`) — the flat `patches/[0-9]*`
-glob that would have crossed the vendors is retired (hm-0dst, tribunal F7).
+This directory contains diffs against the Linux version pinned in
+`../versions.lock`. The x86 and arm64 build scripts apply only the series for
+their target architecture.
 
-**Licensing.** Repository policy is first-party source = `AGPL-3.0-or-later`.
-Kernel diffs are the one exception: their content is Linux-kernel code and
-carries the kernel's `GPL-2.0` — permitted **only in diff form, only under a
-designated patch directory** (this one for the guest kernel;
-`consonance/vmm-backend/kvm-patches/patches/` for the host KVM modules —
-whose README states the same bedrock GPL-2 no-copy discipline). Standalone
-first-party `.c` files are not a permitted form; do not add one here.
+Kernel patch content remains under the kernel's GPL-2.0 license. First-party C
+code elsewhere in the repository uses the repository license. Keep kernel
+changes in diff form under this directory.
 
-**Application discipline.** The x86 build (`build-kernel.sh`) applies every
-`patches/x86/[0-9][0-9][0-9][0-9]-*.patch` in lexical order with `patch -p1`,
-guarded by a reverse dry-run — an exactly-applied tree is skipped (idempotent
-re-builds on the persistent extracted tree), a pristine tree is patched, and a
-drifted/partially-patched tree fails loudly (remove the extracted tree under
-the build root and rebuild). The arm64 build (`build-arm64-kernel.sh`) applies
-the `patches/arm64/` series (0002→0003→0004, in that order — the later patches
-modify files the first creates) against a tree re-extracted pristine on every
-run, each patch guarded by a forward dry-run.
+## Layout and application
 
-**Regenerating a patch** (a kernel version bump, or editing the pvclock
-clocksource): extract the pinned tree (on Linux or the linux/amd64 container —
-a kernel tree cannot extract on a case-insensitive filesystem), apply the
-current patch, make the edits in-tree, and `diff -u` the touched files against
-a pristine extract into the patch file, keeping the explanatory preamble
-(`patch` ignores everything before the first `---` header). Then re-run the
-counter-opcode gate: the x86 pvclock clocksource deliberately executes **two**
-`rdtsc` instructions (the pre-registration anchor freshener and the
-post-registration clock advance the Δ refresh arms off), accounted in
-`../rdtsc-allowlist.txt` — an edit that changes that count must update the
-reviewed allowlist entry, and `run-tests.sh` must be re-run to regenerate
-`../MANIFEST.sha256` (the diff changes the built image by construction). The
-arm64 series carries no allowlist: its gate rejects the kernel if **any** live
-generic-counter read or LL/SC opcode survives into the published image.
+- `x86/` is applied in lexical order by `../build-kernel.sh`. An already
+  applied series is accepted; a partially applied or drifted tree is rejected.
+- `arm64/` is applied in lexical order by `../build-arm64-kernel.sh` to a
+  freshly extracted source tree.
 
-Each patch describes itself in its preamble (everything before the first
-`---` header); the series listings are `ls patches/x86/` and `ls patches/arm64/`.
+To regenerate a patch, extract the pinned kernel on a case-sensitive
+filesystem, apply the current series, make the change, and create a unified
+diff against a pristine extract. Preserve the explanatory preamble before the
+first diff header.
+
+After an x86 clock-source change, run the counter-opcode scan and update
+`../rdtsc-allowlist.txt` if the deliberate instruction count changes. After any
+kernel patch change, run the image test to regenerate and verify
+`../MANIFEST.sha256`.
+
+## x86 series
+
+- `0001-x86-harmony-pvclock-exit-count-clocksource.patch` adds
+  `CONFIG_HARMONY_PVCLOCK`, the non-interpolating paravirtual clock source, and
+  its one-shot doorbell registration. It is inactive unless the
+  `harmony_pvclock` kernel parameter is present.
+- `0002-x86-harmony-character-device.patch` adds `/dev/harmony`, attributed
+  event delivery, and deterministic entropy transactions over the existing
+  doorbell.
+
+The clock source contains two deliberate `rdtsc` instructions. The reviewed
+allowlist records their locations. The x86 build rejects unaccounted counter
+reads.
+
+## arm64 series
+
+- `0002-arm64-harmony-pvclock-exit-count-clocksource.patch` redirects the
+  generic counter accessors to the guest's ABI-v1 clock page, disables direct
+  userspace counter access, and retains the architectural timer only as a
+  clock-event device.
+- `0003-arm64-harmony-lse-only.patch` emits LSE atomics directly and removes
+  runtime LL/SC alternatives and reservation-monitor waits from the owned
+  guest image.
+- `0004-arm64-harmony-virtual-time-clockevent.patch` expresses clock events as
+  absolute work-clock deadlines on the MMIO page and uses virtual-timer PPI 27
+  for delivery and acknowledgement.
+
+The arm64 build rejects surviving generic-counter reads, LL/SC instructions,
+and direct counter-compare programming in published artifacts.

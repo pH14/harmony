@@ -1,0 +1,632 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Host capability detection for the support matrix in docs/DETERMINISM.md §4.
+//!
+//! Detection is deliberately cheap and read-only: file metadata, `/proc`
+//! reads, and one `sysctl` subprocess on macOS. Anything this module cannot
+//! establish is reported as unknown, and callers fail closed on unknown.
+
+use serde::Serialize;
+use std::fmt;
+use std::path::Path;
+
+/// Instruction-set architecture of the host. Run artifacts are ISA-scoped;
+/// no cross-ISA byte identity is claimed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Isa {
+    X86_64,
+    Arm64,
+    /// Compiled for an architecture the support matrix does not cover.
+    Other,
+}
+
+impl fmt::Display for Isa {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Isa::X86_64 => f.write_str("x86-64"),
+            Isa::Arm64 => f.write_str("arm64"),
+            Isa::Other => f.write_str(std::env::consts::ARCH),
+        }
+    }
+}
+
+impl Isa {
+    pub fn current() -> Self {
+        match std::env::consts::ARCH {
+            "x86_64" => Isa::X86_64,
+            "aarch64" => Isa::Arm64,
+            _ => Isa::Other,
+        }
+    }
+
+    /// Directory name for per-ISA guest artifacts (`share/harmony/guest/<isa>/`).
+    pub fn guest_dir_name(self) -> &'static str {
+        match self {
+            Isa::X86_64 => "x86_64",
+            Isa::Arm64 => "arm64",
+            Isa::Other => "unsupported",
+        }
+    }
+}
+
+/// The answer to a yes/no question about the host, with the third state
+/// detection actually has. A probe whose sources are missing or unreadable
+/// answers `Unknown`, and `Unknown` never collapses into `No`: a matrix cell
+/// is claimed proven only on a positive `No`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Detected {
+    Yes,
+    No,
+    Unknown,
+}
+
+impl From<bool> for Detected {
+    fn from(yes: bool) -> Self {
+        if yes { Detected::Yes } else { Detected::No }
+    }
+}
+
+impl fmt::Display for Detected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Detected::Yes => "yes",
+            Detected::No => "no",
+            Detected::Unknown => "unknown",
+        })
+    }
+}
+
+/// Whether the host hypervisor is usable, and if not, why.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "kebab-case", tag = "state", content = "detail")]
+pub enum Hypervisor {
+    /// Linux with `/dev/kvm` present and openable read-write.
+    Kvm,
+    /// macOS with `kern.hv_support = 1`.
+    Hvf,
+    /// The hypervisor exists but this process cannot use it.
+    Unavailable(String),
+    /// No supported hypervisor on this OS.
+    Unsupported(String),
+}
+
+impl Hypervisor {
+    pub fn detect() -> Self {
+        match std::env::consts::OS {
+            "linux" => detect_kvm(),
+            "macos" => detect_hvf(),
+            other => Hypervisor::Unsupported(format!(
+                "no supported hypervisor on {other}; supported hosts are Linux (KVM) and macOS (HVF)"
+            )),
+        }
+    }
+
+    pub fn available(&self) -> bool {
+        matches!(self, Hypervisor::Kvm | Hypervisor::Hvf)
+    }
+
+    /// Why the hypervisor cannot be used, for a refusal message.
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Hypervisor::Kvm | Hypervisor::Hvf => None,
+            Hypervisor::Unavailable(why) | Hypervisor::Unsupported(why) => Some(why),
+        }
+    }
+}
+
+fn detect_kvm() -> Hypervisor {
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+    {
+        Ok(_) => Hypervisor::Kvm,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Hypervisor::Unavailable(
+            "/dev/kvm does not exist; enable hardware virtualization (or nested \
+             virtualization in this VM)"
+                .into(),
+        ),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => Hypervisor::Unavailable(
+            "/dev/kvm exists but is not writable; add this user to the kvm group".into(),
+        ),
+        Err(err) => Hypervisor::Unavailable(format!("/dev/kvm: {err}")),
+    }
+}
+
+fn detect_hvf() -> Hypervisor {
+    match sysctl("kern.hv_support").as_deref() {
+        Some("1") => Hypervisor::Hvf,
+        Some(_) => Hypervisor::Unavailable(
+            "kern.hv_support is not 1; Hypervisor.framework is unavailable on this machine".into(),
+        ),
+        None => Hypervisor::Unavailable("could not query kern.hv_support".into()),
+    }
+}
+
+/// One `sysctl -n <name>` read. The subprocess avoids an unsafe
+/// `sysctlbyname` call; detection is not on any hot path.
+fn sysctl(name: &str) -> Option<String> {
+    let out = std::process::Command::new("sysctl")
+        .args(["-n", name])
+        .output()
+        .ok()?;
+    sysctl_value(out.status.success(), &out.stdout)
+}
+
+fn sysctl_value(success: bool, stdout: &[u8]) -> Option<String> {
+    if !success {
+        return None;
+    }
+    let value = String::from_utf8_lossy(stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+/// One row+column cell of the DETERMINISM.md §4 support matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MatrixCell {
+    /// Committed cross-host evidence exists for this cell.
+    Proven,
+    /// The design covers this cell but no committed evidence exists yet.
+    /// Untested per the contract; hypervisor verbs refuse it without
+    /// `--allow-untested`.
+    Expected,
+    /// Outside the matrix entirely.
+    Unsupported,
+}
+
+/// Where this host falls in the support matrix.
+pub struct HostReport {
+    pub isa: Isa,
+    pub os: &'static str,
+    pub hypervisor: Hypervisor,
+    pub nested: Detected,
+    pub container: Detected,
+    pub cell: MatrixCell,
+}
+
+impl HostReport {
+    pub fn detect() -> Self {
+        let isa = Isa::current();
+        let os = std::env::consts::OS;
+        let hypervisor = Hypervisor::detect();
+        let nested = detect_nested();
+        let container = detect_container();
+        let cell = classify(isa, os, nested, container);
+        HostReport {
+            isa,
+            os,
+            hypervisor,
+            nested,
+            container,
+            cell,
+        }
+    }
+}
+
+/// DMI vendor strings that name a virtual machine. Read on ACPI-booted arm64
+/// machines, which have neither the x86 CPUID flag nor a device tree. The
+/// list is only ever a positive signal: a vendor that is not on it says
+/// nothing about whether the machine is physical.
+const VM_DMI_VENDORS: &[&str] = &[
+    "QEMU",
+    "VMware",
+    "Xen",
+    "Microsoft Corporation",
+    "Amazon EC2",
+    "Google",
+    "Parallels",
+    "innotek",
+    "Oracle Corporation",
+    "KVM",
+];
+
+/// Whether the host itself runs inside a VM.
+///
+/// Each architecture answers from its own documented signal, and `No` is
+/// returned only where the absence of that signal is itself evidence of
+/// physical hardware. Everywhere else the answer is unknown, which callers
+/// treat as untested.
+fn detect_nested() -> Detected {
+    match (std::env::consts::OS, Isa::current()) {
+        ("linux", Isa::X86_64) => match std::fs::read_to_string("/proc/cpuinfo") {
+            Ok(info) => cpuinfo_nesting(&info),
+            Err(_) => Detected::Unknown,
+        },
+        ("linux", Isa::Arm64) => arm64_nesting(
+            Path::new("/proc/device-tree/hypervisor").exists(),
+            std::fs::read_to_string("/sys/class/dmi/id/sys_vendor")
+                .ok()
+                .as_deref(),
+        ),
+        ("macos", _) => match sysctl("kern.hv_vmm_present") {
+            Some(value) => (value == "1").into(),
+            None => Detected::Unknown,
+        },
+        _ => Detected::Unknown,
+    }
+}
+
+/// The nesting answer for x86 from /proc/cpuinfo. The `hypervisor` flag is
+/// the architectural CPUID bit a hypervisor sets, so its absence on a CPU
+/// that reports flags at all is evidence of physical hardware.
+fn cpuinfo_nesting(cpuinfo: &str) -> Detected {
+    let mut flags = cpuinfo.lines().filter(|l| l.starts_with("flags"));
+    let Some(line) = flags.next() else {
+        // No flags line: this is not the x86 cpuinfo format the check reads.
+        return Detected::Unknown;
+    };
+    line.contains(" hypervisor").into()
+}
+
+/// The nesting answer for arm64 Linux from its two sources: whether the
+/// device tree advertises a hypervisor node, and the DMI vendor string where
+/// one can be read.
+///
+/// arm64 has no CPUID hypervisor flag, and neither source has a form that
+/// means "physical hardware" — a VM implementation this does not recognize
+/// looks exactly like a machine with no signal. So a positive signal answers
+/// yes and everything else is unknown; arm64 Linux is never reported as bare
+/// metal from detection alone.
+fn arm64_nesting(hypervisor_node: bool, dmi_vendor: Option<&str>) -> Detected {
+    if hypervisor_node {
+        return Detected::Yes;
+    }
+    match dmi_vendor {
+        Some(vendor) if VM_DMI_VENDORS.iter().any(|v| vendor.contains(v)) => Detected::Yes,
+        _ => Detected::Unknown,
+    }
+}
+
+/// Container-engine cgroup paths, as they appear in PID 1's cgroup line.
+const CONTAINER_CGROUPS: &[&str] = &[
+    "/docker",
+    "/kubepods",
+    "/lxc",
+    "/libpod",
+    "/containerd",
+    "/podman",
+    "/garden",
+];
+
+/// Process names a host's PID 1 is allowed to have. Anything else means the
+/// process tree was started by something that is not a host init, which the
+/// container question cannot resolve from here.
+const HOST_INIT_NAMES: &[&str] = &[
+    "systemd",
+    "init",
+    "launchd",
+    "openrc-init",
+    "runit",
+    "s6-svscan",
+];
+
+/// Whether this process runs inside a container — its own support-matrix row
+/// (docs/DETERMINISM.md §4), because a container on a nested host inherits
+/// the host's virtualization signals and would otherwise be reported as the
+/// host's row. Any positive signal answers yes; only a recognized host init
+/// answers no.
+fn detect_container() -> Detected {
+    detect_container_for(std::env::consts::OS, detect_container_linux)
+}
+
+fn detect_container_for(os: &str, linux: impl FnOnce() -> Detected) -> Detected {
+    match os {
+        "linux" => linux(),
+        // Hypervisor.framework is not reachable from a Linux container, so
+        // the HVF rows have no container variant.
+        "macos" => Detected::No,
+        _ => Detected::Unknown,
+    }
+}
+
+fn detect_container_linux() -> Detected {
+    detect_container_linux_at(Path::new("/"))
+}
+
+fn detect_container_linux_at(root: &Path) -> Detected {
+    // Marker files written by the docker and podman runtimes.
+    if root.join(".dockerenv").exists() || root.join("run/.containerenv").exists() {
+        return Detected::Yes;
+    }
+    // PID 1's cgroup names the engine under cgroup v1, and under cgroup v2
+    // whenever the container did not get its own cgroup namespace.
+    let Ok(cgroup) = std::fs::read_to_string(root.join("proc/1/cgroup")) else {
+        return Detected::Unknown;
+    };
+    if CONTAINER_CGROUPS
+        .iter()
+        .any(|engine| cgroup.contains(engine))
+    {
+        return Detected::Yes;
+    }
+    // PID 1's name: `comm` on any kernel that exposes it, `sched` (whose
+    // first line starts with the same name) as the fallback.
+    match std::fs::read_to_string(root.join("proc/1/comm"))
+        .or_else(|_| std::fs::read_to_string(root.join("proc/1/sched")))
+    {
+        Ok(name) => host_init_name(&name),
+        Err(_) => Detected::Unknown,
+    }
+}
+
+/// Whether PID 1's name is a host init. `/proc/1/comm` holds the name alone;
+/// `/proc/1/sched` starts its first line with it.
+fn host_init_name(pid1: &str) -> Detected {
+    let Some(name) = pid1.split_whitespace().next() else {
+        return Detected::Unknown;
+    };
+    if HOST_INIT_NAMES.contains(&name) {
+        Detected::No
+    } else {
+        Detected::Unknown
+    }
+}
+
+/// docs/DETERMINISM.md §4, encoded. Rows are (os, container, nested);
+/// columns are ISA. Unknown detection never yields `Proven`.
+fn classify(isa: Isa, os: &str, nested: Detected, container: Detected) -> MatrixCell {
+    match (os, isa) {
+        ("linux", Isa::X86_64 | Isa::Arm64) | ("macos", Isa::Arm64) => {}
+        _ => return MatrixCell::Unsupported,
+    }
+    // "Inside a container with /dev/kvm" is its own row, expected on every
+    // ISA. An unresolved container answer takes the same untested row rather
+    // than inheriting the bare-metal or nested one.
+    if container != Detected::No {
+        return MatrixCell::Expected;
+    }
+    match (os, isa, nested) {
+        // Linux KVM nested-in-a-VM: proven on x86 (Intel and AMD, X2/X3).
+        ("linux", Isa::X86_64, Detected::Yes) => MatrixCell::Proven,
+        // Linux KVM bare metal arm64: proven (M4–M5 on metal).
+        ("linux", Isa::Arm64, Detected::No) => MatrixCell::Proven,
+        // macOS HVF on Apple silicon: proven bare metal (M0–M6).
+        ("macos", Isa::Arm64, Detected::No) => MatrixCell::Proven,
+        // Linux bare-metal x86, nested arm64, nested macOS, and every host
+        // whose nesting could not be established: expected, untested.
+        _ => MatrixCell::Expected,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isa_display_names() {
+        assert_eq!(Isa::X86_64.to_string(), "x86-64");
+        assert_eq!(Isa::Arm64.to_string(), "arm64");
+    }
+
+    #[test]
+    fn guest_dir_names() {
+        assert_eq!(Isa::X86_64.guest_dir_name(), "x86_64");
+        assert_eq!(Isa::Arm64.guest_dir_name(), "arm64");
+        assert_eq!(Isa::Other.guest_dir_name(), "unsupported");
+    }
+
+    #[test]
+    fn hypervisor_availability() {
+        assert!(Hypervisor::Kvm.available());
+        assert!(Hypervisor::Hvf.available());
+        assert!(!Hypervisor::Unavailable("x".into()).available());
+        assert!(!Hypervisor::Unsupported("x".into()).available());
+        assert_eq!(Hypervisor::Kvm.detail(), None);
+        assert_eq!(Hypervisor::Unavailable("why".into()).detail(), Some("why"));
+        assert_eq!(Hypervisor::Unsupported("why".into()).detail(), Some("why"));
+    }
+
+    /// Every cell of the DETERMINISM.md §4 matrix, including the fallthrough.
+    /// Pure in its inputs, so the whole matrix is checked off the executing
+    /// host.
+    #[test]
+    fn matrix_cells() {
+        let cell = |isa, os, nested| classify(isa, os, nested, Detected::No);
+        assert_eq!(
+            cell(Isa::X86_64, "linux", Detected::Yes),
+            MatrixCell::Proven
+        );
+        assert_eq!(cell(Isa::Arm64, "linux", Detected::No), MatrixCell::Proven);
+        assert_eq!(cell(Isa::Arm64, "macos", Detected::No), MatrixCell::Proven);
+        assert_eq!(
+            cell(Isa::X86_64, "linux", Detected::No),
+            MatrixCell::Expected
+        );
+        assert_eq!(
+            cell(Isa::Arm64, "linux", Detected::Yes),
+            MatrixCell::Expected
+        );
+        assert_eq!(
+            cell(Isa::Arm64, "macos", Detected::Yes),
+            MatrixCell::Expected
+        );
+        assert_eq!(
+            cell(Isa::X86_64, "macos", Detected::No),
+            MatrixCell::Unsupported
+        );
+        assert_eq!(
+            cell(Isa::Other, "linux", Detected::No),
+            MatrixCell::Unsupported
+        );
+        assert_eq!(
+            cell(Isa::X86_64, "windows", Detected::No),
+            MatrixCell::Unsupported
+        );
+    }
+
+    /// Unknown nesting must not be read as bare metal: every host whose
+    /// nesting is unresolved is untested, never proven.
+    #[test]
+    fn unknown_nesting_is_never_proven() {
+        for (isa, os) in [
+            (Isa::X86_64, "linux"),
+            (Isa::Arm64, "linux"),
+            (Isa::Arm64, "macos"),
+        ] {
+            assert_eq!(
+                classify(isa, os, Detected::Unknown, Detected::No),
+                MatrixCell::Expected,
+                "{os}/{isa}"
+            );
+        }
+    }
+
+    /// The container row is expected on every ISA, and an unresolved
+    /// container answer takes that row instead of the host's. A container on
+    /// a nested x86 host inherits the host's `hypervisor` CPUID flag, so
+    /// without this the proven nested row would be claimed for it.
+    #[test]
+    fn container_row_is_never_proven() {
+        for container in [Detected::Yes, Detected::Unknown] {
+            assert_eq!(
+                classify(Isa::X86_64, "linux", Detected::Yes, container),
+                MatrixCell::Expected
+            );
+            assert_eq!(
+                classify(Isa::Arm64, "linux", Detected::No, container),
+                MatrixCell::Expected
+            );
+            // Still outside the matrix, container or not.
+            assert_eq!(
+                classify(Isa::X86_64, "macos", Detected::No, container),
+                MatrixCell::Unsupported
+            );
+        }
+    }
+
+    /// arm64 has no signal that means "physical hardware", so only a
+    /// positive one answers. A vendor or a machine this does not recognize
+    /// stays unknown, which keeps it out of the proven cell.
+    #[test]
+    fn arm64_nesting_answers_only_from_positive_signals() {
+        assert_eq!(arm64_nesting(true, None), Detected::Yes);
+        assert_eq!(
+            arm64_nesting(true, Some("Raspberry Pi Foundation")),
+            Detected::Yes
+        );
+        for vendor in ["QEMU", "Amazon EC2", "Microsoft Corporation", "KVM"] {
+            assert_eq!(
+                arm64_nesting(false, Some(vendor)),
+                Detected::Yes,
+                "{vendor}"
+            );
+        }
+        for vendor in [
+            "Raspberry Pi Foundation",
+            "Ampere(R)",
+            "Some Unlisted Hypervisor Inc.",
+            "",
+        ] {
+            assert_eq!(
+                arm64_nesting(false, Some(vendor)),
+                Detected::Unknown,
+                "{vendor}"
+            );
+        }
+        // No device tree node and no readable DMI: still unknown.
+        assert_eq!(arm64_nesting(false, None), Detected::Unknown);
+    }
+
+    /// The x86 flag is architectural, so its absence from a real flags line
+    /// is evidence. Anything that is not that format stays unknown.
+    #[test]
+    fn cpuinfo_nesting_reads_the_hypervisor_flag() {
+        assert_eq!(
+            cpuinfo_nesting("processor\t: 0\nflags\t\t: fpu vme hypervisor lm\n"),
+            Detected::Yes
+        );
+        assert_eq!(
+            cpuinfo_nesting("processor\t: 0\nflags\t\t: fpu vme lm\n"),
+            Detected::No
+        );
+        // An arm64 cpuinfo has Features, not flags: the check does not apply.
+        assert_eq!(
+            cpuinfo_nesting("processor\t: 0\nFeatures\t: fp asimd\n"),
+            Detected::Unknown
+        );
+        assert_eq!(cpuinfo_nesting(""), Detected::Unknown);
+    }
+
+    #[test]
+    fn pid1_name_resolves_only_known_host_inits() {
+        assert_eq!(host_init_name("systemd\n"), Detected::No);
+        assert_eq!(host_init_name("systemd (1, #threads: 1)\n"), Detected::No);
+        assert_eq!(host_init_name("init (1, #threads: 1)\n"), Detected::No);
+        assert_eq!(host_init_name("bash (1, #threads: 1)\n"), Detected::Unknown);
+        assert_eq!(host_init_name(""), Detected::Unknown);
+    }
+
+    #[test]
+    fn detected_serializes_as_kebab_case() {
+        assert_eq!(serde_json::to_string(&Detected::Yes).unwrap(), "\"yes\"");
+        assert_eq!(
+            serde_json::to_string(&Detected::Unknown).unwrap(),
+            "\"unknown\""
+        );
+        assert_eq!(Detected::from(true), Detected::Yes);
+        assert_eq!(Detected::from(false), Detected::No);
+        assert_eq!(Detected::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn matrix_cell_is_serializable() {
+        let s = serde_json::to_string(&MatrixCell::Proven).unwrap();
+        assert_eq!(s, "\"proven\"");
+    }
+}
+
+#[cfg(test)]
+mod acceptance_regressions {
+    use super::*;
+
+    #[test]
+    fn sysctl_output_handles_status_whitespace_and_empty_values() {
+        assert_eq!(sysctl_value(true, b" 17\n"), Some("17".into()));
+        assert_eq!(sysctl_value(false, b"17"), None);
+        assert_eq!(sysctl_value(true, b" \n"), None);
+        let key = if cfg!(target_os = "macos") {
+            "kern.ostype"
+        } else {
+            "kernel.ostype"
+        };
+        let expected = if cfg!(target_os = "macos") {
+            "Darwin"
+        } else {
+            "Linux"
+        };
+        assert_eq!(sysctl(key).as_deref(), Some(expected));
+        assert_eq!(sysctl("harmony.nonexistent.acceptance_key"), None);
+    }
+
+    #[test]
+    fn container_dispatch_preserves_each_platform_answer() {
+        for answer in [Detected::Yes, Detected::No, Detected::Unknown] {
+            assert_eq!(detect_container_for("linux", || answer), answer);
+        }
+        assert_eq!(
+            detect_container_for("macos", || panic!("Linux probe on macOS")),
+            Detected::No
+        );
+        assert_eq!(
+            detect_container_for("other", || panic!("Linux probe on unsupported OS")),
+            Detected::Unknown
+        );
+        assert_eq!(
+            detect_container(),
+            detect_container_for(std::env::consts::OS, detect_container_linux)
+        );
+    }
+
+    #[test]
+    fn either_container_marker_is_sufficient_without_proc() {
+        for marker in [".dockerenv", "run/.containerenv"] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(root.path().join("run")).unwrap();
+            assert_eq!(detect_container_linux_at(root.path()), Detected::Unknown);
+            std::fs::write(root.path().join(marker), b"").unwrap();
+            assert_eq!(detect_container_linux_at(root.path()), Detected::Yes);
+        }
+    }
+}

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! CPU-MSR-CONTRACT §1.1/§1.2 host-homogeneity enforcement: the assertions
+//! x86 CPU contract§1.2 host-homogeneity enforcement: the assertions
 //! `vmm-core` checks against the **physical host** at VM start and **refuses to
 //! run** on any mismatch.
 //!
@@ -20,7 +20,7 @@
 //! physical guest execution to protect, so the probe is skipped and [`enforce`]
 //! is a no-op. This `cfg(target_os/target_arch)` seam is the same box-only live
 //! boundary the task already draws for `KVM_RUN`; it is documented in
-//! `IMPLEMENTATION.md` as a declared exception to conventions rule 6.
+//! `README.md` as a declared exception to conventions rule 6.
 
 use crate::vmm::VmmError;
 

@@ -27,7 +27,7 @@
 //! fed back to the guest. Telemetry is for the operator; the hashes remain the
 //! source of truth. The per-exit wiring inside `vmm-core` is **frontier**
 //! (integrator-owned) and is documented, not built, here — see
-//! `docs/INTEGRATION.md` §8. This crate is driven in tests by a scripted
+//! `docs/ARCHITECTURE.md` This crate is driven in tests by a scripted
 //! `Vec<Event>` with no KVM.
 //!
 //! ## Record → replay (the integrator's use case)

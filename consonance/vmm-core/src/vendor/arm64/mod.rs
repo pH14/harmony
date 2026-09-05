@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The **arm64 vendor** (`docs/ARCH-BOUNDARY.md` §B/§D, `tasks/112`):
+//! The **arm64 vendor** described in `docs/ARCHITECTURE.md`:
 //! everything in the deterministic VMM that names the arm64 ISA — the
 //! CPU-contract policy skeleton ([`contract`]), the exit dispatch and the
 //! device models ([`dispatch`], [`devices`]), and the `vm_state` record set
@@ -431,7 +431,7 @@ pub fn compare_arm64_architecture(
 
 use control_proto::RegsView;
 use vm_state::Arm64VmState;
-use vmm_backend::{Arm64, Arm64Exit, Arm64VcpuState, Backend, Gpa};
+use vmm_backend::{Arm64, Arm64Exit, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
 pub use dispatch::Arm64Devices;
 
@@ -460,7 +460,7 @@ impl Vendor for Arm64 {
         exit: Arm64Exit,
     ) -> Result<Step, VmmError> {
         // Exhaustive over `Arm64Exit` — no wildcard arm (default-deny stays
-        // structural; `docs/ARCH-BOUNDARY.md` §A).
+        // structural; `docs/ARCHITECTURE.md`).
         match exit {
             Arm64Exit::Sysreg { sysreg, write } => vmm.dispatch_sysreg(sysreg, write),
         }
@@ -473,6 +473,18 @@ impl Vendor for Arm64 {
         write: Option<u64>,
     ) -> Result<Step, VmmError> {
         vmm.dispatch_mmio_arm64(gpa, size, write)
+    }
+
+    fn is_doorbell_exit(exit: &Exit<Self>) -> bool {
+        matches!(
+            exit,
+            Exit::Common(CommonExit::Mmio {
+                gpa,
+                size: 4,
+                write: Some(_),
+            }) if gpa.0 >= board::DOORBELL.0
+                && gpa.0 < board::DOORBELL.0.saturating_add(board::DOORBELL.1)
+        )
     }
 
     fn post_exit<B: Backend<A = Self>>(vmm: &mut Vmm<B>) -> Result<(), VmmError> {
@@ -508,6 +520,10 @@ impl Vendor for Arm64 {
 
     fn next_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
         vmm.next_timer_deadline_vns_arm64()
+    }
+
+    fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)> {
+        vmm.clockevent_trace_schedule_arm64()
     }
 
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
@@ -793,6 +809,35 @@ mod comparator_tests {
                 <Arm64 as Vendor>::vcpu_has_inflight_injection(&state),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn doorbell_classifier_accepts_only_dword_stores_in_the_frame() {
+        let ring = Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(board::DOORBELL.0),
+            size: 4,
+            write: Some(7),
+        });
+        assert!(<Arm64 as Vendor>::is_doorbell_exit(&ring));
+        for exit in [
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(board::DOORBELL.0),
+                size: 1,
+                write: Some(7),
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(board::DOORBELL.0),
+                size: 4,
+                write: None,
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(board::DOORBELL.0.saturating_add(board::DOORBELL.1)),
+                size: 4,
+                write: Some(7),
+            }),
+        ] {
+            assert!(!<Arm64 as Vendor>::is_doorbell_exit(&exit));
         }
     }
 }

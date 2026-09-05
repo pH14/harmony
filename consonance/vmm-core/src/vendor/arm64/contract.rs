@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The arm64 CPU-contract policy shared by the HVF and KVM compositions.
 //!
-//! The x86 contract (`docs/cpu-msr-contract.toml`, the `vendor::x86::contract`
+//! The x86 contract (`consonance/vmm-core/contracts/x86/intel.toml`, the `vendor::x86::contract`
 //! module) is the rigor template, not the content. M5 measured both live hosts,
 //! selected a conservative common feature surface, and validated every row
 //! through KVM's config-time writable-ID-register API. Values KVM does not
@@ -117,7 +117,7 @@ pub fn policy() -> Arm64Policy {
 /// Two builds whose policy or timing rows differ
 /// stamp different hashes, so a snapshot taken under one contract baseline is
 /// refused by a VMM enforcing another (the same anti-drift role as the x86
-/// `contract_hash`, INTEGRATION.md §4). The domain-separation prefix names this
+/// `contract_hash`, docs/ARCHITECTURE.md). The domain-separation prefix names this
 /// baseline explicitly so it cannot collide with the earlier empty skeleton.
 pub fn contract_hash() -> [u8; 32] {
     let p = policy();

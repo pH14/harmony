@@ -1,0 +1,98 @@
+# Release artifacts for the brew tap (pH14/homebrew-harmony): per-platform
+# `harmony` binaries plus per-ISA guest artifact tarballs (kernel + initramfs).
+# Runs on version tags. The tap formula pins these assets by sha256.
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  cli:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            triple: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release -p harmony-cli
+      - run: tar -C target/release -czf harmony-${{ github.ref_name }}-${{ matrix.triple }}.tar.gz harmony
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.triple }}
+          path: harmony-*.tar.gz
+
+  guest:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            isa: x86_64
+            targets: kernel postgres-image
+          - runner: ubuntu-24.04-arm
+            isa: arm64
+            targets: arm64-postgres-kernel arm64-oci-image
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential flex bison libelf-dev libssl-dev bc cpio kmod bzip2 wget
+      - run: make -C consonance/harmony-linux fetch
+      # arm64: from-source musl-static payloads; build directly on the runner.
+      - if: matrix.isa == 'arm64'
+        run: sudo make -C consonance/harmony-linux ${{ matrix.targets }}
+      # x86: the kernel builds on the runner (the counter-opcode scan
+      # baselines are per-toolchain — select the runner-toolchain gcc 13
+      # lists), and the postgres image builds in a Debian trixie container,
+      # the pinned build environment its deb shared-library closure needs
+      # (docs/BUILDING.md).
+      - if: matrix.isa == 'x86_64'
+        run: |
+          HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \
+          HARMONY_RDRAND_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdrand-allowlist-gha.txt" \
+          make -C consonance/harmony-linux kernel
+          sudo docker run --rm -v "$PWD:/work" -w /work debian:trixie bash -euc '
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              build-essential bzip2 gzip cpio kmod e2fsprogs util-linux locales
+            # The image build extracts the pinned debs and copies their
+            # shared-library closure from the host /lib; installing the same
+            # debs pulls that closure (libicu and friends) into the container.
+            apt-get install -y --no-install-recommends \
+              ./consonance/harmony-linux/dl/*.deb
+            echo "en_US.UTF-8 UTF-8" >/etc/locale.gen && locale-gen
+            make -C consonance/harmony-linux postgres-image'
+      # The x86 build writes bzImage + initramfs at build/ top level; the
+      # tarball layout is build/<isa>/ (the CLI's share/harmony/guest/<isa>).
+      - if: matrix.isa == 'x86_64'
+        run: |
+          mkdir -p consonance/harmony-linux/build/x86_64
+          cp consonance/harmony-linux/build/bzImage \
+             consonance/harmony-linux/build/initramfs-postgres.cpio.gz \
+             consonance/harmony-linux/build/x86_64/
+      - run: tar -C consonance/harmony-linux/build -czf harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-${{ matrix.isa }}
+          path: harmony-guest-*.tar.gz
+
+  publish:
+    needs: [cli, guest]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes harmony-*.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}

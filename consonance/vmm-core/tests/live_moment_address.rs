@@ -2,11 +2,11 @@
 //! Box-only **moment-address** gate (task 80): prove that a
 //! `(genesis-complete Reproducer, Moment)` pair materializes to a live session
 //! at exactly that instruction, twice, byte-identically — the substrate for
-//! everything in git history's `docs/RESOLUTION.md`. Driven directly against the
+//! everything in `docs/PROTOCOL.md`. Driven directly against the
 //! [`ControlServer`] verbs (`hello`/`snapshot`/`branch`/`run`/`read`/`regs`/`hash`)
 //! on the real patched-KVM Postgres workload.
 //!
-//! The spec's box gates (`tasks/80-inspection-verbs.md`):
+//! The spec's box gates (`docs/PROTOCOL.md`):
 //!   2. **The moment address.** Pick ≥ 4 mid-workload `Moment`s. For each,
 //!      materialize `(env, moment)` **twice from genesis** → identical `regs`
 //!      (including `rip` and the reported `Moment`), identical `read` of ≥ 3 probe
@@ -23,7 +23,7 @@
 //! recoverable from genesis.
 //!
 //! Run on `ssh <det-box>` with the LOADED patched KVM modules + the built Postgres
-//! image, CPU-pinned per `docs/BOX-PINNING.md` (lease a core via `box-window.sh`;
+//! image, CPU-pinned per `.github/workflows/box.yml` (lease a core via `box-window.sh`;
 //! never touch another lease's cores or its patched-KVM window). ALWAYS revert KVM
 //! to stock **1396736** + verify after any patched run.
 //! ```text
@@ -93,7 +93,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+         patched KVM modules, CPU-pinned per .github/workflows/box.yml."
     );
 }
 
@@ -253,7 +253,7 @@ struct Observation {
 
 #[test]
 #[ignore = "box-only moment-address gate (LOADED patched KVM + built Postgres image + \
-            det-cfl-v1 host); run per docs/BOX-PINNING.md"]
+            det-cfl-v1 host); run per .github/workflows/box.yml"]
 fn moment_address_materializes_identically_twice() {
     require_kvm();
     require_host_baseline();

@@ -1,2 +1,3 @@
 # Build artifacts of the Linux-side SDK workspace (task 73; standalone workspace).
 sdk/target/
+__pycache__/

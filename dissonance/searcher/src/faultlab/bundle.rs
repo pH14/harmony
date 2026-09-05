@@ -191,7 +191,10 @@ ready /usr/local/pgsql/bin/pg_isready
         let vocabulary = FaultVocabulary::parse(SHIPPED_ETCD).expect("parse");
         assert_eq!(vocabulary.nodes(), 1);
         assert_eq!(vocabulary.hooks(), [1, 2]);
-        assert_eq!(vocabulary.identifier(), "faultlab_bundle_v1;nodes=1;hooks=1,2");
+        assert_eq!(
+            vocabulary.identifier(),
+            "faultlab_bundle_v1;nodes=1;hooks=1,2"
+        );
     }
 
     #[test]

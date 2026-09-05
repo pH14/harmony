@@ -9,7 +9,7 @@ description = "The deterministic VMM above the Backend trait: Multiboot loader, 
 workspace = true
 
 [dependencies]
-# Rule-2 exception (declared in tasks/15-vmm-core-skeleton.md): vmm-core is the
+# Rule-2 exception (declared in consonance/vmm-core/README.md): vmm-core is the
 # deterministic VMM *above* the `Backend` trait, so it depends on its sibling
 # `vmm-backend` for the trait + value types. Re-declaring the trait locally would
 # produce a different trait the binary's `KvmBackend` does not implement. NO
@@ -94,7 +94,7 @@ environment = { path = "../environment", version = "0.1.0" }
 
 # Linux-only host support. Caret default, pin nothing.
 [target.'cfg(target_os = "linux")'.dependencies]
-
+libc = "0.2"
 [dev-dependencies]
 snapshot-store = { path = "../snapshot-store", version = "0.1.0", features = ["test-utils"] }
 # `mock` turns on `vmm_backend::MockBackend` — the scripted, no-`/dev/kvm`

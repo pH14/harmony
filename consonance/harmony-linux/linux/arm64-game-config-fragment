@@ -16,6 +16,9 @@ CONFIG_MMU=y
 # silently publish a kernel without the tmpfs mounted by arm64-game-init.sh.
 CONFIG_SHMEM=y
 CONFIG_TMPFS=y
+# Nova's init reserves two physically contiguous 2 MiB billboard pages through
+# /proc/sys/vm/nr_hugepages before the static QuickNES agent starts.
+CONFIG_HUGETLBFS=y
 CONFIG_FILE_LOCKING=y
 CONFIG_MULTIUSER=y
 CONFIG_ADVISE_SYSCALLS=y

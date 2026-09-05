@@ -24,10 +24,13 @@ fetch_one() {
         return
     fi
     echo "fetching $url"
+    # Every download is sha256-verified below, so retrying on transient
+    # transport errors (kernel.org intermittently resets HTTP/2 streams) is
+    # safe and keeps CI guest builds off the flake.
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$file.part" "$url"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o "$file.part" "$url"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$file.part" "$url"
+        wget -q --tries=5 --waitretry=5 -O "$file.part" "$url"
     else
         echo "FAIL: need curl or wget to fetch $url" >&2
         exit 1
@@ -68,7 +71,9 @@ fetch_postgres_image() {
         echo "ok: $out (cached; integrity anchored by the pinned registry digest)"
         return
     fi
-    if ! command -v ctr >/dev/null 2>&1; then
+    # `ctr version` also proves the containerd socket is reachable — CI
+    # runners ship a ctr binary the runner user cannot talk to.
+    if ! ctr version >/dev/null 2>&1; then
         echo "skip: $out — needs 'ctr' (containerd). Run 'make -C consonance/harmony-linux fetch' on the" >&2
         echo "      Linux box where the task-38 image is built; the digest is pinned in" >&2
         echo "      versions.lock so the pull is content-verified there." >&2
@@ -119,7 +124,7 @@ fetch_k3s_pause_image() {
         echo "ok: $out (cached; extracted from the digest-pinned air-gap tarball)"
         return
     fi
-    if ! command -v ctr >/dev/null 2>&1; then
+    if ! ctr version >/dev/null 2>&1; then
         echo "skip: $out — needs 'ctr' (containerd). Run 'make -C consonance/harmony-linux fetch' on the" >&2
         echo "      Linux box; the air-gap tarball is sha256-pinned so the pause image" >&2
         echo "      is content-verified there." >&2

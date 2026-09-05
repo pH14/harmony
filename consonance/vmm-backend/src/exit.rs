@@ -3,7 +3,7 @@
 //! counters.
 //!
 //! `Exit` **is** the CPU/MSR contract's trapped surface. Default-deny is
-//! structural, at two levels (`docs/ARCH-BOUNDARY.md` §A): an operation not
+//! structural, at two levels (`docs/ARCHITECTURE.md`): an operation not
 //! represented here either never exits (the backend never enabled its exit
 //! control / it is serviced in-kernel) or is a contract violation that fails
 //! closed as a [`crate::BackendError`]; and the arch-specific variants live in
@@ -70,13 +70,13 @@ pub enum CommonExit {
         /// `Some(v)` = store value; `None` = load (awaits `complete_read`).
         write: Option<u64>,
     },
-    /// Hypercall transport (INTEGRATION.md §1) → `complete_hypercall(ret)`.
+    /// Hypercall transport (docs/ARCHITECTURE.md) → `complete_hypercall(ret)`.
     /// **Not surfaced by stock `KvmBackend`** (stock KVM services VMCALL
     /// in-kernel); it exists for `PatchedKvmBackend`/`DirectVmxBackend`.
     Hypercall(HypercallFrame),
     /// The guest went idle waiting for an event (x86 `HLT` / ARM `WFI` — one
     /// concept above the trait; `KVM_EXIT_HLT` on x86 KVM). Idle-skip
-    /// (INTEGRATION.md §3) or terminal; vmm-core decides. No completion.
+    /// (docs/ARCHITECTURE.md) or terminal; vmm-core decides. No completion.
     Idle,
     /// `KVM_EXIT_SHUTDOWN` (an unrecoverable guest fault / guest shutdown).
     /// Terminal. No completion.
@@ -137,7 +137,7 @@ mod completion_tests {
     }
 }
 
-/// The hypercall argument frame (INTEGRATION.md §1): four guest argument slots
+/// The hypercall argument frame (docs/ARCHITECTURE.md): four guest argument slots
 /// in transport-ABI order — `args[0]` = the transport magic `0x3150_4348`,
 /// `args[1]` = request-page GPA, `args[2]` = response-page GPA, `args[3]` is
 /// reserved/forward-compat. Which guest registers carry the slots is the

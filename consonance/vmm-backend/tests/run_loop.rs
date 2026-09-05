@@ -159,6 +159,32 @@ fn complete_read_without_pending_errors() {
 }
 
 #[test]
+fn retire_pending_completion_is_a_noop_without_a_stage() {
+    let mut m = configured();
+    m.push_exit(Exit::Common(CommonExit::Idle));
+    m.retire_pending_completion().unwrap();
+    assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
+}
+
+#[test]
+fn retire_pending_completion_does_not_consume_the_next_mock_exit() {
+    let mut m = configured();
+    m.extend_exits([
+        Exit::Arch(X86Exit::Io {
+            port: 0x80,
+            size: 1,
+            write: None,
+        }),
+        Exit::Common(CommonExit::Idle),
+    ]);
+
+    m.run().unwrap();
+    m.complete_read(0x55).unwrap();
+    m.retire_pending_completion().unwrap();
+    assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
+}
+
+#[test]
 fn rdmsr_accepts_read_or_fault() {
     // value path
     let mut m = configured();
@@ -354,6 +380,41 @@ fn deferred_accept_holds_irq_pending() {
     m.push_exit(Exit::Common(CommonExit::Idle));
     assert_eq!(m.run().expect("run"), Exit::Common(CommonExit::Idle));
     assert_eq!(m.take_accepted_interrupt(), Some(0x40));
+}
+
+#[test]
+fn restore_requires_completion_retirement_then_discards_interrupt_bookkeeping() {
+    let mut m = configured();
+    m.set_pending_irq(Some(0x40)).unwrap();
+    m.extend_exits([
+        Exit::Arch(X86Exit::Io {
+            port: 0x60,
+            size: 1,
+            write: None,
+        }),
+        Exit::Common(CommonExit::Idle),
+    ]);
+    let exit = m.run().unwrap();
+    assert!(matches!(exit, Exit::Arch(X86Exit::Io { .. })));
+    assert!(matches!(
+        m.restore(&VcpuState::default()),
+        Err(BackendError::PendingCompletion)
+    ));
+    m.complete_read(0xA5).unwrap();
+    // Keep both an already-accepted report and a newly pending identity in the
+    // host-only queues; neither belongs to the state being restored.
+    m.set_pending_irq(Some(0x50)).unwrap();
+
+    assert!(matches!(
+        m.restore(&VcpuState::default()),
+        Err(BackendError::PendingCompletion)
+    ));
+    m.retire_pending_completion().unwrap();
+    m.restore(&VcpuState::default()).unwrap();
+    assert_eq!(m.pending_irq(), None);
+    assert_eq!(m.take_accepted_interrupt(), None);
+    assert_eq!(m.run().unwrap(), Exit::Common(CommonExit::Idle));
+    assert_eq!(m.take_accepted_interrupt(), None);
 }
 
 #[test]

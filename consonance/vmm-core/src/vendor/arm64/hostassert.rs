@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The arm64 host-homogeneity probe (`docs/ARCH-BOUNDARY.md` §B, ARM row) — the
+//! The arm64 host-homogeneity probe (`docs/ARCHITECTURE.md`, ARM row) — the
 //! arm64 analogue of x86's `hostassert`: `MIDR` / `ID_AA64*` / errata behind the
 //! same [`enforce`] gate the composition root runs before the first boot.
 //!
 //! **A skeleton probe.** The concrete `expect-vs-found` rows (which `ID_AA64*`
 //! fields must match the frozen contract, which errata must be present) are
 //! M4's capability truth table and enforcement rows
-//! (`docs/VM-EXIT-COUNT-VTIME.md`) — measured on msr1, never guessed here. The
+//! (`docs/DETERMINISM.md`) — measured on msr1, never guessed here. The
 //! live probe is
 //! `target_arch = "aarch64"`-gated and reads nothing yet (its row set is
 //! `TODO(AA-0/AA-6)`); off the box it is a no-op, exactly as x86's is off an

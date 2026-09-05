@@ -9,10 +9,10 @@ license.workspace = true
 # substrate task 15 unit-tests vmm-core against). NOT `#[cfg(test)]`: a
 # `#[cfg(test)]` item is invisible to downstream crates, so it could not be the
 # mock task 15 turns on under `[dev-dependencies]`. The default build compiles the
-# trait + value types only. See tasks/14-backend.md §"Features".
+# trait + value types only. See consonance/vmm-backend/README.md.
 mock = []
 # Non-default. Gates `vmm_backend::contract`, the shared `Backend` contract
-# exam (`docs/TESTING.md`, rung 2). Like `mock` it is a feature rather than
+# exam (`docs/TESTING.md`). Like `mock` it is a feature rather than
 # `#[cfg(test)]` so downstream crates — and this crate's own box-only KVM
 # integration tests — can run the identical exam the portable mock test runs.
 contract-tests = []
@@ -20,7 +20,7 @@ contract-tests = []
 [dependencies]
 thiserror = "2"
 # Linux-only frontier deps (reviewed rule-5 whitelist EXCEPTION, recorded in
-# tasks/14-backend.md §"Dependencies" and the PR description — NOT a deny.toml
+# consonance/vmm-backend/README.md and the PR description — NOT a deny.toml
 # edit; deny.toml has no crate allowlist). These gate `KvmBackend` only; a macOS
 # `cargo build -p vmm-backend` never compiles them (the trait + value types +
 # `MockBackend` are platform-portable and pull none of these). Caret defaults,

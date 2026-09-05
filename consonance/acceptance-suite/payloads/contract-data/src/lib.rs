@@ -1,13 +1,11 @@
 //! Conformance tables for the instruction-sweep payloads (task 18), generated
-//! at build time from `docs/cpu-msr-contract.toml` so every expected value
+//! at build time from `consonance/vmm-core/contracts/x86/intel.toml` so every expected value
 //! traces to the committed contract — a contract bump surfaces as a payload /
 //! golden diff rather than silent drift. Shared verbatim between the bare-metal
 //! sweep payloads (`no_std`) and host-side tests, like `compute-core`.
 //!
-//! Normativity note: the authoritative source is the TOML (the hashed §6
-//! surface). `docs/fragments/cpuid-model.md` is explicitly non-normative and,
-//! since the `det-skx-v1` → `det-cfl-v1` re-baseline, describes the old model;
-//! the TOML wins and is what `build.rs` parses.
+//! The authoritative source is the TOML. `build.rs` parses that same file, so
+//! the enforced and hashed representations stay aligned.
 #![cfg_attr(not(test), no_std)]
 
 /// One frozen CPUID (leaf, subleaf) and its expected register values. A
@@ -275,14 +273,14 @@ mod tests {
         assert!(is_contract_msr(0xc000_0080)); // EFER
     }
 
-    /// Re-parse `docs/cpu-msr-contract.toml` independently of `build.rs` and
+    /// Re-parse the x86 contract independently of `build.rs` and
     /// return the contract's **allow-stateful** index set. A second, minimal
     /// parser (not the codegen one) so the completeness gate cannot be fooled by a
     /// `build.rs` regression.
     fn contract_allow_stateful_indices() -> std::collections::BTreeSet<u32> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../../docs/cpu-msr-contract.toml"
+            "/../../../vmm-core/contracts/x86/intel.toml"
         );
         let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         let hex = |s: &str| {

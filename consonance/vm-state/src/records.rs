@@ -8,7 +8,7 @@
 //! timer queue, the entropy-stream position). This trait names exactly that
 //! engine-facing surface, so vmm-core's snapshot glue can hold a vendor's
 //! associated snapshot type (`Vendor::Snapshot`) without ever naming a register
-//! record — the `docs/ARCH-BOUNDARY.md` §D snapshot-state seam, ruled 2026-07-14
+//! record — the `docs/ARCHITECTURE.md` snapshot-state seam, ruled 2026-07-14
 //! (PR #109) and landed with the ARM skeleton (`hm-cbt`).
 //!
 //! Each implementor is one architecture's record set over the same TLV

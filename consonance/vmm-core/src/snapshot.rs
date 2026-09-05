@@ -26,7 +26,7 @@
 //! The KVM-specific mechanics this builds on — the dirty-log drain that yields the
 //! per-snapshot dirty set, and the memslot remap that makes restore O(dirty) rather
 //! than O(image) — live **below the `Backend` trait** in `vmm-backend` (task 08's
-//! measured mechanism); see `IMPLEMENTATION.md`. The engine here is portable and
+//! measured mechanism). The engine here is portable and
 //! Mac/Miri-testable against plain memory, exactly as `snapshot-store` is.
 
 use snapshot_store::{Mapping, PAGE_SIZE, SnapStats, SnapshotId, Store, StoreConfig, StoreStats};
@@ -67,12 +67,34 @@ pub enum SnapshotError {
         /// The configured guest image size in pages.
         pages: u64,
     },
+    /// A sparse snapshot page list was not sorted by guest frame number.
+    #[error("sparse snapshot pages are not sorted: {previous} then {current}")]
+    SparsePagesNotSorted {
+        /// The preceding page's guest frame number.
+        previous: u64,
+        /// The page that appeared after `previous`.
+        current: u64,
+    },
+    /// A sparse snapshot page list contained a guest frame more than once.
+    #[error("sparse snapshot page {gfn} is duplicated")]
+    SparsePageDuplicate {
+        /// The repeated guest frame number.
+        gfn: u64,
+    },
+    /// A sparse snapshot page lies outside this engine's configured image.
+    #[error("sparse snapshot page {gfn} out of range: guest image is {pages} pages")]
+    SparsePageOutOfRange {
+        /// The offending guest frame number.
+        gfn: u64,
+        /// The configured guest image size in pages.
+        pages: u64,
+    },
     /// The userspace xAPIC rejected a restored [`LapicState`].
     #[error("device restore rejected: {0}")]
     DeviceRestore(&'static str),
     /// The snapshot was taken under a different ratified CPU/MSR contract than the
     /// one this VMM enforces, so its CPUID/MSR behavior would silently diverge on
-    /// restore. Refused loudly (INTEGRATION.md §4 `contract_hash`).
+    /// restore. Refused loudly (docs/ARCHITECTURE.md `contract_hash`).
     #[error("contract hash mismatch: snapshot taken under a different CPU/MSR contract")]
     ContractMismatch,
 }
@@ -93,9 +115,9 @@ pub struct SnapshotEngine {
 
 /// Default [`SnapshotEngine::max_chain_len`]: `materialize` is O(chain), so a
 /// dirty-log derive chain (task 95 M2.1) is bounded — at this depth a seal
-/// flattens via `snapshot_base` instead (one full scan; content-dedup keeps the
-/// storage cost near zero). 32 sits well below the flat region of the M1
-/// depth-sweep (materialize was depth-flat at 1/8/32 on the bench machine).
+/// flattens through the chain's page sets and dirty window instead of deriving
+/// deeper. 32 sits well below the flat region of the M1 depth-sweep (materialize
+/// was depth-flat at 1/8/32 on the bench machine).
 pub const DEFAULT_MAX_CHAIN_LEN: u32 = 32;
 
 impl SnapshotEngine {
@@ -117,9 +139,9 @@ impl SnapshotEngine {
     }
 
     /// The configured derive-chain bound (task 95 M2.1): a capture whose parent
-    /// already has `chain_len >= max_chain_len` must seal as a fresh base (one
-    /// flattening full scan) instead of deriving deeper — keeping `materialize`
-    /// O(bounded chain). Default [`DEFAULT_MAX_CHAIN_LEN`].
+    /// already has `chain_len >= max_chain_len` must seal as a fresh base using
+    /// the chain-flattening page-set walk instead of deriving deeper — keeping
+    /// `materialize` O(bounded chain). Default [`DEFAULT_MAX_CHAIN_LEN`].
     pub fn max_chain_len(&self) -> u32 {
         self.max_chain_len
     }
@@ -167,6 +189,27 @@ impl SnapshotEngine {
         Ok(builder.seal(vm_state.to_vec()))
     }
 
+    /// Flatten the chain ending at `parent` into a fresh base, reading only the
+    /// union of page sets in that chain and the supplied `dirty` set.
+    ///
+    /// This is the bounded-chain seal path. The store walks the chain's owned page
+    /// keys, adds frames dirtied since `parent`, and lets the ordinary base builder
+    /// perform its zero-page check. Consequently a page changed back to zero is not
+    /// retained in the flat base, while a zero-to-nonzero write is retained. The
+    /// resulting base has `chain_len == 1` and is independent of `parent`.
+    pub fn snapshot_flatten(
+        &mut self,
+        parent: SnapshotId,
+        memory: &[u8],
+        dirty: &[u64],
+        vm_state: &[u8],
+    ) -> Result<SnapshotId, SnapshotError> {
+        self.check_image_len(memory)?;
+        Ok(self
+            .store
+            .flatten_base(parent, memory, dirty, vm_state.to_vec())?)
+    }
+
     /// Derive a child snapshot of `parent` from the current full image.
     ///
     /// When `dirty` is `Some(gfns)`, only those frames are written — the **dirty-set-
@@ -208,6 +251,50 @@ impl SnapshotEngine {
         Ok(builder.seal(vm_state.to_vec()))
     }
 
+    /// Derive a child snapshot directly from a sorted sparse page list.
+    ///
+    /// Every page is the target-resolved content relative to `parent`; absent
+    /// pages therefore remain inherited from the parent. Validation completes
+    /// before the store builder is created, and the builder is only committed
+    /// by `seal`, so malformed input cannot partially mutate the store.
+    pub fn snapshot_sparse_derive(
+        &mut self,
+        parent: SnapshotId,
+        pages: &[(u64, [u8; PAGE_SIZE])],
+        vm_state: &[u8],
+    ) -> Result<SnapshotId, SnapshotError> {
+        let mut previous = None;
+        for &(gfn, _) in pages {
+            if gfn >= self.mem_pages {
+                return Err(SnapshotError::SparsePageOutOfRange {
+                    gfn,
+                    pages: self.mem_pages,
+                });
+            }
+            if let Some(prev) = previous {
+                match gfn.cmp(&prev) {
+                    std::cmp::Ordering::Equal => {
+                        return Err(SnapshotError::SparsePageDuplicate { gfn });
+                    }
+                    std::cmp::Ordering::Less => {
+                        return Err(SnapshotError::SparsePagesNotSorted {
+                            previous: prev,
+                            current: gfn,
+                        });
+                    }
+                    std::cmp::Ordering::Greater => {}
+                }
+            }
+            previous = Some(gfn);
+        }
+
+        let mut builder = self.store.derive(parent)?;
+        for &(gfn, page) in pages {
+            builder.write_page(gfn, &page)?;
+        }
+        Ok(builder.seal(vm_state.to_vec()))
+    }
+
     /// Materialize `snap`'s full logical image as a private copy-on-write
     /// [`Mapping`] — the host backing the restore points the KVM memslot at (the
     /// remap mechanism task 08 chose; below the trait). Resolving the chain is
@@ -216,12 +303,35 @@ impl SnapshotEngine {
         Ok(self.store.materialize(snap)?)
     }
 
+    /// Return the target contents for every page that may differ between two
+    /// snapshots. The result is sorted by guest frame number and is resolved
+    /// against `to`, including all-zero pages that are implicit in that image.
+    /// When `from` is `None`, the complete resolved target image is returned.
+    pub fn diff_pages(
+        &self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+    ) -> Result<Vec<(u64, [u8; PAGE_SIZE])>, SnapshotError> {
+        Ok(self.store.diff_pages(from, to)?)
+    }
+
+    /// Resolve one integrity-checked page from `snap`'s logical image.
+    ///
+    /// This is the in-place restore path's narrow lookup for a page dirtied by
+    /// the live VM after its last sealed image but absent from the store-side
+    /// snapshot diff.
+    pub fn read_page(&self, snap: SnapshotId, gfn: u64) -> Result<[u8; PAGE_SIZE], SnapshotError> {
+        let mut page = [0u8; PAGE_SIZE];
+        self.store.read_page(snap, gfn, &mut page)?;
+        Ok(page)
+    }
+
     /// Decode the sealed `vm_state` blob of `snap` back into a vendor record
     /// set `S` (x86: [`vm_state::VmState`]; arm64: the arm64 record set). The
     /// engine never reads a record: `S::decode` is the vendor codec, and its
     /// arch-tag gate rejects a foreign blob loudly
     /// ([`vm_state::VmStateError::UnsupportedArch`]) rather than
-    /// reinterpreting it — the `docs/ARCH-BOUNDARY.md` §D snapshot seam.
+    /// reinterpreting it — the `docs/ARCHITECTURE.md` snapshot seam.
     pub fn vm_state<S: SnapshotRecords>(&self, snap: SnapshotId) -> Result<S, SnapshotError> {
         Ok(S::decode(self.store.vm_state(snap)?)?)
     }
@@ -328,6 +438,100 @@ mod tests {
         // Store-wide: the 3 base contents + the 1 new content = 4 (page 1's old
         // 0xB is still referenced by the base).
         assert_eq!(eng.store_stats().stored_unique_pages, 4);
+    }
+
+    #[test]
+    fn diff_pages_exposes_target_resolved_branch_image() {
+        let mut eng = SnapshotEngine::new(4 * PG);
+        let base_mem = img(&[(0, 0x10)], 4);
+        let base = eng.snapshot_base(&base_mem, b"base").unwrap();
+        let mut child_mem = base_mem.clone();
+        child_mem[PG..2 * PG].fill(0x20);
+        let child = eng
+            .snapshot_derive(base, &child_mem, Some(&[1]), b"child")
+            .unwrap();
+
+        assert_eq!(
+            eng.diff_pages(Some(child), base).unwrap(),
+            vec![(1, [0u8; PAGE_SIZE])]
+        );
+        assert_eq!(
+            eng.diff_pages(None, child).unwrap(),
+            vec![
+                (0, [0x10u8; PAGE_SIZE]),
+                (1, [0x20u8; PAGE_SIZE]),
+                (2, [0u8; PAGE_SIZE]),
+                (3, [0u8; PAGE_SIZE]),
+            ]
+        );
+    }
+
+    #[test]
+    fn sparse_derive_is_sorted_atomic_and_parent_relative() {
+        let mut eng = SnapshotEngine::new(4 * PG);
+        let base = eng
+            .snapshot_base(&img(&[(0, 0x10), (2, 0x20)], 4), b"base")
+            .unwrap();
+        let pages = vec![(1, [0x30; PAGE_SIZE]), (3, [0x40; PAGE_SIZE])];
+        let child = eng.snapshot_sparse_derive(base, &pages, b"child").unwrap();
+        assert_eq!(eng.stats(child).unwrap().owned_pages, 2);
+        assert_eq!(
+            eng.diff_pages(Some(base), child).unwrap(),
+            pages,
+            "sparse derive preserves target-resolved pages"
+        );
+
+        let before = eng.store_stats();
+        assert!(matches!(
+            eng.snapshot_sparse_derive(
+                base,
+                &[(2, [0xAA; PAGE_SIZE]), (1, [0xBB; PAGE_SIZE])],
+                b"bad"
+            ),
+            Err(SnapshotError::SparsePagesNotSorted {
+                previous: 2,
+                current: 1
+            })
+        ));
+        assert_eq!(
+            eng.store_stats(),
+            before,
+            "invalid sparse input does not mutate the store"
+        );
+        assert!(matches!(
+            eng.snapshot_sparse_derive(
+                base,
+                &[(1, [0xAA; PAGE_SIZE]), (1, [0xBB; PAGE_SIZE])],
+                b"bad"
+            ),
+            Err(SnapshotError::SparsePageDuplicate { gfn: 1 })
+        ));
+        assert!(matches!(
+            eng.snapshot_sparse_derive(base, &[(4, [0xAA; PAGE_SIZE])], b"bad"),
+            Err(SnapshotError::SparsePageOutOfRange { gfn: 4, pages: 4 })
+        ));
+        assert_eq!(eng.store_stats(), before);
+    }
+
+    #[test]
+    fn read_page_resolves_content_and_rejects_invalid_inputs() {
+        let mut eng = SnapshotEngine::new(2 * PG);
+        let base = eng.snapshot_base(&img(&[(1, 0xAB)], 2), b"base").unwrap();
+
+        assert_eq!(eng.read_page(base, 1).unwrap(), [0xAB; PAGE_SIZE]);
+        assert!(matches!(
+            eng.read_page(base, 2),
+            Err(SnapshotError::Store(StoreError::GfnOutOfRange {
+                gfn: 2,
+                mem_pages: 2
+            }))
+        ));
+
+        eng.release(base).unwrap();
+        assert!(matches!(
+            eng.read_page(base, 0),
+            Err(SnapshotError::Store(StoreError::UnknownSnapshot(id))) if id == base
+        ));
     }
 
     #[test]

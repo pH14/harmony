@@ -2,16 +2,16 @@
 //! Nova the Squirrel payload mode for the Consonance guest play-agent.
 //!
 //! The guest asks the SDK for opaque two-byte controller chords, advances the
-//! libretro core, publishes source-derived progress registers, and yields at
-//! each completed chord. Snapshotting and restoration remain entirely host
-//! owned: `frame_complete` is the clean Consonance lifecycle boundary.
+//! libretro core, publishes raw frame memory, and yields at each completed
+//! chord. Snapshotting and observation decoding remain entirely host owned:
+//! `frame_complete` is the clean Consonance lifecycle boundary.
 
 use std::fmt;
 
 use harmony_sdk::Point;
 
 use crate::{
-    billboard::{BillboardError, BillboardLayout},
+    billboard::{BillboardError, NOVA_SAVE_RAM_LEN, NovaBillboardLayout},
     core_seam::Core,
 };
 
@@ -171,11 +171,14 @@ pub trait NovaChannel {
 
     /// Consume one exact two-byte `[buttons, hold_frames]` payload.
     fn payload_fetch(&mut self, out: &mut [u8; 2]) -> Result<(), Self::Error>;
-    /// Publish one state register assignment.
+    /// Publish one setup-point state register assignment.
+    ///
+    /// These operations are retained for the pre-`setup_complete` seal; the
+    /// action path exports only billboard bytes.
     fn state_set(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
-    /// Publish one monotone state-register candidate.
+    /// Publish one setup-point monotone state-register candidate.
     fn state_max(&mut self, reg: u32, value: u64) -> Result<(), Self::Error>;
-    /// Publish a positive reachability marker.
+    /// Publish one setup-point reachability marker.
     fn reachable(&mut self, point: u32) -> Result<(), Self::Error>;
     /// Yield at a complete controller-chord boundary.
     fn frame_complete(&mut self, frame_count: u64) -> Result<(), Self::Error>;
@@ -233,7 +236,7 @@ pub fn run_setup<C: Core>(core: &mut C) -> Result<NovaState, NovaError<core::con
 /// QuickNES-backed Nova loop whose snapshots are owned by Consonance.
 pub struct NovaAgent<C: Core> {
     core: C,
-    layout: BillboardLayout,
+    layout: NovaBillboardLayout,
     frame_count: u64,
     genesis: NovaState,
     clear_fired: bool,
@@ -245,7 +248,8 @@ impl<C: Core> NovaAgent<C> {
     /// Freeze the billboard layout after setup and capture the genesis state.
     pub fn new(mut core: C) -> Result<Self, NovaError<core::convert::Infallible>> {
         let genesis = read_state(&mut core)?;
-        let layout = BillboardLayout::new(core.serialize_size()).map_err(NovaError::Billboard)?;
+        let layout =
+            NovaBillboardLayout::new(core.serialize_size()).map_err(NovaError::Billboard)?;
         Ok(Self {
             core,
             layout,
@@ -259,7 +263,7 @@ impl<C: Core> NovaAgent<C> {
 
     /// Frozen billboard layout for the guest-physical publication.
     #[must_use]
-    pub fn layout(&self) -> BillboardLayout {
+    pub fn layout(&self) -> NovaBillboardLayout {
         self.layout
     }
 
@@ -274,55 +278,115 @@ impl<C: Core> NovaAgent<C> {
         &mut self,
         billboard: &mut [u8],
     ) -> Result<NovaState, NovaError<core::convert::Infallible>> {
-        self.publish(billboard, 0)?;
-        read_state(&mut self.core)
+        if billboard.len() < self.layout.total_len() {
+            return Err(NovaError::Billboard(BillboardError::BufferTooSmall {
+                got: billboard.len(),
+                need: self.layout.total_len(),
+            }));
+        }
+        // No action frames exist at setup, so slot zero carries the endpoint
+        // work RAM that lets the host decode the sealed genesis uniformly.
+        if !self
+            .core
+            .read_work_ram(self.layout.work_ram_slot_mut(billboard, 0))
+        {
+            return Err(NovaError::MemoryUnavailable);
+        }
+        let state = read_state(&mut self.core)?;
+        self.publish_final(billboard, 0, 0, state)?;
+        Ok(state)
     }
 
-    /// Fetch and execute one chord, publish the resulting state, then yield.
+    /// Fetch and execute one chord, publish its raw frame observations, then
+    /// yield. The payload and completion are the only SDK calls in this path;
+    /// state decoding belongs to the host adapter.
     pub fn run_chord<H: NovaChannel>(
         &mut self,
         channel: &mut H,
         billboard: &mut [u8],
     ) -> Result<NovaState, NovaError<H::Error>> {
+        if billboard.len() < self.layout.total_len() {
+            return Err(NovaError::Billboard(BillboardError::BufferTooSmall {
+                got: billboard.len(),
+                need: self.layout.total_len(),
+            }));
+        }
         let mut payload = [0_u8; 2];
         channel
             .payload_fetch(&mut payload)
             .map_err(NovaError::Channel)?;
         let hold = payload[1].clamp(1, MAX_HOLD_FRAMES);
-        let mut state = read_state(&mut self.core).map_err(widen_error)?;
-        for _ in 0..hold {
-            self.publish(billboard, payload[0]).map_err(widen_error)?;
+        let mut frames_run = 0_u8;
+        for slot in 0..usize::from(hold) {
             self.core.run_frame(payload[0]);
             self.frame_count = self.frame_count.saturating_add(1);
-            state = read_state(&mut self.core).map_err(widen_error)?;
-            if state.dead() || state.cleared > self.genesis.cleared {
-                break;
+            let work_ram = self.layout.work_ram_slot_mut(billboard, slot);
+            if !self.core.read_work_ram(work_ram) {
+                return Err(NovaError::MemoryUnavailable);
             }
+            frames_run = frames_run.saturating_add(1);
         }
-        // The snapshot-point billboard describes the exact post-action state.
-        self.publish(billboard, 0).map_err(widen_error)?;
-        self.emit_state(channel, state)?;
+        // A chord is an exact held-input interval. Decode only its endpoint;
+        // death and clear are host-adapter meanings, not guest-side stops.
+        let state = read_state(&mut self.core).map_err(widen_error)?;
+        // The host sees a coherent endpoint only after the raw ring, save RAM,
+        // and savestate are all complete. This is the sole billboard write
+        // after the per-frame ring copies.
+        self.publish_final(billboard, payload[0], frames_run, state)
+            .map_err(widen_error)?;
         channel
             .frame_complete(self.frame_count)
             .map_err(NovaError::Channel)?;
         Ok(state)
     }
 
-    fn publish<E>(&mut self, billboard: &mut [u8], joypad: u8) -> Result<(), NovaError<E>> {
+    fn publish_final(
+        &mut self,
+        billboard: &mut [u8],
+        joypad: u8,
+        frames_run: u8,
+        state: NovaState,
+    ) -> Result<(), NovaError<core::convert::Infallible>> {
+        if billboard.len() < self.layout.total_len() {
+            return Err(NovaError::Billboard(BillboardError::BufferTooSmall {
+                got: billboard.len(),
+                need: self.layout.total_len(),
+            }));
+        }
         let frame = u32::try_from(self.frame_count).map_err(|_| NovaError::FrameOverflow)?;
+        if usize::from(frames_run) > usize::from(MAX_HOLD_FRAMES) {
+            // `frames_run` is produced by the bounded loop above. Keeping this
+            // check at the serialization boundary makes the wire invariant
+            // explicit if another caller is added later.
+            return Err(NovaError::FrameOverflow);
+        }
+        let mut save_ram = [0_u8; NOVA_SAVE_RAM_LEN];
+        if self.core.read_save_ram(&mut save_ram) != Some(NOVA_SAVE_RAM_LEN) {
+            return Err(NovaError::MemoryUnavailable);
+        }
         self.layout
-            .write_header(billboard, frame, joypad)
-            .map_err(NovaError::Billboard)?;
+            .save_ram_mut(billboard)
+            .copy_from_slice(&save_ram);
         if !self.core.serialize(self.layout.savestate_mut(billboard)) {
             return Err(NovaError::SerializeFailed);
         }
-        if !self.core.read_work_ram(self.layout.work_ram_mut(billboard)) {
-            return Err(NovaError::MemoryUnavailable);
-        }
-        Ok(())
+        self.layout
+            .write_header(
+                billboard,
+                frame,
+                joypad,
+                frames_run,
+                state.dead(),
+                state.cleared > self.genesis.cleared,
+            )
+            .map_err(NovaError::Billboard)
     }
 
-    /// Publish the current source-derived state through the SDK register catalog.
+    /// Publish the setup-point state through the legacy SDK register catalog.
+    ///
+    /// The action path deliberately never calls this method: after
+    /// `setup_complete`, Nova exports raw memory only and the host adapter
+    /// performs all observation decoding.
     pub fn emit_state<H: NovaChannel>(
         &mut self,
         channel: &mut H,
@@ -430,6 +494,8 @@ mod tests {
         payload: Option<[u8; 2]>,
         sets: Vec<(u32, u64)>,
         maxes: Vec<(u32, u64)>,
+        reachables: Vec<u32>,
+        calls: Vec<&'static str>,
         frames: Vec<u64>,
     }
 
@@ -437,6 +503,7 @@ mod tests {
         type Error = &'static str;
 
         fn payload_fetch(&mut self, out: &mut [u8; 2]) -> Result<(), Self::Error> {
+            self.calls.push("payload_fetch");
             *out = self.payload.take().ok_or("payload exhausted")?;
             Ok(())
         }
@@ -451,11 +518,13 @@ mod tests {
             Ok(())
         }
 
-        fn reachable(&mut self, _point: u32) -> Result<(), Self::Error> {
+        fn reachable(&mut self, point: u32) -> Result<(), Self::Error> {
+            self.reachables.push(point);
             Ok(())
         }
 
         fn frame_complete(&mut self, frame_count: u64) -> Result<(), Self::Error> {
+            self.calls.push("frame_complete");
             self.frames.push(frame_count);
             Ok(())
         }
@@ -479,6 +548,11 @@ mod tests {
         let mut billboard = vec![0_u8; agent.layout().total_len()];
         let primed = agent.prime_billboard(&mut billboard).expect("prime");
         assert_eq!((primed.x, primed.y, primed.health), (38, 184, 4));
+        assert_eq!(billboard[13], 0);
+        assert_eq!(
+            agent.layout().work_ram_slot_mut(&mut billboard, 0)[PLAYER_HEALTH],
+            4
+        );
 
         let mut tape = Tape {
             payload: Some([0, 3]),
@@ -488,9 +562,188 @@ mod tests {
         assert_eq!(endpoint, primed);
         assert_eq!(agent.frame_count(), 3);
         assert_eq!(tape.frames, [3]);
-        assert!(tape.sets.contains(&(regs::REG_FRAME, 3)));
-        assert!(tape.maxes.contains(&(regs::REG_AVAILABLE, 1)));
+        assert_eq!(tape.calls, ["payload_fetch", "frame_complete"]);
+        assert!(tape.sets.is_empty());
+        assert!(tape.maxes.is_empty());
+        assert!(tape.reachables.is_empty());
         assert_eq!(&billboard[8..12], &3_u32.to_le_bytes());
+        assert_eq!(billboard[12], 0);
+        assert_eq!(billboard[13], 3);
+    }
+
+    struct RingCore {
+        inner: MockCore,
+        serializes: usize,
+        save_reads: usize,
+    }
+
+    impl RingCore {
+        fn new() -> Self {
+            Self {
+                inner: gameplay_core(),
+                serializes: 0,
+                save_reads: 0,
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum TerminalCondition {
+        Dead,
+        Cleared,
+    }
+
+    struct TerminalCore {
+        inner: RingCore,
+        condition: TerminalCondition,
+    }
+
+    impl TerminalCore {
+        fn new(condition: TerminalCondition) -> Self {
+            Self {
+                inner: RingCore::new(),
+                condition,
+            }
+        }
+    }
+
+    impl Core for TerminalCore {
+        fn serialize_size(&mut self) -> usize {
+            self.inner.serialize_size()
+        }
+
+        fn serialize(&mut self, out: &mut [u8]) -> bool {
+            self.inner.serialize(out)
+        }
+
+        fn run_frame(&mut self, joypad: u8) {
+            self.inner.run_frame(joypad);
+            if self.inner.inner.frames_run() == 1 {
+                match self.condition {
+                    TerminalCondition::Dead => self.inner.inner.ram_mut()[PLAYER_HEALTH] = 0,
+                    TerminalCondition::Cleared => {
+                        self.inner.inner.save_ram_mut()[LEVEL_CLEARED] = 1;
+                    }
+                }
+            }
+        }
+
+        fn read_work_ram(&mut self, out: &mut [u8]) -> bool {
+            self.inner.read_work_ram(out)
+        }
+
+        fn read_save_ram(&mut self, out: &mut [u8]) -> Option<usize> {
+            self.inner.read_save_ram(out)
+        }
+    }
+
+    impl Core for RingCore {
+        fn serialize_size(&mut self) -> usize {
+            self.inner.serialize_size()
+        }
+
+        fn serialize(&mut self, out: &mut [u8]) -> bool {
+            self.serializes += 1;
+            self.inner.serialize(out)
+        }
+
+        fn run_frame(&mut self, joypad: u8) {
+            self.inner.run_frame(joypad);
+            self.inner.ram_mut()[0] = self.inner.frames_run() as u8;
+        }
+
+        fn read_work_ram(&mut self, out: &mut [u8]) -> bool {
+            self.inner.read_work_ram(out)
+        }
+
+        fn read_save_ram(&mut self, out: &mut [u8]) -> Option<usize> {
+            self.save_reads += 1;
+            self.inner.read_save_ram(out)
+        }
+    }
+
+    #[test]
+    fn action_publishes_each_post_frame_ram_slot_and_end_regions_once() {
+        let mut core = RingCore::new();
+        core.inner.save_ram_mut()[PLAYER_ABILITY] = 0xA5;
+        let mut agent = NovaAgent::new(core).expect("agent");
+        let mut billboard = vec![0_u8; agent.layout().total_len()];
+        let mut tape = Tape {
+            payload: Some([0, 3]),
+            ..Tape::default()
+        };
+
+        agent.run_chord(&mut tape, &mut billboard).expect("chord");
+
+        assert_eq!(tape.calls, ["payload_fetch", "frame_complete"]);
+        assert_eq!(billboard[13], 3);
+        for slot in 0..3 {
+            let ram = agent.layout().work_ram_slot_mut(&mut billboard, slot);
+            assert_eq!(ram[0], (slot + 1) as u8);
+        }
+        assert!(
+            agent
+                .layout()
+                .work_ram_slot_mut(&mut billboard, 3)
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert_eq!(
+            &agent.layout().save_ram_mut(&mut billboard)[PLAYER_ABILITY..=PLAYER_ABILITY],
+            &[0xA5]
+        );
+        assert_eq!(agent.core.serializes, 1);
+        // The state decoder reads the core's save RAM at setup and once at the
+        // action endpoint; the billboard window itself is populated only by
+        // the single endpoint copy above.
+        assert_eq!(agent.core.save_reads, 3);
+    }
+
+    fn assert_full_hold_after_terminal(condition: TerminalCondition) {
+        let mut agent = NovaAgent::new(TerminalCore::new(condition)).expect("agent");
+        let mut billboard = vec![0_u8; agent.layout().total_len()];
+        let mut tape = Tape {
+            payload: Some([0, 4]),
+            ..Tape::default()
+        };
+
+        let endpoint = agent.run_chord(&mut tape, &mut billboard).expect("chord");
+
+        assert_eq!(agent.frame_count(), 4);
+        assert_eq!(agent.core.inner.inner.frames_run(), 4);
+        assert_eq!(billboard[13], 4);
+        for slot in 0..4 {
+            let ram = agent.layout().work_ram_slot_mut(&mut billboard, slot);
+            assert_eq!(ram[0], (slot + 1) as u8);
+        }
+        assert_eq!(tape.calls, ["payload_fetch", "frame_complete"]);
+        assert_eq!(tape.frames, [4]);
+        assert_eq!(
+            NovaBillboardLayout::dead_flag(&billboard),
+            matches!(condition, TerminalCondition::Dead)
+        );
+        assert_eq!(
+            NovaBillboardLayout::cleared_flag(&billboard),
+            matches!(condition, TerminalCondition::Cleared)
+        );
+        assert_eq!(
+            endpoint.dead(),
+            matches!(condition, TerminalCondition::Dead)
+        );
+        assert_eq!(
+            endpoint.cleared > agent.genesis.cleared,
+            matches!(condition, TerminalCondition::Cleared)
+        );
+    }
+
+    #[test]
+    fn dead_core_still_runs_and_publishes_the_full_hold() {
+        assert_full_hold_after_terminal(TerminalCondition::Dead);
+    }
+
+    #[test]
+    fn cleared_core_still_runs_and_publishes_the_full_hold() {
+        assert_full_hold_after_terminal(TerminalCondition::Cleared);
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub enum VmStateError {
     #[error("unsupported version: {0}")]
     UnsupportedVersion(u16),
     /// The container's **arch tag** names a record set this build does not carry
-    /// (`docs/ARCH-BOUNDARY.md` step 4). Fail closed: decoding another
+    /// (`docs/ARCHITECTURE.md`). Fail closed: decoding another
     /// architecture's registers into this one's fields would be a silent
     /// reinterpretation, which is exactly what the tag exists to prevent.
     #[error("unsupported arch tag: {0}")]

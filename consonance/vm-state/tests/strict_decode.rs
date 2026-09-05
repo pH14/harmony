@@ -67,7 +67,7 @@ fn wrong_version() {
 
 /// The v2 arch tag is a **hard gate on the record set**: a blob whose sections are
 /// byte-perfect but whose arch tag is another architecture's is REJECTED, never
-/// decoded into this build's x86 fields (`docs/ARCH-BOUNDARY.md` step 4 — versioned
+/// decoded into this build's x86 fields (`docs/ARCHITECTURE.md` — versioned
 /// wire evolution, never silent reinterpretation).
 #[test]
 fn foreign_arch_tag_is_rejected_not_reinterpreted() {

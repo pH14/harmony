@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The ISA seam (`docs/ARCH-BOUNDARY.md` §A): the [`Arch`] trait — the
+//! The ISA seam (`docs/ARCHITECTURE.md`): the [`Arch`] trait — the
 //! vocabulary of guest-observable CPU events and state, one implementation per
 //! vendor — and the per-vendor modules that supply it.
 //!
@@ -25,7 +25,7 @@ pub mod x86;
 /// One CPU architecture's vocabulary, as associated types. Vendors are
 /// zero-sized types (e.g. [`x86::X86`]); the trait carries no methods beyond
 /// what every consumer of an arch exit needs — nothing above `vmm-core` is
-/// generic over this (`docs/ARCH-BOUNDARY.md` "generics stop at vmm-core").
+/// generic over this (`docs/ARCHITECTURE.md` "generics stop at vmm-core").
 pub trait Arch {
     /// The arch-specific exit variants — only the operations whose *identity*
     /// is per-ISA (x86: `Io`, `Rdmsr`/`Wrmsr`, `Cpuid`, `Rdtsc`/`Rdtscp`,

@@ -83,6 +83,9 @@ fn boxed_backend_forwards_every_method() {
             edx: 0xD,
         })
         .unwrap();
+    // The explicit completion-retirement operation is also object-safe and
+    // forwarded through the boxed backend. It must not consume the next exit.
+    backend.retire_pending_completion().unwrap();
 
     assert_eq!(
         backend.run().unwrap(),
@@ -123,6 +126,7 @@ fn boxed_backend_forwards_every_method() {
         })
     );
     backend.complete_read(0x55).unwrap();
+    backend.retire_pending_completion().unwrap();
 
     // inject forward: exercised through the box (its effect is not trait-observable
     // — see `.cargo/mutants.toml` exclude for the forward).

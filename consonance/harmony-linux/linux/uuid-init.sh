@@ -7,7 +7,7 @@
 # pedigree), stop postgres, then run the supervised process whose rare branch
 # fires only on a matching seeded-entropy draw. A verbatim clone of
 # campaign-init.sh (bug 1) with the supervisor/markers swapped. See
-# consonance/harmony-linux/linux/uuid-super.c and consonance/harmony-linux/linux/IMPLEMENTATION.md.
+# consonance/harmony-linux/linux/uuid-super.c and consonance/harmony-linux/linux/README.md.
 #
 # The base snapshot is sealed at the `UUID_READY` marker `uuid-super` prints
 # right before it draws the (post-seal, per-branch) seeded entropy. When the

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The arm64 platform devices (pure logic, Mac-testable): the PL011 UART.
 //!
-//! The PL011 carries the 8250's *pattern* (`docs/ARCH-BOUNDARY.md` §B: "the
+//! The PL011 carries the 8250's *pattern* (`docs/ARCHITECTURE.md`: "the
 //! 8250 UART pattern itself carries"), not its registers: a serial-output
 //! capture the engine's `SERL` hash chunk and the scrape stream read, an
 //! injected-input queue for the task-81 `exec` verb (off-record, live-only —

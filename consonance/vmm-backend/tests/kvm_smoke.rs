@@ -5,7 +5,7 @@
 //! `cargo test … --all-features`) **compile but do not run** them — a Cargo
 //! feature would be flipped on by `--all-features` and trip the fail-fast on a
 //! Mac/CI host. Run explicitly on the determinism box, **CPU-pinned** per
-//! `docs/BOX-PINNING.md` (core 1 is spare; 2/4 are measurement, 5–7 the CI
+//! `.github/workflows/box.yml` (core 1 is spare; 2/4 are measurement, 5–7 the CI
 //! runner, 0 the OS):
 //!
 //! ```sh

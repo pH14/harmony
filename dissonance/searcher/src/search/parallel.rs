@@ -119,7 +119,6 @@ pub fn with_worker_pool<State, Job, Output, ResultValue, CoordinatorError>(
     coordinate: impl FnOnce(&mut WorkerPool<Job, Output>) -> Result<ResultValue, CoordinatorError>,
 ) -> Result<ResultValue, CoordinatorError>
 where
-    State: Send,
     Job: Send,
     Output: Send,
 {
@@ -163,7 +162,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::{cell::Cell, rc::Rc, sync::mpsc};
 
     use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
 
@@ -212,6 +211,24 @@ mod tests {
         )
         .expect("coordinate one worker");
         assert_eq!(replies, vec![(0, 17)]);
+    }
+
+    #[test]
+    fn worker_state_can_remain_on_the_thread_that_constructed_it() {
+        let value = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(Rc::new(Cell::new(4_u64))),
+            |state, increment: u64| {
+                state.set(state.get().saturating_add(increment));
+                Ok::<_, String>(state.get())
+            },
+            |pool| -> Result<u64, Box<dyn std::error::Error>> {
+                pool.send(0, 3)?;
+                Ok(pool.receive()?.outcome?)
+            },
+        )
+        .expect("coordinate worker-local state");
+        assert_eq!(value, 7);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Live X2 gates for **assigned-at-exit (virtual_time) V-time on the stock x86
-//! backend** (`docs/VM-EXIT-COUNT-VTIME.md`, status in
-//! `docs/VIRTUAL_TIME-VTIME-STATUS.md`): boot the committed
+//! backend** (`docs/DETERMINISM.md`, status in
+//! `docs/DETERMINISM.md`): boot the committed
 //! `harmony-linux` bzImage + initramfs through
 //! [`boot_linux_stock_virtual_time`] on real `/dev/kvm` and measure whether the
 //! production [`LiveVirtualTimeTrace`](vmm_core::virtual_time) is identical

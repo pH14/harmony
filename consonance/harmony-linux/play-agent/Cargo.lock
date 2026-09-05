@@ -182,6 +182,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "harmony-sdk",
+ "hypercall-doorbell",
  "hypercall-proto",
  "libc",
  "proptest",
@@ -199,6 +200,13 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hypercall-doorbell"
+version = "0.1.0"
+dependencies = [
+ "hypercall-proto",
+]
 
 [[package]]
 name = "hypercall-proto"

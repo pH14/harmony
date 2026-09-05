@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **single-node branching demo** (`#[cfg(target_os = "linux")]` **and
 //! `#[ignore]`**, on `ssh <det-box>` with the LOADED patched KVM modules, CPU-pinned
-//! per `docs/BOX-PINNING.md`). Task 40 — the dissonance "join point": where the
+//! per `.github/workflows/box.yml`). Task 40 — the dissonance "join point": where the
 //! live snapshot/branch substrate (task 39) meets the bare-Postgres workload (task
 //! 37) to show *the multiverse from one snapshot*.
 //!
@@ -9,12 +9,12 @@
 //! task 12). It:
 //!
 //! 1. Boots the task-37 Postgres workload image on the patched backend and seals a
-//!    **quiescent snapshot point** (INTEGRATION.md §4) of the **live** machine (guest
+//!    **quiescent snapshot point** (docs/ARCHITECTURE.md) of the **live** machine (guest
 //!    memory → `snapshot-store`, the non-memory machine → the `vm_state` codec) into a
 //!    base snapshot `S`, then **drops the live VM** (freeing its work
 //!    counter — exactly one counter is ever open at a time, per `live_postgres.rs`).
 //!
-//!    **Where `S` lands (a substrate constraint, measured — see `IMPLEMENTATION.md`).**
+//!    **Where `S` lands (a substrate constraint).**
 //!    Task 39's snapshot codec captures the *quiescent* machine: `vm-state`'s
 //!    `VcpuEvents` deliberately omits the in-flight-interrupt-injection fields (its
 //!    doc names the HLT point as the snapshot target). A **cooperative, never-halting**
@@ -67,7 +67,7 @@
 //! RAM-disk model, **D1**). The crash-timing fault the spec also lists ("kill
 //! `postgres` at V-time T, restart so WAL recovery runs") needs either a cooperating
 //! guest or the host-side fault seam (`dissonance/environment` — a *separate*, live
-//! frontier), so it is **out of scope here** and called out in `IMPLEMENTATION.md`.
+//! frontier), so it is **out of scope here** and called out in `README.md`.
 //! This demo drives the **entropy-fork** knob the public branch API exposes
 //! (`reseed_entropy`); what that surfaces into guest-observable state on this
 //! substrate is **measured and reported**, never asserted beyond what the substrate
@@ -176,7 +176,7 @@ fn require_kvm() {
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
-         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md (taskset -c 4)."
+         patched KVM modules, CPU-pinned per .github/workflows/box.yml (taskset -c 4)."
     );
 }
 
@@ -185,7 +185,7 @@ fn require_kvm() {
 fn require_host_baseline() {
     let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
-    eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
+    eprintln!("[host-assert] x86 CPU contract baseline:");
     for o in &report {
         eprintln!(
             "[host-assert]   {}  {}: expected {}, observed {}",
@@ -199,7 +199,7 @@ fn require_host_baseline() {
     assert!(
         all,
         "host CPU is not the det-cfl-v1 baseline — the frozen contract cannot run here. Run on the \
-         determinism box (i9-9900K) per docs/BOX-PINNING.md."
+         determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 
@@ -382,7 +382,7 @@ struct LiveSnapshot {
 ///
 /// Both point to the same place, so by default `S` is sealed at the first clean
 /// boundary (boot entry). The forks then each run the *whole* boot→Postgres→workload
-/// forward from `S`. See `IMPLEMENTATION.md` for the full reasoning + the limitation.
+/// forward from `S`.
 ///
 /// Arming: with no `earliest` marker (default), seal at the first clean boundary
 /// (boot entry); with an explicit marker, seal at the first clean boundary once it
@@ -402,7 +402,7 @@ fn seal_first_clean(live: &mut DynVmm, earliest: &[u8]) -> LiveSnapshot {
     // console byte), so a later seal yields only bookkeeping-level divergence —
     // "N identical reruns," not a multiverse. With an explicit marker, seal at the
     // first clean boundary once it appears (a *later*, post-CRNG-seed root — useful to
-    // demonstrate that very trade-off; see IMPLEMENTATION.md).
+    // demonstrate that trade-off).
     let mut armed = earliest.is_empty();
     let mut steps = 0u64;
     loop {
@@ -833,7 +833,7 @@ fn branching_demo_reproducibility_and_divergence() {
             "[demo] gate 2: terminal state_hash differs, but only in the host-side \
              determinism/entropy bookkeeping (`vtim:` components), not guest-observable state — the \
              branches are byte-identical guests (\"N identical reruns\"). This happens when `S` is \
-             sealed AFTER the kernel CRNG is seeded; see IMPLEMENTATION.md."
+             sealed AFTER the kernel CRNG is seeded."
         );
     }
     // For the default (boot-entry) seal, gate 2 requires *meaningful* divergence —

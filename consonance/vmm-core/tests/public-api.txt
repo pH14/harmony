@@ -1,6 +1,7 @@
 pub mod vmm_core
 pub mod vmm_core::control
 pub enum vmm_core::control::RestoreMode
+pub vmm_core::control::RestoreMode::InPlace
 pub vmm_core::control::RestoreMode::Memcpy
 pub vmm_core::control::RestoreMode::Remap
 pub enum vmm_core::control::ServeError
@@ -12,8 +13,14 @@ pub vmm_core::control::ServeError::Vmm(vmm_core::vmm::VmmError)
 pub struct vmm_core::control::ControlServer<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>>
 impl<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>> vmm_core::control::ControlServer<B>
 pub fn vmm_core::control::ControlServer<B>::export_portable_snapshot<W: std::io::Write>(&self, control_proto::types::SnapId, W) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
+pub fn vmm_core::control::ControlServer<B>::export_sparse_snapshot(&self, control_proto::types::SnapId, control_proto::types::SnapId) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshot, vmm_core::portable_snapshot::PortableSnapshotError>
 pub fn vmm_core::control::ControlServer<B>::handle(&mut self, &control_proto::types::Request) -> core::result::Result<core::result::Result<control_proto::types::Reply, control_proto::error::ControlError>, vmm_core::control::ServeError>
 pub fn vmm_core::control::ControlServer<B>::import_portable_snapshot<R: std::io::Read>(&mut self, R) -> core::result::Result<vmm_core::control::PortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
+pub fn vmm_core::control::ControlServer<B>::import_sparse_snapshot(&mut self, control_proto::types::SnapId, vmm_core::portable_snapshot::SparsePortableSnapshot) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
+pub fn vmm_core::control::ControlServer<B>::import_sparse_snapshot_parts(&mut self, control_proto::types::SnapId, &[(u64, alloc::sync::Arc<[u8; 4096]>)], &[u8]) -> core::result::Result<vmm_core::portable_snapshot::SparsePortableSnapshotReceipt, vmm_core::portable_snapshot::PortableSnapshotError>
+pub fn vmm_core::control::ControlServer<B>::in_place_fallbacks(&self) -> u64
+pub fn vmm_core::control::ControlServer<B>::last_restore_bytes_written(&self) -> u64
+pub fn vmm_core::control::ControlServer<B>::last_seal_dirty_gfns(&self) -> core::option::Option<&[u64]>
 pub fn vmm_core::control::ControlServer<B>::latest_snapshot(&self) -> core::option::Option<control_proto::types::SnapId>
 pub fn vmm_core::control::ControlServer<B>::new(vmm_core::vmm::Vmm<B>, vmm_core::control::VmmFactory<B>) -> Self
 pub fn vmm_core::control::ControlServer<B>::recorded_env(&self) -> &environment::recorded::EnvSpec
@@ -24,6 +31,7 @@ pub fn vmm_core::control::ControlServer<B>::set_max_chain_len(&mut self, u32)
 pub fn vmm_core::control::ControlServer<B>::set_remap_factory(&mut self, vmm_core::control::RemapVmmFactory<B>)
 pub fn vmm_core::control::ControlServer<B>::set_restore_mode(&mut self, vmm_core::control::RestoreMode)
 pub fn vmm_core::control::ControlServer<B>::snapshot_chain_len(&self, control_proto::types::SnapId) -> core::option::Option<u32>
+pub fn vmm_core::control::ControlServer<B>::snapshot_stats(&self, control_proto::types::SnapId) -> core::option::Option<snapshot_store::SnapStats>
 pub fn vmm_core::control::ControlServer<B>::snapshot_store_stats(&self) -> snapshot_store::StoreStats
 pub fn vmm_core::control::ControlServer<B>::take_session_virtual_time_trace(&mut self) -> core::option::Option<vmm_core::session_trace::SessionVirtualTimeTrace>
 pub fn vmm_core::control::ControlServer<B>::vmm(&self) -> core::option::Option<&vmm_core::vmm::Vmm<B>>
@@ -35,6 +43,7 @@ pub vmm_core::control::PortableSnapshotReceipt::state_hash: [u8; 32]
 pub vmm_core::control::PortableSnapshotReceipt::tainted: bool
 pub vmm_core::control::PortableSnapshotReceipt::trace_events: u64
 pub vmm_core::control::PortableSnapshotReceipt::trace_schedules: u64
+pub fn vmm_core::control::host_minor_faults() -> core::option::Option<u64>
 pub fn vmm_core::control::server_caps() -> control_proto::types::Caps
 pub type vmm_core::control::RemapVmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut(snapshot_store::mapping::Mapping) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
 pub type vmm_core::control::VmmFactory<B> = alloc::boxed::Box<dyn core::ops::function::FnMut() -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>>
@@ -150,6 +159,16 @@ pub vmm_core::portable_snapshot::PortableSnapshotError::Length::section: &'stati
 pub vmm_core::portable_snapshot::PortableSnapshotError::Malformed(&'static str)
 pub vmm_core::portable_snapshot::PortableSnapshotError::Snapshot(vmm_core::snapshot::SnapshotError)
 pub vmm_core::portable_snapshot::PortableSnapshotError::UnknownSnapshot(u64)
+pub struct vmm_core::portable_snapshot::SparsePortableSnapshot
+pub vmm_core::portable_snapshot::SparsePortableSnapshot::pages: alloc::vec::Vec<(u64, alloc::sync::Arc<[u8; 4096]>)>
+pub vmm_core::portable_snapshot::SparsePortableSnapshot::sidecar: alloc::vec::Vec<u8>
+pub struct vmm_core::portable_snapshot::SparsePortableSnapshotReceipt
+pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::at: control_proto::types::Moment
+pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::id: control_proto::types::SnapId
+pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::sdk_events: u64
+pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::tainted: bool
+pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::trace_events: u64
+pub vmm_core::portable_snapshot::SparsePortableSnapshotReceipt::trace_schedules: u64
 pub mod vmm_core::session_trace
 pub enum vmm_core::session_trace::ContinuationDivergence
 pub vmm_core::session_trace::ContinuationDivergence::BoundaryHashCount
@@ -226,19 +245,31 @@ pub vmm_core::snapshot::SnapshotError::MemorySize
 pub vmm_core::snapshot::SnapshotError::MemorySize::expected: usize
 pub vmm_core::snapshot::SnapshotError::MemorySize::got: usize
 pub vmm_core::snapshot::SnapshotError::MemorySize::pages: u64
+pub vmm_core::snapshot::SnapshotError::SparsePageDuplicate
+pub vmm_core::snapshot::SnapshotError::SparsePageDuplicate::gfn: u64
+pub vmm_core::snapshot::SnapshotError::SparsePageOutOfRange
+pub vmm_core::snapshot::SnapshotError::SparsePageOutOfRange::gfn: u64
+pub vmm_core::snapshot::SnapshotError::SparsePageOutOfRange::pages: u64
+pub vmm_core::snapshot::SnapshotError::SparsePagesNotSorted
+pub vmm_core::snapshot::SnapshotError::SparsePagesNotSorted::current: u64
+pub vmm_core::snapshot::SnapshotError::SparsePagesNotSorted::previous: u64
 pub vmm_core::snapshot::SnapshotError::Store(snapshot_store::StoreError)
 pub struct vmm_core::snapshot::SnapshotEngine
 impl vmm_core::snapshot::SnapshotEngine
+pub fn vmm_core::snapshot::SnapshotEngine::diff_pages(&self, core::option::Option<snapshot_store::SnapshotId>, snapshot_store::SnapshotId) -> core::result::Result<alloc::vec::Vec<(u64, [u8; 4096])>, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::gc(&mut self) -> u64
 pub fn vmm_core::snapshot::SnapshotEngine::materialize(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::mapping::Mapping, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::max_chain_len(&self) -> u32
 pub fn vmm_core::snapshot::SnapshotEngine::mem_pages(&self) -> u64
 pub fn vmm_core::snapshot::SnapshotEngine::new(usize) -> vmm_core::snapshot::SnapshotEngine
+pub fn vmm_core::snapshot::SnapshotEngine::read_page(&self, snapshot_store::SnapshotId, u64) -> core::result::Result<[u8; 4096], vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::release(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::retain(&mut self, snapshot_store::SnapshotId) -> core::result::Result<(), vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::set_max_chain_len(&mut self, u32)
 pub fn vmm_core::snapshot::SnapshotEngine::snapshot_base(&mut self, &[u8], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::snapshot_derive(&mut self, snapshot_store::SnapshotId, &[u8], core::option::Option<&[u64]>, &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
+pub fn vmm_core::snapshot::SnapshotEngine::snapshot_flatten(&mut self, snapshot_store::SnapshotId, &[u8], &[u64], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
+pub fn vmm_core::snapshot::SnapshotEngine::snapshot_sparse_derive(&mut self, snapshot_store::SnapshotId, &[(u64, [u8; 4096])], &[u8]) -> core::result::Result<snapshot_store::SnapshotId, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::stats(&self, snapshot_store::SnapshotId) -> core::result::Result<snapshot_store::SnapStats, vmm_core::snapshot::SnapshotError>
 pub fn vmm_core::snapshot::SnapshotEngine::store(&self) -> &snapshot_store::Store
 pub fn vmm_core::snapshot::SnapshotEngine::store_stats(&self) -> snapshot_store::StoreStats
@@ -359,9 +390,11 @@ pub fn vmm_core::vendor::x86::bringup::boot_linux<B: vmm_backend::backend::Backe
 pub fn vmm_core::vendor::x86::bringup::boot_linux_patched_with_dirty_log(&[u8], &[u8], usize, &str, u64, bool) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::boot_linux_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time(&[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_linux_stock_virtual_time_cancellable(&[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<vmm_backend::kvm_sys::KvmBackend>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::boot_patched_corpus(&[u8], usize, u64) -> core::result::Result<vmm_core::corpus::CorpusMachine<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::boot_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], usize, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::x86::bringup::compose_restore_target<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, snapshot_store::mapping::Mapping, bool) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::compose_stock_virtual_time_restore_target(snapshot_store::mapping::Mapping, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub mod vmm_core::vendor::x86::contract
 pub enum vmm_core::vendor::x86::contract::MsrDisposition
 pub vmm_core::vendor::x86::contract::MsrDisposition::AllowFixed(u64)
@@ -581,6 +614,7 @@ pub type vmm_core::vendor::Vendor::Snapshot: vm_state::records::SnapshotRecords
 pub fn vmm_core::vendor::Vendor::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &Self::VcpuState) -> Self::Snapshot
 pub fn vmm_core::vendor::Vendor::check_sealable_vcpu(&Self::VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vendor::Vendor::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
+pub fn vmm_core::vendor::Vendor::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_core::vendor::Vendor::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_core::vendor::Vendor::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_core::vendor::Vendor::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -594,6 +628,7 @@ pub fn vmm_core::vendor::Vendor::has_pending_guest_interrupt<B: vmm_backend::bac
 pub fn vmm_core::vendor::Vendor::hash_device_chunks(&Self::VcpuState, &Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_core::vendor::Vendor::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_core::vendor::Vendor::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::Vendor::is_doorbell_exit(&vmm_backend::exit::Exit<Self>) -> bool
 pub fn vmm_core::vendor::Vendor::mmio_holes() -> &'static [(u64, u64)]
 pub fn vmm_core::vendor::Vendor::new_devices() -> Self::Devices
 pub fn vmm_core::vendor::Vendor::next_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -614,6 +649,7 @@ pub type vmm_backend::arch::arm64::Arm64::Snapshot = vm_state::arm64::Arm64VmSta
 pub fn vmm_backend::arch::arm64::Arm64::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &vmm_backend::arch::arm64::state::Arm64VcpuState) -> vm_state::arm64::Arm64VmState
 pub fn vmm_backend::arch::arm64::Arm64::check_sealable_vcpu(&vmm_backend::arch::arm64::state::Arm64VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::arm64::Arm64::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
+pub fn vmm_backend::arch::arm64::Arm64::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_backend::arch::arm64::Arm64::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::arm64::Arm64::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::arm64::Arm64::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -627,6 +663,7 @@ pub fn vmm_backend::arch::arm64::Arm64::has_pending_guest_interrupt<B: vmm_backe
 pub fn vmm_backend::arch::arm64::Arm64::hash_device_chunks(&vmm_backend::arch::arm64::state::Arm64VcpuState, &Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_backend::arch::arm64::Arm64::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_backend::arch::arm64::Arm64::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::arm64::Arm64::is_doorbell_exit(&vmm_backend::exit::Exit<Self>) -> bool
 pub fn vmm_backend::arch::arm64::Arm64::mmio_holes() -> &'static [(u64, u64)]
 pub fn vmm_backend::arch::arm64::Arm64::new_devices() -> Self::Devices
 pub fn vmm_backend::arch::arm64::Arm64::next_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -647,6 +684,7 @@ pub type vmm_backend::arch::x86::X86::Snapshot = vm_state::VmState
 pub fn vmm_backend::arch::x86::X86::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &vmm_backend::arch::x86::state::VcpuState) -> vm_state::VmState
 pub fn vmm_backend::arch::x86::X86::check_sealable_vcpu(&vmm_backend::arch::x86::state::VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_backend::arch::x86::X86::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
+pub fn vmm_backend::arch::x86::X86::clockevent_trace_schedule<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<(u64, u32)>
 pub fn vmm_backend::arch::x86::X86::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::x86::X86::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::x86::X86::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -660,6 +698,7 @@ pub fn vmm_backend::arch::x86::X86::has_pending_guest_interrupt<B: vmm_backend::
 pub fn vmm_backend::arch::x86::X86::hash_device_chunks(&vmm_backend::arch::x86::state::VcpuState, &Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_backend::arch::x86::X86::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_backend::arch::x86::X86::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::x86::X86::is_doorbell_exit(&vmm_backend::exit::Exit<Self>) -> bool
 pub fn vmm_backend::arch::x86::X86::mmio_holes() -> &'static [(u64, u64)]
 pub fn vmm_backend::arch::x86::X86::new_devices() -> Self::Devices
 pub fn vmm_backend::arch::x86::X86::next_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -846,6 +885,8 @@ pub vmm_core::vmm::RunResult::sdk_stop: core::option::Option<vmm_core::vmm::SdkS
 pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
 pub struct vmm_core::vmm::SdkSnapshot
 pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend> where <B as vmm_backend::backend::Backend>::A: vmm_core::vendor::Vendor
+impl vmm_core::vmm::Vmm<vmm_backend::kvm_sys::KvmBackend>
+pub fn vmm_core::vmm::Vmm<vmm_backend::kvm_sys::KvmBackend>::kvm_cancellation_flag(&self) -> alloc::sync::Arc<core::sync::atomic::AtomicBool>
 impl<B: vmm_backend::backend::Backend<A = vmm_backend::arch::arm64::Arm64>> vmm_core::vmm::Vmm<B>
 pub fn vmm_core::vmm::Vmm<B>::arm64_architectural_state(&self) -> core::result::Result<vmm_core::vendor::arm64::Arm64ArchitecturalState, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::canonical_arm64_gic_state(&self) -> core::result::Result<core::option::Option<gicv3::state::GicState>, vmm_core::vmm::VmmError>
@@ -859,6 +900,7 @@ pub fn vmm_core::vmm::Vmm<B>::apply_host_fault(&mut self, &environment::host::Ho
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace(&mut self) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace_at(&mut self, u64, [u8; 32]) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::defer_virtual_time_checkpoint_hashes(&mut self) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::doorbell_exits(&self) -> u64
 pub fn vmm_core::vmm::Vmm<B>::drain_dirty_pages(&mut self) -> core::option::Option<alloc::vec::Vec<u64>>
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::enable_net(&mut self) -> &mut Self
@@ -918,6 +960,7 @@ pub fn vmm_core::vmm::Vmm<B>::vtime_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_snapshot_hashing(&mut self) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::wire_vtime(&mut self, vmm_core::vmm::VtimeWiring) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::with_backing(B, vmm_core::vmm::RamBacking) -> Self
+pub fn vmm_core::vmm::Vmm<B>::write_guest_pages(&mut self, &[(u64, [u8; 4096])]) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub struct vmm_core::vmm::VtimeSnapshot
 pub vmm_core::vmm::VtimeSnapshot::entropy: alloc::vec::Vec<u8>
 pub vmm_core::vmm::VtimeSnapshot::guest_clock_offset: u64
