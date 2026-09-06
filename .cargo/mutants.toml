@@ -27,7 +27,7 @@ timeout_multiplier = 3.0
 # The Kani proof harnesses (quality-f) live in their own `#[cfg(kani)]` files
 # (`consonance/vtime/src/clock_proofs.rs`, `consonance/lapic/src/device_proofs.rs`,
 # `consonance/vmm-backend/src/region_proofs.rs` (task 54, the memslot splitter),
-# `dissonance/environment/src/envcodec_proofs.rs` — each a `#[path]` child module of
+# `consonance/environment/src/envcodec_proofs.rs` — each a `#[path]` child module of
 # its parent). They are not compiled by the normal
 # (non-kani) test suite cargo-mutants uses as its oracle, so every mutant in them
 # — functions *and* module-level bound consts — is structurally unkillable here
@@ -56,20 +56,7 @@ exclude_globs = [
     # HVF or `/dev/kvm` paths. Keep their portable library seams mutation-gated,
     # but do not count unentered probe mains as surviving library mutants.
     "**/src/bin/*.rs",
-    # `dissonance/campaign-runner`'s box composition root (issue #69 coverage
-    # recovery): split out of `main.rs` into its own file so the portable CLI
-    # dispatch logic around it stays mutation-gated. Same rationale as the
-    # `kvm`/`patched_kvm.rs`/`boot_linux_selected` entries below: every
-    # function in it (`drive_to_marker`, `boot_server`, `run`, `run_campaign`)
-    # needs a real `/dev/kvm` + patched KVM + a built guest image, so the
-    # no-`--ignored` mutation oracle can never run it — every mutant here is
-    # structurally unkillable ("missed"), not a real gap. Verified instead by
-    # the hardware box gates; this mirrors the coverage job's
-    # `--ignore-filename-regex` exclusion of the
-    # same file.
-    "**/boxrun.rs",
-    # `consonance/acceptance-suite`'s real-VMM registry — the same category as
-    # `boxrun.rs` above, and it should have shipped with this entry. It is the
+    # `consonance/acceptance-suite`'s real-VMM registry. It is the
     # binary's Linux/x86-64 composition root: every function needs a real
     # `/dev/kvm`, the LOADED patched KVM modules, and built payloads, so the
     # no-`--ignored` mutation oracle can never execute a line of it and every

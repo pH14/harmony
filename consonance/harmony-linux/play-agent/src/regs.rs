@@ -5,7 +5,7 @@
 //! central registry; each agent owns its catalog — the `sdk-demo` precedent).
 //! They are kept **below 2^16** because the host-side `LinkSensor` packs
 //! `(reg, value)` into one 64-bit feature id as `(reg & 0xFFFF) << 48 |
-//! (value & 0xFFFF_FFFF_FFFF)` (`dissonance/link/src/sensor.rs::pack_state`) —
+//! (value & 0xFFFF_FFFF_FFFF)` (the host-side state-feature packer) —
 //! a register id past 16 bits would alias, and a value past 48 bits would
 //! truncate (the billboard GPA comfortably fits 48 bits on this guest's RAM
 //! sizes).

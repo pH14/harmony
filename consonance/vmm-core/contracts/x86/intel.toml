@@ -34,8 +34,8 @@ bus-hz = 100000000
 mxcsr-mask = "0x0000ffff"
 rtc-epoch = 1577836800
 pit-refresh-ns = 15085
-# VirtualTime per-exit-class durations in virtual nanoseconds
-# (docs/VM-EXIT-COUNT-VTIME.md). The execution tick must stay strictly below
+# VirtualTime per-exit-class durations in virtual nanoseconds. The execution
+# tick must stay strictly below
 # the clockevent period: a timer interrupt can itself cause a context switch,
 # and advancing by a full period there would immediately mature its successor.
 vtime-interrupt-controller-vns = 10000
@@ -3358,7 +3358,7 @@ hashed = false
 # is the protocol — a non-dword width, a value other than 1, or any IN fails closed
 # without advancing V-time. The tick's duration is the hashed
 # `vtime-execution-tick-vns` row above; the port itself carries no per-host input,
-# so it is not a §6-hashed row. See docs/VM-EXIT-COUNT-VTIME.md.
+# so it is not a §6-hashed row; it is part of the fixed protocol surface.
 name = "VIRTUAL_TIME_TICK_PORT"
 port = "0x0ca3"
 width = "dword"

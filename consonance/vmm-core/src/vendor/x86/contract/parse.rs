@@ -400,13 +400,10 @@ pub(crate) struct Contract {
     pub vtime_arch_control_vns: i64,
     pub vtime_execution_tick_vns: i64,
     pub vtime_clockevent_period_vns: i64,
-    /// The §6 registry hash, if/once the foreman has committed
-    /// `contract_hash = "<hex>"` to the `[contract]` table. `None` until then.
-    /// **Not** part of the canonical form (it is the hash *of* the body, so it
-    /// cannot be in the body) — the serializer never reads it. Read only by the
-    /// `#[ignore]`d registry-drift test until the field lands, so the un-ignore is
-    /// a one-line change; allow dead_code until then.
-    #[allow(dead_code)]
+    /// The optional §6 registry hash committed in the `[contract]` table. This
+    /// is test-only metadata: production uses the parsed tables to compute the
+    /// hash, while the registry-drift test compares that result with this field.
+    #[cfg(test)]
     pub contract_hash: Option<String>,
     pub cpuid: Vec<CpuidRow>,
     pub msr: Vec<MsrRow>,
@@ -762,6 +759,7 @@ impl Contract {
                 .get("vtime-clockevent-period-vns")
                 .map(TomlValue::as_int)
                 .unwrap_or_default(),
+            #[cfg(test)]
             contract_hash: c.get("contract_hash").map(|v| v.as_str().to_string()),
             cpuid,
             msr,

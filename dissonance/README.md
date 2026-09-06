@@ -13,8 +13,6 @@ search policy, and hardware-backed control remain independently testable.
 - `searcher/` contains the game-neutral archive, campaign coordinator,
   selection, mutation, worker scheduling, recording, and replay code. Its SMB
   and Nova modules supply target-specific observations and policies.
-- `fuzzer/` contains the current auxiliary fuzzing entry point and is kept
-  separate from the library crates.
 
 The generic search layer sees actions, observations, snapshots, ordered archive
 keys, and opaque policy values. Game addresses, setup sequences, progress

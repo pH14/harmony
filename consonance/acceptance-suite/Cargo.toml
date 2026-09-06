@@ -42,7 +42,7 @@ thiserror = "2"
 # The real-VMM registry's composition root (Linux/x86-64 only): the binary's
 # hardware cells boot a corpus payload on the patched backend through
 # `vmm_core::vendor::x86::bringup::boot_patched_corpus`, exactly as
-# `dissonance/campaign-runner/src/boxrun.rs` composes its box entry point. The
+# `src/realvmm.rs` composes its hardware-only entry point. The
 # LIBRARY stays substrate-free — this is a `[[bin]]`-only edge, gated on the
 # `real-vmm` feature so a portable build never pulls it in.
 #

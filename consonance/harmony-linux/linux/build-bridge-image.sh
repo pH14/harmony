@@ -37,7 +37,7 @@ require_tools cc make gzip cpio ldd
 
 BRIDGEROOT=$BUILD_ROOT/bridge-root
 
-# --- 1. static busybox (mirrors build-flow-image.sh) --------------------------
+# --- 1. static busybox --------------------------------------------------------
 echo "== bridge image: building static busybox ($BUSYBOX_VERSION)"
 extract_busybox
 mkdir -p "$BBOBJ" "$ART_DIR"

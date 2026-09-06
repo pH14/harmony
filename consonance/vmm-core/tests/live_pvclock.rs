@@ -450,18 +450,6 @@ fn seal_with_retry<B: Backend<A = X86>>(
     }
 }
 
-#[allow(dead_code)]
-fn seeded_env(seed: u64) -> Reproducer {
-    Reproducer {
-        blob_version: EnvSpec::BLOB_VERSION,
-        bytes: EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        }
-        .encode(),
-    }
-}
-
 /// One G1 arm: boot the Postgres workload page-on, run to the shared seal
 /// schedule, seal K times, hashing after each seal. Returns the hashes + the
 /// registered GPA (the registration itself must be deterministic too).

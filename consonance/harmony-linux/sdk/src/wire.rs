@@ -2,7 +2,7 @@
 //! The **SDK event wire convention** (task 73) — the byte-deterministic,
 //! versioned payload format every SDK emission rides on the hypercall Event
 //! service (`ServiceId::Event`, op 1). This module is the **canonical source of
-//! truth**; the host-side link decoder (`dissonance/link`) and the vmm-core
+//! truth**; the host-side decoder and the vmm-core
 //! run-loop stop-surfacing seam mirror these constants privately (conventions
 //! rule 2 — the guest/host protocol pattern, exactly as `hypercall-doorbell`
 //! mirrors `hypercall-proto`'s frame magic). A golden test on each side pins the
