@@ -342,7 +342,12 @@ mod tests {
 
     /// Reproduce the canonical `encode_billboard` byte-for-byte for comparison
     /// with the writer (this is a test-only reference encoder).
-    fn canonical_encode_billboard(frame: u32, joypad: u8, savestate: &[u8], work_ram: &[u8]) -> Vec<u8> {
+    fn canonical_encode_billboard(
+        frame: u32,
+        joypad: u8,
+        savestate: &[u8],
+        work_ram: &[u8],
+    ) -> Vec<u8> {
         let savestate_off = HEADER_LEN as u32;
         let savestate_len = savestate.len() as u32;
         let workram_off = savestate_off + savestate_len;
