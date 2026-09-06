@@ -2,12 +2,9 @@
 //! The billboard writer — the guest-side producer of task 86's always-on,
 //! per-frame core-state export.
 //!
-//! Local mirror of the billboard wire contract in
-//! `dissonance/film/src/billboard.rs` (conventions rule 2: `consonance/harmony-linux/` crates
-//! never depend on `dissonance/`; film defined the layout locally against the
-//! same spec, and the integrator reconciles the two onto this one byte layout).
-//! The golden test below pins this writer's bytes to film's canonical
-//! `encode_billboard` output so the two definitions cannot drift silently.
+//! Local implementation of the billboard wire contract. The golden test below
+//! pins this writer's bytes to the canonical `encode_billboard` output so the
+//! writer and reader cannot drift silently.
 //!
 //! ## The byte layout (v1) — all little-endian
 //!
@@ -34,13 +31,13 @@ use std::fmt;
 
 use crate::ram::WORK_RAM_LEN;
 
-/// The billboard magic: ASCII `HBBD` (mirrors `film::billboard::BILLBOARD_MAGIC`).
+/// The billboard magic: ASCII `HBBD`.
 pub const BILLBOARD_MAGIC: [u8; 4] = *b"HBBD";
 
-/// The layout version this writer stamps (mirrors film's reader pin).
+/// The layout version this writer stamps.
 pub const BILLBOARD_LAYOUT_VERSION: u16 = 1;
 
-/// The fixed header size in bytes (mirrors `film::billboard::HEADER_LEN`).
+/// The fixed header size in bytes.
 pub const HEADER_LEN: usize = 32;
 
 /// The fixed region layout for one run: header, then the savestate, then the
@@ -343,10 +340,14 @@ pub type BillboardLayoutV2 = NovaBillboardLayout;
 mod tests {
     use super::*;
 
-    /// Reproduce film's canonical `encode_billboard` byte-for-byte (a test-only
-    /// mirror of `dissonance/film/src/billboard.rs::encode_billboard`, quoted
-    /// there as "the byte form `BillboardHeader::parse` round-trips").
-    fn film_encode_billboard(frame: u32, joypad: u8, savestate: &[u8], work_ram: &[u8]) -> Vec<u8> {
+    /// Reproduce the canonical `encode_billboard` byte-for-byte for comparison
+    /// with the writer (this is a test-only reference encoder).
+    fn canonical_encode_billboard(
+        frame: u32,
+        joypad: u8,
+        savestate: &[u8],
+        work_ram: &[u8],
+    ) -> Vec<u8> {
         let savestate_off = HEADER_LEN as u32;
         let savestate_len = savestate.len() as u32;
         let workram_off = savestate_off + savestate_len;
@@ -367,13 +368,13 @@ mod tests {
         buf
     }
 
-    /// The writer's bytes must equal film's canonical encoder byte-for-byte —
+    /// The writer's bytes must equal the canonical encoder byte-for-byte —
     /// but with the full 2 KiB work RAM (this producer's fixed region size).
     #[test]
-    fn writer_matches_films_canonical_encoding() {
+    fn writer_matches_canonical_encoding() {
         let savestate: Vec<u8> = (0..40u8).map(|b| b.wrapping_mul(7)).collect();
         let work_ram: Vec<u8> = (0..WORK_RAM_LEN as u32).map(|b| (b % 251) as u8).collect();
-        let expected = film_encode_billboard(7, 0b0000_0011, &savestate, &work_ram);
+        let expected = canonical_encode_billboard(7, 0b0000_0011, &savestate, &work_ram);
 
         let layout = BillboardLayout::new(savestate.len()).unwrap();
         let mut buf = vec![0u8; layout.total_len()];

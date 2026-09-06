@@ -66,8 +66,8 @@
 //! fault against (the "fsync lied → recover wrong" class rides the deferred host-side
 //! RAM-disk model, **D1**). The crash-timing fault the spec also lists ("kill
 //! `postgres` at V-time T, restart so WAL recovery runs") needs either a cooperating
-//! guest or the host-side fault seam (`dissonance/environment` — a *separate*, live
-//! frontier), so it is **out of scope here** and called out in `README.md`.
+//! guest or the host-side fault seam (a *separate*, live environment frontier),
+//! so it is **out of scope here** and called out in `README.md`.
 //! This demo drives the **entropy-fork** knob the public branch API exposes
 //! (`reseed_entropy`); what that surfaces into guest-observable state on this
 //! substrate is **measured and reported**, never asserted beyond what the substrate

@@ -52,8 +52,7 @@ allow = [
   "Unicode-3.0",
   "BSD-2-Clause",
   "BSD-3-Clause",
-  # Transitive build/runtime dependencies of the imported LibAFL workspace.
-  # Both are permissive and GPL/AGPL-compatible.
+  # Permissive transitive build/runtime dependencies used by the guest tools.
   "Zlib",
   "BSL-1.0",
   # option-ext through tetanes-core -> dirs. MPL-2.0 permits distribution of

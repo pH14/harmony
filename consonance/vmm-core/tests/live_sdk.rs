@@ -319,7 +319,7 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
 
 /// GATE C — never-fired: `commit_seen` fires, `rollback_seen` never; the fired one
 /// appears in the event stream. (The `link::Catalog` fold that turns this into the
-/// never-fired report is proven portably in `dissonance/link`.)
+/// never-fired report is proven portably in the host-side event-catalog fold.)
 #[test]
 #[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host"]
 fn box_gate_c_never_fired_detection() {

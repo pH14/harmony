@@ -39,9 +39,8 @@
 use std::time::Duration;
 
 use control_proto::{
-    HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
+    HashScope, Moment, Reply, Request, SnapId, StopConditions, StopMask, StopReason,
 };
-use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, server_caps};
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
@@ -447,18 +446,6 @@ fn seal_with_retry<B: Backend<A = X86>>(
             }
             Err(e) => panic!("snapshot answered a ControlError: {e:?}"),
         }
-    }
-}
-
-#[allow(dead_code)]
-fn seeded_env(seed: u64) -> Reproducer {
-    Reproducer {
-        blob_version: EnvSpec::BLOB_VERSION,
-        bytes: EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        }
-        .encode(),
     }
 }
 

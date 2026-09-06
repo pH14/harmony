@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // order-super — benchmark bug (ii): an ORDERING / INTERRUPT-TIMING bug (task 69).
 // The second planted bug of the seeded-bug benchmark, beside task 60's
-// campaign-super.c (bug i). See dissonance/benchmark (BugClass::OrderingInterrupt).
+// campaign-super.c (bug i). See the benchmark manifest (BugClass::OrderingInterrupt).
 //
 // The bug in one sentence: a supervised process maintains a two-word invariant
 // `mirror == ~primary` that it updates NON-ATOMICALLY inside a small, fixed
@@ -38,7 +38,7 @@
 // move except when the campaign injects one (verified by the nominal-never-fires
 // smoke).
 //
-// Trigger (tunable — matches dissonance/benchmark manifest BugId(2)):
+// Trigger (tunable — matches the benchmark manifest BugId(2)):
 //   * fault kind:  InjectInterrupt { vector = INTERRUPT_VECTOR } (any vector the
 //                  guest kernel SERVICES + counts in /proc/interrupts; the box
 //                  confirmed every mint vector {0x81^0..15} is counted).

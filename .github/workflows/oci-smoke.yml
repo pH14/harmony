@@ -83,7 +83,7 @@ jobs:
       # The postgres image copies the runtime shared-library closure from the
       # build host, and the pinned build environment is Debian trixie (the
       # trixie debs need its libicu). Build it in a trixie container as
-      # docs/BUILDING.md prescribes for non-box hosts.
+      # consonance/harmony-linux/README.md describes the guest build prerequisites for non-box hosts.
       - name: Build postgres image (trixie container)
         if: steps.guest.outputs.cache-hit != 'true'
         run: |

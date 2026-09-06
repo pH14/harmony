@@ -128,8 +128,8 @@ install -m 0755 "$K3S_BIN" "$K3SROOT/usr/local/bin/k3s"
 for t in kubectl crictl ctr; do ln -sf k3s "$K3SROOT/usr/local/bin/$t"; done
 
 # The task-61 in-guest flow agent (optional). Built as a static musl binary by
-# `consonance/harmony-linux/flow-agent/build-static.sh`; bake it in when its path is passed via
-# FLOW_AGENT_BIN. `k3s-init.sh` starts it before the client pod (see there). The
+# a caller-supplied static musl `flow-agent` binary; bake it in when its path is
+# passed via FLOW_AGENT_BIN. `k3s-init.sh` starts it before the client pod (see there). The
 # nominal path installs no rules; the FAULT path (gate B) additionally needs `nft`
 # + `tc` in the image — bake those alongside when driving a NetLatency/drop policy.
 if [ -n "${FLOW_AGENT_BIN:-}" ]; then

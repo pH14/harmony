@@ -12,15 +12,14 @@
 //! the frame count (determinism rule 4).
 //!
 //! The joypad byte's bit layout is the NES hardware controller shift order —
-//! the exact layout `film`'s `CoreReplay` replays (`dissonance/film/src/
-//! core_replay.rs::joypad_pressed`, a local mirror per conventions rule 2):
+//! the exact layout expected by the replay decoder:
 //! bit 0 = A, 1 = B, 2 = Select, 3 = Start, 4 = Up, 5 = Down, 6 = Left,
 //! 7 = Right.
 
 use std::fmt;
 
 /// NES joypad button masks in hardware controller shift order — the billboard's
-/// joypad-byte contract (mirrors `film::core_replay::joypad_pressed`).
+/// joypad-byte contract used by the replay decoder.
 pub mod joypad {
     /// A (jump).
     pub const A: u8 = 1 << 0;

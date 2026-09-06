@@ -55,7 +55,7 @@ jobs:
       # baselines are per-toolchain — select the runner-toolchain gcc 13
       # lists), and the postgres image builds in a Debian trixie container,
       # the pinned build environment its deb shared-library closure needs
-      # (docs/BUILDING.md).
+      # (consonance/harmony-linux/README.md).
       - if: matrix.isa == 'x86_64'
         run: |
           HARMONY_RDTSC_ALLOWLIST="$GITHUB_WORKSPACE/consonance/harmony-linux/linux/rdtsc-allowlist-gha.txt" \

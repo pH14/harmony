@@ -35,9 +35,6 @@ pub(crate) mod reg {
     /// `UARTICR` — interrupt clear (write-1-to-clear; no latched state in the
     /// skeleton, so a write is accepted and dropped).
     pub(crate) const ICR: u64 = 0x044;
-    /// One past the last modeled byte (the PL011 occupies a 4 KiB page; the
-    /// PrimeCell ID registers at `0xFE0..0x1000` read as absent).
-    pub(crate) const SIZE: u64 = 0x1000;
 }
 
 /// `UARTFR.TXFE` — transmit FIFO empty (the model transmits instantly).
@@ -66,14 +63,6 @@ impl Pl011 {
     /// A fresh (reset) PL011.
     pub(crate) fn new() -> Self {
         Self::default()
-    }
-
-    /// `true` iff `offset` lies inside the PL011's 4 KiB register page. (The
-    /// board-level frame check is `dispatch`'s `in_frame`; this stays for
-    /// symmetry with the x86 `Uart8250::owns` and any direct caller.)
-    #[allow(dead_code)]
-    pub(crate) fn owns(offset: u64) -> bool {
-        offset < reg::SIZE
     }
 
     /// Service a register load at `offset` (page-relative). Total: an
@@ -193,8 +182,6 @@ mod tests {
         assert_eq!(u.read(0xFE0), 0);
         assert_eq!(u.read(reg::RIS), 0);
         assert_eq!(u.read(reg::MIS), 0);
-        assert!(Pl011::owns(0xFFF));
-        assert!(!Pl011::owns(0x1000));
     }
 
     #[test]

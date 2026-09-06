@@ -6,7 +6,7 @@
 //! program, this maps it to the item's **built payload**, booted on the patched
 //! backend through `vmm_core::vendor::x86::bringup::boot_patched_corpus`. It is
 //! the one place this binary names a concrete `(Backend impl, Arch vendor)`
-//! pair, mirroring `dissonance/campaign-runner/src/boxrun.rs`.
+//! pair for the hardware-only path.
 //!
 //! Everything above stays substrate-free: `acceptance_suite::run_item` is
 //! generic over [`unison::SubjectFactory`] and never learns which registry made
@@ -17,7 +17,7 @@
 //! `boot_patched_corpus` names the x86 vendor's patched backend. Every function
 //! here needs a real `/dev/kvm`, the loaded patched KVM modules, and built
 //! payloads, so no portable test can drive it; its evidence is the hardware lane
-//! (`scripts/box-gates.sh`), exactly like `boxrun.rs`.
+//! (`scripts/box-gates.sh`).
 
 use std::path::PathBuf;
 

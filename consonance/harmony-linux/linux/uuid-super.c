@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // uuid-super — benchmark bug (iii): a RARE-ENTROPY-VALUE bug (task 69). The third
 // planted bug of the seeded-bug benchmark, beside campaign-super.c (bug i) and
-// order-super.c (bug ii). See dissonance/benchmark (BugClass::RareEntropy).
+// order-super.c (bug ii). See the benchmark manifest (BugClass::RareEntropy).
 //
 // The bug in one sentence: the process draws a value from the guest's seeded
 // entropy source (the deterministic `gen_random_uuid()`-style draw the VMM
@@ -10,7 +10,7 @@
 // it, crashing. Nominally the prefix does not match (probability 2^-PREFIX_BITS),
 // so the poisoning branch is dead code; the campaign must find the rare seed.
 //
-// Trigger (tunable — matches dissonance/benchmark manifest BugId(3)):
+// Trigger (tunable — matches the benchmark manifest BugId(3)):
 //   * the seed-derived draw's top PREFIX_BITS bits == TARGET_PREFIX's top bits.
 //   * PREFIX_BITS dials the expected time-to-find: 8 bits ⇒ ~256 branches.
 //
@@ -18,7 +18,7 @@
 // hypervisor intercepts and answers with the first word of
 // `SeededEntropy::new(EnvSpec.seed)` (the reference xorshift64* stream in
 // consonance/hypercall-proto) — NOT host randomness. That word IS the draw (no
-// extra hashing); dissonance/benchmark's `entropy_draw` replicates the identical
+// extra hashing); the benchmark's `entropy_draw` replicates the identical
 // function, so the guest and the offline model agree bit-for-bit on which seeds
 // fire. A fixed branch draws identically every replay (the crash reproduces N/N)
 // while different branches (different EnvSpec seeds) draw different values, which

@@ -2569,8 +2569,8 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 #[cfg(test)]
 mod tests {
     //! Direct-dispatch unit tests over a scripted `MockBackend` — no socket.
-    //! The socket loopback + adapter integration lives in
-    //! `dissonance/campaign-runner` (which composes this server with the explorer's
+    //! The socket loopback + adapter integration lives in the acceptance suite
+    //! (which composes this server with the explorer's
     //! socket `Machine`).
 
     use control_proto::{
@@ -4993,8 +4993,8 @@ mod tests {
         // hash → EOF. The server stays on this thread (a `Vmm` is not `Send` —
         // its work source is a thread-affine counter on the box); the client
         // runs on a spawned thread, exactly the composition the demo bin uses.
-        // The full loopback (socket Machine end-to-end) lives in
-        // dissonance/campaign-runner.
+        // The full loopback (socket Machine end-to-end) lives in the acceptance
+        // suite.
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
         let (mut client, server_end) = UnixStream::pair().unwrap();

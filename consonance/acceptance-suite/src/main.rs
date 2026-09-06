@@ -20,8 +20,7 @@
 //! * any hardware host — the **real-VMM** registry ([`realvmm`]), a
 //!   Linux/x86-64 composition root behind the `real-vmm` feature that boots the
 //!   item's built payload on the patched backend. It is the one place a concrete
-//!   `(Backend impl, Arch vendor)` pair is named, mirroring
-//!   `dissonance/campaign-runner/src/boxrun.rs`.
+//!   `(Backend impl, Arch vendor)` pair is named for the hardware-only path.
 //!
 //! The library above both stays substrate-free: `run_item` is generic over
 //! [`unison::SubjectFactory`] and does not know which registry produced it.

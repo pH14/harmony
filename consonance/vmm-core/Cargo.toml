@@ -26,16 +26,9 @@ vmm-backend = { path = "../vmm-backend", version = "0.1.0" }
 # alongside `path` to satisfy `cargo deny`'s wildcard ban (as for vmm-backend).
 vtime = { path = "../vtime", version = "0.1.0" }
 # `host` provides `SeededEntropy`/`Service` (the entropy stream RDRAND/RDSEED
-# draw from). `guest` is enabled too **only** so the dependency builds clean
-# under vmm-core's `clippy -D warnings`: with host-only, hypercall-proto's
-# `core::fmt` import and `Status::from_u16` are dead (they are exercised only by
-# the guest-side `Client`), which `-D warnings` would reject in this workspace
-# member. The guest code itself is unused here (host-side crate). [question]: a
-# host-only `feature = ["host"]` would be cleaner once hypercall-proto gates
-# those two items under `guest` — a one-line sibling fix, out of task-21 scope.
+# draw from). The guest-side client is not part of this host-only crate.
 hypercall-proto = { path = "../hypercall-proto", version = "0.1.0", features = [
     "host",
-    "guest",
 ] }
 thiserror = "2"
 # State + contract hashing (rule-5 whitelist). 32-byte SHA-256 matches

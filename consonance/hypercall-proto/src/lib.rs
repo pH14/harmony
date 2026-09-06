@@ -44,7 +44,7 @@
 //! (the guest decodes it against its own catalog — a `Nominal` deliver-normally, or
 //! a `NetLatency`/`NetLoss`/`NetThrottle`/`NetReset` policy it enforces on the
 //! intra-guest CNI). This crate is `consonance` substrate and deliberately does
-//! **not** depend on the `dissonance/environment` catalog: it frames the request
+//! **not** depend on the environment catalog: it frames the request
 //! fields and ferries the answer bytes verbatim, bounding their length but never
 //! interpreting them. The production host ([`consonance/vmm-core`]) decodes the
 //! request into an `environment::DecisionPoint::NetFlow`, resolves it through its
