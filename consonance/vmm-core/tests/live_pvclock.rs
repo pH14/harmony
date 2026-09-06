@@ -39,9 +39,8 @@
 use std::time::Duration;
 
 use control_proto::{
-    HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
+    HashScope, Moment, Reply, Request, SnapId, StopConditions, StopMask, StopReason,
 };
-use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, server_caps};
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
