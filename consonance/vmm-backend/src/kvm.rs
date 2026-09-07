@@ -392,6 +392,16 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit<X86>, Pending)>>
     }
 }
 
+/// Whether a decoded KVM exit leaves a completion in the shared `kvm_run`
+/// buffer after it is returned to the caller. Read-style exits carry a
+/// [`Pending`] value until `complete_*` writes their result; write-style PIO and
+/// MMIO exits carry no value, but KVM still retains their fast-path callback
+/// until the next `KVM_RUN`. The box-only loop uses this pure predicate so the
+/// callback-retirement invariant is unit-tested without `/dev/kvm`.
+pub(crate) fn decoded_exit_stages_completion(exit: &Exit<X86>, pending: Pending) -> bool {
+    exit.stages_completion() && pending == Pending::None
+}
+
 /// Map a `KVM_EXIT_IO`. OUT carries the value out (read from the PIO data buffer
 /// via the `run_buf` seam); IN arms `Pending::IoIn` for completion.
 ///
@@ -665,6 +675,26 @@ pub(crate) fn saved_msrs(
         .take(got)
         .map(|e| (e.index, e.data))
         .collect())
+}
+
+/// Restore special registers while invalidating translations from displaced
+/// guest page tables. KVM's SET_SREGS2 requests an MMU reset and guest TLB flush
+/// only when paging control registers change. Host-written RAM can change the
+/// page tables while all those registers retain their values.
+///
+/// Write a transient CR0.WP value followed by the exact snapshot. At least one
+/// write changes CR0, even when the live value is unknown. WP does not change
+/// execution mode; no guest instruction may run between these two writes.
+/// A failed write aborts restoration so the caller discards the partial VM.
+pub(crate) fn restore_sregs2_with_flush<F>(state: &VcpuSregs, mut set: F) -> Result<()>
+where
+    F: FnMut(&kvm_sregs2) -> Result<()>,
+{
+    let target = to_kvm_sregs2(state);
+    let mut transient = target;
+    transient.cr0 ^= 1 << 16; // Architectural CR0.WP.
+    set(&transient)?;
+    set(&target)
 }
 
 /// Validate a snapshot's cheap shape against this backend's config *before* any

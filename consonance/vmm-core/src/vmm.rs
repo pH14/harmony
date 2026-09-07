@@ -745,8 +745,8 @@ where
     /// RDTSCP/IO/MSR/CPUID completions are **idempotent on replay** (positional
     /// work / re-queried device-or-contract value), so they do not set this.
     pub(crate) rng_completion_staged: bool,
-    /// `true` when the **last serviced exit staged *any* backend completion** (a
-    /// read-style IO/MMIO load, an `Rdmsr`/`Wrmsr`, a `Cpuid`, or a determinism
+    /// `true` when the **last serviced exit staged *any* backend completion** (an
+    /// IO/MMIO read or write, an `Rdmsr`/`Wrmsr`, a `Cpuid`, or a determinism
     /// `Rdtsc`/`Rdtscp`/`Rdrand`/`Rdseed`) whose register-write/RIP-advance is only
     /// committed on the **next** `KVM_RUN`. Superset of [`Self::rng_completion_staged`]
     /// (which is the *non-idempotent* RNG subset). A snapshot may be *saved* at such a
@@ -8735,6 +8735,33 @@ mod tests {
         assert!(!tgt.completion_staged);
         assert!(!tgt.rng_completion_staged);
         assert!(!tgt.sdk_snapshot_reentry_required);
+        tgt.restore_vm_state(&snap).unwrap();
+    }
+
+    #[test]
+    fn output_completion_must_be_retired_before_restoring_registers() {
+        let src = full_vmm(VcpuState::default(), vec![], 500, 1);
+        let snap = src.save_vm_state().unwrap();
+        let mut tgt = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(b'x' as u32),
+            })],
+            10,
+            1,
+        );
+        tgt.step().unwrap();
+        // KVM retains an OUT completion even though servicing it requires no
+        // response bytes. A restore must retire that callback before installing
+        // a RIP it could otherwise advance on the next entry.
+        assert!(tgt.completion_staged);
+        assert!(matches!(
+            tgt.restore_vm_state(&snap),
+            Err(VmmError::ContractViolation(_))
+        ));
+        tgt.retire_pending_completion().unwrap();
         tgt.restore_vm_state(&snap).unwrap();
     }
 
