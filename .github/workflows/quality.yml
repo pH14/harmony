@@ -19,7 +19,9 @@ name: quality
 # follow-up (see the migration PR description); until then the box's role is unchanged.
 #
 # Cargo tools (cargo-nextest, cargo-deny, cargo-llvm-cov, cargo-mutants) are installed
-# per-job with taiki-e/install-action (prebuilt binaries, seconds). The shared-temp
+# per-job with taiki-e/install-action (prebuilt binaries, seconds). The mutation
+# runner is pinned to cargo-mutants 27.1.0 so its shard and output semantics stay
+# consistent across hosted runners. The shared-temp
 # race that once flaked install-action — and forced pre-provisioning on the box — was
 # a property of CONCURRENT jobs sharing one self-hosted /tmp; on GHA every job gets a
 # fresh, isolated runner, so it cannot recur. Swatinem/rust-cache caches the cargo
@@ -258,8 +260,9 @@ jobs:
   # main, where there is no diff to compare against.
   #
   # Sharded 16-way: large consolidation PRs can contain thousands of mutants;
-  # each shard tests a deterministic sixteenth of the list so every mutant is
-  # retained while each hosted-runner leg stays inside the timeout.
+  # each shard tests a deterministic round-robin slice of the list so expensive
+  # mutants are distributed across hosted-runner legs while every mutant is
+  # retained. The shard union is the same as the unsharded list.
   #
   # Runner survivability (hm-y53x). The ~59-min kills were diagnosed as genuine
   # hosted-runner preemption: the killed steps logged "The runner has received a
@@ -313,19 +316,22 @@ jobs:
       - name: Install CI cargo tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,cargo-nextest
+          tool: cargo-mutants@27.1.0,cargo-nextest
       - name: Compute PR diff
         run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
       - name: cargo mutants --in-diff
         # Infra-only retry; exit-code decision table is in the mutants-job header
         # comment. Exit 2/3 (real surviving/timed-out mutants) is never retried.
+        env:
+          CARGO_INCREMENTAL: "1"
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/mutants/root"
           for attempt in 1 2; do
             # Stop the oracle as soon as one test kills a mutant. Besides
             # avoiding wasted runner time, this ensures a later test that
             # loops only because the mutant already violated a prerequisite
             # cannot turn an immediate assertion failure into TIMEOUT.
-            set +e; cargo mutants --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 --cargo-test-arg=--profile --cargo-test-arg=mutants; rc=$?; set -e
+            set +e; cargo mutants --profile mutants --no-shuffle --sharding round-robin --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 --output "$GITHUB_WORKSPACE/mutants/root" --cargo-test-arg=--profile --cargo-test-arg=mutants; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
@@ -339,12 +345,19 @@ jobs:
       # diffed lines on their own manifest, mirroring the fmt/clippy/test/public-api
       # split the `gates` job already applies to consonance/harmony-linux/sdk. `--in-diff` filters to
       # the PR's changed consonance/harmony-linux/sdk lines. The SDK has no local
-      # nextest mutant profile, so cargo-mutants drives its default cargo test.
+      # nextest mutant profile, so cargo-mutants drives its default cargo test;
+      # the standalone manifest still selects the dedicated Cargo profile below.
+      # `--in-place` keeps its sibling path dependencies visible: the hosted
+      # checkout is disposable, while cargo-mutants' isolated copy of this
+      # out-of-workspace manifest is too small to resolve those paths.
       - name: cargo mutants --in-diff (consonance/harmony-linux/sdk, out-of-workspace manifest)
         # Infra-only retry (same contract as the root step above).
+        env:
+          CARGO_INCREMENTAL: "1"
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/mutants/sdk"
           for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --no-shuffle --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180; rc=$?; set -e
+            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --in-place --profile mutants --no-shuffle --sharding round-robin --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 --output "$GITHUB_WORKSPACE/mutants/sdk"; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
@@ -352,6 +365,20 @@ jobs:
             echo "::warning::cargo-mutants infrastructure failure (exit $rc), attempt $attempt/2 — retrying on this runner"; sleep 15
           done
           echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
+      - name: Upload root mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-root-${{ matrix.shard }}
+          path: ${{ github.workspace }}/mutants/root/mutants.out
+          if-no-files-found: warn
+      - name: Upload SDK mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-sdk-${{ matrix.shard }}
+          path: ${{ github.workspace }}/mutants/sdk/mutants.out
+          if-no-files-found: warn
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in

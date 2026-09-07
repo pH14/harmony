@@ -27,3 +27,11 @@ all = { level = "deny", priority = -1 }
 
 [profile.release]
 debug = true
+
+# Mutation builds inherit the test profile's assertions and panic behavior while
+# omitting debug information. Incremental compilation is enabled by the CI
+# mutation steps because each mutant is a small source change built in a
+# separate scratch tree.
+[profile.mutants]
+inherits = "test"
+debug = 0

@@ -18,6 +18,12 @@ description = "The harmony guest SDK (task 73): no_std assertions/state/buggify/
 # harmony-linux tree or the repo root workspace.
 [workspace]
 
+# Keep the standalone SDK mutation builds aligned with the root workspace. The
+# CI mutation step enables incremental compilation and does not need debug info.
+[profile.mutants]
+inherits = "test"
+debug = 0
+
 # The guest-side hypercall client + Transport trait (no_std, guest feature only).
 # Explicit `version` alongside `path` for `cargo deny`'s wildcard ban, mirroring
 # `hypercall-doorbell`.
