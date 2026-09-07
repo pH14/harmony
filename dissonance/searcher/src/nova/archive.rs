@@ -143,7 +143,7 @@ pub struct NovaArchiveGroup {
 /// position first, because the splice donor gate then stops preferring
 /// donors that reached a cell without taking damage. Keep the order until a
 /// paired measurement says otherwise.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
 pub struct NovaArchiveKey {
     /// Durable completed-level count.
     pub cleared: u8,
@@ -166,10 +166,52 @@ pub struct NovaArchiveKey {
     /// Player vertical 16-pixel bucket.
     pub y: u16,
     /// Digest bits of work RAM, the key's [`ArchiveKey::variant`]. No group
-    /// reads it; a replacement policy that splits barren slots does. It sorts
-    /// last so it never outranks progress.
+    /// reads it, it takes no part in the key's identity or ordering, and only
+    /// a replacement policy that splits barren slots reads it.
     #[serde(default)]
     pub state_fingerprint: u8,
+}
+
+impl NovaArchiveKey {
+    /// Every field but the variant, in the measured order. The variant is
+    /// carried, recorded, and read by a splitting replacement policy, but it
+    /// is not part of the key's identity: two arrivals that differ only in
+    /// it are the same key, exactly as they were before it existed, so a
+    /// run that never splits a slot searches as it always did.
+    fn identity(self) -> (u8, u8, u8, bool, u8, u8, u8, u8, u16, u16) {
+        (
+            self.cleared,
+            self.collectibles,
+            self.available,
+            self.has_ability,
+            self.health,
+            self.chips,
+            self.started_level,
+            self.level,
+            self.x,
+            self.y,
+        )
+    }
+}
+
+impl PartialEq for NovaArchiveKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
+impl Eq for NovaArchiveKey {}
+
+impl PartialOrd for NovaArchiveKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NovaArchiveKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.identity().cmp(&other.identity())
+    }
 }
 
 impl ArchiveKey for NovaArchiveKey {
