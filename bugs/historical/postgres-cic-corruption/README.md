@@ -101,6 +101,12 @@ than a churn cycle, and a hand-written overlap of churn, build and check never
 tripped the oracle. Autovacuum is off, which makes hook 4 the only other
 pruning event and puts it under the searcher's control.
 
+Run the hooks by hand in a plain container — start the churn, start the build
+while it runs, then check — and the 14.3 image reports rows without index
+entries while the 14.4 image stays silent. That says the image and its oracle
+are wired correctly; it says nothing about whether a Consonance search reaches
+the same overlap, which is what CI measures.
+
 The concurrency the bug needs comes from the fault agent spawning hooks without
 waiting, so overlapping hook 1 and hook 2 windows are what a campaign must
 produce. Knobs: `faultlab.churn_rows` (default 20, spread evenly over the

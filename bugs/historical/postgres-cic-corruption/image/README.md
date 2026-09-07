@@ -47,6 +47,29 @@ rootfs is unpacked into guest RAM on every boot, so the tree keeps only
 `postgres`, `psql`, `pg_isready`, `pg_amcheck` and `pg_ctl`, with binaries
 stripped and headers, docs and LLVM bitcode dropped.
 
+Each arm is about 173 MB: a 67 MB cluster, a 16 MB PostgreSQL tree and the
+Debian base.
+
+## Check the arms without Harmony
+
+Start the churn, start the build while it runs, then check. Hook 3 prints
+`@always 2 0` on the 14.3 image and `@always 2 1` on 14.4.
+
+```sh
+docker run --rm --privileged harmony-pgcic:14.3 /bin/sh -c '
+    /opt/harmony/setup.sh
+    /opt/harmony/node.sh >/run/node.out 2>&1 &
+    until /opt/harmony/ready.sh >/dev/null 2>&1; do sleep 1; done
+    /opt/harmony/hooks.sh 1 & churn=$!
+    /opt/harmony/hooks.sh 2
+    wait $churn
+    /opt/harmony/hooks.sh 4
+    /opt/harmony/hooks.sh 3'
+```
+
+`--privileged` is what lets the setup script mount its tmpfs; the guest gives
+the same privileges without it.
+
 ## The bundle
 
 `/etc/harmony/bundle` names the scripts the fault agent runs:
