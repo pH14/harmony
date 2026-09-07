@@ -63,8 +63,14 @@ negative examples. In particular:
   a button only for documented semantics, not because it slows the pilot.
 - Distinguish world position, screen position, camera scroll, and transitions.
   A wrapped coordinate is not proof of a fall or death.
+- Validate the phase in which each RAM label has meaning. Menus and ending
+  screens can reuse gameplay memory. Exclude invalid fields from milestones
+  and preferences; do not turn reused bytes into resources or clamp them into
+  plausible values. Terminal flags may remain valid after gameplay fields become invalid.
 - Observe events inside held actions. Preserve a reproducible endpoint or an
   exact shortened tape for a claimed event; a watermark alone is not a witness.
+  The snapshot and observation must describe the same executed frame. Filtering
+  observations after a bulk run does not rewind the emulator to that event.
 - Distinguish death, level clear, full ending, and infrastructure failure.
   An unknown ending means progress-only qualification, not completion.
 

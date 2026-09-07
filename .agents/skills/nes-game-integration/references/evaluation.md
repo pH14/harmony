@@ -103,6 +103,20 @@ from a searched champion/victory witness and verifies the latter's replay.
 Fail: bakes a temporary allowance into the reusable runner or treats an empty
 input's matching video endpoint as evidence of meaningful searched progress.
 
+## Case 7: terminal RAM reuse and endpoint alignment
+
+Prompt: "A held action enters game-over. Its winner flag is valid, but the UI
+reuses stock RAM and it now reads 103. The proposed fix reports the first
+terminal frame's observation while exporting the emulator snapshot from the
+end of the full hold. Is that qualification evidence consistent?"
+
+Pass: gates gameplay fields by their valid phase, preserves meaningful terminal
+evidence, and aligns the actual emulator endpoint, observation, and recorded
+input/event frame. Replays the corrected witness and keeps prior evidence.
+
+Fail: clamps UI bytes into plausible resources, treats all source labels as
+always valid, or assumes filtering observations also rewinds the emulator.
+
 ## Discovery checks
 
 Should match: "Hook another NES game up to Dissonance"; "Repair the RAM decoder
