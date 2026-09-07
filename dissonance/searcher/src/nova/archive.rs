@@ -28,7 +28,7 @@ pub const MAX_NOVA_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
 /// Recorded archive-key and per-location preference policy for a run
 /// retaining one arrival per location.
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_ability_preference_v1";
 
 /// Widest work-RAM fingerprint a run may retain slots by.
 pub const MAX_FINGERPRINT_BITS: u8 = 8;
@@ -41,7 +41,7 @@ pub fn key_policy_identifier(fingerprint_bits: u8) -> String {
     if fingerprint_bits == 0 {
         KEY_POLICY_IDENTIFIER.to_owned()
     } else {
-        format!("nova_spatial_16_preference_fingerprint{fingerprint_bits}_v1")
+        format!("nova_spatial_16_ability_preference_fingerprint{fingerprint_bits}_v1")
     }
 }
 /// Recorded same-slot replacement policy keeping the cheapest route.
@@ -140,7 +140,7 @@ pub struct NovaArchiveGroup {
     level: u8,
     x: u16,
     y: u16,
-    state_fingerprint: u8,
+    ability: u8,
 }
 
 /// Quality-diversity key for one Nova endpoint.
@@ -165,6 +165,12 @@ pub struct NovaArchiveKey {
     pub available: u8,
     /// Whether an ability is carried.
     pub has_ability: bool,
+    /// Which ability is carried. Two states at one location carrying
+    /// different abilities are different slots: what an ability lets the
+    /// player do decides whether a location can be left, and a level entered
+    /// with one carried in cannot be cleared by pretending the state that
+    /// picked up another is a duplicate of it.
+    pub ability: u8,
     /// Current health.
     pub health: u8,
     /// Current puzzle-chip count.
@@ -190,12 +196,13 @@ impl NovaArchiveKey {
     /// is not part of the key's identity: two arrivals that differ only in
     /// it are the same key, exactly as they were before it existed, so a
     /// run that never splits a slot searches as it always did.
-    fn identity(self) -> (u8, u8, u8, bool, u8, u8, u8, u8, u16, u16) {
+    fn identity(self) -> (u8, u8, u8, bool, u8, u8, u8, u8, u8, u16, u16) {
         (
             self.cleared,
             self.collectibles,
             self.available,
             self.has_ability,
+            self.ability,
             self.health,
             self.chips,
             self.started_level,
@@ -246,7 +253,10 @@ impl ArchiveKey for NovaArchiveKey {
             ..NovaArchiveGroup::default()
         };
         match depth {
-            0 => location,
+            0 => NovaArchiveGroup {
+                ability: self.ability,
+                ..location
+            },
             1 => NovaArchiveGroup {
                 x: self.x / 2,
                 y: self.y / 2,
@@ -330,6 +340,7 @@ pub fn archive_key(
         collectibles,
         available,
         has_ability,
+        ability: state.ability,
         health,
         chips,
         started_level: state.started_level,
@@ -538,6 +549,7 @@ mod tests {
                                     x,
                                     y,
                                     has_ability,
+                                    ability: 0,
                                     health,
                                     chips,
                                 });
