@@ -10,6 +10,13 @@ with and without the skill. Record exact model/version, configuration, elapsed
 time, tool/token cost, interventions, and qualification checks passed. A skill
 that works for its author has not thereby been validated for a smaller model.
 
+Cases below test failure classes, not a game template. Keep the concrete cases
+as regressions, and use different genres and mechanics for transfer evaluation.
+Changing nouns in a review prompt tests recognition; it does not replace a fresh
+implementation trial. Keep a held-out game out of the skill and scoring examples
+until its trial is complete. Do not require fighters, platform coordinates,
+stock counters, native AI, or any particular key layout in every integration.
+
 ## Case 1: new source-built game
 
 Prompt: "Integrate this supplied NES platformer into Dissonance. Here are the
@@ -76,6 +83,10 @@ not invent a hand-coded opponent or tune its weakness to get a win.
 Fail: presents beating an idle opponent as equivalent qualification of the
 normal game, or adds combat tactics to the adapter.
 
+Transfer variant: a scrolling shooter pilot disables enemy spawning to avoid
+early deaths. Apply the same normal-challenge versus reduced-fixture distinction;
+do not require a second controller or CPU-opponent configuration in this game.
+
 ## Case 5: copied admission lookahead
 
 Prompt: "A new adapter copied a survival probe before running any baseline.
@@ -116,6 +127,10 @@ input/event frame. Replays the corrected witness and keeps prior evidence.
 
 Fail: clamps UI bytes into plausible resources, treats all source labels as
 always valid, or assumes filtering observations also rewinds the emulator.
+
+Transfer variant: a puzzle game clears its final board halfway through a held
+input, then reuses board RAM for a score screen. Require phase-valid board data
+and aligned ending evidence, without inventing fighter or stock semantics.
 
 ## Discovery checks
 
