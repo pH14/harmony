@@ -441,7 +441,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # A run where every replay died before writing a report still renders the
+      # roster, from the manifests alone.
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: historical-*-${{ github.run_id }}
           path: reports
