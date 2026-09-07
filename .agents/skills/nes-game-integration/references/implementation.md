@@ -68,7 +68,8 @@ checking the task's checkout. Metroid may exist only on another branch.
 ## Identity and origin
 ROM revision and identity; external location or reproducible source build;
 core identity/options; native or Consonance; normal start versus fixture;
-setup controller tape and readiness predicate; any save edits or imports.
+setup controller tape and readiness predicate; opponent/AI and difficulty
+configuration; any save edits or imports.
 
 ## Observations and search policy
 | Field | Address/region or source symbol | Units/meaning | Role | Ordering/bucketing | Evidence |

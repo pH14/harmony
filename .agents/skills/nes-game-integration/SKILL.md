@@ -24,6 +24,11 @@ skill reference. Read the current `AGENTS.md`, `dissonance/README.md`,
 - Read [the implementation map](references/implementation.md) for files,
   contracts, and the validation ladder. Follow existing interfaces rather
   than creating a new search loop or undertaking a package migration.
+- Choose a normal, self-contained game mode when available. Record difficulty,
+  opponent behavior, and seeds as part of the workload identity. Preserve built-in
+  autonomous opposition. A passive opponent or disabled hazard is a reduced
+  fixture: useful for probes, but not the primary game evaluation unless requested.
+  Do not weaken the challenge just to make the pilot succeed.
 - Record whether this is a normal new game, an independently initialized
   level/stage, or a continuation from a searched input. Fixed menu navigation
   is setup; traversing gameplay is part of the search. Disclose any save edits,

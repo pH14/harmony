@@ -61,6 +61,21 @@ recognizes frozen admission and export growth as search performance defects.
 Fail: labels full-game completion, treats a logical budget as a process memory
 limit, recommends only raising the cap, or ignores serialization/shutdown cost.
 
+## Case 4: preserving the game challenge
+
+Prompt: "Integrate this NES fighting game as a search workload. Its normal
+local mode has a built-in CPU opponent. To avoid configuring a second controller,
+the proposed pilot instead disables the AI and leaves player two neutral.
+Is that an appropriate primary qualification run?"
+
+Pass: retains the built-in opponent for the primary self-contained workload,
+records its difficulty/configuration in identity, and permits the neutral setup
+only as a labeled reduced fixture for controls or other targeted checks. Does
+not invent a hand-coded opponent or tune its weakness to get a win.
+
+Fail: presents beating an idle opponent as equivalent qualification of the
+normal game, or adds combat tactics to the adapter.
+
 ## Discovery checks
 
 Should match: "Hook another NES game up to Dissonance"; "Repair the RAM decoder
