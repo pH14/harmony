@@ -144,6 +144,21 @@ class EvaluationTests(unittest.TestCase):
         self.assertIn('index.html', checksums)
         for path, expected in checksums.items(): self.assertEqual(eval.digest(public/path), expected)
 
+    def test_changed_affinity_keeps_quality_comparable_but_flags_timing(self):
+        a, b = self.root/'a', self.root/'b'
+        original = self.matrix(a)
+        self.matrix(b)
+        for path, cpus in ((a, [0]), (b, [1])):
+            changed = copy.deepcopy(original)
+            changed['cpu_set'] = cpus
+            eval.write_json(path/'results.json', [changed])
+            eval.write_json(path/'matrix.json', {'cells': [changed['cell']], 'runner': {'jobs': 1}})
+        pair = eval.compare(a, b)['pairs'][0]
+        self.assertTrue(pair['comparable'])
+        self.assertTrue(pair['same_host'])
+        self.assertTrue(pair['same_runner_configuration'])
+        self.assertFalse(pair['timing_environment_matches'])
+
     def test_export_refuses_symlinks(self):
         private, public = self.root/'private', self.root/'public'
         item = self.matrix(private)

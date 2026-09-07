@@ -328,6 +328,8 @@ def aggregates(results):
 def compare(base, candidate):
     left = {x['cell']: x for x in load_results(base)}
     right = {x['cell']: x for x in load_results(candidate)}
+    left_runner = read_json(base / 'matrix.json').get('runner')
+    right_runner = read_json(candidate / 'matrix.json').get('runner')
     if left.keys() != right.keys():
         raise ValueError('different registered cells; comparisons require matching suites')
     rows = []
@@ -344,7 +346,11 @@ def compare(base, candidate):
             if a['search_request'].get(key) != b['search_request'].get(key):
                 raise ValueError('comparison changed ' + key + ': ' + cell)
         row = {'cell': cell, 'comparable': True, 'baseline_status': a['status'], 'candidate_status': b['status'],
-               'same_host': a['host'] == b['host']}
+               'same_host': a['host'] == b['host'],
+               'same_cpu_set': bool(a.get('cpu_set')) and a.get('cpu_set') == b.get('cpu_set'),
+               'same_runner_configuration': left_runner is not None and left_runner == right_runner}
+        row['timing_environment_matches'] = all(row[key] for key in
+            ('same_host', 'same_cpu_set', 'same_runner_configuration'))
         for label, value in [('baseline', a), ('candidate', b)]:
             r = value['result'] or {}
             progress = value.get('last_progress', {})
@@ -356,6 +362,7 @@ def compare(base, candidate):
                           'workload_diagnostics': progress.get('workload_diagnostics')}
         rows.append(row)
     return {'format': 'harmony-search-comparison-v1', 'pairs': rows,
+            'timing_note': 'Matching recorded allocation does not establish host isolation. Concurrent jobs may share physical cores and finish at different times; use admitted frame cost for search quality and isolated runs for precise throughput claims.',
             'baseline': aggregates(list(left.values())), 'candidate': aggregates(list(right.values()))}
 
 

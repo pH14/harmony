@@ -169,8 +169,12 @@ throughput, process RSS, logical memory, disk, and the workload's named progress
 observations. Numeric map labels are not interpreted as distances to a solution.
 Each new revision can be added as another labelled series; retain the previous
 run exports and figure directories unchanged. Different resource panels require
-separate figures. A changed host is recorded by `compare`; use like-for-like
-hardware and allocation when making timing claims.
+separate figures. `compare` flags changed hosts, CPU affinity and runner limits.
+Dynamic scheduling can assign a seed a different CPU set when another seed
+finishes first, and disjoint logical CPUs may share a physical core. Concurrent
+panel timings describe that workload mix; use admitted frames for search quality
+and `--jobs 1` on an otherwise quiet host for precise throughput claims. Matching
+recorded environment fields alone does not prove physical isolation.
 
 ## Checks
 
