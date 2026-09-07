@@ -285,6 +285,7 @@ pub struct NovaTarget<M: Machine = QuickNesMachine> {
     failed: bool,
     snapshot_base: Option<M::Portable>,
     genesis_cleared: u8,
+    halt_on_level_clear: bool,
 }
 
 impl<M: Machine> NovaTarget<M> {
@@ -322,6 +323,7 @@ impl<M: Machine> NovaTarget<M> {
             failed: false,
             snapshot_base: None,
             genesis_cleared: state.cleared_count(),
+            halt_on_level_clear: true,
         })
     }
 }
@@ -418,6 +420,22 @@ impl<M: Machine> NovaTarget<M> {
         self.observation.decoded.cleared_count() >= NOVA_CAMPAIGN_LEVEL_COUNT
     }
 
+    /// Whether a durable level clear freezes this target.
+    ///
+    /// A campaign that stops at the first clear never needs to emulate past
+    /// one, and freezing there keeps a terminal state from drifting. A
+    /// whole-game campaign has to walk out of the cleared level to reach the
+    /// next, so it clears this and lets the run's own terminal predicate
+    /// decide.
+    pub fn set_halt_on_level_clear(&mut self, halt: bool) {
+        self.halt_on_level_clear = halt;
+    }
+
+    /// Whether the current state is frozen against further actions.
+    fn halted(&self) -> bool {
+        self.failed || self.is_dead() || (self.halt_on_level_clear && self.cleared_a_level())
+    }
+
     /// Total deterministic frames this instance has emulated.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {
@@ -432,7 +450,7 @@ impl<M: Machine> NovaTarget<M> {
 
     /// Test one fixed continuation and restore the caller's state afterward.
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-        if self.failed || self.is_dead() || self.cleared_a_level() {
+        if self.halted() {
             return false;
         }
         if frames == 0 {
@@ -717,7 +735,7 @@ impl<M: Machine> Target for NovaTarget<M> {
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
-        if self.failed || self.is_dead() || self.cleared_a_level() {
+        if self.halted() {
             return;
         }
         let prior_wram = self.current_wram;

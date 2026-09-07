@@ -733,6 +733,9 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
         max_actions: usize,
         retention: RetentionPolicy,
     ) -> Result<NovaCampaignJobResult<M>, Box<dyn Error>> {
+        // A whole-game run has to emulate out of a cleared level to reach the
+        // next one, so the target's freeze follows the run's terminal policy.
+        target.set_halt_on_level_clear(run.terminal == NovaTerminalPredicate::LevelClear);
         target.restore(origin_snapshot)?;
         for action in replay {
             target.apply(action);
