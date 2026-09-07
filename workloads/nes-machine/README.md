@@ -59,3 +59,10 @@ sidecar bytes. Imports require the same execution identity; cross-backend
 comparisons reconstruct state through actions. The sidecar uses portable
 snapshot format 3, recorded separately in execution identity; older portable
 formats are rejected explicitly.
+
+Cartridge work RAM is exposed at `$6000` for workloads that need it. The
+`nes::with_cartridge_ram` helper sets the iNES declaration on an in-memory
+execution copy, preserving the original ROM identity. QuickNES's declared
+cartridge RAM is initialized to `0xff` before gameplay, matching its undeclared
+RAM initialization and preventing allocator contents from entering power-on
+state. The same checked FFI path runs through the Miri loopback tests.

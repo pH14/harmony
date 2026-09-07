@@ -285,6 +285,7 @@ pub struct NovaTarget<M: Machine = QuickNesMachine> {
     failed: bool,
     snapshot_base: Option<M::Portable>,
     genesis_cleared: u8,
+    halt_on_level_clear: bool,
 }
 
 impl<M: Machine> NovaTarget<M> {
@@ -330,6 +331,7 @@ impl<M: Machine> NovaTarget<M> {
             failed: false,
             snapshot_base: None,
             genesis_cleared: state.cleared_count(),
+            halt_on_level_clear: true,
         })
     }
 }
@@ -420,6 +422,22 @@ impl<M: Machine> NovaTarget<M> {
         self.observation.decoded.cleared_count() > self.genesis_cleared
     }
 
+    /// Whether all campaign levels have a durable clear flag.
+    #[must_use]
+    pub fn cleared_every_level(&self) -> bool {
+        self.observation.decoded.cleared_count() >= NOVA_CAMPAIGN_LEVEL_COUNT
+    }
+
+    /// Configure the run's fixed terminal policy before executing actions.
+    /// The campaign records this policy and rejects a mismatched replay context.
+    pub fn set_halt_on_level_clear(&mut self, halt: bool) {
+        self.halt_on_level_clear = halt;
+    }
+
+    fn halted(&self) -> bool {
+        self.failed || self.is_dead() || (self.halt_on_level_clear && self.cleared_a_level())
+    }
+
     /// Total deterministic frames this instance has emulated.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {
@@ -434,7 +452,7 @@ impl<M: Machine> NovaTarget<M> {
 
     /// Test one fixed continuation and restore the caller's state afterward.
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {
-        if self.failed || self.is_dead() || self.cleared_a_level() {
+        if self.halted() {
             return false;
         }
         if frames == 0 {
@@ -719,7 +737,7 @@ impl<M: Machine> Target for NovaTarget<M> {
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
-        if self.failed || self.is_dead() || self.cleared_a_level() {
+        if self.halted() {
             return;
         }
         let prior_wram = self.current_wram;
@@ -1204,6 +1222,20 @@ mod tests {
         fn frames(&self) -> &[[u8; WRAM_SIZE]] {
             &self.frames
         }
+    }
+
+    #[test]
+    fn whole_game_policy_executes_after_a_level_clear() {
+        let mut target = NovaTarget::from_machine(FakeMachine::new()).expect("genesis");
+        target.genesis_cleared = 0;
+        target.observation.decoded.levels_cleared[0] = 1;
+        assert!(target.cleared_a_level());
+        assert!(!target.cleared_every_level());
+        target.apply(&ButtonChord::new(0, 3));
+        assert_eq!(target.machine.run_calls, 0);
+        target.set_halt_on_level_clear(false);
+        target.apply(&ButtonChord::new(0, 3));
+        assert_eq!(target.machine.run_calls, 1);
     }
 
     #[test]

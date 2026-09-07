@@ -75,6 +75,7 @@ pub struct NovaNoTableHeader;
 pub struct NovaGame<M: NovaMachineKind = QuickNesMachine> {
     rom: Vec<u8>,
     level: NovaLevel,
+    whole_game: bool,
     identity: String,
     runtime: M::Configuration,
 }
@@ -160,6 +161,7 @@ impl NovaGame<QuickNesMachine> {
         Self {
             rom: rom.to_vec(),
             level,
+            whole_game: false,
             identity,
             runtime: NativeConfiguration {
                 core_path: core_path.to_path_buf(),
@@ -192,6 +194,7 @@ impl NovaGame<ConsonanceMachine> {
         Self {
             rom: rom.to_vec(),
             level: NovaLevel::default(),
+            whole_game: false,
             identity: format!(
                 "{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3",
                 consonance_identity(kernel, initramfs),
@@ -205,6 +208,21 @@ impl NovaGame<ConsonanceMachine> {
 }
 
 impl<M: NovaMachineKind> NovaGame<M> {
+    /// Continue through level clears and stop only once all levels are cleared.
+    #[must_use]
+    pub fn with_whole_game(mut self) -> Self {
+        self.whole_game = true;
+        self
+    }
+
+    fn terminal_reached(&self, target: &NovaTarget<M>) -> bool {
+        if self.whole_game {
+            target.cleared_every_level()
+        } else {
+            target.cleared_a_level()
+        }
+    }
+
     /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
@@ -508,7 +526,14 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (
+                TERMINAL_POLICY_FIELD,
+                if self.whole_game {
+                    "every_level_cleared"
+                } else {
+                    TERMINAL_POLICY_IDENTIFIER
+                },
+            ),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -556,7 +581,11 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
     }
 
     fn max_action_limit(&self) -> usize {
-        MAX_NOVA_ACTIONS
+        if self.whole_game {
+            8192
+        } else {
+            MAX_NOVA_ACTIONS
+        }
     }
 
     fn longest_action_time(&self) -> u64 {
@@ -566,7 +595,10 @@ impl<M: NovaMachineKind> InputPolicy for NovaGame<M> {
 
 impl<M: NovaMachineKind> TargetExecution for NovaGame<M> {
     fn new_target(&self) -> Result<NovaTarget<M>, String> {
-        M::new_nova_target(self)
+        M::new_nova_target(self).map(|mut target| {
+            target.set_halt_on_level_clear(!self.whole_game);
+            target
+        })
     }
     fn reset(&self, target: &mut NovaTarget<M>) {
         target.reset();
@@ -740,7 +772,7 @@ impl<M: NovaMachineKind> Evaluation for NovaGame<M> {
         if target.exit_kind() != ExitKind::Ok {
             return Err("Nova terminal predicate cannot inspect a failed emulator".into());
         }
-        Ok(target.is_dead() || target.cleared_a_level())
+        Ok(target.is_dead() || self.terminal_reached(target))
     }
 
     fn rollout_outcome(
@@ -750,7 +782,7 @@ impl<M: NovaMachineKind> Evaluation for NovaGame<M> {
     ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
         Ok(crate::search::rollout::Outcome {
             dead: target.is_dead(),
-            victory: target.cleared_a_level(),
+            victory: self.terminal_reached(target),
             failed: target.exit_kind() != ExitKind::Ok,
         })
     }
