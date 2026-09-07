@@ -48,14 +48,15 @@ pub fn key_policy_identifier(fingerprint_bits: u8) -> String {
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// Prefix of the recorded replacement policy that also lets an incumbent
 /// drawn barren past a count lose its slot; the count follows the colon.
-pub const REPLACEMENT_OR_BARREN_PREFIX: &str = "opaque_preference_then_fewest_frames_or_barren:";
+pub const REPLACEMENT_OR_BARREN_PREFIX: &str =
+    "opaque_preference_then_fewest_frames_or_barren_split:";
 
 /// The recorded identifier of a replacement policy.
 #[must_use]
 pub fn replacement_identifier(policy: ReplacementPolicy) -> String {
     match policy {
         ReplacementPolicy::FewestFrames => REPLACEMENT_IDENTIFIER.to_owned(),
-        ReplacementPolicy::FewestFramesOrBarren { draws } => {
+        ReplacementPolicy::FewestFramesOrBarrenSplit { draws } => {
             format!("{REPLACEMENT_OR_BARREN_PREFIX}{draws}")
         }
     }
@@ -76,7 +77,7 @@ pub fn replacement_from_identifier(identifier: &str) -> Result<ReplacementPolicy
         if draws == 0 {
             return Err("barren replacement count must be nonzero".into());
         }
-        return Ok(ReplacementPolicy::FewestFramesOrBarren { draws });
+        return Ok(ReplacementPolicy::FewestFramesOrBarrenSplit { draws });
     }
     Err(format!("Nova replacement policy {identifier} is not recognized").into())
 }
@@ -164,9 +165,9 @@ pub struct NovaArchiveKey {
     pub x: u16,
     /// Player vertical 16-pixel bucket.
     pub y: u16,
-    /// Six-bit digest of work RAM, separating retention slots only. It sorts
-    /// last so it never outranks progress, and no group above depth 0 keeps
-    /// it.
+    /// Digest bits of work RAM, the key's [`ArchiveKey::variant`]. No group
+    /// reads it; a replacement policy that splits barren slots does. It sorts
+    /// last so it never outranks progress.
     #[serde(default)]
     pub state_fingerprint: u8,
 }
@@ -191,10 +192,7 @@ impl ArchiveKey for NovaArchiveKey {
             ..NovaArchiveGroup::default()
         };
         match depth {
-            0 => NovaArchiveGroup {
-                state_fingerprint: self.state_fingerprint,
-                ..location
-            },
+            0 => location,
             1 => NovaArchiveGroup {
                 x: self.x / 2,
                 y: self.y / 2,
@@ -231,6 +229,10 @@ impl ArchiveKey for NovaArchiveKey {
 
     fn preference_cmp(self, other: Self) -> Ordering {
         self.preference().cmp(&other.preference())
+    }
+
+    fn variant(self) -> u8 {
+        self.state_fingerprint
     }
 
     type Lineage = ();

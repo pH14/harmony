@@ -78,6 +78,14 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn preference_cmp(self, _other: Self) -> Ordering {
         Ordering::Equal
     }
+    /// A bounded tag for state the key does not otherwise name -- pose,
+    /// momentum, what the level's actors are doing. It takes no part in the
+    /// grouping; the archive reads it only when a replacement policy splits a
+    /// slot, so arrivals that differ in it can be retained side by side.
+    /// The default names no variant, so no slot ever splits.
+    fn variant(self) -> u8 {
+        0
+    }
     /// Ancestry state a key needs to complete itself.
     type Lineage: Clone + Default;
     /// Complete a freshly decoded key against its parent's key and lineage.
@@ -141,13 +149,19 @@ pub enum ReplacementPolicy {
     /// Equal preference keeps the route with fewer frames in its group.
     #[default]
     FewestFrames,
-    /// As above, and an incumbent drawn `draws` times since it last produced
-    /// a retained child loses its slot to any equal-preference arrival. The
-    /// count survives the selector's exhaustion reset, so it measures a
-    /// lifetime of barren draws rather than the few a retirement threshold
-    /// allows between resets.
-    FewestFramesOrBarren {
-        /// Barren draws an incumbent must reach before it can be displaced.
+    /// As above until an incumbent has been drawn `draws` times since it last
+    /// produced a retained child; the slot then splits by
+    /// [`ArchiveKey::variant`], and each variant competes for its own
+    /// representative under the fewest-frames rule. The count survives the
+    /// selector's exhaustion reset, so it measures a lifetime of barren
+    /// draws. A slot whose representative keeps producing never splits and
+    /// costs nothing; one that has gone barren retains up to one arrival per
+    /// variant, which is what lets a search past a location its cheapest
+    /// arrival cannot leave. Displacing the incumbent instead was measured
+    /// and lost: it trades a cheap route for a random one at every barren
+    /// cell, and a hard level has many.
+    FewestFramesOrBarrenSplit {
+        /// Barren draws an incumbent must reach before its slot splits.
         draws: u64,
     },
 }
@@ -819,6 +833,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// Draws since the entry last produced a retained child; unlike
     /// `since_retained` this is never cleared by the exhaustion reset.
     barren_draws: Vec<u64>,
+    /// Depth-0 slots that have split by variant.
+    split_slots: BTreeSet<K::Group>,
     in_window_ever: Vec<bool>,
     /// Per entry: whether its retention slot was empty when it arrived.
     opened_slot: Vec<bool>,
@@ -1400,6 +1416,7 @@ where
             productive: Vec::new(),
             since_retained: Vec::new(),
             barren_draws: Vec::new(),
+            split_slots: BTreeSet::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
             opened_cell: Vec::new(),
@@ -2723,9 +2740,31 @@ where
         // breaks ties so the choice stays a total order over the slot.
         let slot = self.slots.entry(key.group(0)).or_default().clone();
         let new_slot = slot.is_empty();
-        let slot_full = slot.len() >= K::slot_capacity().max(1);
+        // A slot splits by variant once any representative has proven
+        // barren; from then on an arrival contends only with its own variant.
+        let split = match self.replacement_policy {
+            ReplacementPolicy::FewestFrames => false,
+            ReplacementPolicy::FewestFramesOrBarrenSplit { draws } => {
+                let group = key.group(0);
+                if !self.split_slots.contains(&group)
+                    && slot.iter().any(|id| self.barren_draws[*id] >= draws)
+                {
+                    self.split_slots.insert(group);
+                }
+                self.split_slots.contains(&group)
+            }
+        };
+        let contenders: Vec<usize> = if split {
+            slot.iter()
+                .copied()
+                .filter(|id| self.entries[*id].key.variant() == key.variant())
+                .collect()
+        } else {
+            slot.clone()
+        };
+        let slot_full = contenders.len() >= K::slot_capacity().max(1);
         let replace = if slot_full {
-            let worst = slot.iter().copied().min_by(|left, right| {
+            let worst = contenders.iter().copied().min_by(|left, right| {
                 let left_entry = &self.entries[*left];
                 let right_entry = &self.entries[*right];
                 left_entry
@@ -2736,15 +2775,7 @@ where
             });
             worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
                 Ordering::Greater => true,
-                Ordering::Equal => {
-                    candidate_time_in_group < self.time_in_group[*id]
-                        || match self.replacement_policy {
-                            ReplacementPolicy::FewestFrames => false,
-                            ReplacementPolicy::FewestFramesOrBarren { draws } => {
-                                self.barren_draws[*id] >= draws
-                            }
-                        }
-                }
+                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
                 Ordering::Less => false,
             })
         } else {
@@ -4167,6 +4198,7 @@ mod tests {
     struct PreferredKey {
         slot: u8,
         quality: u8,
+        variant: u8,
     }
 
     impl ArchiveKey for PreferredKey {
@@ -4189,6 +4221,10 @@ mod tests {
             self.quality.cmp(&other.quality)
         }
 
+        fn variant(self) -> u8 {
+            self.variant
+        }
+
         type Lineage = ();
 
         fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
@@ -4208,7 +4244,11 @@ mod tests {
                     0,
                     ArchiveCandidate {
                         suffix: vec![input],
-                        key: PreferredKey { slot: 7, quality },
+                        key: PreferredKey {
+                            slot: 7,
+                            quality,
+                            variant: 0,
+                        },
                         milestones: (),
                     },
                     (),
@@ -4224,45 +4264,52 @@ mod tests {
         assert_eq!(archive.active, vec![false, true]);
     }
 
-    /// A costlier equal-preference arrival loses to a productive incumbent
-    /// under both policies, and takes the slot from one drawn barren past the
-    /// policy's count only under the barren policy: a dead-end cell then keeps
-    /// sampling arrivals instead of guarding the cheapest one that cannot move.
+    /// A costlier equal-preference arrival of another variant is rejected
+    /// while the incumbent is productive under both policies. Once the
+    /// incumbent has been drawn barren past the split policy's count, the
+    /// slot splits: the other variant is retained beside the incumbent, and
+    /// the incumbent's own variant still keeps the cheaper route.
     #[test]
-    fn barren_replacement_yields_a_dead_slot_to_an_equal_arrival() {
-        let run = |policy: ReplacementPolicy, retire: bool| {
+    fn barren_split_retains_another_variant_beside_a_dead_incumbent() {
+        let run = |policy: ReplacementPolicy, barren: bool| {
             let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
             archive.replacement_policy = policy;
-            archive.selector_policy = SelectorPolicy::Retire(RetireThresholds {
-                entry: 3,
-                groups: Vec::new(),
-            });
-            let candidate = |suffix: Vec<u8>| ArchiveCandidate {
+            let candidate = |suffix: Vec<u8>, variant: u8| ArchiveCandidate {
                 suffix,
                 key: PreferredKey {
                     slot: 7,
                     quality: 4,
+                    variant,
                 },
                 milestones: (),
             };
             let incumbent = archive
-                .insert(None, 0, candidate(vec![1]), ())
+                .insert(None, 0, candidate(vec![1], 0), ())
                 .expect("insert incumbent")
                 .expect("incumbent retained");
-            if retire {
+            if barren {
                 archive.barren_draws[incumbent] = 16;
             }
-            // Two actions cost more than one, so this arrival is the costlier route.
-            let arrival = archive
-                .insert(None, 0, candidate(vec![2, 3]), ())
-                .expect("insert arrival");
-            (arrival, archive.active[incumbent])
+            // Two actions cost more than one, so both arrivals are costlier routes.
+            let other_variant = archive
+                .insert(None, 0, candidate(vec![2, 3], 1), ())
+                .expect("insert other variant");
+            let same_variant = archive
+                .insert(None, 0, candidate(vec![4, 5], 0), ())
+                .expect("insert same variant");
+            (other_variant, same_variant, archive.active[incumbent])
         };
-        assert_eq!(run(ReplacementPolicy::FewestFrames, false), (None, true));
-        assert_eq!(run(ReplacementPolicy::FewestFrames, true), (None, true));
-        let barren = ReplacementPolicy::FewestFramesOrBarren { draws: 16 };
-        assert_eq!(run(barren, false), (None, true));
-        assert_eq!(run(barren, true), (Some(1), false));
+        assert_eq!(
+            run(ReplacementPolicy::FewestFrames, false),
+            (None, None, true)
+        );
+        assert_eq!(
+            run(ReplacementPolicy::FewestFrames, true),
+            (None, None, true)
+        );
+        let split = ReplacementPolicy::FewestFramesOrBarrenSplit { draws: 16 };
+        assert_eq!(run(split, false), (None, None, true));
+        assert_eq!(run(split, true), (Some(1), None, true));
     }
 
     fn flat_archive<const DEPTHS: usize>(
