@@ -46,17 +46,18 @@ pub fn key_policy_identifier(fingerprint_bits: u8) -> String {
 }
 /// Recorded same-slot replacement policy keeping the cheapest route.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
-/// Recorded same-slot replacement policy that also lets a retired incumbent
-/// lose its slot.
-pub const REPLACEMENT_OR_RETIRED_IDENTIFIER: &str =
-    "opaque_preference_then_fewest_frames_or_retired";
+/// Prefix of the recorded replacement policy that also lets an incumbent
+/// drawn barren past a count lose its slot; the count follows the colon.
+pub const REPLACEMENT_OR_BARREN_PREFIX: &str = "opaque_preference_then_fewest_frames_or_barren:";
 
 /// The recorded identifier of a replacement policy.
 #[must_use]
-pub fn replacement_identifier(policy: ReplacementPolicy) -> &'static str {
+pub fn replacement_identifier(policy: ReplacementPolicy) -> String {
     match policy {
-        ReplacementPolicy::FewestFrames => REPLACEMENT_IDENTIFIER,
-        ReplacementPolicy::FewestFramesOrRetired => REPLACEMENT_OR_RETIRED_IDENTIFIER,
+        ReplacementPolicy::FewestFrames => REPLACEMENT_IDENTIFIER.to_owned(),
+        ReplacementPolicy::FewestFramesOrBarren { draws } => {
+            format!("{REPLACEMENT_OR_BARREN_PREFIX}{draws}")
+        }
     }
 }
 
@@ -64,13 +65,20 @@ pub fn replacement_identifier(policy: ReplacementPolicy) -> &'static str {
 ///
 /// # Errors
 ///
-/// Returns an error when the identifier names no compiled policy.
+/// Returns an error when the identifier names no compiled policy or carries
+/// a zero count.
 pub fn replacement_from_identifier(identifier: &str) -> Result<ReplacementPolicy, Box<dyn Error>> {
-    match identifier {
-        REPLACEMENT_IDENTIFIER => Ok(ReplacementPolicy::FewestFrames),
-        REPLACEMENT_OR_RETIRED_IDENTIFIER => Ok(ReplacementPolicy::FewestFramesOrRetired),
-        other => Err(format!("Nova replacement policy {other} is not recognized").into()),
+    if identifier == REPLACEMENT_IDENTIFIER {
+        return Ok(ReplacementPolicy::FewestFrames);
     }
+    if let Some(draws) = identifier.strip_prefix(REPLACEMENT_OR_BARREN_PREFIX) {
+        let draws = draws.parse::<u64>()?;
+        if draws == 0 {
+            return Err("barren replacement count must be nonzero".into());
+        }
+        return Ok(ReplacementPolicy::FewestFramesOrBarren { draws });
+    }
+    Err(format!("Nova replacement policy {identifier} is not recognized").into())
 }
 /// Recorded controller hold distribution.
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";

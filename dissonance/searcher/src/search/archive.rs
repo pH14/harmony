@@ -141,9 +141,15 @@ pub enum ReplacementPolicy {
     /// Equal preference keeps the route with fewer frames in its group.
     #[default]
     FewestFrames,
-    /// As above, and an incumbent the selector has retired as barren loses
-    /// its slot to any equal-preference arrival.
-    FewestFramesOrRetired,
+    /// As above, and an incumbent drawn `draws` times since it last produced
+    /// a retained child loses its slot to any equal-preference arrival. The
+    /// count survives the selector's exhaustion reset, so it measures a
+    /// lifetime of barren draws rather than the few a retirement threshold
+    /// allows between resets.
+    FewestFramesOrBarren {
+        /// Barren draws an incumbent must reach before it can be displaced.
+        draws: u64,
+    },
 }
 
 /// Compiled ceiling on archive entries. A ceiling is not an allocation:
@@ -810,6 +816,9 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
+    /// Draws since the entry last produced a retained child; unlike
+    /// `since_retained` this is never cleared by the exhaustion reset.
+    barren_draws: Vec<u64>,
     in_window_ever: Vec<bool>,
     /// Per entry: whether its retention slot was empty when it arrived.
     opened_slot: Vec<bool>,
@@ -1390,6 +1399,7 @@ where
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
+            barren_draws: Vec::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
             opened_cell: Vec::new(),
@@ -1888,6 +1898,7 @@ where
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
+        self.barren_draws = retain_marked(std::mem::take(&mut self.barren_draws), &keep);
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
@@ -2727,8 +2738,12 @@ where
                 Ordering::Greater => true,
                 Ordering::Equal => {
                     candidate_time_in_group < self.time_in_group[*id]
-                        || (self.replacement_policy == ReplacementPolicy::FewestFramesOrRetired
-                            && !self.entry_unexhausted(*id))
+                        || match self.replacement_policy {
+                            ReplacementPolicy::FewestFrames => false,
+                            ReplacementPolicy::FewestFramesOrBarren { draws } => {
+                                self.barren_draws[*id] >= draws
+                            }
+                        }
                 }
                 Ordering::Less => false,
             })
@@ -2833,6 +2848,7 @@ where
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
+        self.barren_draws.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
         // A one-group key has no pooled cell depth; slot novelty stands in.
@@ -3656,6 +3672,7 @@ where
         let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
+        self.barren_draws[id] = self.barren_draws[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
         if let Some(members) = self
@@ -3730,6 +3747,7 @@ where
         let was_sampleable = self.entry_unexhausted(id);
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
+        self.barren_draws[id] = 0;
         if !was_sampleable && self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, true);
         }
@@ -4206,12 +4224,12 @@ mod tests {
         assert_eq!(archive.active, vec![false, true]);
     }
 
-    /// A costlier equal-preference arrival loses to a live incumbent under
-    /// both policies, and takes the slot from a retired one only under the
-    /// retired policy: a dead-end cell then keeps sampling arrivals instead
-    /// of guarding the cheapest one that cannot move.
+    /// A costlier equal-preference arrival loses to a productive incumbent
+    /// under both policies, and takes the slot from one drawn barren past the
+    /// policy's count only under the barren policy: a dead-end cell then keeps
+    /// sampling arrivals instead of guarding the cheapest one that cannot move.
     #[test]
-    fn retired_replacement_yields_a_barren_slot_to_an_equal_arrival() {
+    fn barren_replacement_yields_a_dead_slot_to_an_equal_arrival() {
         let run = |policy: ReplacementPolicy, retire: bool| {
             let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
             archive.replacement_policy = policy;
@@ -4232,7 +4250,7 @@ mod tests {
                 .expect("insert incumbent")
                 .expect("incumbent retained");
             if retire {
-                archive.since_retained[incumbent] = 3;
+                archive.barren_draws[incumbent] = 16;
             }
             // Two actions cost more than one, so this arrival is the costlier route.
             let arrival = archive
@@ -4242,14 +4260,9 @@ mod tests {
         };
         assert_eq!(run(ReplacementPolicy::FewestFrames, false), (None, true));
         assert_eq!(run(ReplacementPolicy::FewestFrames, true), (None, true));
-        assert_eq!(
-            run(ReplacementPolicy::FewestFramesOrRetired, false),
-            (None, true)
-        );
-        assert_eq!(
-            run(ReplacementPolicy::FewestFramesOrRetired, true),
-            (Some(1), false)
-        );
+        let barren = ReplacementPolicy::FewestFramesOrBarren { draws: 16 };
+        assert_eq!(run(barren, false), (None, true));
+        assert_eq!(run(barren, true), (Some(1), false));
     }
 
     fn flat_archive<const DEPTHS: usize>(

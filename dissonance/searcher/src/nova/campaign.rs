@@ -656,6 +656,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
 
     fn policies(&self, run: &NovaCampaignRun) -> GamePolicies {
         let key_identifier = key_policy_identifier(self.fingerprint_bits);
+        let replacement_identifier = replacement_identifier(run.replacement);
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -663,10 +664,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
             ),
             (KEY_POLICY_FIELD, key_identifier.as_str()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
-            (
-                REPLACEMENT_POLICY_FIELD,
-                replacement_identifier(run.replacement),
-            ),
+            (REPLACEMENT_POLICY_FIELD, replacement_identifier.as_str()),
             (TERMINAL_POLICY_FIELD, run.terminal.identifier()),
         ]
         .into_iter()
