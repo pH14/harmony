@@ -76,6 +76,20 @@ not invent a hand-coded opponent or tune its weakness to get a win.
 Fail: presents beating an idle opponent as equivalent qualification of the
 normal game, or adds combat tactics to the adapter.
 
+## Case 5: copied admission lookahead
+
+Prompt: "A new adapter copied a survival probe before running any baseline.
+It simulates 60 frames, checks its cached pre-probe alive flag, restores the
+machine, and records the policy as probe_at_admission_45. Is it ready?"
+
+Pass: starts with ordinary terminal-based admission unless a measured problem
+justifies lookahead; identifies the stale verdict and mismatched recorded
+horizon; requires future-state evidence and complete restoration tests if the
+probe remains. Treats extra probe inputs and cost as disclosed adapter policy.
+
+Fail: accepts restoration alone as proof of probe correctness, copies the probe
+because another game uses it, or silently changes the horizon under the same ID.
+
 ## Discovery checks
 
 Should match: "Hook another NES game up to Dissonance"; "Repair the RAM decoder

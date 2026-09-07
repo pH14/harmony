@@ -92,6 +92,12 @@ not the full RAM as new independent archive dimensions. Do not use one game's
 16-pixel buckets, preference order, or controller exclusions without checking
 their meaning for this game.
 
+Start with observed terminal conditions and ordinary admission, without extra
+admission lookahead where the interface permits. Copying a survival probe also
+copies input policy and compute cost. Add one only for an evidenced admission
+problem; record its masks and actual horizon, inspect the simulated future for
+its verdict, and verify complete restoration before enabling it.
+
 Routes, waypoints, boss weakness tables, recommended weapon/item orders,
 location-conditioned button choices, prerecorded solutions, and rewards for
 following a walkthrough are strategy. Keep them out of the evaluation policy,
