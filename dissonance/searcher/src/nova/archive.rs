@@ -54,6 +54,11 @@ pub const REPLACEMENT_OR_BARREN_PREFIX: &str =
 /// Recorded replacement policy splitting every slot by variant from the start.
 pub const REPLACEMENT_SPLIT_BY_VARIANT_IDENTIFIER: &str =
     "opaque_preference_then_fewest_frames_per_variant";
+/// Identifier of [`ReplacementPolicy::SettledThenFewestFrames`]: equal
+/// preference keeps the representative the idle admission probe left in
+/// place, and only then the cheaper one.
+pub const REPLACEMENT_SETTLED_IDENTIFIER: &str =
+    "opaque_preference_then_settled_then_fewest_frames";
 
 /// The recorded identifier of a replacement policy.
 #[must_use]
@@ -61,6 +66,7 @@ pub fn replacement_identifier(policy: ReplacementPolicy) -> String {
     match policy {
         ReplacementPolicy::FewestFrames => REPLACEMENT_IDENTIFIER.to_owned(),
         ReplacementPolicy::SplitByVariant => REPLACEMENT_SPLIT_BY_VARIANT_IDENTIFIER.to_owned(),
+        ReplacementPolicy::SettledThenFewestFrames => REPLACEMENT_SETTLED_IDENTIFIER.to_owned(),
         ReplacementPolicy::FewestFramesOrPressuredSplit { rejections, draws } => {
             format!("{REPLACEMENT_OR_BARREN_PREFIX}{rejections},{draws}")
         }
@@ -79,6 +85,9 @@ pub fn replacement_from_identifier(identifier: &str) -> Result<ReplacementPolicy
     }
     if identifier == REPLACEMENT_SPLIT_BY_VARIANT_IDENTIFIER {
         return Ok(ReplacementPolicy::SplitByVariant);
+    }
+    if identifier == REPLACEMENT_SETTLED_IDENTIFIER {
+        return Ok(ReplacementPolicy::SettledThenFewestFrames);
     }
     if let Some(values) = identifier.strip_prefix(REPLACEMENT_OR_BARREN_PREFIX) {
         let (rejections, draws) = values

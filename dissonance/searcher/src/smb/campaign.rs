@@ -795,6 +795,7 @@ pub(crate) fn execute_job(
             Some(CampaignCandidate {
                 key,
                 viable,
+                settled: false,
                 snapshot,
             })
         };

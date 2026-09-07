@@ -75,7 +75,13 @@ when the archive reads them: `opaque_preference_then_fewest_frames` never
 (the default, unchanged), `..._per_variant` at every slot from its first
 arrival, `..._or_pressured_split:R,D` once a slot's representative has been
 drawn `D` times with no retained child and `R` arrivals have lost to it.
-Every choice is recorded in the stream header and resolved on replay.
+`opaque_preference_then_settled_then_fewest_frames` reads a different
+signal: whether the arrival is at rest. The target reports an action whose
+last eight frames left the player's pixel position unchanged, standing
+rather than falling, jumping, or sliding through the endpoint, and the slot
+then keeps a settled representative over one in motion before it compares
+frames. The verdict costs no emulation. Every choice is recorded in the
+stream header and resolved on replay.
 
 Level 9 (world 2) is the measurement that motivated all of it. Its corridor
 cell at x=208 took 123 selections under an undecayed frontier, produced 411
@@ -159,11 +165,25 @@ a frontier rank span of 8 in place of 16 (128,700), 6 fingerprint bits with
 pressured split 64,8 (245,400), and 6 bits split at every slot, which had
 not cleared level 2 by 183,100.
 
-What the level-1 genesis lacks is a representative standing on the platform,
-and no existing knob names one: the key sees location and resources, not
-whether the arrival has come to rest. A settled-state preference at
-admission, measured against the key rather than any Nova field, is the
-generic lever this points at and is unmeasured.
+What the level-1 genesis lacks is a representative standing on the platform.
+The settled replacement rule above names one, and against the level panel,
+seed 1, it is the better setting on four levels of five:
+
+| setting | L1 | L3 | L17 | L33 | L25 |
+| --- | --- | --- | --- | --- | --- |
+| no decay, fewest frames | 5,518 | 8,596 | 2,911 | 2,133 | 180,478 |
+| no decay, settled then fewest frames | 5,368 | 5,837 | 2,599 | 2,948 | 130,136 |
+
+It does not clear level 3 from the level-1 genesis either (uncleared at
+337,900). Replaying that run's archive at 90,000 executions shows why: every
+representative in the door's cells is still in motion, because no arrival
+there has ever landed. The rule can only keep a settled arrival it is
+offered, and the isolated run's clear was a single suffix that landed and
+pressed in one draw; its landing was never a separate candidate. The
+entries above the platform that would land under a short idle hold sit at
+the entry retirement threshold of three barren draws, so the pair the clear
+needs -- a settling hold, then Up -- has three draws to appear at each of
+two stages.
 
 ## Replay and media capture
 

@@ -527,17 +527,20 @@ fn execute_suffix<M: NovaMachineKind>(
             None
         } else {
             let snapshot = target.snapshot().ok_or("failed to snapshot Nova suffix")?;
+            let key = archive_key(
+                target.mechanical_state(),
+                target.work_ram(),
+                fingerprint_bits,
+            );
+            let settled = target.at_rest();
             let viable = match retention {
                 RetentionPolicy::ProbeAtAdmission45 => admission_is_viable(target, &snapshot)?,
                 RetentionPolicy::AdmitAlive => true,
             };
             Some(CampaignCandidate {
-                key: archive_key(
-                    target.mechanical_state(),
-                    target.work_ram(),
-                    fingerprint_bits,
-                ),
+                key,
                 viable,
+                settled,
                 snapshot,
             })
         };
@@ -1063,6 +1066,7 @@ mod tests {
                 candidate: Some(CampaignCandidate {
                     key: archive_key(state, &[0_u8; 16], 0),
                     viable: true,
+                    settled: false,
                     snapshot: NovaSnapshot {
                         emulator_state: portable,
                         observation,
