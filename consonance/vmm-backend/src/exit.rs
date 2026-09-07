@@ -42,15 +42,14 @@ impl<A: Arch> Exit<A> {
     }
 
     /// Whether servicing this exit stages a backend completion (a
-    /// register-write and/or RIP-advance committed on the next entry): every
-    /// read-style / MSR / CPUID / determinism exit calls a `complete_*`, and
-    /// a store's instruction is finished by KVM on the next entry too.
-    /// `Idle`, `Shutdown`, and the unmodeled `Hypercall` resume with nothing
-    /// pending. Drives the engine's restore-safety bookkeeping
+    /// register-write and/or RIP-advance committed on the next entry). This is
+    /// conservative for write-style exits: they have no trait-level pending
+    /// value, but KVM retains the PIO/MMIO callback until the next entry.
+    /// Drives the engine's restore-safety bookkeeping
     /// (`Vmm::completion_staged`).
     pub fn stages_completion(&self) -> bool {
         match self {
-            Exit::Common(c) => c.stages_completion(),
+            Exit::Common(c) => A::stages_common_completion(c),
             Exit::Arch(e) => e.stages_completion(),
         }
     }
@@ -62,8 +61,8 @@ impl<A: Arch> Exit<A> {
 pub enum CommonExit {
     /// MMIO (on x86 the userspace xAPIC page at `0xFEE0_0000` falls through
     /// here, R1). `write = Some(v)` is a store; `None` is a load, resolved by
-    /// `complete_read`. Both leave a completion in the backend: KVM finishes
-    /// the instruction (remaining fragments, the PC advance) on the next entry.
+    /// `complete_read`. The architecture classifies whether a store callback
+    /// remains staged on return.
     Mmio {
         /// Guest-physical address of the access.
         gpa: Gpa,
@@ -96,13 +95,15 @@ impl CommonExit {
         }
     }
 
-    /// See [`Exit::stages_completion`]. Of the common exits every MMIO
-    /// access stages one (`Hypercall` is unmodeled above the trait and
-    /// resumes with nothing pending).
+    /// See [`Exit::stages_completion`]. The architecture-specific `Exit` wrapper
+    /// may conservatively add MMIO stores when its backend retains a callback.
     pub fn stages_completion(&self) -> bool {
         match self {
-            CommonExit::Mmio { .. } => true,
-            CommonExit::Hypercall(_) | CommonExit::Idle | CommonExit::Shutdown => false,
+            CommonExit::Mmio { write: None, .. } => true,
+            CommonExit::Mmio { write: Some(_), .. }
+            | CommonExit::Hypercall(_)
+            | CommonExit::Idle
+            | CommonExit::Shutdown => false,
         }
     }
 }
@@ -118,7 +119,7 @@ mod completion_tests {
     use super::*;
 
     #[test]
-    fn every_mmio_access_stages_a_common_completion() {
+    fn only_an_mmio_load_stages_a_common_completion_by_default() {
         let load = CommonExit::Mmio {
             gpa: Gpa(0x1000),
             size: 4,
@@ -130,7 +131,7 @@ mod completion_tests {
             write: Some(7),
         };
         assert!(load.stages_completion());
-        assert!(store.stages_completion());
+        assert!(!store.stages_completion());
         assert!(!CommonExit::Idle.stages_completion());
         assert!(!CommonExit::Shutdown.stages_completion());
     }

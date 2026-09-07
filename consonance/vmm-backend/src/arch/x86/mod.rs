@@ -15,7 +15,7 @@ pub use state::{
 };
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
-use crate::exit::ExitReason;
+use crate::exit::{CommonExit, ExitReason};
 
 /// The x86-64 vendor (a zero-sized type; `docs/ARCHITECTURE.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -29,6 +29,10 @@ impl Arch for X86 {
     type IntId = u8;
     type Caps = X86Caps;
     type Completion = X86Completion;
+
+    fn stages_common_completion(exit: &CommonExit) -> bool {
+        matches!(exit, CommonExit::Mmio { .. }) || exit.stages_completion()
+    }
 }
 
 /// The x86-specific exit variants — the per-ISA half of the two-level
