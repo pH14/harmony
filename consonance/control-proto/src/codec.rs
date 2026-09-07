@@ -20,8 +20,8 @@
 use crate::error::ProtocolError;
 use crate::types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
-    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId, StopConditions,
-    StopMask, StopReason,
+    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, Resolution, SnapId,
+    StopConditions, StopMask, StopReason,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
@@ -251,7 +251,7 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
         Request::Run { until, resolve } => {
             w.push(REQ_RUN);
             write_stop_conditions(w, until);
-            write_opt_answer(w, resolve);
+            write_opt_resolution(w, resolve);
         }
         Request::Hash { scope } => {
             w.push(REQ_HASH);
@@ -300,7 +300,7 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
         REQ_REPLAY => Request::Replay(SnapId(r.u64()?)),
         REQ_RUN => Request::Run {
             until: read_stop_conditions(r)?,
-            resolve: read_opt_answer(r)?,
+            resolve: read_opt_resolution(r)?,
         },
         REQ_HASH => Request::Hash {
             scope: read_hash_scope(r)?,
@@ -807,20 +807,33 @@ fn read_opt_vtime(r: &mut Reader) -> Result<Option<Moment>, ProtocolError> {
     })
 }
 
-fn write_opt_answer(w: &mut Vec<u8>, a: &Option<Answer>) {
-    match a {
-        Some(Answer(bytes)) => {
+fn write_opt_resolution(w: &mut Vec<u8>, resolution: &Option<Resolution>) {
+    match resolution {
+        Some(Resolution {
+            vtime: Moment(vtime),
+            service,
+            id: DecisionId(id),
+            answer: Answer(bytes),
+        }) => {
             w.push(PRESENT);
+            put_u64(w, *vtime);
+            put_u16(w, *service);
+            put_u64(w, *id);
             put_bytes(w, bytes);
         }
         None => w.push(ABSENT),
     }
 }
 
-fn read_opt_answer(r: &mut Reader) -> Result<Option<Answer>, ProtocolError> {
+fn read_opt_resolution(r: &mut Reader) -> Result<Option<Resolution>, ProtocolError> {
     Ok(match r.u8()? {
         ABSENT => None,
-        PRESENT => Some(Answer(r.bytes()?.to_vec())),
+        PRESENT => Some(Resolution {
+            vtime: Moment(r.u64()?),
+            service: r.u16()?,
+            id: DecisionId(r.u64()?),
+            answer: Answer(r.bytes()?.to_vec()),
+        }),
         _ => return Err(ProtocolError::ShortFrame),
     })
 }

@@ -32,7 +32,7 @@ Run on the qualified host with the matching patched KVM modules loaded:
 
 ```sh
 DETCORPUS_BLESS=1 taskset -c 2 \
-  cargo test -p vmm-core --test box_corpus \
+  cargo test -p acceptance-tests --test box_corpus \
   c1_corpus_o1_o2_on_the_patched_backend -- --ignored --nocapture
 ```
 

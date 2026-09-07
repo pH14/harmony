@@ -12,8 +12,8 @@
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
     EventRef, HashScope, HostFault, Moment, PROTO_VERSION, ProtocolError, Reply, Reproducer,
-    Request, SnapId, StopConditions, StopMask, StopReason, class_bit, decode_reply, decode_request,
-    encode_reply, encode_request,
+    Request, Resolution, SnapId, StopConditions, StopMask, StopReason, class_bit, decode_reply,
+    decode_request, encode_reply, encode_request,
 };
 
 const MAGIC: [u8; 4] = *b"CTL1";
@@ -156,7 +156,12 @@ fn req_run_with_deadline_and_resolve() {
                 deadline: Some(Moment(0x100)),
                 on: StopMask::NONE.arm(class_bit::BLOCK_IO),
             },
-            resolve: Some(Answer(vec![0x01, 0x02])),
+            resolve: Some(Resolution {
+                vtime: Moment(0x200),
+                service: 0x1234,
+                id: DecisionId(7),
+                answer: Answer(vec![0x01, 0x02]),
+            }),
         },
         &[
             0x06, // REQ_RUN
@@ -164,6 +169,9 @@ fn req_run_with_deadline_and_resolve() {
             0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // deadline = 0x100
             0x20, 0x00, 0x00, 0x00, // on = 1<<5 = 0x20 (BlockIo armed)
             0x01, // resolve present
+            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // resolution vtime = 0x200
+            0x34, 0x12, // service = 0x1234
+            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // decision id = 7
             0x02, 0x00, 0x00, 0x00, // answer len = 2
             0x01, 0x02, // answer bytes
         ],
@@ -814,25 +822,22 @@ fn err_tainted() {
     check_reply(63, Err(ControlError::Tainted), &[0x01, 0x13]);
 }
 
-/// The `class_bit` constants are a hand-maintained mirror of
-/// `environment::DecisionClass` (the lib stays schema-blind — conventions rule 2,
-/// so it never imports the enum). This test — the only place both are in scope —
-/// pins the mirror against the real enum: a renumbering on either side, or a new
-/// class added to only one, fails here rather than silently desyncing the
-/// armed-class `StopMask` from the backend's decision classes.
+/// The `class_bit` values are a persisted protocol contract. The environment
+/// fault catalog used to expose a `DecisionClass` enum that could be mirrored
+/// here, but the generic protocol no longer depends on that workload-specific
+/// catalog. Pinning the wire values still catches accidental renumbering and
+/// keeps armed-class `StopMask` values stable for archived requests.
 #[test]
-fn class_bit_mirrors_decision_class() {
-    use environment::DecisionClass as D;
-    assert_eq!(class_bit::ENTROPY, D::Entropy as u16);
-    assert_eq!(class_bit::PAYLOAD, D::Payload as u16);
-    assert_eq!(class_bit::SCHEDULER, D::Scheduler as u16);
-    assert_eq!(class_bit::NET_SEND, D::NetFlow as u16);
-    assert_eq!(class_bit::BLOCK_IO, D::BlockIo as u16);
-    assert_eq!(class_bit::PROCESS, D::Process as u16);
-    assert_eq!(class_bit::BUGGIFY, D::Buggify as u16);
-    // And the task-73 addition is pinned to its literal, so the enum and the
-    // mirror moving together (to the wrong shared value) is still caught.
+fn class_bit_values_are_pinned() {
+    assert_eq!(class_bit::ENTROPY, 1);
+    assert_eq!(class_bit::PAYLOAD, 2);
+    assert_eq!(class_bit::SCHEDULER, 3);
+    assert_eq!(class_bit::NET_SEND, 4);
+    assert_eq!(class_bit::BLOCK_IO, 5);
+    assert_eq!(class_bit::PROCESS, 6);
     assert_eq!(class_bit::BUGGIFY, 7);
+    assert_eq!(class_bit::SNAPSHOT_POINT, 8);
+    assert_eq!(class_bit::ASSERTION, 9);
 }
 
 // ---------------------------------------------------------------------------

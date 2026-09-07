@@ -49,7 +49,7 @@ use control_proto::{
     HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId,
     StopConditions, StopMask, StopReason,
 };
-use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
+use environment::{channel::Effect as EnvHostEffect, input_spec::InputSpec as EnvSpec};
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
@@ -210,11 +210,7 @@ fn read<B: Backend<A = X86>>(s: &mut ControlServer<B>, gpa: u64, len: u32) -> Ve
 fn seeded_env(seed: u64) -> Reproducer {
     Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
-        bytes: EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        }
-        .encode(),
+        bytes: EnvSpec::seeded(seed).encode(),
     }
 }
 
@@ -232,9 +228,9 @@ fn seeded_env(seed: u64) -> Reproducer {
 fn arrival_marker(at: u64) -> Request {
     Request::Perturb {
         fault: WireHostFault(
-            EnvHostFault::CorruptMemory {
+            EnvHostEffect::XorMemory {
                 gpa: 0,
-                mask: BitMask(0),
+                bytes: 0_u64.to_le_bytes().to_vec(),
             }
             .encode(),
         ),

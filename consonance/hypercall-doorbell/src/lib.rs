@@ -32,19 +32,24 @@
 //! 2. `OUT DOORBELL_PORT, EAX` with `EAX` = the request length → the host gets
 //!    `Exit::Io { port, size, write: Some(len) }`, reads [`REQ_GPA`], services it through the
 //!    task-01 `Dispatcher`, writes the response **frame** into [`RESP_GPA`], and resumes the guest
-//!    at the next instruction. An `OUT` needs no completion.
+//!    at the next instruction. The response is synchronously ready before the
+//!    guest resumes; the x86 backend still retires the write-exit completion
+//!    callback at the next guest entry.
 //! 3. The guest reads the response **length** straight from the response-frame header in
 //!    [`RESP_GPA`] (`HEADER_LEN + payload_len`, the frame being self-describing) and copies that
 //!    many bytes out. A response page that does not begin with the frame magic — e.g. the host
 //!    wrote nothing — is a rejection (`HostRejected`).
 //!
 //! **Atomicity / single-in-flight.** The whole exchange is **one** `OUT` exit: the host fully
-//! services it and writes the response before resuming, holding **no pending state across a guest
-//! resume** — exactly like the old single-`VMCALL` doorbell. This is why the response length is
-//! folded into the frame header rather than returned by a second `IN` exit: a two-exit `OUT`/`IN`
-//! doorbell resumes the guest *between* the exits while the host still owes a response length, so
-//! an interrupt injected in that window whose handler re-enters the doorbell would clobber the
-//! fixed pages and the pending length. One exit removes that window.
+//! services it and writes the response before resuming. The host has no
+//! hypercall response pending across that resume, although the VMM retains the
+//! ordinary instruction-completion callback until the next guest entry. This
+//! is why the response length is folded into the frame header rather than
+//! returned by a second `IN` exit: a two-exit `OUT`/`IN` doorbell resumes the
+//! guest *between* the exits while the host still owes a response length, so an
+//! interrupt injected in that window whose handler re-enters the doorbell
+//! would clobber the fixed pages and the pending length. One exit removes that
+//! window.
 //!
 //! The privileged `OUT` doorbell is abstracted behind the [`IoDoorbell`] seam so the whole
 //! marshalling path — plus the real task-01 `Client` and `Dispatcher` — can be exercised
@@ -54,9 +59,252 @@
 //! > avoid churn (the spec defers the `io-transport` rename); despite the name, the mechanism is
 //! > now the port-I/O doorbell described above, **not** `VMCALL`.
 
+#[cfg(feature = "linux-device")]
+extern crate std;
+
 use core::{mem::size_of, ptr};
 
 use hypercall_proto::HEADER_LEN;
+
+/// Linux userspace transport over the kernel-owned `/dev/harmony` device.
+///
+/// This module is deliberately feature-gated: the normal guest page/doorbell
+/// transport above remains `no_std`, while Linux guest supervisors can opt
+/// into the synchronous device UAPI without duplicating its ioctl framing.
+#[cfg(all(feature = "linux-device", target_os = "linux"))]
+pub mod linux {
+    use core::mem::size_of;
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::AsRawFd;
+
+    const DEVICE: &str = "/dev/harmony";
+    const MAX_FRAME: usize = hypercall_proto::MAX_FRAME;
+    // _IOWR('H', 1, struct harmony_ioc_exchange), whose fixed-width UAPI
+    // structure is 32 bytes on both 32- and 64-bit Linux.
+    // Keep the command as its ABI bit pattern. libc's ioctl request argument
+    // is `c_ulong` on glibc and `c_int` on musl; the call-site cast below lets
+    // each libc binding use its declared type without changing these bits.
+    const HARMONY_IOC_EXCHANGE: u64 = 0xc020_4801;
+
+    #[repr(C)]
+    struct Exchange {
+        request: u64,
+        response: u64,
+        request_len: u32,
+        response_capacity: u32,
+        response_len: u32,
+        reserved: u32,
+    }
+
+    const _: () = assert!(size_of::<Exchange>() == 32);
+
+    /// An open handle to the kernel-owned synchronous transport.
+    pub struct DeviceTransport {
+        file: File,
+    }
+
+    impl DeviceTransport {
+        /// Open the kernel-owned synchronous hypercall device.
+        pub fn open() -> io::Result<Self> {
+            File::options()
+                .read(true)
+                .write(true)
+                .open(DEVICE)
+                .map(|file| Self { file })
+        }
+    }
+
+    impl hypercall_proto::Transport for DeviceTransport {
+        type Error = io::Error;
+
+        fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {
+            exchange_with(req, resp, |exchange| {
+                // SAFETY: `exchange` is the fixed-width UAPI structure. The
+                // request and response slices outlive this synchronous ioctl,
+                // are non-null whenever their lengths are non-zero, and have
+                // already passed the one-frame bounds checks in
+                // `exchange_with`. The kernel copies only those declared
+                // lengths under the device's synchronous transaction lock.
+                let result = unsafe {
+                    libc::ioctl(
+                        self.file.as_raw_fd(),
+                        HARMONY_IOC_EXCHANGE as _,
+                        exchange as *mut Exchange,
+                    )
+                };
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            })
+        }
+    }
+
+    /// Validate frame bounds and run one device operation.
+    ///
+    /// Keeping the UAPI operation behind a closure lets tests exercise every
+    /// length and response-validation branch without opening `/dev/harmony`.
+    fn exchange_with<F>(req: &[u8], resp: &mut [u8], mut ioctl: F) -> io::Result<usize>
+    where
+        F: FnMut(&mut Exchange) -> io::Result<()>,
+    {
+        if req.len() > MAX_FRAME || resp.len() > MAX_FRAME {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "hypercall frame exceeds one page",
+            ));
+        }
+        let request_len = u32::try_from(req.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "request length exceeds u32")
+        })?;
+        let response_capacity = u32::try_from(resp.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "response capacity exceeds u32")
+        })?;
+        let mut exchange = Exchange {
+            request: req.as_ptr() as usize as u64,
+            response: resp.as_mut_ptr() as usize as u64,
+            request_len,
+            response_capacity,
+            response_len: 0,
+            reserved: 0,
+        };
+        ioctl(&mut exchange)?;
+        let response_len = exchange.response_len as usize;
+        // The caller capacity was checked against `MAX_FRAME` above, so this
+        // single comparison also enforces the one-page response bound.
+        if response_len > resp.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "driver returned an out-of-range response length",
+            ));
+        }
+        Ok(response_len)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::vec;
+
+        use super::*;
+
+        fn assert_transport<T: hypercall_proto::Transport>() {}
+
+        #[test]
+        fn device_transport_implements_protocol_transport() {
+            assert_transport::<DeviceTransport>();
+            assert_eq!(DEVICE, "/dev/harmony");
+            assert_eq!(HARMONY_IOC_EXCHANGE, 0xc020_4801);
+            assert_eq!(size_of::<Exchange>(), 32);
+        }
+
+        #[test]
+        fn oversized_frames_are_rejected_before_ioctl() {
+            let request = vec![0; MAX_FRAME + 1];
+            let mut response = [0; 8];
+            let mut called = false;
+            let error = exchange_with(&request, &mut response, |_| {
+                called = true;
+                Ok(())
+            })
+            .expect_err("oversized request must fail");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(!called);
+
+            let request = [0; 8];
+            let mut response = vec![0; MAX_FRAME + 1];
+            let error = exchange_with(&request, &mut response, |_| {
+                called = true;
+                Ok(())
+            })
+            .expect_err("oversized response must fail");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(!called);
+        }
+
+        #[test]
+        fn response_length_is_bounded_after_ioctl() {
+            let request = [1, 2, 3];
+            let mut response = [0; 4];
+            let response_capacity = response.len();
+            let error = exchange_with(&request, &mut response, |exchange| {
+                assert_eq!(exchange.request_len, request.len() as u32);
+                assert_eq!(exchange.response_capacity, response_capacity as u32);
+                exchange.response_len = response_capacity as u32 + 1;
+                Ok(())
+            })
+            .expect_err("driver length above capacity must fail");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+
+        #[test]
+        fn exact_page_boundary_preserves_uapi_fields_and_is_accepted() {
+            let request = vec![0xA5; MAX_FRAME];
+            let mut response = vec![0; MAX_FRAME];
+            let request_ptr = request.as_ptr() as usize as u64;
+            let response_ptr = response.as_mut_ptr() as usize as u64;
+            let mut called = false;
+            let length = exchange_with(&request, &mut response, |exchange| {
+                called = true;
+                assert_eq!(exchange.request, request_ptr);
+                assert_eq!(exchange.response, response_ptr);
+                assert_eq!(exchange.request_len, MAX_FRAME as u32);
+                assert_eq!(exchange.response_capacity, MAX_FRAME as u32);
+                assert_eq!(exchange.response_len, 0);
+                assert_eq!(exchange.reserved, 0);
+                exchange.response_len = MAX_FRAME as u32;
+                Ok(())
+            })
+            .expect("one-page request and response must be accepted");
+            assert!(called, "the ioctl must run at the inclusive boundary");
+            assert_eq!(length, MAX_FRAME);
+        }
+
+        #[test]
+        fn bounded_response_length_is_returned() {
+            let request = [1, 2, 3];
+            let mut response = [0; 4];
+            let length = exchange_with(&request, &mut response, |exchange| {
+                assert_eq!(exchange.request_len, 3);
+                assert_eq!(exchange.response_capacity, 4);
+                exchange.response_len = 4;
+                Ok(())
+            })
+            .expect("bounded response length should pass");
+            assert_eq!(length, response.len());
+        }
+
+        #[test]
+        fn ioctl_error_is_preserved() {
+            let request = [0; 1];
+            let mut response = [0; 1];
+            let error = exchange_with(&request, &mut response, |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "test denial",
+                ))
+            })
+            .expect_err("fake ioctl error should propagate");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+
+        #[cfg(not(miri))]
+        #[test]
+        fn device_transport_preserves_a_nonzero_ioctl_result() {
+            let mut transport = DeviceTransport {
+                file: File::open("/dev/null").expect("Linux test device exists"),
+            };
+            let mut response = [0_u8; 1];
+            let error = hypercall_proto::Transport::exchange(&mut transport, &[0], &mut response)
+                .expect_err("an unsupported ioctl must remain an error");
+            assert!(
+                error.raw_os_error().is_some(),
+                "the ioctl errno must be preserved"
+            );
+        }
+    }
+}
 
 /// The magic 16-bit I/O port the guest rings to signal a hypercall (the **doorbell**). An `OUT` to
 /// this port is surfaced by **stock KVM** as `KVM_EXIT_IO` (docs/ARCHITECTURE.md) — unlike `VMCALL`,

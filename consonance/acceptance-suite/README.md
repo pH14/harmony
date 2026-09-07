@@ -20,8 +20,9 @@ make -C consonance/acceptance-suite test-payloads
 ```
 
 The payload gate runs every image twice under QEMU TCG and compares its payload
-output byte-for-byte. The hardware-backed corpus gate is driven from the VMM
-test harness and uses the same payloads, manifest, and goldens.
+output byte-for-byte. The hardware-backed corpus gate is driven by the separate
+`acceptance-tests` composition crate and uses the same payloads, manifest, and
+goldens (`cargo test -p acceptance-tests --test box_corpus -- --ignored`).
 
 This directory owns acceptance workloads and oracle plumbing. Linux kernels,
 guest agents, and compatibility libraries live under

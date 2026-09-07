@@ -383,7 +383,7 @@ fn boot_pg(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
     )
     .expect("boot_linux_selected (patched) — needs the LOADED patched KVM modules");
     let out = run_bounded(&mut vmm);
-    (vmm.serial().to_vec(), vmm.state_hash(), out)
+    (vmm.serial().to_vec(), vmm.state_hash().unwrap(), out)
 }
 
 fn report(tag: &str, out: &BootOutcome) {

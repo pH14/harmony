@@ -204,7 +204,7 @@ if [ "$host_arch" = aarch64 ]; then
         build_arm64_game_musl
     )
     if ! agent_output=$(HARMONY_MUSL_PREFIX="$build_root/musl-arm64-game-prefix" \
-        bash "$guest/tetanes-agent/build.sh"); then
+        bash "$repo/workloads/tetanes-guest/build.sh"); then
         printf '%s\n' "$agent_output" >&2
         echo "FAIL: offline NES agent build or image audit failed" >&2
         exit 1

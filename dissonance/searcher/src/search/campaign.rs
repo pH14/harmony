@@ -49,12 +49,15 @@ use crate::search::rand::RomuDuoJrRand;
 
 /// A campaign's finished report and its whole-tree snapshot checkpoint.
 pub type CampaignOutcome<G> = (
-    CampaignModeReport<<G as Game>::Action, <G as Game>::ArchiveReport>,
-    SnapshotCheckpoint<<G as Game>::Snapshot>,
+    CampaignModeReport<<G as CampaignTypes>::Action, <G as CampaignTypes>::ArchiveReport>,
+    SnapshotCheckpoint<<G as CampaignTypes>::Snapshot>,
 );
 
 /// A game's initial draw state and the header provenance recorded for it.
-pub type InitialDrawState<G> = (<G as Game>::DrawState, Option<<G as Game>::TableHeader>);
+pub type InitialDrawState<G> = (
+    <G as CampaignTypes>::DrawState,
+    Option<<G as CampaignTypes>::TableHeader>,
+);
 
 /// Fixed statement of the live worker schedule, recorded in new reports.
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
@@ -206,17 +209,15 @@ pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 ///
 /// The generic layer never interprets a name or a value: it writes the set
 /// into the header and the report, and hands the recorded set back to
-/// [`Game::resolve_recorded`], which decides whether it names a run this
+/// [`InputPolicy::resolve_recorded`], which decides whether it names a run this
 /// build can reproduce. A target with no controller and no input alphabet
 /// records whatever names its own policies have instead.
 pub type GamePolicies = BTreeMap<String, String>;
 
-/// Everything one game supplies to run campaigns over it.
-///
-/// The trait is implemented on a context value holding the game image, so
-/// methods can construct targets and stamp identity hashes. Worker threads
-/// share the context, hence `Sync`.
-pub trait Game: Sync {
+/// The associated types shared by the independently implementable campaign
+/// facets. Keeping these in one contract lets a target, input policy, evaluator,
+/// and reporter be supplied by separate implementations for the same context.
+pub trait CampaignTypes: Sync {
     /// Emulated game instance a worker drives.
     /// The pool constructs, uses, and drops each target on its worker thread;
     /// targets are never transferred between threads.
@@ -242,33 +243,39 @@ pub trait Game: Sync {
     type Run: Clone + Sync;
     /// Live state of the recorded input-draw policy.
     type DrawState;
+    /// State checkpoint owned by the input policy. Stateless policies use
+    /// `()` and never materialize a draw checkpoint; empirical policies can
+    /// retain their historical checkpoint representation.
+    type DrawCheckpoint: Clone + Debug + Eq + Send + Sync;
     /// Header provenance for a derived draw-table policy.
     type TableHeader: Clone + Debug + Eq + Serialize + DeserializeOwned;
+}
 
+/// Stream and result serialization owned by a campaign adapter.
+pub trait Reporting: CampaignTypes {
     /// Stream format identifier written as the first line of every stream.
     fn stream_format(&self) -> &'static str;
     /// Format tag of the snapshot checkpoint file.
     fn checkpoint_format(&self) -> &'static str;
     /// SHA-256 of the game image bytes.
     fn image_sha256(&self) -> String;
+    /// Incrementally digest one complete worker result for stream replay verification.
+    fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
+    /// Assemble the game's archive report from the campaign's final state.
+    fn archive_report(
+        &self,
+        evidence: &Self::Evidence,
+        state: ArchiveReportState<Self>,
+    ) -> Self::ArchiveReport;
+}
+
+/// Input vocabulary and mutation-draw policy owned by a campaign adapter.
+pub trait InputPolicy: CampaignTypes {
     /// Ceiling on the per-run action limit.
     fn max_action_limit(&self) -> usize;
-    /// Time-accounting function handed to the archive.
-    fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
     /// Time of the longest single action the target can draw; the suffix
     /// time bound is a multiple of it.
     fn longest_action_time(&self) -> u64;
-    /// Deterministic logical memory charge for one resident snapshot.
-    fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
-    /// Fixed logical-memory reserve withheld from the recorded global budget
-    /// for the run's bounded input-draw acceleration state.
-    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
-    /// Current logical bytes held by the live input-draw acceleration state.
-    fn draw_state_memory_bytes(&self, state: &Self::DrawState) -> usize;
-
-    /// Incrementally digest one complete worker result for stream replay verification.
-    fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
-
     /// The recorded identifiers of one run's game-owned policies.
     fn policies(&self, run: &Self::Run) -> GamePolicies;
     /// Resolve a recorded policy set back into a run, rejecting any name or
@@ -278,95 +285,11 @@ pub trait Game: Sync {
     ///
     /// Returns an error for an unrecognized policy set.
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<Self::Run, Box<dyn Error>>;
-
-    /// Build one worker's target.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the target cannot be built.
-    fn new_target(&self) -> Result<Self::Target, String>;
-    /// Reset a target to gameplay genesis.
-    fn reset(&self, target: &mut Self::Target);
-    /// Restore a snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the restore fails.
-    fn restore(
-        &self,
-        target: &mut Self::Target,
-        snapshot: &Self::Snapshot,
-    ) -> Result<(), Box<dyn Error>>;
-    /// Frames the target has emulated over its lifetime.
-    fn frames_clocked(&self, target: &Self::Target) -> u64;
-    /// Apply one action and merge its milestone evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when milestone decoding fails.
-    fn apply_action(
-        &self,
-        target: &mut Self::Target,
-        action: &Self::Action,
-        milestones: &mut Self::Milestones,
-    ) -> Result<(), Box<dyn Error>>;
-    /// Whether the target is dead or failed, ending an imported walk.
-    fn is_terminal(&self, target: &Self::Target) -> bool;
-    /// Whether the target satisfies any terminal condition recorded by this run.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the terminal state cannot be observed reliably.
-    fn is_run_terminal(
-        &self,
-        run: &Self::Run,
-        target: &Self::Target,
-    ) -> Result<bool, Box<dyn Error>>;
-    /// Snapshot the target.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when snapshotting fails.
-    fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>>;
-    /// Decode the completed archive key of the target's current state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when decoding fails.
-    fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
-    /// Complete a worker-decoded candidate key against its snapshot. Workers
-    /// leave ancestry-dependent fields canonical so result digests stay
-    /// independent of them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the snapshot cannot supply the identity.
-    fn complete_candidate_key(
-        &self,
-        key: Self::Key,
-        snapshot: &Self::Snapshot,
-    ) -> Result<Self::Key, Box<dyn Error>>;
-
-    /// Execute one job: restore the origin snapshot, replay the actions that
-    /// lead from it to the parent, and apply the suffix, collecting
-    /// per-boundary candidates with worker-side probe verdicts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when emulation or snapshotting fails.
-    #[allow(clippy::too_many_arguments)]
-    fn execute_job(
-        &self,
-        run: &Self::Run,
-        target: &mut Self::Target,
-        origin_snapshot: &Self::Snapshot,
-        replay: &[Self::Action],
-        parent_actions: usize,
-        parent_milestones: Self::Milestones,
-        suffix: &[Self::Action],
-        max_actions: usize,
-        retention: RetentionPolicy,
-    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>;
+    /// Fixed logical-memory reserve withheld from the recorded global budget
+    /// for the run's bounded input-draw acceleration state.
+    fn draw_state_memory_reserve_bytes(&self, run: &Self::Run, max_actions: usize) -> usize;
+    /// Current logical bytes held by the live input-draw acceleration state.
+    fn draw_state_memory_bytes(&self, state: &Self::DrawState) -> usize;
 
     /// Build the run's initial draw state and, for a derived policy, the
     /// header provenance recorded for it. `origin` carries the source archive
@@ -388,7 +311,30 @@ pub trait Game: Sync {
     fn draw_checkpoint(
         &self,
         state: &Self::DrawState,
-    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>>;
+    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
+        let _ = state;
+        Ok(None)
+    }
+    /// Convert an input-policy checkpoint to the legacy stream representation.
+    /// The stream remains serde-compatible with historical empirical records.
+    fn draw_checkpoint_to_wire(
+        &self,
+        checkpoint: &Self::DrawCheckpoint,
+    ) -> Result<EmpiricalStepCheckpoint, Box<dyn Error>> {
+        let _ = checkpoint;
+        Err("stateless input policy produced a draw checkpoint".into())
+    }
+    /// Decode the legacy stream representation into the policy's checkpoint.
+    /// Stateless policies reject a non-empty historical checkpoint explicitly.
+    fn draw_checkpoint_from_wire(
+        &self,
+        checkpoint: Option<&EmpiricalStepCheckpoint>,
+    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
+        if checkpoint.is_some() {
+            return Err("recorded stream carries an unsupported draw checkpoint".into());
+        }
+        Ok(None)
+    }
     /// Expand one mutation seed into its complete suffix from the live draw
     /// state, under the search layer's mutation `shape`.
     ///
@@ -415,9 +361,14 @@ pub trait Game: Sync {
         state: &Self::DrawState,
         shape: SuffixShape,
         mixture: MixtureDraw,
-        before: Option<&EmpiricalStepCheckpoint>,
+        before: Option<&Self::DrawCheckpoint>,
         mutation_seed: u64,
-    ) -> Result<Vec<Self::Action>, Box<dyn Error>>;
+    ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+        if before.is_some() {
+            return Err("recorded stream carries an unsupported draw checkpoint".into());
+        }
+        self.expand_suffix(run, state, shape, mixture, mutation_seed)
+    }
     /// Fold the record's retained inputs into the draw state and close the
     /// record, returning the periodic checkpoint when one is due. Each
     /// retained input arrives with its parent's action count so the game's
@@ -431,10 +382,15 @@ pub trait Game: Sync {
         run: &Self::Run,
         state: &mut Self::DrawState,
         retained: &[(usize, &[Self::Action])],
-    ) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>>;
+    ) -> Result<Option<Self::DrawCheckpoint>, Box<dyn Error>> {
+        let _ = (run, state, retained);
+        Ok(None)
+    }
     /// Whether retained-input folding needs the complete root-relative input
     /// instead of only the newly retained parent-relative suffix.
-    fn retained_inputs_need_full(&self, run: &Self::Run) -> bool;
+    fn retained_inputs_need_full(&self, _run: &Self::Run) -> bool {
+        false
+    }
     /// Remember the current draw-state version when a recorded stream will
     /// need it, so replay can re-derive suffixes drawn against it.
     ///
@@ -445,8 +401,173 @@ pub trait Game: Sync {
         &self,
         state: &mut Self::DrawState,
         required: &BTreeSet<u64>,
-    ) -> Result<(), Box<dyn Error>>;
+    ) -> Result<(), Box<dyn Error>> {
+        let _ = (state, required);
+        Ok(())
+    }
+}
 
+/// Target construction, execution, and action-boundary observation owned by a
+/// campaign adapter.
+pub trait TargetExecution: CampaignTypes {
+    /// Build one worker's target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target cannot be built.
+    fn new_target(&self) -> Result<Self::Target, String>;
+    /// Reset a target to gameplay genesis.
+    fn reset(&self, target: &mut Self::Target);
+    /// Restore a snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the restore fails.
+    fn restore(
+        &self,
+        target: &mut Self::Target,
+        snapshot: &Self::Snapshot,
+    ) -> Result<(), Box<dyn Error>>;
+    /// Frames the target has emulated over its lifetime.
+    fn frames_clocked(&self, target: &Self::Target) -> u64;
+    /// Time-accounting function handed to the archive.
+    fn action_time_fn(&self) -> fn(&Self::Action) -> u64;
+    /// Deterministic logical memory charge for one resident snapshot.
+    fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
+    /// Apply one action and merge its milestone evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when milestone decoding fails.
+    fn apply_action(
+        &self,
+        target: &mut Self::Target,
+        action: &Self::Action,
+        milestones: &mut Self::Milestones,
+    ) -> Result<(), Box<dyn Error>>;
+    /// Per-action observations captured by the target after an action.
+    ///
+    /// The default is suitable for games whose stream has no observations;
+    /// workload adapters with native observations override it.
+    fn rollout_observations(&self, _target: &Self::Target) -> Vec<Self::Observations> {
+        Vec::new()
+    }
+    /// Run the admission probe and restore the supplied candidate snapshot
+    /// before returning. The default is a restore-only probe.
+    fn rollout_probe(
+        &self,
+        _run: &Self::Run,
+        target: &mut Self::Target,
+        snapshot: &Self::Snapshot,
+    ) -> Result<bool, Box<dyn Error>> {
+        self.restore(target, snapshot)?;
+        Ok(true)
+    }
+    /// Snapshot the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when snapshotting fails.
+    fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>>;
+    /// Execute one job: restore the origin snapshot, replay the actions that
+    /// lead from it to the parent, and apply the suffix, collecting
+    /// per-boundary candidates with worker-side probe verdicts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when emulation or snapshotting fails.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_job(
+        &self,
+        run: &Self::Run,
+        target: &mut Self::Target,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
+        parent_actions: usize,
+        parent_milestones: Self::Milestones,
+        suffix: &[Self::Action],
+        max_actions: usize,
+        retention: RetentionPolicy,
+    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
+    where
+        Self: Game + Sized,
+    {
+        crate::search::rollout::execute_job(
+            self,
+            run,
+            target,
+            origin_snapshot,
+            replay,
+            parent_actions,
+            parent_milestones,
+            suffix,
+            max_actions,
+            retention,
+        )
+    }
+}
+
+/// Outcome classification, archive keys, and retained evidence owned by a workload.
+pub trait Evaluation: CampaignTypes {
+    /// Whether the target is dead or failed, ending an imported walk.
+    fn is_terminal(&self, target: &Self::Target) -> bool;
+    /// Whether the target satisfies any terminal condition recorded by this run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the terminal state cannot be observed reliably.
+    fn is_run_terminal(
+        &self,
+        run: &Self::Run,
+        target: &Self::Target,
+    ) -> Result<bool, Box<dyn Error>>;
+    /// Classify the current target at a rollout boundary.
+    ///
+    /// Games with distinct death, victory, and infrastructure-failure states
+    /// should override this hook. The conservative default treats a generic
+    /// terminal target as dead and asks the run predicate only for live
+    /// targets.
+    fn rollout_outcome(
+        &self,
+        run: &Self::Run,
+        target: &Self::Target,
+    ) -> Result<crate::search::rollout::Outcome, Box<dyn Error>> {
+        let terminal = self.is_terminal(target);
+        Ok(crate::search::rollout::Outcome {
+            dead: terminal,
+            victory: !terminal && self.is_run_terminal(run, target)?,
+            failed: false,
+        })
+    }
+    /// Decode the completed archive key of the target's current state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding fails.
+    fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>>;
+    /// Decode a worker candidate key before coordinator completion.
+    ///
+    /// Workloads with ancestry-dependent key fields keep their recorded worker
+    /// representation here and fill those fields in `complete_candidate_key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when decoding fails.
+    fn rollout_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
+        self.current_key(target)
+    }
+    /// Complete a worker-decoded candidate key against its snapshot. Workers
+    /// leave ancestry-dependent fields canonical so result digests stay
+    /// independent of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot cannot supply the identity.
+    fn complete_candidate_key(
+        &self,
+        key: Self::Key,
+        snapshot: &Self::Snapshot,
+    ) -> Result<Self::Key, Box<dyn Error>>;
     /// Merge one milestone summary into another, keeping the strongest of
     /// each rung.
     fn merge_milestones(&self, into: &mut Self::Milestones, from: Self::Milestones);
@@ -497,17 +618,20 @@ pub trait Game: Sync {
         &self,
         source: &Self::ArchiveReport,
     ) -> Result<Input<Self::Action>, Box<dyn Error>>;
-    /// Assemble the game's archive report from the campaign's final state.
-    fn archive_report(
-        &self,
-        evidence: &Self::Evidence,
-        state: ArchiveReportState<Self>,
-    ) -> Self::ArchiveReport;
 }
 
+/// Complete typed campaign surface consumed by the generic engine.
+pub trait Game: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting {}
+
+impl<T> Game for T where T: CampaignTypes + TargetExecution + InputPolicy + Evaluation + Reporting {}
+
+pub trait CampaignInterfaces: Game {}
+
+impl<T: Game + ?Sized> CampaignInterfaces for T {}
+
 /// The generic half of the final archive state, handed to
-/// [`Game::archive_report`].
-pub struct ArchiveReportState<G: Game + ?Sized> {
+/// [`Reporting::archive_report`].
+pub struct ArchiveReportState<G: CampaignTypes + ?Sized> {
     /// Campaign seed.
     pub seed: u64,
     /// Admitted executions.
@@ -1124,7 +1248,7 @@ fn stop_reservations_after_victory(continue_after_victory: bool, victory_found: 
 /// One candidate boundary inside a job result.
 #[derive(Serialize)]
 #[serde(bound = "")]
-pub struct CampaignCandidate<G: Game + ?Sized> {
+pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
     /// Worker-decoded archive key, ancestry fields canonical.
     pub key: G::Key,
     /// Worker-side probe verdict under the run's admission rule.
@@ -1133,14 +1257,14 @@ pub struct CampaignCandidate<G: Game + ?Sized> {
     pub snapshot: G::Snapshot,
 }
 
-impl<G: Game + ?Sized> PartialEq for CampaignCandidate<G> {
+impl<G: CampaignTypes + ?Sized> PartialEq for CampaignCandidate<G> {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && self.viable == other.viable && self.snapshot == other.snapshot
     }
 }
-impl<G: Game + ?Sized> Eq for CampaignCandidate<G> {}
+impl<G: CampaignTypes + ?Sized> Eq for CampaignCandidate<G> {}
 
-impl<G: Game + ?Sized> Clone for CampaignCandidate<G> {
+impl<G: CampaignTypes + ?Sized> Clone for CampaignCandidate<G> {
     fn clone(&self) -> Self {
         Self {
             key: self.key,
@@ -1150,7 +1274,7 @@ impl<G: Game + ?Sized> Clone for CampaignCandidate<G> {
     }
 }
 
-impl<G: Game + ?Sized> Debug for CampaignCandidate<G> {
+impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignCandidate")
@@ -1164,7 +1288,7 @@ impl<G: Game + ?Sized> Debug for CampaignCandidate<G> {
 /// One executed action inside a job result.
 #[derive(Serialize)]
 #[serde(bound = "")]
-pub struct CampaignActionResult<G: Game + ?Sized> {
+pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
     /// The executed action.
     pub action: G::Action,
     /// Per-frame observations across the action.
@@ -1181,7 +1305,7 @@ pub struct CampaignActionResult<G: Game + ?Sized> {
     pub candidate: Option<CampaignCandidate<G>>,
 }
 
-impl<G: Game + ?Sized> PartialEq for CampaignActionResult<G> {
+impl<G: CampaignTypes + ?Sized> PartialEq for CampaignActionResult<G> {
     fn eq(&self, other: &Self) -> bool {
         self.action == other.action
             && self.observations == other.observations
@@ -1192,9 +1316,9 @@ impl<G: Game + ?Sized> PartialEq for CampaignActionResult<G> {
             && self.candidate == other.candidate
     }
 }
-impl<G: Game + ?Sized> Eq for CampaignActionResult<G> {}
+impl<G: CampaignTypes + ?Sized> Eq for CampaignActionResult<G> {}
 
-impl<G: Game + ?Sized> Clone for CampaignActionResult<G> {
+impl<G: CampaignTypes + ?Sized> Clone for CampaignActionResult<G> {
     fn clone(&self) -> Self {
         Self {
             action: self.action,
@@ -1208,7 +1332,7 @@ impl<G: Game + ?Sized> Clone for CampaignActionResult<G> {
     }
 }
 
-impl<G: Game + ?Sized> Debug for CampaignActionResult<G> {
+impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignActionResult")
@@ -1228,19 +1352,19 @@ impl<G: Game + ?Sized> Debug for CampaignActionResult<G> {
 /// complete serialization, including snapshots.
 #[derive(Serialize)]
 #[serde(bound = "")]
-pub struct CampaignJobResult<G: Game + ?Sized> {
+pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
     /// Executed actions in order.
     pub actions: Vec<CampaignActionResult<G>>,
 }
 
-impl<G: Game + ?Sized> PartialEq for CampaignJobResult<G> {
+impl<G: CampaignTypes + ?Sized> PartialEq for CampaignJobResult<G> {
     fn eq(&self, other: &Self) -> bool {
         self.actions == other.actions
     }
 }
-impl<G: Game + ?Sized> Eq for CampaignJobResult<G> {}
+impl<G: CampaignTypes + ?Sized> Eq for CampaignJobResult<G> {}
 
-impl<G: Game + ?Sized> Clone for CampaignJobResult<G> {
+impl<G: CampaignTypes + ?Sized> Clone for CampaignJobResult<G> {
     fn clone(&self) -> Self {
         Self {
             actions: self.actions.clone(),
@@ -1248,7 +1372,7 @@ impl<G: Game + ?Sized> Clone for CampaignJobResult<G> {
     }
 }
 
-impl<G: Game + ?Sized> Debug for CampaignJobResult<G> {
+impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CampaignJobResult")
@@ -1682,7 +1806,7 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
     }
 
     /// The strongest milestone summary so far; delegated through the game via
-    /// the evidence, see [`Game::aggregate_milestones`].
+    /// the evidence, see [`Evaluation::aggregate_milestones`].
     fn aggregate_milestones(&self) -> G::Milestones {
         G::aggregate_milestones(&self.evidence)
     }
@@ -2102,15 +2226,14 @@ impl postcard::ser_flavors::Flavor for PostcardSha256 {
 
 /// Incrementally digest the pinned postcard representation without building
 /// a full encoded result buffer.
-pub(crate) fn postcard_result_sha256<G: Game + ?Sized>(
+pub fn postcard_result_sha256<G: Game + ?Sized>(
     result: &CampaignJobResult<G>,
 ) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(result)
 }
 
-pub(crate) fn postcard_value_sha256<T: Serialize + ?Sized>(
-    value: &T,
-) -> Result<String, Box<dyn Error>> {
+/// Hash a value using the pinned postcard encoding without allocating its full bytes.
+pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
         PostcardSha256(Sha256::new()),
@@ -2363,7 +2486,7 @@ fn validate_snapshot_root_checkpoint<'a, G: Game + ?Sized>(
 /// Returns an error when the origin is unusable, a worker fails, emulation or
 /// snapshotting fails, or the stream cannot be written.
 #[allow(clippy::too_many_lines)]
-pub fn run_campaign_checkpointed<G: Game>(
+pub fn run_campaign_checkpointed<G: CampaignInterfaces>(
     game: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
@@ -2537,7 +2660,9 @@ where
                         }
                         _ => (default_mixture_weight(), 0),
                     };
-                    let draw_table_before = game.draw_checkpoint(draw_state)?;
+                    let draw_checkpoint_before = game.draw_checkpoint(draw_state)?;
+                    let draw_table_before =
+                        draw_checkpoint_to_wire(game, draw_checkpoint_before.as_ref())?;
                     let (spliced, splice) =
                         if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
                             == EnergyStrategy::Splice
@@ -2593,8 +2718,10 @@ where
                     let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
                         && core.all_prefixes_archived(parent_index, &suffix);
                     if all_prefixes_archived {
-                        let draw_table_after =
+                        let draw_checkpoint_after =
                             game.finish_stream_record(&config.run, draw_state, &[])?;
+                        let draw_table_after =
+                            draw_checkpoint_to_wire(game, draw_checkpoint_after.as_ref())?;
                         writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
                             worker,
                             parent_id,
@@ -3123,7 +3250,21 @@ fn finish_record<G: Game>(
         .iter()
         .map(|(parent_actions, input)| (*parent_actions, input.actions.as_slice()))
         .collect::<Vec<_>>();
-    game.finish_stream_record(run, draw_state, &retained)
+    let checkpoint = game.finish_stream_record(run, draw_state, &retained)?;
+    draw_checkpoint_to_wire(game, checkpoint.as_ref())
+}
+
+/// Convert an input policy's typed checkpoint to the historical stream field.
+/// The stream schema remains tied to `EmpiricalStepCheckpoint` for replay
+/// compatibility; stateless policies return `None` and never need to invent a
+/// checkpoint representation.
+fn draw_checkpoint_to_wire<G: Game>(
+    game: &G,
+    checkpoint: Option<&G::DrawCheckpoint>,
+) -> Result<Option<EmpiricalStepCheckpoint>, Box<dyn Error>> {
+    checkpoint
+        .map(|checkpoint| game.draw_checkpoint_to_wire(checkpoint))
+        .transpose()
 }
 
 /// Replay a recorded campaign stream serially and rebuild its report.
@@ -3142,7 +3283,7 @@ fn finish_record<G: Game>(
 /// Returns an error when the stream is malformed, the origin does not match
 /// the header, or any recomputed value differs from the recorded one.
 #[allow(clippy::too_many_lines)]
-pub fn replay_campaign_checkpointed<G: Game>(
+pub fn replay_campaign_checkpointed<G: CampaignInterfaces>(
     game: &G,
     stream_bytes: &[u8],
     origin_report: Option<&G::ArchiveReport>,
@@ -3426,6 +3567,8 @@ where
                     strategy,
                     skip.splice,
                 )?;
+                let draw_checkpoint_before =
+                    game.draw_checkpoint_from_wire(skip.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
@@ -3437,7 +3580,7 @@ where
                             weight: skip.mixture_weight,
                             splice_weight: skip.splice_weight,
                         },
-                        skip.draw_table_before.as_ref(),
+                        draw_checkpoint_before.as_ref(),
                         skip.mutation_seed,
                     )?,
                 };
@@ -3455,8 +3598,10 @@ where
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
                 counters.skips_per_worker[worker] =
                     counters.skips_per_worker[worker].saturating_add(1);
-                let draw_table_after =
+                let draw_checkpoint_after =
                     game.finish_stream_record(&replay_run, &mut draw_state, &[])?;
+                let draw_table_after =
+                    draw_checkpoint_to_wire(game, draw_checkpoint_after.as_ref())?;
                 if draw_table_after != skip.draw_table_after {
                     return Err("replayed skip draw-table checkpoint diverged".into());
                 }
@@ -3500,6 +3645,8 @@ where
                     strategy,
                     job.splice.clone(),
                 )?;
+                let draw_checkpoint_before =
+                    game.draw_checkpoint_from_wire(job.draw_table_before.as_ref())?;
                 let mut suffix = match spliced {
                     Some(tail) => tail,
                     None => game.expand_suffix_recorded(
@@ -3511,7 +3658,7 @@ where
                             weight: job.mixture_weight,
                             splice_weight: job.splice_weight,
                         },
-                        job.draw_table_before.as_ref(),
+                        draw_checkpoint_before.as_ref(),
                         job.mutation_seed,
                     )?,
                 };
@@ -3670,12 +3817,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate, CampaignCounters,
-        CampaignJobRecord, CampaignJobResult, CampaignSpliceRecord, CampaignStreamHeader,
-        CampaignStreamRecord, CoordinatorCore, DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
-        EnergyStrategy, Game, GamePolicies, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
-        SPLICE_ACTION_CAP, admission_window_depth, archive_entry_limit_is_valid,
-        compact_progress_curve, completed_results_within_bound,
+        ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
+        CampaignCounters, CampaignJobRecord, CampaignJobResult, CampaignSpliceRecord,
+        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CoordinatorCore,
+        DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER, EnergyStrategy, Evaluation, GamePolicies,
+        InitialDrawState, InputPolicy, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
+        Reporting, SPLICE_ACTION_CAP, TargetExecution, admission_window_depth,
+        archive_entry_limit_is_valid, compact_progress_curve, completed_results_within_bound,
         draw_state_memory_is_within_reserve, finish_record, is_zero_usize,
         live_coordinator_profile, postcard_value_sha256, profile_elapsed, profile_now,
         progress_checkpoint_due, progress_policy_is_supported, record_compaction_elapsed,
@@ -3684,45 +3832,488 @@ mod tests {
         schedule_policy_predates_budget_maintenance, schedule_policy_window,
         stop_reservations_after_victory, uses_bounded_progress_curve, worker_queue_is_idle,
     };
-    use crate::search::archive::{ProgressPoint, SelectorDraw, SelectorPath};
-    use crate::search::empirical_steps::EmpiricalStepCheckpoint;
-    use crate::smb::{
-        archive::archive_key,
-        campaign::{
-            SmbButtonVocabulary, SmbCampaignChordPolicy, SmbCampaignRun, SmbGame,
-            SmbTerminalPredicate,
-        },
-        target::{ButtonChord, SmbMilestones, SmbProgressWatermark, SmbTarget},
+    use crate::search::archive::{
+        ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
+        SelectorPath, entries_by_suffix,
     };
-    use crate::target::Target;
+    use crate::search::draw::{MixtureDraw, SuffixShape};
+    use crate::search::empirical_steps::EmpiricalStepCheckpoint;
+    use crate::search::rollout::{Outcome, Rollout, execute_suffix};
+    use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
-    use std::time::{Duration, Instant};
+    use std::{
+        error::Error,
+        time::{Duration, Instant},
+    };
 
-    fn synthetic_nrom() -> Vec<u8> {
-        let mut rom = vec![0_u8; 16 + (16 * 1024) + (8 * 1024)];
-        rom[..16].copy_from_slice(&[b'N', b'E', b'S', 0x1a, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        let prg = &mut rom[16..16 + (16 * 1024)];
-        prg.fill(0xea);
-        prg[..3].copy_from_slice(&[0x4c, 0x00, 0x80]);
-        for vector in [0x3ffa, 0x3ffc, 0x3ffe] {
-            prg[vector..vector + 2].copy_from_slice(&0x8000_u16.to_le_bytes());
-        }
-        rom
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    struct TestAction {
+        input: u8,
+        hold_frames: u8,
     }
 
-    fn smb_core() -> (SmbGame, SmbCampaignRun, CoordinatorCore<SmbGame>, SmbTarget) {
-        let rom = synthetic_nrom();
-        let game = SmbGame::loopback_for_tests(&rom);
-        let run = SmbCampaignRun {
-            chord: SmbCampaignChordPolicy::default(),
-            vocabulary: SmbButtonVocabulary::default(),
-            terminal: Some(SmbTerminalPredicate::GameVictory),
-        };
+    impl TestAction {
+        fn new(input: u8, hold_frames: u8) -> Self {
+            Self {
+                input,
+                hold_frames: hold_frames.max(1),
+            }
+        }
+    }
+
+    fn test_action_time(action: &TestAction) -> u64 {
+        u64::from(action.hold_frames)
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+    struct TestKey(u8);
+
+    impl ArchiveKey for TestKey {
+        type Group = u8;
+
+        fn groups() -> usize {
+            1
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            assert_eq!(depth, 0);
+            self.0
+        }
+
+        type Lineage = ();
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    #[derive(Default)]
+    struct TestTarget {
+        value: u8,
+        frames: u64,
+    }
+
+    impl TestTarget {
+        fn apply(&mut self, action: &TestAction) {
+            self.value = self.value.wrapping_add(action.input);
+            self.frames = self.frames.saturating_add(u64::from(action.hold_frames));
+        }
+
+        fn snapshot(&self) -> Result<u8, Box<dyn Error>> {
+            Ok(self.value)
+        }
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct TestArchiveReport {
+        #[serde(with = "entries_by_suffix")]
+        entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
+    }
+
+    struct TestGame;
+    impl CampaignTypes for TestGame {
+        type Target = TestTarget;
+        type Action = TestAction;
+        type Key = TestKey;
+        type Milestones = ();
+        type Progress = ();
+        type Snapshot = u8;
+        type Observations = ();
+        type Evidence = ();
+        type ArchiveReport = TestArchiveReport;
+        type Run = ();
+        type DrawState = ();
+        type DrawCheckpoint = ();
+        type TableHeader = ();
+    }
+
+    impl Reporting for TestGame {
+        fn stream_format(&self) -> &'static str {
+            "test-campaign-v1"
+        }
+        fn checkpoint_format(&self) -> &'static str {
+            "test-checkpoint-v1"
+        }
+        fn image_sha256(&self) -> String {
+            "test-image".to_owned()
+        }
+        fn result_sha256(
+            &self,
+            result: &CampaignJobResult<Self>,
+        ) -> Result<String, Box<dyn Error>> {
+            postcard_value_sha256(result)
+        }
+
+        fn archive_report(
+            &self,
+            _evidence: &Self::Evidence,
+            state: ArchiveReportState<Self>,
+        ) -> Self::ArchiveReport {
+            TestArchiveReport {
+                entries: state.entries,
+            }
+        }
+    }
+
+    impl InputPolicy for TestGame {
+        fn draw_state_memory_reserve_bytes(&self, _run: &Self::Run, _max_actions: usize) -> usize {
+            0
+        }
+        fn draw_state_memory_bytes(&self, _state: &Self::DrawState) -> usize {
+            0
+        }
+        fn policies(&self, _run: &Self::Run) -> GamePolicies {
+            GamePolicies::new()
+        }
+        fn resolve_recorded(&self, _policies: &GamePolicies) -> Result<Self::Run, Box<dyn Error>> {
+            Ok(())
+        }
+        fn initial_draw_state(
+            &self,
+            _run: &Self::Run,
+            _origin: Option<(&str, &Self::ArchiveReport)>,
+        ) -> Result<InitialDrawState<Self>, Box<dyn Error>> {
+            Ok(((), None))
+        }
+        fn expand_suffix(
+            &self,
+            _run: &Self::Run,
+            _state: &Self::DrawState,
+            _shape: SuffixShape,
+            _mixture: MixtureDraw,
+            mutation_seed: u64,
+        ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            Ok(vec![TestAction::new(mutation_seed as u8, 1)])
+        }
+
+        fn max_action_limit(&self) -> usize {
+            64
+        }
+
+        fn longest_action_time(&self) -> u64 {
+            1
+        }
+    }
+
+    impl TargetExecution for TestGame {
+        fn new_target(&self) -> Result<Self::Target, String> {
+            Ok(TestTarget::default())
+        }
+        fn reset(&self, target: &mut Self::Target) {
+            *target = TestTarget::default();
+        }
+        fn restore(
+            &self,
+            target: &mut Self::Target,
+            snapshot: &Self::Snapshot,
+        ) -> Result<(), Box<dyn Error>> {
+            target.value = *snapshot;
+            target.frames = 0;
+            Ok(())
+        }
+        fn frames_clocked(&self, target: &Self::Target) -> u64 {
+            target.frames
+        }
+        fn apply_action(
+            &self,
+            target: &mut Self::Target,
+            action: &Self::Action,
+            _milestones: &mut Self::Milestones,
+        ) -> Result<(), Box<dyn Error>> {
+            target.apply(action);
+            Ok(())
+        }
+        fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
+            target.snapshot()
+        }
+        fn execute_job(
+            &self,
+            _run: &Self::Run,
+            _target: &mut Self::Target,
+            _origin_snapshot: &Self::Snapshot,
+            _replay: &[Self::Action],
+            _parent_actions: usize,
+            _parent_milestones: Self::Milestones,
+            _suffix: &[Self::Action],
+            _max_actions: usize,
+            _retention: RetentionPolicy,
+        ) -> Result<CampaignJobResult<Self>, Box<dyn Error>> {
+            Err("test fixture does not execute worker jobs".into())
+        }
+
+        fn action_time_fn(&self) -> fn(&Self::Action) -> u64 {
+            test_action_time
+        }
+
+        fn snapshot_memory_charge(_snapshot: &Self::Snapshot) -> usize {
+            1
+        }
+    }
+
+    impl Evaluation for TestGame {
+        fn is_terminal(&self, _target: &Self::Target) -> bool {
+            false
+        }
+
+        fn is_run_terminal(
+            &self,
+            _run: &Self::Run,
+            _target: &Self::Target,
+        ) -> Result<bool, Box<dyn Error>> {
+            Ok(false)
+        }
+
+        fn current_key(&self, target: &Self::Target) -> Result<Self::Key, Box<dyn Error>> {
+            Ok(TestKey(target.value))
+        }
+
+        fn complete_candidate_key(
+            &self,
+            key: Self::Key,
+            _snapshot: &Self::Snapshot,
+        ) -> Result<Self::Key, Box<dyn Error>> {
+            Ok(key)
+        }
+
+        fn merge_milestones(&self, _into: &mut Self::Milestones, _from: Self::Milestones) {}
+        fn aggregate_milestones(_evidence: &Self::Evidence) -> Self::Milestones {}
+        fn aggregate_progress(_evidence: &Self::Evidence) -> Self::Progress {}
+        fn merge_origin_evidence(
+            &self,
+            _evidence: &mut Self::Evidence,
+            _source: &Self::ArchiveReport,
+        ) {
+        }
+        fn merge_snapshot_root_evidence(
+            &self,
+            _evidence: &mut Self::Evidence,
+            _target: &Self::Target,
+        ) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+        fn merge_import_evidence(
+            &self,
+            _evidence: &mut Self::Evidence,
+            _milestones: Self::Milestones,
+            _input: &Input<Self::Action>,
+        ) {
+        }
+        fn merge_action_evidence<F>(
+            &self,
+            _evidence: &mut Self::Evidence,
+            _action: &CampaignActionResult<Self>,
+            _sequence: u64,
+            _input: F,
+        ) -> Result<(), Box<dyn Error>>
+        where
+            F: FnOnce() -> Result<Input<Self::Action>, Box<dyn Error>>,
+        {
+            Ok(())
+        }
+        fn source_entries<'a>(
+            &self,
+            source: &'a Self::ArchiveReport,
+        ) -> &'a [ArchiveEntryReport<Self::Action, Self::Key, Self::Milestones>] {
+            &source.entries
+        }
+        fn resume_input(
+            &self,
+            source: &Self::ArchiveReport,
+        ) -> Result<Input<Self::Action>, Box<dyn Error>> {
+            source
+                .entries
+                .iter()
+                .max_by_key(|entry| (entry.key, entry.id))
+                .map(|entry| entry.input.clone())
+                .ok_or_else(|| "test fixture has no source archive".into())
+        }
+    }
+
+    struct TestRollout<'a> {
+        target: &'a mut TestTarget,
+        initial_terminal: bool,
+        terminal_after: Option<u8>,
+        fail_apply: bool,
+        fail_probe: bool,
+        probe_calls: Vec<u8>,
+    }
+
+    impl<'a> TestRollout<'a> {
+        fn new(target: &'a mut TestTarget) -> Self {
+            Self {
+                target,
+                initial_terminal: false,
+                terminal_after: None,
+                fail_apply: false,
+                fail_probe: false,
+                probe_calls: Vec::new(),
+            }
+        }
+    }
+
+    impl Rollout<TestGame> for TestRollout<'_> {
+        fn apply(
+            &mut self,
+            action: &TestAction,
+            _milestones: &mut (),
+        ) -> Result<(), Box<dyn Error>> {
+            if self.fail_apply {
+                return Err("test apply failed".into());
+            }
+            self.target.apply(action);
+            Ok(())
+        }
+
+        fn observations(&self) -> Vec<()> {
+            vec![()]
+        }
+
+        fn outcome(&self) -> Result<Outcome, Box<dyn Error>> {
+            if self.initial_terminal && self.target.frames == 0 {
+                return Ok(Outcome {
+                    dead: true,
+                    ..Outcome::default()
+                });
+            }
+            Ok(self
+                .terminal_after
+                .filter(|limit| self.target.value >= *limit)
+                .map_or_else(Outcome::default, |value| Outcome {
+                    victory: value > 0,
+                    ..Outcome::default()
+                }))
+        }
+
+        fn snapshot(&mut self) -> Result<u8, Box<dyn Error>> {
+            self.target.snapshot()
+        }
+
+        fn key(&self) -> Result<TestKey, Box<dyn Error>> {
+            Ok(TestKey(self.target.value))
+        }
+
+        fn probe(&mut self, snapshot: &u8) -> Result<bool, Box<dyn Error>> {
+            if self.fail_probe {
+                return Err("test probe failed".into());
+            }
+            self.probe_calls.push(*snapshot);
+            self.target.value = snapshot.wrapping_add(1);
+            self.target.value = *snapshot;
+            Ok(true)
+        }
+    }
+
+    fn test_core() -> (TestGame, (), CoordinatorCore<TestGame>, TestTarget) {
+        let game = TestGame;
+        let run = ();
         let mut core = CoordinatorCore::new(&game, &run, 16, 1_024, None);
-        let mut target = SmbTarget::loopback_for_tests(&rom).expect("loopback target");
+        let mut target = TestTarget::default();
         core.bootstrap(&game, &mut target)
             .expect("bootstrap generic core");
         (game, run, core, target)
+    }
+
+    #[test]
+    fn rollout_stops_on_an_already_terminal_parent() {
+        let mut target = TestTarget::default();
+        let mut rollout = TestRollout::new(&mut target);
+        rollout.initial_terminal = true;
+        let result = execute_suffix(
+            &mut rollout,
+            0,
+            (),
+            &[TestAction::new(1, 1)],
+            8,
+            RetentionPolicy::AdmitAlive,
+        )
+        .expect("terminal parent is a valid no-op rollout");
+        assert!(result.actions.is_empty());
+        assert_eq!(rollout.target.value, 0);
+    }
+
+    #[test]
+    fn rollout_honors_limits_and_restores_after_each_probe() {
+        let mut target = TestTarget::default();
+        let mut rollout = TestRollout::new(&mut target);
+        let result = execute_suffix(
+            &mut rollout,
+            1,
+            (),
+            &[
+                TestAction::new(1, 1),
+                TestAction::new(2, 1),
+                TestAction::new(4, 1),
+            ],
+            3,
+            RetentionPolicy::ProbeAtAdmission45,
+        )
+        .expect("bounded rollout");
+        assert_eq!(result.actions.len(), 2);
+        assert_eq!(
+            result.actions[0].candidate.as_ref().map(|c| c.key),
+            Some(TestKey(1))
+        );
+        assert_eq!(
+            result.actions[1].candidate.as_ref().map(|c| c.key),
+            Some(TestKey(3))
+        );
+        assert_eq!(rollout.probe_calls, vec![1, 3]);
+        assert_eq!(rollout.target.value, 3, "probe restores the live target");
+    }
+
+    #[test]
+    fn rollout_stops_on_terminal_actions_and_propagates_failures() {
+        let mut target = TestTarget::default();
+        let mut rollout = TestRollout::new(&mut target);
+        rollout.terminal_after = Some(2);
+        let result = execute_suffix(
+            &mut rollout,
+            0,
+            (),
+            &[
+                TestAction::new(1, 1),
+                TestAction::new(1, 1),
+                TestAction::new(1, 1),
+            ],
+            8,
+            RetentionPolicy::AdmitAlive,
+        )
+        .expect("terminal action rollout");
+        assert_eq!(result.actions.len(), 2);
+        assert!(result.actions[1].victory);
+        assert!(result.actions[1].candidate.is_none());
+
+        let mut target = TestTarget::default();
+        let mut apply_failure = TestRollout::new(&mut target);
+        apply_failure.fail_apply = true;
+        assert!(
+            execute_suffix(
+                &mut apply_failure,
+                0,
+                (),
+                &[TestAction::new(1, 1)],
+                8,
+                RetentionPolicy::AdmitAlive,
+            )
+            .is_err()
+        );
+
+        let mut target = TestTarget::default();
+        let mut probe_failure = TestRollout::new(&mut target);
+        probe_failure.fail_probe = true;
+        assert!(
+            execute_suffix(
+                &mut probe_failure,
+                0,
+                (),
+                &[TestAction::new(1, 1)],
+                8,
+                RetentionPolicy::ProbeAtAdmission45,
+            )
+            .is_err()
+        );
     }
 
     /// The header a stream recorded before the policy map existed, verbatim.
@@ -3797,7 +4388,7 @@ mod tests {
         assert!(is_zero_usize(&0));
         assert!(!is_zero_usize(&1));
 
-        let (_game, _run, mut core, _target) = smb_core();
+        let (_game, _run, mut core, _target) = test_core();
         core.sequence = 0;
         core.finish_curve();
         assert!(core.curve.is_empty());
@@ -3815,8 +4406,8 @@ mod tests {
         core.curve = (1..=MAX_PROGRESS_CURVE_POINTS)
             .map(|sample| ProgressPoint {
                 executions: u64::try_from(sample).expect("sample fits u64") * 100,
-                milestones: SmbMilestones::default(),
-                progress: Some(SmbProgressWatermark::default()),
+                milestones: (),
+                progress: Some(()),
                 active_entries: sample,
                 occupied_cells: sample,
                 deaths: 0,
@@ -3832,8 +4423,8 @@ mod tests {
         assert_eq!(core.curve.len(), MAX_PROGRESS_CURVE_POINTS - 1);
         core.curve.push(ProgressPoint {
             executions: u64::try_from(MAX_PROGRESS_CURVE_POINTS).expect("bound fits u64") * 100,
-            milestones: SmbMilestones::default(),
-            progress: Some(SmbProgressWatermark::default()),
+            milestones: (),
+            progress: Some(()),
             active_entries: MAX_PROGRESS_CURVE_POINTS,
             occupied_cells: MAX_PROGRESS_CURVE_POINTS,
             deaths: 0,
@@ -3864,20 +4455,20 @@ mod tests {
 
     #[test]
     fn coordinator_classifies_new_and_duplicate_boundaries() {
-        let (game, _run, mut core, mut target) = smb_core();
-        let action = ButtonChord::new(0x01, 4);
+        let (game, _run, mut core, mut target) = test_core();
+        let action = TestAction::new(0x01, 4);
         target.apply(&action);
         let snapshot = target.snapshot().expect("snapshot candidate");
-        let result = CampaignJobResult::<SmbGame> {
+        let result = CampaignJobResult::<TestGame> {
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
-                milestones: SmbMilestones::default(),
+                milestones: (),
                 dead: false,
                 victory: false,
                 failed: false,
                 candidate: Some(CampaignCandidate {
-                    key: archive_key(&target.wram()),
+                    key: TestKey(target.value),
                     viable: true,
                     snapshot,
                 }),
@@ -3901,10 +4492,116 @@ mod tests {
     }
 
     #[test]
+    fn coordinator_counts_victories_and_keeps_the_first_winning_input() {
+        let (game, _run, mut core, _target) = test_core();
+        let winning = TestAction::new(0x81, 7);
+        let result = CampaignJobResult::<TestGame> {
+            actions: vec![CampaignActionResult {
+                action: winning,
+                observations: Vec::new(),
+                milestones: (),
+                dead: false,
+                victory: true,
+                failed: false,
+                candidate: None,
+            }],
+        };
+        let winning_action = result.actions[0].clone();
+        let (sequence, decisions) = core.admit_job(&game, 0, result).expect("admit victory");
+        assert_eq!(sequence, 1);
+        assert_eq!(decisions, vec![CampaignAdmissionDecision::Victory]);
+        assert_eq!(core.victories, 1);
+        assert_eq!(
+            core.victory_input,
+            Some(Input {
+                actions: vec![winning]
+            })
+        );
+
+        let later = CampaignJobResult {
+            actions: vec![CampaignActionResult {
+                action: TestAction::new(0x01, 9),
+                ..winning_action
+            }],
+        };
+        core.admit_job(&game, 0, later)
+            .expect("admit a second victory");
+        assert_eq!(core.victories, 2);
+        assert_eq!(
+            core.victory_input,
+            Some(Input {
+                actions: vec![winning]
+            })
+        );
+        let (report, _) = core.into_archive_report_and_snapshots(&game, 0, true);
+        assert_eq!(
+            report.entries.len(),
+            1,
+            "victory does not extend the archive"
+        );
+    }
+
+    #[test]
+    fn whole_tree_import_rebuilds_inputs_and_reroots_sparse_parents() {
+        let game = TestGame;
+        let run = ();
+        let mut target = TestTarget::default();
+        let action = |input: u8| TestAction::new(input, 1);
+        let entry =
+            |id: u64, parent_id: Option<u64>, actions: Vec<TestAction>| ArchiveEntryReport {
+                id,
+                parent_id,
+                created_execution: 0,
+                input: Input { actions },
+                key: TestKey(0),
+                milestones: (),
+                selector: None,
+            };
+        let source = TestArchiveReport {
+            entries: vec![
+                entry(0, None, Vec::new()),
+                entry(1, Some(0), vec![action(0x01)]),
+                entry(2, Some(1), vec![action(0x01), action(0x02)]),
+                entry(3, Some(1), vec![action(0x01), action(0x80)]),
+                entry(9, Some(7), vec![action(0x01), action(0x02), action(0x40)]),
+                entry(10, Some(2), vec![action(0x01); 5]),
+            ],
+        };
+        let mut core = CoordinatorCore::new(&game, &run, 4, 32_768, None);
+        let suffix_json = serde_json::to_string(&source).expect("serialize source archive");
+        assert!(suffix_json.contains("\"input_suffix\""));
+        let rebuilt: TestArchiveReport =
+            serde_json::from_str(&suffix_json).expect("load suffix archive");
+        assert_eq!(rebuilt, source);
+        let counts = core
+            .import_tree(&game, &mut target, &source, None)
+            .expect("import source archive");
+        assert_eq!(counts.over_limit, 1);
+        assert_eq!(counts.rerooted, 1);
+        assert_eq!(counts.terminal, 0);
+        assert_eq!(counts.imported + counts.rejected, 4);
+        let reports = core.archive.take_entry_reports_and_snapshots().0;
+        assert_eq!(reports[0].input.actions.len(), 0);
+        for report in &reports[1..] {
+            let parent = usize::try_from(report.parent_id.expect("parent")).expect("index");
+            let parent_input = &reports[parent].input.actions;
+            assert_eq!(
+                report.input.actions.get(..parent_input.len()),
+                Some(parent_input.as_slice())
+            );
+            assert_eq!(report.created_execution, 0);
+        }
+        assert_eq!(
+            reports.len(),
+            usize::try_from(counts.imported).expect("imported count") + 1
+        );
+    }
+
+    #[test]
     fn recorded_splice_tail_validates_strategy_and_bounds() {
-        let (_game, _run, mut core, _target) = smb_core();
-        let action = ButtonChord::new(0x01, 4);
-        let encoded = |actions: Vec<ButtonChord>| {
+        let (_game, _run, mut core, _target) = test_core();
+        let action = TestAction::new(0x01, 4);
+        let encoded = |actions: Vec<TestAction>| {
             Some(CampaignSpliceRecord::Tail {
                 donor_id: 90,
                 leaf_id: 91,
@@ -4007,20 +4704,20 @@ mod tests {
         assert!(!worker_queue_is_idle(1));
         assert!(!worker_queue_is_idle(usize::MAX));
 
-        let (game, run, mut core, mut target) = smb_core();
-        let action = ButtonChord::new(0x01, 4);
+        let (game, run, mut core, mut target) = test_core();
+        let action = TestAction::new(0x01, 4);
         target.apply(&action);
         let snapshot = target.snapshot().expect("snapshot candidate");
-        let result = CampaignJobResult::<SmbGame> {
+        let result = CampaignJobResult::<TestGame> {
             actions: vec![CampaignActionResult {
                 action,
                 observations: Vec::new(),
-                milestones: SmbMilestones::default(),
+                milestones: (),
                 dead: false,
                 victory: false,
                 failed: false,
                 candidate: Some(CampaignCandidate {
-                    key: archive_key(&target.wram()),
+                    key: TestKey(target.value),
                     viable: true,
                     snapshot,
                 }),

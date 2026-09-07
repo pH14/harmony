@@ -87,12 +87,12 @@ trap cleanup EXIT
 
 echo "== M2: building production compositions"
 (cd "$repo_root" && cargo build --release -p vmm-core --bin hvf_control_server)
-(cd "$repo_root" && cargo build --release --manifest-path dissonance/Cargo.toml \
-    -p searcher --bin smb-smoke --bin smb-campaign --bin smb-vtime-continuation)
+(cd "$repo_root" && cargo build --release --manifest-path workloads/nes/Cargo.toml \
+    -p nes-workload --bin smb-smoke --bin smb-campaign --bin smb-vtime-continuation)
 server=$repo_root/target/release/hvf_control_server
-smoke=$repo_root/dissonance/target/release/smb-smoke
-searcher=$repo_root/dissonance/target/release/smb-campaign
-continuation_oracle=$repo_root/dissonance/target/release/smb-vtime-continuation
+smoke=$repo_root/workloads/nes/target/release/smb-smoke
+searcher=$repo_root/workloads/nes/target/release/smb-campaign
+continuation_oracle=$repo_root/workloads/nes/target/release/smb-vtime-continuation
 entitlements=$repo_root/consonance/vmm-backend/hvf.entitlements.plist
 for artifact in "$server" "$smoke" "$searcher" "$continuation_oracle" "$entitlements"; do
     if [[ ! -s "$artifact" ]]; then

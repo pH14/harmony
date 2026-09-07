@@ -67,7 +67,7 @@ pub enum ProtocolError {
 /// [`Protocol`](Self::Protocol) error and from a version error: a frame can
 /// decode cleanly yet carry bytes the backend must reject —
 /// [`MalformedEnvironment`](Self::MalformedEnvironment) (a [`Branch`] env blob
-/// that fails `environment::EnvSpec::decode`) and
+/// that fails `environment::input_spec::InputSpec::decode`) and
 /// [`MalformedAnswer`](Self::MalformedAnswer) (a [`Run`] resolve answer that is
 /// malformed or wrong-class for the outstanding decision). The backend never
 /// misclassifies them or passes untrusted bytes into service code.

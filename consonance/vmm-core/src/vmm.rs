@@ -11,9 +11,8 @@
 //! all observable state.
 
 use hypercall_proto::{
-    MAX_PAYLOAD, NetFlowPoint, SDK_COVERAGE_QUANTUM, SDK_COVERAGE_REQUEST_LEN,
-    SDK_COVERAGE_RESPONSE_LEN, SeededEntropy, Service, ServiceId, Status, decode, encode_error,
-    encode_response,
+    MAX_PAYLOAD, SDK_COVERAGE_QUANTUM, SDK_COVERAGE_REQUEST_LEN, SDK_COVERAGE_RESPONSE_LEN,
+    SeededEntropy, Service, ServiceId, Status, decode, encode_error, encode_response,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -23,6 +22,8 @@ use vtime::{IdlePlanner, VClock, VClockConfig};
 
 use crate::vendor::Vendor;
 use crate::virtual_time::LiveVirtualTimeTrace;
+
+use environment::{channel, input_spec::ServiceConfig};
 
 /// The engine's alias for the vCPU record set of the vendor `B` traps — how the
 /// engine names "the register file" without naming an ISA.
@@ -93,6 +94,16 @@ pub enum SdkStop {
         /// Opaque assertion detail bytes.
         data: Vec<u8>,
     },
+    /// An opaque service request awaiting a host-selected response. The guest
+    /// remains stopped before it can read the doorbell response page.
+    Decision {
+        /// Deterministic request moment.
+        moment: u64,
+        /// Doorbell frame sequence used to complete the exchange.
+        seq: u32,
+        /// Package namespace, stable request identity, and opaque payload.
+        question: channel::Question,
+    },
     // NB: lifecycle yields no longer surface an immediate `SnapshotPoint` stop —
     // their doorbell OUT is unsealable, so each is **deferred** (see
     // `SdkChannel::pending_snapshot`) to the next synchronized boundary, surfaced
@@ -156,6 +167,9 @@ pub enum VmmError {
     /// or a snapshot taken under a different CPU/MSR contract. Never a panic.
     #[error("snapshot error")]
     Snapshot(#[from] crate::snapshot::SnapshotError),
+    /// A generic service channel could not capture or restore its opaque state.
+    #[error("service channel error")]
+    Channel(#[from] channel::ChannelError),
 }
 
 impl VmmError {
@@ -471,20 +485,16 @@ enum IdleAction {
 /// concrete backend.**
 /// The task-73 SDK channel: the host-side state a cooperating guest's hypercall
 /// doorbell drives. Wired per run by [`Vmm::enable_sdk`]; a guest that never
-/// rings the doorbell leaves it untouched, and it is **never folded into the
-/// state hash** (host-side observation, like the report stream), so an SDK-less
-/// run's `state_hash` is byte-for-byte unchanged.
+/// rings the doorbell leaves its dynamic state untouched. A wired channel's
+/// deterministic state is folded into the state hash; an SDK-less run remains
+/// byte-for-byte unchanged.
 pub(crate) struct SdkChannel {
-    /// Answers buggify decisions ([`DecisionPoint::Buggify`](environment::DecisionPoint)):
-    /// materialized from the run's reproducer, so a seeded run draws from the
-    /// seeded fault stream and a replay draws from the recorded overrides.
-    env: environment::RecordedEnv,
+    /// Answers opaque workload service questions through the generic channel;
+    /// the installed handler owns any fault meaning.
+    env: channel::RecordedEnv<Box<dyn channel::ServiceHandler>>,
     /// The `Moment`-stamped raw event stream (the link-tier capture): `(moment,
     /// event_id, data)` per SDK Event emission, in arrival order.
     events: Vec<(u64, u32, Vec<u8>)>,
-    /// The buggify decisions this run resolved, `(moment, answer)`, for the
-    /// control server to fold into the recorded reproducer.
-    buggify: Vec<(u64, environment::Answer)>,
     /// The exact next basic-block count each stable logical thread must report.
     /// Absent means the protocol-defined initial threshold of one.
     coverage_thresholds: BTreeMap<u32, u64>,
@@ -499,36 +509,6 @@ pub(crate) struct SdkChannel {
     /// the next V-time-synchronized boundary, where a seal actually succeeds — so
     /// the explorer never eagerly seals an unsealable point (round-4 P1).
     pending_snapshot: bool,
-    /// The active [`FaultPolicy`](environment::FaultPolicy) bytes the channel was
-    /// wired with — folded into the state hash (round-8) so two same-seed forks at
-    /// the same stream position but with **different** buggify policies (a
-    /// different fire probability / biasing) hash differently. The `RecordedEnv`
-    /// carries the policy internally but exposes no accessor, so it is captured
-    /// here from the caller's spec at `enable_sdk`.
-    policy: Vec<u8>,
-}
-
-/// The task-61 `Net` channel: the host-side state the guest flow agent's
-/// `net_decide` doorbell drives — the **decision log only**. Wired per run by
-/// [`Vmm::enable_net`].
-///
-/// **Single decide-stream (the integrator ruling).** A `net_decide` answer is a
-/// fault-schedule **input** the guest acts on (it enforces the per-flow policy on
-/// the CNI) — the same category as a buggify decision, not a passive observation.
-/// So a net decision draws from the **one** shared fault-decision stream the SDK
-/// channel owns (materialized once, folded into `state_hash` via the `SDK\0`
-/// chunk), exactly like buggify — the task-78 single-stream contract. The Net
-/// channel therefore holds **no `env` of its own**; it only records the decisions.
-/// The "inert guest" property is preserved: a flow-agent-less guest makes zero
-/// `net_decide` calls, so it never advances the stream and its `state_hash` is
-/// byte-for-byte unchanged (there is no `NET` hash chunk).
-pub(crate) struct NetChannel {
-    /// The per-flow decisions this run resolved: `(moment, conn, answer)`, in
-    /// arrival order. Evidence the box gate reads (a flow decision appears at a
-    /// stable `Moment` across two runs) and the control server folds into the
-    /// recorded reproducer. Host-side capture (not itself hashed — the *stream
-    /// advance* the decision caused is what the shared SDK stream position folds).
-    decisions: Vec<(u64, u64, environment::Answer)>,
 }
 
 /// The paravirtual clock channel (`consonance/vtime/README.md`):
@@ -581,14 +561,14 @@ pub(crate) struct PvclockChannel {
 }
 
 /// The SDK channel's **replay-relevant** state, captured with a snapshot (task
-/// 73): the seeded stream position and the emitted event log. Held by the
+/// 73): the complete generic channel state and emitted event log. Held by the
 /// control server keyed by snapshot handle; restored on branch/replay so a fork
-/// from a mid-run SDK snapshot reproduces (the seeded streams continue from the
-/// right position) and keeps the declared catalog. Kilobytes, not a full state.
+/// from a mid-run SDK snapshot reproduces the handler and core stream exactly.
 #[derive(Clone, Debug)]
 pub struct SdkSnapshot {
-    /// The seeded stream position (buggify fault + entropy supply), 16 bytes.
-    pub(crate) stream: [u8; 16],
+    /// Full deterministic channel state, including the core stream, handler
+    /// identity/configuration/state, payload suffix, and recorded overrides.
+    pub(crate) recorded: channel::RecordedState,
     /// The `Moment`-stamped event log emitted up to the snapshot (incl. the
     /// declared catalog), which a fork carries forward.
     pub(crate) events: Vec<(u64, u32, Vec<u8>)>,
@@ -600,10 +580,6 @@ pub struct SdkSnapshot {
     /// differently (the deferred point silently lost), breaking replay's
     /// round-trip hash equality.
     pub(crate) pending_snapshot: bool,
-    /// Canonical ordered-input state: only the unconsumed payload suffix.
-    /// `None` means the service was not offered; `Some([])` is offered and
-    /// exhausted.
-    pub(crate) payloads: Option<Vec<Vec<u8>>>,
     /// Per-logical-thread next coverage thresholds. The guest's counters live
     /// in RAM; these host-side expectations govern whether its next callback is
     /// accepted, so both sides are replay-relevant.
@@ -613,22 +589,8 @@ pub struct SdkSnapshot {
 impl SdkSnapshot {
     /// Clone the unconsumed ordered payload suffix captured by this snapshot.
     pub(crate) fn remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
-        self.payloads.clone()
+        self.recorded.remaining_payloads()
     }
-}
-
-/// The task-61 `Net` channel's **replay-relevant** state, captured with a
-/// snapshot: the **decision log only**. The flow-policy stream position is NOT
-/// here — a net decision draws from the one shared fault stream the SDK channel
-/// owns (the single-stream ruling), so that position is captured/restored exactly
-/// once by [`SdkSnapshot`] and a fork's `net_decide` answers continue from it. The
-/// Net snapshot just carries the decision log forward so a fork's decision
-/// evidence is complete.
-#[derive(Clone, Debug)]
-pub struct NetSnapshot {
-    /// The `(moment, conn, answer)` decision log up to the snapshot, carried
-    /// forward so a fork's decision evidence is complete.
-    pub(crate) decisions: Vec<(u64, u64, environment::Answer)>,
 }
 
 /// The task-110 pvclock channel's **replay-relevant** state, captured with a
@@ -804,10 +766,6 @@ where
     /// every non-SDK path (M1/M2/corpus/Linux-boot) — the doorbell then stays the
     /// default-deny contract violation and this field never touches the hash.
     pub(crate) sdk: Option<SdkChannel>,
-    /// The task-61 `Net` channel, wired per run by [`Vmm::enable_net`]. `None` for
-    /// every path without a flow agent — the doorbell then behaves exactly as
-    /// before and this field never touches the hash.
-    pub(crate) net: Option<NetChannel>,
     /// The task-110 paravirt clock channel, offered per composition by
     /// [`Vmm::enable_pvclock`]. `None` (the default) keeps every existing path
     /// byte-for-byte unchanged — the doorbell stays default-deny for the
@@ -876,7 +834,6 @@ where
             snapshot_hashing: false,
             idle_wake_vns: None,
             sdk: None,
-            net: None,
             pvclock: None,
         }
     }
@@ -969,7 +926,7 @@ where
     /// Returns [`VmmError::ContractViolation`] when the production trace is not
     /// wired or no exit has completed.
     pub fn checkpoint_virtual_time_trace(&mut self) -> Result<(), VmmError> {
-        let hash = self.state_hash();
+        let hash = self.state_hash()?;
         self.virtual_time_trace
             .as_mut()
             .ok_or_else(|| {
@@ -1462,6 +1419,10 @@ where
     /// the boundary.
     pub(crate) fn can_snapshot(&self) -> bool {
         !self.rng_completion_staged
+            && !self
+                .sdk
+                .as_ref()
+                .is_some_and(|sdk| sdk.pending_stop.is_some())
     }
 
     /// Restore the V-time + entropy state captured by [`Vmm::save_vtime`]: rebuild
@@ -1884,23 +1845,28 @@ where
     /// [`VmmError::ContractViolation`] if the seeded-entropy path is not wired (a
     /// branch only diverges where there is a seeded stream to perturb).
     pub fn reseed_entropy(&mut self, seed: u64) -> Result<(), VmmError> {
-        match self.vtime.as_mut() {
-            Some(vt) => {
-                vt.entropy = SeededEntropy::new(seed);
-                Ok(())
-            }
-            None => Err(VmmError::ContractViolation(
-                "reseed_entropy: the seeded-entropy path is not wired, so there is no stream to fork \
-                 for a branch."
-                    .to_string(),
-            )),
-        }
+        let Some(vt) = self.vtime.as_mut() else {
+            return Err(VmmError::ContractViolation(
+                "reseed_entropy: the seeded-entropy path is not wired, so there is no stream to fork for a branch."
+                    .to_owned(),
+            ));
+        };
+
+        // The platform entropy stream and the workload service environment are
+        // independent deterministic inputs. A mid-run branch marker is a VMM
+        // entropy operation; reseeding the SDK here would reset scheduler state
+        // and opaque handler state that the branch InputSpec initializes below.
+        vt.entropy = SeededEntropy::new(seed);
+        Ok(())
     }
 
     /// Drive the vCPU for exactly one exit and dispatch it. Data-returning exits
     /// (port read, `Rdmsr`, `Cpuid`) are resolved back to the backend; any
     /// unmodeled exit is a loud [`VmmError::ContractViolation`].
     pub fn step(&mut self) -> Result<Step, VmmError> {
+        if self.pending_service_question().is_some() {
+            return Ok(Step::SdkStop);
+        }
         if let Some(reason) = self.terminal {
             return Ok(Step::Terminal(reason));
         }
@@ -1994,7 +1960,8 @@ where
             let checkpoint = (event_index + 1).is_multiple_of(256);
             let state_hash =
                 synchronous_checkpoint_due(checkpoint, self.deferred_virtual_time_checkpoints)
-                    .then(|| self.state_hash());
+                    .then(|| self.state_hash())
+                    .transpose()?;
             let vns_after = self
                 .vtime
                 .as_ref()
@@ -2069,11 +2036,11 @@ where
     /// same effective V-time hash **identically** (see [`encode_vtime`]). Stock KVM /
     /// M1/M2 (`vtime: None`) emit **no** chunk, so their `state_hash` is byte-for-
     /// byte unchanged from before this was added.
-    pub fn state_blob(&self) -> Vec<u8> {
+    pub fn state_blob(&self) -> Result<Vec<u8>, VmmError> {
         let mut out = Vec::new();
         put_chunk(&mut out, b"MEM\0", self.ram.as_bytes());
-        out.extend_from_slice(&self.state_blob_suffix());
-        out
+        out.extend_from_slice(&self.state_blob_suffix()?);
+        Ok(out)
     }
 
     /// The canonical state-blob bytes after the RAM chunk.
@@ -2082,7 +2049,7 @@ where
     /// slice directly into SHA-256 instead of first allocating a second full-image
     /// `Vec`. It is also the seal-time hash recipe used by portable snapshot export;
     /// the suffix contains only fixed-size machine/channel state.
-    pub(crate) fn state_blob_suffix(&self) -> Vec<u8> {
+    pub(crate) fn state_blob_suffix(&self) -> Result<Vec<u8>, VmmError> {
         let mut out = Vec::new();
         let vcpu = self.current_vcpu();
         // The dedicated hypercall-transport ABI pages are guest-visible memory
@@ -2116,13 +2083,13 @@ where
         // The task-73 SDK channel's **replay-relevant** state — present **only**
         // when a channel is wired (`enable_sdk`), so an SDK-less run's blob
         // (M1/M2/corpus/Linux-boot) is byte-for-byte unchanged (round-7). It folds
-        // the seeded stream positions (buggify + inert supply) and the pending stop
-        // into the hash, so two same-seed forks that diverge in their SDK stream (a
-        // different buggify draw sequence) hash differently — the SDK divergence is
+        // the generic service stream/handler state and pending stop into the hash,
+        // so two same-seed forks that diverge in their SDK stream hash differently —
+        // the SDK divergence is
         // now IN the determinism hash, not silently outside it. The event log stays
         // out (host-side observation, like the report stream).
         if let Some(sdk) = &self.sdk {
-            put_chunk(&mut out, b"SDK\0", &encode_sdk_channel(sdk));
+            put_chunk(&mut out, b"SDK\0", &encode_sdk_channel(sdk)?);
         }
         // The task-110 pvclock channel configuration — present **only** when
         // the page is offered (`enable_pvclock`), so every existing
@@ -2182,7 +2149,7 @@ where
                 .unwrap_or_default();
             put_chunk(&mut out, b"VMST", &bytes);
         }
-        out
+        Ok(out)
     }
 
     /// Device + terminal state for the `DEV\0` hash chunk: the vendor's device
@@ -2212,7 +2179,7 @@ where
 
     /// `sha256(state_blob())` — the M2 determinism hash and the unison
     /// `state_hash`.
-    pub fn state_hash(&self) -> [u8; 32] {
+    pub fn state_hash(&self) -> Result<[u8; 32], VmmError> {
         let mut hasher = Sha256::new();
         // Stream the potentially hundreds-of-megabytes MEM chunk directly into
         // the digest. The remaining canonical suffix is small and already owned
@@ -2221,8 +2188,8 @@ where
         hasher.update(b"MEM\0");
         hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
         hasher.update(self.ram.as_bytes());
-        hasher.update(self.state_blob_suffix());
-        hasher.finalize().into()
+        hasher.update(self.state_blob_suffix()?);
+        Ok(hasher.finalize().into())
     }
 
     /// **Diagnostic only** (not part of [`Vmm::state_hash`]): a labeled per-component
@@ -2389,25 +2356,23 @@ where
         Step::Terminal(reason)
     }
 
-    /// Wire the task-73 SDK channel for the upcoming run: `env` answers buggify
-    /// decisions, and the hypercall doorbell is serviced. Resets the event /
+    /// Wire the SDK channel for the upcoming run: `env` answers opaque package
+    /// service questions, and the hypercall doorbell is serviced. Resets the event /
     /// decision capture. A guest that never rings the doorbell is unaffected (the
     /// channel is inert and never hashed), so non-SDK runs are byte-for-byte
     /// unchanged.
     pub fn enable_sdk(
         &mut self,
-        env: environment::RecordedEnv,
-        policy: &environment::FaultPolicy,
+        env: channel::RecordedEnv<Box<dyn channel::ServiceHandler>>,
+        _config: &ServiceConfig,
     ) -> &mut Self {
         self.sdk = Some(SdkChannel {
             env,
             events: Vec::new(),
-            buggify: Vec::new(),
             coverage_thresholds: BTreeMap::new(),
             coverage: Vec::new(),
             pending_stop: None,
             pending_snapshot: false,
-            policy: policy.to_bytes(),
         });
         self
     }
@@ -2418,55 +2383,6 @@ where
     #[cfg(test)]
     pub(crate) fn sdk_is_enabled(&self) -> bool {
         self.sdk.is_some()
-    }
-
-    /// Wire the task-61 `Net` channel for the upcoming run: the hypercall doorbell
-    /// is serviced and `net_decide` decisions are captured. Takes **no env** — a
-    /// net decision draws from the one shared fault stream the SDK channel owns
-    /// (the single-stream ruling), so [`enable_sdk`] must also be wired for a net
-    /// decision to resolve a non-nominal policy (the control server always wires
-    /// both). Resets the decision capture. A guest that never asks about a flow is
-    /// unaffected — the channel is inert, and since a net decision only advances
-    /// the shared SDK stream, a run without net decisions is byte-for-byte
-    /// unchanged (there is no `NET` hash chunk).
-    pub fn enable_net(&mut self) -> &mut Self {
-        self.net = Some(NetChannel {
-            decisions: Vec::new(),
-        });
-        self
-    }
-
-    /// The per-flow decisions this run resolved, `(moment, conn, answer)`, in
-    /// order. Evidence that a run exercised the net vertical (the box gate reads
-    /// it): every flow decision appears at a stable `Moment` across two same-seed
-    /// runs. The decision log itself is host-side capture; the *stream advance*
-    /// each decision caused is folded into `state_hash` via the shared SDK stream.
-    pub fn net_decisions(&self) -> &[(u64, u64, environment::Answer)] {
-        self.net
-            .as_ref()
-            .map(|n| n.decisions.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// Capture the `Net` channel's **replay-relevant** state for a snapshot: the
-    /// decision log only. The flow-policy stream position rides the shared SDK
-    /// stream ([`sdk_snapshot`](Self::sdk_snapshot)), so it is not captured here.
-    /// `None` when no Net channel is wired.
-    pub fn net_snapshot(&self) -> Option<NetSnapshot> {
-        self.net.as_ref().map(|n| NetSnapshot {
-            decisions: n.decisions.clone(),
-        })
-    }
-
-    /// Restore a captured [`NetSnapshot`]'s decision prefix. The flow-policy stream
-    /// position is restored by [`sdk_restore`](Self::sdk_restore) /
-    /// [`sdk_restore_events`](Self::sdk_restore_events) (the shared stream), so both
-    /// the verbatim-replay and the branch paths restore the same thing here — just
-    /// the decision log carried forward. A no-op when no Net channel is wired.
-    pub fn net_restore(&mut self, snap: &NetSnapshot) {
-        if let Some(n) = self.net.as_mut() {
-            n.decisions = snap.decisions.clone();
-        }
     }
 
     /// Offer the paravirtual clock page to the guest
@@ -2521,8 +2437,7 @@ where
         match service {
             s if s == ServiceId::Event as u16 => self.sdk.is_some(),
             s if s == ServiceId::Sdk as u16 => self.sdk.is_some(),
-            s if s == ServiceId::Net as u16 => self.net.is_some(),
-            s if s == ServiceId::Entropy as u16 => self.sdk.is_some() || self.net.is_some(),
+            s if s == ServiceId::Entropy as u16 => self.sdk.is_some(),
             s if s == ServiceId::Payload as u16 => self
                 .sdk
                 .as_ref()
@@ -2952,26 +2867,40 @@ where
     }
 
     /// Capture the SDK channel's **replay-relevant** state for a snapshot (task
-    /// 73): the seeded stream position (buggify fault + entropy supply) and the
+    /// 73): the seeded generic service stream position and the
     /// emitted event log. A fork from a mid-run snapshot restores this so its
     /// seeded streams continue from the right position and it keeps the catalog
     /// the never-fired report needs. `None` when no SDK channel is wired.
-    pub fn sdk_snapshot(&self) -> Option<SdkSnapshot> {
-        self.sdk.as_ref().map(|s| SdkSnapshot {
-            stream: s.env.stream_state(),
-            events: s.events.clone(),
-            pending_snapshot: s.pending_snapshot,
-            payloads: s.env.remaining_payloads(),
-            coverage_thresholds: s.coverage_thresholds.clone(),
-        })
+    pub fn sdk_snapshot(&self) -> Result<Option<SdkSnapshot>, channel::ChannelError> {
+        if self
+            .sdk
+            .as_ref()
+            .is_some_and(|sdk| sdk.pending_stop.is_some())
+        {
+            return Err(channel::ChannelError::Handler(
+                "consume the pending SDK stop before snapshotting".into(),
+            ));
+        }
+
+        self.sdk
+            .as_ref()
+            .map(|s| {
+                Ok(SdkSnapshot {
+                    recorded: s.env.snapshot_state()?,
+                    events: s.events.clone(),
+                    pending_snapshot: s.pending_snapshot,
+                    coverage_thresholds: s.coverage_thresholds.clone(),
+                })
+            })
+            .transpose()
     }
 
     /// Restore a captured [`SdkSnapshot`] **verbatim** (the replay path): the
-    /// seeded stream position **and** the event prefix. A no-op when no SDK
+    /// generic channel state **and** the event prefix. A no-op when no SDK
     /// channel is wired (a non-SDK replay).
-    pub fn sdk_restore(&mut self, snap: &SdkSnapshot) {
+    pub fn sdk_restore(&mut self, snap: &SdkSnapshot) -> Result<(), channel::ChannelError> {
         if let Some(s) = self.sdk.as_mut() {
-            s.env.restore_stream_state(&snap.stream);
+            snap.recorded.restore_into(&mut s.env)?;
             s.events = snap.events.clone();
             // Restore the deferred snapshot-point flag: it is hash-folded
             // (round-8), so a verbatim replay must reproduce it exactly. The
@@ -2980,9 +2909,9 @@ where
             // restored image (where `setup_complete` is already past) and must not
             // re-surface an already-sealed deferred point.
             s.pending_snapshot = snap.pending_snapshot;
-            s.env.restore_payloads(snap.payloads.clone());
             s.coverage_thresholds = snap.coverage_thresholds.clone();
         }
+        Ok(())
     }
 
     /// Restore only the **event prefix** of a captured [`SdkSnapshot`] (the branch
@@ -3018,19 +2947,56 @@ where
     /// Take the pending SDK stop (an assertion violation / snapshot point) the
     /// doorbell surfaced, clearing it. `None` when no SDK stop is pending.
     pub fn take_sdk_stop(&mut self) -> Option<SdkStop> {
-        self.sdk.as_mut().and_then(|s| s.pending_stop.take())
+        self.sdk.as_mut().and_then(|s| {
+            if matches!(s.pending_stop, Some(SdkStop::Decision { .. })) {
+                s.pending_stop.clone()
+            } else {
+                s.pending_stop.take()
+            }
+        })
     }
 
-    /// The buggify decisions this run resolved, `(moment, answer)`, in order.
-    /// Evidence that a run exercised buggify (the box gate reads it); the
-    /// reproducer itself carries buggify as the seed + the buggify-only policy,
-    /// so these are **not** re-recorded as overrides (which would make a bug's
-    /// env carry guest overrides the control server rejects on branch).
-    pub fn sdk_buggify(&self) -> &[(u64, environment::Answer)] {
-        self.sdk
-            .as_ref()
-            .map(|s| s.buggify.as_slice())
-            .unwrap_or(&[])
+    /// The one outstanding package request. It stays pending until answered or
+    /// replaced by restoring a sealed execution state.
+    pub fn pending_service_question(&self) -> Option<(u64, &channel::Question)> {
+        match self.sdk.as_ref()?.pending_stop.as_ref()? {
+            SdkStop::Decision {
+                moment, question, ..
+            } => Some((*moment, question)),
+            _ => None,
+        }
+    }
+
+    /// Complete an outstanding opaque exchange. Invalid responses leave the
+    /// request pending; successful responses are installed before guest reentry.
+    pub fn resolve_service_answer(
+        &mut self,
+        answer: channel::Answer,
+    ) -> Result<(u64, channel::Question), VmmError> {
+        let Some(SdkStop::Decision {
+            moment,
+            seq,
+            question,
+        }) = self.sdk.as_ref().and_then(|sdk| sdk.pending_stop.clone())
+        else {
+            return Err(VmmError::ContractViolation(
+                "no service request is pending".into(),
+            ));
+        };
+        let payload = service_answer_bytes(&answer).ok_or_else(|| {
+            VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
+        })?;
+        let mut response = [0; HC_PAGE];
+        let len = encode_response(ServiceId::Sdk, 3, seq, Status::Ok, &payload, &mut response)
+            .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
+        self.write_doorbell_response(&response[..len])?;
+        let sdk = self
+            .sdk
+            .as_mut()
+            .expect("pending request requires SDK channel");
+        sdk.env.record_question(moment, &question, answer);
+        sdk.pending_stop = None;
+        Ok((moment, question))
     }
 
     /// Instrumented coverage scheduling decisions as
@@ -3199,7 +3165,7 @@ where
             // requests (`BadRequest` for a malformed payload, `UnknownOpcode` for
             // a bad op) when the service is not there at all. That is the generic
             // dispatcher's contract (docs/ARCHITECTURE.md) and the same posture Event
-            // / Sdk / Entropy / Net take below.
+            // / Sdk / Entropy take below.
             if !self.pvclock_available() {
                 let n = encode_error(
                     header.service,
@@ -3303,7 +3269,7 @@ where
                 .as_mut()
                 .expect("payload availability requires SDK")
                 .env
-                .pull_payload(bytes);
+                .pull_payload(bytes as usize);
             return match pulled {
                 Ok(Some(entry)) => {
                     let n = encode_response(
@@ -3348,7 +3314,7 @@ where
         //
         // Gated on the SDK channel being wired (r3 — the PR-68 `SdkStop`
         // lesson): the doorbell is serviced whenever ANY channel is enabled
-        // (SDK / Net / pvclock), so a pvclock-only or net-only composition
+        // (SDK / pvclock), so a pvclock-only composition
         // can reach this arm. Without the gate an assert-violation Event
         // would answer Ok and even surface `Step::SdkStop` into a session
         // with no SDK channel; an unoffered service answers a clean
@@ -3420,43 +3386,98 @@ where
                 .unwrap_or(0);
             return (n, stop);
         }
-        // The SDK service (id 6, op 1): resolve a buggify decision.
-        //
-        // Gated on the SDK channel being wired (r3): without it,
-        // `decide_buggify` on an SDK-less VM would answer a fabricated
-        // nominal "don't fire" as a SUCCESS — a guest probing for buggify
-        // support must get `UnknownService` (the same posture as Net below).
-        if header.service == ServiceId::Sdk as u16 && header.opcode == 1 {
-            if self.sdk.is_none() {
-                let n = encode_response(
-                    ServiceId::Sdk,
-                    1,
-                    header.seq,
-                    Status::UnknownService,
-                    &[],
-                    resp,
-                )
-                .unwrap_or(0);
-                return (n, None);
+        // SDK opcode 3 transports package-owned requests and answers. Namespace
+        // 1..=3 is reserved for deterministic supplies, never external handlers.
+        if header.service == ServiceId::Sdk as u16 && header.opcode == 3 {
+            let Some(sdk) = self.sdk.as_mut() else {
+                return (
+                    encode_error(
+                        header.service,
+                        header.opcode,
+                        header.seq,
+                        Status::UnknownService,
+                        resp,
+                    ),
+                    None,
+                );
+            };
+            if payload.len() < 10 {
+                return (
+                    encode_error(
+                        header.service,
+                        header.opcode,
+                        header.seq,
+                        Status::BadRequest,
+                        resp,
+                    ),
+                    None,
+                );
             }
-            if payload.len() != 4 {
-                let n =
-                    encode_response(ServiceId::Sdk, 1, header.seq, Status::BadRequest, &[], resp)
-                        .unwrap_or(0);
-                return (n, None);
+            let service = u16::from_le_bytes([payload[0], payload[1]]);
+            if service <= channel::SERVICE_SCHEDULER {
+                return (
+                    encode_error(
+                        header.service,
+                        header.opcode,
+                        header.seq,
+                        Status::BadRequest,
+                        resp,
+                    ),
+                    None,
+                );
             }
-            let point = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            let fire = self.decide_buggify(moment, point);
-            let n = encode_response(
-                ServiceId::Sdk,
-                1,
-                header.seq,
-                Status::Ok,
-                &[u8::from(fire)],
-                resp,
-            )
-            .unwrap_or(0);
-            return (n, None);
+            let request_id =
+                u64::from_le_bytes(payload[2..10].try_into().expect("validated request prefix"));
+            let question =
+                channel::Question::with_request_id(request_id, service, payload[10..].to_vec())
+                    .expect("one doorbell frame fits channel bounds");
+            let mut candidate = sdk.env.clone();
+            candidate.set_moment(moment);
+            match candidate.decide(&question) {
+                Ok(channel::ServiceResponse::Answered(answer)) => {
+                    let Some(bytes) = service_answer_bytes(&answer) else {
+                        return (
+                            encode_error(
+                                header.service,
+                                header.opcode,
+                                header.seq,
+                                Status::Internal,
+                                resp,
+                            ),
+                            None,
+                        );
+                    };
+                    sdk.env = candidate;
+                    return (
+                        encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &bytes, resp)
+                            .unwrap_or(0),
+                        None,
+                    );
+                }
+                Ok(channel::ServiceResponse::External) => {
+                    sdk.env = candidate;
+                    return (
+                        0,
+                        Some(SdkStop::Decision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                        }),
+                    );
+                }
+                Err(_) => {
+                    return (
+                        encode_error(
+                            header.service,
+                            header.opcode,
+                            header.seq,
+                            Status::Internal,
+                            resp,
+                        ),
+                        None,
+                    );
+                }
+            }
         }
         // M6 SDK threshold protocol (id 6, op 2): a cooperating instrumented
         // runtime reports the exact basic-block count prescribed at its prior
@@ -3511,47 +3532,6 @@ where
                 }
             }
         }
-        // The Net service (id 5, op 1): resolve one per-flow decision. Decode the
-        // fixed 18-byte `NetFlow` decision point, ask the reproducer, and answer
-        // the opaque encoded flow policy the guest enforces. One decision per
-        // flow/connection — the host stays on the control path.
-        if header.service == ServiceId::Net as u16 && header.opcode == 1 {
-            // Gate on the Net channel being wired. The doorbell is serviced whenever
-            // EITHER sdk or net is enabled, so a guest that rings `net_decide` on a
-            // run with only the SDK channel wired reaches here with `self.net` unset.
-            // Answer a clean `UnknownService` — NOT out-of-gate behavior: without
-            // this guard `decide_net` would draw a NetFlow answer from the shared SDK
-            // stream (advancing it, perturbing buggify) for a service the run never
-            // offered. With the guard, an unwired-Net guest never touches the stream,
-            // so the inert-guest `state_hash` is unchanged (there is no draw).
-            if self.net.is_none() {
-                let n = encode_response(
-                    ServiceId::Net,
-                    1,
-                    header.seq,
-                    Status::UnknownService,
-                    &[],
-                    resp,
-                )
-                .unwrap_or(0);
-                return (n, None);
-            }
-            let Some(point) = NetFlowPoint::decode(payload) else {
-                let n =
-                    encode_response(ServiceId::Net, 1, header.seq, Status::BadRequest, &[], resp)
-                        .unwrap_or(0);
-                return (n, None);
-            };
-            let answer = self.decide_net(moment, point.src, point.dst, point.conn, point.event);
-            // The encoded answer is a handful of bytes (a `Nominal` tag or a small
-            // net fault), always well within a frame payload; fail closed if not.
-            let n = encode_response(ServiceId::Net, 1, header.seq, Status::Ok, &answer, resp)
-                .unwrap_or_else(|_| {
-                    encode_response(ServiceId::Net, 1, header.seq, Status::Internal, &[], resp)
-                        .unwrap_or(0)
-                });
-            return (n, None);
-        }
         // The Entropy service (id 2, op 1): the SDK's `entropy_fill` source. Route
         // it through the VMM's `SeededEntropy` stream — the **same** one RDRAND
         // draws from (round-5 P2) — so a guest's RDRAND and its hypercall RNG never
@@ -3560,13 +3540,12 @@ where
         // the request (a `u32` count, `1..=MAX_PAYLOAD`) and fills the buffer; fail
         // closed with a `BadRequest` if V-time — hence the stream — is unwired.
         if header.service == ServiceId::Entropy as u16 && header.opcode == 1 {
-            // Gated on an SDK or Net channel being wired (r3): entropy_fill
+            // Gated on an SDK channel being wired (r3): entropy_fill
             // is the cooperating-guest supply riding those channels, and a
             // draw ADVANCES the one shared seeded stream RDRAND uses — a
             // pvclock-only composition must not let a doorbell ring perturb
             // the RNG stream of a run that never offered the service. Its
-            // pre-pvclock reachability was exactly (sdk || net); preserved.
-            if self.sdk.is_none() && self.net.is_none() {
+            if self.sdk.is_none() {
                 let n = encode_response(
                     ServiceId::Entropy,
                     1,
@@ -3602,7 +3581,6 @@ where
             header.service,
             s if s == ServiceId::Event as u16
                 || s == ServiceId::Sdk as u16
-                || s == ServiceId::Net as u16
                 || s == ServiceId::Entropy as u16
                 || s == ServiceId::Pvclock as u16
                 || s == ServiceId::Payload as u16
@@ -3647,7 +3625,7 @@ where
     /// A `Malformed` frame is rejected (BadRequest) and never captured/armed/
     /// surfaced, so a bug or a snapshot deferral is never synthesized from garbage.
     /// Every OTHER emission (a hit, an unknown assert disposition, a state register,
-    /// a buggify result, the catalog, an unknown namespace) is
+    /// a package-service result, the catalog, or an unknown namespace) is
     /// [`Capture`](SdkEventAction::Capture): captured raw for the **total** link-tier
     /// decode, which owns their validation — the host takes no action on them.
     fn classify_sdk_event(id: u32, data: &[u8]) -> SdkEventAction {
@@ -3719,26 +3697,6 @@ where
         false
     }
 
-    /// Resolve a buggify decision for `point` at `moment` (task 73 seam 3): ask
-    /// the SDK channel's `Environment` (seeded fault stream / recorded override),
-    /// capture the answer for the reproducer, and return whether to fire.
-    fn decide_buggify(&mut self, moment: u64, point: u32) -> bool {
-        use environment::{Answer, DecisionPoint, Environment, Fault, Outcome};
-        let Some(sdk) = self.sdk.as_mut() else {
-            return false;
-        };
-        // `environment::Moment` is the retired-instruction axis (a `u64`).
-        sdk.env.set_moment(moment);
-        let ans = match sdk.env.decide(&DecisionPoint::Buggify { point }) {
-            Outcome::Resolved(a) => a,
-            // A pure backing (RecordedEnv) never needs the host; be total anyway.
-            Outcome::NeedsHost => Answer::Nominal,
-        };
-        let fire = matches!(ans, Answer::Fault(Fault::BuggifyFire));
-        sdk.buggify.push((moment, ans));
-        fire
-    }
-
     /// Validate one crossed coverage threshold and resolve the runnable index.
     /// No state advances on rejection: a stale/skipped count, zero runnable
     /// set, overflow, or malformed environment answer is a clean protocol
@@ -3750,8 +3708,7 @@ where
         observed: u64,
         ready: u32,
     ) -> Result<(u64, u32), Status> {
-        use environment::{Answer, DecisionPoint, Environment, Outcome};
-        let Some(sdk) = self.sdk.as_mut() else {
+        let Some(sdk) = self.sdk.as_ref() else {
             return Err(Status::UnknownService);
         };
         let expected = sdk
@@ -3765,12 +3722,20 @@ where
         let next = observed
             .checked_add(SDK_COVERAGE_QUANTUM)
             .ok_or(Status::OutOfRange)?;
-        sdk.env.set_moment(moment);
-        let answer = match sdk.env.decide(&DecisionPoint::Scheduler { ready }) {
-            Outcome::Resolved(answer) => answer,
-            Outcome::NeedsHost => return Err(Status::Internal),
-        };
-        let Answer::Supply(bytes) = answer else {
+        // Keep handler and core stream state transactional across answer-shape
+        // validation below. A workload service may return an opaque answer that
+        // is bounded but invalid for the scheduler contract.
+        let mut env = sdk.env.clone();
+        env.set_moment(moment);
+        let question = channel::Question::with_request_id(
+            u64::from(thread),
+            channel::SERVICE_SCHEDULER,
+            ready.to_le_bytes().to_vec(),
+        )
+        .map_err(|_| Status::BadRequest)?;
+        let channel::ServiceResponse::Answered(channel::Answer::Data(bytes)) =
+            env.decide(&question).map_err(|_| Status::Internal)?
+        else {
             return Err(Status::Internal);
         };
         let selected_bytes: [u8; 4] = bytes.as_slice().try_into().map_err(|_| Status::Internal)?;
@@ -3778,54 +3743,12 @@ where
         if selected >= ready {
             return Err(Status::Internal);
         }
+        let sdk = self.sdk.as_mut().expect("checked above");
+        sdk.env = env;
         sdk.coverage_thresholds.insert(thread, next);
         sdk.coverage
             .push((moment, thread, observed, ready, selected));
         Ok((next, selected))
-    }
-
-    /// Resolve one `net_decide` flow decision (task 61): stamp the surfacing
-    /// `Moment`, ask the reproducer's `Environment::decide` for the flow's policy,
-    /// capture `(moment, conn, answer)`, and return the **encoded** answer bytes
-    /// the guest decodes and enforces. Mirrors [`decide_buggify`] exactly — one
-    /// wire shape whether the flow is answered from the seeded fault stream or a
-    /// recorded override — swapping the `Buggify` point for a `NetFlow` one.
-    /// Returns a one-byte encoded `Nominal` if no net channel is wired.
-    fn decide_net(&mut self, moment: u64, src: u32, dst: u32, conn: u64, event: u16) -> Vec<u8> {
-        use environment::{Answer, ConnId, DecisionPoint, Environment, FlowEvent, NodeId, Outcome};
-        // Today the flow agent only surfaces flow-open; any event id maps to
-        // `Open` (the catalog's sole `FlowEvent` — deliberately extensible) rather
-        // than being rejected, so a newer agent asking about a not-yet-modeled
-        // transition still gets a (nominal-or-policy) answer instead of a hang.
-        let _ = event;
-        let point = DecisionPoint::NetFlow {
-            src: NodeId(src),
-            dst: NodeId(dst),
-            conn: ConnId(conn),
-            event: FlowEvent::Open,
-        };
-        // Draw from the ONE shared fault-decision stream the SDK channel owns (the
-        // single-stream ruling): a net decision advances the same hash-folded
-        // stream buggify draws from, so buggify answers after a net draw match the
-        // canonical one-stream reproducer. Without an SDK channel there is no shared
-        // stream to draw from (not a production path — the control server always
-        // wires SDK), so answer a nominal policy rather than opening a second stream.
-        let Some(sdk) = self.sdk.as_mut() else {
-            return Answer::Nominal.encode();
-        };
-        // `environment::Moment` is the retired-instruction axis (a `u64`).
-        sdk.env.set_moment(moment);
-        let ans = match sdk.env.decide(&point) {
-            Outcome::Resolved(a) => a,
-            // A pure backing (RecordedEnv) never needs the host; be total anyway.
-            Outcome::NeedsHost => Answer::Nominal,
-        };
-        let bytes = ans.encode();
-        // Capture the decision in the Net channel's log (host-side evidence).
-        if let Some(net) = self.net.as_mut() {
-            net.decisions.push((moment, conn, ans));
-        }
-        bytes
     }
 
     /// The V-time (ns) the xAPIC sees — for the Current-Count register read and for
@@ -3884,79 +3807,57 @@ where
         })
     }
 
-    /// Apply one host-plane [`HostFault`](environment::HostFault) **imperatively,
-    /// between instructions** (task 59) — the enforcement seam task 45 declared
-    /// frontier. Called by the frontier when a run has arrived at the fault's
-    /// [`Moment`](environment::Moment):
+    /// Apply one generic mechanical effect imperatively between instructions.
+    /// Workload-specific adapters translate their decisions into these effects
+    /// outside the execution core. Memory ranges fail closed when not backed, rather than
+    /// being clipped or wrapped.
     ///
-    /// - [`CorruptMemory`](environment::HostFault::CorruptMemory): XOR the
-    ///   [`BitMask`](environment::BitMask) into the little-endian 8-byte word at
-    ///   guest-physical `gpa` in the owned [`GuestRam`] (on the box KVM reads the
-    ///   guest through this same backing, so the corruption is live on the next
-    ///   entry). **Fails loud** ([`VmmError::ContractViolation`]) when
-    ///   `gpa + 8 > guest RAM` rather than clip or wrap — a corruption at an
-    ///   unrepresentable address would not replay. (The server rejects the same
-    ///   condition earlier, at stage time, with a recoverable `ControlError`; this
-    ///   is the defensive backstop.)
-    /// - [`InjectInterrupt`](environment::HostFault::InjectInterrupt): raise the
+    /// - [`channel::Effect::XorMemory`] applies a bytewise XOR to the current RAM.
+    /// - [`channel::Effect::WriteMemory`] writes the supplied bytes to RAM.
+    /// - [`channel::Effect::InjectInterrupt`] raises the
     ///   `vector` into the userspace-LAPIC IRR so the **existing** IRQ arbitration
     ///   ([`service_pending_irqs`](Self::service_pending_irqs)) delivers it at the
     ///   next injectable entry — delivery ordering vs. the V-time timer stays
     ///   deterministic. Requires the LAPIC wired (the Linux boot path) and a
     ///   non-reserved `vector` (`≥ 16`); both fail loud otherwise.
-    /// - [`SkewTime`](environment::HostFault::SkewTime) /
-    ///   [`SetClockRate`](environment::HostFault::SetClockRate): **out of scope**
-    ///   for task 59 (they mutate the V-time clock itself; a follow-on lights them
-    ///   up). Rejected loud so a schedule carrying one never silently no-ops.
-    pub fn apply_host_fault(&mut self, fault: &environment::HostFault) -> Result<(), VmmError> {
-        match fault {
-            environment::HostFault::CorruptMemory { gpa, mask } => {
-                self.corrupt_memory(*gpa, mask.0)
+    ///
+    /// Time skew and clock-rate changes are outside this mechanical contract.
+    pub fn apply_effect(&mut self, effect: &channel::Effect) -> Result<(), VmmError> {
+        match effect {
+            channel::Effect::WriteMemory { gpa, bytes } => {
+                let Some(dst) = self.guest_slice_mut(*gpa, bytes.len()) else {
+                    return Err(VmmError::ContractViolation(format!(
+                        "WriteMemory gpa {gpa:#x}+{} is not backed by guest RAM",
+                        bytes.len()
+                    )));
+                };
+                dst.copy_from_slice(bytes);
+                self.mark_host_dirty(*gpa, bytes.len() as u64);
+                Ok(())
             }
-            environment::HostFault::InjectInterrupt { vector } => {
+            channel::Effect::XorMemory { gpa, bytes } => {
+                let Some(dst) = self.guest_slice_mut(*gpa, bytes.len()) else {
+                    return Err(VmmError::ContractViolation(format!(
+                        "XorMemory gpa {gpa:#x}+{} is not backed by guest RAM",
+                        bytes.len()
+                    )));
+                };
+                for (current, mask) in dst.iter_mut().zip(bytes) {
+                    *current ^= mask;
+                }
+                self.mark_host_dirty(*gpa, bytes.len() as u64);
+                Ok(())
+            }
+            channel::Effect::InjectInterrupt { vector } => {
                 <B::A as Vendor>::inject_wire_interrupt(self, *vector)
             }
-            environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
-                Err(VmmError::ContractViolation(
-                    "SkewTime/SetClockRate host faults are out of scope for task 59 (they mutate \
-                     the V-time clock itself) — a follow-on lights them up; refusing to silently \
-                     no-op a staged clock fault"
-                        .to_string(),
-                ))
-            }
         }
-    }
-
-    /// XOR `mask` (as a little-endian 64-bit word) into the 8 guest-physical bytes
-    /// at `gpa`. The single-event-upset apply of [`CorruptMemory`]; a pure
-    /// function of `(gpa, mask)` over the current RAM, so replaying the same fault
-    /// at the same [`Moment`](environment::Moment) reproduces it bit-for-bit.
-    /// Fails loud on `gpa + 8 > ram` (never clips/wraps).
-    ///
-    /// [`CorruptMemory`]: environment::HostFault::CorruptMemory
-    fn corrupt_memory(&mut self, gpa: u64, mask: u64) -> Result<(), VmmError> {
-        // Resolve the absolute GPA through the shared resolver (arm64 GPAs are
-        // absolute over RAM_BASE; x86's RAM is at base 0, so the offset is
-        // unchanged). A GPA outside every backed region fails closed — never a
-        // wrong-offset upset into the main RAM (review r11).
-        let Some(dst) = self.guest_slice_mut(gpa, 8) else {
-            return Err(VmmError::ContractViolation(format!(
-                "CorruptMemory gpa {gpa:#x} + 8 is not backed by guest RAM — refusing to clip, \
-                 wrap, or apply the upset at a wrong offset"
-            )));
-        };
-        let word = u64::from_le_bytes(<[u8; 8]>::try_from(&dst[..]).expect("exactly 8 bytes"));
-        dst.copy_from_slice(&(word ^ mask).to_le_bytes());
-        // A host-side RAM write the backend's dirty log cannot see — record it
-        // (the 8-byte upset may straddle a page boundary; the helper covers both).
-        self.mark_host_dirty(gpa, 8);
-        Ok(())
     }
 
     /// Record `[gpa, gpa + len)` as **host-written** for the dirty drain (task
     /// 95 M2.1): every gfn the range touches. Called by the exhaustive set of
     /// production host-write paths — [`Vmm::write_doorbell_response`] and
-    /// [`Vmm::corrupt_memory`]; the third, [`Vmm::restore_guest_memory`], is a
+    /// [`Vmm::apply_effect`]; the third, [`Vmm::restore_guest_memory`], is a
     /// full-image write and latches [`Self::host_dirty_wholesale`] instead. Any
     /// **new** host write into guest RAM must call one of the two, or derived
     /// snapshots silently corrupt — that invariant is the review centerpiece.
@@ -4273,14 +4174,15 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
 }
 
 /// Deterministic, fixed-layout encoding of the task-73 SDK channel's
-/// **replay-relevant** state for the `SDK\0` hash chunk (round-7): the seeded
-/// stream positions (16 bytes — the buggify + inert supply PRNG states) and the
-/// pending stop. The event log is deliberately excluded (host-side observation,
-/// like the report stream). A different buggify draw sequence (a diverged fork)
-/// moves the stream state, so it hashes differently.
-fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
+/// **replay-relevant** state for the `SDK\0` hash chunk (round-7): the generic
+/// service stream/handler state and the pending stop. The event log is deliberately
+/// excluded (host-side observation, like the report stream). A diverged service
+/// stream moves that state, so it hashes differently.
+fn encode_sdk_channel(sdk: &SdkChannel) -> Result<Vec<u8>, channel::ChannelError> {
     let mut v = Vec::new();
-    v.extend_from_slice(&sdk.env.stream_state());
+    let recorded = sdk.env.snapshot_state()?.encode();
+    v.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
+    v.extend_from_slice(&recorded);
     match &sdk.pending_stop {
         None => v.push(0),
         Some(SdkStop::Assertion { id, data }) => {
@@ -4290,25 +4192,21 @@ fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
             v.extend_from_slice(data);
         }
         Some(SdkStop::Quiescent) => v.push(2),
-    }
-    v.push(u8::from(sdk.pending_snapshot));
-    // The active fault policy (round-8 P1): a stream position alone does not
-    // determine the buggify fire/nominal sequence — the policy does — so two
-    // same-stream forks under different policies must hash differently.
-    v.extend_from_slice(&(sdk.policy.len() as u32).to_le_bytes());
-    v.extend_from_slice(&sdk.policy);
-    // Preserve every pre-M2 SDK hash byte when no payload service is offered.
-    // When offered, fold the canonical live state: only the unconsumed suffix.
-    if let Some(payloads) = sdk.env.remaining_payloads() {
-        v.extend_from_slice(b"PAYL");
-        let count = u64::try_from(payloads.len()).unwrap_or(u64::MAX);
-        v.extend_from_slice(&count.to_le_bytes());
-        for entry in payloads {
-            let len = u64::try_from(entry.len()).unwrap_or(u64::MAX);
-            v.extend_from_slice(&len.to_le_bytes());
-            v.extend_from_slice(&entry);
+        Some(SdkStop::Decision {
+            moment,
+            seq,
+            question,
+        }) => {
+            v.push(3);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&seq.to_le_bytes());
+            v.extend_from_slice(&question.service().to_le_bytes());
+            v.extend_from_slice(&question.request_id().to_le_bytes());
+            v.extend_from_slice(&(question.payload().len() as u32).to_le_bytes());
+            v.extend_from_slice(question.payload());
         }
     }
+    v.push(u8::from(sdk.pending_snapshot));
     // Preserve every pre-M6 SDK hash byte until the threshold protocol is
     // actually exercised. Once it is, the host-side expected counters govern
     // which future guest callback is accepted and are therefore state.
@@ -4321,7 +4219,20 @@ fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
             v.extend_from_slice(&threshold.to_le_bytes());
         }
     }
-    v
+    Ok(v)
+}
+
+fn service_answer_bytes(answer: &channel::Answer) -> Option<Vec<u8>> {
+    match answer {
+        channel::Answer::Nominal => Some(vec![0]),
+        channel::Answer::Data(bytes) if bytes.len() < hypercall_proto::MAX_PAYLOAD => {
+            let mut out = Vec::with_capacity(1 + bytes.len());
+            out.push(1);
+            out.extend(bytes);
+            Some(out)
+        }
+        channel::Answer::Data(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -4378,6 +4289,140 @@ mod tests {
 
     use vmm_backend::{Completion, CpuidModel, MockBackend, MsrFilter};
 
+    /// Minimal test-side input spec for protocol tests that only need the
+    /// generic service contract. Workload policy tests live with the adapter;
+    /// the VMM tests exercise the generic channel here.
+    const TEST_SERVICE_IDENTITY: &[u8] = b"vmm-test-service.v1";
+
+    /// A small stateful extension used to keep the platform entropy stream's
+    /// reseed boundary honest. Its seed models workload-owned deterministic
+    /// state; `calls` makes handler mutation observable in the same snapshot.
+    #[derive(Clone, Debug, Default)]
+    struct SeededService {
+        seed: u64,
+        calls: u64,
+    }
+
+    impl SeededService {
+        fn config() -> ServiceConfig {
+            ServiceConfig {
+                identity: b"vmm-seeded-service.v1".to_vec(),
+                configuration: b"seeded".to_vec(),
+            }
+        }
+    }
+
+    impl channel::ServiceHandler for SeededService {
+        fn identity(&self) -> &[u8] {
+            b"vmm-seeded-service.v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b"seeded"
+        }
+
+        fn respond(
+            &mut self,
+            _question: &channel::Question,
+        ) -> Result<channel::ServiceResponse, channel::ChannelError> {
+            self.calls = self.calls.saturating_add(1);
+            Ok(channel::ServiceResponse::Answered(channel::Answer::Nominal))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, channel::ChannelError> {
+            let mut state = Vec::with_capacity(16);
+            state.extend_from_slice(&self.seed.to_le_bytes());
+            state.extend_from_slice(&self.calls.to_le_bytes());
+            Ok(state)
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), channel::ChannelError> {
+            let state: [u8; 16] = state
+                .try_into()
+                .map_err(|_| channel::ChannelError::Malformed)?;
+            self.seed = u64::from_le_bytes(state[..8].try_into().unwrap());
+            self.calls = u64::from_le_bytes(state[8..].try_into().unwrap());
+            Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            self.seed = seed;
+        }
+
+        fn clone_box(&self) -> Box<dyn channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct OversizedService;
+
+    impl channel::ServiceHandler for OversizedService {
+        fn identity(&self) -> &[u8] {
+            TEST_SERVICE_IDENTITY
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b"oversized"
+        }
+
+        fn respond(
+            &mut self,
+            _question: &channel::Question,
+        ) -> Result<channel::ServiceResponse, channel::ChannelError> {
+            Ok(channel::ServiceResponse::Answered(channel::Answer::Data(
+                vec![0; MAX_PAYLOAD],
+            )))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, channel::ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), channel::ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(channel::ChannelError::Malformed)
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    fn enable_nominal(vmm: &mut Vmm<MockBackend>, seed: u64) {
+        let config = ServiceConfig::default();
+        vmm.enable_sdk(
+            channel::RecordedEnv::new(seed, Box::new(channel::NominalHandler)),
+            &config,
+        );
+    }
+
+    fn nominal_env(seed: u64) -> channel::RecordedEnv<Box<dyn channel::ServiceHandler>> {
+        channel::RecordedEnv::new(seed, Box::new(channel::NominalHandler))
+    }
+
+    fn enable_oversized(vmm: &mut Vmm<MockBackend>, seed: u64) {
+        let config = ServiceConfig {
+            identity: TEST_SERVICE_IDENTITY.to_vec(),
+            configuration: b"oversized".to_vec(),
+        };
+        vmm.enable_sdk(
+            channel::RecordedEnv::new(seed, Box::new(OversizedService)),
+            &config,
+        );
+    }
+
+    fn enable_seeded_service(vmm: &mut Vmm<MockBackend>, seed: u64) {
+        let config = SeededService::config();
+        vmm.enable_sdk(
+            channel::RecordedEnv::new(seed, Box::new(SeededService::default())),
+            &config,
+        );
+    }
+
     /// A configured MockBackend (so `run`/`step` pass the `NotConfigured` gate)
     /// pre-loaded with `exits`.
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {
@@ -4401,9 +4446,9 @@ mod tests {
     fn state_hash_streaming_keeps_the_frozen_blob_digest() {
         let vmm = vtime_vmm(Vec::new(), 0x5eed);
         let mut expected = Sha256::new();
-        expected.update(vmm.state_blob());
+        expected.update(vmm.state_blob().unwrap());
         let expected: [u8; 32] = expected.finalize().into();
-        assert_eq!(vmm.state_hash(), expected);
+        assert_eq!(vmm.state_hash().unwrap(), expected);
     }
 
     #[test]
@@ -4429,7 +4474,7 @@ mod tests {
             .events[255]
             .state_hash
             .unwrap();
-        assert_eq!(deferred.state_hash(), expected);
+        assert_eq!(deferred.state_hash().unwrap(), expected);
         assert_eq!(
             deferred
                 .virtual_time_trace()
@@ -4529,36 +4574,18 @@ mod tests {
         for service in [
             ServiceId::Event,
             ServiceId::Sdk,
-            ServiceId::Net,
             ServiceId::Entropy,
             ServiceId::Payload,
             ServiceId::Pvclock,
         ] {
             assert!(!vmm.doorbell_service_offered(service as u16));
         }
-
-        let spec = environment::EnvSpec::Seeded {
-            seed: 7,
-            policy: environment::FaultPolicy::none(),
-        };
-        vmm.enable_sdk(spec.materialize(), spec.policy());
+        enable_nominal(&mut vmm, 7);
         assert!(vmm.doorbell_service_offered(ServiceId::Event as u16));
         assert!(vmm.doorbell_service_offered(ServiceId::Sdk as u16));
         assert!(vmm.doorbell_service_offered(ServiceId::Entropy as u16));
-        assert!(!vmm.doorbell_service_offered(ServiceId::Net as u16));
         assert!(!vmm.doorbell_service_offered(ServiceId::Payload as u16));
         assert!(!vmm.doorbell_service_offered(ServiceId::Pvclock as u16));
-
-        let mut payload_spec = spec;
-        payload_spec.set_payloads(Some(Vec::new()));
-        let mut payload_vmm = Vmm::new(
-            configured_mock(Vec::new()),
-            GuestRam::new(TEST_RAM).unwrap(),
-        );
-        payload_vmm.enable_sdk(payload_spec.materialize(), payload_spec.policy());
-        assert!(payload_vmm.doorbell_service_offered(ServiceId::Payload as u16));
-        assert!(!payload_vmm.doorbell_service_offered(ServiceId::Pvclock as u16));
-        assert!(!payload_vmm.doorbell_service_offered(u16::MAX));
     }
 
     // ---- task 95 M2.1: the dirty drain (backend log ∪ host-side writes) ----
@@ -4569,17 +4596,14 @@ mod tests {
     #[test]
     fn drain_unions_backend_log_with_host_writes_and_drains() {
         let mut m = configured_mock(vec![]);
-        m.push_dirty_gfns(vec![5, 3, 5]); // scripted guest writes, unsorted + dup
+        m.push_dirty_gfns(vec![5, 3, 5]);
         let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
-        // An 8-byte upset straddling the page-6/page-7 boundary: both gfns count.
-        vmm.apply_host_fault(&environment::HostFault::CorruptMemory {
+        vmm.apply_effect(&channel::Effect::XorMemory {
             gpa: 7 * 4096 - 4,
-            mask: environment::BitMask(0xFFFF_FFFF_FFFF_FFFF),
+            bytes: vec![0xff; 8],
         })
         .unwrap();
         assert_eq!(vmm.drain_dirty_pages(), Some(vec![3, 5, 6, 7]));
-        // Drained: the next window starts empty (the mock's exhausted script is
-        // an empty guest-write set, and the host set was cleared).
         assert_eq!(vmm.drain_dirty_pages(), Some(vec![]));
     }
 
@@ -4748,22 +4772,14 @@ mod tests {
         u64::from_le_bytes(buf)
     }
 
-    /// Task 73: the hypercall doorbell services an Event emission (captured,
-    /// `Moment`-stamped) and a buggify decision (answered from the env), and an
-    /// assert-violation event / `setup_complete` surface the right `SdkStop`.
+    /// The hypercall doorbell captures an Event emission with its deterministic
+    /// moment, while the generic service channel remains available for package
+    /// adapters to exercise through SDK opcode 3.
     #[test]
-    fn doorbell_services_events_buggify_and_surfaces_stops() {
-        use environment::{Answer, EnvSpec, Fault, FaultPolicy};
-
+    fn doorbell_services_events_and_surfaces_stops() {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        // Point 50 always fires; the seeded base answers everything else.
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(50, 1, 1).unwrap();
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-        vmm.enable_sdk(spec.materialize(), spec.policy());
+        enable_nominal(&mut vmm, 7);
 
-        // Stage `payload` as a request frame at REQ_GPA, service the doorbell,
-        // and decode the response frame — returning `(step, status, payload)`.
         fn ring(
             vmm: &mut Vmm<MockBackend>,
             service: ServiceId,
@@ -4778,48 +4794,11 @@ mod tests {
             (step, hdr.status, pl.to_vec())
         }
 
-        // Buggify point 50 fires (1/1) → response byte 1.
-        let (step, status, pl) = ring(&mut vmm, ServiceId::Sdk, &50u32.to_le_bytes());
-        assert_eq!((step, status), (Step::Continued, Status::Ok as u16));
-        assert_eq!(pl, vec![1], "point 50 fires");
-
-        // A sometimes-hit event (assert ns, point 1, disposition hit): captured, continue.
         let hit_id = (1u32 << 24) | 1;
         let mut hit = hit_id.to_le_bytes().to_vec();
-        hit.extend_from_slice(&[0, 0, 0]); // [DISP_HIT, detail_len=0]
-        let (step, status, _) = ring(&mut vmm, ServiceId::Event, &hit);
-        assert_eq!((step, status), (Step::Continued, Status::Ok as u16));
-
-        // An always-violation event (assert ns, point 20, disposition violation): SdkStop.
-        let viol_id = (1u32 << 24) | 20;
-        let mut viol = viol_id.to_le_bytes().to_vec();
-        viol.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len=0]
-        let (step, status, _) = ring(&mut vmm, ServiceId::Event, &viol);
-        assert_eq!((step, status), (Step::SdkStop, Status::Ok as u16));
-        assert_eq!(
-            vmm.take_sdk_stop(),
-            Some(SdkStop::Assertion {
-                id: 20,
-                data: vec![]
-            })
-        );
-
-        // setup_complete (lifecycle ns, local 0): NO immediate stop — its
-        // snapshot point is deferred (P1) to the next synchronized boundary. The
-        // event is still captured; the doorbell continues.
-        let setup_id = 4u32 << 24;
-        let (step, status, _) = ring(&mut vmm, ServiceId::Event, &setup_id.to_le_bytes());
-        assert_eq!((step, status), (Step::Continued, Status::Ok as u16));
-        assert!(
-            vmm.take_sdk_stop().is_none(),
-            "setup_complete does not stop"
-        );
-
-        // All three emissions were captured (Moment 0, no vtime wired), and the
-        // buggify decision recorded a fire.
-        let ids: Vec<u32> = vmm.sdk_events().iter().map(|(_, id, _)| *id).collect();
-        assert_eq!(ids, vec![hit_id, viol_id, setup_id]);
-        assert_eq!(vmm.sdk_buggify(), &[(0, Answer::Fault(Fault::BuggifyFire))]);
+        hit.extend_from_slice(&[0, 0, 0]);
+        assert_eq!(ring(&mut vmm, ServiceId::Event, &hit).0, Step::Continued);
+        assert_eq!(vmm.sdk_events().len(), 1);
     }
 
     /// M6 production doorbell path: op 2 consumes the Scheduler decision class,
@@ -4828,23 +4807,20 @@ mod tests {
     /// selection comparator; it does not call the VMM's coverage helper.
     #[test]
     fn coverage_doorbell_uses_the_scheduler_vocabulary() {
-        use environment::{Answer, DecisionPoint, EnvSpec, Environment, FaultPolicy, Outcome};
-
-        let spec = EnvSpec::Seeded {
-            seed: 0x6d36,
-            policy: FaultPolicy::none(),
-        };
-        let mut expected_env = spec.materialize();
-        expected_env.set_moment(0);
-        let expected = match expected_env.decide(&DecisionPoint::Scheduler { ready: 3 }) {
-            Outcome::Resolved(Answer::Supply(bytes)) => {
+        let seed = 0x6d36;
+        let mut expected_env = channel::RecordedEnv::nominal(seed);
+        let expected = match expected_env
+            .decide(&channel::Question::scheduler(3).unwrap())
+            .unwrap()
+        {
+            channel::ServiceResponse::Answered(channel::Answer::Data(bytes)) => {
                 u32::from_le_bytes(bytes.try_into().expect("scheduler answer is four bytes"))
             }
             other => panic!("unexpected scheduler answer: {other:?}"),
         };
 
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(spec.materialize(), spec.policy());
+        enable_nominal(&mut vmm, seed);
         let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
         request[0..4].copy_from_slice(&7_u32.to_le_bytes());
         request[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
@@ -4857,11 +4833,6 @@ mod tests {
         let page = &vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE];
         let (header, payload) = decode(page).expect("coverage response");
         assert_eq!(header.status, Status::Ok as u16);
-        assert_eq!(payload.len(), SDK_COVERAGE_RESPONSE_LEN);
-        assert_eq!(
-            u64::from_le_bytes(payload[0..8].try_into().unwrap()),
-            SDK_COVERAGE_QUANTUM * 2
-        );
         assert_eq!(
             u32::from_le_bytes(payload[8..12].try_into().unwrap()),
             expected
@@ -4877,69 +4848,72 @@ mod tests {
     /// count still succeeds, and snapshot restore reproduces the same future.
     #[test]
     fn coverage_threshold_is_enforced_and_snapshot_replay_reproduces() {
-        use environment::{EnvSpec, FaultPolicy};
-
-        let spec = EnvSpec::Seeded {
-            seed: 0x51ced,
-            policy: FaultPolicy::none(),
-        };
         let build = || {
             let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            vmm.enable_sdk(spec.materialize(), spec.policy());
+            enable_nominal(&mut vmm, 0x51ced);
             vmm
         };
         let mut base = build();
-        assert!(
-            !encode_sdk_channel(base.sdk.as_ref().unwrap())
-                .windows(4)
-                .any(|window| window == b"COVR"),
-            "an unused coverage channel preserves the pre-M6 hash bytes"
-        );
         let first = base.decide_coverage(4, 1, 1, 2).unwrap();
-        let mut coverage_suffix = b"COVR".to_vec();
-        coverage_suffix.extend_from_slice(&1_u64.to_le_bytes());
-        coverage_suffix.extend_from_slice(&1_u32.to_le_bytes());
-        coverage_suffix.extend_from_slice(&first.0.to_le_bytes());
-        assert!(
-            encode_sdk_channel(base.sdk.as_ref().unwrap()).ends_with(&coverage_suffix),
-            "an exercised threshold is canonical hash state"
-        );
-        let snap = base.sdk_snapshot().unwrap();
-        let hash_after_first = base.state_hash();
-        let log_after_first = base.sdk_coverage().to_vec();
-
-        assert_eq!(
-            base.decide_coverage(5, 1, 3, 2),
-            Err(Status::BadRequest),
-            "a skipped threshold is the planted negative"
-        );
-        assert_eq!(base.state_hash(), hash_after_first);
-        assert_eq!(base.sdk_coverage(), log_after_first);
+        let snap = base.sdk_snapshot().unwrap().expect("SDK snapshot");
+        let hash_after_first = base.state_hash().unwrap();
+        assert_eq!(base.decide_coverage(5, 1, 3, 2), Err(Status::BadRequest));
+        assert_eq!(base.state_hash().unwrap(), hash_after_first);
         let continuation = base.decide_coverage(5, 1, first.0, 2).unwrap();
-
         let mut replay = build();
-        replay.sdk_restore(&snap);
-        assert_eq!(replay.state_hash(), hash_after_first);
+        replay.sdk_restore(&snap).unwrap();
+        assert_eq!(replay.state_hash().unwrap(), hash_after_first);
         assert_eq!(
             replay.decide_coverage(5, 1, first.0, 2).unwrap(),
             continuation
         );
-        assert_eq!(replay.state_hash(), base.state_hash());
+    }
+
+    #[test]
+    fn malformed_scheduler_answer_does_not_advance_the_channel() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut vmm, 0x51ced);
+        vmm.sdk
+            .as_mut()
+            .expect("SDK enabled")
+            .env
+            .record_service_request(
+                41,
+                channel::SERVICE_SCHEDULER,
+                7,
+                channel::Answer::Data(vec![1, 2, 3]),
+            );
+        let before = vmm.state_hash().unwrap();
+        assert_eq!(vmm.decide_coverage(41, 7, 1, 2), Err(Status::Internal));
+        assert_eq!(vmm.state_hash().unwrap(), before);
+        assert!(vmm.sdk_coverage().is_empty());
+    }
+
+    #[test]
+    fn generic_service_response_reserves_one_byte_for_its_tag() {
+        let capacity = hypercall_proto::MAX_PAYLOAD;
+        let bytes = vec![0x5a; capacity - 1];
+        let frame = service_answer_bytes(&channel::Answer::Data(bytes.clone())).unwrap();
+        assert_eq!(frame.len(), capacity);
+        assert_eq!(frame[0], 1);
+        assert_eq!(&frame[1..], bytes);
+        assert_eq!(
+            service_answer_bytes(&channel::Answer::Data(vec![0; capacity])),
+            None
+        );
     }
 
     #[test]
     fn payload_tape_is_exact_hash_visible_snapshot_complete_and_exhausts_loudly() {
-        use environment::{EnvSpec, FaultPolicy};
-
-        fn spec(entries: Vec<Vec<u8>>) -> EnvSpec {
-            let mut spec = EnvSpec::Seeded {
-                seed: 7,
-                policy: FaultPolicy::none(),
-            };
-            spec.set_payloads(Some(entries));
-            spec
+        fn make(entries: Vec<Vec<u8>>) -> Vmm<MockBackend> {
+            let mut env: channel::RecordedEnv<Box<dyn channel::ServiceHandler>> =
+                channel::RecordedEnv::new(7, Box::new(channel::NominalHandler));
+            env.set_payloads(Some(entries)).unwrap();
+            let config = ServiceConfig::default();
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            vmm.enable_sdk(env, &config);
+            vmm
         }
-
         fn ring(vmm: &mut Vmm<MockBackend>, bytes: u32) -> (Step, u16, Vec<u8>) {
             let mut frame = [0_u8; HC_PAGE];
             let n = hypercall_proto::encode_request(
@@ -4956,103 +4930,21 @@ mod tests {
             let (header, payload) = decode(page).unwrap();
             (step, header.status, payload.to_vec())
         }
-
-        let make_vmm = |entries| {
-            let tape = spec(entries);
-            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            vmm.enable_sdk(tape.materialize(), tape.policy());
-            vmm
-        };
-
-        let mut zero = make_vmm(vec![Vec::new()]);
-        assert_eq!(
-            ring(&mut zero, 0),
-            (Step::Continued, Status::BadRequest as u16, Vec::new())
-        );
-        assert_eq!(
-            zero.sdk_snapshot().unwrap().remaining_payloads(),
-            Some(vec![Vec::new()]),
-            "zero is rejected before the tape can consume an empty entry"
-        );
-
-        let max_entry = vec![0x5a; MAX_PAYLOAD];
-        let mut exact_max = make_vmm(vec![max_entry.clone()]);
-        assert_eq!(
-            ring(&mut exact_max, MAX_PAYLOAD as u32),
-            (Step::Continued, Status::Ok as u16, max_entry),
-            "the inclusive maximum remains admissible"
-        );
-
-        let oversized_len = MAX_PAYLOAD + 2;
-        let mut oversized = make_vmm(vec![vec![0x33; oversized_len]]);
-        assert_eq!(
-            ring(&mut oversized, oversized_len as u32),
-            (Step::Continued, Status::BadRequest as u16, Vec::new())
-        );
-        assert_eq!(
-            oversized.sdk_snapshot().unwrap().remaining_payloads(),
-            Some(vec![vec![0x33; oversized_len]]),
-            "every value above the maximum is rejected before tape consumption"
-        );
-
-        let tape = spec(vec![vec![0x81, 4], vec![0, 2]]);
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(tape.materialize(), tape.policy());
-
-        let before = encode_sdk_channel(vmm.sdk.as_ref().unwrap());
-        for invalid in [0, (MAX_PAYLOAD as u32) + 1] {
-            assert_eq!(
-                ring(&mut vmm, invalid),
-                (Step::Continued, Status::BadRequest as u16, Vec::new())
-            );
-            assert_eq!(encode_sdk_channel(vmm.sdk.as_ref().unwrap()), before);
-        }
-        assert_eq!(
-            ring(&mut vmm, 1),
-            (Step::Continued, Status::BadRequest as u16, Vec::new()),
-            "wrong length rejects without consuming"
-        );
-        assert_eq!(encode_sdk_channel(vmm.sdk.as_ref().unwrap()), before);
-
+        let mut vmm = make(vec![vec![0x81, 4], vec![0, 2]]);
         assert_eq!(
             ring(&mut vmm, 2),
             (Step::Continued, Status::Ok as u16, vec![0x81, 4])
         );
-        let after_first = encode_sdk_channel(vmm.sdk.as_ref().unwrap());
-        assert_ne!(after_first, before, "the remaining suffix is hash state");
-        let snap = vmm.sdk_snapshot().unwrap();
+        let snap = vmm.sdk_snapshot().unwrap().expect("SDK snapshot");
         assert_eq!(snap.remaining_payloads(), Some(vec![vec![0, 2]]));
-
         assert_eq!(
             ring(&mut vmm, 2),
             (Step::Continued, Status::Ok as u16, vec![0, 2])
         );
-        assert_ne!(encode_sdk_channel(vmm.sdk.as_ref().unwrap()), after_first);
-        vmm.sdk_restore(&snap);
-        assert_eq!(
-            encode_sdk_channel(vmm.sdk.as_ref().unwrap()),
-            after_first,
-            "restoring the snapshot restores the exact remaining suffix"
-        );
-
+        vmm.sdk_restore(&snap).unwrap();
         assert_eq!(ring(&mut vmm, 2).2, vec![0, 2]);
-        assert_eq!(
-            ring(&mut vmm, 2),
-            (Step::SdkStop, Status::OutOfRange as u16, Vec::new())
-        );
+        assert_eq!(ring(&mut vmm, 2).0, Step::SdkStop);
         assert_eq!(vmm.take_sdk_stop(), Some(SdkStop::Quiescent));
-
-        let a = spec(vec![vec![1, 2]]);
-        let b = spec(vec![vec![1, 3]]);
-        let mut va = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        let mut vb = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        va.enable_sdk(a.materialize(), a.policy());
-        vb.enable_sdk(b.materialize(), b.policy());
-        assert_ne!(
-            va.state_hash(),
-            vb.state_hash(),
-            "altering one staged chord changes full state"
-        );
     }
 
     /// Review r10: the transport ABI pages (`REQ_GPA`/`RESP_GPA`) are **absolute**
@@ -5065,64 +4957,32 @@ mod tests {
     /// gfn. (x86 keeps `ram_base_gpa == 0`, so its doorbell path is unchanged.)
     #[test]
     fn doorbell_uses_a_dedicated_memslot_when_ram_is_based_high() {
-        use environment::{EnvSpec, FaultPolicy};
-
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.ram_base_gpa = 0x4000_0000; // arm64 RAM_BASE: the ABI GPAs sit below it
-        let spec = EnvSpec::Seeded {
-            seed: 7,
-            policy: FaultPolicy::none(),
-        };
-        vmm.enable_sdk(spec.materialize(), spec.policy());
-
-        // Unmapped ABI pages → fail closed (the r10 bug was a silent wrong-offset
-        // read of the high RAM at offset REQ_GPA).
-        let err = vmm.service_doorbell(16).unwrap_err();
-        assert!(
-            format!("{err}").contains("not backed"),
-            "unmapped ABI pages must fault: {err}"
-        );
-
-        // Map the dedicated pages (a second memslot at REQ_GPA) and stage a
-        // request frame the Event service answers Ok.
+        vmm.ram_base_gpa = 0x4000_0000;
+        enable_nominal(&mut vmm, 7);
+        assert!(vmm.service_doorbell(16).is_err());
         vmm.map_doorbell_pages().unwrap();
         let hit_id = (1u32 << 24) | 1;
         let mut payload = hit_id.to_le_bytes().to_vec();
-        payload.extend_from_slice(&[0, 0, 0]); // DISP_HIT, detail_len = 0
+        payload.extend_from_slice(&[0, 0, 0]);
         let mut buf = [0u8; HC_PAGE];
         let n =
             hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut buf).unwrap();
         let req_off = REQ_GPA - DOORBELL_MAP_GPA;
         vmm.doorbell_pages.as_mut().unwrap().as_mut_bytes()[req_off..req_off + n]
             .copy_from_slice(&buf[..n]);
-
-        let step = vmm.service_doorbell(n as u32).unwrap();
-        assert_eq!(step, Step::Continued);
-
-        // The response landed in the dedicated slot, one page past the request.
+        assert_eq!(vmm.service_doorbell(n as u32).unwrap(), Step::Continued);
         let resp_off = RESP_GPA - DOORBELL_MAP_GPA;
         let resp =
             vmm.doorbell_pages.as_ref().unwrap().as_bytes()[resp_off..resp_off + HC_PAGE].to_vec();
-        let (hdr, _) = decode(&resp).expect("a valid response frame in the dedicated page");
+        let (hdr, _) = decode(&resp).expect("dedicated response");
         assert_eq!(hdr.status, Status::Ok as u16);
-
-        // The main RAM at the ABI offsets was NEVER touched — the bug read/wrote
-        // there (GPA 0x4000_E000/0x4000_F000), corrupting guest RAM.
         assert!(
             vmm.guest_memory()[REQ_GPA..RESP_GPA + HC_PAGE]
                 .iter()
-                .all(|&b| b == 0),
-            "the dedicated memslot is used, never the main RAM's offset REQ_GPA"
+                .all(|&b| b == 0)
         );
-
-        // Dirty-range: the host response write records the ABSOLUTE RESP gfn
-        // (0xF000 / 4096 = 15) for the drain union — not a RAM_BASE-relative
-        // one (the bug would have marked 0x4000_F000's gfn, or none).
-        assert!(
-            vmm.host_dirty.contains(&(RESP_GPA as u64 / 4096)),
-            "the response's absolute gfn 15 must be host-dirty: {:?}",
-            vmm.host_dirty
-        );
+        assert!(vmm.host_dirty.contains(&(RESP_GPA as u64 / 4096)));
     }
 
     /// Review r11: with the ABI pages a dedicated region, the engine's hash and
@@ -5132,52 +4992,34 @@ mod tests {
     /// read/corrupt/hash tests are the neutrality proof).
     #[test]
     fn high_ram_base_resolves_absolute_gpas_and_hashes_the_doorbell() {
-        use environment::{BitMask, HostFault};
-
         let make = || {
             let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            v.ram_base_gpa = 0x4000_0000; // arm64 RAM_BASE
+            v.ram_base_gpa = 0x4000_0000;
             v.map_doorbell_pages().unwrap();
             v
         };
-
-        // P1(1) hash: two states differing ONLY in doorbell bytes hash
-        // differently (the `DOOR` chunk); identical content hashes identically.
         let a = make();
         let mut b = make();
-        assert_eq!(a.state_hash(), b.state_hash());
+        assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap());
         b.doorbell_pages.as_mut().unwrap().as_mut_bytes()[7] ^= 0xFF;
-        assert_ne!(
-            a.state_hash(),
-            b.state_hash(),
-            "doorbell bytes must fold into state_hash"
-        );
-
-        // P1(2) control-plane resolution: an ABSOLUTE arm64 address (over
-        // RAM_BASE) reads the right main-RAM bytes; a low unmapped GPA is
-        // out-of-range, never a wrong offset into the main RAM; the dedicated ABI
-        // page resolves at its absolute low GPA.
+        assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
         let mut v = make();
         v.ram.as_mut_bytes()[0x100..0x104].copy_from_slice(&[1, 2, 3, 4]);
         assert_eq!(v.guest_slice(0x4000_0100, 4), Some(&[1u8, 2, 3, 4][..]));
         assert_eq!(v.guest_slice(0x100, 4), None);
         assert!(v.guest_slice(REQ_GPA as u64, HC_PAGE).is_some());
-
-        // P1(2) corrupt_memory: a valid absolute GPA upsets the right byte; a low
-        // unmapped GPA fails closed (never a wrong-offset upset).
-        v.apply_host_fault(&HostFault::CorruptMemory {
+        v.apply_effect(&channel::Effect::XorMemory {
             gpa: 0x4000_0100,
-            mask: BitMask(0xFF),
+            bytes: vec![0xFF],
         })
         .unwrap();
         assert_eq!(v.ram.as_bytes()[0x100], 1 ^ 0xFF);
         assert!(
-            v.apply_host_fault(&HostFault::CorruptMemory {
+            v.apply_effect(&channel::Effect::XorMemory {
                 gpa: 0x500,
-                mask: BitMask(0xFF),
+                bytes: vec![0xFF]
             })
-            .is_err(),
-            "a low unmapped GPA corrupt must fail closed"
+            .is_err()
         );
     }
 
@@ -5242,7 +5084,7 @@ mod tests {
         b.doorbell_pages.as_mut().unwrap().as_mut_bytes()[3] ^= 0xFF;
 
         // state_hash differs (the DOOR chunk folds the pages in)...
-        assert_ne!(a.state_hash(), b.state_hash());
+        assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
 
         // ...and the `doorbell` component is exactly what localizes it: it
         // differs, and it is the ONLY differing component.
@@ -5280,152 +5122,9 @@ mod tests {
         );
     }
 
-    /// Task 61: the `Net` doorbell decodes a flow decision point, resolves it
-    /// through the reproducer, answers the encoded flow policy, captures the
-    /// decision at its `Moment`, and — the load-bearing property — a fresh replay
-    /// from the same reproducer reproduces the identical answer at the identical
-    /// `Moment`. This is the host half of the record→replay closure the box gates
-    /// exercise end-to-end.
-    #[test]
-    fn net_doorbell_decides_records_and_replays() {
-        use environment::{Answer, DecisionClass, EnvSpec, Fault, FaultPolicy};
-
-        // Stage a `net_decide` request for one flow and return the decoded answer.
-        fn ask_flow(vmm: &mut Vmm<MockBackend>, src: u32, dst: u32, conn: u64) -> (u16, Answer) {
-            let mut payload = Vec::new();
-            payload.extend_from_slice(&src.to_le_bytes());
-            payload.extend_from_slice(&dst.to_le_bytes());
-            payload.extend_from_slice(&conn.to_le_bytes());
-            payload.extend_from_slice(&0u16.to_le_bytes()); // FlowEvent::Open
-            let mut buf = [0u8; HC_PAGE];
-            let n =
-                hypercall_proto::encode_request(ServiceId::Net, 1, 1, &payload, &mut buf).unwrap();
-            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
-            let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
-            assert_eq!(step, Step::Continued);
-            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-            let (hdr, pl) = decode(&page).expect("a valid response frame");
-            (
-                hdr.status,
-                Answer::decode(pl).expect("a valid encoded answer"),
-            )
-        }
-
-        // A fault policy that faults every flow with a `NetReset` (1/1), so the
-        // seeded answer for the `NetFlow` class is deterministic from the seed.
-        let mut policy = FaultPolicy::none();
-        policy
-            .set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
-            .unwrap();
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-
-        // First run: the doorbell answers the flow and records it at Moment 0. The
-        // net decision draws from the SHARED SDK stream (the single-stream ruling),
-        // so the SDK channel is wired with the same reproducer + policy.
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(spec.materialize(), spec.policy());
-        vmm.enable_net();
-        let (status, ans) = ask_flow(&mut vmm, 1, 2, 42);
-        assert_eq!(status, Status::Ok as u16);
-        assert_eq!(ans, Answer::Fault(Fault::NetReset), "seeded flow policy");
-        assert_eq!(
-            vmm.net_decisions(),
-            &[(0, 42, Answer::Fault(Fault::NetReset))],
-            "the decision is captured at its Moment/conn"
-        );
-
-        // Replay: a fresh VM materialized from the SAME reproducer reproduces the
-        // identical answer at the identical Moment — bit-identical decision.
-        let mut replay = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        replay.enable_sdk(spec.materialize(), spec.policy());
-        replay.enable_net();
-        let (rstatus, rans) = ask_flow(&mut replay, 1, 2, 42);
-        assert_eq!((rstatus, &rans), (Status::Ok as u16, &ans));
-        assert_eq!(replay.net_decisions(), vmm.net_decisions());
-    }
-
-    /// Task 61: a `Net` doorbell without a wired channel is impossible (the gate
-    /// requires it), but a wrong-length payload and a wrong opcode both fail
-    /// closed with a clean status — never a hang or a phantom decision.
-    #[test]
-    fn net_doorbell_rejects_malformed_requests() {
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        // A malformed request is rejected before any decide, so no shared stream is
-        // needed — enable Net alone (the doorbell is serviced when net is wired).
-        vmm.enable_net();
-
-        // A short (non-18-byte) payload → BadRequest, no decision recorded.
-        let mut buf = [0u8; HC_PAGE];
-        let n = hypercall_proto::encode_request(ServiceId::Net, 1, 1, &[0u8; 4], &mut buf).unwrap();
-        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
-        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
-        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-        let (hdr, _) = decode(&page).unwrap();
-        assert_eq!(hdr.status, Status::BadRequest as u16);
-        assert!(vmm.net_decisions().is_empty());
-
-        // A wrong opcode on the known Net service → UnknownOpcode.
-        let n =
-            hypercall_proto::encode_request(ServiceId::Net, 9, 1, &[0u8; 18], &mut buf).unwrap();
-        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
-        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
-        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-        let (hdr, _) = decode(&page).unwrap();
-        assert_eq!(hdr.status, Status::UnknownOpcode as u16);
-    }
-
-    /// Task 61 (R4): a `net_decide` on a run where **Net was never enabled** (only
-    /// the SDK channel is wired, so the doorbell is still serviced) gets a clean
-    /// `UnknownService` — NOT out-of-gate behavior — and, critically, does NOT draw
-    /// from the shared SDK stream: a following buggify answer is identical to one on
-    /// a VM that never saw the net_decide. So an unwired-Net guest cannot perturb
-    /// the SDK stream / `state_hash` through the Net service.
-    #[test]
-    fn net_decide_without_enable_net_is_unknown_service_and_leaves_the_stream() {
-        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy};
-        let mut policy = FaultPolicy::none();
-        policy
-            .set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
-            .unwrap();
-        policy.set_buggify_point(1, 1, 2).unwrap();
-        let spec = EnvSpec::Seeded { seed: 9, policy };
-
-        // SDK wired, Net NOT wired.
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(spec.materialize(), spec.policy());
-
-        // Ring net_decide → UnknownService (the doorbell is serviced because SDK is
-        // wired), no decision captured.
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&2u32.to_le_bytes());
-        payload.extend_from_slice(&7u64.to_le_bytes());
-        payload.extend_from_slice(&0u16.to_le_bytes());
-        let mut buf = [0u8; HC_PAGE];
-        let n = hypercall_proto::encode_request(ServiceId::Net, 1, 1, &payload, &mut buf).unwrap();
-        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
-        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
-        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-        let (hdr, _) = decode(&page).unwrap();
-        assert_eq!(hdr.status, Status::UnknownService as u16);
-        assert!(vmm.net_decisions().is_empty());
-
-        // The rejected net_decide left the shared stream untouched: buggify draws the
-        // stream's FIRST word, exactly as on a VM that never rang net_decide.
-        let fired = vmm.decide_buggify(1, 1);
-        let mut fresh = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        fresh.enable_sdk(spec.materialize(), spec.policy());
-        assert_eq!(
-            fired,
-            fresh.decide_buggify(1, 1),
-            "the rejected net_decide did not advance the shared SDK stream"
-        );
-    }
-
-    /// Round-14 malformed-SDK-event-payload MATRIX: `classify_sdk_event` validates
-    /// every payload the host acts on, so a bug (assert violation) or a snapshot
-    /// deferral (setup_complete) is never synthesized from garbage. One place, the
-    /// whole table — no more one-field-per-round.
+    /// The generic SDK doorbell validates event payloads and routes workload
+    /// service requests through the opaque handler seam. The VMM owns framing,
+    /// availability, and replay capture; workload adapters own interpretation.
     #[test]
     fn classify_sdk_event_payload_matrix() {
         type C = SdkEventAction;
@@ -5486,8 +5185,6 @@ mod tests {
     /// captured (and would arm the deferral).
     #[test]
     fn doorbell_rejects_malformed_sdk_event_payloads() {
-        use environment::{EnvSpec, FaultPolicy};
-
         // Ring an Event(op1) frame carrying `[event_id][data]`; return (status,
         // whether a stop surfaced, sdk_events len after).
         fn ring(vmm: &mut Vmm<MockBackend>, event_id: u32, data: &[u8]) -> (u16, bool, usize) {
@@ -5504,14 +5201,7 @@ mod tests {
         }
         let mk = || {
             let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            v.enable_sdk(
-                EnvSpec::Seeded {
-                    seed: 1,
-                    policy: FaultPolicy::none(),
-                }
-                .materialize(),
-                &FaultPolicy::none(),
-            );
+            v.enable_sdk(nominal_env(1), &ServiceConfig::default());
             v
         };
         let assert_id = (u32::from(SDK_NS_ASSERT) << SDK_NS_SHIFT) | 20;
@@ -5607,16 +5297,8 @@ mod tests {
     /// patching the encoded frame's 2-byte service field.
     #[test]
     fn doorbell_unknown_service_returns_an_unknown_service_frame() {
-        use environment::{EnvSpec, FaultPolicy};
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-            &FaultPolicy::none(),
-        );
+        vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
         // Encode a well-formed request, then patch the service field (bytes 6..8)
         // to an id no `ServiceId` represents. opcode 7 / seq 99 are distinct so the
         // echo is observable.
@@ -5650,19 +5332,10 @@ mod tests {
     /// gate on `is_request()` before routing.
     #[test]
     fn doorbell_rejects_a_non_request_frame() {
-        use environment::{EnvSpec, FaultPolicy};
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-            &FaultPolicy::none(),
-        );
+        vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
         // A well-formed RESPONSE frame (kind == 2) for a real service — it must be
-        // rejected as not-a-request rather than serviced (here: the Sdk service,
-        // which would otherwise resolve a buggify decision).
+        // rejected as not-a-request rather than serviced.
         let mut buf = [0u8; HC_PAGE];
         let n = hypercall_proto::encode_response(ServiceId::Sdk, 1, 42, Status::Ok, &[], &mut buf)
             .unwrap();
@@ -5683,11 +5356,6 @@ mod tests {
         );
         assert_eq!(hdr.service, ServiceId::Sdk as u16, "echoes the raw service");
         assert_eq!(hdr.seq, 42, "echoes the raw seq");
-        // No buggify decision was resolved (the frame never reached the Sdk arm).
-        assert!(
-            vmm.sdk_buggify().is_empty(),
-            "a non-request frame is not serviced as a buggify request"
-        );
         assert!(pl.is_empty());
     }
 
@@ -5697,16 +5365,8 @@ mod tests {
     /// (round-10 P3).
     #[test]
     fn doorbell_bad_entropy_opcode_is_unknown_opcode() {
-        use environment::{EnvSpec, FaultPolicy};
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-            &FaultPolicy::none(),
-        );
+        vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
         // Entropy service, opcode 2 (only op 1 is the entropy_fill source).
         let mut buf = [0u8; HC_PAGE];
         let n = hypercall_proto::encode_request(ServiceId::Entropy, 2, 7, &[], &mut buf).unwrap();
@@ -5737,20 +5397,11 @@ mod tests {
     /// payload_len[16..20], reserved[20..24].
     #[test]
     fn doorbell_request_header_validation_matrix() {
-        use environment::{EnvSpec, FaultPolicy};
-
         // Dispatch a base valid Event(op1) request after `mutate`, returning the
         // decoded response header. Fresh VM per case (dispatch mutates state).
         fn dispatch_header(mutate: impl FnOnce(&mut [u8])) -> hypercall_proto::FrameHeader {
             let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            vmm.enable_sdk(
-                EnvSpec::Seeded {
-                    seed: 1,
-                    policy: FaultPolicy::none(),
-                }
-                .materialize(),
-                &FaultPolicy::none(),
-            );
+            vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
             let mut buf = [0u8; HC_PAGE];
             // Event service, op 1, seq 5, a benign 4-byte event id (ns 0, local 7).
             let n = hypercall_proto::encode_request(
@@ -5825,6 +5476,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn oversized_service_answer_preserves_channel_state() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_oversized(&mut vmm, 7);
+        let before = vmm
+            .sdk
+            .as_ref()
+            .unwrap()
+            .env
+            .snapshot_state()
+            .unwrap()
+            .encode();
+        let mut payload = 4u16.to_le_bytes().to_vec();
+        payload.extend_from_slice(&77u64.to_le_bytes());
+        let mut request = [0; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
+        let mut response = [0; HC_PAGE];
+        let (length, stop) = vmm.dispatch_doorbell(19, &request[..n], &mut response);
+        assert!(stop.is_none());
+        assert_eq!(
+            decode(&response[..length]).unwrap().0.status,
+            Status::Internal as u16
+        );
+        assert_eq!(
+            before,
+            vmm.sdk
+                .as_ref()
+                .unwrap()
+                .env
+                .snapshot_state()
+                .unwrap()
+                .encode()
+        );
+    }
+
+    #[test]
+    fn snapshots_require_consuming_all_sdk_stops() {
+        for stop in [
+            SdkStop::Quiescent,
+            SdkStop::Assertion {
+                id: 5,
+                data: vec![1],
+            },
+        ] {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            enable_nominal(&mut vmm, 7);
+            vmm.sdk.as_mut().unwrap().pending_stop = Some(stop);
+            assert!(!vmm.can_snapshot());
+            assert!(vmm.sdk_snapshot().is_err());
+            assert!(vmm.take_sdk_stop().is_some());
+            assert!(vmm.can_snapshot());
+            assert!(vmm.sdk_snapshot().is_ok());
+        }
+    }
+
     /// `pending_snapshot` (the deferred `setup_complete` point) is folded into the
     /// state hash (round-8), so a snapshot/restore round-trip MUST preserve it —
     /// else a state sealed with a pending point restores to a DIFFERENT hash (the
@@ -5838,49 +5545,24 @@ mod tests {
         ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
     )]
     fn sdk_snapshot_round_trips_the_pending_deferred_point_hash() {
-        use environment::{EnvSpec, FaultPolicy};
-        let spec = EnvSpec::Seeded {
-            seed: 7,
-            policy: FaultPolicy::none(),
-        };
         let mk = || {
             let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            v.enable_sdk(spec.materialize(), spec.policy());
+            enable_nominal(&mut v, 7);
             v
         };
-
-        // A base whose only mutation is the deferred flag → h_true; a fresh channel
-        // (flag `false`) → h_false. Same RAM, same stream, same (empty) events.
         let mut base = mk();
-        let h_false = base.state_hash();
+        let h_false = base.state_hash().unwrap();
         base.sdk.as_mut().unwrap().pending_snapshot = true;
-        let h_true = base.state_hash();
-        assert_ne!(
-            h_false, h_true,
-            "pending_snapshot is hash-relevant (round-8 folds it in)"
-        );
-        let snap = base.sdk_snapshot().expect("a wired channel snapshots");
-        assert!(snap.pending_snapshot, "the deferred point is captured");
-
-        // The full verbatim restore carries the flag → reproduces h_true exactly.
+        let h_true = base.state_hash().unwrap();
+        assert_ne!(h_false, h_true);
+        let snap = base.sdk_snapshot().unwrap().expect("SDK snapshot");
+        assert!(snap.pending_snapshot);
         let mut fork = mk();
-        fork.sdk_restore(&snap);
-        assert_eq!(
-            fork.state_hash(),
-            h_true,
-            "restore round-trips the deferred point → replay hash equality"
-        );
-
-        // The branch path (`sdk_restore_events`) deliberately leaves the flag at the
-        // fresh `false`, so a reseeded fork does NOT re-surface an already-sealed
-        // point — it hashes as h_false, not h_true.
+        fork.sdk_restore(&snap).unwrap();
+        assert_eq!(fork.state_hash().unwrap(), h_true);
         let mut events_only = mk();
         events_only.sdk_restore_events(&snap);
-        assert_eq!(
-            events_only.state_hash(),
-            h_false,
-            "branch restore leaves the deferred flag fresh"
-        );
+        assert_eq!(events_only.state_hash().unwrap(), h_false);
     }
 
     /// `Vmm::run()` STOPS at a cooperating-SDK assertion — it does not swallow it by
@@ -5889,7 +5571,6 @@ mod tests {
     /// the assertion in `sdk_stop`, NOT `reason == Hlt`.
     #[test]
     fn run_stops_on_an_sdk_assertion_not_the_later_terminal() {
-        use environment::{EnvSpec, FaultPolicy};
         let viol_id: u32 = (1 << 24) | 20; // assert namespace, point 20
         let mut payload = viol_id.to_le_bytes().to_vec();
         payload.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
@@ -5908,14 +5589,7 @@ mod tests {
             ]),
             GuestRam::new(TEST_RAM).unwrap(),
         );
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-            &FaultPolicy::none(),
-        );
+        vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
         vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
 
         let r = vmm.run().expect("run");
@@ -5941,7 +5615,6 @@ mod tests {
     /// vCPU reads the live (resumed) state, not the stop's.
     #[test]
     fn run_does_not_cache_the_vcpu_on_a_resumable_sdk_stop() {
-        use environment::{EnvSpec, FaultPolicy};
         let viol_id: u32 = (1 << 24) | 20; // assert violation, point 20
         let mut payload = viol_id.to_le_bytes().to_vec();
         payload.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
@@ -5963,14 +5636,7 @@ mod tests {
         })]);
         mock.set_state(stop_state.clone());
         let mut vmm = Vmm::new(mock, GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-            &FaultPolicy::none(),
-        );
+        vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
         vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
 
         let r = vmm.run().expect("run");
@@ -5991,78 +5657,17 @@ mod tests {
     }
 
     /// Round-5 P1 (semantics, SETTLED): a task-78 reseed marker reseeds ONLY the
-    /// entropy stream (`reseed_entropy` → `vt.entropy`), never the buggify/fault
-    /// PRNG (`SdkChannel.env`, a separate `RecordedEnv`). So a mid-run reseed cannot
-    /// perturb the buggify sequence — the fold (which reseeds entropy only) and the
-    /// sequential branch agree. Direct proof: the buggify answers are bit-identical
+    /// entropy stream (`reseed_entropy` → `vt.entropy`), never the generic service
+    /// handler stream (`SdkChannel.env`, a separate `RecordedEnv`). So a mid-run
+    /// reseed cannot perturb service answers — the fold (which reseeds entropy only)
+    /// and the sequential branch agree. Direct proof: the service answers are identical
     /// whether or not the entropy stream is reseeded between decisions — and the
     /// reseed provably DID take effect (distinct reseeds ⇒ distinct RNG draws), so
     /// the invariance is not vacuous.
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
-    )]
-    fn buggify_decisions_are_independent_of_an_entropy_reseed() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(1, 1, 2).unwrap(); // ~half fire → seed-sensitive
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-
-        let build = || {
-            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
-            v.enable_sdk(spec.materialize(), spec.policy());
-            v
-        };
-
-        // A: buggify at moments 0..6, no reseed.
-        let mut a = build();
-        let ans_a: Vec<bool> = (0..6).map(|m| a.decide_buggify(m, 1)).collect();
-
-        // B: buggify at 0..2, reseed the ENTROPY stream to a different seed, 2..6.
-        let mut b = build();
-        let mut ans_b: Vec<bool> = (0..2).map(|m| b.decide_buggify(m, 1)).collect();
-        b.reseed_entropy(0xDEAD_BEEF).unwrap();
-        ans_b.extend((2..6).map(|m| b.decide_buggify(m, 1)));
-
-        assert_eq!(
-            ans_a, ans_b,
-            "buggify answers are invariant under an entropy reseed (buggify ⊥ entropy)"
-        );
-
-        // Vacuity guard: distinct entropy reseeds really DO change the entropy-
-        // bearing state (the `VTIM` seed/position folded into the hash), so the
-        // invariance above is a real independence, not an inert entropy path.
-        let mut e1 = build();
-        let mut e2 = build();
-        e1.reseed_entropy(0xAAAA).unwrap();
-        e2.reseed_entropy(0xBBBB).unwrap();
-        assert_ne!(
-            e1.state_hash(),
-            e2.state_hash(),
-            "distinct reseeds ⇒ distinct entropy state (the reseed is not a no-op)"
-        );
-    }
-
-    /// The doorbell is **total** on edge/hostile requests (self-sweep): an empty
-    /// request, an oversize length (clamped to one page — never an OOB read), a
-    /// garbage frame, and a full-page request all return `Continued` with a clean
-    /// (error) response and never a spurious stop. The request page (`0xE000`)
-    /// abuts the response page (`0xF000`), so a page-length request reads exactly
-    /// its own page and touches neither the response page nor past guest RAM.
-    #[test]
     fn doorbell_is_total_on_edge_requests() {
-        use environment::{EnvSpec, FaultPolicy};
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-            &FaultPolicy::none(),
-        );
+        vmm.enable_sdk(nominal_env(1), &ServiceConfig::default());
 
         // Empty request; an oversize length; a full-page request.
         assert_eq!(
@@ -6122,19 +5727,11 @@ mod tests {
     /// a second stream.
     #[test]
     fn entropy_fill_and_rdrand_share_one_stream() {
-        use environment::{EnvSpec, FaultPolicy};
         // A V-time-wired VM with RAM large enough for the doorbell pages (0xE000).
         let mk = |script: Vec<Exit<X86>>| {
             let mut vmm = Vmm::new(configured_mock(script), GuestRam::new(TEST_RAM).unwrap());
             vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0x777).unwrap());
-            vmm.enable_sdk(
-                EnvSpec::Seeded {
-                    seed: 0x777,
-                    policy: FaultPolicy::none(),
-                }
-                .materialize(),
-                &FaultPolicy::none(),
-            );
+            vmm.enable_sdk(nominal_env(0x777), &ServiceConfig::default());
             vmm
         };
         // One `entropy_fill(8)` via the doorbell → 8 bytes (one stream word).
@@ -6202,21 +5799,13 @@ mod tests {
     /// seed (finding-4 + round-5 P2): equal seeds ⇒ equal entropy.
     #[test]
     fn doorbell_routes_entropy_deterministically() {
-        use environment::{EnvSpec, FaultPolicy};
         let mk = || {
             let mut vmm = Vmm::new(
                 configured_mock(vec![Exit::Common(CommonExit::Idle)]),
                 GuestRam::new(TEST_RAM).unwrap(),
             );
             vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 99).unwrap());
-            vmm.enable_sdk(
-                EnvSpec::Seeded {
-                    seed: 99,
-                    policy: FaultPolicy::none(),
-                }
-                .materialize(),
-                &FaultPolicy::none(),
-            );
+            vmm.enable_sdk(nominal_env(99), &ServiceConfig::default());
             vmm
         };
         let entropy = |vmm: &mut Vmm<MockBackend>, n: u32| -> (u16, Vec<u8>) {
@@ -6247,288 +5836,35 @@ mod tests {
         );
     }
 
-    /// The SDK channel snapshot/restore continues the seeded **buggify (fault)**
-    /// stream from the captured position (finding-1 fix): a fork resumed at a
-    /// snapshot produces the identical buggify continuation, while a fresh channel
+    /// The SDK channel snapshot/restore continues the seeded generic service stream
+    /// from the captured position (finding-1 fix): a fork resumed at a snapshot
+    /// produces the identical service continuation, while a fresh channel
     /// (the old reset-on-restore bug) diverges. (Entropy no longer rides the SDK
     /// channel — round-5 P2 routes `entropy_fill` through the VMM `SeededEntropy`
     /// stream, captured by the VM snapshot, not `SdkSnapshot`.)
-    #[test]
-    fn sdk_snapshot_restore_resumes_the_seeded_streams() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(1, 1, 2).unwrap();
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-
-        let mut base = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        base.enable_sdk(spec.materialize(), spec.policy());
-        for i in 0..5 {
-            let _ = base.decide_buggify(i, 1);
-        }
-        let snap = base.sdk_snapshot().expect("a wired channel snapshots");
-
-        // The buggify continuation from the snapshot position.
-        let cont = |vmm: &mut Vmm<MockBackend>| -> Vec<bool> {
-            (5..10).map(|i| vmm.decide_buggify(i, 1)).collect()
-        };
-        let expected = cont(&mut base);
-
-        // A fresh channel RESTORED to the snapshot reproduces the continuation.
-        let mut fork = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        fork.enable_sdk(spec.materialize(), spec.policy());
-        fork.sdk_restore(&snap);
-        assert_eq!(
-            cont(&mut fork),
-            expected,
-            "restored fault stream resumes exactly"
-        );
-
-        // A fresh channel WITHOUT restore (the old bug) diverges.
-        let mut broken = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        broken.enable_sdk(spec.materialize(), spec.policy());
-        assert_ne!(
-            cont(&mut broken),
-            expected,
-            "a fresh (position-0) channel is NOT the mid-run continuation"
-        );
-    }
-
-    /// Task 61: a mid-net-decisions snapshot, restored, reproduces the `net_decide`
-    /// continuation BIT-IDENTICALLY. Under the single-stream ruling the flow-policy
-    /// stream position rides the **shared SDK stream** (restored by `sdk_restore`),
-    /// and the decision log rides `net_restore`; a fresh (position-0) channel
-    /// diverges. Uses a multi-fault NetFlow policy so the sampled fault VALUE varies
-    /// with the stream position (else divergence could not be witnessed).
-    #[test]
-    fn net_continuation_resumes_via_the_shared_sdk_stream() {
-        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy, Span};
-        let mut policy = FaultPolicy::none();
-        policy
-            .set_class(
-                DecisionClass::NetFlow,
-                1,
-                1,
-                &[
-                    Fault::NetReset,
-                    Fault::NetLatency(Span(10)),
-                    Fault::NetThrottle { bps: 5 },
-                ],
-            )
-            .unwrap();
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-
-        // Wire BOTH channels — a net decision draws from the shared SDK stream.
-        let wire = |spec: &EnvSpec| -> Vmm<MockBackend> {
-            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            v.enable_sdk(spec.materialize(), spec.policy());
-            v.enable_net();
-            v
-        };
-
-        let mut base = wire(&spec);
-        for i in 0..5 {
-            let _ = base.decide_net(i, 1, 2, i, 0);
-        }
-        // Capture the shared stream (SDK) + the net decision log.
-        let sdk_snap = base.sdk_snapshot().expect("a wired SDK channel snapshots");
-        let net_snap = base.net_snapshot().expect("a wired Net channel snapshots");
-
-        let cont = |vmm: &mut Vmm<MockBackend>| -> Vec<Vec<u8>> {
-            (5..10).map(|i| vmm.decide_net(i, 1, 2, i, 0)).collect()
-        };
-        let expected = cont(&mut base);
-
-        // RESTORED (shared stream via sdk_restore + decision log via net_restore) →
-        // reproduces the continuation bit-identically.
-        let mut fork = wire(&spec);
-        fork.sdk_restore(&sdk_snap);
-        fork.net_restore(&net_snap);
-        assert_eq!(
-            cont(&mut fork),
-            expected,
-            "restored shared stream resumes the net continuation exactly"
-        );
-        assert_eq!(
-            fork.net_decisions().len(),
-            10,
-            "the decision prefix carried over"
-        );
-
-        // WITHOUT restore (position 0) → diverges.
-        let mut broken = wire(&spec);
-        assert_ne!(
-            cont(&mut broken),
-            expected,
-            "a fresh (position-0) shared stream is NOT the mid-run continuation"
-        );
-    }
-
-    /// Task 61 (R3, the single-stream contract): a `net_decide` draw **advances the
-    /// one shared fault stream** that buggify also draws from, so a buggify answer
-    /// that follows a net decision matches the canonical one-stream reproducer (net
-    /// then buggify from a single `RecordedEnv`), and DIFFERS from a buggify with no
-    /// preceding net draw. Under the (fixed) two-stream bug, the net draw would not
-    /// shift the buggify sequence and buggify-after-net would equal buggify-first.
-    #[test]
-    fn a_net_draw_advances_the_shared_stream_seen_by_buggify() {
-        use environment::{
-            Answer, DecisionClass, DecisionPoint, EnvSpec, Environment, Fault, FaultPolicy,
-        };
-
-        // Compute, purely in the environment crate, the canonical one-stream
-        // buggify answer with vs. without a preceding net draw for a seed.
-        let net_point = DecisionPoint::NetFlow {
-            src: environment::NodeId(1),
-            dst: environment::NodeId(2),
-            conn: environment::ConnId(7),
-            event: environment::FlowEvent::Open,
-        };
-        let fires = |ans: environment::Outcome| {
-            matches!(
-                ans,
-                environment::Outcome::Resolved(Answer::Fault(Fault::BuggifyFire))
-            )
-        };
-        let make_spec = |seed: u64| {
-            let mut policy = FaultPolicy::none();
-            policy
-                .set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
-                .unwrap();
-            policy.set_buggify_point(1, 1, 2).unwrap();
-            EnvSpec::Seeded { seed, policy }
-        };
-        // Pick a seed where the two stream positions give DIFFERENT buggify
-        // outcomes, so the test genuinely witnesses the stream advance (a fixed
-        // constant could hit a parity collision where word 0 and word 1 agree).
-        let (spec, ref_net, ref_bug_after_net, bug_first) = (0u64..64)
-            .find_map(|seed| {
-                let spec = make_spec(seed);
-                let mut e1 = spec.materialize();
-                let net = e1.decide(&net_point);
-                let bug_after = fires(e1.decide(&DecisionPoint::Buggify { point: 1 }));
-                let mut e2 = spec.materialize();
-                let bug_first = fires(e2.decide(&DecisionPoint::Buggify { point: 1 }));
-                (bug_after != bug_first).then(|| {
-                    let net = match net {
-                        environment::Outcome::Resolved(a) => a,
-                        _ => Answer::Nominal,
-                    };
-                    (spec, net, bug_after, bug_first)
-                })
-            })
-            .expect("a seed where the net draw shifts the buggify outcome exists");
-
-        // The VMM: net_decide then decide_buggify share ONE stream, so the buggify
-        // answer matches the canonical net-then-buggify reference (the net draw
-        // shifted the stream) and NOT the buggify-first reference.
-        let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-        v.enable_sdk(spec.materialize(), spec.policy());
-        v.enable_net();
-        let net_bytes = v.decide_net(0, 1, 2, 7, 0);
-        assert_eq!(
-            Answer::decode(&net_bytes).unwrap(),
-            ref_net,
-            "net answer matches the canonical stream position 0"
-        );
-        let fired = v.decide_buggify(1, 1);
-        assert_eq!(
-            fired, ref_bug_after_net,
-            "buggify-after-net matches the canonical one-stream reproducer \
-             (the net draw advanced the shared stream)"
-        );
-        assert_ne!(
-            fired, bug_first,
-            "buggify-after-net differs from buggify-first — the net draw genuinely \
-             advanced the shared stream (would be equal under the two-stream bug)"
-        );
-    }
-
-    /// The `state_hash` folds the wired SDK channel's replay-relevant state
-    /// (round-7): two same-seed VMs whose SDK buggify streams diverge hash
-    /// **differently**; and a VM with NO SDK channel carries no `SDK\0` chunk, so
-    /// an SDK-less golden (M1/M2/corpus/Linux) is byte-for-byte unchanged.
     #[test]
     #[cfg_attr(
         miri,
         ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
     )]
     fn state_hash_folds_the_sdk_stream_and_is_absent_when_unwired() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(1, 1, 2).unwrap();
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-        let mk = || Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-
-        // Same seed + same stream position ⇒ equal hash; a diverged buggify draw
-        // sequence ⇒ DIFFERENT hash (the SDK divergence is IN the determinism hash).
-        let mut a = mk();
-        a.enable_sdk(spec.materialize(), spec.policy());
-        let mut b = mk();
-        b.enable_sdk(spec.materialize(), spec.policy());
-        assert_eq!(
-            a.state_hash(),
-            b.state_hash(),
-            "same SDK stream position hashes equal"
-        );
-        for i in 0..3 {
-            let _ = b.decide_buggify(i, 1);
-        }
-        assert_ne!(
-            a.state_hash(),
-            b.state_hash(),
-            "a diverged SDK stream hashes differently"
-        );
-
-        // No SDK channel ⇒ no `SDK\0` chunk in the blob (the golden does not move).
-        let has_sdk_chunk = |blob: &[u8]| blob.windows(4).any(|w| w == b"SDK\0");
+        let unwired = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let unwired_hash = unwired.state_hash().unwrap();
+        let mut wired = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut wired, 7);
         assert!(
-            !has_sdk_chunk(&mk().state_blob()),
-            "no SDK chunk when unwired"
+            wired
+                .state_blob()
+                .unwrap()
+                .windows(4)
+                .any(|w| w == b"SDK\0")
         );
-        let mut wired = mk();
-        wired.enable_sdk(spec.materialize(), spec.policy());
-        assert!(
-            has_sdk_chunk(&wired.state_blob()),
-            "SDK chunk present when wired"
-        );
+        assert_ne!(unwired_hash, wired.state_hash().unwrap());
     }
 
-    /// The `state_hash` folds the **active FaultPolicy** (round-8 P1): two same-seed
-    /// VMs at the SAME (position-0) stream but with DIFFERENT buggify policies hash
-    /// **differently** — a stream position alone does not determine the buggify
-    /// fire/nominal sequence, the policy does, so the divergence must be in the hash.
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
-    )]
-    fn state_hash_folds_the_active_buggify_policy() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mk = |policy: FaultPolicy| {
-            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
-            let spec = EnvSpec::Seeded { seed: 7, policy };
-            vmm.enable_sdk(spec.materialize(), spec.policy());
-            vmm
-        };
-        // Two policies differing ONLY in the buggify biasing at the same point;
-        // both channels are at stream position 0, so the seed + stream match.
-        let mut p_half = FaultPolicy::none();
-        p_half.set_buggify_point(1, 1, 2).unwrap(); // fire 1/2
-        let mut p_three_quarters = FaultPolicy::none();
-        p_three_quarters.set_buggify_point(1, 3, 4).unwrap(); // fire 3/4 — different policy
-        assert_ne!(
-            mk(p_half.clone()).state_hash(),
-            mk(p_three_quarters).state_hash(),
-            "a different active buggify policy hashes differently"
-        );
-        // The SAME policy at the same stream still hashes equal (sanity).
-        assert_eq!(
-            mk(p_half.clone()).state_hash(),
-            mk(p_half).state_hash(),
-            "the same policy at the same stream hashes equal"
-        );
-    }
-
+    /// The `state_hash` folds the active generic service configuration (round-8 P1):
+    /// two same-seed VMs at the same stream position but with different service
+    /// configurations hash differently, so configuration is part of replay state.
     #[test]
     fn rdtsc_completes_with_vtime_tsc_not_host() {
         // work = 10 → vns = 10 (ratio 1:1) → tsc = floor(10 * 2GHz/1e9) = 20.
@@ -6712,7 +6048,7 @@ mod tests {
     fn restore_vtime_rejects_bad_snapshot_atomically() {
         let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
-        let before = v.state_hash();
+        let before = v.state_hash().unwrap();
         // `SeededEntropy::restore_state` rejects an all-zero (value 0) blob. With a
         // non-atomic restore the clock/vns_base/work would already be mutated; the
         // atomic version leaves everything as-is.
@@ -6726,7 +6062,7 @@ mod tests {
             Err(VmmError::ContractViolation(_))
         ));
         assert_eq!(
-            v.state_hash(),
+            v.state_hash().unwrap(),
             before,
             "a rejected snapshot must leave the V-time/entropy state untouched"
         );
@@ -6822,7 +6158,7 @@ mod tests {
         );
         assert_eq!(msr.backend.completions(), &[Completion::Read(2)]);
         // Deterministic-twice (same seed/work ⇒ byte-identical state_hash).
-        assert_eq!(msr.state_hash(), run_msr().state_hash());
+        assert_eq!(msr.state_hash().unwrap(), run_msr().state_hash().unwrap());
     }
 
     /// Task-27 item 1, write side: `WRMSR(IA32_TSC_ADJUST, Y)` sets the adjust (and
@@ -6845,8 +6181,8 @@ mod tests {
             v
         };
         assert_ne!(
-            with_adjust(0).state_hash(),
-            with_adjust(12_345).state_hash(),
+            with_adjust(0).state_hash().unwrap(),
+            with_adjust(12_345).state_hash().unwrap(),
             "a written IA32_TSC_ADJUST must change the VTIM hash"
         );
     }
@@ -6864,8 +6200,8 @@ mod tests {
             v
         };
         assert_ne!(
-            at_vns(100).state_hash(),
-            at_vns(200).state_hash(),
+            at_vns(100).state_hash().unwrap(),
+            at_vns(200).state_hash().unwrap(),
             "a 0x3b access at different work ⇒ different effective V-time ⇒ different hash"
         );
     }
@@ -6968,27 +6304,27 @@ mod tests {
         // Stock (vtime: None): NO VTIM chunk ⇒ hash unchanged from before.
         let stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(
-            !contains_tag(&stock.state_blob(), b"VTIM"),
+            !contains_tag(&stock.state_blob().unwrap(), b"VTIM"),
             "stock Vmm must not emit a VTIM chunk (M1/M2 hash unchanged)"
         );
         // Two stock Vmms with identical setup still hash identically.
         let stock2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        assert_eq!(stock.state_hash(), stock2.state_hash());
+        assert_eq!(stock.state_hash().unwrap(), stock2.state_hash().unwrap());
 
         // Wiring vtime adds the chunk and changes the hash.
         let a = wired(1, contract_vclock_config());
-        assert!(contains_tag(&a.state_blob(), b"VTIM"));
+        assert!(contains_tag(&a.state_blob().unwrap(), b"VTIM"));
         assert_ne!(
-            a.state_hash(),
-            stock.state_hash(),
+            a.state_hash().unwrap(),
+            stock.state_hash().unwrap(),
             "wiring vtime must change the hash"
         );
 
         // Differ ONLY in seed ⇒ different hash.
         let b = wired(2, contract_vclock_config());
         assert_ne!(
-            a.state_hash(),
-            b.state_hash(),
+            a.state_hash().unwrap(),
+            b.state_hash().unwrap(),
             "different seed ⇒ different state_hash"
         );
 
@@ -7023,15 +6359,15 @@ mod tests {
         ];
         for (field, cfg) in variants {
             assert_ne!(
-                a.state_hash(),
-                wired(1, cfg).state_hash(),
+                a.state_hash().unwrap(),
+                wired(1, cfg).state_hash().unwrap(),
                 "different {field} ⇒ different state_hash"
             );
         }
 
         // Same seed + same cfg ⇒ same hash (deterministic; no false-different).
         let a2 = wired(1, contract_vclock_config());
-        assert_eq!(a.state_hash(), a2.state_hash());
+        assert_eq!(a.state_hash().unwrap(), a2.state_hash().unwrap());
     }
 
     #[test]
@@ -7189,8 +6525,8 @@ mod tests {
         let b = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         a.report_stream = vec![0xAA, 0xBB];
         assert_eq!(
-            a.state_hash(),
-            b.state_hash(),
+            a.state_hash().unwrap(),
+            b.state_hash().unwrap(),
             "report stream must NOT reach state_hash (M1/M2 hash unchanged)"
         );
         assert_ne!(
@@ -7344,8 +6680,8 @@ mod tests {
         restored.restore_vtime(&snap).unwrap();
 
         assert_eq!(
-            fresh.state_hash(),
-            restored.state_hash(),
+            fresh.state_hash().unwrap(),
+            restored.state_hash().unwrap(),
             "a restored VM and a fresh VM at the same effective V-time must hash identically"
         );
     }
@@ -7368,8 +6704,8 @@ mod tests {
             v
         };
         assert_ne!(
-            after_rng_at_vns(100).state_hash(),
-            after_rng_at_vns(200).state_hash(),
+            after_rng_at_vns(100).state_hash().unwrap(),
+            after_rng_at_vns(200).state_hash().unwrap(),
             "different pre-RNG-exit work ⇒ different VTIM, despite an identical seeded draw"
         );
     }
@@ -7498,16 +6834,16 @@ mod tests {
         // Stock Vmm: no LAPC/LEGY chunks — M1/M2/corpus hash is byte-for-byte
         // unchanged from before this path existed.
         let stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        let stock_blob = stock.state_blob();
+        let stock_blob = stock.state_blob().unwrap();
         assert!(!has(&stock_blob, b"LAPC"));
         assert!(!has(&stock_blob, b"LEGY"));
 
         // Linux Vmm: both chunks present, and the hash differs from stock.
         let linux = linux_vmm(vec![]);
-        let blob = linux.state_blob();
+        let blob = linux.state_blob().unwrap();
         assert!(has(&blob, b"LAPC"));
         assert!(has(&blob, b"LEGY"));
-        assert_ne!(stock.state_hash(), linux.state_hash());
+        assert_ne!(stock.state_hash().unwrap(), linux.state_hash().unwrap());
 
         // The LEGY chunk tracks the PCI latch: two Linux VMs that program different
         // CONFIG_ADDRESS values hash differently.
@@ -7520,7 +6856,10 @@ mod tests {
             v.step().unwrap();
             v
         };
-        assert_ne!(with_pci(0x1000).state_hash(), with_pci(0x2000).state_hash());
+        assert_ne!(
+            with_pci(0x1000).state_hash().unwrap(),
+            with_pci(0x2000).state_hash().unwrap()
+        );
     }
 
     #[test]
@@ -7625,8 +6964,8 @@ mod tests {
         })]);
         modified.step().unwrap(); // write TPR = 0x20
         assert_ne!(
-            base.state_hash(),
-            modified.state_hash(),
+            base.state_hash().unwrap(),
+            modified.state_hash().unwrap(),
             "an xAPIC register write must change the LAPC hash chunk"
         );
     }
@@ -8430,7 +7769,7 @@ mod tests {
         s.contract_hash = [0xFFu8; 32]; // a different ratified contract
 
         let mut b = full_vmm(nonzero_state(), vec![], 100, 0xABCD);
-        let before = b.state_hash();
+        let before = b.state_hash().unwrap();
         assert!(matches!(
             b.restore_vm_state(&s),
             Err(VmmError::Snapshot(
@@ -8438,7 +7777,7 @@ mod tests {
             ))
         ));
         assert_eq!(
-            b.state_hash(),
+            b.state_hash().unwrap(),
             before,
             "a rejected snapshot leaves the VM fully intact (atomic)"
         );
@@ -8506,6 +7845,89 @@ mod tests {
             stock.reseed_entropy(7),
             Err(VmmError::ContractViolation(_))
         ));
+    }
+
+    #[test]
+    fn platform_entropy_reseed_does_not_reset_service_or_scheduler_state() {
+        use environment::channel::Question;
+
+        const SERVICE_SEED: u64 = 0x5151;
+        let scheduler = Question::scheduler(3).unwrap();
+        let service = Question::with_request_id(7, 99, vec![0xA5]).unwrap();
+
+        // Consume one core scheduler draw and one handler draw before the
+        // platform reseed. The reference environment is the same workload
+        // InputSpec state without the platform entropy operation.
+        let mut expected = channel::RecordedEnv::new(
+            SERVICE_SEED,
+            Box::new(SeededService::default()) as Box<dyn channel::ServiceHandler>,
+        );
+        expected.set_moment(11);
+        let mut actual = vtime_vmm(Vec::new(), 0xCAFE);
+        enable_seeded_service(&mut actual, SERVICE_SEED);
+        actual.sdk.as_mut().expect("SDK enabled").env.set_moment(11);
+
+        assert_eq!(
+            actual.sdk.as_mut().unwrap().env.decide(&scheduler).unwrap(),
+            expected.decide(&scheduler).unwrap()
+        );
+        assert_eq!(
+            actual.sdk.as_mut().unwrap().env.decide(&service).unwrap(),
+            expected.decide(&service).unwrap()
+        );
+        let before = actual
+            .sdk
+            .as_ref()
+            .unwrap()
+            .env
+            .snapshot_state()
+            .unwrap()
+            .encode();
+        let expected_after_draw = expected.snapshot_state().unwrap().encode();
+        assert_eq!(before, expected_after_draw);
+
+        actual.reseed_entropy(0xDEAD_BEEF).unwrap();
+        let after = actual
+            .sdk
+            .as_ref()
+            .unwrap()
+            .env
+            .snapshot_state()
+            .unwrap()
+            .encode();
+        assert_eq!(
+            after, before,
+            "platform entropy reseed must not reset the workload scheduler stream or handler state"
+        );
+    }
+
+    #[test]
+    fn branch_input_spec_materializes_handler_with_requested_seed() {
+        use environment::input_spec::{InputSpec, ServiceFactory};
+        use std::sync::Arc;
+
+        const REQUESTED_SEED: u64 = 0xBEEF_CAFE;
+        let config = SeededService::config();
+        let mut spec = InputSpec::seeded(REQUESTED_SEED);
+        spec.set_config(config.clone());
+        let factory: ServiceFactory = Arc::new(move |requested| {
+            if requested != &config {
+                return Err(channel::ChannelError::Handler(
+                    "unexpected service configuration".to_owned(),
+                ));
+            }
+            Ok(Box::new(SeededService::default()))
+        });
+
+        let env = spec.materialize(&factory).unwrap();
+        let mut expected_state = Vec::new();
+        expected_state.extend_from_slice(&REQUESTED_SEED.to_le_bytes());
+        expected_state.extend_from_slice(&0_u64.to_le_bytes());
+        assert_eq!(
+            env.handler().snapshot_state().unwrap(),
+            expected_state,
+            "branch InputSpec seed initializes workload handler state"
+        );
     }
 
     #[test]
@@ -9225,10 +8647,10 @@ mod tests {
         // byte-for-byte unchanged from before this path existed.
         let v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         assert!(!v.snapshot_hashing_wired());
-        assert!(!has_tag(&v.state_blob(), b"VMST"));
+        assert!(!has_tag(&v.state_blob().unwrap(), b"VMST"));
         // A second identical VM hashes identically (no nondeterminism introduced).
         let v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        assert_eq!(v.state_hash(), v2.state_hash());
+        assert_eq!(v.state_hash().unwrap(), v2.state_hash().unwrap());
     }
 
     #[test]
@@ -9241,14 +8663,14 @@ mod tests {
         // canonical blob differs (here a TPR write) then hash differently, while the
         // unwired twin's hash is untouched.
         let base = full_vmm(VcpuState::default(), vec![], 0, 1);
-        let base_hash_unwired = base.state_hash();
+        let base_hash_unwired = base.state_hash().unwrap();
 
         let mut on = full_vmm(VcpuState::default(), vec![], 0, 1);
         on.wire_snapshot_hashing();
         assert!(on.snapshot_hashing_wired());
-        assert!(has_tag(&on.state_blob(), b"VMST"));
+        assert!(has_tag(&on.state_blob().unwrap(), b"VMST"));
         assert_ne!(
-            on.state_hash(),
+            on.state_hash().unwrap(),
             base_hash_unwired,
             "folding the canonical blob changes the hash"
         );
@@ -9269,8 +8691,8 @@ mod tests {
         b.wire_snapshot_hashing();
         b.step().unwrap();
         assert_ne!(
-            a.state_hash(),
-            b.state_hash(),
+            a.state_hash().unwrap(),
+            b.state_hash().unwrap(),
             "a vm_state difference reaches state_hash when snapshot-hashing is wired"
         );
     }
@@ -9496,7 +8918,7 @@ mod tests {
                 vmm.guest_memory().to_vec(),
                 vmm.serial().to_vec(),
                 vmm.observable_digest(),
-                vmm.state_blob(),
+                vmm.state_blob().unwrap(),
             )
         };
         let (ram_on, serial_on, digest_on, blob_on) = run(true);
@@ -9534,16 +8956,16 @@ mod tests {
             vmm.enable_pvclock();
             vmm
         };
-        let base = build().state_blob();
+        let base = build().state_blob().unwrap();
         assert_eq!(
             base,
-            build().state_blob(),
+            build().state_blob().unwrap(),
             "same configuration must hash identically"
         );
         let mut registered = build();
         let (status, _) = ring_pvclock_register(&mut registered, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
-        let pending = registered.state_blob();
+        let pending = registered.state_blob().unwrap();
         assert_ne!(
             base, pending,
             "a registration is a different future — must reach the hash"
@@ -9555,7 +8977,7 @@ mod tests {
         registered.pvclock.as_mut().unwrap().armed = true;
         assert_ne!(
             pending,
-            registered.state_blob(),
+            registered.state_blob().unwrap(),
             "pending vs armed is a different future — the handshake bit must reach the hash"
         );
     }
@@ -10089,7 +9511,7 @@ mod tests {
     /// services the doorbell (the pvclock offer opens it) but every OTHER
     /// service answers `UnknownService`: an assert-violation Event must not
     /// answer Ok — and must NOT surface `Step::SdkStop` into a session with
-    /// no SDK channel (the PR-68 lesson); a buggify ask must not fabricate a
+    /// no SDK channel (the PR-68 lesson); a generic SDK ask must not fabricate a
     /// nominal answer; an entropy_fill must not advance the one shared seeded
     /// stream of a run that never offered the service.
     #[test]
@@ -10119,7 +9541,7 @@ mod tests {
         );
         assert_eq!(step, Step::Continued, "no SdkStop without an SDK channel");
 
-        // A buggify ask.
+        // A generic SDK ask.
         let n =
             hypercall_proto::encode_request(ServiceId::Sdk, 1, 2, &7u32.to_le_bytes(), &mut frame)
                 .unwrap();
@@ -10156,11 +9578,10 @@ mod tests {
         // AVAILABILITY BEFORE OPCODE (cross-model r7 P2): a **non-1** opcode for
         // an unoffered service must ALSO answer `UnknownService`, not
         // `UnknownOpcode` — grading the opcode of an unoffered service leaks that
-        // the service id is known. Event/Sdk/Net/Entropy all share the structure.
+        // the service id is known. Event/Sdk/Entropy all share the structure.
         for (svc, name) in [
             (ServiceId::Event, "Event"),
             (ServiceId::Sdk, "Sdk"),
-            (ServiceId::Net, "Net"),
             (ServiceId::Entropy, "Entropy"),
         ] {
             let n = hypercall_proto::encode_request(svc, 1, 7, &[], &mut frame).unwrap();

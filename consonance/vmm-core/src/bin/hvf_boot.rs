@@ -431,7 +431,13 @@ fn main() -> std::process::ExitCode {
                 late_placement_event,
                 hex(&trace.normalized_digest()),
             );
-            let hash = vmm.state_hash();
+            let hash = match vmm.state_hash() {
+                Ok(hash) => hash,
+                Err(error) => {
+                    eprintln!("state capture failed: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
             println!("HVF_BOOT_READY event={event} state_hash={}", hex(&hash));
             if let Some(log) = calibration_log.as_mut()
                 && let Err(error) = log.flush()

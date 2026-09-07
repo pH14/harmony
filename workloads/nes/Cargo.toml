@@ -1,0 +1,37 @@
+[package]
+name = "nes-workload"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace]
+
+[dependencies]
+guest-image = { path = "../guest-image", version = "=0.1.0" }
+searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
+machine = { path = "../nes-machine", version = "=0.1.0" }
+postcard = { version = "=1.1.3", default-features = false, features = ["alloc", "use-std"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+
+[features]
+consonance = ["machine/consonance"]
+
+[[bin]]
+name = "nova-consonance-campaign"
+path = "src/bin/nova-consonance-campaign.rs"
+required-features = ["consonance"]
+
+[[bin]]
+name = "nova-consonance-observation-oracle"
+path = "src/bin/nova-consonance-observation-oracle.rs"
+required-features = ["consonance"]
+
+[dev-dependencies]
+machine = { path = "../nes-machine", version = "=0.1.0", features = ["test-loopback"] }
+
+[[bin]]
+name = "nes-backend-oracle"
+path = "src/bin/nes-backend-oracle.rs"
+required-features = ["consonance"]

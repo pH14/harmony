@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `sdk-demo`: the SDK-instrumented demo guest (task 73). It drives every guest
+//! `sdk-demo`: the generic SDK-instrumented demo guest. It drives the guest
 //! SDK verb over the real `Client<VmcallTransport>` doorbell transport:
 //!
 //! - **catalog-at-init** — two `sometimes` points (one wired to fire, one never:
-//!   the gate-6 never-fired shape), an `always` assertion, a buggify site, a
-//!   state register;
-//! - **buggify** — a "slow disk" site the host decides; when it fires it takes
-//!   the buggy path;
-//! - a planted, **buggify-gated `always` violation** — the balance invariant only
-//!   breaks on the buggy path, so a run whose seed fires buggify enough surfaces
-//!   `StopReason::Assertion` (gate B); a run that never fires it passes;
+//!   the gate-6 never-fired shape), an `always` assertion, and a state register;
 //! - **IJON state** (`state_max`) and the **setup-complete** lifecycle hook.
 //!
 //! Box-only to run: it needs the patched KVM and the vmm-core doorbell seam that
@@ -27,8 +21,7 @@ const NAME: &str = "sdk-demo";
 const CATALOG: &[Point] = &[
     Point::sometimes(1, "commit_seen"),   // fires every iteration
     Point::sometimes(2, "rollback_seen"), // never fires -> never-fired report
-    Point::always(20, "balance_nonneg"),  // the planted invariant
-    Point::buggify(50, "slow_disk"),      // the host-decided perturbation
+    Point::always(20, "balance_nonneg"),  // the invariant
     Point::state(40, "min_balance"),      // an IJON register
 ];
 
@@ -54,23 +47,10 @@ extern "C" fn payload_main() -> ! {
     }
 
     // A deterministic little workload. `balance` starts safely positive and
-    // decrements each step; only the buggify "slow disk" path double-charges it,
-    // so ONLY a run that fires buggify enough can drive it below zero and trip
-    // the `always` invariant. A run that never fires buggify passes cleanly.
+    // decrements each step while the generic SDK reports its state and invariant.
     let mut balance: i64 = 100;
     let mut min_balance: i64 = balance;
     for _ in 0..8u32 {
-        // Fail LOUD on a buggify transport error — never `unwrap_or(false)`: a
-        // swallowed error reads as "never fired", so the buggify-gated violation
-        // could never trip and the box gate would pass VACUOUSLY (green for the
-        // wrong reason). A broken doorbell must crash the run, not hide the bug.
-        let slow = match sdk.buggify(50) {
-            Ok(b) => b,
-            Err(_) => common::payload::fail(NAME, "buggify"),
-        };
-        if slow {
-            balance -= 60; // the bug: the slow-disk path over-charges
-        }
         balance -= 10;
 
         if balance < min_balance {
@@ -87,9 +67,7 @@ extern "C" fn payload_main() -> ! {
             common::payload::fail(NAME, "assert_sometimes");
         }
 
-        // The planted invariant — only the buggy path can break it. LOUD on Err: a
-        // swallowed emission error here would DROP the violation, so the box gate
-        // that expects the planted Bug would pass VACUOUSLY (green for no reason).
+        // The generic invariant stays explicit and loud on transport failure.
         if sdk.assert_always(balance >= 0, 20).is_err() {
             common::payload::fail(NAME, "assert_always");
         }

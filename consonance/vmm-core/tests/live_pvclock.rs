@@ -592,9 +592,9 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
     // Deliberate fault, live: corrupt the page and require the checker to
     // catch it (then this VM is discarded).
     let gpa = vmm.pvclock_registration().unwrap();
-    vmm.apply_host_fault(&environment::HostFault::CorruptMemory {
+    vmm.apply_effect(&environment::channel::Effect::XorMemory {
         gpa: gpa + 0x10, // the guest_clock field
-        mask: environment::BitMask(0xFF),
+        bytes: (0xFF_u64).to_le_bytes().to_vec(),
     })
     .expect("test corruption applies");
     assert!(
