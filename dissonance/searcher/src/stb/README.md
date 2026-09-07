@@ -188,6 +188,16 @@ and observation, campaign/replay reports, control probe, the explicitly labeled
 checksums. ROMs, core/compiler binaries, snapshots and raw media are excluded.
 Scheduled runs become active after the workflow reaches the default branch.
 
+Public CI builds and runs the author's WTFPL source release; the author also
+[explicitly permits redistribution](https://itch.io/post/11601778). The root
+software license does not replace separate asset notices. The default film
+shows Sinbad (Zi Ye, CC BY-SA 3.0) and Kiki (Tyson Tan, CC BY-SA 4.0 option),
+with Tui's CC-BY "Kiki theme". The uploaded
+[artifact notice](../../../STB-ARTIFACT-LICENSE.md) provides attribution, source
+and license links, identifies the recording transformation, and distributes
+the video under CC BY-SA 4.0. Recheck the media notice when changing the pinned
+game, setup, characters, music or recording scope.
+
 To reproduce one CI campaign locally after the source build, from the repository
 root:
 
