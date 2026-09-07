@@ -20,6 +20,28 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
+A package that answers its own opaque service requests installs a resolver with
+`Session::set_service_factory` and branches with `branch_with_service`, which
+carries the package's `ServiceConfig` into the branch so the control server
+builds that handler. The handler is built before the live VM changes, so an
+uninstalled configuration fails the branch and leaves the session untouched.
+
+`Session::run_until` runs to an absolute virtual-time deadline or an earlier
+stop. `Session::seal` snapshots the current stopped state, running the guest a
+further settle step whenever the control server cannot seal that point yet, and
+gives up once the caller's total settle allowance is spent. A guest that has
+crashed or gone quiescent advances no further, so it is reported rather than
+settled again.
+
+`SessionConfig::wall_limit` bounds one run in host time. A guest spinning on a
+frozen virtual clock takes no exit, so it never reaches its virtual-time
+deadline and only the host clock notices it; past the bound the run is
+abandoned through the backend's cancellation latch and reported as
+`SessionError::Hung`. The limit is a host resource bound, so it is deliberately
+outside the session identity and the image identity. The `watchdog` module owns
+the mechanism — it reserves SIGUSR1 process-wide, so every composition that
+arms a host bound shares this one guard.
+
 `SparseSnapshot` is the explicit `consonance-whole-vm-v2` archive shape used
 by adapters that need page and sidecar sharing across related checkpoints.
 Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the

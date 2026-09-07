@@ -7,9 +7,9 @@
 //! mechanics.  Keeping this seam here prevents a package adapter from
 //! depending on another workload's machine crate.
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
-use control_proto::{Reply, StopReason};
+use control_proto::{Reply, SnapId, StopReason};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -54,6 +54,15 @@ pub struct SessionConfig {
     /// Optional domain tag included in portable image identity hashing.
     /// Empty selects the generic session identity domain.
     pub identity_tag: String,
+    /// Host wall-clock bound on one lifecycle run, or `None` for no bound.
+    ///
+    /// A guest spinning on a frozen virtual clock takes no exit, so it never
+    /// reaches its virtual-time deadline; only host time notices it. Past this
+    /// bound the run is abandoned and reported as [`SessionError::Hung`]. This
+    /// is a host resource bound rather than an input, so it is deliberately
+    /// absent from [`identity_with_config`] and from the image identity.
+    #[serde(default)]
+    pub wall_limit: Option<Duration>,
 }
 
 impl Default for SessionConfig {
@@ -64,6 +73,7 @@ impl Default for SessionConfig {
             run_budget: DEFAULT_RUN_BUDGET,
             cmdline: default_cmdline().to_owned(),
             identity_tag: String::new(),
+            wall_limit: None,
         }
     }
 }
@@ -78,6 +88,7 @@ impl SessionConfig {
             run_budget,
             cmdline: cmdline.into(),
             identity_tag: String::new(),
+            wall_limit: None,
         }
     }
 
@@ -85,6 +96,14 @@ impl SessionConfig {
     #[must_use]
     pub fn with_identity_tag(mut self, identity_tag: impl Into<String>) -> Self {
         self.identity_tag = identity_tag.into();
+        self
+    }
+
+    /// Abandon a run that spends more than `wall_limit` of host time inside
+    /// the guest. Available where the backend can be interrupted mid-run.
+    #[must_use]
+    pub fn with_wall_limit(mut self, wall_limit: Duration) -> Self {
+        self.wall_limit = Some(wall_limit);
         self
     }
 
@@ -489,6 +508,89 @@ pub enum SessionError {
     Portable(String),
     #[error("guest stopped before the expected snapshot point: {0:?}")]
     Stop(StopReason),
+    /// The guest spent more than the configured wall-clock limit inside one
+    /// run without taking an exit. The VM is abandoned; the session cannot be
+    /// resumed and the caller reports the run rather than retrying it.
+    #[error("guest ran for more than {0:?} of host time without exiting")]
+    Hung(Duration),
+    /// The guest never reached a snapshot-eligible point within the caller's
+    /// settle allowance.
+    #[error("guest reached no snapshot-eligible point within {settled} ns of settling")]
+    Settle {
+        /// Virtual time spent settling before the attempt was abandoned.
+        settled: u64,
+    },
+}
+
+/// Whether running the guest further can move it off a point the control
+/// server refuses to seal. A crashed or quiescent guest advances no further,
+/// so a retried seal would only repeat the refusal.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn settling_can_advance(stop: &StopReason) -> bool {
+    match stop {
+        StopReason::Deadline { .. }
+        | StopReason::Decision { .. }
+        | StopReason::SnapshotPoint { .. }
+        | StopReason::Assertion { .. } => true,
+        StopReason::Crash { .. } | StopReason::Quiescent { .. } => false,
+    }
+}
+
+/// Seal the current point, running the guest a little further whenever the
+/// control server refuses it.
+///
+/// `seal` answers `None` for a point that is not snapshot-eligible yet, and
+/// `advance` runs one settle step and reports where the guest stopped. Both
+/// take `context` so one caller can lend the same session to each. This pure
+/// retry policy stays here so it is testable without a VM or Linux linker; the
+/// third result field is the last settle run's stop reason, absent when the
+/// point sealed with no settling at all.
+#[cfg_attr(
+    not(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    )),
+    allow(dead_code)
+)]
+fn seal_after_settling<C, Seal, Advance>(
+    context: &mut C,
+    settle_step: u64,
+    max_settle: u64,
+    mut seal: Seal,
+    mut advance: Advance,
+) -> Result<(SnapId, u64, Option<StopReason>), Box<dyn Error>>
+where
+    Seal: FnMut(&mut C) -> Result<Option<(SnapId, u64)>, Box<dyn Error>>,
+    Advance: FnMut(&mut C, u64) -> Result<StopReason, Box<dyn Error>>,
+{
+    if settle_step == 0 {
+        return Err(SessionError::Control("settle step is zero".into()).into());
+    }
+    let mut settled = 0_u64;
+    let mut last = None;
+    loop {
+        if let Some((snapshot, at)) = seal(context)? {
+            return Ok((snapshot, at, last));
+        }
+        if settled >= max_settle {
+            return Err(SessionError::Settle { settled }.into());
+        }
+        let step = settle_step.min(max_settle - settled);
+        let stop = advance(context, step)?;
+        settled += step;
+        if !settling_can_advance(&stop) {
+            return Err(SessionError::Stop(stop).into());
+        }
+        last = Some(stop);
+    }
 }
 
 #[cfg_attr(
@@ -937,6 +1039,140 @@ mod tests {
         let decoded: SparseSnapshot =
             serde_json::from_value(encoded).expect("deserialize sparse snapshot");
         assert_eq!(equal, decoded);
+    }
+
+    /// A caller-scripted stand-in for the control server's seal/run pair.
+    struct SettleFixture {
+        /// Virtual time at which the guest becomes snapshot-eligible.
+        eligible_at: u64,
+        now: u64,
+        stop: StopReason,
+        seals: usize,
+        runs: Vec<u64>,
+    }
+
+    impl SettleFixture {
+        fn new(eligible_at: u64) -> Self {
+            Self {
+                eligible_at,
+                now: 0,
+                stop: StopReason::Deadline {
+                    vtime: control_proto::Moment(0),
+                },
+                seals: 0,
+                runs: Vec::new(),
+            }
+        }
+
+        fn seal(&mut self) -> Result<Option<(SnapId, u64)>, Box<dyn Error>> {
+            self.seals += 1;
+            Ok((self.now >= self.eligible_at).then_some((SnapId(7), self.now)))
+        }
+
+        fn advance(&mut self, step: u64) -> Result<StopReason, Box<dyn Error>> {
+            self.runs.push(step);
+            self.now += step;
+            Ok(self.stop.clone())
+        }
+    }
+
+    fn settle(fixture: &mut SettleFixture, step: u64, max: u64) -> Result<u64, Box<dyn Error>> {
+        seal_after_settling(
+            fixture,
+            step,
+            max,
+            SettleFixture::seal,
+            SettleFixture::advance,
+        )
+        .map(|(_, at, _)| at)
+    }
+
+    #[test]
+    fn an_eligible_point_seals_without_running_the_guest() {
+        let mut fixture = SettleFixture::new(0);
+        let (snapshot, at, stop) = seal_after_settling(
+            &mut fixture,
+            10,
+            100,
+            SettleFixture::seal,
+            SettleFixture::advance,
+        )
+        .expect("an eligible point seals");
+        assert_eq!((snapshot, at), (SnapId(7), 0));
+        assert_eq!(stop, None, "no settle run happened, so there is no stop");
+        assert!(fixture.runs.is_empty());
+    }
+
+    #[test]
+    fn settling_advances_in_steps_and_stops_at_the_allowance() {
+        let mut fixture = SettleFixture::new(25);
+        assert_eq!(settle(&mut fixture, 10, 100).unwrap(), 30);
+        assert_eq!(fixture.runs, [10, 10, 10]);
+        // The final step is clipped so settling never runs past the allowance,
+        // and the point is still offered one last seal at the boundary.
+        let mut clipped = SettleFixture::new(25);
+        assert_eq!(settle(&mut clipped, 10, 25).unwrap(), 25);
+        assert_eq!(clipped.runs, [10, 10, 5]);
+        let mut exhausted = SettleFixture::new(31);
+        let error = settle(&mut exhausted, 10, 30).unwrap_err().to_string();
+        assert!(error.contains("30 ns of settling"), "{error}");
+        assert_eq!(exhausted.runs, [10, 10, 10]);
+        assert_eq!(exhausted.seals, 4, "the allowance boundary is sealed too");
+    }
+
+    #[test]
+    fn a_guest_that_cannot_advance_is_reported_rather_than_settled_again() {
+        for stop in [
+            StopReason::Quiescent {
+                vtime: control_proto::Moment(1),
+            },
+            StopReason::Crash {
+                vtime: control_proto::Moment(1),
+                info: control_proto::CrashInfo {
+                    kind: control_proto::CrashKind::Panic,
+                    detail: Vec::new(),
+                },
+            },
+        ] {
+            let mut fixture = SettleFixture::new(u64::MAX);
+            fixture.stop = stop.clone();
+            assert!(!settling_can_advance(&stop));
+            let error = settle(&mut fixture, 10, 100).unwrap_err().to_string();
+            assert!(
+                error.contains("stopped before the expected snapshot point"),
+                "{error}"
+            );
+            assert_eq!(fixture.runs, [10], "settling stopped after the first run");
+        }
+    }
+
+    #[test]
+    fn a_zero_settle_step_is_rejected_before_any_control_request() {
+        let mut fixture = SettleFixture::new(u64::MAX);
+        assert!(settle(&mut fixture, 0, 100).is_err());
+        assert_eq!(fixture.seals, 0);
+    }
+
+    #[test]
+    fn the_host_wall_limit_is_outside_the_session_identity() {
+        let bounded = SessionConfig::default().with_wall_limit(Duration::from_secs(30));
+        assert_ne!(bounded, SessionConfig::default());
+        assert_eq!(
+            identity_with_config(b"kernel", b"initramfs", &bounded),
+            identity_with_config(b"kernel", b"initramfs", &SessionConfig::default()),
+        );
+    }
+
+    #[test]
+    fn a_config_serialized_without_a_wall_limit_still_loads() {
+        let mut value = serde_json::to_value(SessionConfig::default()).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("configuration is a JSON object")
+            .remove("wall_limit")
+            .expect("the field is serialized");
+        let decoded: SessionConfig = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded, SessionConfig::default());
     }
 
     #[test]
