@@ -10,8 +10,9 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, HashScope, HostFault,
-    Moment, PROTO_VERSION, RegsView, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
-    StopReason, class_bit, decode_reply, decode_request, encode_reply, encode_request,
+    Moment, PROTO_VERSION, RegsView, Reply, Reproducer, Request, Resolution, SnapId,
+    StopConditions, StopMask, StopReason, class_bit, decode_reply, decode_request, encode_reply,
+    encode_request,
 };
 
 fn caps() -> Caps {
@@ -78,10 +79,14 @@ impl StubServer {
             | Request::Replay(_)
             | Request::Perturb { .. } => Ok(Reply::Unit),
             Request::Run { resolve, .. } => {
-                if resolve.is_some() {
+                if let Some(resolution) = resolve {
                     // A resolve with no outstanding decision is a loud error,
                     // never silently dropped (it would desync the DecisionId).
-                    if !self.armed {
+                    if !self.armed
+                        || resolution.vtime != Moment(100)
+                        || resolution.service != 19
+                        || resolution.id != DecisionId(1)
+                    {
                         return Err(ControlError::ResolveWithoutDecision);
                     }
                     self.armed = false;
@@ -227,7 +232,12 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     }));
     replies.push(lb.exchange(Request::Run {
         until: conds(),
-        resolve: Some(Answer(vec![0xA1])),
+        resolve: Some(Resolution {
+            vtime: Moment(100),
+            service: 19,
+            id: DecisionId(1),
+            answer: Answer(vec![0xA1]),
+        }),
     }));
     replies.push(lb.exchange(Request::Replay(snap)));
     replies.push(lb.exchange(Request::Hash {
@@ -257,7 +267,12 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     // resolve with no outstanding decision -> loud ControlError
     replies.push(lb.exchange(Request::Run {
         until: conds(),
-        resolve: Some(Answer(vec![0xFF])),
+        resolve: Some(Resolution {
+            vtime: Moment(0),
+            service: 0,
+            id: DecisionId(0),
+            answer: Answer(vec![0xFF]),
+        }),
     }));
     replies.push(lb.exchange(Request::Drop(snap)));
 

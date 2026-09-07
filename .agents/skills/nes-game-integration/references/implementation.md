@@ -8,28 +8,34 @@ transcripts are not executable APIs.
 
 | Responsibility | Existing code to inspect |
 |---|---|
-| Snapshot/branch/replay/run/read contract | `dissonance/machine/src/lib.rs` |
-| Controller masks, duration bounds, reproducer encoding | `dissonance/machine/src/nes.rs` |
-| Pinned core, RAM access, capture, snapshot compatibility | `dissonance/machine/src/quicknes.rs` |
+| Snapshot/branch/replay/run/read contract | `workloads/nes-machine/src/lib.rs` |
+| Controller masks, duration bounds, reproducer encoding | `workloads/nes-machine/src/nes.rs` |
+| Pinned core, RAM access, capture, snapshot compatibility | `workloads/nes-machine/src/quicknes.rs` |
 | Smaller action/observation/snapshot interface | `dissonance/searcher/src/target.rs` |
-| Full workload contract and coordinator | `dissonance/searcher/src/search/campaign.rs`, `Game` |
+| Typed execution, input, evaluation and reporting contracts | `dissonance/searcher/src/search/campaign.rs`, `CampaignTypes`, `TargetExecution`, `InputPolicy`, `Evaluation`, `Reporting` |
+| Shared rollout and coordinator | `dissonance/searcher/src/search/rollout.rs`, `dissonance/searcher/src/search/campaign.rs` |
 | Key groups, progress and preference, retention | `dissonance/searcher/src/search/archive.rs`, `ArchiveKey` |
-| Mature campaign identity, recording, policy resolution | `dissonance/searcher/src/smb/campaign.rs` |
-| Source-grounded decoder and native execution adapter | `dissonance/searcher/src/nova/target.rs` and nearby README |
-| Spatial key and same-location preference | `dissonance/searcher/src/nova/archive.rs` |
-| CLI run/replay/report/capture pattern | `dissonance/searcher/src/bin/nova-campaign.rs` |
-| Multi-control game examples, if present | `dissonance/searcher/src/mm2/{target,archive,campaign}.rs` |
-| Native/Consonance equivalence, when requested | `dissonance/searcher/src/nova/consonance.rs`, `dissonance/searcher/src/bin/nova-consonance-observation-oracle.rs` |
+| Mature campaign identity, recording, policy resolution | `workloads/nes/src/smb/campaign.rs` |
+| Source-grounded decoder and native execution adapter | `workloads/nes/src/nova/target.rs` and nearby README |
+| Spatial key and same-location preference | `workloads/nes/src/nova/archive.rs` |
+| CLI run/replay/report/capture pattern | `workloads/nes/src/bin/nova-campaign.rs` |
+| Multi-control game examples, if present | `workloads/nes/src/mm2/{target,archive,campaign}.rs` |
+| Native/Consonance equivalence, when requested | `workloads/nes-machine/src/consonance.rs`, `workloads/nes/src/bin/nes-backend-oracle.rs` |
 
-Within `dissonance/searcher/`, normally add
+Within the standalone `workloads/nes/` package, normally add
 `src/<game>/{mod,target,archive,campaign}.rs`, expose the module in `src/lib.rs`,
 and add `src/bin/<game>-campaign.rs` and a small probe. Inspect
 Cargo's current binary/feature discovery before modifying manifests.
 
 Reuse the example's infrastructure, not its addresses, predicates, key order,
-setup shortcuts, or policy names. `Game` currently has many hooks, including
-workload-owned job execution. Preserve its restore/replay/suffix/probe ordering
-when adapting it. Do not invent a new parallel coordinator to avoid the boilerplate.
+setup shortcuts, or policy names. Define associated types in `CampaignTypes`,
+then implement the four contracts; `Game` is composed automatically. Reuse
+`search::rollout::execute_suffix` for job execution and preserve its
+restore/replay/suffix/probe ordering. Keep game code out of the generic searcher
+and machine drivers. Do not create another coordinator or copy the rollout loop.
+The shared CLI package dispatch and backend oracle currently recognize specific
+ROMs; registering a standalone campaign does not automatically add CLI or
+Consonance support. Report those separately.
 The existing `mm2` code may be concurrent/uncommitted; do not depend on it without
 checking the task's checkout. Metroid may exist only on another branch.
 
@@ -122,16 +128,19 @@ known backend limitations and guidance deliberately encoded in this adapter.
    worker sweep and mature-archive measurements. A stall is an informative
    result; a missing replay or false terminal is an integration defect.
 
-Current portable workspace commands are in `CONTRIBUTING.md`:
+Current portable checks are in `CONTRIBUTING.md` and the workload CI jobs.
+For adapter changes, check the standalone NES package:
 
 ```sh
-cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
-cargo clippy --locked --manifest-path dissonance/Cargo.toml \
+cargo fmt --manifest-path workloads/nes/Cargo.toml --all -- --check
+cargo clippy --locked --manifest-path workloads/nes/Cargo.toml \
   --release --all-features --all-targets -- -D warnings
-cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
-cargo deny --manifest-path dissonance/Cargo.toml check
+cargo test --locked --release --manifest-path workloads/nes/Cargo.toml --all-features
+cargo deny --manifest-path workloads/nes/Cargo.toml check --config deny.toml
 ```
 
+Also check `dissonance/Cargo.toml` when changing generic search contracts and
+`workloads/nes-machine/Cargo.toml` when changing emulator drivers.
 Use the repository toolchain. Changed unsafe logic additionally needs its
 safety invariant documented and Miri coverage. State skipped ROM/hardware checks.
 A documentation-only change does not call for emulator campaigns.
@@ -139,7 +148,7 @@ A documentation-only change does not call for emulator campaigns.
 For a concrete runner pattern, Nova accepts:
 
 ```sh
-cargo run --locked --release --manifest-path dissonance/Cargo.toml \
+cargo run --locked --release --manifest-path workloads/nes/Cargo.toml \
   --bin nova-campaign -- \
   --rom "$NOVA_ROM" --core "$QUICKNES_CORE" --output "$RUN_OUTPUT" \
   --seed 1 --executions 1000 --workers 1 --action-limit 512

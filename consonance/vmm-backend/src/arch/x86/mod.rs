@@ -15,7 +15,7 @@ pub use state::{
 };
 
 use crate::arch::{Arch, ArchCaps, ArchExit};
-use crate::exit::ExitReason;
+use crate::exit::{CommonExit, ExitReason};
 
 /// The x86-64 vendor (a zero-sized type; `docs/ARCHITECTURE.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -29,6 +29,10 @@ impl Arch for X86 {
     type IntId = u8;
     type Caps = X86Caps;
     type Completion = X86Completion;
+
+    fn stages_common_completion(exit: &CommonExit) -> bool {
+        matches!(exit, CommonExit::Mmio { .. }) || exit.stages_completion()
+    }
 }
 
 /// The x86-specific exit variants — the per-ISA half of the two-level
@@ -36,8 +40,9 @@ impl Arch for X86 {
 /// deadline) live in [`CommonExit`](crate::CommonExit).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum X86Exit {
-    /// Port I/O. `write = Some(v)` is `OUT(v)` (no completion); `write = None`
-    /// is `IN`, resolved by `complete_read`.
+    /// Port I/O. `write = Some(v)` is `OUT(v)`; KVM retains its fast-PIO
+    /// callback until the next entry. `write = None` is `IN`, resolved by
+    /// `complete_read`.
     Io {
         /// I/O port.
         port: u16,
@@ -105,7 +110,7 @@ impl ArchExit for X86Exit {
 
     fn stages_completion(&self) -> bool {
         match self {
-            X86Exit::Io { write: None, .. }
+            X86Exit::Io { .. }
             | X86Exit::Rdmsr { .. }
             | X86Exit::Wrmsr { .. }
             | X86Exit::Cpuid { .. }
@@ -113,7 +118,6 @@ impl ArchExit for X86Exit {
             | X86Exit::Rdtscp
             | X86Exit::Rdrand { .. }
             | X86Exit::Rdseed { .. } => true,
-            X86Exit::Io { write: Some(_), .. } => false,
         }
     }
 }

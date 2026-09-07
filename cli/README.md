@@ -6,6 +6,40 @@ Run `target/release/harmony preflight` to inspect host support and guest artifac
 See the [harmony-linux README](../consonance/harmony-linux/README.md) for guest image builds. Set `HARMONY_GUEST_DIR`
 to the artifact directory when using an external build.
 
+## Search packages
+
+```sh
+harmony search --package nes smb.nes --core quicknes_libretro.so
+harmony search --package nes --backend native smb.nes --core quicknes_libretro.so
+harmony search --package nes --backend consonance smb.nes \
+  --kernel bzImage --base-initramfs initramfs-nes.cpio.gz
+harmony search --package faults foo.oci
+```
+
+NES identifies SMB or Nova by ROM hash and defaults to `native`. Supply the
+pinned host QuickNES library with `--core` or `HARMONY_QUICKNES_CORE`. Consonance
+execution uses a controlled kernel and the ROM-free image produced by
+[`build-base-image.sh`](../workloads/nes-guest/build-base-image.sh); preparation
+adds the ROM and launch command. It requires a supported Linux KVM host.
+
+The faults package defaults to `consonance`. Its OCI image supplies
+`/harmony/workload.json`, node executables, topology setup, and check/recovery
+commands using the [workload schema](../workloads/faults/src/spec.rs).
+All replicas and the fault supervisor execute inside one VM on one virtual CPU.
+Supply the controlled kernel with `--kernel`, the Linux base image with
+`--base-initramfs`, and a static `fault-guest` binary with `--fault-agent` or
+`HARMONY_FAULT_AGENT`. Installed artifacts are discovered through
+`HARMONY_GUEST_DIR`. Preparation injects the supervisor into the staged image;
+its commands execute inside the guest.
+
+`--seed`, `--workers`, `--executions`, and `--actions` bound the campaign's logical
+work. `--out` selects a fresh output directory. `prepared.json` records the
+resolved workload, backend artifacts, and search settings; `stream.jsonl`,
+`checkpoint.json`, and `report.json` retain campaign choices, state, and results.
+An explicit backend selection is checked before execution.
+
+## OCI execution
+
 ```
 harmony oci run alpine:3 --seed 7 --timeout 60 --out run-7 -- /bin/echo hello
 ```

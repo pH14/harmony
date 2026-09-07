@@ -131,11 +131,11 @@ pub struct KvmBackend {
     cpuid_installed: bool,
     msr_filter_installed: bool,
     pending: Pending,
-    /// `true` after a completion has been written to `kvm_run` and before a
-    /// `KVM_RUN` consumes it. This is separate from `pending`: the latter is
-    /// cleared as soon as the VMM supplies the completion value, while this
-    /// marker keeps restore-in-place from carrying the old run-page transaction
-    /// across a snapshot restore.
+    /// `true` after KVM returns a userspace completion (including a write-style
+    /// PIO/MMIO callback) and before a `KVM_RUN` consumes it. This is separate
+    /// from `pending`: the latter is cleared as soon as the VMM supplies the
+    /// completion value, while this marker keeps restore-in-place from carrying
+    /// the old run-page transaction across a snapshot restore.
     completion_staged: bool,
     /// The single pending maskable IRQ vector ([`Backend::set_pending_irq`]),
     /// `None` if none. Held (not issued eagerly) so [`Self::enter_guest`] runs the
@@ -353,6 +353,11 @@ impl KvmBackend {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
+                    // Read exits become staged when complete_* writes their
+                    // result. Write exits have no trait-level pending value,
+                    // but KVM retains their fast-PIO/MMIO callback until the
+                    // next entry, so mark them here for restore retirement.
+                    self.completion_staged = decoded_exit_stages_completion(&exit, pending);
                     return Ok(exit);
                 }
                 None => continue, // run-loop control exit; re-enter
@@ -1010,9 +1015,13 @@ impl Backend for KvmBackend {
         self.vcpu
             .set_regs(&to_kvm_regs(&state.regs))
             .map_err(kvm_err)?;
-        // SAFETY: `vcpu` is valid; `raw_set_sregs2` reads a full `kvm_sregs2`
-        // (incl. flags/PDPTRs preserved from `save`). Excluded under Miri.
-        unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), &to_kvm_sregs2(&state.sregs))? };
+        restore_sregs2_with_flush(&state.sregs, |sregs| {
+            // SAFETY: the owned vCPU is stopped and `sregs` is a complete live
+            // kvm_sregs2 value, including saved flags/PDPTRs. No KVM_RUN occurs
+            // between the transient WP write and exact target write. Pure
+            // sequencing is Miri-tested; the ioctl runs in hardware acceptance.
+            unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), sregs) }
+        })?;
         self.vcpu
             .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
             .map_err(kvm_err)?;

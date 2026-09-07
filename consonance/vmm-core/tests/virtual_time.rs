@@ -473,10 +473,16 @@ fn state_blob_carries_assigned_vtime_and_entropy_at_work_zero() {
     let changed_vtime = state_vmm(18, 0xCAFE);
     let changed_entropy = state_vmm(17, 0xBABE);
 
-    assert!(has_chunk(&baseline.state_blob(), b"VTIM"));
-    assert_eq!(baseline.state_hash(), same.state_hash());
-    assert_ne!(baseline.state_hash(), changed_vtime.state_hash());
-    assert_ne!(baseline.state_hash(), changed_entropy.state_hash());
+    assert!(has_chunk(&baseline.state_blob().unwrap(), b"VTIM"));
+    assert_eq!(baseline.state_hash().unwrap(), same.state_hash().unwrap());
+    assert_ne!(
+        baseline.state_hash().unwrap(),
+        changed_vtime.state_hash().unwrap()
+    );
+    assert_ne!(
+        baseline.state_hash().unwrap(),
+        changed_entropy.state_hash().unwrap()
+    );
 
     let labels: Vec<_> = baseline
         .state_components()

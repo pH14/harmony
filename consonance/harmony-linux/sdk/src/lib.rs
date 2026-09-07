@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![no_std]
-#![doc = "The harmony guest SDK (task 73): assertions, IJON state registers, buggify decisions, and lifecycle points a cooperating in-guest workload emits over the deterministic hypercall channel."]
+#![doc = "The harmony guest SDK: assertions, IJON state registers, and lifecycle points a cooperating in-guest workload emits over the deterministic hypercall channel."]
 //!
 //! # The thin-SDK ruling (load-bearing)
 //!
@@ -17,9 +17,6 @@
 //!   reach duals: a reached `unreachable` is a violation.
 //! - **`state_set` / `state_max`** are the IJON numeric registers (S&P 2020): the
 //!   guest reports the raw `(reg, op, value)`; the host interprets max-novelty.
-//! - **`buggify(point)`** asks the host to resolve a deliberate perturbation
-//!   ([FoundationDB BUGGIFY], minus the anonymity — the point is a *named,
-//!   steerable, auditable* coordinate) and records the result on the event stream.
 //! - **`coverage_yield(thread, observed, ready)`** surfaces a crossed
 //!   per-thread instrumentation threshold. The host returns the next threshold
 //!   and one index in the cooperating runtime's runnable set.
@@ -38,13 +35,12 @@
 //! `Sdk<Client-over-VmcallTransport>` composes with the purpose-built guest
 //! doorbell shim with zero new transport code. Every emission rides the existing
 //! Event service (`ServiceId::Event`, op 1) under the byte-deterministic,
-//! versioned payload convention in [`wire`]; the round-trip `buggify` verb rides
-//! the SDK control service (`ServiceId::Sdk`, op 1); the M6 threshold handshake
-//! uses op 2 on that same service. Task 74's OTel bridge reuses
+//! versioned payload convention in [`wire`]; package-defined requests ride SDK
+//! opcode 3; the M6 threshold handshake uses op 2 on that same service.
+//! Fault-specific buggify and network adapters live in the optional
+//! `workloads/fault-sdk` crate. Task 74's OTel bridge reuses
 //! these same transport conventions (a reserved event-id namespace).
 //!
-//! [FoundationDB BUGGIFY]: https://www.youtube.com/watch?v=4fFDFbi3toc
-
 pub mod wire;
 
 use hypercall_proto::{Client, ClientError, MAX_PAYLOAD, Transport};
@@ -73,7 +69,8 @@ pub enum PointKind {
     AssertUnreachable,
     /// An IJON numeric state register.
     StateReg,
-    /// A buggify site.
+    /// A package-defined perturbation site. The optional fault adapter owns the
+    /// request and response codec; the generic SDK only declares its coordinate.
     Buggify,
 }
 
@@ -161,7 +158,8 @@ impl Point {
             kind: PointKind::StateReg,
         }
     }
-    /// A buggify site.
+    /// A package-defined perturbation site. Runtime resolution is supplied by
+    /// the optional fault adapter, not by the generic SDK.
     pub const fn buggify(id: u32, name: &'static str) -> Self {
         Self {
             id,
@@ -377,20 +375,6 @@ impl<T: Transport> Sdk<T> {
     /// frame clock rather than interpreting V-time nanoseconds as game time.
     pub fn frame_complete(&mut self, frame_count: u64) -> Result<(), SdkError<T::Error>> {
         self.emit(wire::FRAME_COMPLETE_EVENT_ID, &frame_count.to_le_bytes())
-    }
-
-    /// `buggify(point) -> bool`: ask the host whether to fire the deliberate
-    /// perturbation at `point`, then **record the result** on the event stream
-    /// (so the link tier observes reached-and-fired vs reached-and-nominal, and
-    /// the catalog can flag a never-reached buggify point). Returns whether the
-    /// host decided to fire.
-    pub fn buggify(&mut self, point: u32) -> Result<bool, SdkError<T::Error>> {
-        if point > wire::LOCAL_MAX {
-            return Err(SdkError::PointIdTooLarge);
-        }
-        let fired = self.client.buggify_decide(point)?;
-        self.emit(wire::event_id(wire::NS_BUGGIFY, point), &[u8::from(fired)])?;
-        Ok(fired)
     }
 
     /// Surface a crossed instrumented basic-block threshold and obtain the

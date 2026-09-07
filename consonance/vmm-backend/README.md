@@ -20,9 +20,12 @@ an ISA-specific exit enum.
 
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits remain pending until the matching completion method is called; resuming
-with an unserviced completion is an error. Exit counters and capability flags
-are exposed for the VMM's reports. Virtual-time policy, device models,
-snapshot formats, and entropy live above this crate.
+with an unserviced completion is an error. PIO/MMIO stores have no value to
+complete, but KVM retains their fast-path callback until the next entry, so the
+backend marks them staged and retires them with an immediate-exit entry before
+an in-place restore. Exit counters and capability flags are exposed for the
+VMM's reports. Virtual-time policy, device models, snapshot formats, and
+entropy live above this crate.
 
 The `contract-tests` feature exposes the shared backend contract exam, and the
 `mock` feature enables portable fixtures:
@@ -31,3 +34,12 @@ The `contract-tests` feature exposes the shared backend contract exam, and the
 cargo test -p vmm-backend --features mock,contract-tests
 cargo clippy -p vmm-backend --all-targets -- -D warnings
 ```
+
+KVM restoration invalidates cached guest translations before resuming a reused
+VM. The restore sequence writes a transient CR0 write-protection value and then
+the exact saved special registers, without entering the guest between writes.
+This forces KVM to reset its MMU context after the caller replaces page-table
+memory while retaining the same paging registers. Linux performs this reset
+conditionally in [`__set_sregs2`](https://github.com/torvalds/linux/blob/v6.12/arch/x86/kvm/x86.c#L11986). Synthetic tests check the
+write sequence and error handling; the Nova restore oracle checks 200 restored
+continuations across a branching snapshot tree on KVM.

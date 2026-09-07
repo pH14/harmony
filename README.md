@@ -3,13 +3,17 @@
 Harmony is a test environment for exploring controlled executions and replaying
 an interesting execution exactly.
 
-It has two parts:
+Its components have distinct roles:
 
 - consonance is the deterministic machine. It runs a controlled workload, owns
   its time and environmental inputs, captures complete machine state, and can
   branch or replay from that state.
-- dissonance is the explorer. It chooses inputs and faults, evaluates the
-  resulting states, and retains useful paths for further search.
+- dissonance is the explorer. It schedules campaigns, executes rollouts, and
+  retains useful paths for further search.
+- workload packages supply programs, actions, observations, evaluation, and
+  runtime preparation. The NES package supports direct emulator execution and
+  Consonance. The faults package supplies guest fault injection for systems
+  running together in one VM on one virtual CPU.
 
 Harmony is under active development. The repository contains x86-64 and arm64
 virtualization paths, a controlled Linux guest environment, deterministic
@@ -25,7 +29,18 @@ cargo build --release -p harmony-cli
 ./target/release/harmony preflight
 ```
 
-The CLI runs OCI workloads with `harmony oci run IMAGE -- COMMAND`.
+Search selects a workload package and, when needed, its execution backend:
+
+```sh
+harmony search --package nes smb.nes
+harmony search --package nes --backend consonance smb.nes
+harmony search --package faults foo.oci
+```
+
+NES defaults to the native QuickNES backend. Packages resolve their input and
+record workload, execution, and search identities in campaign artifacts.
+
+The CLI also runs OCI workloads with `harmony oci run IMAGE -- COMMAND`.
 See [CLI documentation](cli/README.md) for prerequisites and run artifacts.
 
 ## Documentation
@@ -48,14 +63,18 @@ repository checks live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - `consonance/` contains the deterministic VMM, machine models, snapshots,
   guest protocols, Linux guest environment, and acceptance suite.
-- `dissonance/` contains the machine abstraction, campaign engine, search
-  archive, and workload adapters.
+- `dissonance/` contains the campaign engine, search archive, and target
+  interfaces.
+- `workloads/` contains NES adapters, guest payloads, fault tooling, and package
+  preparation.
 - `scripts/` contains repository-level development and validation helpers.
 
-consonance and dissonance are separate Rust workspaces. consonance also owns the
-shared environment and control vocabulary because those contracts form part of
-the deterministic machine boundary. dissonance depends on the meaning of that
-boundary without depending on a particular hypervisor implementation.
+Consonance and Dissonance build independently. Standalone workload crates consume
+their interfaces; the CLI composes them. The [Cargo dependency policy](docs/dependency-boundaries.toml)
+and its required CI check enforce the direction of dependencies, including
+optional, target-specific, build, and development dependencies. Consonance owns
+opaque input transport and deterministic state. Fault definitions and policies
+are supplied by workload tooling.
 
 ## License
 

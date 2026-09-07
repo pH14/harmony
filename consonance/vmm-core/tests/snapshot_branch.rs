@@ -199,8 +199,8 @@ fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     q.restore_guest_memory(&booted_image()).unwrap();
     q.step().unwrap();
     assert_ne!(
-        a.state_hash(),
-        q.state_hash(),
+        a.state_hash().unwrap(),
+        q.state_hash().unwrap(),
         "the in-flight kvm_vcpu_events state is reflected in the full state_hash"
     );
 
@@ -223,8 +223,8 @@ fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     // EXACT restore: the restored VM's FULL state_hash equals the source's at the in-flight
     // point — capture → restore of the genuine in-flight kvm_vcpu_events is bit-for-bit.
     assert_eq!(
-        b.state_hash(),
-        a.state_hash(),
+        b.state_hash().unwrap(),
+        a.state_hash().unwrap(),
         "restored full state_hash == source at the genuine in-flight point"
     );
     // And the full kvm_vcpu_events round-tripped through save → restore → save.
@@ -267,7 +267,7 @@ fn vmst_chunk_masks_an_unusable_segments_type() {
         v.wire_snapshot_hashing(); // fold the VMST chunk into state_hash
         v.restore_guest_memory(&booted_image()).unwrap();
         v.step().unwrap(); // RDTSC → synchronized
-        v.state_hash()
+        v.state_hash().unwrap()
     };
     assert_eq!(
         hash_of(0),
@@ -296,7 +296,7 @@ fn vmst_chunk_masks_an_unusable_segments_type() {
         v.wire_snapshot_hashing();
         v.restore_guest_memory(&booted_image()).unwrap();
         v.step().unwrap();
-        v.state_hash()
+        v.state_hash().unwrap()
     };
     assert_ne!(
         usable_hash(0),
@@ -314,7 +314,7 @@ fn snapshot_hashing_makes_restore_reproduce_the_state_hash() {
     a.wire_snapshot_hashing();
     a.restore_guest_memory(&booted_image()).unwrap();
     a.step().unwrap();
-    let hash_a = a.state_hash();
+    let hash_a = a.state_hash().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
     let blob = a.save_vm_state().unwrap().encode().unwrap();
@@ -328,7 +328,7 @@ fn snapshot_hashing_makes_restore_reproduce_the_state_hash() {
     )
     .unwrap();
     assert_eq!(
-        b.state_hash(),
+        b.state_hash().unwrap(),
         hash_a,
         "a restored VM hashes identically to the snapshot source (same state)"
     );
@@ -367,7 +367,7 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
     a.wire_snapshot_hashing();
     a.restore_guest_memory(&booted_image()).unwrap();
     assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → synchronized
-    let hash_a = a.state_hash();
+    let hash_a = a.state_hash().unwrap();
 
     let mut eng = SnapshotEngine::new(RAM);
     let blob = a.save_vm_state().unwrap().encode().unwrap();
@@ -381,7 +381,7 @@ fn snapshot_hashing_round_trips_at_a_residual_events_point() {
     )
     .unwrap();
     assert_eq!(
-        b.state_hash(),
+        b.state_hash().unwrap(),
         hash_a,
         "a restored VM hashes identically to a residual-events snapshot source — both the \
          device blob AND the typed VmState.events record are canonicalized, so the VMST hash \
@@ -459,7 +459,7 @@ fn n_branches_share_one_boot_image_and_fork_entropy() {
         v.reseed_entropy(0x1000 + i as u64).unwrap();
         // With snapshot-hashing wired, the reseeded entropy position is in the hash,
         // so a distinct branch seed ⇒ a distinct state_hash (a divergent future).
-        hashes.push(v.state_hash());
+        hashes.push(v.state_hash().unwrap());
     }
 
     // The base is physically shared: N branches that touched nothing add NO unique

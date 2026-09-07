@@ -28,7 +28,7 @@ use control_proto::{
     HashScope, HostFault as WireHostFault, Moment, Reply, Reproducer, Request, SnapId,
     StopConditions, StopMask, StopReason,
 };
-use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
+use environment::{channel::Effect as HostEffect, input_spec::InputSpec as EnvSpec};
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
@@ -168,15 +168,11 @@ fn hash_whole<B: Backend<A = X86>>(s: &mut ControlServer<B>) -> [u8; 32] {
 fn seeded_env(seed: u64) -> Reproducer {
     Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
-        bytes: EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        }
-        .encode(),
+        bytes: EnvSpec::seeded(seed).encode(),
     }
 }
 
-fn wire(fault: HostFault) -> WireHostFault {
+fn wire(fault: HostEffect) -> WireHostFault {
     WireHostFault(fault.encode())
 }
 
@@ -247,11 +243,11 @@ fn host_plane_record_replay_closure() {
     let deadline = snapshot_vtime + env_u64("HP_DELTA", 5_000_000);
     let gpa = env_u64("HP_GPA", 0x0100_0000);
     let vector = env_u64("HP_VECTOR", 0x60) as u32;
-    let corrupt = wire(HostFault::CorruptMemory {
+    let corrupt = wire(HostEffect::XorMemory {
         gpa,
-        mask: BitMask(0xD15EA5ED_C0FFEE01),
+        bytes: 0xD15E_A5ED_C0FF_EE01_u64.to_le_bytes().to_vec(),
     });
-    let inject = wire(HostFault::InjectInterrupt { vector });
+    let inject = wire(HostEffect::InjectInterrupt { vector });
 
     // Run one branch → (optional perturbs) → run(deadline) → hash cycle from `base`.
     // Returns (stop, hash, recorded-env bytes).

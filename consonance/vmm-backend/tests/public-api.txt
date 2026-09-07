@@ -21,6 +21,7 @@ pub type vmm_backend::arch::arm64::Arm64::Injection = vmm_backend::arch::arm64::
 pub type vmm_backend::arch::arm64::Arm64::IntId = vmm_backend::arch::arm64::GicIntId
 pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm64Policy
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
+pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::arch::arm64::Arm64Caps
 pub vmm_backend::arch::arm64::Arm64Caps::deterministic_cntvct: bool
 pub vmm_backend::arch::arm64::Arm64Caps::enforces_cntv_cval: bool
@@ -264,6 +265,7 @@ pub type vmm_backend::arch::x86::X86::Injection = vmm_backend::arch::x86::Inject
 pub type vmm_backend::arch::x86::X86::IntId = u8
 pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
+pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::arch::x86::X86Caps
 pub vmm_backend::arch::x86::X86Caps::deterministic_tsc: bool
 pub vmm_backend::arch::x86::X86Caps::enforces_tsc_deadline_msr: bool
@@ -283,6 +285,7 @@ pub type vmm_backend::arch::Arch::Injection: core::marker::Copy + core::fmt::Deb
 pub type vmm_backend::arch::Arch::IntId: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
 pub type vmm_backend::arch::Arch::Policy: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq
 pub type vmm_backend::arch::Arch::VcpuState: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq + core::default::Default
+pub fn vmm_backend::arch::Arch::stages_common_completion(&vmm_backend::CommonExit) -> bool
 impl vmm_backend::arch::Arch for vmm_backend::arch::arm64::Arm64
 pub type vmm_backend::arch::arm64::Arm64::Caps = vmm_backend::arch::arm64::Arm64Caps
 pub type vmm_backend::arch::arm64::Arm64::Completion = vmm_backend::arch::arm64::Arm64Completion
@@ -291,6 +294,7 @@ pub type vmm_backend::arch::arm64::Arm64::Injection = vmm_backend::arch::arm64::
 pub type vmm_backend::arch::arm64::Arm64::IntId = vmm_backend::arch::arm64::GicIntId
 pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm64Policy
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
+pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 impl vmm_backend::arch::Arch for vmm_backend::arch::x86::X86
 pub type vmm_backend::arch::x86::X86::Caps = vmm_backend::arch::x86::X86Caps
 pub type vmm_backend::arch::x86::X86::Completion = vmm_backend::arch::x86::X86Completion
@@ -299,6 +303,7 @@ pub type vmm_backend::arch::x86::X86::Injection = vmm_backend::arch::x86::Inject
 pub type vmm_backend::arch::x86::X86::IntId = u8
 pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
+pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub trait vmm_backend::arch::ArchCaps: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
 pub fn vmm_backend::arch::ArchCaps::deterministic_clock(&self) -> bool
 impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps
@@ -474,6 +479,7 @@ pub type vmm_backend::arch::arm64::Arm64::Injection = vmm_backend::arch::arm64::
 pub type vmm_backend::arch::arm64::Arm64::IntId = vmm_backend::arch::arm64::GicIntId
 pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm64Policy
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
+pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::Arm64Caps
 pub vmm_backend::Arm64Caps::deterministic_cntvct: bool
 pub vmm_backend::Arm64Caps::enforces_cntv_cval: bool
@@ -911,6 +917,7 @@ pub type vmm_backend::arch::x86::X86::Injection = vmm_backend::arch::x86::Inject
 pub type vmm_backend::arch::x86::X86::IntId = u8
 pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
+pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub struct vmm_backend::X86Caps
 pub vmm_backend::X86Caps::deterministic_tsc: bool
 pub vmm_backend::X86Caps::enforces_tsc_deadline_msr: bool
@@ -929,6 +936,7 @@ pub type vmm_backend::Arch::Injection: core::marker::Copy + core::fmt::Debug + c
 pub type vmm_backend::Arch::IntId: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
 pub type vmm_backend::Arch::Policy: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq
 pub type vmm_backend::Arch::VcpuState: core::clone::Clone + core::fmt::Debug + core::cmp::PartialEq + core::default::Default
+pub fn vmm_backend::Arch::stages_common_completion(&vmm_backend::CommonExit) -> bool
 impl vmm_backend::arch::Arch for vmm_backend::arch::arm64::Arm64
 pub type vmm_backend::arch::arm64::Arm64::Caps = vmm_backend::arch::arm64::Arm64Caps
 pub type vmm_backend::arch::arm64::Arm64::Completion = vmm_backend::arch::arm64::Arm64Completion
@@ -937,6 +945,7 @@ pub type vmm_backend::arch::arm64::Arm64::Injection = vmm_backend::arch::arm64::
 pub type vmm_backend::arch::arm64::Arm64::IntId = vmm_backend::arch::arm64::GicIntId
 pub type vmm_backend::arch::arm64::Arm64::Policy = vmm_backend::arch::arm64::Arm64Policy
 pub type vmm_backend::arch::arm64::Arm64::VcpuState = vmm_backend::Arm64VcpuState
+pub fn vmm_backend::arch::arm64::Arm64::stages_common_completion(&vmm_backend::CommonExit) -> bool
 impl vmm_backend::arch::Arch for vmm_backend::arch::x86::X86
 pub type vmm_backend::arch::x86::X86::Caps = vmm_backend::arch::x86::X86Caps
 pub type vmm_backend::arch::x86::X86::Completion = vmm_backend::arch::x86::X86Completion
@@ -945,6 +954,7 @@ pub type vmm_backend::arch::x86::X86::Injection = vmm_backend::arch::x86::Inject
 pub type vmm_backend::arch::x86::X86::IntId = u8
 pub type vmm_backend::arch::x86::X86::Policy = vmm_backend::arch::x86::X86Policy
 pub type vmm_backend::arch::x86::X86::VcpuState = vmm_backend::VcpuState
+pub fn vmm_backend::arch::x86::X86::stages_common_completion(&vmm_backend::CommonExit) -> bool
 pub trait vmm_backend::ArchCaps: core::marker::Copy + core::fmt::Debug + core::cmp::PartialEq
 pub fn vmm_backend::ArchCaps::deterministic_clock(&self) -> bool
 impl vmm_backend::arch::ArchCaps for vmm_backend::arch::arm64::Arm64Caps

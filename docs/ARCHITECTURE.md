@@ -4,7 +4,8 @@ Harmony separates execution from exploration. consonance supplies a
 deterministic machine that can be captured, branched, and replayed. dissonance
 treats that machine as a search target and decides which executions to try.
 
-The boundary consists of operations such as `snapshot`, `branch`, `replay`,
+Workload packages connect these cores with typed execution adapters, evaluation
+policies, and prepared programs. The boundary consists of operations such as `snapshot`, `branch`, `replay`,
 `run`, and `read`, plus opaque recorded environments. dissonance does not need
 to know how the machine virtualizes a CPU or stores a snapshot. consonance does
 not need to know how the searcher evaluates a state. The
@@ -21,8 +22,8 @@ boundary.
    snapshot handle.
 4. dissonance selects a retained state, derives a new input or environmental
    mutation, and asks the machine to branch from that state.
-5. The rollout returns observations. dissonance converts them into
-   workload-specific progress keys and decides whether to retain the endpoint.
+5. The rollout returns observations. The workload evaluator derives progress
+   keys and outcomes; Dissonance applies the configured archive retention policy.
 6. The machine's recorded environment reproduces an individual timeline. The
    campaign stream separately records the choices needed to reproduce the
    search process.
@@ -90,21 +91,27 @@ session-local handle into a host-neutral artifact.
 
 ### Environment and guest communication
 
-`environment` is the deterministic answering surface. It models guest decisions
-such as entropy, payloads, scheduling, network policy, and injected faults. A
-seeded environment generates answers. A recorded environment fixes selected
-answers and host actions for replay. Guest-plane answers and host-plane
-perturbations share one ordered timeline.
+`environment` supplies seeded entropy, ordered payloads, opaque service answers,
+and recorded inputs. An optional handler supplies service-specific responses.
+Its implementation identity, configuration, and dynamic state participate in
+snapshot/restore and state hashes. Capture and restore failures propagate to the
+caller. The default handler supplies nominal responses.
 
-The in-band guest channel is split into `hypercall-proto`, which owns service
-frames, and `hypercall-doorbell`, which transports those frames between a guest
-and the VMM. The out-of-band `control-proto` is the explorer-facing machine
-interface. The guest uses the first channel to request a service. The explorer
-uses the second to drive and observe the whole machine.
+Workload tooling owns fault catalogs, probabilities, eligibility, and decoding.
+The execution core can schedule bounded memory writes, memory XOR operations,
+and interrupt delivery at exact execution moments. An external package maps its
+fault meanings onto these mechanical operations. Input format version 5 records
+these operations and the selected service configuration; the fault-policy
+package explicitly translates supported historical environments.
 
-`harmony-linux` contains the controlled Linux kernels, images, guest agents,
-and SDK used by Linux workloads. The guest environment is part of the tested
-machine composition.
+`hypercall-proto` defines guest service frames and `hypercall-doorbell` transports
+them. `control-proto` supplies host machine operations. `consonance-client`
+negotiates these operations and exposes raw SDK events, memory reads, session
+lifecycle, and portable snapshots to workload drivers.
+
+`harmony-linux` supplies controlled Linux and paravirtual transport. Package-owned
+guest agents and image recipes live under `workloads/`. The guest environment
+and package payload are separately identified parts of a prepared execution.
 
 ### Observation and acceptance
 
@@ -120,21 +127,40 @@ workloads. [Testing](TESTING.md) describes these layers.
 
 The `dissonance` workspace is independent of the consonance build graph.
 
-`machine` defines a small deterministic-machine vocabulary for search clients.
-It mirrors the control operations with local types, so the searcher is not
-coupled to consonance crates. Its QuickNES implementation provides an
-emulator-backed target.
+`searcher` contains the campaign coordinator, mutation machinery,
+quality-diversity archive, deterministic worker scheduling, and checkpoint and
+stream formats. Its generic rollout executor restores origins, replays parent
+paths, applies suffixes, observes outcomes, and restores retention probes.
+Workloads supply actions, evaluation, archive keys, milestones, and snapshots.
+[Exploration](EXPLORATION.md) describes the search model.
 
-`searcher` contains the campaign coordinator, mutation policies,
-quality-diversity archive, deterministic worker scheduling, checkpoint and
-stream formats, and workload adapters. The generic layer sees actions,
-observations, archive keys, milestones, and snapshots supplied by a `Game`. It
-does not encode game rules.
+## Workload packages
 
-Current adapters exercise the search machinery against NES workloads. A
-consonance-backed Nova adapter runs the emulator inside the controlled Linux
-guest while retaining the same search boundary. [Exploration](EXPLORATION.md)
-describes the search model.
+`workloads/nes` owns SMB and Nova adapters. Each supports QuickNES directly
+and QuickNES inside Consonance through the same game semantics. The package's
+machine driver interprets NES controller actions and publications. Shared
+host/guest codec code validates publication versions and region bounds. Native
+emulator snapshots and whole-VM snapshots retain distinct execution identities.
+
+`workloads/fault-policy` owns the optional fault decision catalog and its legacy
+compatibility adapter. `workloads/fault-runtime` owns deterministic guest fault
+schedules and process/network enforcement. The systems package puts its
+supervisor, logical nodes, message paths, and files inside one VM on one virtual
+CPU, so whole-VM snapshots preserve the entire experiment.
+
+The CLI selects a package and backend at campaign startup. Packages prepare the
+input and record workload semantics, execution artifacts, and search settings as
+separate identities. The default NES backend is native; the systems faults
+package uses Consonance.
+
+## Enforcing ownership
+
+The [Cargo dependency policy](dependency-boundaries.toml) classifies every
+first-party crate. A required CI check resolves declared dependencies across
+workspaces, including optional, target-specific, build, and development edges.
+Integration crates compose packages and cores without giving core crates reverse
+dependencies. The semantic ownership lens in `REVIEWING.md` complements the graph
+check by reviewing the behavior implemented inside each crate.
 
 ## Documentation ownership
 

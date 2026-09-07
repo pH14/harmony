@@ -27,7 +27,7 @@ timeout_multiplier = 3.0
 # The Kani proof harnesses (quality-f) live in their own `#[cfg(kani)]` files
 # (`consonance/vtime/src/clock_proofs.rs`, `consonance/lapic/src/device_proofs.rs`,
 # `consonance/vmm-backend/src/region_proofs.rs` (task 54, the memslot splitter),
-# `consonance/environment/src/envcodec_proofs.rs` — each a `#[path]` child module of
+# `workloads/fault-policy/src/envcodec_proofs.rs` — each a `#[path]` child module of
 # its parent). They are not compiled by the normal
 # (non-kani) test suite cargo-mutants uses as its oracle, so every mutant in them
 # — functions *and* module-level bound consts — is structurally unkillable here
@@ -56,6 +56,10 @@ exclude_globs = [
     # HVF or `/dev/kvm` paths. Keep their portable library seams mutation-gated,
     # but do not count unentered probe mains as surviving library mutants.
     "**/src/bin/*.rs",
+    # The live Session is the Linux/KVM composition root. Portable session
+    # configuration, identity, and sparse snapshot validation stay in
+    # `session.rs`; boot/control calls are exercised by the hardware lanes.
+    "consonance/client/src/session/live.rs",
     # `consonance/acceptance-suite`'s real-VMM registry. It is the
     # binary's Linux/x86-64 composition root: every function needs a real
     # `/dev/kvm`, the LOADED patched KVM modules, and built payloads, so the
@@ -101,6 +105,16 @@ exclude_globs = [
 # determinism anchor — `contract/parse.rs` + the §6 `contract/canonical.rs`
 # serializer — has NONE of these: every mutant there is killed by a real test.
 exclude_re = [
+    # Every current X86Exit variant stages completion. Keep the exhaustive
+    # match so new variants require an explicit decision; replacing that
+    # entire match with true is equivalent. completion_staging.rs covers
+    # every variant and kills the false/forwarding/default mutations.
+    "consonance/vmm-backend/src/arch/x86/mod\\.rs:.*replace <impl ArchExit for X86Exit>::stages_completion -> bool with true",
+    # The nominal handler has empty configuration and no dynamic state.
+    # Empty borrowed/owned slices have the same byte contract; Vec::new() and
+    # vec![] construct the same empty state. Its tests pin these empty values.
+    "consonance/environment/src/channel\\.rs:.*replace <impl ServiceHandler for NominalHandler>::configuration -> &\\[u8\\] with Vec::leak\\(Vec::new\\(\\)\\)$",
+    "consonance/environment/src/channel\\.rs:.*replace <impl ServiceHandler for NominalHandler>::snapshot_state -> Result<Vec<u8>, ChannelError> with Ok\\(vec!\\[\\]\\)$",
     # (a) `vmm_core::hostassert::probe` — the `cfg(linux)` host-CPU probe (live
     #     CPUID / FXSAVE / sysfs-microcode reads + the comparisons against them).
     #     Exactly like the `kvm` path above: it cannot be value-mutation-tested on a
@@ -118,7 +132,7 @@ exclude_re = [
     # getrusage path and its testable seam; macOS exercises this fallback in the
     # ordinary all-features gates. Pin the exact fallback line so the live Linux
     # accessor remains mutation-gated.
-    "consonance/vmm-core/src/control\\.rs:159:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
+    "consonance/vmm-core/src/control\\.rs:162:5: replace host_minor_faults -> Option<u64> with Some\\([01]\\)",
     # (b) Provably-equivalent disjoint-bit OR mutants in vmm-core: `a | b` ≡ `a ^ b`
     #     whenever a,b share no set bits — true of every bitwise-flag combine here
     #     (USER_SPACE_MSR_MASK = FILTER|UNKNOWN|INVAL; resolve_cpuid's clear-then-set
@@ -184,11 +198,6 @@ exclude_re = [
     # The two frozen pvclock ABI flags are distinct single bits (1 and 2), so
     # OR and XOR are identical for this compile-time constant expression.
     "consonance/vtime/src/pvclock\\.rs:85:61: replace \\| with \\^",
-    # `FLAG_SDK` and `SPARSE_FLAG_SDK` are both `1 << 0`; shifting either
-    # direction by zero is exactly the identity operation. The neighboring
-    # NET/TAINTED shifts remain gated and are caught by the exact wire-value
-    # and round-trip tests.
-    "consonance/vmm-core/src/portable_snapshot\\.rs:(26:25|37:32): replace << with >>",
     # (g) `impl Backend for Box<B>`'s `inject` forward (task 21): `inject` returns
     #     `Result<()>` with no trait-observable effect (no getter on the trait) and
     #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
@@ -252,10 +261,10 @@ exclude_re = [
     # not controllable from a unit test. The parsing these feed
     # (`parse_runtime_config`, manifest/layout resolution, layer whiteouts)
     # is unit-tested and stays gated.
-    "cli/src/oci/image\\.rs.*(replace tool|local_image_id|ensure_local|export_from_tool)",
+    "workloads/oci/src/image\\.rs.*(replace tool|local_image_id|ensure_local|export_from_tool)",
     # `cache::key` is the image-ID lookup through docker/podman — same
     # category; the store/load/atomic-write logic it keys is unit-tested.
-    "cli/src/oci/cache\\.rs.*replace key ->",
+    "workloads/oci/src/cache\\.rs.*replace key ->",
     # `preflight::run` composes the live host probes above, and `print_text`
     # is println-only reporting with no test-observable return (same category
     # as the loud-log entries in (c)).
@@ -264,10 +273,10 @@ exclude_re = [
     # nodes, which an unprivileged test cannot create (mknod needs root); the
     # fifo/socket halves of the guard ARE killed by the tree test's fifo and
     # socket entries.
-    "cli/src/oci/cpio\\.rs:96:75: replace != with ==",
+    "workloads/guest-image/src/lib\\.rs:96:75: replace != with ==",
     # newc type bits (0o040000/0o100000/0o120000) and the 0o7777-masked
     # permission bits are disjoint, so OR and XOR build identical headers —
     # the same provably-equivalent class as (b). The `|`→`&` and `&`→`^`/`|`
     # siblings ARE killed by the exact-mode header parse test.
-    "cli/src/oci/cpio\\.rs:(60|64|70):36: replace \\| with \\^",
+    "workloads/guest-image/src/lib\\.rs:(60|64|70):36: replace \\| with \\^",
 ]

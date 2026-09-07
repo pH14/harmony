@@ -171,7 +171,13 @@ fn main() -> std::process::ExitCode {
             // M4's live save/restore oracle. Capture the typed architectural
             // GIC independently of the hash/codec, restore the exact VM-state
             // and RAM bytes, then require all three views to agree.
-            let pre_restore_hash = vmm.state_hash();
+            let pre_restore_hash = match vmm.state_hash() {
+                Ok(hash) => hash,
+                Err(error) => {
+                    eprintln!("state capture failed: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
             let pre_restore_components = vmm.state_components();
             let pre_restore_vcpu = vmm.inspect_vcpu();
             let pre_restore_gic = match vmm.canonical_arm64_gic_state() {
@@ -201,7 +207,13 @@ fn main() -> std::process::ExitCode {
                 eprintln!("cannot restore M4 checkpoint state: {error}");
                 return std::process::ExitCode::FAILURE;
             }
-            let post_restore_hash = vmm.state_hash();
+            let post_restore_hash = match vmm.state_hash() {
+                Ok(hash) => hash,
+                Err(error) => {
+                    eprintln!("state capture failed: {error}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            };
             if post_restore_hash != pre_restore_hash {
                 let post_restore_vcpu = vmm.inspect_vcpu();
                 eprintln!(
@@ -382,7 +394,13 @@ fn main() -> std::process::ExitCode {
             );
             println!(
                 "KVM_ARM64_BOOT_READY event={event} state_hash={}",
-                hex(&vmm.state_hash()),
+                hex(&match vmm.state_hash() {
+                    Ok(hash) => hash,
+                    Err(error) => {
+                        eprintln!("state capture failed: {error}");
+                        return std::process::ExitCode::FAILURE;
+                    }
+                }),
             );
             for (label, digest) in vmm.state_components() {
                 println!("KVM_STATE_COMPONENT label={label} digest={}", hex(&digest));

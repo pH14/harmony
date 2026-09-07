@@ -5,9 +5,8 @@
 `searcher` implements deterministic search independently of a workload. The
 `search::` modules own archive retention, parent selection, input mutation,
 campaign coordination, worker execution, seeded draws, checkpoints, stream
-recording, and replay. The `Game` trait supplies target construction, action and
-snapshot types, archive keys, observations, progress, and workload policy
-identifiers.
+recording, and replay. Workloads supply associated types through `CampaignTypes`
+and implement four contracts. `Game` composes those contracts for a full campaign.
 
 The archive groups entries at several ordered depths. A workload provides the
 key and any same-location state preference; the generic archive uses only the
@@ -113,21 +112,32 @@ Use small correctness/pilot runs before expensive sweeps or long soaks. Changes
 to retention, scheduling, or accounting also need deterministic replay checks
 under pressure and workload-neutral tests of the changed invariant.
 
-## Workload adapters
+## Workload boundary
 
-- `smb/` maps QuickNES WRAM to Super Mario Bros. observations, room/depth keys,
-  milestones, and controller-chord policies.
-- `nova/` maps Nova system/save RAM to spatial keys, level and collectible
-  progress, milestones, and its input vocabulary. Its optional `consonance`
-  module drives the consonance control protocol for a live guest.
-- `target.rs` provides the smaller action/observation/snapshot seam used by
-  target implementations and tests.
+`searcher` is independently buildable. Workload packages implement its typed
+campaign and target contracts:
 
-The campaign binaries under `src/bin/` write a report, recorded stream, and
-checkpoint. Replay consumes those artifacts and verifies the recorded decisions
-and observations against the same workload identity.
+| Contract | Workload responsibility |
+| --- | --- |
+| `TargetExecution` | Construct, drive, restore, and snapshot targets; capture observations and account for execution cost. |
+| `InputPolicy` | Define the action vocabulary, draw suffixes, retain policy history, and checkpoint draw state. |
+| `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
+| `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
-Run the library checks with:
+Each contract depends on `CampaignTypes` and can be implemented independently.
+A complete adapter receives the aggregate `Game` implementation automatically.
+The `tests/interfaces.rs` fixture implements execution alone and exercises it
+through a function bounded only by `TargetExecution`.
+
+The shared `search::rollout` loop owns suffix
+limits, action evidence capture, candidate creation, retention probe placement,
+and stopping; a workload provides action execution and state evaluation.
+
+The NES package lives in `../../workloads/nes`. It owns game adapters, emulator
+integration, and campaign binaries. A probe must restore candidate state before
+returning, including adapter caches and pending input.
+
+Run the core checks with:
 
 ```sh
 cargo test --manifest-path dissonance/searcher/Cargo.toml

@@ -916,7 +916,7 @@ mod tests {
 
         // state_blob re-reads the owned GuestRam (the `MEM\0` chunk: `b"MEM\0" ‖
         // len(u64 LE) ‖ raw guest RAM`) — the backing outlived map_memory.
-        let blob = vmm.state_blob();
+        let blob = vmm.state_blob().unwrap();
         assert_eq!(&blob[0..4], b"MEM\0");
         assert!(blob.len() >= 12 + GUEST_RAM_LEN);
         let mem = &blob[12..12 + GUEST_RAM_LEN];
@@ -1091,7 +1091,7 @@ mod tests {
 
         // The kernel was copied to pref_address and boot_params carries the HdrS
         // magic — i.e. the loader actually ran inside compose_linux.
-        let blob = vmm.state_blob();
+        let blob = vmm.state_blob().unwrap();
         let mem = &blob[12..12 + ram];
         assert_eq!(mem[0x10_0000], 0x11, "kernel copied to pref_address");
         assert_eq!(

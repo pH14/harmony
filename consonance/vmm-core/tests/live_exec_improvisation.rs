@@ -70,7 +70,7 @@ use control_proto::{
     ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
     StopReason,
 };
-use environment::{EnvSpec, FaultPolicy};
+use environment::input_spec::InputSpec as EnvSpec;
 use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
 use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
@@ -206,11 +206,7 @@ fn hash_whole<B: Backend<A = X86>>(s: &mut ControlServer<B>) -> [u8; 32] {
 fn seeded_env(seed: u64) -> Reproducer {
     Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
-        bytes: EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        }
-        .encode(),
+        bytes: EnvSpec::seeded(seed).encode(),
     }
 }
 

@@ -26,6 +26,9 @@ use serde::{Deserialize, Serialize};
 /// the enum form is used so callers can distinguish failure classes.)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubjectError {
+    /// Canonical state could not be captured by the execution backend.
+    #[error("state capture failed: {0}")]
+    StateCapture(String),
     /// `run_to` was asked to rewind; machines cannot run backwards.
     #[error("run_to target {target} is behind the current work count {current}")]
     TargetBehind {
@@ -90,7 +93,8 @@ pub trait Subject {
     fn work(&self) -> u64;
     /// Canonical hash of ALL architectural state (registers, memory, output log…).
     /// Must be a pure function of state — calling it twice changes nothing.
-    fn state_hash(&self) -> [u8; 32];
+    /// Capture failures are errors, so comparisons never accept a partial hash.
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError>;
     /// Canonical hash of only the **guest-observable output** — the bytes the
     /// guest deliberately emits (serial / output log + event log), carrying
     /// **no** latent device or PRNG state. This is deliberately distinct from
@@ -204,7 +208,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         match (oa, ob) {
             (RunOutcome::ReachedTarget, RunOutcome::ReachedTarget) => {
                 checkpoints_compared += 1;
-                if ma.state_hash() != mb.state_hash() {
+                if ma.state_hash()? != mb.state_hash()? {
                     return Ok(CompareReport {
                         verdict: Verdict::Diverged {
                             last_match,
@@ -230,7 +234,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                     });
                 }
                 checkpoints_compared += 1;
-                let verdict = if ma.state_hash() != mb.state_hash() {
+                let verdict = if ma.state_hash()? != mb.state_hash()? {
                     Verdict::Diverged {
                         last_match,
                         first_mismatch: wa,
@@ -325,7 +329,7 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
         let mut mb = b.spawn(seed);
         mb.run_to(t)?;
         runs_executed += 1;
-        Ok((ma.state_hash(), mb.state_hash()))
+        Ok((ma.state_hash()?, mb.state_hash()?))
     };
     let (mut hash_a, mut hash_b) = probe(hi)?;
     if hash_a == hash_b {
@@ -425,8 +429,8 @@ mod tests {
         fn work(&self) -> u64 {
             0
         }
-        fn state_hash(&self) -> [u8; 32] {
-            self.hash
+        fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
+            Ok(self.hash)
         }
         fn observable_digest(&self) -> [u8; 32] {
             // This machine has no latent device or PRNG state, so its whole
@@ -439,10 +443,43 @@ mod tests {
     #[test]
     fn a_wholly_observable_machine_states_that_its_digests_coincide() {
         let a = WhollyObservableMachine { hash: [7u8; 32] };
-        assert_eq!(a.observable_digest(), a.state_hash());
+        assert_eq!(a.observable_digest(), a.state_hash().unwrap());
         assert_eq!(a.observable_digest(), [7u8; 32]);
         let b = WhollyObservableMachine { hash: [9u8; 32] };
         assert_ne!(a.observable_digest(), b.observable_digest());
+    }
+
+    struct FailingCapture;
+    impl Subject for FailingCapture {
+        fn run_to(&mut self, _: u64) -> Result<RunOutcome, SubjectError> {
+            Ok(RunOutcome::Halted)
+        }
+        fn work(&self) -> u64 {
+            0
+        }
+        fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
+            Err(SubjectError::StateCapture(
+                "extension capture failed".into(),
+            ))
+        }
+        fn observable_digest(&self) -> [u8; 32] {
+            [0; 32]
+        }
+    }
+    impl SubjectFactory for FailingCapture {
+        type M = Self;
+        fn spawn(&self, _: u64) -> Self {
+            Self
+        }
+    }
+    #[test]
+    fn identical_capture_failures_are_not_identical_executions() {
+        assert_eq!(
+            compare_runs(&FailingCapture, &FailingCapture, 0, 1, 1),
+            Err(SubjectError::StateCapture(
+                "extension capture failed".into()
+            ))
+        );
     }
 
     #[test]

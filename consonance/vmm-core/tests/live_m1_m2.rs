@@ -198,8 +198,10 @@ impl Subject for VmmMachine {
         u64::from(self.ran)
     }
 
-    fn state_hash(&self) -> [u8; 32] {
-        self.vmm.state_hash()
+    fn state_hash(&self) -> Result<[u8; 32], unison::SubjectError> {
+        self.vmm
+            .state_hash()
+            .map_err(|error| unison::SubjectError::StateCapture(error.to_string()))
     }
 
     fn observable_digest(&self) -> [u8; 32] {
@@ -242,8 +244,8 @@ fn assert_deterministic_twice(name: &str, payload: Vec<u8>, check_golden: bool) 
     b.run_to(u64::MAX).expect("run b");
 
     assert_eq!(
-        a.state_hash(),
-        b.state_hash(),
+        a.state_hash().unwrap(),
+        b.state_hash().unwrap(),
         "M2 {name}: two runs must produce identical state_hash over all observable state"
     );
     assert_eq!(

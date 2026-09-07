@@ -1,8 +1,8 @@
-# The harmony guest SDK (task 73): a `no_std`, `alloc`-free, hooks-and-transport
-# crate the in-guest workload calls to emit assertions, IJON state registers,
-# buggify decisions, and lifecycle points over the existing hypercall Event/SDK
-# services. It composes with `Client<VmcallTransport>` with zero new transport
-# code.
+# The harmony guest SDK: a `no_std`, `alloc`-free, hooks-and-transport crate the
+# in-guest workload calls to emit assertions, IJON state registers, and lifecycle
+# points over the existing hypercall Event/SDK services. Fault request codecs live
+# in the optional workloads/fault-sdk adapter. It composes with
+# `Client<VmcallTransport>` with zero new transport code.
 #
 # Standalone workspace (like `consonance/acceptance-suite/payloads`): the root Cargo.toml excludes
 # `consonance/harmony-linux/`, so this crate declares its own `[workspace]` and carries its own
@@ -12,11 +12,17 @@ name = "harmony-sdk"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-description = "The harmony guest SDK (task 73): no_std assertions/state/buggify/lifecycle hooks over the hypercall Event + SDK services"
+description = "The harmony guest SDK: no_std assertions/state/lifecycle hooks over the hypercall Event + SDK services"
 
 # Own workspace root so cargo does not try to fold this into the excluded
 # harmony-linux tree or the repo root workspace.
 [workspace]
+
+# Keep the standalone SDK mutation builds aligned with the root workspace. The
+# CI mutation step enables incremental compilation and does not need debug info.
+[profile.mutants]
+inherits = "test"
+debug = 0
 
 # The guest-side hypercall client + Transport trait (no_std, guest feature only).
 # Explicit `version` alongside `path` for `cargo deny`'s wildcard ban, mirroring
@@ -24,7 +30,7 @@ description = "The harmony guest SDK (task 73): no_std assertions/state/buggify/
 [dependencies]
 hypercall-proto = { path = "../../hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
 
-# The host `Dispatcher` + reference services (`EventSink`, `SdkBuggify`) drive the
+# The host `Dispatcher` + reference services (`EventSink`, `CoverageService`) drive the
 # loopback gate. Their `host` feature implies `std`; under the v2 resolver it
 # unifies only into the `cargo test` graph, never into
 # `cargo build --target x86_64-unknown-none`, so the library stays no_std. The

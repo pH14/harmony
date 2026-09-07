@@ -138,7 +138,7 @@ fn run_reference() -> ([u8; 32], Vec<u8>) {
         TerminalReason::DebugExit { code: 0 },
         "payload must end on a clean isa-debug-exit PASS"
     );
-    (vmm.state_hash(), r.serial)
+    (vmm.state_hash().unwrap(), r.serial)
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn gate1_restore_replays_bit_identical() {
         .expect("restore the snapshot into the fresh VM");
     let r = b.run().expect("restored run to terminal");
     assert_eq!(r.reason, TerminalReason::DebugExit { code: 0 });
-    let restored_hash = b.state_hash();
+    let restored_hash = b.state_hash().unwrap();
 
     eprintln!("[gate1] reference state_hash = {}", hex(&ref_hash));
     eprintln!("[gate1] restored  state_hash = {}", hex(&restored_hash));

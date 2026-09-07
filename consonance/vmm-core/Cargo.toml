@@ -37,12 +37,12 @@ sha2 = "0.10"
 # Page-aligned, pinned host backing for `GuestRam` (rule-5 whitelist). Only used
 # off-Miri; under Miri `GuestRam` falls back to a `Vec<u8>` (see src/vmm.rs).
 memmap2 = "0.9"
-# Rule-2 sibling exception (corpus box-integration, task 28): the VMM-backed
-# `acceptance-suite` `Machine` bridge (`corpus::CorpusMachine`) lives above the trait in
-# vmm-core (the frontier glue the dissonance ruling places here), so it implements
-# `unison::Machine` directly. unison is the generic divergence bisector this
-# composes — promoted from a dev-dependency now that the adapter is library code,
-# not test-only. Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
+# Rule-2 sibling exception (corpus bridge, task 28): the VMM-backed
+# `corpus::CorpusMachine` lives above the trait in vmm-core (the frontier glue
+# the dissonance ruling places here), so it implements `unison::Machine`
+# directly. `unison` is the generic divergence bisector this composes — it is a
+# library dependency because the bridge is reusable by composition tests.
+# Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
 unison = { path = "../unison", version = "0.1.0" }
 # Rule-2 sibling exception (task 30, Linux boot): the userspace xAPIC register
 # file + V-time timer (ruling R1) lives above the `Backend` trait — vmm-core
@@ -93,13 +93,6 @@ snapshot-store = { path = "../snapshot-store", version = "0.1.0", features = ["t
 # `mock` turns on `vmm_backend::MockBackend` — the scripted, no-`/dev/kvm`
 # substrate the pure-logic gates drive the event loop against (Mac + Linux).
 vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] }
-# Drive the corpus oracles over the VMM-backed `Machine` in the box-only
-# `box_corpus` integration test (task 28). The library bridge depends only on
-# `unison` (above); `acceptance-suite` is the harness that owns the manifest + O1
-# runner, used test-side. Pinned `version` alongside `path` (cargo-deny wildcard
-# ban). `default-features = false` drops its CLI deps (clap/serde_json) — the
-# test needs only the library (manifest + oracles).
-acceptance-suite = { path = "../acceptance-suite", version = "0.1.0", default-features = false }
 # Wire the userspace xAPIC in the box-only `live_preemption` gate (task 47): that
 # test boots the bare `irq-landing` payload on the patched backend, `wire_lapic`s a
 # timer, and proves preemption lands the LAPIC-timer interrupt mid-busy-spin. `lapic`
@@ -107,15 +100,6 @@ acceptance-suite = { path = "../acceptance-suite", version = "0.1.0", default-fe
 # (a separate crate) can name `lapic::{Lapic, LapicConfig}`. Pinned `version`
 # alongside `path` (cargo-deny wildcard ban).
 lapic = { path = "../lapic", version = "0.1.0" }
-# Task 49: the out-of-band, read-only telemetry tap — the box-only
-# `live_k3s_postgres` gate records its run (serial + exit-count snapshots) to an
-# NDJSON file the `console` bin replays, so an operator can WATCH a k3s boot. Used
-# test-side only (never wired into the determinism path: the recorder reads
-# `serial()`/`exit_counts()` and writes a file — it touches no `state_hash`/
-# `observable_digest`). `default-features = false` drops its `console`/`clap` CLI;
-# the test needs only the library (Event/EventKind/NdjsonRecorder/Observer).
-# Pinned `version` alongside `path` (cargo-deny wildcard ban, as for the siblings).
-telemetry = { path = "../telemetry", version = "0.1.0", default-features = false }
 proptest = "1"
 # The `tasks/112` M3 TCG smoke (`tests/arm64_tcg_smoke.rs`, `#[ignore]`d) writes
 # the assembled Image payload + the DTB this vendor emits to a scratch dir and

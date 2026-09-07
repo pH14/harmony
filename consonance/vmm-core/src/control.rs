@@ -43,10 +43,10 @@
 //!   loudly — [`ControlError::BadEnvVersion`] / [`ControlError::MalformedEnvironment`])
 //!   but now its **host-plane overrides are enforced** (task 59): they are staged
 //!   like a `perturb` and applied at their `Moment`s during the branched run. An
-//!   env carrying a **guest** override, a **standing** fault, or a **non-`none`
-//!   fault policy** still answers [`ControlError::Unsupported`] (they need the
-//!   task-61 guest-plane / decide-seam enforcement loops), rather than silently
-//!   running without them.
+//!   env carrying a **guest** override or a **standing** host effect still answers
+//!   [`ControlError::Unsupported`] (those require the guest-plane or scheduling
+//!   enforcement loop). A service configuration is passed to the installed generic
+//!   handler factory and is never silently discarded.
 //! - **`replay(snap)`** → restore verbatim under the selected restore mode,
 //!   **no reseed** — the repro / determinism-gate path.
 //! - **`run(until)`** → advance via [`Vmm::step`] until a terminal stop or the
@@ -69,9 +69,9 @@
 //! - **`hash(scope)`** → [`Vmm::state_hash`] for `Whole`; `Disk` / `Region`
 //!   answer [`ControlError::Unsupported`] (no disk device exists; region
 //!   hashing has no consumer yet).
-//! - **`perturb(fault, at)`** → **stage a [`HostFault`](environment::HostFault)
-//!   at a [`Moment`](environment::Moment)** (task 59): the fault blob is decoded
-//!   and validated (an out-of-range [`CorruptMemory`](environment::HostFault::CorruptMemory)
+//! - **`perturb(fault, at)`** → **stage a [`HostFault`](Effect)
+//!   at a [`Moment`](u64)** (task 59): the fault blob is decoded
+//!   and validated (an out-of-range [`CorruptMemory`](Effect::CorruptMemory)
 //!   gpa is a loud [`ControlError::PerturbOutOfRange`], a malformed blob a
 //!   [`ControlError::MalformedEnvironment`], the out-of-scope `SkewTime`/
 //!   `SetClockRate` a [`ControlError::Unsupported`]), then queued. [`run`](ControlServer::run)
@@ -110,7 +110,10 @@ use control_proto::{
     READ_CAP, RegsView, Reply, Reproducer, Request, SnapId, StopReason, decode_request,
     encode_reply,
 };
-use environment::{EnvError, EnvSpec, FaultPolicy};
+use environment::{
+    channel::{Effect, NominalHandler, RecordedEnv, ServiceHandler},
+    input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
+};
 use snapshot_store::SnapshotId;
 use vm_state::SnapshotRecords;
 use vmm_backend::Backend;
@@ -125,7 +128,7 @@ use crate::portable_snapshot::{
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 #[cfg(all(target_os = "linux", any(test, not(miri))))]
 fn host_minor_faults_with(getrusage: impl FnOnce(*mut libc::rusage) -> i32) -> Option<u64> {
@@ -258,6 +261,9 @@ pub enum ServeError {
     /// — those answer `ControlError` replies).
     #[error("snapshot store failure")]
     Snapshot(#[from] SnapshotError),
+    /// An installed service cannot capture or restore its execution state.
+    #[error("service state failure: {0}")]
+    Service(#[from] environment::channel::ChannelError),
     /// A verb arrived after a previous fatal error already tore the VM down
     /// (the server is poisoned; a prior [`ServeError`] was returned).
     #[error("server poisoned by a prior fatal error")]
@@ -306,8 +312,8 @@ pub fn server_caps() -> Caps {
         },
         // Task 73: the server now services the hypercall doorbell for a
         // cooperating guest SDK — assertions surface `StopReason::Assertion`,
-        // `setup_complete` surfaces `StopReason::SnapshotPoint`, and buggify
-        // decisions are answered — so `GUEST_HAS_SDK` is advertised.
+        // `setup_complete` surfaces `StopReason::SnapshotPoint`, and generic
+        // service requests are answered — so `GUEST_HAS_SDK` is advertised.
         flags: control_proto::CapFlags::GUEST_HAS_SDK,
     }
 }
@@ -321,6 +327,7 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// before the factory boots its replacement).
     vmm: Option<Vmm<B>>,
     factory: VmmFactory<B>,
+    service_factory: ServiceFactory,
     /// The remap-restore factory (task 95 M2.2), when the composition root
     /// provides one; `None` = memcpy-only (the pre-task-95 behavior, and what
     /// every existing composition gets unchanged).
@@ -370,7 +377,7 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// every emitted reproducer exact. (The one-fault-per-`Moment` rule is the
     /// integrator's final ruling — spec amendment PR #54.) A `BTreeMap` so no
     /// insertion order can reach the apply sequence.
-    schedule: BTreeMap<environment::Moment, environment::HostFault>,
+    schedule: BTreeMap<u64, Effect>,
     /// The **staged reseed schedule** (task 78): the branch env's reseed markers
     /// strictly beyond the restore floor, ordered. A marker-carrying env's
     /// collapsed-hop reseeds are re-executed at their recorded `Moment`s by
@@ -382,9 +389,9 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// `Moment` shared with a staged host fault the reseed applies **first**
     /// (fixed order, so the apply sequence is deterministic; the recorded
     /// tables are disjoint, so replay preserves it).
-    reseed_schedule: BTreeMap<environment::Moment, u64>,
+    reseed_schedule: BTreeMap<u64, u64>,
     /// The **active recorded reproducer** (task 59 requirement 3): every applied
-    /// host fault is stamped here via task-45's [`EnvSpec::perturb`], so the env
+    /// host fault is stamped here via task-45's [`EnvSpec::record_effect`], so the env
     /// [`recorded_env`](ControlServer::recorded_env) returns replays to the
     /// identical `state_hash` (the record → replay closure). With one fault per
     /// `Moment` (above) the stamping is exact — no fault is ever lost. Its seed is
@@ -415,12 +422,6 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// Removed with its snapshot on `drop`; ephemeral pool state, like the
     /// snapshot handles themselves.
     sdk_snaps: BTreeMap<u64, SdkSnap>,
-    /// Per-snapshot `Net` channel state (task 61), same discipline as
-    /// [`sdk_snaps`](Self::sdk_snaps): a `branch`/`replay` from a mid-run snapshot
-    /// restores the flow-policy stream position (and, for a replay, the decision
-    /// prefix) so a fork's `net_decide` answers do not diverge from the sequential
-    /// run. Ephemeral, removed with its snapshot on `drop`.
-    net_snaps: BTreeMap<u64, NetSnap>,
     /// **The lineage taint bit** for the *current live timeline* (task 81). Set the
     /// instant an [`Request::Exec`] improvisation is issued (conservatively, before
     /// it runs — so no failure mode leaves an improvised timeline looking clean),
@@ -462,29 +463,16 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     last_seal_dirty_gfns: Option<Vec<u64>>,
 }
 
-/// The per-snapshot `Net` state the control server retains (task 61): the
-/// VM-level channel snapshot (seeded flow-policy stream position + decision log)
-/// **and** the [`FaultPolicy`] active when sealed — captured for the same reason
-/// as [`SdkSnap`]: a **replay** resets the recorded reproducer to `none()`, so the
-/// seal-time policy must be restored before materializing the Net env, else the
-/// restored stream would draw all-`Nominal`.
-#[derive(Clone)]
-struct NetSnap {
-    channel: NetSnapshot,
-    policy: FaultPolicy,
-}
-
 /// The per-snapshot SDK state the control server retains (task 73): the VM-level
 /// channel snapshot (seeded stream position + event log) **and** the
-/// [`FaultPolicy`] active when the snapshot was sealed. The policy is captured
+/// [`ServiceConfig`] active when the snapshot was sealed. The configuration is captured
 /// because [`reset_schedule_to_fresh_vm`](ControlServer::reset_schedule_to_fresh_vm)
 /// resets the recorded reproducer to `none()` on every restore — so a **replay**
-/// must restore this policy before materializing the SDK env, else the restored
-/// stream position would draw all-`Nominal` (the buggify biasing lost).
+/// must restore this configuration before materializing the SDK environment.
 #[derive(Clone)]
 struct SdkSnap {
     channel: SdkSnapshot,
-    policy: FaultPolicy,
+    policy: ServiceConfig,
 }
 
 #[derive(Clone)]
@@ -500,7 +488,7 @@ struct SnapshotMeta {
     /// Canonical state-blob bytes following the large `MEM\0` chunk, captured
     /// at the same stopped boundary as this metadata.
     state_blob_suffix: Vec<u8>,
-    policy: FaultPolicy,
+    policy: ServiceConfig,
 }
 
 /// Hash the exact canonical `MEM\0` chunk followed by its seal-time suffix.
@@ -533,23 +521,20 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // runs before its first `branch`/`replay` — a reproducer branched from the
         // starting snapshot then reseeds to this same stream.
         let seed = vmm.entropy_state().unwrap_or(0);
-        let recorded = EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        };
+        let recorded = EnvSpec::seeded(seed);
         // Task 73: wire the SDK channel on the **live VM too** (not only restore
         // targets), so an SDK guest that rings the hypercall doorbell BEFORE its
         // first `branch`/`replay` is serviced — we advertise `GUEST_HAS_SDK`
         // unconditionally, so the capability must be honored from construction.
         // Inert (and unhashed) for a non-SDK guest.
-        vmm.enable_sdk(recorded.materialize(), recorded.policy());
-        // Task 61: wire the Net channel on the live VM too, so a guest flow agent
-        // that rings `net_decide` before its first branch/replay is serviced. Inert
-        // (and unhashed) for a guest that never asks about a flow.
-        vmm.enable_net();
+        vmm.enable_sdk(
+            RecordedEnv::new(seed, Box::new(NominalHandler) as Box<dyn ServiceHandler>),
+            recorded.config(),
+        );
         ControlServer {
             vmm: Some(vmm),
             factory,
+            service_factory: nominal_factory(),
             remap_factory: None,
             // Truthful default: with no remap factory, memcpy is the only
             // path this server can take; `set_remap_factory` flips to `Remap`.
@@ -565,13 +550,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             hello_done: false,
             schedule: BTreeMap::new(),
             reseed_schedule: BTreeMap::new(),
-            recorded: EnvSpec::Seeded {
-                seed,
-                policy: FaultPolicy::none(),
-            },
+            recorded: EnvSpec::seeded(seed),
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
-            net_snaps: BTreeMap::new(),
             // A fresh session's live timeline is untainted; no snapshots exist yet.
             timeline_tainted: false,
             tainted_snaps: BTreeSet::new(),
@@ -581,6 +562,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             session_trace_start: SessionTraceStart::InitialBoot,
             last_seal_dirty_gfns: None,
         }
+    }
+
+    /// Install the workload composition's service implementation resolver.
+    /// Existing snapshots keep their recorded identity and configuration.
+    pub fn set_service_factory(&mut self, factory: ServiceFactory) {
+        self.service_factory = factory;
     }
 
     /// The **active recorded reproducer** (task 59): the [`EnvSpec`] every applied
@@ -781,7 +768,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let sidecar = encode_sparse_sidecar(&SparsePortableSidecarRef {
             vm_state,
             sdk: self.sdk_snaps.get(&target.0).map(|s| &s.channel),
-            net: self.net_snaps.get(&target.0).map(|s| &s.channel),
             policy: &meta.policy,
             at: meta.at,
             sdk_events: meta.sdk_events,
@@ -884,15 +870,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 },
             );
         }
-        if let Some(channel) = portable.net {
-            self.net_snaps.insert(
-                id,
-                NetSnap {
-                    channel,
-                    policy: portable.policy.clone(),
-                },
-            );
-        }
         if portable.tainted {
             self.tainted_snaps.insert(id);
         }
@@ -931,8 +908,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// Export one session-local snapshot as a complete host-neutral artifact.
     ///
     /// The artifact contains materialized RAM, the exact canonical vendor
-    /// VM-state bytes, SDK stream and remaining payload suffix, Net decision
-    /// prefix, fault policy, taint, seal cut, and source whole-state hash. It is
+    /// VM-state bytes, SDK stream and remaining payload suffix, service
+    /// configuration, taint, seal cut, and source whole-state hash. It is
     /// streamed in a fixed order and closed by a SHA-256 digest. No live-VM
     /// state is read, so exporting after the source has continued cannot
     /// accidentally capture a mixed-time artifact.
@@ -958,7 +935,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             memory: memory.as_slice(),
             vm_state,
             sdk: self.sdk_snaps.get(&snap.0).map(|s| &s.channel),
-            net: self.net_snaps.get(&snap.0).map(|s| &s.channel),
             policy: &meta.policy,
             at: meta.at,
             sdk_events: meta.sdk_events,
@@ -1015,15 +991,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             self.sdk_snaps.insert(
                 id,
                 SdkSnap {
-                    channel,
-                    policy: portable.policy.clone(),
-                },
-            );
-        }
-        if let Some(channel) = portable.net {
-            self.net_snaps.insert(
-                id,
-                NetSnap {
                     channel,
                     policy: portable.policy.clone(),
                 },
@@ -1118,18 +1085,63 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Branch { snap, env } => self.restore(*snap, Some(env)),
             Request::Replay(snap) => self.restore(*snap, None),
             Request::Run { until, resolve } => {
-                if resolve.is_some() {
-                    // No decision is ever outstanding on the seed-driven
-                    // substrate; absorbing a resolve would desync the client's
-                    // DecisionId bookkeeping (task 25: never silently dropped).
-                    return Ok(Err(ControlError::ResolveWithoutDecision));
+                if let Some(resolution) = resolve {
+                    let Some((at, question)) = self
+                        .vmm
+                        .as_ref()
+                        .ok_or(ServeError::Poisoned)?
+                        .pending_service_question()
+                        .map(|(at, question)| (at, question.clone()))
+                    else {
+                        return Ok(Err(ControlError::ResolveWithoutDecision));
+                    };
+                    if resolution.vtime.0 != at
+                        || resolution.service != question.service()
+                        || resolution.id.0 != question.request_id()
+                    {
+                        return Ok(Err(ControlError::ResolveWithoutDecision));
+                    }
+                    // Reject the hypercall wire limit before decoding, so an
+                    // untrusted control frame cannot first allocate the larger
+                    // environment-channel bound and only then be rejected.
+                    if resolution.answer.0.len() > hypercall_proto::MAX_PAYLOAD {
+                        return Ok(Err(ControlError::MalformedEnvironment));
+                    }
+                    let response = match environment::channel::Answer::decode(&resolution.answer.0)
+                    {
+                        Ok(response) => response,
+                        Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
+                    };
+                    let mut recorded = self.recorded.clone();
+                    recorded.record_answer(
+                        at,
+                        question.service(),
+                        question.request_id(),
+                        response.clone(),
+                    )?;
+                    if recorded.try_encode().is_err() {
+                        return Ok(Err(ControlError::MalformedEnvironment));
+                    }
+                    // A response-page write is a substrate failure. Poison the
+                    // live VM before returning so a direct caller cannot retry
+                    // against state whose guest re-entry contract is unknown.
+                    if let Err(error) = self
+                        .vmm
+                        .as_mut()
+                        .ok_or(ServeError::Poisoned)?
+                        .resolve_service_answer(response)
+                    {
+                        self.vmm = None;
+                        return Err(error.into());
+                    }
+                    self.recorded = recorded;
                 }
                 self.run(until)
             }
             Request::Hash { scope } => match scope {
                 HashScope::Whole => {
                     let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
-                    Ok(Ok(Reply::Hash(vmm.state_hash())))
+                    Ok(Ok(Reply::Hash(vmm.state_hash()?)))
                 }
                 // No disk device exists and region hashing has no consumer;
                 // unsupported is loud and distinct from a malformed frame.
@@ -1239,15 +1251,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    /// `perturb(fault, at)`: decode the opaque host-fault blob and **stage** it at
-    /// `Moment` `at` for [`ControlServer::run`] to apply — going through the same
-    /// [`validate_host_fault`](ControlServer::validate_host_fault) gate a
-    /// [`Request::Branch`] env host fault does, so the two paths reject identically
-    /// (nothing that would mint a reproducer that does not reproduce is ever
-    /// staged). A malformed blob is [`ControlError::MalformedEnvironment`]; the
-    /// remaining rejections (unsynchronized point, past `Moment`, out-of-range gpa,
-    /// out-of-scope clock fault, and the same-`Moment` conflict) are below / the
-    /// shared gate's.
+    /// Decode and schedule a mechanical effect at an exact execution moment.
+    /// Branch inputs use the same validation path. Invalid requests leave the
+    /// schedule unchanged; applied effects become part of the reproducer.
     fn perturb(
         &mut self,
         fault: &control_proto::HostFault,
@@ -1259,8 +1265,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Some(err) = &self.schedule_poisoned {
             return Err(err.clone());
         }
-        let decoded = environment::HostFault::decode(&fault.0)
-            .map_err(|_| ControlError::MalformedEnvironment)?;
+        let decoded = Effect::decode(&fault.0).map_err(|_| ControlError::MalformedEnvironment)?;
         // Capability first: a VM without virtual time cannot schedule host faults.
         if !self.vmm.as_ref().is_some_and(|v| v.vtime_wired()) {
             return Err(ControlError::Unsupported);
@@ -1277,44 +1282,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(Reply::Unit)
     }
 
-    /// The **single validate-and-stage gate** for a host fault, shared by
-    /// [`perturb`](ControlServer::perturb) and by a [`Request::Branch`] env's host
-    /// overrides so both reject identically (PR #51 review, blocking item 1). It
-    /// checks, in order, and never mutates on failure:
-    ///
-    /// - **Past `Moment`** (`at < floor`) → [`ControlError::PerturbPastMoment`].
-    ///   `floor` is the current effective V-time (perturb) or the restored
-    ///   snapshot's V-time (branch); `at == floor` is fine (applies immediately and
-    ///   truthfully).
-    /// - **Same-`Moment` conflict** (`at` already staged) →
-    ///   [`ControlError::PerturbMomentTaken`] (one fault per `Moment` — see the
-    ///   [`schedule`](ControlServer::schedule) doc).
-    /// - **Out-of-range [`CorruptMemory`](environment::HostFault::CorruptMemory)**
-    ///   (`gpa + 8 > guest RAM`) → [`ControlError::PerturbOutOfRange`] (never
-    ///   clipped/wrapped).
-    /// - **Out-of-scope [`SkewTime`](environment::HostFault::SkewTime) /
-    ///   [`SetClockRate`](environment::HostFault::SetClockRate)** →
-    ///   [`ControlError::Unsupported`] (a follow-on lights these up).
-    ///
-    /// An [`InjectInterrupt`](environment::HostFault::InjectInterrupt) is rejected
-    /// here (not at apply time) when its vector is architecturally reserved
-    /// (`< 16`) → [`ControlError::PerturbReservedVector`], or the VM has no
-    /// userspace LAPIC to raise it into → [`ControlError::Unsupported`] (PR #51
-    /// round-8) — both stage-time-decidable, so a recoverable reply instead of a
-    /// session-fatal apply-time failure.
-    fn validate_host_fault(
-        &self,
-        fault: &environment::HostFault,
-        at: environment::Moment,
-        floor: environment::Moment,
-    ) -> Result<(), ControlError> {
+    /// Validate an effect before staging it. Moments must be reachable and
+    /// unoccupied, memory ranges must be mapped in full, and interrupt identities
+    /// must be supported by the selected machine. The operation is read-only.
+    fn validate_host_fault(&self, fault: &Effect, at: u64, floor: u64) -> Result<(), ControlError> {
         // One fault per `Moment` — reject a duplicate against **both** the still-
         // staged schedule **and** the already-applied faults recorded in the
         // reproducer (PR #51 round-2 finding): once a fault at `at` has applied it is
         // gone from the schedule but present in `recorded`, and re-staging it would
         // overwrite it in `recorded_env()` (an applied fault silently vanishing). The
         // remaining, occupancy-free checks are shared with the branch-env path.
-        if self.schedule.contains_key(&at) || self.recorded.overrides().contains_key(&at) {
+        if self.schedule.contains_key(&at) || self.recorded.effects().contains_key(&at) {
             return Err(ControlError::PerturbMomentTaken { at });
         }
         self.check_fault_admissible(fault, at, floor)
@@ -1331,9 +1309,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     /// side-effect-free).
     fn check_fault_admissible(
         &self,
-        fault: &environment::HostFault,
-        at: environment::Moment,
-        floor: environment::Moment,
+        fault: &Effect,
+        at: u64,
+        floor: u64,
     ) -> Result<(), ControlError> {
         let vmm = self.vmm.as_ref().ok_or(ControlError::Unsupported)?;
         // **Capability check, up front (PR #51 round-2 finding).** Host-plane
@@ -1349,7 +1327,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Err(ControlError::PerturbPastMoment { at, floor });
         }
         match fault {
-            environment::HostFault::CorruptMemory { gpa, .. } => {
+            Effect::WriteMemory { gpa, bytes } | Effect::XorMemory { gpa, bytes } => {
                 // Stage-time validation must use the SAME region resolver
                 // `corrupt_memory` applies at arrival (review r13 — the last of the
                 // r11 GPA family). Otherwise, on arm64 (RAM over `RAM_BASE`) a valid
@@ -1357,17 +1335,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 // stage cleanly and then explode session-fatally at `apply_host_fault`.
                 // x86 (RAM at base 0) resolves a low GPA to its own offset, so the
                 // range decision is byte-identical.
-                if vmm.guest_slice(*gpa, 8).is_none() {
+                if vmm.guest_slice(*gpa, bytes.len()).is_none() {
                     return Err(ControlError::PerturbOutOfRange {
                         gpa: *gpa,
                         ram_len: vmm.guest_memory().len() as u64,
                     });
                 }
             }
-            environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
-                return Err(ControlError::Unsupported);
-            }
-            environment::HostFault::InjectInterrupt { vector } => {
+            Effect::InjectInterrupt { vector } => {
                 // Every `InjectInterrupt` failure mode is a stage-time-decidable
                 // property of the request and the machine (PR #51 round-8) — reject
                 // it here as a recoverable reply, mirroring the `CorruptMemory`
@@ -1497,6 +1472,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             // A backend save failure is substrate breakage, not a caller error.
             Err(e) => return Err(e.into()),
         };
+        let sdk_channel = match vmm.sdk_snapshot() {
+            Ok(state) => state,
+            Err(error) => {
+                self.vmm = None;
+                return Err(ServeError::Service(error));
+            }
+        };
+        let state_blob_suffix = vmm.state_blob_suffix()?;
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
         // Task 127: stamp the seal's evidence cut from the SAME stopped state
         // the seal captures — the sealed record's own synchronized V-time (not
@@ -1511,7 +1494,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace.schedule().len() as u64,
             )
         });
-        let policy = self.recorded.policy().clone();
+        let policy = self.recorded.config().clone();
         // Task 95 M2.1: capture O(dirty) when the tracked window allows it,
         // full-scan otherwise — then re-arm the window with the new snapshot as
         // the next seal's parent (the arm fails ⇒ the next seal full-scans too).
@@ -1535,10 +1518,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // Task 73: capture the SDK channel's replay-relevant state (seeded stream
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
         // borrow ends before we touch `self.sdk_snaps`.
-        let sdk_channel = vmm.sdk_snapshot();
-        // Task 61: capture the Net channel's flow-policy stream position + decision
-        // log the same way (owned, so the borrow ends before touching self).
-        let net_channel = vmm.net_snapshot();
+
         // (Task 110: the pvclock channel — offer + registration — rides the
         // sealed vm_state's device blob itself (v4), so there is no side
         // table to capture here; the restore path validates and commits it
@@ -1547,16 +1527,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
         if let Some(channel) = sdk_channel {
-            // Capture the active policy too, so a replay restores the buggify
-            // biasing (the restore path resets `recorded` to `none()`).
-            let policy = self.recorded.policy().clone();
+            // Capture the active service configuration too, so a replay restores
+            // the same handler setup.
+            let policy = self.recorded.config().clone();
             self.sdk_snaps.insert(id, SdkSnap { channel, policy });
-        }
-        if let Some(channel) = net_channel {
-            // Same reason as SdkSnap: a replay resets `recorded` to `none()`, so
-            // the seal-time policy must be restored before the Net env materializes.
-            let policy = self.recorded.policy().clone();
-            self.net_snaps.insert(id, NetSnap { channel, policy });
         }
         // Task 81: a snapshot inherits the live timeline's taint. If the timeline
         // was tainted by an `exec` improvisation, record the handle (so any
@@ -1575,7 +1549,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_schedules,
                 tainted: self.timeline_tainted,
                 state_hash: None,
-                state_blob_suffix: vmm.state_blob_suffix(),
+                state_blob_suffix,
                 policy,
             },
         );
@@ -1595,8 +1569,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // Task 73: drop the SDK channel snapshot with its handle (ephemeral pool
         // state, released alongside the guest snapshot).
         self.sdk_snaps.remove(&snap.0);
-        // Task 61: drop the Net channel snapshot with its handle too.
-        self.net_snaps.remove(&snap.0);
         // Task 81: drop its taint record with the handle. (The `SnapId` is
         // monotonic — [`next_snap`] never reuses a number — so a later snapshot can
         // never inherit this one's taint by handle reuse.)
@@ -1674,11 +1646,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.reset_schedule_to_fresh_vm();
         self.timeline_tainted = false;
         self.session_trace_start = SessionTraceStart::RecoveryBoot;
-        let sdk_env = self.recorded.materialize();
-        let sdk_policy = self.recorded.policy().clone();
+        let sdk_env = RecordedEnv::new(
+            self.recorded.seed(),
+            Box::new(NominalHandler) as Box<dyn ServiceHandler>,
+        );
+        let sdk_policy = self.recorded.config().clone();
         if let Some(vmm) = self.vmm.as_mut() {
             vmm.enable_sdk(sdk_env, &sdk_policy);
-            vmm.enable_net();
         }
     }
 
@@ -1692,13 +1666,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // 1. Validate everything non-destructively first: the env blob …
         //    `seed` is the branch seed (`None` for a verbatim replay); `host` is
         //    the env's host-plane schedule to stage after a successful restore.
-        let mut host: Vec<(environment::Moment, environment::HostFault)> = Vec::new();
-        let mut reseeds: BTreeMap<environment::Moment, u64> = BTreeMap::new();
+        let mut host: Vec<(u64, Effect)> = Vec::new();
+        let mut reseeds: BTreeMap<u64, u64> = BTreeMap::new();
         let mut payloads: Option<Vec<Vec<u8>>> = None;
-        // Task 73: the branch env's (buggify-only) fault policy, preserved into the
-        // recorded reproducer below so `recorded_env()` re-emits it and a replay
-        // reproduces the buggify decisions. `None` for a verbatim replay.
-        let mut env_policy: Option<FaultPolicy> = None;
+        let mut answers = BTreeMap::new();
+        // Task 73: the branch env's service configuration, preserved into the
+        // recorded reproducer below so a replay rebuilds the same handler.
+        // `None` for a verbatim replay.
+        let mut env_policy: Option<ServiceConfig> = None;
         let seed = match env {
             None => None,
             Some(env) => {
@@ -1707,55 +1682,53 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
                 let spec = match EnvSpec::decode(&env.bytes) {
                     Ok(spec) => spec,
-                    Err(EnvError::BadVersion(v)) => return Ok(Err(ControlError::BadEnvVersion(v))),
                     Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                 };
-                // Task 59 lights up the **host** plane: an env's host overrides are
-                // now enforced — staged for `run` to apply at their `Moment`s (the
-                // record → replay closure). The still-unenforceable halves must be
-                // REJECTED rather than silently run without them (a silent no-op
-                // mints reproducers that do not reproduce): a **guest** override
-                // needs the task-61 `decide`-seam loop; a **standing** fault needs
-                // the guest-utility enforcement; a fault policy that faults a
-                // **service** class (net/block/process) makes the seeded stream
-                // answer decisions with faults no service enforces.
-                //
-                // **Task 73 relaxation:** a **buggify-only** policy IS enforceable
-                // now — the SDK decide-seam (the doorbell's `Sdk` service →
-                // `Environment::decide`) answers `DecisionClass::Buggify`, so a
-                // reproducer whose only faults are buggify biasing is accepted
-                // (its buggify decisions replay from the seeded fault stream).
-                //
-                // **Task 61 widening:** the in-guest **flow agent** is the
-                // `NetFlow` decide-seam (the doorbell's `Net` service →
-                // `Environment::decide` → the guest enforces the per-flow policy on
-                // the CNI), so a policy that faults the **net** class is now
-                // enforceable too. Accept a policy that faults **only** the
-                // enforceable classes (buggify and/or net) — its per-flow decisions
-                // replay from the seeded fault stream exactly like buggify (no guest
-                // overrides, so the reproducer still round-trips a later
-                // branch/replay). A block/process fault (no decide-seam yet) is
-                // still rejected. A **guest override** (a pinned per-Moment answer)
-                // and a **standing** fault remain unsupported — the net path is
-                // driven by the seeded policy, not by pinned overrides.
-                let has_standing = matches!(
-                    &spec,
-                    EnvSpec::Recorded { standing, .. } if !standing.is_empty()
-                );
-                let has_guest = spec
-                    .overrides()
-                    .values()
-                    .any(|a| a.guest_answer().is_some());
-                if has_guest || has_standing || !spec.policy().is_enforceable_only() {
-                    return Ok(Err(ControlError::Unsupported));
-                }
-                host = spec.host_faults().collect();
+                // The core validates framing and machine operations; the installed
+                // service factory validates extension identity and configuration.
+                host = spec
+                    .effects()
+                    .iter()
+                    .map(|(&at, effect)| (at, effect.clone()))
+                    .collect();
                 reseeds = spec.reseeds().clone();
                 payloads = spec.payloads().map(<[Vec<u8>]>::to_vec);
-                env_policy = Some(spec.policy().clone());
+                env_policy = Some(spec.config().clone());
+                answers = spec.answers().clone();
                 Some(spec.seed())
             }
         };
+        // Construct the extension before changing the live VM. Unknown or
+        // incompatible implementations leave the active session untouched.
+        let restore_config = env_policy
+            .clone()
+            .or_else(|| self.sdk_snaps.get(&snap.0).map(|s| s.policy.clone()))
+            .unwrap_or_default();
+        let prepared_handler = match (self.service_factory)(&restore_config) {
+            Ok(handler)
+                if handler.identity() == restore_config.identity
+                    && handler.configuration() == restore_config.configuration =>
+            {
+                handler
+            }
+            _ => return Ok(Err(ControlError::Unsupported)),
+        };
+        let mut prepared_env = RecordedEnv::new(seed.unwrap_or(0), prepared_handler);
+        if let Some(snapshot) = self.sdk_snaps.get(&snap.0).filter(|_| seed.is_none())
+            && snapshot
+                .channel
+                .recorded
+                .restore_into(&mut prepared_env)
+                .is_err()
+        {
+            return Ok(Err(ControlError::RestoreFailed));
+        }
+        if seed.is_some() && prepared_env.set_payloads(payloads.clone()).is_err() {
+            return Ok(Err(ControlError::MalformedEnvironment));
+        }
+        for (&(at, service, request), answer) in &answers {
+            prepared_env.record_service_request(at, service, request, answer.clone());
+        }
         // … then the handle and the sealed snapshot pieces.
         let Some(&store_id) = self.snaps.get(&snap.0) else {
             return Ok(Err(ControlError::UnknownSnapshot(snap)));
@@ -1788,8 +1761,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // (`vtime()` is the arch-neutral `SnapshotRecords` accessor — the one
         // engine read of the decoded snapshot; the record set stays opaque.)
         let restored_floor = vm_state.vtime().snapshot_vns;
-        let mut seen: std::collections::BTreeSet<environment::Moment> =
-            std::collections::BTreeSet::new();
+        let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for (m, fault) in &host {
             if let Err(e) = self.check_fault_admissible(fault, *m, restored_floor) {
                 return Ok(Err(e));
@@ -1953,27 +1925,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         //    order, no duplicates) at step 1b against the live VM — side-effect-free —
         //    so this only stages them; `run` applies + records them.
         self.reset_schedule_to_fresh_vm();
-        // Task 73: preserve the branch env's (buggify-only) policy in the recorded
-        // reproducer (the reset above reset it to `none`), then wire the SDK
-        // channel from the now-final reproducer so a seeded run draws buggify from
-        // the seeded fault stream and a replay from the recorded overrides. Wired
+        // Task 73: preserve the branch env's service configuration in the recorded
+        // reproducer, then wire the SDK channel from the now-final reproducer so a
+        // seeded run and a replay use the same generic handler setup. Wired
         // on every restore; inert (and unhashed) for a guest that never rings the
         // doorbell, so non-SDK paths are unchanged.
-        // Task 73: choose the policy the SDK env materializes with. A **branch**
-        // uses the branch env's (buggify-only) policy; a **replay** restores the
-        // policy active when the snapshot was sealed — else the reset-to-`none`
-        // above would make the restored stream draw all-`Nominal` (P1). `env_policy`
+        // Task 73: choose the service configuration the SDK environment materializes
+        // with. A **branch** uses the branch env's configuration; a **replay**
+        // restores the configuration active when the snapshot was sealed.
+        // `env_policy`
         // is `Some` iff branching, so `or_else` picks the snapshot's policy only on
         // a replay.
         let sdk_snap = self.sdk_snaps.get(&snap.0).cloned();
-        let net_snap = self.net_snaps.get(&snap.0).cloned();
-        // On a replay, restore the seal-time policy from whichever channel snapshot
-        // carries it (SDK or Net capture the same reproducer policy); a branch uses
-        // its own `env_policy`. Without this the reset-to-`none` above makes a
-        // restored stream draw all-`Nominal` — including a Net-only run (P1).
-        let restore_policy = env_policy
-            .or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()))
-            .or_else(|| net_snap.as_ref().map(|s| s.policy.clone()));
+        // On a replay, restore the seal-time configuration from the SDK channel
+        // snapshot; a branch uses its own `env_policy`.
+        let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
         if let Some(policy) = restore_policy {
             self.set_recorded_policy(policy);
         }
@@ -1988,18 +1954,31 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .as_ref()
                 .and_then(|snap| snap.channel.remaining_payloads())
         };
+        if seed.is_none()
+            && let Some(snapshot) = &sdk_snap
+        {
+            answers = snapshot
+                .channel
+                .recorded
+                .answers()
+                .map(|(key, value)| (key, value.clone()))
+                .collect();
+        }
+        for ((at, service, request), answer) in answers {
+            self.recorded
+                .record_answer(at, service, request, answer)
+                .map_err(ServeError::Service)?;
+        }
         self.recorded.set_payloads(active_payloads);
-        let sdk_env = self.recorded.materialize();
-        let sdk_policy = self.recorded.policy().clone();
+        if seed.is_some() {
+            prepared_env.reseed(self.recorded.seed());
+        }
+        let sdk_env = prepared_env;
+        let sdk_policy = self.recorded.config().clone();
         self.vmm
             .as_mut()
             .ok_or(ServeError::Poisoned)?
             .enable_sdk(sdk_env, &sdk_policy);
-        // Task 61: wire the Net channel (capture only, no env). A net decision
-        // draws from the shared SDK stream wired just above (the single-stream
-        // ruling), so a seeded run draws the flow policy from that one seeded fault
-        // stream and a replay continues it from the restored position.
-        self.vmm.as_mut().ok_or(ServeError::Poisoned)?.enable_net();
         // Restore the SDK channel snapshot for this handle, if any. A verbatim
         // **replay** (`seed` is `None`) continues the seeded streams from the
         // snapshot's position AND keeps the event prefix — so a fork from a mid-run
@@ -2012,17 +1991,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             if seed.is_some() {
                 vmm.sdk_restore_events(&s.channel);
             } else {
-                vmm.sdk_restore(&s.channel);
+                if let Err(error) = vmm.sdk_restore(&s.channel) {
+                    self.vmm = None;
+                    return Err(ServeError::Service(error));
+                }
             }
-        }
-        // Task 61: restore the Net channel's decision prefix. The flow-policy
-        // stream position rides the shared SDK stream, restored by
-        // sdk_restore/sdk_restore_events above (so a replay's net_decide answers are
-        // bit-identical and a branch reseeds), so both paths restore the same thing
-        // here — just the decision log carried forward for the fork's evidence.
-        if let Some(n) = net_snap {
-            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-            vmm.net_restore(&n.channel);
         }
         // (Task 110: the pvclock channel state rode the restored vm_state's
         // device blob — `restore_vm_state`/`restore_snapshot` validated it
@@ -2065,14 +2038,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(Ok(Reply::Unit))
     }
 
-    /// Overwrite the recorded reproducer's fault policy in place, keeping its
-    /// variant (task 73): the branch env's buggify-only policy must survive into
-    /// [`recorded_env`](ControlServer::recorded_env) so a replay reproduces the
-    /// buggify decisions.
-    fn set_recorded_policy(&mut self, policy: FaultPolicy) {
-        match &mut self.recorded {
-            EnvSpec::Seeded { policy: p, .. } | EnvSpec::Recorded { policy: p, .. } => *p = policy,
-        }
+    /// Overwrite the recorded reproducer's service configuration in place,
+    /// keeping its variant (task 73), so a replay rebuilds the same handler.
+    fn set_recorded_policy(&mut self, policy: ServiceConfig) {
+        self.recorded.set_config(policy);
     }
 
     /// Reset the host-plane schedule + recorded reproducer for the VM currently in
@@ -2096,10 +2065,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .as_ref()
             .and_then(|v| v.entropy_state())
             .unwrap_or(0);
-        self.recorded = EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        };
+        self.recorded = EnvSpec::seeded(seed);
     }
 
     /// `run(until)`: step the event loop to a terminal stop or the V-time
@@ -2138,6 +2104,20 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(err.clone()));
         }
         loop {
+            if let Some((moment, question)) = self
+                .vmm
+                .as_ref()
+                .ok_or(ServeError::Poisoned)?
+                .pending_service_question()
+            {
+                let mut ctx = question.service().to_le_bytes().to_vec();
+                ctx.extend(question.payload());
+                return Ok(Ok(Reply::Stop(StopReason::Decision {
+                    vtime: control_proto::Moment(moment),
+                    id: control_proto::DecisionId(question.request_id()),
+                    ctx,
+                })));
+            }
             let vns = {
                 let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                 vmm.effective_vns().unwrap_or(0)
@@ -2182,8 +2162,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     // time; a reserved vector; an unwired LAPIC) is substrate-level
                     // breakage of a vouched run: fail loud (session-fatal), never a
                     // silent skip that would desync the recorded env from the run.
-                    vmm.apply_host_fault(&fault).map_err(ServeError::Vmm)?;
-                    self.recorded.perturb(fault, m);
+                    vmm.apply_effect(&fault).map_err(ServeError::Vmm)?;
+                    self.recorded.record_effect(m, fault);
                 }
             }
 
@@ -2256,19 +2236,24 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 Step::SdkStop => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     let stop = vmm.take_sdk_stop();
-                    // **Poison loud on ANY staged fault (P2, task 59's crossed-
-                    // fault rule).** An SDK stop surfaces at a hypercall-doorbell
+                    if matches!(stop, Some(SdkStop::Decision { .. })) {
+                        return Ok(Ok(Reply::Stop(sdk_stop_to_reason(
+                            stop.expect("decision is present"),
+                            vns,
+                        ))));
+                    }
+                    // **Poison loud on ANY staged host effect (P2, task 59's crossed-
+                    // effect rule).** An SDK stop surfaces at a hypercall-doorbell
                     // `OUT` — NOT a V-time intercept — so `effective_vns` here is
-                    // only a lower bound; a still-staged fault at-or-just-above it
+                    // only a lower bound; a still-staged effect at-or-just-above it
                     // may already be crossed (the guest ran past `m` within the
                     // exit-boundary variability window). Exactly like the terminal arm below, poison
                     // rather than silently returning a stop past a crossed fault;
-                    // the client rewinds via `branch`/`replay`. (Buggify decisions
-                    // reproduce from the reproducer's seed + policy, so nothing is
-                    // recorded here.)
-                    // Any staged host fault OR staged reseed (task 78) poisons — a
+                    // the client rewinds via `branch`/`replay`. Generic service
+                    // answers are recorded by the channel itself. Any staged host
+                    // effect OR staged reseed (task 78) poisons — a
                     // crossed reseed marker (guest ran past its `Moment` in the exit-boundary variability
-                    // window) is the same non-reproducing class as a crossed fault:
+                    // window) is the same non-reproducing class as a crossed effect:
                     // a later replay from the reseed re-derives a different stream.
                     // Mirror the terminal arm below (both staged structures).
                     let staged = [
@@ -2399,6 +2384,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 // A cooperating-SDK doorbell during an improvisation is consumed and
                 // ignored (exec is not an SDK-driven run); keep stepping.
                 Step::SdkStop => {
+                    if vmm.pending_service_question().is_some() {
+                        return Ok(Err(ControlError::Unsupported));
+                    }
                     let _ = vmm.take_sdk_stop();
                 }
                 // The guest halted / crashed / rebooted before the sentinel: drain
@@ -2439,7 +2427,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         recorded.set_payloads(self.vmm.as_ref().and_then(Vmm::sdk_remaining_payloads));
         Ok(Reply::Recorded(Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
-            bytes: recorded.encode(),
+            bytes: recorded
+                .try_encode()
+                .map_err(|_| ControlError::MalformedEnvironment)?,
         }))
     }
 }
@@ -2523,6 +2513,17 @@ fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
     let vtime = Moment(vns);
     match stop {
         SdkStop::Quiescent => StopReason::Quiescent { vtime },
+        SdkStop::Decision {
+            moment, question, ..
+        } => {
+            let mut ctx = question.service().to_le_bytes().to_vec();
+            ctx.extend(question.payload());
+            StopReason::Decision {
+                vtime: Moment(moment),
+                id: control_proto::DecisionId(question.request_id()),
+                ctx,
+            }
+        }
         // `setup_complete`'s snapshot point is deferred to a synchronized boundary
         // (surfaced directly in the run loop), so the only immediate SDK stop is an
         // assertion.
@@ -2575,9 +2576,67 @@ mod tests {
 
     use control_proto::{
         Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP, Reply,
-        Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
+        Reproducer, Request, Resolution, SnapId, StopConditions, StopMask, StopReason,
     };
-    use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
+    use environment::{
+        channel::Effect as EnvHostEffect,
+        input_spec::{InputSpec as EnvSpec, ServiceConfig, nominal_factory},
+    };
+
+    #[derive(Clone)]
+    struct TestService {
+        response: Vec<u8>,
+        calls: u64,
+    }
+    impl environment::channel::ServiceHandler for TestService {
+        fn identity(&self) -> &[u8] {
+            b"test-service-v1"
+        }
+        fn configuration(&self) -> &[u8] {
+            &self.response
+        }
+        fn respond(
+            &mut self,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            self.calls += 1;
+            Ok(environment::channel::ServiceResponse::Answered(
+                environment::channel::Answer::Data(self.response.clone()),
+            ))
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(self.calls.to_le_bytes().to_vec())
+        }
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            self.calls = u64::from_le_bytes(
+                state
+                    .try_into()
+                    .map_err(|_| environment::channel::ChannelError::Malformed)?,
+            );
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+    fn with_test_service<B: Backend<A: Vendor>>(mut server: ControlServer<B>) -> ControlServer<B> {
+        let nominal = nominal_factory();
+        server.set_service_factory(std::sync::Arc::new(move |config| {
+            if config.identity == b"test-service-v1" {
+                Ok(Box::new(TestService {
+                    response: config.configuration.clone(),
+                    calls: 0,
+                }))
+            } else {
+                nominal(config)
+            }
+        }));
+        server
+    }
     use vmm_backend::{
         Arm64, Arm64Policy, Backend, CommonExit, Exit, MockArm64Backend, MockBackend, X86, X86Exit,
         X86Policy,
@@ -2709,7 +2768,54 @@ mod tests {
             );
             Ok(v)
         });
-        ControlServer::new(live, factory)
+        with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[derive(Clone)]
+    struct BrokenCapture;
+    impl environment::channel::ServiceHandler for BrokenCapture {
+        fn identity(&self) -> &[u8] {
+            b"test-broken-capture"
+        }
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+        fn respond(
+            &mut self,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::Answered(
+                environment::channel::Answer::Nominal,
+            ))
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Err(environment::channel::ChannelError::Handler(
+                "capture failed".into(),
+            ))
+        }
+        fn restore_state(&mut self, _: &[u8]) -> Result<(), environment::channel::ChannelError> {
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+    #[test]
+    fn extension_capture_failure_cannot_create_a_snapshot_or_hash() {
+        let mut s = server(vec![]);
+        let config = ServiceConfig {
+            identity: b"test-broken-capture".to_vec(),
+            configuration: vec![],
+        };
+        s.vmm.as_mut().unwrap().enable_sdk(
+            environment::channel::RecordedEnv::new(0, Box::new(BrokenCapture)),
+            &config,
+        );
+        assert!(s.vmm.as_ref().unwrap().state_hash().is_err());
+        assert!(matches!(s.snapshot(), Err(ServeError::Service(_))));
+        assert!(s.vmm.is_none());
+        assert!(s.sdk_snaps.is_empty());
     }
 
     /// [`server`] whose live VM's mock has **dirty tracking armed** (task 95
@@ -2739,7 +2845,7 @@ mod tests {
             );
             Ok(v)
         });
-        ControlServer::new(live, factory)
+        with_test_service(ControlServer::new(live, factory))
     }
 
     /// [`server`] plus a remap-restore factory (task 95 M2.2) mirroring the
@@ -2791,10 +2897,7 @@ mod tests {
     }
 
     fn seeded_env(seed: u64) -> Reproducer {
-        let spec = EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        };
+        let spec = EnvSpec::seeded(seed);
         Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
@@ -2805,10 +2908,7 @@ mod tests {
     /// promotion to `Recorded` is deliberate: `Some([])` means offered but
     /// exhausted, unlike a bare `Seeded` spec where service 8 is unavailable.
     fn payload_env(seed: u64, payloads: Vec<Vec<u8>>) -> Reproducer {
-        let mut spec = EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        };
+        let mut spec = EnvSpec::seeded(seed);
         spec.set_payloads(Some(payloads));
         Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
@@ -2860,7 +2960,421 @@ mod tests {
             );
             Ok(vmm)
         });
-        ControlServer::new(live, factory)
+        with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[derive(Clone)]
+    struct ExternalService(u64);
+    impl environment::channel::ServiceHandler for ExternalService {
+        fn identity(&self) -> &[u8] {
+            b"test-external-v1"
+        }
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+        fn respond(
+            &mut self,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            self.0 += 1; // External responses must roll this tentative mutation back.
+            Ok(environment::channel::ServiceResponse::External)
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(self.0.to_le_bytes().to_vec())
+        }
+        fn restore_state(
+            &mut self,
+            bytes: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            self.0 = u64::from_le_bytes(
+                bytes
+                    .try_into()
+                    .map_err(|_| environment::channel::ChannelError::Malformed)?,
+            );
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "restores the complete VM through snapshot-store mmap; pure service codec and state transitions run under Miri"
+    )]
+    fn host_service_response_is_stopped_recorded_and_replayed() {
+        use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+        let mut s = payload_server();
+        hello(&mut s);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        let expected_config = config.clone();
+        s.set_service_factory(std::sync::Arc::new(move |config| {
+            if config != &expected_config {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(ExternalService(0)))
+        }));
+        s.recorded.set_config(config.clone());
+        s.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(s.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let origin = snap(&mut s);
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let ring = |s: &mut ControlServer<MockBackend>| {
+            let v = s.vmm.as_mut().unwrap();
+            v.guest_slice_mut(0xe000, len)
+                .unwrap()
+                .copy_from_slice(&frame[..len]);
+            v.service_doorbell(len as u32).unwrap()
+        };
+        assert_eq!(ring(&mut s), crate::vmm::Step::SdkStop);
+        let at = s.vmm().unwrap().effective_vns().unwrap();
+        let until = StopConditions {
+            deadline: Some(Moment(at)),
+            on: StopMask::NONE,
+        };
+        let request = Request::Run {
+            until,
+            resolve: None,
+        };
+        let stopped_hash = s.vmm().unwrap().state_hash().unwrap();
+        let expected = Reply::Stop(StopReason::Decision {
+            vtime: Moment(at),
+            id: control_proto::DecisionId(77),
+            ctx: [19_u16.to_le_bytes().as_slice(), b"choose"].concat(),
+        });
+        assert_eq!(s.handle(&request).unwrap(), Ok(expected.clone()));
+        assert_eq!(s.handle(&request).unwrap(), Ok(expected));
+        assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
+        assert_eq!(s.snapshot().unwrap(), Err(ControlError::NotQuiescent));
+        assert_eq!(
+            s.handle(&Request::Run {
+                until,
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(vec![9]),
+                }),
+            })
+            .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert!(s.vmm().unwrap().pending_service_question().is_some());
+        for (vtime, service, id) in [(at + 1, 19, 77), (at, 20, 77), (at, 19, 78)] {
+            assert_eq!(
+                s.handle(&Request::Run {
+                    until,
+                    resolve: Some(Resolution {
+                        vtime: Moment(vtime),
+                        service,
+                        id: control_proto::DecisionId(id),
+                        answer: Answer(ServiceAnswer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+                Err(ControlError::ResolveWithoutDecision)
+            );
+            assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
+        }
+        let oversized = ServiceAnswer::Data(vec![0; hypercall_proto::MAX_PAYLOAD]).encode();
+        assert_eq!(
+            s.handle(&Request::Run {
+                until,
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(oversized),
+                }),
+            })
+            .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(s.vmm().unwrap().state_hash().unwrap(), stopped_hash);
+        // The full valid response frame includes one byte of answer framing.
+        let answer = ServiceAnswer::Data(vec![0x5a; hypercall_proto::MAX_PAYLOAD - 1]);
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until,
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(answer.encode()),
+                }),
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        assert!(s.vmm().unwrap().pending_service_question().is_none());
+        let expected_hash = s.vmm().unwrap().state_hash().unwrap();
+        let response = s.vmm().unwrap().guest_slice(0xf000, 4096).unwrap().to_vec();
+        let (_, bytes) = hypercall_proto::decode(&response).unwrap();
+        assert_eq!(ServiceAnswer::decode(bytes).unwrap(), answer);
+        let recorded = s.recorded_env().clone();
+        assert_eq!(recorded.answers().get(&(at, 19, 77)), Some(&answer));
+        s.restore(
+            origin,
+            Some(&Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: recorded.encode(),
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ring(&mut s), crate::vmm::Step::Continued);
+        assert_eq!(
+            s.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            response
+        );
+        assert_eq!(s.vmm().unwrap().state_hash().unwrap(), expected_hash);
+    }
+
+    #[test]
+    fn restore_rejects_factory_identity_or_configuration_mismatch_without_mutation() {
+        let mut s = payload_server();
+        hello(&mut s);
+        let origin = snap(&mut s);
+        let before = s.vmm().unwrap().state_hash().unwrap();
+        // A resolver must independently honor both pieces of the requested
+        // contract, even when it returns an otherwise usable implementation.
+        for config in [
+            ServiceConfig {
+                identity: b"different-service".to_vec(),
+                configuration: vec![7],
+            },
+            ServiceConfig {
+                identity: b"test-service-v1".to_vec(),
+                configuration: vec![8],
+            },
+        ] {
+            s.set_service_factory(std::sync::Arc::new(|_| {
+                Ok(Box::new(TestService {
+                    response: vec![7],
+                    calls: 0,
+                }))
+            }));
+            let mut spec = EnvSpec::seeded(1);
+            spec.set_config(config);
+            assert_eq!(
+                s.handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: spec.encode()
+                    },
+                })
+                .unwrap(),
+                Err(ControlError::Unsupported)
+            );
+            assert_eq!(s.vmm().unwrap().state_hash().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn stale_service_resolution_cannot_answer_a_later_decision() {
+        use environment::channel::RecordedEnv;
+
+        let mut s = payload_server();
+        hello(&mut s);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        let expected_config = config.clone();
+        s.set_service_factory(std::sync::Arc::new(move |config| {
+            if config != &expected_config {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(ExternalService(0)))
+        }));
+        s.recorded.set_config(config.clone());
+        s.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(s.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+
+        let ring = |s: &mut ControlServer<MockBackend>, request_id: u64, seq: u32| {
+            let mut payload = 19_u16.to_le_bytes().to_vec();
+            payload.extend(request_id.to_le_bytes());
+            payload.extend(b"choose");
+            let mut frame = [0; 4096];
+            let len = hypercall_proto::encode_request(
+                hypercall_proto::ServiceId::Sdk,
+                3,
+                seq,
+                &payload,
+                &mut frame,
+            )
+            .unwrap();
+            let v = s.vmm.as_mut().unwrap();
+            v.guest_slice_mut(0xe000, len)
+                .unwrap()
+                .copy_from_slice(&frame[..len]);
+            v.service_doorbell(len as u32).unwrap()
+        };
+
+        assert_eq!(ring(&mut s, 77, 12), crate::vmm::Step::SdkStop);
+        let at = s.vmm().unwrap().effective_vns().unwrap();
+        let until = StopConditions {
+            deadline: Some(Moment(at)),
+            on: StopMask::NONE,
+        };
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision {
+                id: control_proto::DecisionId(77),
+                ..
+            }))
+        ));
+
+        let first = environment::channel::Answer::Data(b"first".to_vec());
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until,
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(first.encode()),
+                }),
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+
+        assert_eq!(ring(&mut s, 88, 13), crate::vmm::Step::SdkStop);
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision {
+                id: control_proto::DecisionId(88),
+                ..
+            }))
+        ));
+
+        // A retry of the first resolution must not be accepted for request 88.
+        assert_eq!(
+            s.handle(&Request::Run {
+                until,
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(first.encode()),
+                }),
+            })
+            .unwrap(),
+            Err(ControlError::ResolveWithoutDecision)
+        );
+        assert_eq!(
+            s.vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, q)| q.request_id()),
+            Some(88)
+        );
+
+        let second = environment::channel::Answer::Data(b"second".to_vec());
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until,
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(88),
+                    answer: Answer(second.encode()),
+                }),
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        assert_eq!(s.recorded_env().answers().get(&(at, 19, 88)), Some(&second));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "restores the complete VM through snapshot-store mmap; the service configuration assertion is a control-server replay invariant"
+    )]
+    fn replay_restores_generic_service_configuration_and_recorded_env() {
+        let mut s = payload_server();
+        hello(&mut s);
+        let origin = snap(&mut s);
+        let config_a = ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: b"configuration-a".to_vec(),
+        };
+        let config_b = ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: b"configuration-b".to_vec(),
+        };
+        let branch_env = |seed, config: ServiceConfig| {
+            let mut spec = EnvSpec::seeded(seed);
+            spec.set_config(config);
+            Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            }
+        };
+
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: origin,
+                env: branch_env(0xA, config_a.clone()),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(s.recorded_env().config(), &config_a);
+        let config_a_snapshot = snap(&mut s);
+
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: config_a_snapshot,
+                env: branch_env(0xB, config_b.clone()),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(s.recorded_env().config(), &config_b);
+
+        assert_eq!(
+            s.handle(&Request::Replay(config_a_snapshot)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(s.recorded_env().config(), &config_a);
+        assert_eq!(
+            EnvSpec::decode(&s.recorded_env().encode())
+                .unwrap()
+                .config(),
+            &config_a
+        );
     }
 
     /// Stage one payload request in the canonical transport page.
@@ -2935,7 +3449,7 @@ mod tests {
         assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
         let factory =
             Box::new(move || Ok(make_vmm(vec![serial(), Exit::Common(CommonExit::Idle)], 0)));
-        let mut server = ControlServer::new(live, factory);
+        let mut server = with_test_service(ControlServer::new(live, factory));
         assert_eq!(
             server.handle(&Request::Hello(server_caps())).unwrap(),
             Ok(Reply::Hello(server_caps()))
@@ -3018,7 +3532,7 @@ mod tests {
     )]
     fn taking_the_session_trace_returns_and_drains_completed_segments() {
         let mut server = accumulated_session_server();
-        let before = server.vmm().unwrap().state_hash();
+        let before = server.vmm().unwrap().state_hash().unwrap();
         let viewed = server.session_virtual_time_trace().unwrap();
         let taken = server.take_session_virtual_time_trace().unwrap();
         assert_eq!(taken, viewed);
@@ -3029,10 +3543,10 @@ mod tests {
         let live_only = server.take_session_virtual_time_trace().unwrap();
         assert_eq!(live_only.segments().len(), 1);
         assert_eq!(live_only.segments()[0], taken.segments()[2]);
-        assert_eq!(server.vmm().unwrap().state_hash(), before);
+        assert_eq!(server.vmm().unwrap().state_hash().unwrap(), before);
         for _ in 0..8 {
             assert_eq!(server.take_session_virtual_time_trace().unwrap(), live_only);
-            assert_eq!(server.vmm().unwrap().state_hash(), before);
+            assert_eq!(server.vmm().unwrap().state_hash().unwrap(), before);
         }
     }
 
@@ -3063,9 +3577,9 @@ mod tests {
         s.vmm
             .as_mut()
             .unwrap()
-            .apply_host_fault(&EnvHostFault::CorruptMemory {
+            .apply_effect(&EnvHostEffect::XorMemory {
                 gpa: 0x40,
-                mask: BitMask(0xDEAD_BEEF),
+                bytes: (0xDEAD_BEEF_u64).to_le_bytes().to_vec(),
             })
             .unwrap();
         let second = snap(&mut s);
@@ -3160,9 +3674,9 @@ mod tests {
         s.vmm
             .as_mut()
             .unwrap()
-            .apply_host_fault(&EnvHostFault::CorruptMemory {
+            .apply_effect(&EnvHostEffect::XorMemory {
                 gpa: 2 * 4096 + 0x40,
-                mask: BitMask(0xABCD_1234),
+                bytes: (0xABCD_1234_u64).to_le_bytes().to_vec(),
             })
             .unwrap();
         let c = snap(&mut s);
@@ -3298,9 +3812,9 @@ mod tests {
         s.vmm
             .as_mut()
             .unwrap()
-            .apply_host_fault(&EnvHostFault::CorruptMemory {
+            .apply_effect(&EnvHostEffect::XorMemory {
                 gpa: 3 * 4096,
-                mask: BitMask(0xA5A5_5A5A),
+                bytes: (0xA5A5_5A5A_u64).to_le_bytes().to_vec(),
             })
             .unwrap();
         s.set_restore_mode(super::RestoreMode::InPlace);
@@ -3394,9 +3908,9 @@ mod tests {
         s.vmm
             .as_mut()
             .unwrap()
-            .apply_host_fault(&EnvHostFault::CorruptMemory {
+            .apply_effect(&EnvHostEffect::XorMemory {
                 gpa: 4096,
-                mask: BitMask(0x55AA_33CC),
+                bytes: (0x55AA_33CC_u64).to_le_bytes().to_vec(),
             })
             .unwrap();
         let lost_source = s
@@ -3501,7 +4015,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 10,
+            caps.protocol_version, 11,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
@@ -3918,61 +4432,8 @@ mod tests {
         );
     }
 
-    /// A **replay** restores the buggify policy captured with the SDK snapshot
-    /// (P1). The restore path resets the recorded reproducer to `none()`, so
-    /// without capturing the policy a replay would materialize an SDK env whose
-    /// buggify draws all-`Nominal` — the restored stream position would then not
-    /// reproduce. Branch with a firing buggify policy → snapshot → replay → the
-    /// reproducer's policy must survive (not be wiped to `none`).
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
-    )]
-    fn replay_restores_the_buggify_policy() {
-        let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
-        hello(&mut s);
-        let base = snap(&mut s);
-
-        // Branch with a buggify-only policy (point 1 always fires).
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(1, 1, 1).unwrap();
-        let env = Reproducer {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: EnvSpec::Seeded {
-                seed: 5,
-                policy: policy.clone(),
-            }
-            .encode(),
-        };
-        assert_eq!(
-            s.handle(&Request::Branch { snap: base, env }).unwrap(),
-            Ok(Reply::Unit)
-        );
-        assert_eq!(
-            s.recorded_env().policy(),
-            &policy,
-            "the branch carries the buggify policy"
-        );
-
-        // Snapshot the SDK-policy state, then replay it.
-        let mid = snap(&mut s);
-        assert_eq!(s.handle(&Request::Replay(mid)).unwrap(), Ok(Reply::Unit));
-
-        // Without the P1 fix, the replay's reproducer policy would be `none()`;
-        // with it, the snapshot's buggify policy is restored so the run reproduces.
-        assert_eq!(
-            s.recorded_env().policy(),
-            &policy,
-            "replay restored the buggify policy, not none()"
-        );
-        assert_ne!(s.recorded_env().policy(), &FaultPolicy::none());
-    }
-
-    /// M2 payload closure through the real control state machine: branch stages
-    /// the ordered source; the live recorded reproducer exposes only its future;
-    /// snapshots restore that suffix exactly; changing one chord changes the
-    /// whole-state oracle; and exhaustion is a mask-independent terminal stop.
+    /// Payload branch, snapshot, replay, and exhaustion close the control loop:
+    /// the live suffix and generic service configuration remain deterministic.
     #[test]
     #[cfg_attr(
         miri,
@@ -4096,74 +4557,41 @@ mod tests {
         miri,
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
-    fn branch_accepts_host_overrides_but_rejects_guest_or_standing_or_policy() {
+    fn branch_accepts_mechanical_operations_and_rejects_unknown_extensions() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
-        // A HOST override-carrying env is now ENFORCED (task 59): branch accepts it
-        // and stages the fault for `run` to apply — no longer Unsupported.
-        let mut spec = EnvSpec::Seeded {
-            seed: 7,
-            policy: FaultPolicy::none(),
-        };
-        spec.record(
-            1234,
-            environment::Action::Host(environment::HostFault::InjectInterrupt { vector: 32 }),
-        );
-        let env = Reproducer {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: spec.encode(),
-        };
-        assert_eq!(
-            s.handle(&Request::Branch { snap: base, env }).unwrap(),
-            Ok(Reply::Unit),
-            "a host override is enforced (task 59), so branch accepts it"
-        );
-
-        // A GUEST override still needs the task-61 decide-seam loop → Unsupported.
-        let mut guest_spec = EnvSpec::Seeded {
-            seed: 7,
-            policy: FaultPolicy::none(),
-        };
-        guest_spec.record(99, environment::Action::Guest(environment::Answer::Nominal));
-        let guest_env = Reproducer {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: guest_spec.encode(),
-        };
+        let mut spec = EnvSpec::seeded(7);
+        spec.record_effect(1234, EnvHostEffect::InjectInterrupt { vector: 32 });
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: guest_env
+                env: Reproducer {
+                    blob_version: EnvSpec::BLOB_VERSION,
+                    bytes: spec.encode()
+                }
             })
             .unwrap(),
-            Err(ControlError::Unsupported),
-            "a guest override needs the task-61 enforcement loop"
+            Ok(Reply::Unit)
         );
-
-        // A non-nominal FaultPolicy (same class): the seeded stream would answer
-        // some decisions with faults, which no service is wired to enforce yet.
-        let mut policy = FaultPolicy::none();
-        policy
-            .set_class(
-                environment::DecisionClass::BlockIo,
-                1,
-                2,
-                &[environment::Fault::BlockEio],
-            )
-            .unwrap();
-        let faulting = Reproducer {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: EnvSpec::Seeded { seed: 7, policy }.encode(),
-        };
+        let before = hash(&mut s);
+        let mut unknown = EnvSpec::seeded(7);
+        unknown.set_config(ServiceConfig {
+            identity: b"uninstalled-service".to_vec(),
+            configuration: vec![],
+        });
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: faulting
+                env: Reproducer {
+                    blob_version: EnvSpec::BLOB_VERSION,
+                    bytes: unknown.encode()
+                }
             })
             .unwrap(),
-            Err(ControlError::Unsupported),
-            "a non-none fault policy is unenforceable until task 59/61"
+            Err(ControlError::Unsupported)
         );
+        assert_eq!(hash(&mut s), before);
     }
 
     #[test]
@@ -4175,7 +4603,12 @@ mod tests {
                 deadline: None,
                 on: StopMask::NONE,
             },
-            resolve: Some(Answer(vec![1, 2, 3])),
+            resolve: Some(Resolution {
+                vtime: Moment(0),
+                service: 19,
+                id: control_proto::DecisionId(1),
+                answer: Answer(vec![1, 2, 3]),
+            }),
         };
         assert_eq!(
             s.handle(&req).unwrap(),
@@ -4192,7 +4625,7 @@ mod tests {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let h = hash(&mut s);
-        assert_eq!(Some(h), s.vmm().map(|v| v.state_hash()));
+        assert_eq!(Some(h), s.vmm().map(|v| v.state_hash().unwrap()));
         for scope in [HashScope::Disk, HashScope::Region { base: 0, len: 4096 }] {
             assert_eq!(
                 s.handle(&Request::Hash { scope }).unwrap(),
@@ -4207,14 +4640,14 @@ mod tests {
         // (`vmm_at_sync(..., 500, ...)`), so the stage-time floor is 500.
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
-        let perturb = |fault: environment::HostFault, at: u64| Request::Perturb {
+        let perturb = |fault: environment::channel::Effect, at: u64| Request::Perturb {
             fault: HostFault(fault.encode()),
             at: Moment(at),
         };
         // An InjectInterrupt at a future Moment stages cleanly (Reply::Unit).
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::InjectInterrupt { vector: 32 },
+                environment::channel::Effect::InjectInterrupt { vector: 32 },
                 1000
             ))
             .unwrap(),
@@ -4224,7 +4657,7 @@ mod tests {
         // one-action-per-Moment; the recorded env never silently drops a fault).
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::InjectInterrupt { vector: 33 },
+                environment::channel::Effect::InjectInterrupt { vector: 33 },
                 1000
             ))
             .unwrap(),
@@ -4234,7 +4667,7 @@ mod tests {
         // apply later than recorded.
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::InjectInterrupt { vector: 34 },
+                environment::channel::Effect::InjectInterrupt { vector: 34 },
                 100
             ))
             .unwrap(),
@@ -4246,7 +4679,7 @@ mod tests {
         // `at == floor` is fine (applies immediately and truthfully).
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::InjectInterrupt { vector: 35 },
+                environment::channel::Effect::InjectInterrupt { vector: 35 },
                 500
             ))
             .unwrap(),
@@ -4256,9 +4689,9 @@ mod tests {
         // loudly at stage time (never clipped/wrapped).
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::CorruptMemory {
+                environment::channel::Effect::XorMemory {
                     gpa: RAM as u64 - 4, // gpa + 8 > ram
-                    mask: environment::BitMask(0xFF),
+                    bytes: (0xFF_u64).to_le_bytes().to_vec(),
                 },
                 2000
             ))
@@ -4271,23 +4704,14 @@ mod tests {
         // An in-range CorruptMemory stages cleanly.
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::CorruptMemory {
+                environment::channel::Effect::XorMemory {
                     gpa: 0,
-                    mask: environment::BitMask(0xFF),
+                    bytes: (0xFF_u64).to_le_bytes().to_vec(),
                 },
                 3000
             ))
             .unwrap(),
             Ok(Reply::Unit)
-        );
-        // The out-of-scope clock faults are Unsupported (a follow-on lights them up).
-        assert_eq!(
-            s.handle(&perturb(
-                environment::HostFault::SkewTime(environment::Span(5)),
-                4000
-            ))
-            .unwrap(),
-            Err(ControlError::Unsupported)
         );
         // A malformed fault blob is a loud MalformedEnvironment.
         assert_eq!(
@@ -4311,7 +4735,7 @@ mod tests {
     fn perturb_corrupt_memory_stage_time_resolves_high_arm_gpas() {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
-        let perturb = |fault: environment::HostFault, at: u64| Request::Perturb {
+        let perturb = |fault: environment::channel::Effect, at: u64| Request::Perturb {
             fault: HostFault(fault.encode()),
             at: Moment(at),
         };
@@ -4323,9 +4747,9 @@ mod tests {
         // it (`gpa + 8 > ram_len`).
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::CorruptMemory {
+                environment::channel::Effect::XorMemory {
                     gpa: 0x4000_0000,
-                    mask: environment::BitMask(0xFF),
+                    bytes: (0xFF_u64).to_le_bytes().to_vec(),
                 },
                 1000,
             ))
@@ -4339,9 +4763,9 @@ mod tests {
         // explode fatally at arrival.
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::CorruptMemory {
+                environment::channel::Effect::XorMemory {
                     gpa: 0,
-                    mask: environment::BitMask(0xFF),
+                    bytes: (0xFF_u64).to_le_bytes().to_vec(),
                 },
                 2000,
             ))
@@ -4448,7 +4872,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "portable export/import materializes snapshot-store mappings through tempfile+mmap; the strict artifact codec and SDK/Net state logic run under Miri separately"
+        ignore = "portable export/import materializes snapshot-store mappings through tempfile+mmap; the strict artifact codec and SDK state logic run under Miri separately"
     )]
     fn portable_snapshot_replays_the_complete_mid_lineage_future() {
         let mut source = payload_server();
@@ -4659,7 +5083,6 @@ mod tests {
         let malformed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
             vm_state: &decoded.vm_state,
             sdk: None,
-            net: decoded.net.as_ref(),
             policy: &decoded.policy,
             at: decoded.at,
             sdk_events: 1,
@@ -4838,7 +5261,7 @@ mod tests {
             .unwrap();
             Ok(Vmm::new(m, GuestRam::new(RAM).unwrap()))
         });
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
         let base = snap(&mut s);
         assert_eq!(
@@ -5087,7 +5510,7 @@ mod tests {
     }
 
     /// Enough one-nanosecond exits to reach the schedule's final moment.
-    fn exits_to_cover(schedule: &[(u64, EnvHostFault)]) -> usize {
+    fn exits_to_cover(schedule: &[(u64, EnvHostEffect)]) -> usize {
         schedule
             .iter()
             .map(|(m, _)| usize::try_from(*m).unwrap_or(usize::MAX))
@@ -5098,14 +5521,14 @@ mod tests {
     /// Build a server, stage `schedule` via `perturb`, run to terminal, and
     /// return `(state_hash, recorded_env)`. The factory is unused (no
     /// branch/replay in these direct tests), so it errors loudly if ever called.
-    fn enforce_run(schedule: &[(u64, EnvHostFault)], seed: u64) -> ([u8; 32], EnvSpec) {
+    fn enforce_run(schedule: &[(u64, EnvHostEffect)], seed: u64) -> ([u8; 32], EnvSpec) {
         let live = enforce_vmm(exits_to_cover(schedule), enforce_image(), seed);
         let factory = Box::new(|| {
             Err(VmmError::ContractViolation(
                 "factory unused in a direct enforcement run".into(),
             ))
         });
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
         for (m, fault) in schedule {
             let req = Request::Perturb {
@@ -5126,7 +5549,7 @@ mod tests {
         (hash(&mut s), s.recorded_env().clone())
     }
 
-    fn enforce_hash(schedule: &[(u64, EnvHostFault)], seed: u64) -> [u8; 32] {
+    fn enforce_hash(schedule: &[(u64, EnvHostEffect)], seed: u64) -> [u8; 32] {
         enforce_run(schedule, seed).0
     }
 
@@ -5141,12 +5564,12 @@ mod tests {
         let schedule = vec![
             (
                 1,
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x40,
-                    mask: BitMask(0xDEAD_BEEF_0000_0001),
+                    bytes: (0xDEAD_BEEF_0000_0001_u64).to_le_bytes().to_vec(),
                 },
             ),
-            (2, EnvHostFault::InjectInterrupt { vector: 0x40 }),
+            (2, EnvHostEffect::InjectInterrupt { vector: 0x40 }),
         ];
         let seed = 0x5EED59;
         let h1 = enforce_hash(&schedule, seed);
@@ -5166,13 +5589,13 @@ mod tests {
         // exact bytes land, and that a mask that flips no bit (0) is a no-op.
         let gpa = 0x80usize;
         let mask = 0xA5A5_0000_1234_5678u64;
-        let fault = EnvHostFault::CorruptMemory {
+        let fault = EnvHostEffect::XorMemory {
             gpa: gpa as u64,
-            mask: BitMask(mask),
+            bytes: mask.to_le_bytes().to_vec(),
         };
         let live = enforce_vmm(1, enforce_image(), 7);
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
         s.handle(&Request::Perturb {
             fault: HostFault(fault.encode()),
@@ -5235,13 +5658,13 @@ mod tests {
         live.restore_guest_memory(&ram).unwrap();
 
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
         // Stage a CorruptMemory fault EXACTLY at the deferred boundary Moment M.
-        let fault = EnvHostFault::CorruptMemory {
+        let fault = EnvHostEffect::XorMemory {
             gpa: 0x1000,
-            mask: BitMask(0xDEAD_BEEF),
+            bytes: (0xDEAD_BEEF_u64).to_le_bytes().to_vec(),
         };
         s.handle(&Request::Perturb {
             fault: HostFault(fault.encode()),
@@ -5322,13 +5745,13 @@ mod tests {
         live.restore_guest_memory(&ram).unwrap();
 
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
         // A FUTURE fault at M (> the RDTSC boundary's vns of 0).
-        let fault = EnvHostFault::CorruptMemory {
+        let fault = EnvHostEffect::XorMemory {
             gpa: 0x1000,
-            mask: BitMask(0x00C0_FFEE),
+            bytes: (0x00C0_FFEE_u64).to_le_bytes().to_vec(),
         };
         s.handle(&Request::Perturb {
             fault: HostFault(fault.encode()),
@@ -5403,7 +5826,7 @@ mod tests {
         live.restore_guest_memory(&ram).unwrap();
 
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
         // Stage a FUTURE reseed at M. No public verb stages a reseed without a
@@ -5472,7 +5895,7 @@ mod tests {
         live.restore_guest_memory(&ram).unwrap();
 
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
         // The point surfaces (only at the clean RDTSC — never at the RDRAND, which
@@ -5537,7 +5960,7 @@ mod tests {
         live.restore_guest_memory(&ram).unwrap();
 
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
 
         // Stage a reseed beyond the trajectory (direct, as above).
@@ -5608,7 +6031,7 @@ mod tests {
             ram[REQ_GPA..REQ_GPA + frame.len()].copy_from_slice(frame);
             live.restore_guest_memory(&ram).unwrap();
             let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-            let mut s = ControlServer::new(live, factory);
+            let mut s = with_test_service(ControlServer::new(live, factory));
             hello(&mut s);
             match s
                 .handle(&Request::Run {
@@ -5678,22 +6101,22 @@ mod tests {
         let schedule = vec![
             (
                 1,
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x40,
-                    mask: BitMask(1),
+                    bytes: (1_u64).to_le_bytes().to_vec(),
                 },
             ),
             (
                 2,
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x48,
-                    mask: BitMask(2),
+                    bytes: (2_u64).to_le_bytes().to_vec(),
                 },
             ),
         ];
         let live = enforce_vmm(exits_to_cover(&schedule), enforce_image(), 1);
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
         for (m, f) in &schedule {
             s.handle(&Request::Perturb {
@@ -5724,17 +6147,17 @@ mod tests {
         // still applies.
         let live = enforce_vmm(1, enforce_image(), 0xAB);
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
-        let stage = |f: EnvHostFault, m: u64| Request::Perturb {
+        let stage = |f: EnvHostEffect, m: u64| Request::Perturb {
             fault: HostFault(f.encode()),
             at: Moment(m),
         };
         assert_eq!(
             s.handle(&stage(
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x40,
-                    mask: BitMask(0x0F0F_0F0F),
+                    bytes: (0x0F0F_0F0F_u64).to_le_bytes().to_vec(),
                 },
                 1,
             ))
@@ -5742,7 +6165,7 @@ mod tests {
             Ok(Reply::Unit)
         );
         assert_eq!(
-            s.handle(&stage(EnvHostFault::InjectInterrupt { vector: 0x50 }, 1))
+            s.handle(&stage(EnvHostEffect::InjectInterrupt { vector: 0x50 }, 1))
                 .unwrap(),
             Err(ControlError::PerturbMomentTaken { at: 1 }),
             "a second fault at Moment 1 is rejected (not silently dropped)"
@@ -5756,7 +6179,7 @@ mod tests {
             "the one accepted upset landed"
         );
         assert_eq!(
-            s.recorded_env().host_faults().count(),
+            s.recorded_env().effects().len(),
             1,
             "exactly the accepted fault is recorded"
         );
@@ -5774,22 +6197,30 @@ mod tests {
         let schedule = vec![
             (
                 1,
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x20,
-                    mask: BitMask(0x1234_5678_9ABC_DEF0),
+                    bytes: (0x1234_5678_9ABC_DEF0_u64).to_le_bytes().to_vec(),
                 },
             ),
-            (2, EnvHostFault::InjectInterrupt { vector: 0x60 }),
+            (2, EnvHostEffect::InjectInterrupt { vector: 0x60 }),
         ];
         let seed = 0xC105u64;
         let (h1, recorded) = enforce_run(&schedule, seed);
 
         // The recorded env carries both host faults on the Moment axis, and it
         // round-trips through its own byte codec (a real reproducer blob).
-        let host: Vec<_> = recorded.host_faults().collect();
+        let host: Vec<_> = recorded
+            .effects()
+            .iter()
+            .map(|(&at, effect)| (at, effect.clone()))
+            .collect();
         assert_eq!(host.len(), 2, "both applied faults were stamped");
         let reencoded = EnvSpec::decode(&recorded.encode()).expect("recorded env round-trips");
-        let replay_schedule: Vec<(u64, EnvHostFault)> = reencoded.host_faults().collect();
+        let replay_schedule: Vec<(u64, EnvHostEffect)> = reencoded
+            .effects()
+            .iter()
+            .map(|(&at, effect)| (at, effect.clone()))
+            .collect();
 
         // Re-applying the emitted schedule reproduces the hash bit-for-bit.
         let h2 = enforce_hash(&replay_schedule, seed);
@@ -5833,9 +6264,9 @@ mod tests {
     fn stage_corrupt(s: &mut ControlServer<MockBackend>, at: u64) {
         s.handle(&Request::Perturb {
             fault: HostFault(
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x40,
-                    mask: BitMask(0xFFFF_FFFF),
+                    bytes: (0xFFFF_FFFF_u64).to_le_bytes().to_vec(),
                 }
                 .encode(),
             ),
@@ -5877,7 +6308,7 @@ mod tests {
             "the beyond-deadline fault did not apply"
         );
         assert_eq!(
-            s.recorded_env().host_faults().count(),
+            s.recorded_env().effects().len(),
             0,
             "nothing recorded — the fault is still staged for a later run"
         );
@@ -5927,12 +6358,9 @@ mod tests {
         // reply `perturb` gives), NOT a later session-fatal ServeError at apply time.
         // The `server()` live VM is at effective V-time 500, so the snapshot — and
         // the restored floor — is 500.
-        let host_env = |m: u64, fault: EnvHostFault| {
-            let mut spec = EnvSpec::Seeded {
-                seed: 7,
-                policy: FaultPolicy::none(),
-            };
-            spec.record(m, environment::Action::Host(fault));
+        let host_env = |m: u64, fault: EnvHostEffect| {
+            let mut spec = EnvSpec::seeded(7);
+            spec.record_effect(m, fault);
             Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: spec.encode(),
@@ -5949,9 +6377,9 @@ mod tests {
                 snap: base,
                 env: host_env(
                     1000,
-                    EnvHostFault::CorruptMemory {
+                    EnvHostEffect::XorMemory {
                         gpa: RAM as u64 - 4,
-                        mask: BitMask(0xFF),
+                        bytes: (0xFF_u64).to_le_bytes().to_vec(),
                     },
                 ),
             })
@@ -5969,7 +6397,7 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(100, EnvHostFault::InjectInterrupt { vector: 40 }),
+                env: host_env(100, EnvHostEffect::InjectInterrupt { vector: 40 }),
             })
             .unwrap(),
             Err(ControlError::PerturbPastMoment {
@@ -5983,7 +6411,17 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(1000, EnvHostFault::SkewTime(environment::Span(5))),
+                env: {
+                    let mut spec = EnvSpec::seeded(7);
+                    spec.set_config(ServiceConfig {
+                        identity: b"unavailable".to_vec(),
+                        configuration: vec![],
+                    });
+                    Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: spec.encode(),
+                    }
+                },
             })
             .unwrap(),
             Err(ControlError::Unsupported)
@@ -5994,7 +6432,7 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(1000, EnvHostFault::InjectInterrupt { vector: 40 }),
+                env: host_env(1000, EnvHostEffect::InjectInterrupt { vector: 40 }),
             })
             .unwrap(),
             Ok(Reply::Unit)
@@ -6002,12 +6440,9 @@ mod tests {
     }
 
     /// Build a branch env carrying a single host fault at `m`.
-    fn host_env(m: u64, fault: EnvHostFault) -> Reproducer {
-        let mut spec = EnvSpec::Seeded {
-            seed: 7,
-            policy: FaultPolicy::none(),
-        };
-        spec.record(m, environment::Action::Host(fault));
+    fn host_env(m: u64, fault: EnvHostEffect) -> Reproducer {
+        let mut spec = EnvSpec::seeded(7);
+        spec.record_effect(m, fault);
         Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
@@ -6026,7 +6461,7 @@ mod tests {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let base = snap(&mut s);
-        let before = s.vmm().unwrap().state_hash();
+        let before = s.vmm().unwrap().state_hash().unwrap();
 
         // An out-of-range gpa is rejected — validated against the LIVE VM before any
         // drop/restore/reseed.
@@ -6035,9 +6470,9 @@ mod tests {
                 snap: base,
                 env: host_env(
                     1000,
-                    EnvHostFault::CorruptMemory {
+                    EnvHostEffect::XorMemory {
                         gpa: RAM as u64 - 4,
-                        mask: BitMask(0xFF),
+                        bytes: (0xFF_u64).to_le_bytes().to_vec(),
                     },
                 ),
             })
@@ -6050,7 +6485,7 @@ mod tests {
         // The live VM is BYTE-IDENTICAL to before: not dropped, not restored, not
         // reseeded — the rejected branch had no side effect.
         assert_eq!(
-            s.vmm().unwrap().state_hash(),
+            s.vmm().unwrap().state_hash().unwrap(),
             before,
             "a rejected branch env fault must leave the old VM untouched"
         );
@@ -6092,7 +6527,7 @@ mod tests {
         });
         assert_eq!(run_all_res(&mut s), poisoned);
         // The fault never applied (recorded stays empty).
-        assert_eq!(s.recorded_env().host_faults().count(), 0);
+        assert_eq!(s.recorded_env().effects().len(), 0);
         // Poisoned: re-run + snapshot both reject with the named, rewindable error
         // (not a silent stuck `SnapshotWhileArmed`).
         assert_eq!(run_all_res(&mut s), poisoned);
@@ -6129,9 +6564,9 @@ mod tests {
         let perturb = |s: &mut ControlServer<ExitBoundaryBackend>, gpa: u64, at: u64| {
             s.handle(&Request::Perturb {
                 fault: HostFault(
-                    EnvHostFault::CorruptMemory {
+                    EnvHostEffect::XorMemory {
                         gpa,
-                        mask: BitMask(0xDEAD_0000_BEEF),
+                        bytes: (0xDEAD_0000_BEEF_u64).to_le_bytes().to_vec(),
                     }
                     .encode(),
                 ),
@@ -6156,7 +6591,7 @@ mod tests {
         assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
         let h_live = arr_hash(&s);
         let recorded = s.recorded_env().clone();
-        assert_eq!(recorded.host_faults().count(), 2, "both faults recorded");
+        assert_eq!(recorded.effects().len(), 2, "both faults recorded");
 
         // Replay-equivalence: branch the recorded env from base and re-run → the same
         // live hash.
@@ -6197,7 +6632,7 @@ mod tests {
         // The exit-boundary fault APPLIED (recorded), and the schedule is NOT poisoned
         // — a later run works.
         assert_eq!(
-            s.recorded_env().host_faults().count(),
+            s.recorded_env().effects().len(),
             1,
             "the m==vns fault applied"
         );
@@ -6229,14 +6664,14 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(1000, EnvHostFault::InjectInterrupt { vector: 40 }),
+                env: host_env(1000, EnvHostEffect::InjectInterrupt { vector: 40 }),
             })
             .unwrap(),
             Ok(Reply::Unit)
         );
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 41 }.encode()),
+                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 41 }.encode()),
                 at: Moment(1000),
             })
             .unwrap(),
@@ -6268,14 +6703,14 @@ mod tests {
                 1u64..=32u64,
                 prop_oneof![
                     (0u64..(RAM as u64 - 8), any::<u64>())
-                        .prop_map(|(gpa, m)| EnvHostFault::CorruptMemory { gpa, mask: BitMask(m) }),
+                        .prop_map(|(gpa, m)| EnvHostEffect::XorMemory { gpa, bytes: m.to_le_bytes().to_vec() }),
                     (16u32..=255u32)
-                        .prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
+                        .prop_map(|vector| EnvHostEffect::InjectInterrupt { vector }),
                 ],
                 0..8usize,
             ),
         ) {
-            let sched: Vec<(u64, EnvHostFault)> = schedule.into_iter().collect();
+            let sched: Vec<(u64, EnvHostEffect)> = schedule.into_iter().collect();
             let seed = 0x9159_2653;
             let h1 = enforce_hash(&sched, seed);
             let h2 = enforce_hash(&sched, seed);
@@ -6419,7 +6854,7 @@ mod tests {
         .unwrap()
     }
     fn arr_hash<B: Backend<A: Vendor>>(s: &ControlServer<B>) -> [u8; 32] {
-        s.vmm().unwrap().state_hash()
+        s.vmm().unwrap().state_hash().unwrap()
     }
 
     /// A **no-op** host fault (`CorruptMemory` with a zero XOR mask) — it changes no
@@ -6430,9 +6865,9 @@ mod tests {
     fn schedule_marker(at: u64) -> Request {
         Request::Perturb {
             fault: HostFault(
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0,
-                    mask: BitMask(0), // XOR 0 — the state is untouched
+                    bytes: (0_u64).to_le_bytes().to_vec(), // XOR 0 — the state is untouched
                 }
                 .encode(),
             ),
@@ -6617,7 +7052,7 @@ mod tests {
         arr_hello(&mut s);
         // Stage + apply a fault at Moment 100 by running to deadline 100.
         s.handle(&Request::Perturb {
-            fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+            fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
             at: Moment(100),
         })
         .unwrap()
@@ -6634,24 +7069,20 @@ mod tests {
             })
             .unwrap();
         assert!(matches!(stop, Ok(Reply::Stop(StopReason::Deadline { .. }))));
-        assert_eq!(
-            s.recorded_env().host_faults().count(),
-            1,
-            "the fault applied"
-        );
+        assert_eq!(s.recorded_env().effects().len(), 1, "the fault applied");
         assert_eq!(s.vmm().unwrap().effective_vns(), Some(100));
         // A second perturb at the already-APPLIED Moment 100 (== floor, so it clears
         // the past-Moment check) is rejected — it does not overwrite the recorded fault.
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x41 }.encode()),
+                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x41 }.encode()),
                 at: Moment(100),
             })
             .unwrap(),
             Err(ControlError::PerturbMomentTaken { at: 100 })
         );
         assert_eq!(
-            s.recorded_env().host_faults().count(),
+            s.recorded_env().effects().len(),
             1,
             "the applied fault is still recorded (not overwritten)"
         );
@@ -6676,7 +7107,7 @@ mod tests {
         assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
                 at: Moment(10),
             })
             .unwrap(),
@@ -6695,7 +7126,7 @@ mod tests {
         for vector in [0u32, 1, 15] {
             assert_eq!(
                 s.handle(&Request::Perturb {
-                    fault: HostFault(EnvHostFault::InjectInterrupt { vector }.encode()),
+                    fault: HostFault(EnvHostEffect::InjectInterrupt { vector }.encode()),
                     at: Moment(100),
                 })
                 .unwrap(),
@@ -6707,7 +7138,7 @@ mod tests {
         // A non-reserved vector still stages cleanly.
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 16 }.encode()),
+                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 16 }.encode()),
                 at: Moment(100),
             })
             .unwrap(),
@@ -6725,7 +7156,7 @@ mod tests {
         hello(&mut s);
         assert_eq!(
             s.handle(&Request::Perturb {
-                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
                 at: Moment(1000),
             })
             .unwrap(),
@@ -6736,9 +7167,9 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Perturb {
                 fault: HostFault(
-                    EnvHostFault::CorruptMemory {
+                    EnvHostEffect::XorMemory {
                         gpa: 0x40,
-                        mask: BitMask(0xFF),
+                        bytes: (0xFF_u64).to_le_bytes().to_vec(),
                     }
                     .encode(),
                 ),
@@ -6776,12 +7207,12 @@ mod tests {
                 GuestRam::new(RAM).unwrap(),
             ))
         });
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         arr_hello(&mut s);
         let base = arr_snap(&mut s);
         // Stage a fault on the current (soon-to-be-replaced) timeline.
         s.handle(&Request::Perturb {
-            fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+            fault: HostFault(EnvHostEffect::InjectInterrupt { vector: 0x40 }.encode()),
             at: Moment(50),
         })
         .unwrap()
@@ -6792,11 +7223,7 @@ mod tests {
                 snap: base,
                 env: Reproducer {
                     blob_version: EnvSpec::BLOB_VERSION,
-                    bytes: EnvSpec::Seeded {
-                        seed: 7,
-                        policy: FaultPolicy::none()
-                    }
-                    .encode(),
+                    bytes: EnvSpec::seeded(7).encode(),
                 },
             })
             .unwrap(),
@@ -6806,7 +7233,7 @@ mod tests {
         // nothing (and the unwired fork can't even enforce — but the point is the
         // schedule did not carry forward).
         assert_eq!(
-            s.recorded_env().host_faults().count(),
+            s.recorded_env().effects().len(),
             0,
             "the stale schedule/recorded was cleared on the recoverable failure"
         );
@@ -6831,11 +7258,7 @@ mod tests {
             snap: base,
             env: Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
-                bytes: EnvSpec::Seeded {
-                    seed: 0xDEAD,
-                    policy: FaultPolicy::none(),
-                }
-                .encode(),
+                bytes: EnvSpec::seeded(0xDEAD).encode(),
             },
         })
         .unwrap()
@@ -6845,9 +7268,9 @@ mod tests {
         // Perturb + run on the replayed timeline.
         s.handle(&Request::Perturb {
             fault: HostFault(
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x80,
-                    mask: BitMask(0x1234_5678),
+                    bytes: (0x1234_5678_u64).to_le_bytes().to_vec(),
                 }
                 .encode(),
             ),
@@ -6882,7 +7305,7 @@ mod tests {
 
     #[derive(Clone, Debug)]
     enum VerbOp {
-        Perturb(EnvHostFault, u64),
+        Perturb(EnvHostEffect, u64),
         Run,
         Branch(u64),
         Replay,
@@ -6894,12 +7317,12 @@ mod tests {
             (
                 prop_oneof![
                     (0u64..(RAM as u64 - 8), any::<u64>()).prop_map(|(gpa, m)| {
-                        EnvHostFault::CorruptMemory {
+                        EnvHostEffect::XorMemory {
                             gpa,
-                            mask: BitMask(m),
+                            bytes: m.to_le_bytes().to_vec(),
                         }
                     }),
-                    (16u32..=255u32).prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
+                    (16u32..=255u32).prop_map(|vector| EnvHostEffect::InjectInterrupt { vector }),
                 ],
                 1u64..=400,
             )
@@ -6983,11 +7406,7 @@ mod tests {
     fn seeded_env_arr(seed: u64) -> Reproducer {
         Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
-            bytes: EnvSpec::Seeded {
-                seed,
-                policy: FaultPolicy::none(),
-            }
-            .encode(),
+            bytes: EnvSpec::seeded(seed).encode(),
         }
     }
 
@@ -7098,11 +7517,7 @@ mod tests {
     fn idle_seeded_env(seed: u64) -> Reproducer {
         Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
-            bytes: EnvSpec::Seeded {
-                seed,
-                policy: FaultPolicy::none(),
-            }
-            .encode(),
+            bytes: EnvSpec::seeded(seed).encode(),
         }
     }
 
@@ -7143,7 +7558,7 @@ mod tests {
                         let floor = s.vmm().unwrap().effective_vns().unwrap_or(0);
                         let at = floor.saturating_add(off);
                         let _ = s.handle(&Request::Perturb {
-                            fault: HostFault(EnvHostFault::CorruptMemory { gpa, mask: BitMask(0xA5A5_5A5A) }.encode()),
+                            fault: HostFault(EnvHostEffect::XorMemory { gpa, bytes: (0xA5A5_5A5A_u64).to_le_bytes().to_vec() }.encode()),
                             at: Moment(at),
                         }).unwrap();
                     }
@@ -7187,10 +7602,7 @@ mod tests {
 
     /// A branch env carrying only reseed markers (no overrides/standing).
     fn marker_env(seed: u64, markers: &[(u64, u64)]) -> Reproducer {
-        let mut spec = EnvSpec::Seeded {
-            seed,
-            policy: FaultPolicy::none(),
-        };
+        let mut spec = EnvSpec::seeded(seed);
         for &(m, s) in markers {
             spec.record_reseed(m, s);
         }
@@ -7289,335 +7701,6 @@ mod tests {
         miri,
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
     )]
-    fn a_buggify_decision_after_a_mid_run_reseed_folds_to_the_sequential_branch() {
-        // Round-5 P1 — the DECISIVE fold-vs-sequential test. A run that takes a
-        // mid-run reseed marker AND then resolves a buggify decision past it records
-        // a reproducer that must replay bit-identically. A task-78 marker reseeds
-        // ONLY entropy (`reseed_entropy` → `vt.entropy`), never the buggify PRNG
-        // (`SdkChannel.env`); BOTH the sequential branch and the fold do exactly
-        // that, so buggify-after-reseed is coherent and the record→replay closure
-        // holds. (The buggify⊥entropy independence itself is pinned in vmm.rs's
-        // `buggify_decisions_are_independent_of_an_entropy_reseed`.)
-        const REQ_GPA: usize = 0xE000;
-        let m: u64 = 2; // the second RDTSC exit boundary
-        let point: u32 = 1;
-
-        // A buggify request frame (point 1), carried in the genesis snapshot so
-        // every restored fork's doorbell resolves a buggify decision.
-        let mut bug = [0u8; 4096];
-        let bn = hypercall_proto::encode_request(
-            hypercall_proto::ServiceId::Sdk,
-            1,
-            1,
-            &point.to_le_bytes(),
-            &mut bug,
-        )
-        .unwrap();
-        let bug_frame = bug[..bn].to_vec();
-
-        // A wired SDK VM with the buggify frame in RAM. Forks restore genesis's
-        // memory (which carries the frame), so their doorbell resolves buggify.
-        fn wire(
-            script: Vec<Exit<X86>>,
-            frame: &[u8],
-            req_gpa: usize,
-            ram: usize,
-        ) -> Vmm<MockBackend> {
-            let mut mb = MockBackend::with_exits(script);
-            mb.set_policy(&X86Policy {
-                cpuid: vmm_backend::CpuidModel::default(),
-                msr_filter: vmm_backend::MsrFilter::default(),
-            })
-            .unwrap();
-            let mut v = Vmm::new(mb, GuestRam::new(ram).unwrap());
-            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
-            v.wire_snapshot_hashing();
-            let mut mem = vec![0u8; ram];
-            mem[req_gpa..req_gpa + frame.len()].copy_from_slice(frame);
-            v.restore_guest_memory(&mem).unwrap();
-            v
-        }
-
-        // Forks run: Rdtsc (synchronize) → arrival at m (the reseed drains) →
-        // buggify doorbell (decides AFTER the reseed) → HLT.
-        let fork_exits = vec![
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Arch(X86Exit::Io {
-                port: 0x0CA1,
-                size: 4,
-                write: Some(bn as u32),
-            }),
-            Exit::Common(CommonExit::Idle),
-        ];
-
-        // The env: seed + an always-firing buggify policy + a mid-run reseed marker.
-        let env_with = |mid_seed: u64| -> Reproducer {
-            let mut policy = FaultPolicy::none();
-            policy.set_buggify_point(point, 1, 1).unwrap();
-            let mut spec = EnvSpec::Seeded {
-                seed: 0x51EED,
-                policy,
-            };
-            spec.record_reseed(m, mid_seed);
-            Reproducer {
-                blob_version: EnvSpec::BLOB_VERSION,
-                bytes: spec.encode(),
-            }
-        };
-
-        let build_server = {
-            let bug_frame = bug_frame.clone();
-            move || -> ControlServer<MockBackend> {
-                let frame = bug_frame.clone();
-                let exits = fork_exits.clone();
-                let mut live = wire(
-                    vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
-                    &frame,
-                    REQ_GPA,
-                    BIG_RAM,
-                );
-                live.step().unwrap(); // Rdtsc → synchronized, so genesis seals
-                let factory = Box::new(move || Ok(wire(exits.clone(), &frame, REQ_GPA, BIG_RAM)));
-                ControlServer::new(live, factory)
-            }
-        };
-
-        // Sequential branch: run through the reseed to the buggify decision.
-        let mut s = build_server();
-        hello(&mut s);
-        let base = snap(&mut s);
-        s.handle(&Request::Branch {
-            snap: base,
-            env: env_with(0xABCD),
-        })
-        .unwrap()
-        .unwrap();
-        assert!(matches!(
-            run_all(&mut s),
-            StopReason::Crash { .. } | StopReason::Quiescent { .. }
-        ));
-        let h_seq = hash(&mut s);
-        let rec = s.recorded_env().clone();
-        // The reproducer carries BOTH the mid-run reseed marker and the buggify
-        // policy, and a buggify decision was actually resolved after the reseed.
-        assert!(
-            !rec.reseeds().is_empty(),
-            "the mid-run reseed marker is recorded"
-        );
-        assert!(
-            rec.policy().is_buggify_only(),
-            "the buggify policy is recorded"
-        );
-        assert!(
-            !s.vmm().unwrap().sdk_buggify().is_empty(),
-            "a buggify decision was resolved during the run"
-        );
-
-        // Fold: replay the recorded reproducer — bit-identical to the sequential run.
-        let mut r = build_server();
-        hello(&mut r);
-        let base_r = snap(&mut r);
-        r.handle(&Request::Branch {
-            snap: base_r,
-            env: Reproducer {
-                blob_version: EnvSpec::BLOB_VERSION,
-                bytes: rec.encode(),
-            },
-        })
-        .unwrap()
-        .unwrap();
-        assert!(matches!(
-            run_all(&mut r),
-            StopReason::Crash { .. } | StopReason::Quiescent { .. }
-        ));
-        assert_eq!(
-            hash(&mut r),
-            h_seq,
-            "the folded reproducer replays bit-identically to the sequential branch \
-             (buggify-after-reseed is coherent)"
-        );
-    }
-
-    /// Task 61 (review R2): the control plane can now **decide a non-nominal
-    /// per-flow policy**. A branch env that faults the `NetFlow` class is ACCEPTED
-    /// (the task-73 buggify-only gate widened to the enforceable net decide-seam —
-    /// `is_enforceable_only`), the guest's `net_decide` returns the fault from the
-    /// seeded stream at a **stable Moment**, and the recorded reproducer replays
-    /// bit-identically. This is the record→replay closure for a host-decided net
-    /// fault — the mechanism the deferred live gate B drives.
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
-    )]
-    fn a_net_flow_fault_branch_is_accepted_and_replays_at_a_stable_moment() {
-        const REQ_GPA: usize = 0xE000;
-        let conn: u64 = 42;
-
-        // A `net_decide` request frame (flow 1->2, conn 42, event Open), carried in
-        // the genesis snapshot so every restored fork's doorbell resolves a flow
-        // decision from the branch env's seeded net policy.
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&1u32.to_le_bytes()); // src
-        payload.extend_from_slice(&2u32.to_le_bytes()); // dst
-        payload.extend_from_slice(&conn.to_le_bytes()); // conn
-        payload.extend_from_slice(&0u16.to_le_bytes()); // event Open
-        let mut buf = [0u8; 4096];
-        let n = hypercall_proto::encode_request(
-            hypercall_proto::ServiceId::Net,
-            1,
-            1,
-            &payload,
-            &mut buf,
-        )
-        .unwrap();
-        let net_frame = buf[..n].to_vec();
-
-        fn wire(
-            script: Vec<Exit<X86>>,
-            frame: &[u8],
-            req_gpa: usize,
-            ram: usize,
-        ) -> Vmm<MockBackend> {
-            let mut mb = MockBackend::with_exits(script);
-            mb.set_policy(&X86Policy {
-                cpuid: vmm_backend::CpuidModel::default(),
-                msr_filter: vmm_backend::MsrFilter::default(),
-            })
-            .unwrap();
-            let mut v = Vmm::new(mb, GuestRam::new(ram).unwrap());
-            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
-            v.wire_snapshot_hashing();
-            let mut mem = vec![0u8; ram];
-            mem[req_gpa..req_gpa + frame.len()].copy_from_slice(frame);
-            v.restore_guest_memory(&mem).unwrap();
-            v
-        }
-
-        // Forks run: Rdtsc (synchronize) → net doorbell (decides the flow) → HLT.
-        let fork_exits = vec![
-            Exit::Arch(X86Exit::Rdtsc),
-            Exit::Arch(X86Exit::Io {
-                port: 0x0CA1,
-                size: 4,
-                write: Some(n as u32),
-            }),
-            Exit::Common(CommonExit::Idle),
-        ];
-
-        // The branch env: a seed + a policy that faults every NetFlow with a
-        // `NetReset` (1/1). Non-buggify — the OLD gate would reject this `Unsupported`.
-        let net_env = || -> Reproducer {
-            let mut policy = FaultPolicy::none();
-            policy
-                .set_class(
-                    environment::DecisionClass::NetFlow,
-                    1,
-                    1,
-                    &[environment::Fault::NetReset],
-                )
-                .unwrap();
-            let spec = EnvSpec::Seeded {
-                seed: 0x51EED,
-                policy,
-            };
-            Reproducer {
-                blob_version: EnvSpec::BLOB_VERSION,
-                bytes: spec.encode(),
-            }
-        };
-
-        let build_server = {
-            let net_frame = net_frame.clone();
-            move || -> ControlServer<MockBackend> {
-                let frame = net_frame.clone();
-                let exits = fork_exits.clone();
-                let mut live = wire(
-                    vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
-                    &frame,
-                    REQ_GPA,
-                    BIG_RAM,
-                );
-                live.step().unwrap(); // Rdtsc → synchronized, so genesis seals
-                let factory = Box::new(move || Ok(wire(exits.clone(), &frame, REQ_GPA, BIG_RAM)));
-                ControlServer::new(live, factory)
-            }
-        };
-
-        // Sequential branch with the net-fault env — must be ACCEPTED (the widened
-        // gate), not rejected `Unsupported`.
-        let mut s = build_server();
-        hello(&mut s);
-        let base = snap(&mut s);
-        let branched = s
-            .handle(&Request::Branch {
-                snap: base,
-                env: net_env(),
-            })
-            .unwrap();
-        assert!(
-            branched.is_ok(),
-            "a NetFlow-faulting branch env is now accepted (was Unsupported): {branched:?}"
-        );
-        assert!(matches!(
-            run_all(&mut s),
-            StopReason::Crash { .. } | StopReason::Quiescent { .. }
-        ));
-        let h_seq = hash(&mut s);
-
-        // The reproducer carries the net policy (enforceable, not buggify-only), and
-        // a non-nominal flow decision was resolved at a stable Moment.
-        let rec = s.recorded_env().clone();
-        assert!(
-            rec.policy().is_enforceable_only() && !rec.policy().is_buggify_only(),
-            "the net policy is recorded (enforceable, non-buggify)"
-        );
-        let decisions = s.vmm().unwrap().net_decisions().to_vec();
-        assert_eq!(decisions.len(), 1, "one flow decision resolved");
-        let (moment0, conn0, ans0) = decisions[0].clone();
-        assert_eq!(conn0, conn);
-        assert_eq!(
-            ans0,
-            environment::Answer::Fault(environment::Fault::NetReset),
-            "the host decided a non-nominal per-flow policy"
-        );
-
-        // Replay the reproducer — bit-identical hash AND the same non-nominal
-        // decision at the SAME Moment (stable across the round-trip).
-        let mut r = build_server();
-        hello(&mut r);
-        let base_r = snap(&mut r);
-        r.handle(&Request::Branch {
-            snap: base_r,
-            env: Reproducer {
-                blob_version: EnvSpec::BLOB_VERSION,
-                bytes: rec.encode(),
-            },
-        })
-        .unwrap()
-        .unwrap();
-        assert!(matches!(
-            run_all(&mut r),
-            StopReason::Crash { .. } | StopReason::Quiescent { .. }
-        ));
-        assert_eq!(
-            hash(&mut r),
-            h_seq,
-            "the net-fault reproducer replays bit-identically"
-        );
-        assert_eq!(
-            r.vmm().unwrap().net_decisions(),
-            &[(moment0, conn0, ans0)],
-            "the same non-nominal flow decision surfaces at the same stable Moment on replay"
-        );
-    }
-
-    #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping (task 98)"
-    )]
     fn reseed_marker_behind_the_restore_floor_is_rejected() {
         // Advance the live V-time to 100 (a perturb-armed deadline run lands
         // exactly there), seal, then try to branch with a marker behind it.
@@ -7625,9 +7708,9 @@ mod tests {
         arr_hello(&mut s);
         s.handle(&Request::Perturb {
             fault: HostFault(
-                EnvHostFault::CorruptMemory {
+                EnvHostEffect::XorMemory {
                     gpa: 0x40,
-                    mask: BitMask(0xFF),
+                    bytes: (0xFF_u64).to_le_bytes().to_vec(),
                 }
                 .encode(),
             ),
@@ -7877,7 +7960,7 @@ mod tests {
             v.wire_snapshot_hashing();
             Ok(v)
         });
-        ControlServer::new(live, factory)
+        with_test_service(ControlServer::new(live, factory))
     }
 
     /// Page the `SdkEvents` verb from offset 0 until drained (the remote
@@ -8344,7 +8427,7 @@ mod tests {
                 9_999,
             ))
         });
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
         let base = snap(&mut s);
         match s
@@ -8422,7 +8505,7 @@ mod tests {
             v.wire_snapshot_hashing();
             Ok(v)
         });
-        let mut s = ControlServer::new(live, factory);
+        let mut s = with_test_service(ControlServer::new(live, factory));
         hello(&mut s);
         let base = snap(&mut s);
         // The blob's v4 pvclock record fails the fresh VM's validate phase

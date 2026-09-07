@@ -1,0 +1,21 @@
+[package]
+name = "fault-policy"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Fault catalog, policy, and deterministic fault-aware environment backings"
+
+[workspace]
+
+[dependencies]
+environment = { version = "=0.1.0", path = "../../consonance/environment" }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
