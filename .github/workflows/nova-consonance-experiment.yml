@@ -417,3 +417,216 @@ jobs:
             package-consonance/stream.jsonl
           if-no-files-found: warn
           retention-days: 30
+
+  faults-vm-acceptance:
+    name: Faults OCI · Consonance VM acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Install fault workload build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cpio musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          docker version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            workloads/faults -> target
+            workloads/fault-guest -> target
+            workloads/faults/fixtures/replicated-service -> target
+      - name: Restore locked guest artifacts
+        id: guest-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: nix-guest-output
+          key: guest-x86_64-v1-${{ hashFiles('flake.nix', 'flake.lock', 'consonance/harmony-linux/linux/**', 'consonance/harmony-linux/nix/**', 'consonance/harmony-linux/libvoidstar/**') }}
+      - name: Build the package-neutral guest kernel and base initramfs
+        if: steps.guest-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p nix-guest-output
+          nix run .#guest-images -- --output "$PWD/nix-guest-output"
+          (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
+          test -s nix-guest-output/x86_64/bzImage
+          test -s nix-guest-output/x86_64/initramfs.cpio.gz
+      - name: Verify locked guest artifacts
+        run: (cd nix-guest-output && sha256sum -c MANIFEST.sha256)
+      - name: Save successful guest build
+        if: steps.guest-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: nix-guest-output
+          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
+      - name: Build the static fault supervisor and fixture commands
+        run: |
+          cargo build --locked --release \
+            --manifest-path workloads/fault-guest/Cargo.toml \
+            --target x86_64-unknown-linux-musl
+          cargo build --locked --release \
+            --manifest-path workloads/faults/fixtures/replicated-service/Cargo.toml \
+            --target x86_64-unknown-linux-musl --bins
+          test -x workloads/fault-guest/target/x86_64-unknown-linux-musl/release/fault-guest
+          file workloads/fault-guest/target/x86_64-unknown-linux-musl/release/fault-guest | grep -Eiq 'static'
+          for binary in fault-replica fault-check fault-recovery fault-pending fault-ready; do
+            test -x "workloads/faults/fixtures/replicated-service/target/x86_64-unknown-linux-musl/release/$binary"
+            file "workloads/faults/fixtures/replicated-service/target/x86_64-unknown-linux-musl/release/$binary" | grep -Eiq 'static'
+          done
+      - name: Assemble the Alpine OCI fixture
+        run: |
+          rm -rf fault-vm-context
+          mkdir -p fault-vm-context/harmony fault-vm-context/opt/harmony
+          cp workloads/faults/fixtures/replicated-service/workload.json \
+            workloads/faults/fixtures/replicated-service/network-init.sh \
+            workloads/faults/fixtures/replicated-service/netns-exec \
+            fault-vm-context/opt/harmony/
+          for binary in fault-replica fault-check fault-recovery fault-pending fault-ready; do
+            cp "workloads/faults/fixtures/replicated-service/target/x86_64-unknown-linux-musl/release/$binary" \
+              "fault-vm-context/opt/harmony/$binary"
+          done
+          cp workloads/fault-guest/target/x86_64-unknown-linux-musl/release/fault-guest \
+            fault-vm-context/opt/harmony/fault-guest
+          cp workloads/faults/fixtures/replicated-service/workload.json \
+            fault-vm-context/harmony/workload.json
+          cat > fault-vm-context/Dockerfile <<'EOF'
+          FROM alpine:3.20
+          RUN apk add --no-cache iproute2 procps
+          COPY harmony/workload.json /harmony/workload.json
+          COPY opt/harmony/ /opt/harmony/
+          RUN chmod 0755 /opt/harmony/network-init.sh /opt/harmony/netns-exec \
+              /opt/harmony/fault-guest /opt/harmony/fault-replica \
+              /opt/harmony/fault-check /opt/harmony/fault-recovery \
+              /opt/harmony/fault-pending \
+              /opt/harmony/fault-ready
+          EOF
+          docker build --pull --tag harmony-fault-fixture fault-vm-context
+          docker save --output fault-fixture.tar harmony-fault-fixture
+          test -s fault-fixture.tar
+      - name: Grant nested KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | \
+            sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Build the faults VM oracle
+        run: |
+          cargo build --locked --release \
+            --manifest-path workloads/faults/Cargo.toml \
+            --features consonance --bin fault-vm-oracle
+          test -x workloads/faults/target/release/fault-vm-oracle
+          cargo build --locked --release -p harmony-cli
+          test -x target/release/harmony
+      - name: Exercise nominal, partition, restore, recovery, and bounded search
+        run: |
+          rm -rf faults-vm-report
+          mkdir -p faults-vm-report
+          timeout -k 10 1200 \
+            workloads/faults/target/release/fault-vm-oracle \
+              --oci fault-fixture.tar \
+              --kernel nix-guest-output/x86_64/bzImage \
+              --base-initramfs nix-guest-output/x86_64/initramfs.cpio.gz \
+              --fault-agent workloads/fault-guest/target/x86_64-unknown-linux-musl/release/fault-guest \
+              --out faults-vm-report/search \
+            2>&1 | tee faults-vm-report/oracle.txt
+          grep -Eq '^FAULT_VM_ORACLE_OK nominal=1 partition_assertion=1 restore_equal=1 delay_restore=1 delay_pending=1 restart_restore=1 pause_restore=1 recovery=1 search_victory=1$' \
+            faults-vm-report/oracle.txt
+      - name: Exercise the bounded faults search through Harmony CLI
+        env:
+          FAULT_PACKAGE_SEED: "250"
+          FAULT_PACKAGE_WORKERS: "1"
+          FAULT_PACKAGE_EXECUTIONS: "64"
+          FAULT_PACKAGE_ACTIONS: "4"
+        run: |
+          rm -rf faults-cli-report
+          timeout -k 10 1200 \
+            target/release/harmony search --package faults --backend consonance \
+              --kernel nix-guest-output/x86_64/bzImage \
+              --base-initramfs nix-guest-output/x86_64/initramfs.cpio.gz \
+              --fault-agent workloads/fault-guest/target/x86_64-unknown-linux-musl/release/fault-guest \
+              --seed "${FAULT_PACKAGE_SEED}" --workers "${FAULT_PACKAGE_WORKERS}" \
+              --executions "${FAULT_PACKAGE_EXECUTIONS}" --actions "${FAULT_PACKAGE_ACTIONS}" \
+              --out faults-cli-report fault-fixture.tar \
+            2>&1 | tee faults-vm-report/cli.txt
+          grep -Fq 'artifacts   faults-cli-report' faults-vm-report/cli.txt
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path("faults-cli-report")
+          required = ("prepared.json", "stream.jsonl", "report.json", "checkpoint.json", "victory.json")
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f"missing or empty CLI artifact: {path}")
+
+          prepared = json.loads((root / "prepared.json").read_text())
+          if prepared["workload"]["package"] != "faults-v2":
+              raise SystemExit("prepared identity has the wrong workload package")
+          if prepared["execution"]["backend"] != "consonance":
+              raise SystemExit("prepared identity did not record the Consonance backend")
+          expected_search = {"seed": 250, "workers": 1, "executions": 64, "actions": 4}
+          if prepared["search"] != expected_search:
+              raise SystemExit(f"unexpected prepared search identity: {prepared['search']}")
+          if not prepared["execution"]["core_contract"].startswith("consonance-session-v2;"):
+              raise SystemExit("prepared identity is missing the Consonance session contract")
+          for name in ("kernel", "initramfs"):
+              digest = prepared["execution"]["artifacts"].get(name, "")
+              if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                  raise SystemExit(f"prepared identity has no SHA-256 for {name}")
+
+          stream_bytes = (root / "stream.jsonl").read_bytes()
+          stream = [json.loads(line) for line in stream_bytes.decode().splitlines()]
+          if not stream or stream[0].get("format") != "fault-campaign-stream-v2":
+              raise SystemExit("fault stream header is missing or has the wrong format")
+          header = stream[0]
+          if header.get("campaign_seed") != 250 or header.get("workers") != 1:
+              raise SystemExit("fault stream header does not match the requested search")
+          if not any(record.get("event") == "job" for record in stream[1:]):
+              raise SystemExit("fault stream contains no executed job")
+
+          report = json.loads((root / "report.json").read_text())
+          if report.get("mode") != "campaign":
+              raise SystemExit("fault report is not a campaign report")
+          if report.get("campaign_seed") != 250 or report.get("workers") != 1:
+              raise SystemExit("fault report identity does not match the requested search")
+          if report.get("execution_budget") != 64 or report.get("action_limit") != 4:
+              raise SystemExit("fault report limits do not match the requested search")
+          if report.get("victories", 0) < 1 or report.get("executions_to_first_victory") is None:
+              raise SystemExit("fault report did not record a discovered victory")
+          if report.get("stream_sha256") != hashlib.sha256(stream_bytes).hexdigest():
+              raise SystemExit("fault report stream digest does not match stream.jsonl")
+
+          checkpoint = json.loads((root / "checkpoint.json").read_text())
+          if checkpoint.get("format") != "fault-campaign-snapshot-checkpoint-v2":
+              raise SystemExit("fault checkpoint has the wrong format")
+          if not checkpoint.get("entries"):
+              raise SystemExit("fault checkpoint contains no retained snapshots")
+
+          victory = json.loads((root / "victory.json").read_text())
+          if not victory.get("actions"):
+              raise SystemExit("fault victory input contains no reproducing actions")
+          if report.get("victory_input") != victory:
+              raise SystemExit("report victory input differs from victory.json")
+          print("faults CLI identity, stream, report, checkpoint, and victory verified")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: faults-vm-acceptance-${{ github.run_id }}
+          path: |
+            faults-vm-report
+            faults-cli-report/prepared.json
+            faults-cli-report/stream.jsonl
+            faults-cli-report/report.json
+            faults-cli-report/checkpoint.json
+            faults-cli-report/victory.json
+            fault-fixture.tar
+          if-no-files-found: warn
+          retention-days: 30

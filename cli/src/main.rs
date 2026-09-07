@@ -89,6 +89,7 @@ mod search_cli_tests {
                 "consonance",
                 "smb.nes",
             ],
+            vec!["harmony", "search", "--package", "faults", "foo.oci"],
         ] {
             assert!(matches!(
                 Cli::try_parse_from(args).unwrap().command,
