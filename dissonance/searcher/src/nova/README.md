@@ -14,6 +14,13 @@ location, the adapter prefers states with more cleared levels, collectibles,
 available levels, carried abilities, health, and puzzle chips, in that order.
 Coarser archive groups represent durable progress and level identity.
 
+The key sorts durable progress, level identity, and position ahead of the
+ability, health, and chip fields, because the archive reads a key's ordering as
+depth and those three fields only pick a slot's representative. Ordering them
+first ranked a fresh state at a level's mouth above a battered one at its end,
+which sent the reported deepest key wandering backwards and pointed splice
+donors at the wrong tails.
+
 Reports may record progress reached inside an action. Reproducer selection uses
 action endpoints, where the serialized input identifies the complete state.
 

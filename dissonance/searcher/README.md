@@ -11,7 +11,12 @@ identifiers.
 
 The archive groups entries at several ordered depths. A workload provides the
 key and any same-location state preference; the generic archive uses only the
-resulting ordering and retains bounded representatives. Campaigns reserve jobs
+resulting ordering and retains bounded representatives. It also reads the key's
+own `Ord` as depth — the deepest live key a run reports, the donor order inside
+a selection cell, and the splice gate all compare keys directly — so a key sorts
+its progress fields ahead of any field the grouping never reads.
+`group_depth_cmp` is the ordering a declared grouping implies, and
+`first_depth_ord_disagreement` checks a sample of keys for the mistake. Campaigns reserve jobs
 in a deterministic admission window, allow physical workers to execute them,
 and process results in recorded admission order. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed

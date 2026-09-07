@@ -25,7 +25,7 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Nova campaign.
 pub const MAX_NOVA_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_v2";
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// Recorded controller hold distribution.
@@ -55,6 +55,13 @@ pub struct NovaArchiveGroup {
 }
 
 /// Quality-diversity key for one Nova endpoint.
+///
+/// Field order is load-bearing: the derived `Ord` is what the generic
+/// archive reads as depth, so every field the grouping treats as progress
+/// sorts ahead of the resource fields that only pick a slot's
+/// representative. Ordering health or a carried ability ahead of position
+/// would make a healthier state at the start of a level outrank a battered
+/// one at its end, and the splice donor gate would follow that ranking.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct NovaArchiveKey {
     /// Durable completed-level count.
@@ -63,12 +70,6 @@ pub struct NovaArchiveKey {
     pub collectibles: u8,
     /// Unlocked-level count.
     pub available: u8,
-    /// Whether an ability is carried.
-    pub has_ability: bool,
-    /// Current health.
-    pub health: u8,
-    /// Current puzzle-chip count.
-    pub chips: u8,
     /// Selected campaign level.
     pub started_level: u8,
     /// Internal map number.
@@ -77,6 +78,14 @@ pub struct NovaArchiveKey {
     pub x: u16,
     /// Player vertical 16-pixel bucket.
     pub y: u16,
+    /// Whether an ability is carried. Preference only, so it sorts after
+    /// position.
+    pub has_ability: bool,
+    /// Current health. Preference only, so it sorts after position.
+    pub health: u8,
+    /// Current puzzle-chip count. Preference only, so it sorts after
+    /// position.
+    pub chips: u8,
 }
 
 impl ArchiveKey for NovaArchiveKey {
@@ -348,6 +357,44 @@ pub fn sample_chord(rand: &mut RomuDuoJrRand) -> Result<ButtonChord, Box<dyn Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::archive::first_depth_ord_disagreement;
+
+    /// The archive reads a key's own ordering as depth. Nova's resource
+    /// fields pick a slot's representative and appear in no group, so a
+    /// battered state deep in a level has to outrank a fresh one at its
+    /// mouth. Sampling across health, ability, chips, and position pins
+    /// that: ordering a resource ahead of position sent the deepest-live
+    /// report wandering backwards and pointed splice donors at the wrong
+    /// tails.
+    #[test]
+    fn key_ordering_matches_the_declared_grouping() {
+        let mut samples = Vec::new();
+        for x in [0_u16, 3, 200] {
+            for y in [0_u16, 7] {
+                for health in [0_u8, 4] {
+                    for has_ability in [false, true] {
+                        for chips in [0_u8, 2] {
+                            for cleared in [0_u8, 1] {
+                                samples.push(NovaArchiveKey {
+                                    cleared,
+                                    collectibles: 0,
+                                    available: 1,
+                                    started_level: 8,
+                                    level: 8,
+                                    x,
+                                    y,
+                                    has_ability,
+                                    health,
+                                    chips,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(first_depth_ord_disagreement(&samples), None);
+    }
 
     fn state(x: u16, health: u8, cleared: u8) -> NovaMechanicalState {
         let mut value = NovaMechanicalState {

@@ -43,6 +43,19 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
 /// one-group key collapses class, cell, and retention slot onto depth 0 and a
 /// two-group key collapses class onto the cell. Depths past the coarsest are
 /// never read, and `group` is never called with a depth at or past `groups()`.
+///
+/// # Ordering is depth
+///
+/// The archive reads the key's own [`Ord`] as how far a state has come. It
+/// ranks the deepest live key a run reports, orders the donor set each
+/// selection cell keeps, and gates a splice on the donor's deepest leaf
+/// outranking the parent. A key therefore has to sort its progress fields
+/// ahead of any field the grouping never reads — a resource that only picks
+/// which representative holds a slot, say. Ordering such a field first makes
+/// a well-supplied state at the start of a level outrank a depleted one at
+/// its end, and splice donors follow that ranking into the wrong tails.
+/// [`group_depth_cmp`] is the ordering the declared grouping implies, and
+/// [`first_depth_ord_disagreement`] checks a sample of keys for the mistake.
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     /// One pooled identity at some depth.
     type Group: Copy + Ord;
@@ -71,6 +84,43 @@ pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     fn complete(self, parent: Option<(Self, &Self::Lineage)>) -> Self;
     /// Fold a completed key into a lineage.
     fn record(lineage: &mut Self::Lineage, key: Self);
+}
+
+/// Rank two keys by the grouping they declare, coarsest depth first.
+///
+/// This is the depth hierarchy the archive already organizes itself by, so
+/// it never reads a field the grouping pools away. A key whose own [`Ord`]
+/// carries preference-only fields can delegate to this to keep the two
+/// notions of depth in step; see [`ArchiveKey`].
+#[must_use]
+pub fn group_depth_cmp<K: ArchiveKey>(left: K, right: K) -> Ordering {
+    (0..K::groups())
+        .rev()
+        .map(|depth| left.group(depth).cmp(&right.group(depth)))
+        .find(|ordering| ordering.is_ne())
+        .unwrap_or(Ordering::Equal)
+}
+
+/// The first sampled pair whose [`Ord`] contradicts the declared grouping.
+///
+/// Two keys the grouping separates should compare the same way under the
+/// key's own ordering, because the archive reads that ordering as depth.
+/// Returns the offending `(left, right)` pair, so an adapter can assert on
+/// a sample of its own keys and catch a field ordered ahead of the progress
+/// the grouping actually pools by. Keys the grouping cannot separate are
+/// free to order however the adapter likes: that is the preference the
+/// retention slot resolves, not depth.
+#[must_use]
+pub fn first_depth_ord_disagreement<K: ArchiveKey>(samples: &[K]) -> Option<(K, K)> {
+    samples.iter().enumerate().find_map(|(index, left)| {
+        samples[index.saturating_add(1)..]
+            .iter()
+            .find(|right| {
+                let grouped = group_depth_cmp(*left, **right);
+                grouped.is_ne() && grouped != left.cmp(right)
+            })
+            .map(|right| (*left, *right))
+    })
 }
 
 /// Compiled ceiling on archive entries. A ceiling is not an allocation:

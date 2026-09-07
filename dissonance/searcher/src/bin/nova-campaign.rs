@@ -24,7 +24,9 @@ use searcher::{
     search::{
         archive::{RetentionPolicy, RetireThresholds, SelectorPolicy},
         campaign::Game,
-        draw::{DrawMixture, SuffixShape},
+        draw::{
+            DrawMixture, SuffixShape, draw_mixture_from_identifier, suffix_shape_from_identifier,
+        },
     },
     target::{ExitKind, Target},
 };
@@ -44,6 +46,8 @@ struct Args {
     fixed_execution_soak: bool,
     host: String,
     memory_budget_mib: Option<usize>,
+    suffix: SuffixShape,
+    mixture: DrawMixture,
 }
 
 struct RenderedMedia {
@@ -73,6 +77,8 @@ impl Args {
         let mut fixed_execution_soak = false;
         let mut host = "github-actions".to_owned();
         let mut memory_budget_mib = None;
+        let mut suffix = SuffixShape::OneToSix;
+        let mut mixture = DrawMixture::AlphabetOnly;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
@@ -103,6 +109,16 @@ impl Args {
                 "--memory-budget-mib" => {
                     memory_budget_mib = Some(parse_number("memory-budget-mib", value)?);
                 }
+                "--suffix" => {
+                    suffix = suffix_shape_from_identifier(
+                        &value.into_string().map_err(|_| "suffix is not UTF-8")?,
+                    )?;
+                }
+                "--mixture" => {
+                    mixture = draw_mixture_from_identifier(
+                        &value.into_string().map_err(|_| "mixture is not UTF-8")?,
+                    )?;
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -119,6 +135,8 @@ impl Args {
             fixed_execution_soak,
             host,
             memory_budget_mib,
+            suffix,
+            mixture,
         })
     }
 }
@@ -166,8 +184,8 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
             entry: 3,
             groups: vec![6, 12, 2],
         }),
-        suffix: SuffixShape::OneToSix,
-        mixture: DrawMixture::AlphabetOnly,
+        suffix: args.suffix,
+        mixture: args.mixture,
         victory_input_path: Some(args.output.join("victory-input.json")),
     }
 }
