@@ -233,6 +233,46 @@ fn golden_host_fault_wire_format() {
     }
 }
 
+/// The process faults the in-guest fault agent enforces, with their frozen
+/// `Answer::encode` hex. A round-trip test cannot catch a tag renumbering, and
+/// the agent decodes these bytes from a separately built binary.
+#[test]
+fn golden_process_fault_wire_format() {
+    let capture = std::env::var_os("GOLDEN_CAPTURE").is_some();
+    for (fault, expected) in [
+        // 02 (Answer::Fault) + 11 (tag 17) + id u32 LE (7).
+        (Fault::RunHook(7), "021107000000"),
+        // 02 + 13 (tag 19) + addr u64 LE + hits u32 LE + hold u64 LE.
+        (
+            Fault::ProcPark {
+                addr: 0x4b_0e86,
+                hits: 28,
+                hold: Span(2_000_000),
+            },
+            "0213860e4b00000000001c00000080841e0000000000",
+        ),
+    ] {
+        let got = to_hex(&Answer::Fault(fault).encode());
+        if capture {
+            eprintln!("{fault:?} => {got}");
+            continue;
+        }
+        assert_eq!(
+            got, expected,
+            "process fault wire format drifted for {fault:?}. If intentional and reviewed, \
+             regenerate with GOLDEN_CAPTURE=1."
+        );
+    }
+}
+
+/// Byte tag 18 sits between the two and is permanently unassigned, so a blob
+/// that names it is refused rather than reinterpreted.
+#[test]
+fn the_unassigned_process_fault_tag_is_refused() {
+    assert!(Answer::decode(&[0x02, 18]).is_err());
+    assert!(Answer::decode(&[0x02, 18, 0, 0, 0, 0]).is_err());
+}
+
 #[test]
 fn golden_action_wire_format() {
     // Action = one plane-tag byte (00 host / 01 guest) then the plane's encoding.
