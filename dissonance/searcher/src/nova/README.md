@@ -75,13 +75,7 @@ when the archive reads them: `opaque_preference_then_fewest_frames` never
 (the default, unchanged), `..._per_variant` at every slot from its first
 arrival, `..._or_pressured_split:R,D` once a slot's representative has been
 drawn `D` times with no retained child and `R` arrivals have lost to it.
-`opaque_preference_then_settled_then_fewest_frames` reads a different
-signal: whether the arrival is at rest. The target reports an action whose
-last eight frames left the player's pixel position unchanged, standing
-rather than falling, jumping, or sliding through the endpoint, and the slot
-then keeps a settled representative over one in motion before it compares
-frames. The verdict costs no emulation. Every choice is recorded in the
-stream header and resolved on replay.
+Every choice is recorded in the stream header and resolved on replay.
 
 Level 9 (world 2) is the measurement that motivated all of it. Its corridor
 cell at x=208 took 123 selections under an undecayed frontier, produced 411
@@ -161,18 +155,11 @@ isolated run. The search filled the rooms behind its frontier ten times as
 densely instead of advancing it, and every lever tried on the level-1
 genesis left the sub-level uncrossed: entry retirement 8 and 16 in place of
 3 (217,200 and 220,300), a frontier rank span of 8 in place of 16
-(128,700), 6 fingerprint bits with pressured split 64,8 (245,400), 6 bits
-split at every slot (level 2 uncleared by 183,100), the settled rule
-(337,900), and the settled rule with entry retirement 8 and 16 (148,800 and
-170,000).
-
-The settled replacement rule above is nonetheless the better setting on
-four levels of five against the level panel, seed 1:
-
-| setting | L1 | L3 | L17 | L33 | L25 |
-| --- | --- | --- | --- | --- | --- |
-| no decay, fewest frames | 5,518 | 8,596 | 2,911 | 2,133 | 180,478 |
-| no decay, settled then fewest frames | 5,368 | 5,837 | 2,599 | 2,948 | 130,136 |
+(128,700), 6 fingerprint bits with pressured split 64,8 (245,400), and 6
+bits split at every slot (level 2 uncleared by 183,100). A replacement rule
+that kept a standing representative over a moving one was also measured
+and withdrawn: it left the sub-level uncrossed too (337,900), and a rule
+built for one door is not search apparatus.
 
 What makes the whole-game search fill rooms rather than cross them, when
 the same selector crosses the same sub-level in 1,300 executions from a

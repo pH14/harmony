@@ -149,12 +149,6 @@ pub enum ReplacementPolicy {
     /// Equal preference keeps the route with fewer frames in its group.
     #[default]
     FewestFrames,
-    /// Equal preference keeps a settled representative over one still in
-    /// motion, and only then the route with fewer frames. The fewest-frames
-    /// rule alone favors the arrival that passed through a location fastest,
-    /// which at a ledge between two drops is the one falling past it; a
-    /// representative at rest is the one a short suffix can act from.
-    SettledThenFewestFrames,
     /// As above until `rejections` arrivals have lost a slot contest to an
     /// incumbent that has never produced a retained child; the slot then
     /// splits by [`ArchiveKey::variant`], and each variant competes for its
@@ -811,11 +805,6 @@ pub struct ArchiveCandidate<A: Ord, K, M> {
     pub key: K,
     /// Strongest milestones observed along the input.
     pub milestones: M,
-    /// Whether the boundary is at rest by the game's own reading, such as a
-    /// player standing still through the end of the action rather than
-    /// falling or sliding through it. Read only under
-    /// [`ReplacementPolicy::SettledThenFewestFrames`].
-    pub settled: bool,
 }
 
 /// The generic snapshot archive.
@@ -855,8 +844,6 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// Arrivals rejected against the entry since it last produced a retained
     /// child.
     rejections: Vec<u64>,
-    /// Per entry: the candidate's settled verdict at admission.
-    settled: Vec<bool>,
     /// Depth-0 slots that have split by variant.
     split_slots: BTreeSet<K::Group>,
     in_window_ever: Vec<bool>,
@@ -1440,7 +1427,6 @@ where
             productive: Vec::new(),
             since_retained: Vec::new(),
             rejections: Vec::new(),
-            settled: Vec::new(),
             split_slots: BTreeSet::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
@@ -1941,7 +1927,6 @@ where
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
         self.rejections = retain_marked(std::mem::take(&mut self.rejections), &keep);
-        self.settled = retain_marked(std::mem::take(&mut self.settled), &keep);
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
@@ -2742,7 +2727,6 @@ where
             suffix,
             key,
             milestones,
-            settled,
         } = candidate;
         if let Some(existing) = self.existing_input_id(parent_id, &suffix) {
             return Ok((Some(existing), self.entries[existing].key));
@@ -2770,7 +2754,7 @@ where
         // A slot splits by variant once any representative has proven
         // barren; from then on an arrival contends only with its own variant.
         let split = match self.replacement_policy {
-            ReplacementPolicy::FewestFrames | ReplacementPolicy::SettledThenFewestFrames => false,
+            ReplacementPolicy::FewestFrames => false,
             ReplacementPolicy::SplitByVariant => true,
             ReplacementPolicy::FewestFramesOrPressuredSplit { rejections, draws } => {
                 let group = key.group(0);
@@ -2795,27 +2779,20 @@ where
             slot.clone()
         };
         let slot_full = contenders.len() >= K::slot_capacity().max(1);
-        // Under the settled rule an entry at rest outranks one in motion
-        // between the preference and the clock; elsewhere the flag is inert.
-        let rest_rank = |settled: bool| {
-            settled && self.replacement_policy == ReplacementPolicy::SettledThenFewestFrames
-        };
         let worst = contenders.iter().copied().min_by(|left, right| {
             let left_entry = &self.entries[*left];
             let right_entry = &self.entries[*right];
             left_entry
                 .key
                 .preference_cmp(right_entry.key)
-                .then_with(|| rest_rank(self.settled[*left]).cmp(&rest_rank(self.settled[*right])))
                 .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
                 .then_with(|| right_entry.id.cmp(&left_entry.id))
         });
         let replace = if slot_full {
-            worst.filter(|id| {
-                key.preference_cmp(self.entries[*id].key)
-                    .then_with(|| rest_rank(settled).cmp(&rest_rank(self.settled[*id])))
-                    .then_with(|| self.time_in_group[*id].cmp(&candidate_time_in_group))
-                    == Ordering::Greater
+            worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
+                Ordering::Greater => true,
+                Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
+                Ordering::Less => false,
             })
         } else {
             None
@@ -2922,7 +2899,6 @@ where
         self.productive.push(0);
         self.since_retained.push(0);
         self.rejections.push(0);
-        self.settled.push(settled);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
         // A one-group key has no pooled cell depth; slot novelty stands in.
@@ -4051,7 +4027,6 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([index.into(), index.into(), 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4104,7 +4079,6 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4294,7 +4268,6 @@ mod tests {
                             variant: 0,
                         },
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4329,7 +4302,6 @@ mod tests {
                     variant,
                 },
                 milestones: (),
-                settled: false,
             };
             let incumbent = archive
                 .insert(None, 0, candidate(vec![1], 0), ())
@@ -4387,71 +4359,6 @@ mod tests {
         assert_eq!(run(past, true), (None, None, true, 66));
     }
 
-    /// Under the settled rule a representative at rest keeps its slot
-    /// against a cheaper arrival still in motion, a settled arrival takes
-    /// the slot from a cheaper incumbent in motion, and the clock decides
-    /// between two arrivals of one kind. The other policies never read the
-    /// flag. A stronger preference still wins over rest either way.
-    #[test]
-    fn settled_rule_ranks_rest_between_the_preference_and_the_clock() {
-        let run = |policy: ReplacementPolicy, first: (Vec<u8>, bool), second: (Vec<u8>, bool)| {
-            let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
-            archive.replacement_policy = policy;
-            let candidate = |suffix: Vec<u8>, settled: bool, quality: u8| ArchiveCandidate {
-                suffix,
-                key: PreferredKey {
-                    slot: 7,
-                    quality,
-                    variant: 0,
-                },
-                milestones: (),
-                settled,
-            };
-            let incumbent = archive
-                .insert(None, 0, candidate(first.0, first.1, 4), ())
-                .expect("insert incumbent")
-                .expect("incumbent retained");
-            let arrival = archive
-                .insert(None, 0, candidate(second.0, second.1, 4), ())
-                .expect("insert arrival");
-            let incumbent_kept = archive.active[incumbent];
-            let stronger = archive
-                .insert(None, 0, candidate(vec![9, 9, 9], false, 5), ())
-                .expect("insert stronger");
-            (arrival, incumbent_kept, stronger.is_some())
-        };
-        let settled = ReplacementPolicy::SettledThenFewestFrames;
-        // A cheaper arrival in motion loses to a settled incumbent.
-        assert_eq!(
-            run(settled, (vec![1, 2], true), (vec![3], false)),
-            (None, true, true)
-        );
-        // A settled arrival displaces a cheaper incumbent in motion.
-        assert_eq!(
-            run(settled, (vec![1], false), (vec![2, 3], true)),
-            (Some(1), false, true)
-        );
-        // Two settled arrivals contest on the clock as before.
-        assert_eq!(
-            run(settled, (vec![1], true), (vec![2, 3], true)),
-            (None, true, true)
-        );
-        assert_eq!(
-            run(settled, (vec![1, 2], true), (vec![3], true)),
-            (Some(1), false, true)
-        );
-        // The default rule ignores the flag on both sides.
-        let fewest = ReplacementPolicy::FewestFrames;
-        assert_eq!(
-            run(fewest, (vec![1, 2], true), (vec![3], false)),
-            (Some(1), false, true)
-        );
-        assert_eq!(
-            run(fewest, (vec![1], false), (vec![2, 3], true)),
-            (None, true, true)
-        );
-    }
-
     fn flat_archive<const DEPTHS: usize>(
         keys: &[[u16; 4]],
     ) -> Archive<u8, FlatKey<DEPTHS>, (), ()> {
@@ -4465,7 +4372,6 @@ mod tests {
                         suffix: vec![u8::try_from(index).expect("input byte")],
                         key: FlatKey(*components),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4493,7 +4399,6 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4545,7 +4450,6 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4598,7 +4502,6 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4668,7 +4571,6 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4725,7 +4627,6 @@ mod tests {
                         suffix: vec![index],
                         key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4762,7 +4663,6 @@ mod tests {
                             suffix: vec![index],
                             key: FlatKey([u16::from(index), u16::from(index), u16::from(index), 0]),
                             milestones: (),
-                            settled: false,
                         },
                         (),
                     )
@@ -4831,7 +4731,6 @@ mod tests {
                         suffix: vec![u8::try_from(index % 251).expect("suffix byte")],
                         key: FlatKey([key, key, key, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4881,7 +4780,6 @@ mod tests {
                         suffix: vec![u8::try_from(index % 251).expect("suffix byte"), key as u8],
                         key: FlatKey([key, key, key, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -4927,7 +4825,6 @@ mod tests {
                     suffix: vec![0],
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -4942,7 +4839,6 @@ mod tests {
                         suffix: vec![step],
                         key: FlatKey([u16::from(step), u16::from(step), 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -5032,7 +4928,6 @@ mod tests {
                     suffix: Vec::new(),
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5050,7 +4945,6 @@ mod tests {
                         suffix: vec![suffix],
                         key: FlatKey([0, 0, 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -5088,7 +4982,6 @@ mod tests {
                     suffix: Vec::new(),
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5104,7 +4997,6 @@ mod tests {
                     suffix: vec![1],
                     key: FlatKey([1, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5143,7 +5035,6 @@ mod tests {
                         suffix: index.to_be_bytes().to_vec(),
                         key: FlatKey([index, index, 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -5276,7 +5167,6 @@ mod tests {
                     suffix: vec![1],
                     key: FlatKey([1, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5290,7 +5180,6 @@ mod tests {
                     suffix: vec![2],
                     key: FlatKey([2, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5304,7 +5193,6 @@ mod tests {
                     suffix: vec![3],
                     key: FlatKey([3, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5342,7 +5230,6 @@ mod tests {
                         suffix: vec![3],
                         key: FlatKey([9, 9, 9, 9]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -5372,7 +5259,6 @@ mod tests {
                         suffix: vec![suffix],
                         key,
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -5405,7 +5291,6 @@ mod tests {
                     suffix: vec![1],
                     key: root_key,
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5420,7 +5305,6 @@ mod tests {
                     suffix: vec![2],
                     key: child_key,
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5483,7 +5367,6 @@ mod tests {
                     suffix: vec![1],
                     key: LineageKey { value: 1, class: 7 },
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5497,7 +5380,6 @@ mod tests {
                     suffix: vec![2],
                     key: LineageKey { value: 2, class: 7 },
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5511,7 +5393,6 @@ mod tests {
                     suffix: vec![3],
                     key: LineageKey { value: 3, class: 8 },
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5534,7 +5415,6 @@ mod tests {
                     suffix: vec![0xff, 0xfe, 0xfd],
                     key: FlatKey([0, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5556,7 +5436,6 @@ mod tests {
                         suffix: index.to_be_bytes().to_vec(),
                         key: FlatKey([index.saturating_add(1), index.saturating_add(1), 0, 0]),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -5582,7 +5461,6 @@ mod tests {
                         0,
                     ]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5628,7 +5506,6 @@ mod tests {
                     suffix: vec![9, 9, 9],
                     key: FlatKey([4_099, 0, 0, 0]),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -5769,7 +5646,6 @@ mod tests {
                         suffix: actions[parent_len..].to_vec(),
                         key: FlatKey(components),
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -5891,7 +5767,6 @@ mod tests {
                         suffix: input.actions,
                         key,
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -6089,7 +5964,6 @@ mod tests {
                         suffix: input.actions,
                         key,
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -6369,7 +6243,6 @@ mod tests {
                     suffix: vec![ButtonChord::new(buttons, hold)],
                     key,
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -6388,7 +6261,6 @@ mod tests {
                     suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )
@@ -6454,7 +6326,6 @@ mod tests {
                     suffix: Vec::new(),
                     key: probe_key(0, 0, 0, 0),
                     milestones: (),
-                    settled: false,
                 },
                 (),
             )

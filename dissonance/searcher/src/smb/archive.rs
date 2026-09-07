@@ -552,7 +552,6 @@ mod tests {
                         suffix: vec![1_u8; suffix_len],
                         key,
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )
@@ -591,7 +590,6 @@ mod tests {
                         suffix: vec![1_u8; actions],
                         key,
                         milestones: (),
-                        settled: false,
                     },
                     (),
                 )

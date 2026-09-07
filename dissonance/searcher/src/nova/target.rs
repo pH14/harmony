@@ -286,14 +286,7 @@ pub struct NovaTarget<M: Machine = QuickNesMachine> {
     snapshot_base: Option<M::Portable>,
     genesis_cleared: u8,
     halt_on_level_clear: bool,
-    /// Whether the last applied action ended with the player at rest.
-    at_rest: bool,
 }
-
-/// Frames the player's pixel position must hold at the end of an action for
-/// the endpoint to count as at rest. A jump apex holds a position for a
-/// frame or two under NES gravity; a standing player holds it indefinitely.
-const REST_FRAMES: usize = 8;
 
 impl<M: Machine> NovaTarget<M> {
     /// Seal a machine that is already stopped at Nova gameplay genesis.
@@ -331,7 +324,6 @@ impl<M: Machine> NovaTarget<M> {
             snapshot_base: None,
             genesis_cleared: state.cleared_count(),
             halt_on_level_clear: true,
-            at_rest: false,
         })
     }
 }
@@ -452,15 +444,6 @@ impl<M: Machine> NovaTarget<M> {
     /// Whether the current state is frozen against further actions.
     fn halted(&self) -> bool {
         self.failed || self.is_dead() || (self.halt_on_level_clear && self.cleared_a_level())
-    }
-
-    /// Whether the last applied action ended with the player's pixel
-    /// position unchanged for its final [`REST_FRAMES`] frames: standing,
-    /// rather than falling, jumping, or sliding through the endpoint. False
-    /// after a reset or restore until the next action.
-    #[must_use]
-    pub fn at_rest(&self) -> bool {
-        self.at_rest
     }
 
     /// Total deterministic frames this instance has emulated.
@@ -758,12 +741,10 @@ impl<M: Machine> Target for NovaTarget<M> {
         self.current_wram = self.genesis_wram;
         self.observation = self.genesis_observation.clone();
         self.action_observations = vec![self.observation.clone()];
-        self.at_rest = false;
     }
 
     fn apply(&mut self, action: &Self::Action) {
         self.action_observations.clear();
-        self.at_rest = false;
         if self.halted() {
             return;
         }
@@ -811,19 +792,11 @@ impl<M: Machine> Target for NovaTarget<M> {
         let mut prior_wram = prior_wram;
         let mut prior_state = prior_state;
         let mut emitted = false;
-        let mut rest_position = None;
-        let mut rest_frames = 0_usize;
         for (offset, wram) in frames.iter().enumerate() {
             let Ok(state) = decode_state(wram, &save_ram) else {
                 self.failed = true;
                 return;
             };
-            if rest_position == Some((state.x, state.y)) {
-                rest_frames = rest_frames.saturating_add(1);
-            } else {
-                rest_position = Some((state.x, state.y));
-                rest_frames = 1;
-            }
             let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
                 || preference_tuple(state) != preference_tuple(prior_state)
                 || state.level_reload_pending != prior_state.level_reload_pending;
@@ -869,7 +842,6 @@ impl<M: Machine> Target for NovaTarget<M> {
         if let Some(observation) = self.action_observations.last() {
             self.observation = observation.clone();
         }
-        self.at_rest = rest_frames >= REST_FRAMES;
         self.current_wram = endpoint_wram;
         let next = match self.machine.snapshot() {
             Ok(next) => next,
@@ -956,7 +928,6 @@ impl<M: Machine> Target for NovaTarget<M> {
         self.current_wram = restored_wram;
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
-        self.at_rest = false;
         self.failed = snapshot.failed;
         Ok(())
     }

@@ -1135,19 +1135,13 @@ pub struct CampaignCandidate<G: Game + ?Sized> {
     pub key: G::Key,
     /// Worker-side probe verdict under the run's admission rule.
     pub viable: bool,
-    /// Worker-side verdict that the boundary is at rest, by the game's own
-    /// reading of its target. Games without one report false.
-    pub settled: bool,
     /// The boundary's snapshot.
     pub snapshot: G::Snapshot,
 }
 
 impl<G: Game + ?Sized> PartialEq for CampaignCandidate<G> {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
-            && self.viable == other.viable
-            && self.settled == other.settled
-            && self.snapshot == other.snapshot
+        self.key == other.key && self.viable == other.viable && self.snapshot == other.snapshot
     }
 }
 impl<G: Game + ?Sized> Eq for CampaignCandidate<G> {}
@@ -1157,7 +1151,6 @@ impl<G: Game + ?Sized> Clone for CampaignCandidate<G> {
         Self {
             key: self.key,
             viable: self.viable,
-            settled: self.settled,
             snapshot: self.snapshot.clone(),
         }
     }
@@ -1169,7 +1162,6 @@ impl<G: Game + ?Sized> Debug for CampaignCandidate<G> {
             .debug_struct("CampaignCandidate")
             .field("key", &self.key)
             .field("viable", &self.viable)
-            .field("settled", &self.settled)
             .field("snapshot", &self.snapshot)
             .finish()
     }
@@ -1369,7 +1361,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     suffix: Vec::new(),
                     key: genesis_key,
                     milestones: G::Milestones::default(),
-                    settled: false,
                 },
                 genesis_snapshot,
             )?
@@ -1400,7 +1391,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                 suffix: Vec::new(),
                 key,
                 milestones: G::Milestones::default(),
-                settled: false,
             },
             snapshot.clone(),
         )?;
@@ -1548,7 +1538,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                     suffix,
                     key,
                     milestones,
-                    settled: false,
                 },
                 snapshot,
             )? {
@@ -1635,7 +1624,6 @@ impl<G: Game + ?Sized> CoordinatorCore<G> {
                         suffix: pending_suffix.clone(),
                         key: game.complete_candidate_key(candidate.key, &candidate.snapshot)?,
                         milestones: action.milestones,
-                        settled: candidate.settled,
                     },
                     candidate.snapshot,
                 )?;
@@ -3898,7 +3886,6 @@ mod tests {
                 candidate: Some(CampaignCandidate {
                     key: archive_key(&target.wram()),
                     viable: true,
-                    settled: false,
                     snapshot,
                 }),
             }],
@@ -4042,7 +4029,6 @@ mod tests {
                 candidate: Some(CampaignCandidate {
                     key: archive_key(&target.wram()),
                     viable: true,
-                    settled: false,
                     snapshot,
                 }),
             }],
