@@ -64,33 +64,47 @@ is sealed after health and coordinates confirm gameplay. Search actions exclude
 Start and Select. They combine nine non-conflicting directional states with the
 four A/B button states.
 
-## Retention fingerprint
+## Retention variant and replacement policy
 
 The key names a location and the durable resources, so pose, momentum, and
 the level's own actors are invisible to it. Two arrivals at one location are
 then the same cell, and the cheaper one holds the only slot however badly it
-is placed. `--fingerprint-bits` splits that slot by the low bits of the
-work-RAM digest, at depth 0 alone: a location retains up to `2^bits` variants
-in separate slots, while every coarser group pools the bits away so selection
-still draws on one cell. A digest carries no game meaning, so this splits
-slots without telling the archive anything about Nova.
+is placed. `--fingerprint-bits` carries low bits of the work-RAM digest as the
+key's variant, outside its identity and ordering, and `--replacement` says
+when the archive reads them: `opaque_preference_then_fewest_frames` never
+(the default, unchanged), `..._per_variant` at every slot from its first
+arrival, `..._or_pressured_split:R,D` once a slot's representative has been
+drawn `D` times with no retained child and `R` arrivals have lost to it.
+Every choice is recorded in the stream header and resolved on replay.
 
-The width is a run policy because it is not one trade, and zero -- the
-default -- records the unchanged `nova_spatial_16_preference_v1` key policy,
-so a run that does not ask for the split searches exactly as before.
+Level 9 (world 2) is the measurement that motivated all of it. Its corridor
+cell at x=208 took 123 selections under an undecayed frontier, produced 411
+candidates with healthy frame counts, and had all 411 rejected as duplicates.
+The results, seed 1, one setting for every level, against the level panel:
 
-| bits | level 9 | level 25 |
-| --- | --- | --- |
-| 0 | no clear in 1.6M, stuck at 3341 px | 104,751 |
-| 3 | no clear in 453K, never reaches 3341 px | not measured |
-| 6 | 154,281 | no clear by 229K |
+| setting | L1 | L17 | L25 | L33 | L9 |
+| --- | --- | --- | --- | --- | --- |
+| default (splice, bounded, decay) | 3,777 | 2,547 | 104,751 | 3,126 | no clear, stuck at 3341 px through 1.6M |
+| + no frontier decay | 4,678 | 2,521 | 72,118 (seed 2: 59,310 vs 124,346) | 1,654 | reaches the wall at 344K, no clear |
+| + 6 bits, split every slot | -- | -- | no clear by 194K, 111K entries | -- | no clear by 206K |
+| + 6 bits, split every slot, no decay | -- | -- | no clear by 137K, 46K entries | -- | behind no-decay alone at 100K |
+| + 6 bits, pressured split 64,8, no decay | 4,678 | 2,521 | no clear by 358K; seed 2 77,731 vs 59,310 | 1,654 | at the wall from 193K, no clear by 362K |
 
-Level 9 cannot be cleared without the split: its corridor cell at x=208 took
-123 selections, produced 411 candidates with healthy frame counts, and had
-all 411 rejected as duplicates. Four configurations differing in draw policy,
-slot capacity, and selector energy all stopped at the same pixel. Three bits
-are worse than none, paying the dilution without separating enough to cross.
-Level 25 needs no split and pays for one. Measure the width per workload.
+Splitting every slot did clear level 9 once, in 154,281 executions, on a
+build where the variant still sat inside the key's ordering and reordered
+splice donors by hash; on the corrected build the same setting had not
+reached the wall by 206,000. Triggers that split only barren slots -- by the
+incumbent's own draws, by rejected arrivals, and by both -- each fired where
+the search was busy rather than where it was stuck, or reached the corridor
+too late to matter, and cost level 25 on every seed. Displacing a barren
+incumbent instead of splitting was worse than leaving it.
+
+The setting with the best measured record across the panel is the plain one
+with the frontier decay removed: faster on levels 25 and 33, level on 17,
+slightly slower on 1, and level 9 unsolved. Level 9's wall is not a
+retention problem the archive can buy its way past at a price the other
+levels will pay; the unmeasured lever is the draw itself, the chord
+vocabulary and suffix shape that never produce the input that crosses.
 
 ## Terminal predicate
 
