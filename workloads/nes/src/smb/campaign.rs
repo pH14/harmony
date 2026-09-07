@@ -1472,6 +1472,10 @@ where
         stamp_arrival_room(archive_key(&target.wram()), &target.wram())
     }
 
+    fn rollout_key(&self, target: &SmbTarget<M, P>) -> Result<SmbArchiveKey, Box<dyn Error>> {
+        Ok(archive_key(&target.wram()))
+    }
+
     fn complete_candidate_key(
         &self,
         key: SmbArchiveKey,
@@ -2057,6 +2061,48 @@ mod tests {
                 level: 1,
                 minimum_progress: 40
             })
+        );
+    }
+
+    #[test]
+    fn worker_keys_preserve_recorded_room_assignment() {
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let mut target = game.new_target().expect("load target");
+        target.reset();
+        target.poke_wram(0x074e, 7);
+        target.poke_wram(0x074f, 9);
+        let origin = target.snapshot().expect("snapshot room");
+        let result = game
+            .execute_job(
+                &SmbCampaignRun {
+                    chord: SmbCampaignChordPolicy::default(),
+                    vocabulary: SmbButtonVocabulary::default(),
+                    terminal: Some(SmbTerminalPredicate::GameVictory),
+                },
+                &mut target,
+                &origin,
+                &[],
+                0,
+                SmbMilestones::default(),
+                &[ButtonChord::new(0x01, 1)],
+                96,
+                crate::search::archive::RetentionPolicy::AdmitAlive,
+            )
+            .expect("execute room action");
+        let candidate = result.actions[0]
+            .candidate
+            .as_ref()
+            .expect("live candidate");
+        assert_eq!(candidate.key.room, [0; 3]);
+        let completed = game
+            .complete_candidate_key(candidate.key, &candidate.snapshot)
+            .expect("complete arrival room");
+        assert_eq!(completed, game.current_key(&target).expect("current room"));
+        assert_eq!(&completed.room[..2], &[7, 9]);
+        assert_ne!(
+            postcard::to_stdvec(&candidate.key).expect("recorded worker key"),
+            postcard::to_stdvec(&completed).expect("completed archive key")
         );
     }
 
