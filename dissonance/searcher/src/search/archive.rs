@@ -170,6 +170,11 @@ pub enum ReplacementPolicy {
         /// routes converge on it; one drawn this often with no child is.
         draws: u64,
     },
+    /// Every slot splits by [`ArchiveKey::variant`] from its first arrival, so
+    /// a location retains one representative per variant throughout. The
+    /// most retention the archive offers and the most it costs; the
+    /// reference the pressured policy is measured against.
+    SplitByVariant,
 }
 
 /// Compiled ceiling on archive entries. A ceiling is not an allocation:
@@ -2750,6 +2755,7 @@ where
         // barren; from then on an arrival contends only with its own variant.
         let split = match self.replacement_policy {
             ReplacementPolicy::FewestFrames => false,
+            ReplacementPolicy::SplitByVariant => true,
             ReplacementPolicy::FewestFramesOrPressuredSplit { rejections, draws } => {
                 let group = key.group(0);
                 if !self.split_slots.contains(&group)

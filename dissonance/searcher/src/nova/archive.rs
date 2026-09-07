@@ -51,12 +51,16 @@ pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// rejection and draw counts follow the colon.
 pub const REPLACEMENT_OR_BARREN_PREFIX: &str =
     "opaque_preference_then_fewest_frames_or_pressured_split:";
+/// Recorded replacement policy splitting every slot by variant from the start.
+pub const REPLACEMENT_SPLIT_BY_VARIANT_IDENTIFIER: &str =
+    "opaque_preference_then_fewest_frames_per_variant";
 
 /// The recorded identifier of a replacement policy.
 #[must_use]
 pub fn replacement_identifier(policy: ReplacementPolicy) -> String {
     match policy {
         ReplacementPolicy::FewestFrames => REPLACEMENT_IDENTIFIER.to_owned(),
+        ReplacementPolicy::SplitByVariant => REPLACEMENT_SPLIT_BY_VARIANT_IDENTIFIER.to_owned(),
         ReplacementPolicy::FewestFramesOrPressuredSplit { rejections, draws } => {
             format!("{REPLACEMENT_OR_BARREN_PREFIX}{rejections},{draws}")
         }
@@ -72,6 +76,9 @@ pub fn replacement_identifier(policy: ReplacementPolicy) -> String {
 pub fn replacement_from_identifier(identifier: &str) -> Result<ReplacementPolicy, Box<dyn Error>> {
     if identifier == REPLACEMENT_IDENTIFIER {
         return Ok(ReplacementPolicy::FewestFrames);
+    }
+    if identifier == REPLACEMENT_SPLIT_BY_VARIANT_IDENTIFIER {
+        return Ok(ReplacementPolicy::SplitByVariant);
     }
     if let Some(values) = identifier.strip_prefix(REPLACEMENT_OR_BARREN_PREFIX) {
         let (rejections, draws) = values
