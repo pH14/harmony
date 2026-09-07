@@ -165,6 +165,14 @@ class EvaluationTests(unittest.TestCase):
         self.assertLess(low, .2)
         self.assertGreater(high, .8)
 
+    def test_completion_figures_keep_failed_and_censored_trials_in_denominator(self):
+        import plots
+        solved = {'result': {'solved': True, 'frames_to_first_victory': 12}}
+        censored = {'result': {'solved': False, 'frames_to_first_victory': 99}}
+        failed = {'result': None}
+        self.assertEqual(plots.completions([solved, censored, failed], 'frames_to_first_victory'),
+                         ([0, 12], [0, 1 / 3]))
+
 
 if __name__ == '__main__':
     unittest.main()

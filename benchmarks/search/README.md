@@ -63,9 +63,15 @@ platform measurements must not be interpreted as zero.
 | Manifest | Purpose |
 | --- | --- |
 | `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
-| `pilot.json` | Three exploratory seeds on SMB, Nova level 1, Metal Man, Metroid new game and STB Hard. |
+| `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
 | `evaluation.json` | Five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
-| `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, three seeds. Every cell must solve within its declared budget. |
+| `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
+
+Seeds 20260905–20260907 form the development pilot; 20260908–20260909 are
+reserved for validating a selected mechanism. Performance panels have explicit
+frame, execution and wall ceilings. SMB's dedicated regression panel keeps the
+400,000-execution gate; the broad eight-worker panel allows 600,000 executions
+under an 80-million-frame cap. These are distinct resource conditions.
 
 All manifests specify exact ROM hashes and normal menu origins. MM2 is currently
 an independent-stage panel; it does not claim full-game evaluation. Metroid
@@ -144,6 +150,24 @@ runs are counted separately, and missing victories are censored at their budget.
 The reported median victory frame count is conditional on success. Do not
 replace an unsolved run with the budget as an invented completion time or infer
 statistical confidence from a three-seed pilot.
+
+Generate standalone PNG/SVG figures on the publication machine (the benchmark
+host needs no plotting dependencies):
+
+```sh
+python3 -m pip install -r benchmarks/search/requirements-plots.txt
+python3 benchmarks/search/plots.py --run baseline=/private/public/baseline \
+  --run candidate=/private/public/candidate --out /private/public/figures-001
+```
+
+The figure generator verifies matching cells, adapters and budgets, and records
+input hashes. It shows individual seeds, verified completion by frames, coverage,
+throughput, process RSS, logical memory, disk, and the workload's named progress
+observations. Numeric map labels are not interpreted as distances to a solution.
+Each new revision can be added as another labelled series; retain the previous
+run exports and figure directories unchanged. Different resource panels require
+separate figures. A changed host is recorded by `compare`; use like-for-like
+hardware and allocation when making timing claims.
 
 ## Checks
 

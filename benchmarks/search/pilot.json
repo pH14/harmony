@@ -20,7 +20,8 @@
     "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
     "suffix": "one_to_six_within_3_longest_actions_full_hold",
     "mixture": "energy_splice:6",
-    "verification": "witness"
+    "verification": "witness",
+    "frames": 60000000
   },
   "cases": [
     {
@@ -28,7 +29,11 @@
       "game": "smb",
       "origin": "power-on gameplay genesis",
       "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
-      "require_solved": true
+      "require_solved": true,
+      "search": {
+        "frames": 80000000,
+        "executions": 600000
+      }
     },
     {
       "id": "nova-level-1",
@@ -38,7 +43,8 @@
       "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
       "search": {
         "actions": 512,
-        "executions": 100000
+        "executions": 100000,
+        "frames": 5000000
       }
     },
     {
@@ -46,7 +52,8 @@
       "game": "mm2",
       "stage": 6,
       "origin": "power-on menus selecting Metal stage; independent stage",
-      "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf"
+      "rom_sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf",
+      "search": {}
     },
     {
       "id": "metroid-full",
@@ -65,8 +72,22 @@
       "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
       "search": {
         "actions": 512,
-        "executions": 20000
+        "executions": 20000,
+        "frames": 3000000
       }
+    },
+    {
+      "id": "nova-full",
+      "game": "nova",
+      "level": 1,
+      "origin": "power-on level 1 genesis; all 40 level flags required",
+      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+      "search": {
+        "actions": 8192,
+        "executions": 300000,
+        "frames": 40000000
+      },
+      "whole_game": true
     }
   ]
 }

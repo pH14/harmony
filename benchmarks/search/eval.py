@@ -271,7 +271,9 @@ def run_matrix(args):
                     failure = {'format':SCHEMA,'cell':job['id'],'case':job['case']['id'],'origin':job['case']['origin'],
                                'status':'infrastructure_error','error':str(error),'result':None,'identity':None,
                                'search_request':job['request'],'host':host,'build':build,'last_progress':{}}
-                    write_json(args.out/job['id']/'summary.json',failure)
+                    failure_root = args.out/job['id']
+                    failure_root.mkdir(exist_ok=True)
+                    write_json(failure_root/'summary.json',failure)
                     results.append(failure)
                 # Completed cells survive later failures or an interrupted matrix.
                 write_json(args.out/'results.json',sorted(results,key=lambda x:x['cell']))

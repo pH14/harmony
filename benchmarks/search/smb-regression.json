@@ -4,7 +4,9 @@
   "seeds": [
     20260905,
     20260906,
-    20260907
+    20260907,
+    20260908,
+    20260909
   ],
   "workers": [
     24
@@ -21,7 +23,8 @@
     "selector": "room_cell_uniform_128_energy_frontier_cheapest:3,6,12,2",
     "suffix": "one_to_six_within_3_longest_actions_full_hold",
     "mixture": "energy_splice:6",
-    "verification": "witness"
+    "verification": "witness",
+    "frames": 80000000
   },
   "cases": [
     {
