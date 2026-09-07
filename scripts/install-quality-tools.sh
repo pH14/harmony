@@ -19,13 +19,13 @@ fi
 # crate            provides
 #   cargo-nextest    fast, process-isolated test runner (gates)
 #   cargo-llvm-cov   source-based coverage          (quality-b)
-#   cargo-mutants    mutation testing               (quality-c)
+#   cargo-mutants@27.1.0 mutation testing          (quality-c; pinned for CI parity)
 #   cargo-deny       advisories/licenses/bans/sources (gates)
 #   cargo-public-api public-API snapshots           (quality-d)
 tools=(
     cargo-nextest
     cargo-llvm-cov
-    cargo-mutants
+    cargo-mutants@27.1.0
     cargo-deny
     cargo-public-api
 )

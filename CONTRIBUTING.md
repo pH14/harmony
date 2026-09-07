@@ -39,6 +39,8 @@ cargo deny check
 The pre-push hook runs the fast subset. `.github/workflows/quality.yml` defines
 the complete portable gate, including coverage, mutation tests, formal checks,
 public-API snapshots, cross-architecture checks, and standalone guest crates.
+The mutation gate uses cargo-mutants 27.1.0 and round-robin shards; the local
+quality-tool installer pins the same version for matching results.
 
 ## dissonance workspace
 
