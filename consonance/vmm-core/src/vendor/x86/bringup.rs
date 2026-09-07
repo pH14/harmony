@@ -9,10 +9,9 @@
 //! backend is named is the binary's `fn main` / the box integration test; policy
 //! goes in through `set_cpuid`/`set_msr_filter`, not a concrete constructor.
 //!
-//! [`boot`] = the §1.1 host-baseline gate ([`crate::vendor::x86::hostassert::enforce`]) **then**
-//! [`compose`]. The split keeps the composition — including the `unsafe`
-//! `map_memory` pointer seam — unit-testable with a mock backend on every platform
-//! (and under Miri), independent of the box-only host gate.
+//! [`boot`] is [`compose`] over a bare backend. The split keeps the composition —
+//! including the `unsafe` `map_memory` pointer seam — unit-testable with a mock
+//! backend on every platform (and under Miri).
 
 use vmm_backend::{Backend, CpuidModel, Gpa, MpState, VcpuState, X86, X86Policy};
 
@@ -67,28 +66,16 @@ pub fn boot<B: Backend<A = X86>>(
     payload: &[u8],
     guest_ram_len: usize,
 ) -> Result<Vmm<B>, VmmError> {
-    // 0. Enforce the x86 CPU contract host-homogeneity baseline FIRST —
-    //    before installing any policy or entering the guest. A host outside the
-    //    frozen det-cfl-v1 determinism domain (wrong family/model/stepping or
-    //    microcode, MXCSR-mask, MAXPHYADDR, an un-disabled RTM, or a variance
-    //    instruction that should be absent) would diverge in native, non-trapping
-    //    instruction/FPU behavior while still claiming the frozen contract, so we
-    //    fail closed. No-op off the box (no physical guest there to protect).
-    super::hostassert::enforce()?;
-    // 1-5. Compose the configured `Vmm` (separable from the host gate, so the
-    //      composition — including the `unsafe` map seam — is unit-testable with a
-    //      mock backend on every platform and under Miri).
     compose(backend, payload, guest_ram_len)
 }
 
-/// Compose a ready [`Vmm`] over `backend`, **without** the host-baseline gate:
+/// Compose a ready [`Vmm`] over `backend`:
 /// install the contract policy via the trait, allocate the owned [`GuestRam`],
 /// flat-load `payload`, write the boot-info struct, `unsafe`-map the RAM, and
 /// build + restore the 32-bit-PM entry state. Split out of [`boot`] so the
-/// composition (notably the `unsafe` `map_memory` pointer seam) is exercised by a
-/// mock-backed unit test on **every** platform — including under Miri and on the
-/// Linux box, where [`boot`] itself would refuse a non-baseline host before
-/// reaching this code. Order is load-bearing (tasks/15 §bringup): policy **before**
+/// composition (in particular the `unsafe` `map_memory` pointer seam) is exercised
+/// by a mock-backed unit test on **every** platform, including under Miri.
+/// Order is required (tasks/15 §bringup): policy **before**
 /// the first run; map **before** restore; `ram` moves into the `Vmm` so the mapped
 /// pointer stays valid for the backend's lifetime.
 pub(crate) fn compose<B: Backend<A = X86>>(
@@ -182,9 +169,8 @@ impl ImageKind {
     }
 }
 
-/// Boot a Linux bzImage + initramfs via the **direct 64-bit boot protocol**: the
-/// §1.1 host-baseline gate ([`crate::vendor::x86::hostassert::enforce`]) **then**
-/// [`compose_linux`]. Mirrors [`boot`] for the Multiboot path.
+/// Boot a Linux bzImage + initramfs via the **direct 64-bit boot protocol**
+/// through [`compose_linux`]. Mirrors [`boot`] for the Multiboot path.
 pub fn boot_linux<B: Backend<A = X86>>(
     backend: B,
     kernel: &[u8],
@@ -192,7 +178,6 @@ pub fn boot_linux<B: Backend<A = X86>>(
     guest_ram_len: usize,
     cmdline: &str,
 ) -> Result<Vmm<B>, VmmError> {
-    super::hostassert::enforce()?;
     compose_linux(
         backend,
         kernel,
@@ -203,10 +188,9 @@ pub fn boot_linux<B: Backend<A = X86>>(
     )
 }
 
-/// Compose a ready [`Vmm`] for a Linux direct 64-bit boot, **without** the
-/// host-baseline gate (so the composition — including the `unsafe` `map_memory`
-/// seam and the loader — is unit-testable with a mock backend on every platform).
-/// Mirrors [`compose`]: install the given CPUID model with the contract MSR
+/// Compose a ready [`Vmm`] for a Linux direct 64-bit boot (the composition —
+/// including the `unsafe` `map_memory` seam and the loader — is unit-testable
+/// with a mock backend on every platform). Mirrors [`compose`]: install the given CPUID model with the contract MSR
 /// filter (the model varies by composition — [`contract::cpuid_model`] on the
 /// descriptive substrates, [`contract::cpuid_model_hw_rng_hidden`] on the stock
 /// virtual_time one), allocate RAM,
@@ -407,6 +391,29 @@ pub fn compose_stock_virtual_time_restore_target(
     Ok(vmm)
 }
 
+/// Composes a patched-KVM virtual-time restore target around a snapshot mapping.
+///
+/// This mirrors [`boot_linux_patched_with_dirty_log`] without loading the
+/// kernel or initramfs: the same backend, CPUID contract, userspace xAPIC, and
+/// V-time wiring, so a snapshot sealed from that source restores onto it with
+/// [`Vmm::restore_vm_state`] alone.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn compose_patched_virtual_time_restore_target(
+    mapping: snapshot_store::Mapping,
+    seed: u64,
+    dirty_log: bool,
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
+    let mut b = vmm_backend::PatchedKvmBackend::new()?;
+    b.set_dirty_log_enabled(dirty_log);
+    let backend: Box<dyn Backend<A = X86>> = Box::new(b);
+    let mut vmm = compose_restore_target(backend, mapping, true)?;
+    vmm.wire_vtime(crate::vmm::VtimeWiring::new_virtual_time(
+        super::contract_vclock_config(),
+        seed,
+    )?);
+    Ok(vmm)
+}
+
 /// Overlay the long-mode entry registers/segments/control-regs **and the GDTR**
 /// onto a backend `save()` template, keeping the template's valid
 /// `TR`/`LDT`/`IDT`/`apic_base`/XSAVE/MSR shape. Like [`apply_entry`] but also
@@ -527,12 +534,10 @@ pub fn boot_linux_selected(
 /// production [`LiveVirtualTimeTrace`](crate::virtual_time::LiveVirtualTimeTrace)
 /// records every normalized exit.
 ///
-/// Composes via [`compose_linux`] **without** the §1.1 `det-cfl-v1` host gate:
-/// that baseline freezes one physical CPU for the *descriptive* determinism
-/// claim (native instruction behavior must match across the fleet), while this
-/// model's claim is defined over the exit stream plus the frozen CPUID/MSR
-/// contract and is exercised on heterogeneous commodity hosts — residual
-/// native-behavior divergence is exactly what its determinism gates measure.
+/// Composes via [`compose_linux`]. This model's determinism claim is defined
+/// over the exit stream plus the frozen CPUID/MSR contract and is exercised on
+/// heterogeneous commodity hosts — residual native-behavior divergence is
+/// exactly what its determinism gates measure.
 /// No hardware virtual-time clock is opened; the virtual_time wiring holds the work
 /// axis at zero. The installed CPUID model is
 /// [`contract::cpuid_model_hw_rng_hidden`]: stock KVM cannot trap
@@ -547,26 +552,6 @@ pub fn boot_linux_stock_virtual_time(
 ) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
     let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::KvmBackend::new()?);
     compose_linux_virtual_time(backend, kernel, initramfs, guest_ram_len, cmdline, seed)
-}
-
-/// The stock virtual-time boot with its concrete KVM backend retained so the
-/// caller can obtain `Vmm::kvm_cancellation_flag` for a host timeout watchdog.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub fn boot_linux_stock_virtual_time_cancellable(
-    kernel: &[u8],
-    initramfs: &[u8],
-    guest_ram_len: usize,
-    cmdline: &str,
-    seed: u64,
-) -> Result<Vmm<vmm_backend::KvmBackend>, VmmError> {
-    compose_linux_virtual_time(
-        vmm_backend::KvmBackend::new()?,
-        kernel,
-        initramfs,
-        guest_ram_len,
-        cmdline,
-        seed,
-    )
 }
 
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
@@ -955,17 +940,10 @@ mod tests {
     }
 
     #[test]
-    fn boot_runs_the_host_assert_then_composes() {
+    fn boot_composes_over_a_bare_backend() {
         let payload = synthetic_multiboot();
         let backend = MockBackend::with_exits(vec![]);
-        // boot() runs the §1.1 host-assert first, then composes. Off the box the
-        // assert is a no-op and boot composes successfully; on a non-baseline box it
-        // returns HostAssert *before* composing. Either is correct — but never some
-        // other error (which would mean composition broke).
-        match boot(backend, &payload, GUEST_RAM_LEN) {
-            Ok(_) | Err(VmmError::HostAssert(_)) => {}
-            Err(e) => panic!("boot returned an unexpected error: {e}"),
-        }
+        boot(backend, &payload, GUEST_RAM_LEN).expect("boot composes");
     }
 
     // --- Linux path (task 30) ---------------------------------------------

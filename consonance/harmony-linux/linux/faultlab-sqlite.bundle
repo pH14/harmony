@@ -1,0 +1,5 @@
+node checkpointer /w/sqlite-node.sh
+node writer /w/sqlite-writer.sh
+ready /w/sqlite-ready.sh
+hook 1 /w/sqlite-hooks.sh 1
+hook 2 /w/sqlite-hooks.sh 2

@@ -42,6 +42,16 @@ mod tests {
             Fault::ProcRestart,
             Fault::ProcPause(Span(1234)),
             Fault::RunHook(7),
+            Fault::ProcJitter {
+                seed: 9,
+                every: 20_000,
+                hold: Span(1_000_000),
+            },
+            Fault::ProcPark {
+                addr: 0x4b0e86,
+                hits: 28,
+                hold: Span(2_000_000),
+            },
         ] {
             let bytes = process_target(3, &f);
             assert_eq!(decode_process_target(&bytes), Some((3, f)));

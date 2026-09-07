@@ -16,8 +16,7 @@
 //!   *beats* full-`memcpy` is a `vmm-backend` concern below the `Backend` trait.
 //!
 //! Box-only because it needs the loaded patched `/dev/kvm`
-//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
-//! host. `#[ignore]`d out of the default lane (like `live_determinism.rs`): default
+//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`). `#[ignore]`d out of the default lane (like `live_determinism.rs`): default
 //! CI shows it **not-run**, never a vacuous green. Run on `ssh <det-box>`, CPU-pinned
 //! per `.github/workflows/box.yml`, patched modules loaded, reverted to stock after:
 //!
@@ -119,7 +118,7 @@ fn boot_patched_or_panic() -> DynVmm {
         Ok(vmm) => vmm,
         Err(e) => panic!(
             "boot_selected(Patched) failed: {e}. Needs the LOADED patched KVM \
-             (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS), perf_event, and the det-cfl-v1 host. Build + \
+             (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS) and perf_event. Build + \
              load per consonance/vmm-backend/kvm-patches/BUILD.md, then revert to stock after."
         ),
     }
@@ -142,7 +141,7 @@ fn run_reference() -> ([u8; 32], Vec<u8>) {
 }
 
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
+#[ignore = "box-only: needs the LOADED patched KVM + perf; run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn gate1_restore_replays_bit_identical() {
     // Reference continuation (un-snapshotted): boot → run → terminal.
@@ -189,7 +188,7 @@ fn gate1_restore_replays_bit_identical() {
 }
 
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
+#[ignore = "box-only: needs the LOADED patched KVM + perf; run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn gate3_n_vms_share_one_read_only_base() {
     // Snapshot one booted image as the shared base.
@@ -224,7 +223,7 @@ fn gate3_n_vms_share_one_read_only_base() {
 }
 
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
+#[ignore = "box-only: needs the LOADED patched KVM + perf; run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn gate2_capture_is_dirty_set_proportional() {
     // Gate 2 (capture side): a derived snapshot stores **only the pages dirtied since

@@ -9,17 +9,69 @@
 //! perturb anything. The vocabulary is therefore read from the same bundle the
 //! image is built from, and recorded into the stream so a replay draws the
 //! identical alphabet.
+//!
+//! A park needs a place: a user instruction address in the node's binary. The
+//! places are generated from the binary's line table by
+//! `consonance/harmony-linux/linux/faultlab-places.sh` and read from that
+//! file; the stream records their count and a digest, and a resumed campaign
+//! must be given a list with the same digest.
 
 use serde::{Deserialize, Serialize};
 
 /// Prefix of the recorded vocabulary identifier.
 pub const VOCABULARY_FORMAT: &str = "faultlab_bundle_v1";
+/// Largest node count the guest fault agent accepts: its alive bitmap is one
+/// `u64`, one bit per node, so a wider vocabulary would name nodes the agent
+/// never runs.
+pub const MAX_NODES: u16 = 64;
 
-/// The nodes and hooks one workload bundle declares.
+/// The nodes and hooks one workload bundle declares, and the places a park
+/// may name.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultVocabulary {
     nodes: u16,
     hooks: Vec<u32>,
+    places: Vec<u64>,
+    /// The place list's `(count, digest)` when the vocabulary was resolved
+    /// from a recorded identifier and the addresses themselves are not at hand.
+    places_digest: Option<(u64, u64)>,
+}
+
+/// FNV-1a over the sorted place addresses, the digest the identifier carries.
+fn digest_places(places: &[u64]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for addr in places {
+        for byte in addr.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// Parse a place list: one hex address per line, with or without `0x`, blank
+/// lines and `#` comments ignored.
+///
+/// # Errors
+///
+/// Returns an error naming the line that is not a hex address.
+pub fn parse_places(text: &str) -> Result<Vec<u64>, String> {
+    let mut places = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let word = line.split('#').next().unwrap_or_default().trim();
+        if word.is_empty() {
+            continue;
+        }
+        let hex = word.strip_prefix("0x").unwrap_or(word);
+        let addr = u64::from_str_radix(hex, 16).map_err(|error| {
+            format!(
+                "places line {}: {word:?} is not a hex address: {error}",
+                number + 1
+            )
+        })?;
+        places.push(addr);
+    }
+    Ok(places)
 }
 
 impl FaultVocabulary {
@@ -27,10 +79,16 @@ impl FaultVocabulary {
     ///
     /// # Errors
     ///
-    /// Returns an error when the bundle declares no node, or a duplicate hook.
+    /// Returns an error when the bundle declares no node, more nodes than the
+    /// guest agent can supervise, or a duplicate hook.
     pub fn new(nodes: u16, hooks: Vec<u32>) -> Result<Self, String> {
         if nodes == 0 {
             return Err("a fault-library bundle must declare at least one node".to_owned());
+        }
+        if nodes > MAX_NODES {
+            return Err(format!(
+                "a fault-library bundle declares {nodes} nodes; the guest agent supervises at most {MAX_NODES}"
+            ));
         }
         let mut sorted = hooks.clone();
         sorted.sort_unstable();
@@ -41,7 +99,32 @@ impl FaultVocabulary {
         Ok(Self {
             nodes,
             hooks: sorted,
+            places: Vec::new(),
+            places_digest: None,
         })
+    }
+
+    /// The vocabulary with `places` a park may name, sorted and deduplicated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the vocabulary was resolved from a recorded
+    /// identifier whose place digest does not match `places`.
+    pub fn with_places(mut self, mut places: Vec<u64>) -> Result<Self, String> {
+        places.sort_unstable();
+        places.dedup();
+        let digest = (places.len() as u64, digest_places(&places));
+        if let Some(recorded) = self.places_digest
+            && recorded != digest
+        {
+            return Err(format!(
+                "the place list ({} places, digest {:#018x}) is not the recorded one ({} places, digest {:#018x})",
+                digest.0, digest.1, recorded.0, recorded.1
+            ));
+        }
+        self.places = places;
+        self.places_digest = None;
+        Ok(self)
     }
 
     /// Read the vocabulary from a bundle file's text.
@@ -101,6 +184,14 @@ impl FaultVocabulary {
         &self.hooks
     }
 
+    /// Places a park may name, ascending. Empty when the campaign was given
+    /// no place list, and when the vocabulary was resolved from a recorded
+    /// identifier and the list has not been supplied again.
+    #[must_use]
+    pub fn places(&self) -> &[u64] {
+        &self.places
+    }
+
     /// The identifier recorded in the stream header and report.
     #[must_use]
     pub fn identifier(&self) -> String {
@@ -110,7 +201,16 @@ impl FaultVocabulary {
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        format!("{VOCABULARY_FORMAT};nodes={};hooks={hooks}", self.nodes)
+        let (count, digest) = self
+            .places_digest
+            .unwrap_or_else(|| (self.places.len() as u64, digest_places(&self.places)));
+        if count == 0 {
+            return format!("{VOCABULARY_FORMAT};nodes={};hooks={hooks}", self.nodes);
+        }
+        format!(
+            "{VOCABULARY_FORMAT};nodes={};hooks={hooks};places={count}/{digest:016x}",
+            self.nodes
+        )
     }
 
     /// Resolve a recorded identifier back into a vocabulary.
@@ -135,6 +235,21 @@ impl FaultVocabulary {
             .next()
             .and_then(|field| field.strip_prefix("hooks="))
             .ok_or("fault-library vocabulary has no hook list")?;
+        let places_digest = match fields.next() {
+            None => None,
+            Some(field) => {
+                let (count, digest) = field
+                    .strip_prefix("places=")
+                    .and_then(|places| places.split_once('/'))
+                    .ok_or("fault-library vocabulary has an unknown field")?;
+                let count = count
+                    .parse::<u64>()
+                    .map_err(|error| format!("fault-library vocabulary place count: {error}"))?;
+                let digest = u64::from_str_radix(digest, 16)
+                    .map_err(|error| format!("fault-library vocabulary place digest: {error}"))?;
+                Some((count, digest))
+            }
+        };
         if fields.next().is_some() {
             return Err("fault-library vocabulary has trailing fields".to_owned());
         }
@@ -149,7 +264,9 @@ impl FaultVocabulary {
                 })
                 .collect::<Result<Vec<_>, _>>()?
         };
-        Self::new(nodes, hooks)
+        let mut vocabulary = Self::new(nodes, hooks)?;
+        vocabulary.places_digest = places_digest;
+        Ok(vocabulary)
     }
 }
 
@@ -185,6 +302,19 @@ ready /usr/local/pgsql/bin/pg_isready
         include_str!("../../../../consonance/harmony-linux/linux/faultlab-etcd.bundle");
     const SHIPPED_PGCIC: &str =
         include_str!("../../../../consonance/harmony-linux/linux/faultlab-pgcic.bundle");
+    const SHIPPED_SQLITE: &str =
+        include_str!("../../../../consonance/harmony-linux/linux/faultlab-sqlite.bundle");
+
+    #[test]
+    fn the_shipped_sqlite_bundle_has_nodes_0_1_and_hooks_1_2() {
+        let vocabulary = FaultVocabulary::parse(SHIPPED_SQLITE).expect("parse");
+        assert_eq!(vocabulary.nodes(), 2);
+        assert_eq!(vocabulary.hooks(), [1, 2]);
+        assert_eq!(
+            vocabulary.identifier(),
+            "faultlab_bundle_v1;nodes=2;hooks=1,2"
+        );
+    }
 
     #[test]
     fn the_shipped_etcd_bundle_has_node_0_and_hooks_1_2() {
@@ -209,6 +339,36 @@ ready /usr/local/pgsql/bin/pg_isready
     }
 
     #[test]
+    fn places_round_trip_through_the_identifier_as_a_digest() {
+        let vocabulary = FaultVocabulary::parse(ETCD)
+            .expect("parse")
+            .with_places(vec![0x4b0e86, 0x47eca0, 0x4b0e86])
+            .expect("places");
+        assert_eq!(vocabulary.places(), [0x47eca0, 0x4b0e86]);
+        let identifier = vocabulary.identifier();
+        assert!(identifier.starts_with("faultlab_bundle_v1;nodes=1;hooks=1,2;places=2/"));
+        let resolved = FaultVocabulary::from_identifier(&identifier).expect("resolve");
+        assert_eq!(resolved.identifier(), identifier);
+        assert!(resolved.places().is_empty());
+        // The same list is accepted again, a different one is refused.
+        let again = resolved
+            .clone()
+            .with_places(vec![0x47eca0, 0x4b0e86])
+            .expect("same places");
+        assert_eq!(again, vocabulary);
+        assert!(resolved.with_places(vec![0x47eca0]).is_err());
+    }
+
+    #[test]
+    fn a_place_list_parses_hex_with_comments() {
+        assert_eq!(
+            parse_places("# places\n0x4b0e86\n47eca0 # entry\n\n").expect("parse"),
+            [0x4b0e86, 0x47eca0]
+        );
+        assert!(parse_places("0x4b0e86\nnope\n").is_err());
+    }
+
+    #[test]
     fn the_etcd_bundle_admits_one_node_and_two_hooks() {
         let vocabulary = FaultVocabulary::parse(ETCD).expect("parse");
         assert_eq!(vocabulary.nodes(), 1);
@@ -229,6 +389,24 @@ ready /usr/local/pgsql/bin/pg_isready
                 .expect("parse");
         assert_eq!(vocabulary.nodes(), 3, "ids 0, 1 and 2 are addressable");
         assert_eq!(vocabulary.hooks(), [7]);
+    }
+
+    #[test]
+    fn a_bundle_past_the_agent_node_limit_is_refused() {
+        let nodes = |count: u16| {
+            (0..count)
+                .map(|index| format!("node n{index} /bin/true\n"))
+                .chain(std::iter::once("ready /bin/true\n".to_owned()))
+                .collect::<String>()
+        };
+        assert_eq!(
+            FaultVocabulary::parse(&nodes(MAX_NODES))
+                .expect("the limit itself is accepted")
+                .nodes(),
+            MAX_NODES
+        );
+        assert!(FaultVocabulary::parse(&nodes(MAX_NODES + 1)).is_err());
+        assert!(FaultVocabulary::new(MAX_NODES + 1, Vec::new()).is_err());
     }
 
     #[test]

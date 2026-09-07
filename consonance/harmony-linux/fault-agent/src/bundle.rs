@@ -322,6 +322,20 @@ ready /usr/bin/etcdctl endpoint health
     /// alphabet the agent never applies.
     const SHIPPED_ETCD: &str = include_str!("../../linux/faultlab-etcd.bundle");
     const SHIPPED_PGCIC: &str = include_str!("../../linux/faultlab-pgcic.bundle");
+    const SHIPPED_SQLITE: &str = include_str!("../../linux/faultlab-sqlite.bundle");
+
+    #[test]
+    fn the_shipped_sqlite_bundle_has_nodes_0_1_and_hooks_1_2() {
+        let bundle = parse_bundle(SHIPPED_SQLITE).unwrap();
+        assert_eq!(bundle.nodes.len(), 2);
+        assert_eq!(bundle.nodes[0].name, "checkpointer");
+        assert_eq!(bundle.nodes[1].name, "writer");
+        assert_eq!(
+            bundle.hooks.iter().map(|hook| hook.id).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(bundle.ready.is_some());
+    }
 
     #[test]
     fn the_shipped_etcd_bundle_has_node_0_and_hooks_1_2() {

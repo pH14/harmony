@@ -12,8 +12,7 @@
 //!   also equals `consonance/acceptance-suite/golden/compute.txt`.
 //!
 //! **Gate honesty (why `#[ignore]`).** These tests need real KVM, the built
-//! payloads, and a host that matches the frozen `det-cfl-v1` baseline — none of
-//! which exist in the default `cargo nextest` / coverage lane. So they are
+//! payloads — none of which exist in the default `cargo nextest` / coverage lane. So they are
 //! `#[ignore]`d (out of the default lane, exactly like the task-14 KVM integration
 //! tests): default CI shows them **not-run**, never a vacuous green. They run only
 //! when invoked explicitly on the box:
@@ -23,13 +22,9 @@
 //! taskset -c 1 cargo test -p vmm-core --test live_m1_m2 -- --ignored --test-threads=1
 //! ```
 //!
-//! When run, every precondition that would prevent a *real* boot — no `/dev/kvm`,
-//! an unbuilt payload, or a host that fails the §1.1 baseline — is a **loud panic
-//! (test FAILURE)**, never an early-return `Ok` that nextest counts as passed. As of
-//! the `det-cfl-v1` re-baseline (contract-v3, task 11) the box (an i9-9900K, Coffee
-//! Lake-S) **matches** the §1.1 baseline, so `host_assert_report` shows all PASS and
-//! the host-baseline precondition no longer blocks M1/M2 (see
-//! `consonance/vmm-core/README.md`).
+//! When run, every precondition that would prevent a *real* boot — no `/dev/kvm`
+//! or an unbuilt payload — is a **loud panic (test FAILURE)**, never an
+//! early-return `Ok` that nextest counts as passed.
 //!
 //! The whole file compiles only on Linux (`KvmBackend` is Linux-only); on macOS it
 //! is an empty test binary.
@@ -98,60 +93,13 @@ fn require_kvm() {
     }
 }
 
-/// Print the x86 CPU contract host-baseline assertion report; return whether
-/// **every** assertion passes. Pure diagnostic — it does not decide pass/fail.
-fn print_host_baseline_report() -> bool {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all_pass = true;
-    eprintln!("[host-assert] x86 CPU contract host-baseline report:");
-    for o in &report {
-        let tag = if o.pass { "PASS" } else { "FAIL" };
-        eprintln!(
-            "[host-assert]   {tag}  {}: expected {}, observed {}",
-            o.key, o.expected, o.actual
-        );
-        all_pass &= o.pass;
-    }
-    all_pass
-}
-
-/// Require the live host to satisfy the §1.1 `det-cfl-v1` baseline, else **panic
-/// (loud FAILURE)** with the full per-assertion report. A host outside the frozen
-/// determinism domain cannot run the contract faithfully, so this is a real,
-/// visible failure — never a silent skip-as-pass. `boot` itself also refuses such
-/// a host (`VmmError::HostAssert`). As of contract-v3 the determinism box (i9-9900K,
-/// Coffee Lake-S) **matches** this baseline, so on the box this precondition passes;
-/// it still fails-loud on any other host (the assert is never loosened to fake a pass).
-fn require_host_baseline() {
-    if !print_host_baseline_report() {
-        panic!(
-            "host CPU does not match the det-cfl-v1 baseline (x86 CPU contract) — M1/M2 \
-             cannot run the frozen contract faithfully here. Run on the det-cfl-v1 determinism \
-             box (i9-9900K, microcode 0xf8) per .github/workflows/box.yml; see \
-             consonance/vmm-core/README.md. The assert is NOT loosened \
-             to fake a pass."
-        );
-    }
-}
-
-/// Standalone host-baseline reporting harness (`#[ignore]`d, box-only): prints the
-/// per-assertion disposition for the integrator. A pure diagnostic — it never
-/// asserts pass/fail (that decision is the integrator's), so it does not claim
-/// anything about whether M1/M2 boot.
-#[test]
-#[ignore = "box-only host-baseline diagnostic; run on `ssh <det-box>` with `-- --ignored`"]
-fn host_assert_report() {
-    let _ = print_host_baseline_report();
-}
-
 // --- M1 -------------------------------------------------------------------
 
 #[test]
-#[ignore = "box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on \
+#[ignore = "box-only live gate (real KVM + built payloads); run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn m1_hello_boots_and_prints() {
     require_kvm();
-    require_host_baseline();
     let hello = require_payload("hello");
 
     let backend = KvmBackend::new().expect("KvmBackend::new");
@@ -265,21 +213,19 @@ fn assert_deterministic_twice(name: &str, payload: Vec<u8>, check_golden: bool) 
 }
 
 #[test]
-#[ignore = "box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on \
+#[ignore = "box-only live gate (real KVM + built payloads); run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn m2_hello_deterministic_twice() {
     require_kvm();
-    require_host_baseline();
     let hello = require_payload("hello");
     assert_deterministic_twice("hello", hello, true);
 }
 
 #[test]
-#[ignore = "box-only live gate (real KVM + built payloads + det-cfl-v1 host); run on \
+#[ignore = "box-only live gate (real KVM + built payloads); run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn m2_compute_deterministic_twice() {
     require_kvm();
-    require_host_baseline();
     let compute = require_payload("compute");
     assert_deterministic_twice("compute", compute, true);
 }

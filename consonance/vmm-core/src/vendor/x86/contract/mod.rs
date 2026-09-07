@@ -128,47 +128,6 @@ fn hex64(s: &str) -> u64 {
     u64::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0)
 }
 
-/// The host-baseline expectations vmm-core enforces at VM start (x86 CPU contract
-/// §1.1/§1.2), extracted from the ratified contract for the [`crate::hostassert`]
-/// checker. The §6 `guest-ucode-rev` and `cr4-force-reserved` records are part of
-/// the hashed canonical form but are **not** host probes — one is the
-/// guest-visible BIOS_SIGN_ID fake, the other a guest-CR4 configuration invariant
-/// enforced by the frozen CPUID model — so they are not surfaced here.
-///
-/// Gated to the box (Linux/x86-64, not Miri): only the live `hostassert::probe`
-/// consumes it, and only there is a physical host present to assert against.
-#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
-pub(crate) struct HostExpectations {
-    /// `06_9e_0c` — required host CPUID(1) family/model/stepping (hex `ff_mm_ss`).
-    pub family_model_stepping: &'static str,
-    /// The physical host microcode revision (IA32_BIOS_SIGN_ID revision field),
-    /// fleet-pinned; **distinct** from the guest-visible `guest-ucode-rev`.
-    pub microcode_rev: u64,
-    /// `0x0000ffff` — required host FXSAVE-area `MXCSR_MASK`.
-    pub mxcsr_mask: u32,
-    /// Minimum host MAXPHYADDR (CPUID 0x8000_0008 EAX[7:0]).
-    pub maxphyaddr_min: u32,
-    /// Whether RTM must be made non-usable by the guest (host lacks RTM, or has
-    /// `IA32_TSX_CTRL` to disable it).
-    pub rtm_disabled: bool,
-    /// Instructions the contract relies on faulting by **physical absence**.
-    pub host_absent: &'static [String],
-}
-
-/// The parsed host-baseline expectations (`[host-assert]`), for [`crate::hostassert`].
-#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
-pub(crate) fn host_expectations() -> HostExpectations {
-    let ha = &contract().host_assert;
-    HostExpectations {
-        family_model_stepping: ha.family_model_stepping.as_str(),
-        microcode_rev: hex64(&ha.host_microcode_rev),
-        mxcsr_mask: hex64(&ha.mxcsr_mask) as u32,
-        maxphyaddr_min: ha.maxphyaddr_min as u32,
-        rtm_disabled: ha.rtm_disabled,
-        host_absent: &ha.host_absent,
-    }
-}
-
 /// The per-index disposition table, built once: `index → (read, write)`.
 type DispMap = BTreeMap<u32, (MsrDisposition, MsrDisposition)>;
 

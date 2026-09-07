@@ -10,8 +10,9 @@
 //! never decides anything.
 //!
 //! Everything that decides lives in the library (`harmony_fault_agent`); this
-//! binary is the Linux glue — the `/dev/harmony` ioctl transport, process
-//! spawning, process-group signalling, and the hook output files. Off x86-64
+//! binary is the Linux glue — the `/dev/harmony` ioctl transport, the
+//! `/dev/harmony-park` ioctls, process spawning, process-group signalling, and
+//! the hook output files. Off x86-64
 //! Linux only `--check-bundle` runs, which is how an image build validates a
 //! bundle on the dev host.
 
@@ -83,8 +84,8 @@ mod real {
     use harmony_fault_agent::directive::{Directive, LineReader, parse_directive};
     use harmony_fault_agent::faults::ActiveFaults;
     use harmony_fault_agent::regs::{
-        REG_ALIVE, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_RESTARTS, REG_SOMETIMES, REG_TICKS,
-        REG_UNEXPECTED_DEATHS, Registers,
+        REG_ALIVE, REG_HOOKS_FINISHED, REG_HOOKS_STARTED, REG_PARKED, REG_RESTARTS, REG_SOMETIMES,
+        REG_TICKS, REG_UNEXPECTED_DEATHS, Registers,
     };
     use harmony_fault_agent::supervisor::{Action, Supervisor};
     use harmony_fault_agent::{Clock, TICK_NANOS};
@@ -93,7 +94,7 @@ mod real {
     use std::fs::File;
     use std::io::{Read, Write};
     use std::os::unix::process::{CommandExt, ExitStatusExt};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
 
     /// The assertion point a hook's exit code 42 reports, and the point a
@@ -107,7 +108,7 @@ mod real {
     /// The points the agent declares for itself. A hook's own assertion ids are
     /// workload-owned and are not declared here; they still fire, they just
     /// carry no name in the host's never-fired report.
-    const CATALOG: [Point; 8] = [
+    const CATALOG: [Point; 9] = [
         Point::always(HOOK_FAILURE_POINT, "fault_agent.hook_assertion"),
         Point::state(REG_TICKS, "fault_agent.ticks"),
         Point::state(REG_ALIVE, "fault_agent.alive"),
@@ -116,6 +117,7 @@ mod real {
         Point::state(REG_SOMETIMES, "fault_agent.sometimes"),
         Point::state(REG_UNEXPECTED_DEATHS, "fault_agent.unexpected_deaths"),
         Point::state(REG_RESTARTS, "fault_agent.restarts"),
+        Point::state(REG_PARKED, "fault_agent.parked"),
     ];
 
     type GuestSdk = Sdk<doorbell::DeviceTransport>;
@@ -155,6 +157,9 @@ mod real {
     struct Node {
         spec: NodeSpec,
         child: Option<Child>,
+        /// The park armed on the node's process group, while its window is
+        /// open.
+        park: Option<park::Handle>,
     }
 
     /// A launched hook and the output file it writes directives to.
@@ -182,10 +187,11 @@ mod real {
             .map(|spec| Node {
                 spec: spec.clone(),
                 child: None,
+                park: None,
             })
             .collect();
         for (id, node) in nodes.iter_mut().enumerate() {
-            node.child = Some(spawn_node(&node.spec)?);
+            node.child = Some(spawn_node(&node.spec, id as u16, &args.hook_dir)?);
             log(0, &format!("start node {id}"));
         }
 
@@ -247,6 +253,7 @@ mod real {
                 log(tick, &action.describe());
                 apply(action, bundle, nodes, &mut hooks, &args.hook_dir, tick)?;
             }
+            watch_parks(nodes, &mut supervisor, tick);
             drain_hooks(&mut hooks, &mut supervisor, sdk, tick)?;
             for (reg, value) in registers.updates(supervisor.snapshot()) {
                 sdk.state_set(reg, value)
@@ -304,12 +311,79 @@ mod real {
         tick: u64,
     ) -> Result<(), String> {
         match action {
-            Action::Kill(node) => signal_node(nodes, node, libc::SIGKILL),
+            Action::Kill(node) => {
+                // The park's tasks die with the group; the kernel keeps the
+                // breakpoints harmlessly until the handle drops.
+                if let Some(entry) = nodes.get_mut(usize::from(node)) {
+                    entry.park = None;
+                }
+                signal_node(nodes, node, libc::SIGKILL);
+            }
             Action::Stop(node) => signal_node(nodes, node, libc::SIGSTOP),
             Action::Cont(node) => signal_node(nodes, node, libc::SIGCONT),
             Action::Start(node) => {
                 if let Some(entry) = nodes.get_mut(usize::from(node)) {
-                    entry.child = Some(spawn_node(&entry.spec)?);
+                    entry.park = None;
+                    entry.child = Some(spawn_node(&entry.spec, node, hook_dir)?);
+                }
+            }
+            Action::Park(node, park) => {
+                let Some(entry) = nodes.get_mut(usize::from(node)) else {
+                    return Ok(());
+                };
+                let Some(pid) = entry
+                    .child
+                    .as_ref()
+                    .and_then(|child| libc::pid_t::try_from(child.id()).ok())
+                else {
+                    log(tick, &format!("park node {node}: node is not running"));
+                    return Ok(());
+                };
+                match park::arm(pid, &park) {
+                    Ok(handle) => {
+                        log(
+                            tick,
+                            &format!("park node {node} armed on {} thread(s)", handle.tasks()),
+                        );
+                        entry.park = Some(handle);
+                    }
+                    Err(error) => log(tick, &format!("park node {node}: {error}")),
+                }
+            }
+            Action::Unpark(node) => {
+                if let Some(handle) = nodes
+                    .get_mut(usize::from(node))
+                    .and_then(|entry| entry.park.take())
+                {
+                    match handle.status() {
+                        Ok(status) if status.state == park::ARMED => log(
+                            tick,
+                            &format!(
+                                "park node {node} never reached its hit; {} hit(s) counted",
+                                status.hits
+                            ),
+                        ),
+                        Ok(_) => {}
+                        Err(error) => log(tick, &format!("park node {node} status: {error}")),
+                    }
+                }
+            }
+            Action::Jitter(node, jitter) => {
+                let path = jitter_path(hook_dir, node);
+                let staged = path.with_extension("new");
+                std::fs::write(
+                    &staged,
+                    format!("{} {} {}\n", jitter.seed, jitter.every, jitter.hold_nanos),
+                )
+                .and_then(|()| std::fs::rename(&staged, &path))
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            }
+            Action::Settle(node) => {
+                let path = jitter_path(hook_dir, node);
+                if let Err(error) = std::fs::remove_file(&path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(format!("{}: {error}", path.display()));
                 }
             }
             Action::RunHook(id) => match bundle.hook(id) {
@@ -318,6 +392,43 @@ mod real {
             },
         }
         Ok(())
+    }
+
+    /// Log each park's hit and release once, and count the hits.
+    fn watch_parks(nodes: &mut [Node], supervisor: &mut Supervisor, tick: u64) {
+        for (id, node) in nodes.iter_mut().enumerate() {
+            let Some(handle) = node.park.as_mut() else {
+                continue;
+            };
+            let status = match handle.status() {
+                Ok(status) => status,
+                Err(error) => {
+                    log(tick, &format!("park node {id} status: {error}"));
+                    continue;
+                }
+            };
+            if status.state >= park::PARKED && !handle.hit_logged {
+                handle.hit_logged = true;
+                supervisor.note_parked();
+                log(
+                    tick,
+                    &format!(
+                        "park node {id} hit {} at pc={:#x} pid={}",
+                        status.hits, status.pc, status.pid
+                    ),
+                );
+            }
+            if status.state == park::RELEASED && !handle.release_logged {
+                handle.release_logged = true;
+                log(
+                    tick,
+                    &format!(
+                        "park node {id} released after {} ns",
+                        status.released_ns.saturating_sub(status.parked_ns)
+                    ),
+                );
+            }
+        }
     }
 
     /// Send `signal` to a node's whole process group, so a node that forks
@@ -339,8 +450,15 @@ mod real {
         }
     }
 
-    fn spawn_node(spec: &NodeSpec) -> Result<Child, String> {
+    /// The file a `ProcJitter` window writes for `node`; the node's edge
+    /// runtime learns the path from its environment.
+    fn jitter_path(hook_dir: &Path, node: u16) -> PathBuf {
+        hook_dir.join(format!("jitter-{node}"))
+    }
+
+    fn spawn_node(spec: &NodeSpec, node: u16, hook_dir: &Path) -> Result<Child, String> {
         command(&spec.argv)
+            .env("FAULTLAB_JITTER_FILE", jitter_path(hook_dir, node))
             // Its own group, so one fault reaches the node's whole process
             // tree and never the agent.
             .process_group(0)
@@ -468,6 +586,107 @@ mod real {
         // simply not logged to.
         let _ = writeln!(out, "FA: {tick} {what}");
         let _ = out.flush();
+    }
+
+    /// The guest kernel's park: `/dev/harmony-park`, one park per open file.
+    mod park {
+        use harmony_fault_agent::faults::Park;
+        use std::fs::File;
+        use std::os::fd::AsRawFd;
+
+        const DEVICE: &str = "/dev/harmony-park";
+        // _IOW('P', 1, struct harmony_park_arm) and
+        // _IOR('P', 2, struct harmony_park_status); the structures are
+        // fixed-width so the numbers are the same on every Linux target.
+        const IOC_ARM: libc::Ioctl = 0x4020_5001_u32 as libc::Ioctl;
+        const IOC_STATUS: libc::Ioctl = 0x8030_5002_u32 as libc::Ioctl;
+
+        /// The breakpoints are in place and no thread has taken the hit.
+        pub const ARMED: u32 = 1;
+        /// A thread took the hit and is being held.
+        pub const PARKED: u32 = 2;
+        /// The held thread has been let go.
+        pub const RELEASED: u32 = 3;
+
+        #[repr(C)]
+        struct Arm {
+            pgid: u32,
+            reserved: u32,
+            addr: u64,
+            hits: u64,
+            hold_ns: u64,
+        }
+
+        /// What the kernel reports about a park.
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, Default)]
+        pub struct Status {
+            pub state: u32,
+            pub tasks: u32,
+            pub hits: u64,
+            pub pc: u64,
+            pub pid: u32,
+            reserved: u32,
+            pub parked_ns: u64,
+            pub released_ns: u64,
+        }
+
+        /// An armed park. Dropping it disarms a park that has not fired; a
+        /// hold in progress runs to its end.
+        pub struct Handle {
+            file: File,
+            tasks: u32,
+            pub hit_logged: bool,
+            pub release_logged: bool,
+        }
+
+        impl Handle {
+            /// Threads the breakpoint was placed on.
+            pub fn tasks(&self) -> u32 {
+                self.tasks
+            }
+
+            pub fn status(&self) -> Result<Status, String> {
+                let mut status = Status::default();
+                // SAFETY: `status` is a fixed-width structure matching the
+                // kernel's, owned by this frame for the synchronous ioctl.
+                let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), IOC_STATUS, &mut status) };
+                if rc != 0 {
+                    return Err(format!("{DEVICE}: {}", std::io::Error::last_os_error()));
+                }
+                Ok(status)
+            }
+        }
+
+        /// Arm `park` on the process group `pgid`.
+        pub fn arm(pgid: libc::pid_t, park: &Park) -> Result<Handle, String> {
+            let file = File::options()
+                .read(true)
+                .write(true)
+                .open(DEVICE)
+                .map_err(|error| format!("{DEVICE}: {error}"))?;
+            let arm = Arm {
+                pgid: u32::try_from(pgid).map_err(|_| "negative process group".to_string())?,
+                reserved: 0,
+                addr: park.addr,
+                hits: u64::from(park.hits),
+                hold_ns: park.hold_nanos,
+            };
+            // SAFETY: `arm` is a fixed-width structure matching the kernel's,
+            // owned by this frame for the synchronous ioctl.
+            let rc = unsafe { libc::ioctl(file.as_raw_fd(), IOC_ARM, &arm) };
+            if rc != 0 {
+                return Err(format!("{DEVICE}: {}", std::io::Error::last_os_error()));
+            }
+            let handle = Handle {
+                file,
+                tasks: 0,
+                hit_logged: false,
+                release_logged: false,
+            };
+            let tasks = handle.status()?.tasks;
+            Ok(Handle { tasks, ..handle })
+        }
     }
 
     /// The kernel-owned synchronous hypercall transport.

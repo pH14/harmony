@@ -30,7 +30,7 @@
 //! `state_hash`. Needs the LOADED patched KVM modules (so RDTSC traps to V-time).
 //!
 //! **Gate honesty (why `#[ignore]`).** These need real KVM, the built guest
-//! artifacts, and the `det-cfl-v1` host — none of which exist in the default
+//! artifacts — none of which exist in the default
 //! `cargo nextest` / coverage lane — so they are `#[ignore]`d (like
 //! `live_m1_m2.rs`): default CI shows them not-run, never a vacuous green. Every
 //! precondition that would prevent a real boot (no `/dev/kvm`, an unbuilt image, a
@@ -138,29 +138,6 @@ fn require_kvm() {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` (Intel VMX, perf_event), \
          CPU-pinned per .github/workflows/box.yml."
-    );
-}
-
-/// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report
-/// (`boot_linux` would also refuse such a host).
-fn require_host_baseline() {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all = true;
-    eprintln!("[host-assert] x86 CPU contract baseline:");
-    for o in &report {
-        eprintln!(
-            "[host-assert]   {}  {}: expected {}, observed {}",
-            if o.pass { "PASS" } else { "FAIL" },
-            o.key,
-            o.expected,
-            o.actual
-        );
-        all &= o.pass;
-    }
-    assert!(
-        all,
-        "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 
@@ -278,11 +255,10 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
 /// documents "Linux reaches userspace in consonance" independently of the serial-TX /
 /// interrupt path, so a regression in either is localized to the gate that owns it.
 #[test]
-#[ignore = "box-only live gate (real KVM + built guest image + det-cfl-v1 host); run on \
+#[ignore = "box-only live gate (real KVM + built guest image); run on \
             `ssh <det-box>` with `-- --ignored --nocapture`"]
 fn a_linux_boots_to_userspace_stock() {
     require_kvm();
-    require_host_baseline();
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs.cpio.gz");
     let cmdline = cmdline();
@@ -351,13 +327,12 @@ fn a_linux_boots_to_userspace_stock() {
 /// userspace `GUEST_READY` reaches the wire, after which the guest powers off
 /// cleanly. It is kept distinct from the current-capability gate
 /// ([`a_linux_boots_to_userspace_stock`]) so that gate can never stand in for the
-/// milestone. Box-only (real KVM + built guest image + det-cfl-v1 host).
+/// milestone. Box-only (real KVM + built guest image).
 #[test]
 #[ignore = "MILESTONE gate (task 30 gate 3): GUEST_READY + clean poweroff via the Phase B \
             interrupt-injection seam; run on the box with `-- --ignored --nocapture`"]
 fn gate3_linux_guest_ready_and_clean_poweroff() {
     require_kvm();
-    require_host_baseline();
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs.cpio.gz");
     let cmdline = cmdline();
@@ -405,11 +380,10 @@ fn gate3_linux_guest_ready_and_clean_poweroff() {
 /// OBF-set) instead of spinning a jiffies timeout under patched V-time — see
 /// task 34 / `README.md`.
 #[test]
-#[ignore = "box-only determinism gate (LOADED patched KVM + built guest image + det-cfl-v1 host); \
+#[ignore = "box-only determinism gate (LOADED patched KVM + built guest image); \
             run on `ssh <det-box>` with `-- --ignored --nocapture`"]
 fn c_linux_boot_deterministic_twice_patched() {
     require_kvm();
-    require_host_baseline();
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs.cpio.gz");
     let cmdline = cmdline();

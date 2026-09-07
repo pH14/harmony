@@ -7,7 +7,7 @@ set -u
 # A short backend batch interval makes the periodic bbolt commit — the writer
 # that can persist a consistent index ahead of the data it claims to cover —
 # fire often enough that a kill at a Moment can land inside the window.
-exec /opt/etcd/etcd \
+exec "$ETCDROOT/etcd" \
     --name n0 \
     --data-dir /run/etcd \
     --listen-client-urls http://127.0.0.1:2379 \

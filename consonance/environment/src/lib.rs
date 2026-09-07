@@ -78,8 +78,10 @@ pub use seeded::SeededEnv;
 /// additive with stable discriminants, so a recorded blob whose bytes predate
 /// them still replays, while a blob that names them fails loudly on an older
 /// reader (unknown class / undefined tag). Bumped to `5` for the additive
-/// [`Fault::RunHook`] (byte tag `17`).
-pub const CATALOG_VERSION: u16 = 5;
+/// [`Fault::RunHook`] (byte tag `17`). Bumped to `6` for the additive
+/// [`Fault::ProcJitter`] (byte tag `18`). Bumped to `7` for the additive
+/// [`Fault::ProcPark`] (byte tag `19`).
+pub const CATALOG_VERSION: u16 = 7;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service

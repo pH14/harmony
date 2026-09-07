@@ -10,6 +10,31 @@
 
 use environment::{DecisionClass, Fault, decode_process_target};
 
+/// The parameters of a `Fault::ProcJitter` window: seeded-random pauses at
+/// control-flow edges, applied by the node's own edge runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Jitter {
+    /// Seeds the draw of the pause edges.
+    pub seed: u32,
+    /// Mean number of edges between pauses.
+    pub every: u32,
+    /// Length of each pause in nanoseconds.
+    pub hold_nanos: u64,
+}
+
+/// The parameters of a `Fault::ProcPark` window: the thread of the node that
+/// reaches an instruction for the `hits`-th time is held there by the guest
+/// kernel for `hold_nanos`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Park {
+    /// User virtual address of the instruction.
+    pub addr: u64,
+    /// The hit that parks, counted from 1.
+    pub hits: u32,
+    /// Length of the hold in nanoseconds.
+    pub hold_nanos: u64,
+}
+
 /// The process faults in force for one node.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NodeFaults {
@@ -20,6 +45,12 @@ pub struct NodeFaults {
     /// `Fault::ProcRestart` — the node is killed and restarted when the window
     /// closes.
     pub restart: bool,
+    /// `Fault::ProcJitter` — the node pauses itself at random edges for the
+    /// window's duration.
+    pub jitter: Option<Jitter>,
+    /// `Fault::ProcPark` — a breakpoint is armed on the node for the window's
+    /// duration, and the thread that takes its k-th hit is held there.
+    pub park: Option<Park>,
 }
 
 impl NodeFaults {
@@ -55,7 +86,11 @@ impl ActiveFaults {
                 }
                 return;
             }
-            Fault::ProcKill | Fault::ProcPause(_) | Fault::ProcRestart => {}
+            Fault::ProcKill
+            | Fault::ProcPause(_)
+            | Fault::ProcRestart
+            | Fault::ProcJitter { .. }
+            | Fault::ProcPark { .. } => {}
             // Every other fault belongs to a class the guest does not apply;
             // the host enforces those itself.
             _ => return,
@@ -72,6 +107,20 @@ impl ActiveFaults {
             Fault::ProcKill => flags.kill = true,
             Fault::ProcPause(_) => flags.pause = true,
             Fault::ProcRestart => flags.restart = true,
+            Fault::ProcJitter { seed, every, hold } => {
+                flags.jitter = Some(Jitter {
+                    seed: *seed,
+                    every: *every,
+                    hold_nanos: hold.0,
+                });
+            }
+            Fault::ProcPark { addr, hits, hold } => {
+                flags.park = Some(Park {
+                    addr: *addr,
+                    hits: *hits,
+                    hold_nanos: hold.0,
+                });
+            }
             _ => {}
         }
     }
@@ -143,7 +192,9 @@ mod tests {
             NodeFaults {
                 pause: true,
                 restart: true,
-                kill: false
+                kill: false,
+                jitter: None,
+                park: None,
             }
         );
         assert_eq!(active.node(2), NodeFaults::default());
@@ -171,6 +222,29 @@ mod tests {
         assert!(active.node(3).kill);
         assert!(!active.node(0).any());
         assert!(active.hooks().is_empty());
+    }
+
+    #[test]
+    fn a_park_decodes_into_its_parameters() {
+        let process = DecisionClass::Process.as_u16();
+        let park = Fault::ProcPark {
+            addr: 0x4b0e86,
+            hits: 28,
+            hold: Span(2_000_000),
+        };
+        let entries = [(process, target(1, &park))];
+        let active = ActiveFaults::from_entries(entries.iter().map(|(c, t)| (*c, t.as_slice())));
+        assert_eq!(
+            active.node(1).park,
+            Some(Park {
+                addr: 0x4b0e86,
+                hits: 28,
+                hold_nanos: 2_000_000,
+            })
+        );
+        // A park names the node without marking it faulted, like a jitter
+        // window: a death under it is still unexpected.
+        assert!(!active.node(1).any());
     }
 
     #[test]

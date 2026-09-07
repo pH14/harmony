@@ -360,6 +360,35 @@ pub enum Fault {
     /// the guest's bundle. Under [`DecisionClass::Process`] because it perturbs
     /// the node's process plane.
     RunHook(u32),
+    /// Pause a node at seeded-random control-flow edges while the window is
+    /// open: about one pause of `hold` V-time every `every` edges, drawn from
+    /// `seed`. A node built with the edge runtime honours it; any other node
+    /// ignores it. This is the guest-plane form of randomized preemption, for
+    /// a race whose window is user code with no system call in it, which a
+    /// `SIGSTOP` never lands in. Byte tag `18`.
+    ProcJitter {
+        /// Seeds the draw of the pause edges.
+        seed: u32,
+        /// Mean number of edges between pauses.
+        every: u32,
+        /// Length of each pause.
+        hold: Span,
+    },
+    /// Hold a node at an execution place: the thread of the node that reaches
+    /// the instruction at `addr` for the `hits`-th time stops there, before
+    /// the instruction runs, for `hold` of V-time, then continues. The guest
+    /// kernel counts the hits and takes the hold, so the node sees no signal
+    /// and no tracer, only time. This reaches a race whose window is user
+    /// code with no system call in it, which a `SIGSTOP` never lands in and
+    /// a jitter window reaches only by chance. Byte tag `19`.
+    ProcPark {
+        /// User virtual address of the instruction in the node's process.
+        addr: u64,
+        /// The hit that parks, counted from 1 over every thread of the node.
+        hits: u32,
+        /// How long the thread is held.
+        hold: Span,
+    },
 }
 
 impl Fault {
@@ -374,9 +403,12 @@ impl Fault {
             Self::BlockEio | Self::BlockLatency(_) | Self::BlockTorn(_) | Self::BlockNospc => {
                 DecisionClass::BlockIo
             }
-            Self::ProcPause(_) | Self::ProcKill | Self::ProcRestart | Self::RunHook(_) => {
-                DecisionClass::Process
-            }
+            Self::ProcPause(_)
+            | Self::ProcKill
+            | Self::ProcRestart
+            | Self::RunHook(_)
+            | Self::ProcJitter { .. }
+            | Self::ProcPark { .. } => DecisionClass::Process,
             Self::BuggifyFire => DecisionClass::Buggify,
         }
     }

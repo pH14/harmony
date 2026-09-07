@@ -27,10 +27,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::AsRawFd;
 
 use kvm_bindings::{
-    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL,
-    KVM_MSR_EXIT_REASON_UNKNOWN, KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_interrupt,
-    kvm_mp_state, kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
-    kvm_userspace_memory_region, kvm_xsave,
+    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_EXIT_FAIL_ENTRY, KVM_MSR_EXIT_REASON_FILTER,
+    KVM_MSR_EXIT_REASON_INVAL, KVM_MSR_EXIT_REASON_UNKNOWN, KVM_MSR_FILTER_MAX_RANGES, Msrs,
+    kvm_enable_cap, kvm_interrupt, kvm_mp_state, kvm_msr_entry, kvm_msr_filter,
+    kvm_msr_filter_range, kvm_run, kvm_sregs2, kvm_userspace_memory_region, kvm_xsave,
 };
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
@@ -243,14 +243,6 @@ impl KvmBackend {
         })
     }
 
-    /// Host-only cancellation latch for abandoning this VM. Set it before
-    /// interrupting the vCPU thread with a signal. Every entry and EINTR retry
-    /// checks the latch; cancellation never becomes a guest event or advances
-    /// virtual time. A canceled VM must be discarded, not resumed.
-    pub fn cancellation_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        std::sync::Arc::clone(&self.cancel_run)
-    }
-
     /// Enable/disable `KVM_MEM_LOG_DIRTY_PAGES` on memslots registered by
     /// **subsequent** [`Backend::map_memory`] calls (task 95 M2.1). Default
     /// **enabled**. Call before mapping guest RAM; already-registered slots are
@@ -349,10 +341,32 @@ impl KvmBackend {
             // This happens before decoding the newly returned exit, including
             // control exits that this loop consumes internally.
             self.completion_staged = false;
+            if self.run_page().exit_reason() == KVM_EXIT_FAIL_ENTRY {
+                // The hardware reason and the register file are the only
+                // evidence a failed entry leaves; the decoded error carries
+                // neither.
+                // SAFETY: `fail_entry` is the active union member for this
+                // exit reason; the struct is `Copy` and read out wholesale.
+                let fail = unsafe { (*self.run).__bindgen_anon_1.fail_entry };
+                eprintln!(
+                    "[vmm-backend] KVM_EXIT_FAIL_ENTRY reason={:#x} cpu={} regs={:?} sregs={:?} mp_state={:?} exits={:?}",
+                    fail.hardware_entry_failure_reason,
+                    fail.cpu,
+                    self.vcpu.get_regs().ok(),
+                    self.vcpu.get_sregs().ok(),
+                    self.vcpu.get_mp_state().ok(),
+                    self.counts
+                );
+            }
             match decode_exit(self.run_page())? {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
+                    // A store needs nothing from userspace, yet KVM still
+                    // finishes its instruction on the next entry; a read is
+                    // staged once its `complete_*` supplies the value.
+                    self.completion_staged =
+                        exit.stages_completion() && self.pending == Pending::None;
                     return Ok(exit);
                 }
                 None => continue, // run-loop control exit; re-enter
@@ -1033,6 +1047,7 @@ impl Backend for KvmBackend {
         // interrupt after restore that a freshly composed target would not.
         self.pending_irq = None;
         self.accepted_irq.clear();
+        self.run_page().clear_injection_readiness();
         let _ = plan_irq_entry(self.run_page(), None);
         Ok(())
     }
@@ -1047,5 +1062,10 @@ impl Backend for KvmBackend {
 
     fn capabilities(&self) -> Capabilities<X86Caps> {
         kvm_capabilities()
+    }
+
+    /// Every entry and EINTR retry of `KVM_RUN` checks this latch.
+    fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        Some(std::sync::Arc::clone(&self.cancel_run))
     }
 }

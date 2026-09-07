@@ -1,11 +1,11 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Hook dispatcher for the etcd bundle. One argument: the hook id from
-# /bundle/etcd. Directives go to stdout, diagnostics to stderr.
+# /bundle/etcd-<version>. Directives go to stdout, diagnostics to stderr.
 set -u
 . /faultlab-common.sh
 
-ETCDCTL="/opt/etcd/etcdctl --endpoints=127.0.0.1:2379"
+ETCDCTL="$ETCDROOT/etcdctl --endpoints=127.0.0.1:2379"
 JOURNAL=/run/journal
 
 hook_put() {
@@ -31,15 +31,26 @@ hook_put() {
 
 hook_verify() {
     [ -f "$JOURNAL" ] || return 0
-    $ETCDCTL get --prefix k --keys-only >/run/present.raw 2>>/run/hook.err || {
+    # Several instances of this hook can run at once, so the scratch files
+    # are private to each; shared names let one instance's lists be compared
+    # against another's and report keys as missing that were never lost.
+    scratch=/run/verify.$$
+    mkdir -p "$scratch"
+    # The journal is copied before the server is asked, so a put that lands
+    # while this hook runs is either in both lists or in neither. Read in the
+    # other order, a key acknowledged between the two reads would count as
+    # lost.
+    sort -u "$JOURNAL" >"$scratch/acked"
+    $ETCDCTL get --prefix k --keys-only >"$scratch/present.raw" 2>>/run/hook.err || {
         # An unreachable member is not an inconsistency; the oracle stays silent
         # so that a killed node cannot be mistaken for lost data.
         echo "@reachable 13"
+        rm -rf "$scratch"
         return 0
     }
-    grep -x 'k[0-9]*' /run/present.raw | sort -u >/run/present
-    sort -u "$JOURNAL" >/run/acked
-    missing=$(comm -23 /run/acked /run/present | wc -l)
+    grep -x 'k[0-9]*' "$scratch/present.raw" | sort -u >"$scratch/present"
+    missing=$(comm -23 "$scratch/acked" "$scratch/present" | wc -l)
+    rm -rf "$scratch"
     echo "@reachable 14"
     if [ "$missing" -gt 0 ]; then
         echo "@always 1 0"

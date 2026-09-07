@@ -61,6 +61,8 @@ const F_NET_RESET: u8 = 15;
 const F_BUGGIFY_FIRE: u8 = 16;
 // Guest-side hook invocation: a fresh tag past buggify, additive.
 const F_RUN_HOOK: u8 = 17;
+const F_PROC_JITTER: u8 = 18;
+const F_PROC_PARK: u8 = 19;
 
 /// Append a `u16` little-endian.
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
@@ -127,6 +129,18 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             w.push(F_RUN_HOOK);
             put_u32(w, *id);
         }
+        Fault::ProcJitter { seed, every, hold } => {
+            w.push(F_PROC_JITTER);
+            put_u32(w, *seed);
+            put_u32(w, *every);
+            put_u64(w, hold.0);
+        }
+        Fault::ProcPark { addr, hits, hold } => {
+            w.push(F_PROC_PARK);
+            put_u64(w, *addr);
+            put_u32(w, *hits);
+            put_u64(w, hold.0);
+        }
     }
 }
 
@@ -149,6 +163,16 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_PROC_RESTART => Fault::ProcRestart,
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
         F_RUN_HOOK => Fault::RunHook(r.u32()?),
+        F_PROC_JITTER => Fault::ProcJitter {
+            seed: r.u32()?,
+            every: r.u32()?,
+            hold: Span(r.u64()?),
+        },
+        F_PROC_PARK => Fault::ProcPark {
+            addr: r.u64()?,
+            hits: r.u32()?,
+            hold: Span(r.u64()?),
+        },
         _ => return Err(EnvError::Malformed),
     };
     Ok(f)

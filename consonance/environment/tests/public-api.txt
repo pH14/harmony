@@ -106,7 +106,15 @@ pub environment::Fault::NetLoss::num: u16
 pub environment::Fault::NetReset
 pub environment::Fault::NetThrottle
 pub environment::Fault::NetThrottle::bps: u32
+pub environment::Fault::ProcJitter
+pub environment::Fault::ProcJitter::every: u32
+pub environment::Fault::ProcJitter::hold: environment::Span
+pub environment::Fault::ProcJitter::seed: u32
 pub environment::Fault::ProcKill
+pub environment::Fault::ProcPark
+pub environment::Fault::ProcPark::addr: u64
+pub environment::Fault::ProcPark::hits: u32
+pub environment::Fault::ProcPark::hold: environment::Span
 pub environment::Fault::ProcPause(environment::Span)
 pub environment::Fault::ProcRestart
 pub environment::Fault::RunHook(u32)

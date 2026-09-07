@@ -123,11 +123,15 @@ KVM_PATCH_0003_SHA256=db587a6a0cd799597f23232fba100e241a1f91c6a2e45e07ebece71b2b
 # --- fault library: etcd + the PostgreSQL CIC pair --------------------------
 # Two historical database bugs are reproduced from their exact affected
 # releases, so these versions are part of the specimen, not a packaging
-# choice: etcd 3.5.2 carries the consistent-index-ahead-of-data window
-# (bugs/historical/etcd-3.5-inconsistency), PostgreSQL 14.3 carries the
-# CREATE INDEX CONCURRENTLY xmin-horizon race, and 14.4 is the fixed release
+# choice: etcd 3.5.2 carries the consistent-index-ahead-of-data window and
+# 3.5.3 is the fixed release that serves as its control arm
+# (bugs/historical/etcd-3.5-inconsistency); PostgreSQL 14.3 carries the
+# CREATE INDEX CONCURRENTLY xmin-horizon race and 14.4 is the fixed release
 # that serves as that bug's control arm
-# (bugs/historical/postgres-cic-corruption). Do not bump any of the three.
+# (bugs/historical/postgres-cic-corruption); SQLite 3.51.2 carries the
+# WAL-reset checkpoint race and 3.51.3 is the fixed release that serves as
+# its control arm (bugs/historical/sqlite-wal-reset). Do not bump any of
+# the six.
 #
 # etcd ships an official static linux/amd64 release tarball; the bug spec
 # requires building FROM that binary with no source patching. Hash
@@ -136,6 +140,9 @@ ETCD_VERSION=3.5.2
 ETCD_URL=https://github.com/etcd-io/etcd/releases/download/v3.5.2/etcd-v3.5.2-linux-amd64.tar.gz
 ETCD_SHA256=256cad725542d6fd463e81b8a19b86ead4cdfe113f7fb8a1eabc6c32c25d068b
 ETCD_LICENSE=Apache-2.0
+ETCD_CONTROL_VERSION=3.5.3
+ETCD_CONTROL_URL=https://github.com/etcd-io/etcd/releases/download/v3.5.3/etcd-v3.5.3-linux-amd64.tar.gz
+ETCD_CONTROL_SHA256=e13e119ff9b28234561738cd261c2a031eb1c8688079dcf96d8035b3ad19ca58
 
 # Both PostgreSQL trees are built from the project's official source tarballs
 # (contrib amcheck + pg_amcheck are needed for the oracle and are not in the
@@ -147,3 +154,14 @@ PG_CIC_SHA256=279057368bf59a919c05ada8f95c5e04abb43e74b9a2a69c3d46a20e07a9af38
 PG_CIC_CONTROL_VERSION=14.4
 PG_CIC_CONTROL_URL=https://ftp.postgresql.org/pub/source/v14.4/postgresql-14.4.tar.bz2
 PG_CIC_CONTROL_SHA256=c23b6237c5231c791511bdc79098617d6852e9e3bdf360efd8b5d15a1a3d8f6a
+
+# SQLite ships an official amalgamation tarball per release. The sqlite3.c in
+# each is cross-checked at pin time against the SHA3-256 its release log
+# publishes: 3.51.2 733b3fcc6cccb1e334424b9b91a9d68b618385b76ebfcbb106690bd3a9e61367,
+# 3.51.3 32d5424f97e0a7fc5ed2f6335afbb58be4e0298bd7117a34e39d345ff13d859e.
+SQLITE_VERSION=3.51.2
+SQLITE_URL=https://sqlite.org/2026/sqlite-autoconf-3510200.tar.gz
+SQLITE_SHA256=fbd89f866b1403bb66a143065440089dd76100f2238314d92274a082d4f2b7bb
+SQLITE_CONTROL_VERSION=3.51.3
+SQLITE_CONTROL_URL=https://sqlite.org/2026/sqlite-autoconf-3510300.tar.gz
+SQLITE_CONTROL_SHA256=81f5be397049b0cae1b167f2225af7646fc0f82e4a9b3c48c9ea3a533e21d77a

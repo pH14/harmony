@@ -1,0 +1,21 @@
+Two markers of our own beside the Antithesis ones: the checkpointer has just
+copied the wal-index header and not yet tested it against the live backfill
+count, which is the window the WAL-reset bug lives in. The second fires only
+when the copied header shows a WAL that is fully backfilled, which is the
+state a writer's reset needs, so a pause at the k-th passage of it is a
+pause inside the window with the race already possible.
+--- sqlite3.c
++++ sqlite3.c
+@@ -71113,6 +71113,11 @@
+       ** attempt to obtain is a lock on a read-slot, and it should give up
+       ** immediately and do a partial checkpoint if it cannot obtain it. */
+       walDisableBlocking(pWal);
+       rc = walIndexReadHdr(pWal, &isChanged);
++      ANT_REACH("checkpoint: read wal-index header");
++      if( rc==SQLITE_OK && pWal->hdr.mxFrame>0
++       && walCkptInfo(pWal)->nBackfill==pWal->hdr.mxFrame ){
++        ANT_REACH("checkpoint: header shows WAL fully backfilled");
++      }
+       if( eMode2>SQLITE_CHECKPOINT_PASSIVE ) (void)walEnableBlocking(pWal);
+       if( isChanged && pWal->pDbFd->pMethods->iVersion>=3 ){
+         sqlite3OsUnfetch(pWal->pDbFd, 0, 0);

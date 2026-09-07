@@ -22,7 +22,12 @@ use crate::{
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 
 /// Recorded archive-key policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "faultlab_sometimes_hooks_alive_v2";
+/// Completed hooks beyond this count stop distinguishing archive cells. A hook
+/// the workload lets re-run cheaply, such as a read-back that finds nothing to
+/// check, would otherwise turn repetition into an endless supply of new cells
+/// and pull the search away from the sites it has not reached.
+pub const HOOKS_FINISHED_KEY_CAP: u64 = 8;
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "fewest_horizons";
 /// Recorded action-duration policy: every action costs exactly one horizon.
@@ -33,20 +38,35 @@ pub const DURATION_IDENTIFIER: &str = "fixed_horizon_v1";
 pub struct FaultArchiveGroup {
     sometimes: u64,
     hooks_finished: u64,
+    hooks_running: u64,
     alive: u64,
+    parked: u64,
 }
 
 /// Quality-diversity key for one fault-library endpoint: which `sometimes`
-/// sites the workload reached, how much of the workload completed, and which
-/// nodes are running.
+/// sites the workload reached, how much of the workload completed, how many
+/// hooks are still running, and which nodes are running.
+///
+/// Hooks in flight are part of the key because the races a fault library
+/// exists to find live in the overlap of concurrent activities. A hook that
+/// has started and not finished leaves no other trace at its endpoint, so
+/// without this count an endpoint with two hooks overlapping pools with one
+/// where only the second ever ran, and the search keeps the cheaper of the
+/// two.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FaultArchiveKey {
     /// Bitmap of `sometimes` sites hit.
     pub sometimes: u64,
-    /// Hooks that ran to completion.
+    /// Hooks that ran to completion, saturating at [`HOOKS_FINISHED_KEY_CAP`].
     pub hooks_finished: u64,
+    /// Hooks started and not yet finished, saturating at the same cap.
+    pub hooks_running: u64,
     /// Bitmap of live nodes.
     pub alive: u64,
+    /// Threads parked at a place, saturating at [`HOOKS_FINISHED_KEY_CAP`].
+    /// A park that fired and one that never reached its hit are different
+    /// states of the workload.
+    pub parked: u64,
 }
 
 impl ArchiveKey for FaultArchiveKey {
@@ -63,7 +83,9 @@ impl ArchiveKey for FaultArchiveKey {
         let full = FaultArchiveGroup {
             sometimes: self.sometimes,
             hooks_finished: self.hooks_finished,
+            hooks_running: self.hooks_running,
             alive: self.alive,
+            parked: self.parked,
         };
         match depth {
             0 => full,
@@ -93,8 +115,13 @@ impl ArchiveKey for FaultArchiveKey {
 pub fn archive_key(observations: &FaultObservations) -> FaultArchiveKey {
     FaultArchiveKey {
         sometimes: observations.sometimes_bitmap(),
-        hooks_finished: observations.hooks_finished,
+        hooks_finished: observations.hooks_finished.min(HOOKS_FINISHED_KEY_CAP),
+        hooks_running: observations
+            .hooks_started
+            .saturating_sub(observations.hooks_finished)
+            .min(HOOKS_FINISHED_KEY_CAP),
         alive: observations.alive,
+        parked: observations.parked.min(HOOKS_FINISHED_KEY_CAP),
     }
 }
 
@@ -165,8 +192,25 @@ pub fn action_time(_action: &FaultAction) -> u64 {
 
 /// Pause durations in agent ticks.
 pub const PAUSE_TICKS: [u32; 4] = [1, 5, 25, 100];
+/// Mean edges between the pauses of a jitter window. A node runs a few
+/// million edges a second, so the densest setting pauses it about every
+/// half millisecond and the sparsest a few times per horizon.
+pub const JITTER_EVERY: [u32; 3] = [2_000, 5_000, 20_000];
+/// Lengths of a jitter window's pauses, in microseconds. The runtime yields
+/// the processor for the hold, so a pause ends at the next scheduling
+/// boundary after it and a short hold is a few milliseconds in practice.
+pub const JITTER_HOLD_US: [u32; 3] = [1_000, 2_000, 5_000];
+/// Seeds a jitter window may draw from.
+pub const JITTER_SEEDS: u16 = 256;
 /// Interrupt vectors the vocabulary may inject.
 pub const VECTORS: [u32; 2] = [0x20, 0x30];
+/// The hit a park waits for. A place is reached a handful of times or
+/// thousands of times per horizon, so the ladder spans both.
+pub const PARK_HITS: [u32; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
+/// Lengths of a park's hold, in microseconds. The guest kernel releases the
+/// thread at the first system call of another task past the deadline, or at
+/// the periodic tick, so a short hold lands within a few milliseconds.
+pub const PARK_HOLD_US: [u32; 3] = [500, 2_000, 10_000];
 
 /// Draw one action from the bundle's vocabulary. A bundle that declares no
 /// hook cannot draw one, so that arm yields `Wait` rather than an action the
@@ -183,7 +227,7 @@ pub fn sample_action(
         Ok(rand.below(NonZeroUsize::new(len).ok_or("empty fault-library vocabulary alternative")?))
     };
     let node = u16::try_from(pick(rand, usize::from(vocabulary.nodes()))?)?;
-    match pick(rand, 6)? {
+    match pick(rand, 8)? {
         0 => Ok(FaultAction::Wait),
         1 => Ok(FaultAction::Kill(node)),
         2 => Ok(FaultAction::Pause(
@@ -195,7 +239,22 @@ pub fn sample_action(
             [] => Ok(FaultAction::Wait),
             hooks => Ok(FaultAction::Hook(hooks[pick(rand, hooks.len())?])),
         },
-        _ => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
+        5 => Ok(FaultAction::Interrupt(VECTORS[pick(rand, VECTORS.len())?])),
+        6 => Ok(FaultAction::Jitter {
+            node,
+            seed: u16::try_from(pick(rand, usize::from(JITTER_SEEDS))?)?,
+            every: JITTER_EVERY[pick(rand, JITTER_EVERY.len())?],
+            hold_us: JITTER_HOLD_US[pick(rand, JITTER_HOLD_US.len())?],
+        }),
+        _ => match vocabulary.places() {
+            [] => Ok(FaultAction::Wait),
+            places => Ok(FaultAction::Park {
+                node,
+                addr: places[pick(rand, places.len())?],
+                hits: PARK_HITS[pick(rand, PARK_HITS.len())?],
+                hold_us: PARK_HOLD_US[pick(rand, PARK_HOLD_US.len())?],
+            }),
+        },
     }
 }
 
@@ -240,6 +299,8 @@ pub struct FaultArchiveReport {
     /// The sealed setup `Moment` every action window is measured from; zero
     /// when the run never booted a target.
     pub root_seal: u64,
+    /// Virtual nanoseconds each action window spans.
+    pub horizon_nanos: u64,
     /// Admitted executions.
     pub executions: u64,
     /// Strongest milestones.
@@ -290,8 +351,51 @@ mod tests {
             FaultArchiveKey {
                 sometimes: 0b10_0001,
                 hooks_finished: 3,
+                hooks_running: 0,
                 alive: 0b11,
+                parked: 0,
             }
+        );
+    }
+
+    #[test]
+    fn hooks_still_running_open_their_own_cell() {
+        let overlapping = FaultObservations {
+            hooks_started: 2,
+            hooks_finished: 1,
+            alive: 0b1,
+            ..FaultObservations::default()
+        };
+        let alone = FaultObservations {
+            hooks_started: 1,
+            hooks_finished: 1,
+            alive: 0b1,
+            ..FaultObservations::default()
+        };
+        assert_ne!(archive_key(&overlapping), archive_key(&alone));
+        assert_eq!(archive_key(&overlapping).hooks_running, 1);
+        let many = FaultObservations {
+            hooks_started: 100,
+            ..FaultObservations::default()
+        };
+        assert_eq!(archive_key(&many).hooks_running, HOOKS_FINISHED_KEY_CAP);
+    }
+
+    #[test]
+    fn repeated_hooks_stop_opening_cells_past_the_cap() {
+        let at_cap = archive_key(&endpoint(&[1], HOOKS_FINISHED_KEY_CAP, 0b1));
+        let past = archive_key(&endpoint(&[1], HOOKS_FINISHED_KEY_CAP + 1, 0b1));
+        let far_past = archive_key(&endpoint(&[1], 100, 0b1));
+        assert_eq!(at_cap, past);
+        assert_eq!(at_cap, far_past);
+        assert_ne!(
+            archive_key(&endpoint(&[1], HOOKS_FINISHED_KEY_CAP - 1, 0b1)),
+            at_cap
+        );
+        assert_eq!(
+            milestones(&endpoint(&[1], 100, 0b1)).hooks_finished,
+            100,
+            "the milestone keeps the true count"
         );
     }
 
@@ -345,7 +449,10 @@ mod tests {
     }
 
     fn vocabulary() -> FaultVocabulary {
-        FaultVocabulary::new(1, vec![1, 2]).expect("vocabulary")
+        FaultVocabulary::new(1, vec![1, 2])
+            .expect("vocabulary")
+            .with_places(vec![0x4b0e86, 0x47eca0])
+            .expect("places")
     }
 
     #[test]
@@ -360,6 +467,8 @@ mod tests {
             FaultAction::Restart(_) => 3,
             FaultAction::Hook(_) => 4,
             FaultAction::Interrupt(_) => 5,
+            FaultAction::Jitter { .. } => 6,
+            FaultAction::Park { .. } => 7,
         };
         for _ in 0..2_000 {
             let action = sample_action(&mut rand, &vocabulary).expect("draw an action");
@@ -375,9 +484,41 @@ mod tests {
                 }
                 FaultAction::Hook(id) => assert!(vocabulary.hooks().contains(&id)),
                 FaultAction::Interrupt(vector) => assert!(VECTORS.contains(&vector)),
+                FaultAction::Jitter {
+                    node,
+                    seed,
+                    every,
+                    hold_us,
+                } => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(seed < JITTER_SEEDS);
+                    assert!(JITTER_EVERY.contains(&every));
+                    assert!(JITTER_HOLD_US.contains(&hold_us));
+                }
+                FaultAction::Park {
+                    node,
+                    addr,
+                    hits,
+                    hold_us,
+                } => {
+                    assert!(node < vocabulary.nodes());
+                    assert!(vocabulary.places().contains(&addr));
+                    assert!(PARK_HITS.contains(&hits));
+                    assert!(PARK_HOLD_US.contains(&hold_us));
+                }
             }
         }
-        assert_eq!(kinds.len(), 6, "every action kind is reachable");
+        assert_eq!(kinds.len(), 8, "every action kind is reachable");
+    }
+
+    #[test]
+    fn a_vocabulary_with_no_place_never_draws_a_park() {
+        let placeless = FaultVocabulary::new(1, vec![1]).expect("vocabulary");
+        let mut rand = RomuDuoJrRand::with_seed(5);
+        for _ in 0..2_000 {
+            let action = sample_action(&mut rand, &placeless).expect("draw");
+            assert!(!matches!(action, FaultAction::Park { .. }));
+        }
     }
 
     #[test]

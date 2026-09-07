@@ -77,7 +77,7 @@
 //!
 //! Needs real + patched KVM, the built Postgres image (`consonance/harmony-linux/build/bzImage` +
 //! `consonance/harmony-linux/build/initramfs-postgres.cpio.gz`, via
-//! `consonance/harmony-linux/linux/build-postgres-image.sh`), and the `det-cfl-v1` host — none in the
+//! `consonance/harmony-linux/linux/build-postgres-image.sh`) — none in the
 //! default `cargo nextest` lane — so it is `#[ignore]`d (like `live_postgres.rs` /
 //! `live_snapshot_branch.rs`); default CI shows it not-run, never a vacuous green.
 //! Every missing precondition is a **loud panic**, never an early-return `Ok`. macOS
@@ -177,29 +177,6 @@ fn require_kvm() {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
          patched KVM modules, CPU-pinned per .github/workflows/box.yml (taskset -c 4)."
-    );
-}
-
-/// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report (the
-/// boot would refuse such a host anyway).
-fn require_host_baseline() {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all = true;
-    eprintln!("[host-assert] x86 CPU contract baseline:");
-    for o in &report {
-        eprintln!(
-            "[host-assert]   {}  {}: expected {}, observed {}",
-            if o.pass { "PASS" } else { "FAIL" },
-            o.key,
-            o.expected,
-            o.actual
-        );
-        all &= o.pass;
-    }
-    assert!(
-        all,
-        "host CPU is not the det-cfl-v1 baseline — the frozen contract cannot run here. Run on the \
-         determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 
@@ -345,10 +322,7 @@ fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
         &cmdline(),
         seed,
     )
-    .expect(
-        "boot_linux_selected (patched) — needs the LOADED patched KVM modules + perf + det-cfl-v1 \
-         host",
-    )
+    .expect("boot_linux_selected (patched) — needs the LOADED patched KVM modules + perf")
 }
 
 /// What sealing the live VM produced: the canonical `vm_state` blob, the step it was
@@ -559,7 +533,6 @@ fn is_guest_observable(component: &str) -> bool {
 #[ignore = "diagnostic, box-only: scans for snapshummable points across a live Postgres run"]
 fn scan_snapshot_points() {
     require_kvm();
-    require_host_baseline();
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-postgres.cpio.gz");
     let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
@@ -625,11 +598,10 @@ fn scan_snapshot_points() {
 }
 
 #[test]
-#[ignore = "box-only branching demo (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
+#[ignore = "box-only branching demo (LOADED patched KVM + built Postgres image); \
             run on `ssh <det-box>` with `-- --ignored --nocapture`"]
 fn branching_demo_reproducibility_and_divergence() {
     require_kvm();
-    require_host_baseline();
 
     let k = env_usize("BRANCHES", 4);
     let n = env_usize("REPLAYS", 3);

@@ -18,8 +18,7 @@
 //!   guest-memory image **identical** to the un-snapshotted reference run.
 //!
 //! Box-only because it needs the loaded patched `/dev/kvm`
-//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
-//! host. `#[ignore]`d out of the default lane (like `live_m1_m2.rs`): default CI
+//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`). `#[ignore]`d out of the default lane (like `live_m1_m2.rs`): default CI
 //! shows it **not-run**, never a vacuous green. Run on `ssh <det-box>`, CPU-pinned
 //! per `.github/workflows/box.yml`, with the patched modules loaded:
 //!
@@ -188,7 +187,7 @@ fn boot_patched_or_panic() -> vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A 
         Ok(vmm) => vmm,
         Err(e) => panic!(
             "boot_selected(Patched) failed: {e}. Needs the LOADED patched KVM \
-             (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS), perf_event, and the det-cfl-v1 host. \
+             (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS) and perf_event. \
              Build + load per consonance/vmm-backend/kvm-patches/BUILD.md, then revert to stock after."
         ),
     }
@@ -208,7 +207,7 @@ fn run_once() -> ([u8; 32], Results) {
 }
 
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
+#[ignore = "box-only: needs the LOADED patched KVM + perf; run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn p6_rdtsc_rng_are_deterministic_and_vtime_backed() {
     let (hash_a, res_a) = run_once();
@@ -261,7 +260,7 @@ fn p6_rdtsc_rng_are_deterministic_and_vtime_backed() {
 }
 
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
+#[ignore = "box-only: needs the LOADED patched KVM + perf; run on \
             `ssh <det-box>` with `-- --ignored`"]
 fn p6_snapshot_restore_resumes_both_clocks_exactly() {
     // Reference: an un-snapshotted run.

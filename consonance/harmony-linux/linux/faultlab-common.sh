@@ -59,7 +59,15 @@ faultlab_poweroff() {
 faultlab_control() {
     _hooks=$1
     shift
-    "$FAULTLAB_NODE" >/run/node.out 2>&1 &
+    # A node command may carry arguments, the way a bundle line does.
+    # shellcheck disable=SC2153,SC2086  # both names are exported by the init script
+    $FAULTLAB_NODE >/run/node.out 2>&1 &
+    # A bundle with a second node names it in FAULTLAB_NODE2; the ready check
+    # covers both.
+    if [ -n "${FAULTLAB_NODE2:-}" ]; then
+        # shellcheck disable=SC2086
+        $FAULTLAB_NODE2 >/run/node2.out 2>&1 &
+    fi
     _t=0
     until "$FAULTLAB_READY" >/dev/null 2>&1; do
         _t=$((_t + 1))

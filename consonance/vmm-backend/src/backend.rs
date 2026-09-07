@@ -14,6 +14,8 @@
 //! **Designed, NOT frozen.** This trait's shape is the ruled §A design. Do not
 //! treat compiles-for-x86 as frozen-for-every-vendor.
 
+use std::sync::{Arc, atomic::AtomicBool};
+
 use crate::arch::Arch;
 use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
@@ -236,6 +238,15 @@ pub trait Backend {
     /// unison report reads this to refuse to *claim* determinism for a
     /// payload that needs a capability the backend lacks.
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps>;
+
+    /// Host-only latch for abandoning a run whose vCPU thread stops returning
+    /// to the host. A watchdog sets it and then interrupts the vCPU thread with
+    /// a signal; every guest entry checks it, so cancellation never becomes a
+    /// guest event or advances virtual time. A canceled VM must be discarded.
+    /// `None` when the backend cannot be interrupted mid-run.
+    fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
+        None
+    }
 }
 
 /// Blanket forward so the composition root can inject a concrete backend as a
@@ -320,6 +331,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps> {
         (**self).capabilities()
+    }
+
+    fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
+        (**self).cancellation_flag()
     }
 }
 

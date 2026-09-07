@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::faultlab::{
     archive::FaultBugRecord,
-    target::{FaultAction, FaultObservations, reproducer},
+    target::{ActionWindows, FaultAction, FaultObservations, reproducer},
 };
 
 /// File-name stem of a bug report, completed with the bug's ordinal.
@@ -24,6 +24,8 @@ pub struct BugReport {
     pub execution: u64,
     /// Root seal `Moment` every action window is measured from.
     pub root_seal: u64,
+    /// Virtual nanoseconds each action window spans.
+    pub horizon_nanos: u64,
     /// The action list, in execution order.
     pub actions: Vec<FaultAction>,
     /// Reproducer blob version.
@@ -40,15 +42,16 @@ impl BugReport {
     pub fn new(
         bug: u64,
         execution: u64,
-        root_seal: u64,
+        windows: ActionWindows,
         actions: &[FaultAction],
         observations: &FaultObservations,
     ) -> Self {
-        let blob = reproducer(root_seal, actions);
+        let blob = reproducer(windows, actions);
         Self {
             bug,
             execution,
-            root_seal,
+            root_seal: windows.root_seal,
+            horizon_nanos: windows.horizon_nanos,
             actions: actions.to_vec(),
             blob_version: blob.blob_version,
             reproducer: hex(&blob.bytes),
@@ -102,7 +105,7 @@ impl BugReport {
 ///
 /// Returns an error when a report cannot be serialized or written.
 pub fn write_bug_reports(
-    root_seal: u64,
+    windows: ActionWindows,
     bugs: &[FaultBugRecord],
     directory: &Path,
 ) -> Result<Vec<BugReport>, Box<dyn Error>> {
@@ -112,7 +115,7 @@ pub fn write_bug_reports(
         let report = BugReport::new(
             ordinal,
             bug.execution,
-            root_seal,
+            windows,
             &bug.input.actions,
             &bug.observations,
         );
@@ -132,7 +135,12 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::faultlab::target::FaultStop;
+    use crate::faultlab::target::{DEFAULT_HORIZON_NANOS, FaultStop};
+
+    const WINDOWS: ActionWindows = ActionWindows {
+        root_seal: 1_000,
+        horizon_nanos: DEFAULT_HORIZON_NANOS,
+    };
 
     fn sample() -> BugReport {
         let observations = FaultObservations {
@@ -144,7 +152,7 @@ mod tests {
         BugReport::new(
             1,
             42,
-            1_000,
+            WINDOWS,
             &[FaultAction::Hook(1), FaultAction::Kill(0)],
             &observations,
         )
@@ -156,7 +164,8 @@ mod tests {
         assert_eq!(report.file_name(), "bug-1.json");
         assert_eq!(report.actions.len(), 2);
         let bytes = report.reproducer_bytes().expect("hex round-trips");
-        assert_eq!(bytes, reproducer(1_000, &report.actions).bytes);
+        assert_eq!(bytes, reproducer(WINDOWS, &report.actions).bytes);
+        assert_eq!(report.horizon_nanos, DEFAULT_HORIZON_NANOS);
         let spec = environment::EnvSpec::decode(&bytes).expect("the reproducer decodes");
         assert_eq!(
             spec.standing().len(),
@@ -210,7 +219,11 @@ mod tests {
             },
         };
         let bugs = [bug(4, FaultAction::Kill(0)), bug(9, FaultAction::Wait)];
-        let written = write_bug_reports(7, &bugs, &directory).expect("write");
+        let windows = ActionWindows {
+            root_seal: 7,
+            ..WINDOWS
+        };
+        let written = write_bug_reports(windows, &bugs, &directory).expect("write");
         assert_eq!(written.len(), 2);
         assert_eq!(written[0].bug, 1);
         assert_eq!(written[0].execution, 4);

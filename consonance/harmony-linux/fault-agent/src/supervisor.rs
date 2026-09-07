@@ -12,12 +12,14 @@
 //! | `ProcPause` | `SIGSTOP` | `SIGCONT` |
 //! | `ProcRestart` | `SIGKILL` | start the node again |
 //! | `RunHook` | launch the hook once | nothing: hooks are not awaited |
+//! | `ProcJitter` | write the node's jitter file | remove it |
+//! | `ProcPark` | arm the park on the node's process group | disarm it; a hold in progress finishes |
 //!
 //! A node that exits while no fault names it is an unexpected death: it is
 //! counted and started again at the next tick, so a workload that crashes on
 //! its own keeps running and the count is the observable.
 
-use crate::faults::ActiveFaults;
+use crate::faults::{ActiveFaults, Jitter, Park};
 use crate::regs::RegisterSnapshot;
 
 /// One thing the agent must do to the guest this tick, in the order the
@@ -34,6 +36,14 @@ pub enum Action {
     Start(u16),
     /// Launch the hook once, without waiting for it.
     RunHook(u32),
+    /// Write the node's jitter file, which its edge runtime polls.
+    Jitter(u16, Jitter),
+    /// Remove the node's jitter file.
+    Settle(u16),
+    /// Arm a park on the node's process group through the guest kernel.
+    Park(u16, Park),
+    /// Disarm the node's park; a hold already taken runs to its end.
+    Unpark(u16),
 }
 
 impl Action {
@@ -47,6 +57,16 @@ impl Action {
             Action::Cont(node) => format!("resume node {node}"),
             Action::Start(node) => format!("start node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
+            Action::Jitter(node, jitter) => format!(
+                "jitter node {node} seed {} every {} hold {}",
+                jitter.seed, jitter.every, jitter.hold_nanos
+            ),
+            Action::Settle(node) => format!("settle node {node}"),
+            Action::Park(node, park) => format!(
+                "park node {node} at {:#x} hit {} hold {}",
+                park.addr, park.hits, park.hold_nanos
+            ),
+            Action::Unpark(node) => format!("unpark node {node}"),
         }
     }
 }
@@ -66,6 +86,8 @@ pub struct Counters {
     pub restarts: u64,
     /// Bitmap of the `assert_sometimes` ids a hook has reported.
     pub sometimes: u64,
+    /// Threads the guest kernel has parked at a place.
+    pub parked: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,6 +170,20 @@ impl Supervisor {
                 actions.push(Action::Cont(node));
                 state.paused = false;
             }
+            if let Some(jitter) = now.jitter {
+                if was.jitter != Some(jitter) {
+                    actions.push(Action::Jitter(node, jitter));
+                }
+            } else if was.jitter.is_some() {
+                actions.push(Action::Settle(node));
+            }
+            if let Some(park) = now.park {
+                if was.park != Some(park) {
+                    actions.push(Action::Park(node, park));
+                }
+            } else if was.park.is_some() {
+                actions.push(Action::Unpark(node));
+            }
             // A restart window closing brings the node back unless a kill still
             // names it.
             if !now.restart && was.restart && !now.kill && !state.alive {
@@ -185,6 +221,11 @@ impl Supervisor {
     /// Record that a launched hook has exited.
     pub fn note_hook_finished(&mut self) {
         self.counters.hooks_finished += 1;
+    }
+
+    /// Record that a park took its hit and held a thread.
+    pub fn note_parked(&mut self) {
+        self.counters.parked += 1;
     }
 
     /// Record an `assert_sometimes` hit reported by a hook. Ids at or beyond
@@ -226,6 +267,7 @@ impl Supervisor {
             sometimes: self.counters.sometimes,
             unexpected_deaths: self.counters.unexpected_deaths,
             restarts: self.counters.restarts,
+            parked: self.counters.parked,
         }
     }
 }
@@ -339,6 +381,31 @@ mod tests {
     }
 
     #[test]
+    fn a_park_window_arms_on_entry_and_disarms_on_exit() {
+        let mut sup = Supervisor::new(1);
+        let park = Park {
+            addr: 0x4b0e86,
+            hits: 28,
+            hold_nanos: 2_000_000,
+        };
+        let parked = active(&[(
+            0,
+            Fault::ProcPark {
+                addr: 0x4b0e86,
+                hits: 28,
+                hold: Span(2_000_000),
+            },
+        )]);
+        assert_eq!(sup.tick(&parked, &[]), [Action::Park(0, park)]);
+        assert_eq!(sup.tick(&parked, &[]), []);
+        assert_eq!(sup.tick(&ActiveFaults::new(), &[]), [Action::Unpark(0)]);
+        assert_eq!(sup.tick(&ActiveFaults::new(), &[]), []);
+        sup.note_parked();
+        assert_eq!(sup.snapshot().parked, 1);
+        assert_eq!(sup.alive_bitmap(), 1);
+    }
+
+    #[test]
     fn hooks_launch_once_per_window_and_ids_are_ascending() {
         let mut sup = Supervisor::new(1);
         let two = active(&[(0, Fault::RunHook(4)), (0, Fault::RunHook(1))]);
@@ -417,5 +484,18 @@ mod tests {
         assert_eq!(Action::Cont(0).describe(), "resume node 0");
         assert_eq!(Action::Start(1).describe(), "start node 1");
         assert_eq!(Action::RunHook(5).describe(), "run hook 5");
+        assert_eq!(
+            Action::Park(
+                0,
+                Park {
+                    addr: 0x4b0e86,
+                    hits: 28,
+                    hold_nanos: 2_000_000
+                }
+            )
+            .describe(),
+            "park node 0 at 0x4b0e86 hit 28 hold 2000000"
+        );
+        assert_eq!(Action::Unpark(0).describe(), "unpark node 0");
     }
 }

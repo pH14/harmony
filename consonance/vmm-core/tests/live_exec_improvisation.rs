@@ -115,24 +115,6 @@ fn require_kvm() {
     );
 }
 
-fn require_host_baseline() {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all = true;
-    for o in &report {
-        if !o.pass {
-            eprintln!(
-                "[host-assert] FAIL {}: expected {}, observed {}",
-                o.key, o.expected, o.actual
-            );
-        }
-        all &= o.pass;
-    }
-    assert!(
-        all,
-        "host CPU is not the det-cfl-v1 baseline — run on the determinism box."
-    );
-}
-
 fn cmdline() -> String {
     std::env::var("BOOT_CMDLINE").unwrap_or_else(|_| DEFAULT_CMDLINE.to_string())
 }
@@ -157,7 +139,7 @@ fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
         &cmdline(),
         seed,
     )
-    .expect("boot_linux_selected (patched) — needs the LOADED patched KVM + perf + det-cfl-v1 host")
+    .expect("boot_linux_selected (patched) — needs the LOADED patched KVM + perf")
 }
 
 fn call<B: Backend<A = X86>>(
@@ -267,11 +249,10 @@ fn replay_to_late<B: Backend<A = X86>>(
 }
 
 #[test]
-#[ignore = "box-only improvisation gate (LOADED patched KVM + built image + det-cfl-v1 host); \
+#[ignore = "box-only improvisation gate (LOADED patched KVM + built image); \
             run per .github/workflows/box.yml"]
 fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     require_kvm();
-    require_host_baseline();
     let kernel = require_artifact("bzImage");
     let initramfs_name =
         std::env::var("INITRAMFS").unwrap_or_else(|_| "initramfs-postgres.cpio.gz".to_string());
@@ -486,7 +467,6 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
             run per .github/workflows/box.yml before the full gate"]
 fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
     require_kvm();
-    require_host_baseline();
     let kernel = require_artifact("bzImage");
     // The smoke probes the SHELL channel, so it wants the exec-capable image by
     // default (honor INITRAMFS if the operator points it elsewhere).

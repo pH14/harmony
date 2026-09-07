@@ -26,7 +26,7 @@ pub mod supervisor;
 
 pub use bundle::{Bundle, BundleError, HookSpec, NodeSpec};
 pub use directive::{Directive, DirectiveError, LineReader};
-pub use faults::{ActiveFaults, NodeFaults};
+pub use faults::{ActiveFaults, Jitter, NodeFaults, Park};
 pub use regs::{RegisterSnapshot, Registers};
 pub use supervisor::{Action, Counters, Supervisor};
 

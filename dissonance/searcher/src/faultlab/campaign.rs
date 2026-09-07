@@ -16,7 +16,7 @@ use crate::{
             merge_progress_watermark, milestone_key, milestones, sample_action,
         },
         bundle::FaultVocabulary,
-        consonance::{FaultlabTarget, identity, snapshot_memory_charge},
+        consonance::{FaultlabConfig, FaultlabTarget, identity, snapshot_memory_charge},
         target::{FaultAction, FaultObservations, FaultlabSnapshot, MAX_FAULTLAB_ACTIONS},
     },
     search::{
@@ -47,6 +47,7 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const IMAGE_FIELD: &str = "image";
+const HORIZON_FIELD: &str = "horizon_nanos";
 
 /// Header placeholder for a run with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -63,7 +64,7 @@ pub struct FaultCampaignRun {
 pub struct FaultGame {
     kernel: Vec<u8>,
     initramfs: Vec<u8>,
-    rdinit: String,
+    config: FaultlabConfig,
     identity: String,
     /// The image's sealed setup `Moment`, learned from the first target a
     /// worker boots. It is a deterministic property of the image, so every
@@ -74,14 +75,20 @@ pub struct FaultGame {
 impl FaultGame {
     /// Build a game context over one workload image.
     #[must_use]
-    pub fn new(kernel: &[u8], initramfs: &[u8], rdinit: &str) -> Self {
+    pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultlabConfig) -> Self {
         Self {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
-            rdinit: rdinit.to_owned(),
-            identity: identity(kernel, initramfs, rdinit),
+            config: config.clone(),
+            identity: identity(kernel, initramfs, config),
             root_seal: OnceLock::new(),
         }
+    }
+
+    /// How the image boots and how long each action runs.
+    #[must_use]
+    pub fn config(&self) -> &FaultlabConfig {
+        &self.config
     }
 
     /// The sealed setup `Moment`, once a target has booted.
@@ -313,7 +320,7 @@ impl Game for FaultGame {
         let mut digest = Sha256::new();
         digest.update(&self.kernel);
         digest.update(&self.initramfs);
-        digest.update(self.rdinit.as_bytes());
+        digest.update(self.config.rdinit.as_bytes());
         format!("{:x}", digest.finalize())
     }
 
@@ -360,6 +367,10 @@ impl Game for FaultGame {
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .chain([
             (IMAGE_FIELD.to_owned(), self.identity.clone()),
+            (
+                HORIZON_FIELD.to_owned(),
+                self.config.horizon_nanos.to_string(),
+            ),
             (VOCABULARY_FIELD.to_owned(), run.vocabulary.identifier()),
         ])
         .collect()
@@ -387,7 +398,7 @@ impl Game for FaultGame {
     }
 
     fn new_target(&self) -> Result<FaultlabTarget, String> {
-        let target = FaultlabTarget::new(&self.kernel, &self.initramfs, &self.rdinit)?;
+        let target = FaultlabTarget::new(&self.kernel, &self.initramfs, &self.config)?;
         let seal = *self.root_seal.get_or_init(|| target.root_seal());
         if seal != target.root_seal() {
             return Err(format!(
@@ -666,6 +677,7 @@ impl Game for FaultGame {
         FaultArchiveReport {
             seed: state.seed,
             root_seal: self.root_seal.get().copied().unwrap_or_default(),
+            horizon_nanos: self.config.horizon_nanos,
             executions: state.executions,
             milestones: evidence.aggregate,
             progress_watermark: evidence.watermark,
@@ -718,9 +730,24 @@ pub fn replay_faultlab_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::faultlab::{
+        consonance::{BackendKind, DEFAULT_RAM_MIB},
+        target::DEFAULT_HORIZON_NANOS,
+    };
+
+    fn config(rdinit: &str) -> FaultlabConfig {
+        FaultlabConfig {
+            rdinit: rdinit.to_owned(),
+            knobs: Vec::new(),
+            backend: BackendKind::Stock,
+            horizon_nanos: DEFAULT_HORIZON_NANOS,
+            ram_mib: DEFAULT_RAM_MIB,
+            pvclock: true,
+        }
+    }
 
     fn game() -> FaultGame {
-        FaultGame::new(b"kernel", b"initramfs", "/etcd-init")
+        FaultGame::new(b"kernel", b"initramfs", &config("/etcd-init"))
     }
 
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
@@ -763,9 +790,56 @@ mod tests {
     #[test]
     fn the_image_identity_covers_the_selected_workload_init() {
         let etcd = game();
-        let postgres = FaultGame::new(b"kernel", b"initramfs", "/pgcic-init");
+        let postgres = FaultGame::new(b"kernel", b"initramfs", &config("/pgcic-init"));
         assert_ne!(etcd.image_identity(), postgres.image_identity());
         assert_ne!(etcd.image_sha256(), postgres.image_sha256());
         assert!(etcd.image_identity().contains("rdinit=/etcd-init"));
+    }
+
+    #[test]
+    fn the_recorded_policies_pin_the_backend_the_knobs_the_clock_and_the_horizon() {
+        let game = game();
+        let policies = game.policies(&run(1, vec![1, 2]));
+        let patched = FaultGame::new(
+            b"kernel",
+            b"initramfs",
+            &FaultlabConfig {
+                backend: BackendKind::Patched,
+                ..config("/etcd-init")
+            },
+        );
+        assert!(patched.resolve_recorded(&policies).is_err());
+        let tuned = FaultGame::new(
+            b"kernel",
+            b"initramfs",
+            &FaultlabConfig {
+                knobs: vec!["faultlab.puts=20".to_owned()],
+                ..config("/etcd-init")
+            },
+        );
+        assert!(tuned.resolve_recorded(&policies).is_err());
+        let short = FaultGame::new(
+            b"kernel",
+            b"initramfs",
+            &FaultlabConfig {
+                horizon_nanos: 100_000_000,
+                ..config("/etcd-init")
+            },
+        );
+        assert!(short.resolve_recorded(&policies).is_err());
+        let trapping = FaultGame::new(
+            b"kernel",
+            b"initramfs",
+            &FaultlabConfig {
+                pvclock: false,
+                ..config("/etcd-init")
+            },
+        );
+        assert!(trapping.resolve_recorded(&policies).is_err());
+        assert_eq!(game.image_sha256(), short.image_sha256());
+        assert_eq!(
+            policies.get(HORIZON_FIELD).map(String::as_str),
+            Some("2000000000")
+        );
     }
 }

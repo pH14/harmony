@@ -34,8 +34,7 @@
 //! leaking into the saved architectural state; this breakdown localizes it.
 //!
 //! Box-only because it needs the LOADED patched `/dev/kvm`
-//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`), and the `det-cfl-v1`
-//! host; `#[ignore]`d out of the default lane (like `live_determinism.rs`) so a
+//! (`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`); `#[ignore]`d out of the default lane (like `live_determinism.rs`) so a
 //! plain `cargo nextest` shows it **not-run**, never a vacuous green. Run on the
 //! box (patched modules loaded, then reverted to stock afterwards), CPU-pinned:
 //!
@@ -130,7 +129,7 @@ impl SubjectFactory for PatchedPayloadFactory {
         boot_patched_corpus(&self.payload, GUEST_RAM_LEN, seed).unwrap_or_else(|e| {
             panic!(
                 "boot_patched_corpus({}) failed: {e}. Needs the LOADED patched KVM \
-                 (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS), perf_event, and the det-cfl-v1 host. \
+                 (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS) and perf_event. \
                  Build + load per consonance/vmm-backend/kvm-patches/BUILD.md, then revert to stock after.",
                 self.name
             )
@@ -316,7 +315,7 @@ fn aggregate(verdicts: &[ItemVerdict]) -> String {
 }
 
 #[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host + built C1 payloads; \
+#[ignore = "box-only: needs the LOADED patched KVM + perf + built C1 payloads; \
             run on the box with `-- --ignored --nocapture`"]
 fn c1_corpus_o1_o2_on_the_patched_backend() {
     require_box();

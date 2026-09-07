@@ -1,7 +1,5 @@
 # etcd v3.5.0–3.5.2 — silent data inconsistency after untimely crash
 
-**Status: workload built; nominal control pending a patched-KVM host.**
-
 ## The bug
 
 etcd v3.5.0 (PR [#12855](https://github.com/etcd-io/etcd/pull/12855)) introduced backend hooks
@@ -52,6 +50,8 @@ second entry — its trigger (kill during defrag) and symptom direction are diff
   (`--backend-batch-interval`, `--backend-batch-limit`) widen or shrink the CI-ahead-of-data
   window. Record measured branches-to-find here once run.
 - **Nominal control**: same workload, clean shutdowns (SIGTERM + wait) — must never diverge.
+- **Version control**: the same input on etcd 3.5.3, the release that carries the fix — must
+  never trip the oracle.
 
 ## Why this entry is first
 
@@ -62,12 +62,14 @@ today, the oracle is cheap, and it's the highest-recognition corruption bug in m
 ## Workload as built
 
 Built by `consonance/harmony-linux/linux/build-faultlab-image.sh` into
-`initramfs-faultlab-etcd.cpio.gz`. etcd and etcdctl come from the official
-3.5.2 linux/amd64 release tarball, pinned by sha256 in `versions.lock` and
-cross-checked against the release's own `SHA256SUMS`. No source patching, as
-the triple requires.
+`initramfs-faultlab-etcd-3.5.2.cpio.gz` and, for the control arm,
+`initramfs-faultlab-etcd-3.5.3.cpio.gz`. etcd and etcdctl come from the
+official linux/amd64 release tarballs, pinned by sha256 in `versions.lock`
+and cross-checked against each release's own `SHA256SUMS`. No source
+patching, as the triple requires.
 
-Boot with `rdinit=/etcd-init`. Bundle `/bundle/etcd`:
+Boot with `rdinit=/etcd-init` (3.5.2) or `rdinit=/etcd-control-init` (3.5.3).
+Bundle `/bundle/etcd-<version>`:
 
 | item | what it runs |
 |---|---|
@@ -89,6 +91,10 @@ The guest kernel is `bzImage-faultlab`, built by `build-faultlab-kernel.sh`.
 etcd is Go, and the Go runtime reads the timestamp counter directly, so it
 faults instantly on the default kernel; see `x86-faultlab-config-fragment`.
 That variant is only deterministic on a host with the patched KVM loaded.
+The runs recorded below used the SMP build of that kernel; the fault-library
+kernel has since become single-processor (`x86-faultlab-config-fragment`, for
+the reason the SQLite entry records), and a schedule found on one build does
+not replay on the other.
 
 ## Status
 
@@ -96,9 +102,75 @@ Smoke tested on stock KVM: the member starts, all 200 puts are acknowledged,
 the read-back finds every journaled key and the oracle stays silent
 (`@always 1 1`). Roughly 51 s of guest time per run.
 
-The nominal control is **not** yet recorded. Two runs on stock KVM produce
-different serial bytes and different state hashes, which is expected there and
-is not evidence of an image defect: without RDTSC exiting the Go runtime reads
-the raw host counter, and its scheduling decisions vary with it. The control
-belongs on a host with the patched KVM loaded, and the result goes here once
-that run happens.
+Nominal control on the patched KVM (nested L1 guest on Linux 6.18.35, pvclock
+enabled, 1 GiB RAM): two runs stop at the same guest virtual time
+(`Quiescent { vtime: Moment(52113967681) }`), produce byte-identical serial
+output (16660 bytes, fingerprint `96b9589e9f15ce6c`) and the same state hash,
+and the oracle stays silent (`@always 1 1`). About 8 s of wall time per run.
+A reproduction claim against this image therefore rests on a deterministic
+nominal path.
+
+Two runs on stock KVM produce different serial bytes and different state
+hashes, which is expected there and is not evidence of an image defect: without
+RDTSC exiting the Go runtime reads the raw host counter, and its scheduling
+decisions vary with it.
+
+Searcher campaigns on the patched KVM (250 ms horizon, 8 workers,
+`faultlab.puts=20`): a first run of 900 executions found nothing. A second
+run of 3824 executions reported an oracle violation at execution 3817 with the
+member alive the whole time and no kill in the input:
+
+```
+hook 2, hook 1, hook 1, hook 2, hook 1, hook 2, wait, hook 2, wait, hook 2,
+pause 0 (5 ticks), pause 0 (5 ticks), hook 1, hook 1, hook 2
+```
+
+Two fresh boots replay it to the same moment (+3.680 s) and tick count (159)
+with five hooks in flight. That is a defect in the oracle script, found by
+the searcher: the read-back listed the server's keys before it read the
+journal, so a put acknowledged and journaled between the two reads counted
+as lost. The hook now copies the journal first, so a put that lands during
+the check is in both lists or in neither, and the same input on the
+rebuilt image runs to its deadline with the oracle silent.
+
+On the corrected oracle the searcher reported a lost acknowledged key at
+execution 602 of a third campaign, replayed it to the same moment three
+times, and the same input ran clean on 3.5.3 and with its kills replaced by
+waits. That report is withdrawn. The verify hook kept its two key lists in
+fixed files under `/run`, and the searcher starts a fresh hook process for
+every hook action, so several verify hooks run at once (nine hooks were in
+flight when the report fired). One instance could then compare its journal
+copy against another instance's server listing, and a put acknowledged
+between the two counted as lost. The 3.5.3 control campaign exposed this: it
+reported a lost key at execution 1039 with no kill or restart in the input,
+only pauses, deterministic on replay (+1.931 s, 81 ticks), and an image whose
+verify hook also reported its counts showed a report with two keys journaled,
+two keys listed and two keys missing, which no single listing can produce.
+Both hooks now keep their scratch files per instance (`/run/verify.<pid>`).
+
+The schedule a report rests on is bound to the image it was found on:
+repacking the same binaries under other paths moved the guest's timing by a
+few ticks, and reports stop replaying across that change.
+
+On the corrected hook, a campaign of 4000 executions on 3.5.2 (250 ms
+horizon, 8 workers, `faultlab.puts=20`, 101 minutes of wall time) found
+nothing: no oracle violation, no abandoned guest, the deepest schedule
+reaching five finished hooks with eight in flight. The reproduction this
+entry claims is therefore still open. The kill window the searcher reaches
+is quantized to the agent's tick (below), while the upstream window is the
+gap between a batch commit and the applies it covers, so the next step is a
+wider window: a larger `faultlab.batch_interval`, a heavier put load, or
+both. The 3.5.3 control campaign on the same input space, 4000 executions
+in 111 minutes, also found nothing and abandoned no guest.
+
+With the window widened (`faultlab.batch_interval=50ms`, `faultlab.puts=40`,
+otherwise the same campaign), 4000 executions on 3.5.2 in 113 minutes again
+found nothing and abandoned no guest, the deepest schedule reaching seven
+finished hooks with eight in flight and the member killed along the way.
+The 3.5.3 control at the same window ran 3831 executions to its two-hour
+wall limit with the same result.
+
+The fault agent applies a kill at its next reconcile tick after the window
+opens, so kills land at the window's start plus up to one tick rather than
+at any microsecond; the 1 ms batch interval keeps the window wide enough for
+that quantization.

@@ -310,6 +310,21 @@ impl RunPage {
         }
     }
 
+    /// Clear the kernel-written injectability report (`ready_for_interrupt_injection`,
+    /// `if_flag`). KVM refreshes both at every exit, so after a restore into a
+    /// used vCPU they describe the displaced timeline: queueing a vector on
+    /// their say-so while the restored guest has interrupts disabled fails the
+    /// next entry with an invalid guest state. Cleared, the planner requests an
+    /// interrupt window instead, exactly as on a fresh vCPU.
+    pub(crate) fn clear_injection_readiness(&self) {
+        // SAFETY: as above; in-place writes of plain top-level fields that the
+        // kernel overwrites on its next return to userspace.
+        unsafe {
+            (*self.run).ready_for_interrupt_injection = 0;
+            (*self.run).if_flag = 0;
+        }
+    }
+
     /// Set `kvm_run.request_interrupt_window` (user → kernel): when non-zero, the
     /// next `KVM_RUN` exits with `KVM_EXIT_IRQ_WINDOW_OPEN` as soon as the guest is
     /// injectable, so a vector that could not be delivered immediately is retried

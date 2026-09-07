@@ -138,15 +138,6 @@ pub enum VmmError {
     /// backend-dependent RDTSC/RDRAND, or an MSR access with no V-time backing).
     #[error("contract violation: {0}")]
     ContractViolation(String),
-    /// The physical host fails one or more x86 CPU contract host-homogeneity
-    /// assertions (family/model/stepping, microcode, MXCSR-mask, MAXPHYADDR,
-    /// RTM-disabled, or a variance-instruction absence). `boot` refuses to install
-    /// the frozen policy or enter the guest on such a host — same-seed runs on a
-    /// CPU outside the determinism domain would diverge in native instruction/FPU
-    /// behavior while claiming the frozen contract. The string lists every failed
-    /// assertion (expected vs. observed).
-    #[error("host-baseline assertion failed: {0}")]
-    HostAssert(String),
     /// A V-time clock config was rejected (e.g. on snapshot restore). Never a
     /// panic — the malformed config is surfaced.
     #[error("v-time error: {0}")]
@@ -748,10 +739,10 @@ where
     /// RDTSCP/IO/MSR/CPUID completions are **idempotent on replay** (positional
     /// work / re-queried device-or-contract value), so they do not set this.
     pub(crate) rng_completion_staged: bool,
-    /// `true` when the **last serviced exit staged *any* backend completion** (a
-    /// read-style IO/MMIO load, an `Rdmsr`/`Wrmsr`, a `Cpuid`, or a determinism
-    /// `Rdtsc`/`Rdtscp`/`Rdrand`/`Rdseed`) whose register-write/RIP-advance is only
-    /// committed on the **next** `KVM_RUN`. Superset of [`Self::rng_completion_staged`]
+    /// `true` when the **last serviced exit staged *any* backend completion** (an
+    /// IO/MMIO access in either direction, an `Rdmsr`/`Wrmsr`, a `Cpuid`, or a
+    /// determinism `Rdtsc`/`Rdtscp`/`Rdrand`/`Rdseed`) whose register-write/RIP-advance
+    /// is only committed on the **next** `KVM_RUN`. Superset of [`Self::rng_completion_staged`]
     /// (which is the *non-idempotent* RNG subset). A snapshot may be *saved* at such a
     /// boundary for non-RNG exits (restore re-executes the instruction idempotently),
     /// but a snapshot must **not be restored into a backend that has one staged**: the
@@ -839,6 +830,11 @@ where
 
     pub(crate) fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// Host-only cancellation latch; see [`Backend::cancellation_flag`].
+    pub fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.backend.cancellation_flag()
     }
 
     /// The vendor's device state ([`Vendor::Devices`]).
@@ -1716,16 +1712,16 @@ where
     /// post-commit trace failures are classified as `Backend` so callers must
     /// discard the partially restored VM.
     pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
-        // 0. Refuse if **any** backend completion is staged (not just RNG). A
-        //    read-style / MSR / CPUID / determinism exit this VM serviced leaves a
-        //    pending reg-write/RIP-advance in the backend's `kvm_run`; `Backend::restore`
+        // 0. Refuse if **any** backend completion is staged (not just RNG). An
+        //    IO/MMIO/MSR/CPUID/determinism exit this VM serviced leaves a pending
+        //    reg-write/RIP-advance in the backend's `kvm_run`; `Backend::restore`
         //    does not clear it, so the next run would commit the *old* exit's
         //    completion over the restored state. Restore only into a fresh backend, or
         //    complete and explicitly retire the old exit before restoring.
         if self.completion_staged {
             return Err(VmmError::ContractViolation(
-                "restore_vm_state into a backend with a staged completion: the VM just serviced a \
-                 read/MSR/CPUID/determinism exit whose completion is pending in kvm_run and is not \
+                "restore_vm_state into a backend with a staged completion: the VM just serviced an \
+                 IO/MMIO/MSR/CPUID/determinism exit whose completion is pending in kvm_run and is not \
                  cleared by restore — it would commit the old exit on the next run. Complete and \
                  retire the old exit first, or use a freshly-booted VM."
                     .to_string(),
@@ -4265,14 +4261,6 @@ where
             Some(s) => s.clone(),
             None => self.backend.save().unwrap_or_default(),
         }
-    }
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-impl Vmm<vmm_backend::KvmBackend> {
-    /// Host-only cancellation latch; see `KvmBackend::cancellation_flag`.
-    pub fn kvm_cancellation_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        self.backend.cancellation_flag()
     }
 }
 

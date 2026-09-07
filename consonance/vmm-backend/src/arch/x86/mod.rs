@@ -36,8 +36,9 @@ impl Arch for X86 {
 /// deadline) live in [`CommonExit`](crate::CommonExit).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum X86Exit {
-    /// Port I/O. `write = Some(v)` is `OUT(v)` (no completion); `write = None`
-    /// is `IN`, resolved by `complete_read`.
+    /// Port I/O. `write = Some(v)` is `OUT(v)`; `write = None` is `IN`,
+    /// resolved by `complete_read`. Both leave a completion in the backend:
+    /// KVM advances `RIP` past the instruction only on the next `KVM_RUN`.
     Io {
         /// I/O port.
         port: u16,
@@ -104,8 +105,12 @@ impl ArchExit for X86Exit {
     }
 
     fn stages_completion(&self) -> bool {
+        // Every surfaced x86 exit is finished by KVM on the next entry. An
+        // `OUT` needs no data from userspace, but its `RIP` advance is still
+        // deferred (`complete_fast_pio_out`), and KVM applies it to whatever
+        // registers the vCPU holds by then.
         match self {
-            X86Exit::Io { write: None, .. }
+            X86Exit::Io { .. }
             | X86Exit::Rdmsr { .. }
             | X86Exit::Wrmsr { .. }
             | X86Exit::Cpuid { .. }
@@ -113,7 +118,6 @@ impl ArchExit for X86Exit {
             | X86Exit::Rdtscp
             | X86Exit::Rdrand { .. }
             | X86Exit::Rdseed { .. } => true,
-            X86Exit::Io { write: Some(_), .. } => false,
         }
     }
 }

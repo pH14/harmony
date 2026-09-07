@@ -17,6 +17,8 @@ control-proto = { path = "../../consonance/control-proto", version = "=0.1.0", o
 environment = { path = "../../consonance/environment", version = "=0.1.0", optional = true }
 vmm-backend = { path = "../../consonance/vmm-backend", version = "=0.1.0", optional = true }
 vmm-core = { path = "../../consonance/vmm-core", version = "=0.1.0", optional = true }
+# The adapter's stall watchdog interrupts a vCPU thread with a signal.
+libc = { version = "=0.2.189", optional = true }
 
 [features]
 consonance = [
@@ -25,6 +27,7 @@ consonance = [
     "dep:environment",
     "dep:vmm-backend",
     "dep:vmm-core",
+    "dep:libc",
 ]
 
 [[bin]]

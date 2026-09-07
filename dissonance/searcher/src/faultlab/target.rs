@@ -18,16 +18,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::target::ExitKind;
 
-/// Virtual nanoseconds one action runs for before its endpoint is sealed.
-pub const HORIZON_NANOS: u64 = 2_000_000_000;
+/// Virtual nanoseconds one action runs for before its endpoint is sealed,
+/// unless the campaign sets its own horizon.
+pub const DEFAULT_HORIZON_NANOS: u64 = 2_000_000_000;
 /// Virtual nanoseconds of one guest fault-agent reconcile tick. A `Pause`
 /// duration is expressed in these because the agent can only observe a window
 /// boundary on a tick.
 pub const AGENT_TICK_NANOS: u64 = 10_000_000;
-/// Virtual nanoseconds a `Restart` holds a node down before the agent sees the
-/// window leave and starts it again. Held to a fraction of the horizon so the
-/// restarted node is observable inside the same action.
-pub const RESTART_DOWN_NANOS: u64 = HORIZON_NANOS / 4;
+/// A `Restart` holds a node down for this fraction of the horizon before the
+/// agent sees the window leave and starts it again, so the restarted node is
+/// observable inside the same action.
+const RESTART_DOWN_DIVISOR: u64 = 4;
 /// Largest action count one fault-library input may carry.
 pub const MAX_FAULTLAB_ACTIONS: usize = 256;
 /// Seed of the fault-library environment; the search perturbs the standing
@@ -50,6 +51,8 @@ pub mod reg {
     pub const UNEXPECTED_DEATHS: u32 = 6;
     /// Nodes the agent restarted.
     pub const RESTARTS: u32 = 7;
+    /// Threads the guest kernel parked at a place.
+    pub const PARKED: u32 = 8;
 }
 
 const NS_SHIFT: u32 = 24;
@@ -80,6 +83,33 @@ pub enum FaultAction {
     Hook(u32),
     /// Inject one interrupt vector at the start of the horizon.
     Interrupt(u32),
+    /// Pause one node at seeded-random control-flow edges for the whole
+    /// horizon: about one pause of `hold_us` microseconds every `every`
+    /// edges. Only a node built with the edge runtime honours it.
+    Jitter {
+        /// The node.
+        node: u16,
+        /// Seeds the draw of the pause edges.
+        seed: u16,
+        /// Mean number of edges between pauses.
+        every: u32,
+        /// Length of each pause in microseconds.
+        hold_us: u32,
+    },
+    /// Hold one thread of a node at an instruction for the horizon: the
+    /// thread that reaches `addr` for the `hits`-th time stops there, before
+    /// the instruction runs, for `hold_us` microseconds. The guest kernel
+    /// counts and holds, so the node sees only time.
+    Park {
+        /// The node.
+        node: u16,
+        /// User virtual address of the instruction in the node's process.
+        addr: u64,
+        /// The hit that parks, counted from 1.
+        hits: u32,
+        /// Length of the hold in microseconds.
+        hold_us: u32,
+    },
 }
 
 /// Portable campaign snapshot: the action prefix that reaches an endpoint plus
@@ -114,19 +144,31 @@ pub struct ActionDelta {
     pub perturb: Option<StagedPerturb>,
 }
 
-/// The half-open window the action at `index` owns, measured from the root
-/// seal. Saturating so a long input can never wrap the V-time axis.
-#[must_use]
-pub fn action_window(root_seal: u64, index: usize) -> (u64, u64) {
-    let offset = (index as u64).saturating_mul(HORIZON_NANOS);
-    let start = root_seal.saturating_add(offset);
-    (start, start.saturating_add(HORIZON_NANOS))
+/// The tiling every action window is cut from: equal horizons laid end to end
+/// from the root seal.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ActionWindows {
+    /// The sealed setup `Moment` the first window starts at.
+    pub root_seal: u64,
+    /// Virtual nanoseconds each window spans.
+    pub horizon_nanos: u64,
 }
 
-/// The deadline a run must reach for the action at `index` to be complete.
-#[must_use]
-pub fn action_deadline(root_seal: u64, index: usize) -> Moment {
-    Moment(action_window(root_seal, index).1)
+impl ActionWindows {
+    /// The half-open window the action at `index` owns. Saturating so a long
+    /// input can never wrap the V-time axis.
+    #[must_use]
+    pub fn window(self, index: usize) -> (u64, u64) {
+        let offset = (index as u64).saturating_mul(self.horizon_nanos);
+        let start = self.root_seal.saturating_add(offset);
+        (start, start.saturating_add(self.horizon_nanos))
+    }
+
+    /// The deadline a run must reach for the action at `index` to be complete.
+    #[must_use]
+    pub fn deadline(self, index: usize) -> Moment {
+        Moment(self.window(index).1)
+    }
 }
 
 fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingFault {
@@ -141,6 +183,7 @@ fn standing(target: Vec<u8>, window: (u64, u64)) -> StandingFault {
 #[must_use]
 pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
     let (start, end) = window;
+    let horizon = end.saturating_sub(start);
     match action {
         FaultAction::Wait => ActionDelta::default(),
         FaultAction::Kill(node) => ActionDelta {
@@ -155,7 +198,7 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
             // observes the resumed node rather than inheriting a stopped one.
             let held = u64::from(ticks)
                 .saturating_mul(AGENT_TICK_NANOS)
-                .min(HORIZON_NANOS.saturating_sub(AGENT_TICK_NANOS))
+                .min(horizon.saturating_sub(AGENT_TICK_NANOS))
                 .max(AGENT_TICK_NANOS);
             ActionDelta {
                 standing: Some(standing(
@@ -168,13 +211,51 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
         FaultAction::Restart(node) => ActionDelta {
             standing: Some(standing(
                 process_target(node, &Fault::ProcRestart),
-                (start, start.saturating_add(RESTART_DOWN_NANOS)),
+                (start, start.saturating_add(horizon / RESTART_DOWN_DIVISOR)),
             )),
             perturb: None,
         },
         FaultAction::Hook(id) => ActionDelta {
             standing: Some(standing(
                 process_target(0, &Fault::RunHook(id)),
+                (start, end),
+            )),
+            perturb: None,
+        },
+        FaultAction::Jitter {
+            node,
+            seed,
+            every,
+            hold_us,
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcJitter {
+                        seed: u32::from(seed),
+                        every,
+                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                    },
+                ),
+                (start, end),
+            )),
+            perturb: None,
+        },
+        FaultAction::Park {
+            node,
+            addr,
+            hits,
+            hold_us,
+        } => ActionDelta {
+            standing: Some(standing(
+                process_target(
+                    node,
+                    &Fault::ProcPark {
+                        addr,
+                        hits,
+                        hold: Span(u64::from(hold_us).saturating_mul(1_000)),
+                    },
+                ),
                 (start, end),
             )),
             perturb: None,
@@ -191,18 +272,18 @@ pub fn action_delta(action: FaultAction, window: (u64, u64)) -> ActionDelta {
 
 /// Every action's delta in input order.
 #[must_use]
-pub fn action_deltas(root_seal: u64, actions: &[FaultAction]) -> Vec<ActionDelta> {
+pub fn action_deltas(windows: ActionWindows, actions: &[FaultAction]) -> Vec<ActionDelta> {
     actions
         .iter()
         .enumerate()
-        .map(|(index, action)| action_delta(*action, action_window(root_seal, index)))
+        .map(|(index, action)| action_delta(*action, windows.window(index)))
         .collect()
 }
 
 /// The standing-fault list an input installs, in input order.
 #[must_use]
-pub fn standing_faults(root_seal: u64, actions: &[FaultAction]) -> Vec<StandingFault> {
-    action_deltas(root_seal, actions)
+pub fn standing_faults(windows: ActionWindows, actions: &[FaultAction]) -> Vec<StandingFault> {
+    action_deltas(windows, actions)
         .into_iter()
         .filter_map(|delta| delta.standing)
         .collect()
@@ -212,12 +293,12 @@ pub fn standing_faults(root_seal: u64, actions: &[FaultAction]) -> Vec<StandingF
 /// the input's whole standing-fault list. Host-plane perturbations are staged
 /// separately and the backend records them into this environment itself.
 #[must_use]
-pub fn reproducer(root_seal: u64, actions: &[FaultAction]) -> Reproducer {
+pub fn reproducer(windows: ActionWindows, actions: &[FaultAction]) -> Reproducer {
     let mut spec = EnvSpec::Seeded {
         seed: FAULTLAB_SEED,
         policy: FaultPolicy::none(),
     };
-    spec.set_standing(standing_faults(root_seal, actions));
+    spec.set_standing(standing_faults(windows, actions));
     Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: spec.encode(),
@@ -349,6 +430,8 @@ pub struct FaultObservations {
     pub unexpected_deaths: u64,
     /// Nodes the agent restarted.
     pub restarts: u64,
+    /// Threads the guest kernel parked at a place.
+    pub parked: u64,
     /// The `sometimes` bitmap the agent publishes for the first 48 sites.
     pub sometimes_register: u64,
     /// Every `sometimes` site hit, decoded from namespace-1 hits.
@@ -372,6 +455,7 @@ impl FaultObservations {
             hooks_finished: value(reg::HOOKS_FINISHED),
             unexpected_deaths: value(reg::UNEXPECTED_DEATHS),
             restarts: value(reg::RESTARTS),
+            parked: value(reg::PARKED),
             sometimes_register: value(reg::SOMETIMES),
             sometimes: capture.sometimes.clone(),
             violations: capture.violations.clone(),
@@ -413,6 +497,10 @@ mod tests {
     use environment::decode_process_target;
 
     const ROOT: u64 = 1_000;
+    const WINDOWS: ActionWindows = ActionWindows {
+        root_seal: ROOT,
+        horizon_nanos: DEFAULT_HORIZON_NANOS,
+    };
 
     fn assert_event(point: u32, disposition: u8) -> (u64, u32, Vec<u8>) {
         (
@@ -430,16 +518,25 @@ mod tests {
 
     #[test]
     fn windows_tile_the_axis_from_the_root_seal() {
-        assert_eq!(action_window(ROOT, 0), (1_000, 1_000 + HORIZON_NANOS));
-        let (start, end) = action_window(ROOT, 3);
-        assert_eq!(start, 1_000 + 3 * HORIZON_NANOS);
-        assert_eq!(end, start + HORIZON_NANOS);
-        assert_eq!(action_deadline(ROOT, 3), Moment(end));
+        assert_eq!(WINDOWS.window(0), (1_000, 1_000 + DEFAULT_HORIZON_NANOS));
+        let (start, end) = WINDOWS.window(3);
+        assert_eq!(start, 1_000 + 3 * DEFAULT_HORIZON_NANOS);
+        assert_eq!(end, start + DEFAULT_HORIZON_NANOS);
+        assert_eq!(WINDOWS.deadline(3), Moment(end));
+        let short = ActionWindows {
+            horizon_nanos: 100_000_000,
+            ..WINDOWS
+        };
+        assert_eq!(short.window(3), (1_000 + 300_000_000, 1_000 + 400_000_000));
     }
 
     #[test]
     fn a_long_input_saturates_instead_of_wrapping() {
-        let (start, end) = action_window(u64::MAX - 1, usize::MAX);
+        let (start, end) = ActionWindows {
+            root_seal: u64::MAX - 1,
+            ..WINDOWS
+        }
+        .window(usize::MAX);
         assert_eq!(start, u64::MAX);
         assert_eq!(end, u64::MAX);
     }
@@ -447,61 +544,73 @@ mod tests {
     #[test]
     fn wait_installs_nothing() {
         assert_eq!(
-            action_delta(FaultAction::Wait, action_window(ROOT, 0)),
+            action_delta(FaultAction::Wait, WINDOWS.window(0)),
             ActionDelta::default()
         );
-        assert!(standing_faults(ROOT, &[FaultAction::Wait, FaultAction::Wait]).is_empty());
+        assert!(standing_faults(WINDOWS, &[FaultAction::Wait, FaultAction::Wait]).is_empty());
     }
 
     #[test]
     fn kill_holds_the_whole_horizon_for_its_node() {
-        let delta = action_delta(FaultAction::Kill(2), action_window(ROOT, 1));
+        let delta = action_delta(FaultAction::Kill(2), WINDOWS.window(1));
         let fault = delta.standing.expect("kill installs a standing fault");
         assert_eq!(fault.class, DecisionClass::Process);
         assert_eq!(
             decode_process_target(&fault.target),
             Some((2, Fault::ProcKill))
         );
-        assert_eq!(fault.window, action_window(ROOT, 1));
+        assert_eq!(fault.window, WINDOWS.window(1));
         assert!(delta.perturb.is_none());
     }
 
     #[test]
     fn pause_lifts_inside_its_own_horizon() {
-        for ticks in [0_u32, 1, 7, u32::MAX] {
-            let (start, end) = action_window(ROOT, 0);
-            let delta = action_delta(FaultAction::Pause(1, ticks), (start, end));
-            let fault = delta.standing.expect("pause installs a standing fault");
-            let (node, decoded) = decode_process_target(&fault.target).expect("decode");
-            assert_eq!(node, 1);
-            let held = match decoded {
-                Fault::ProcPause(Span(held)) => held,
-                other => panic!("pause encoded as {other:?}"),
-            };
-            assert_eq!(fault.window.0, start);
-            assert_eq!(fault.window.1, start + held);
-            assert!(fault.window.1 < end, "a pause must lift before the horizon");
-            assert!(held >= AGENT_TICK_NANOS, "a pause must span a whole tick");
+        let short = ActionWindows {
+            horizon_nanos: 5 * AGENT_TICK_NANOS,
+            ..WINDOWS
+        };
+        for windows in [WINDOWS, short] {
+            for ticks in [0_u32, 1, 7, u32::MAX] {
+                let (start, end) = windows.window(0);
+                let delta = action_delta(FaultAction::Pause(1, ticks), (start, end));
+                let fault = delta.standing.expect("pause installs a standing fault");
+                let (node, decoded) = decode_process_target(&fault.target).expect("decode");
+                assert_eq!(node, 1);
+                let held = match decoded {
+                    Fault::ProcPause(Span(held)) => held,
+                    other => panic!("pause encoded as {other:?}"),
+                };
+                assert_eq!(fault.window.0, start);
+                assert_eq!(fault.window.1, start + held);
+                assert!(fault.window.1 < end, "a pause must lift before the horizon");
+                assert!(held >= AGENT_TICK_NANOS, "a pause must span a whole tick");
+            }
         }
     }
 
     #[test]
     fn restart_leaves_its_window_inside_the_horizon() {
-        let (start, end) = action_window(ROOT, 0);
-        let fault = action_delta(FaultAction::Restart(0), (start, end))
-            .standing
-            .expect("restart installs a standing fault");
-        assert_eq!(
-            decode_process_target(&fault.target),
-            Some((0, Fault::ProcRestart))
-        );
-        assert_eq!(fault.window.1, start + RESTART_DOWN_NANOS);
-        assert!(fault.window.1 < end);
+        for horizon_nanos in [DEFAULT_HORIZON_NANOS, 100_000_000] {
+            let windows = ActionWindows {
+                horizon_nanos,
+                ..WINDOWS
+            };
+            let (start, end) = windows.window(0);
+            let fault = action_delta(FaultAction::Restart(0), (start, end))
+                .standing
+                .expect("restart installs a standing fault");
+            assert_eq!(
+                decode_process_target(&fault.target),
+                Some((0, Fault::ProcRestart))
+            );
+            assert_eq!(fault.window.1, start + horizon_nanos / 4);
+            assert!(fault.window.1 < end);
+        }
     }
 
     #[test]
     fn hook_targets_the_agent_rather_than_a_node() {
-        let fault = action_delta(FaultAction::Hook(9), action_window(ROOT, 0))
+        let fault = action_delta(FaultAction::Hook(9), WINDOWS.window(0))
             .standing
             .expect("hook installs a standing fault");
         assert_eq!(
@@ -512,8 +621,8 @@ mod tests {
 
     #[test]
     fn interrupt_stages_a_host_fault_and_no_standing_fault() {
-        let (start, _) = action_window(ROOT, 2);
-        let delta = action_delta(FaultAction::Interrupt(0x30), action_window(ROOT, 2));
+        let (start, _) = WINDOWS.window(2);
+        let delta = action_delta(FaultAction::Interrupt(0x30), WINDOWS.window(2));
         assert!(delta.standing.is_none());
         let perturb = delta.perturb.expect("interrupt stages a host fault");
         assert_eq!(perturb.at, Moment(start));
@@ -531,10 +640,10 @@ mod tests {
             FaultAction::Interrupt(32),
             FaultAction::Kill(0),
         ];
-        let faults = standing_faults(ROOT, &actions);
+        let faults = standing_faults(WINDOWS, &actions);
         assert_eq!(faults.len(), 2);
-        assert_eq!(faults[0].window, action_window(ROOT, 0));
-        assert_eq!(faults[1].window, action_window(ROOT, 3));
+        assert_eq!(faults[0].window, WINDOWS.window(0));
+        assert_eq!(faults[1].window, WINDOWS.window(3));
         assert!(
             faults
                 .iter()
@@ -545,13 +654,13 @@ mod tests {
     #[test]
     fn the_reproducer_round_trips_the_standing_list() {
         let actions = [FaultAction::Kill(1), FaultAction::Hook(2)];
-        let reproducer = reproducer(ROOT, &actions);
+        let reproducer = reproducer(WINDOWS, &actions);
         assert_eq!(reproducer.blob_version, EnvSpec::BLOB_VERSION);
         let spec = EnvSpec::decode(&reproducer.bytes).expect("decode reproducer");
         // The encoder canonicalizes the list, so compare it as a set.
         let key = |fault: &StandingFault| (fault.target.clone(), fault.window);
         let mut decoded = spec.standing().iter().map(key).collect::<Vec<_>>();
-        let mut expected = standing_faults(ROOT, &actions)
+        let mut expected = standing_faults(WINDOWS, &actions)
             .iter()
             .map(key)
             .collect::<Vec<_>>();
@@ -563,8 +672,17 @@ mod tests {
     #[test]
     fn the_reproducer_is_a_function_of_the_actions_alone() {
         let actions = [FaultAction::Restart(3), FaultAction::Wait];
-        assert_eq!(reproducer(ROOT, &actions), reproducer(ROOT, &actions));
-        assert_ne!(reproducer(ROOT, &actions), reproducer(2_000, &actions));
+        assert_eq!(reproducer(WINDOWS, &actions), reproducer(WINDOWS, &actions));
+        let moved = ActionWindows {
+            root_seal: 2_000,
+            ..WINDOWS
+        };
+        let shorter = ActionWindows {
+            horizon_nanos: 100_000_000,
+            ..WINDOWS
+        };
+        assert_ne!(reproducer(WINDOWS, &actions), reproducer(moved, &actions));
+        assert_ne!(reproducer(WINDOWS, &actions), reproducer(shorter, &actions));
     }
 
     #[test]

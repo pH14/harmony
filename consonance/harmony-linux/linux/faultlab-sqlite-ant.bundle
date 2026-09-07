@@ -1,0 +1,4 @@
+node writer0 /w/ant-sqlite-node.sh 0
+node writer1 /w/ant-sqlite-node.sh 1
+ready /w/ant-sqlite-ready.sh
+hook 1 /w/ant-sqlite-hooks.sh 1

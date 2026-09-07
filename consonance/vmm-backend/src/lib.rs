@@ -71,8 +71,7 @@ mod hvf;
 mod arm64_kvm_sys;
 
 // The **x86-64 KVM substrate**, gated on the architecture it traps as well as the
-// OS (`all(target_os = "linux", target_arch = "x86_64")` — the same seam
-// `vmm-core`'s `hostassert` already uses). `kvm_bindings` exposes a *different*
+// OS (`all(target_os = "linux", target_arch = "x86_64")`). `kvm_bindings` exposes a *different*
 // `kvm_regs`/`kvm_sregs` on each arch, so this code is not merely Linux-only, it is
 // x86-64-only: gating it on the OS alone made the crate fail to even `cargo check`
 // on `aarch64-unknown-linux-gnu`, which would have blocked the additive ARM backend

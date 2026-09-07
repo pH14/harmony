@@ -1,0 +1,117 @@
+diff --git a/src/wal.c b/src/wal.c
+index 0698521..a7ebbc1 100644
+--- a/src/wal.c
++++ b/src/wal.c
+@@ -251,6 +251,23 @@
+ 
+ #include "wal.h"
+ 
++/*
++** Antithesis instrumentation hooks (see the antithesis/ directory).
++**
++** ANT_REACH() markers flag that control reached a rare/interesting state in the
++** WAL commit/checkpoint/reset machinery. They are emitted via the Antithesis
++** fallback SDK (JSONL), implemented in antithesis/antithesis_fallback.c, and are
++** used by Antithesis to snapshot and branch from those states during testing.
++**
++** They compile to nothing unless the build defines SQLITE_ENABLE_ANTITHESIS, so
++** an ordinary SQLite build is completely unaffected.
++*/
++#ifdef SQLITE_ENABLE_ANTITHESIS
++# include "antithesis_fallback.h"   /* provides ANT_REACH + the shared SDK */
++#else
++# define ANT_REACH(zMsg)
++#endif
++
+ /*
+ ** Trace output macros
+ */
+@@ -1382,6 +1399,7 @@ static int walIndexAppend(Wal *pWal, u32 iFrame, u32 iPage){
+ ** the necessary locks, this routine returns SQLITE_BUSY.
+ */
+ static int walIndexRecover(Wal *pWal){
++  ANT_REACH("wal-index recovery ran (rebuilding index from WAL file)");
+   int rc;                         /* Return Code */
+   i64 nSize;                      /* Size of log file */
+   u32 aFrameCksum[2] = {0, 0};
+@@ -2144,6 +2162,7 @@ static int walPagesize(Wal *pWal){
+ ** one obtained from sqlite3_randomness()).
+ */
+ static void walRestartHdr(Wal *pWal, u32 salt1){
++  ANT_REACH("wal-reset: WAL wrapped back to start (walRestartHdr)");
+   volatile WalCkptInfo *pInfo = walCkptInfo(pWal);
+   int i;                          /* Loop counter */
+   u32 *aSalt = pWal->hdr.aSalt;   /* Big-endian salt values */
+@@ -2214,6 +2233,7 @@ static int walCheckpoint(
+   testcase( szPage>=65536 );
+   pInfo = walCkptInfo(pWal);
+   if( pInfo->nBackfill<pWal->hdr.mxFrame ){
++    ANT_REACH("checkpoint: entered backfill body (nBackfill<mxFrame)");
+ 
+     /* EVIDENCE-OF: R-62920-47450 The busy-handler callback is never invoked
+     ** in the SQLITE_CHECKPOINT_PASSIVE mode. */
+@@ -2237,6 +2257,7 @@ static int walCheckpoint(
+           walUnlockExclusive(pWal, WAL_READ_LOCK(i), 1);
+         }else if( rc==SQLITE_BUSY ){
+           mxSafeFrame = y;
++        ANT_REACH("checkpoint: safe frame limited by an active reader");
+           xBusy = 0;
+         }else{
+           goto walcheckpoint_out;
+@@ -2300,13 +2321,15 @@ static int walCheckpoint(
+         iOffset = (iDbpage-1)*(i64)szPage;
+         testcase( IS_BIG_INT(iOffset) );
+         rc = sqlite3OsWrite(pWal->pDbFd, zBuf, szPage, iOffset);
++        ANT_REACH("checkpoint: wrote a backfilled page into the db file");
+         if( rc!=SQLITE_OK ) break;
+       }
+       sqlite3OsFileControl(pWal->pDbFd, SQLITE_FCNTL_CKPT_DONE, 0);
+ 
+       /* If work was actually accomplished... */
+       if( rc==SQLITE_OK ){
+-        if( mxSafeFrame==walIndexHdr(pWal)->mxFrame ){
++        if( mxSafeFrame!=walIndexHdr(pWal)->mxFrame ) ANT_REACH("checkpoint: live mxFrame differs from snapshot during backfill");
++        if( mxSafeFrame==walIndexHdr(pWal)->mxFrame ){ ANT_REACH("checkpoint: fully drained WAL, truncating db file");
+           i64 szDb = pWal->hdr.nPage*(i64)szPage;
+           testcase( IS_BIG_INT(szDb) );
+           rc = sqlite3OsTruncate(pWal->pDbFd, szDb);
+@@ -2316,6 +2339,7 @@ static int walCheckpoint(
+         }
+         if( rc==SQLITE_OK ){
+           AtomicStore(&pInfo->nBackfill, mxSafeFrame); SEH_INJECT_FAULT;
++          ANT_REACH("checkpoint: advanced nBackfill to mxSafeFrame");
+         }
+       }
+ 
+@@ -3139,6 +3163,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+           walUnlockShared(pWal, WAL_READ_LOCK(0));
+           return WAL_RETRY;
+         }
++        ANT_REACH("reader: using read-mark 0 (WAL fully backfilled, ignoring WAL)");
+         pWal->readLock = 0;
+         return SQLITE_OK;
+       }else if( rc!=SQLITE_BUSY ){
+@@ -4063,6 +4088,7 @@ static int walFrames(
+   */
+   iFrame = pWal->hdr.mxFrame;
+   if( iFrame==0 ){
++    ANT_REACH("writer: writing header for a fresh/reset WAL (iFrame==0)");
+     u8 aWalHdr[WAL_HDRSIZE];      /* Buffer to assemble wal-header in */
+     u32 aCksum[2];                /* Checksum for wal-header */
+ 
+@@ -4126,6 +4152,7 @@ static int walFrames(
+       VVA_ONLY(rc =) walFindFrame(pWal, p->pgno, &iWrite);
+       assert( rc==SQLITE_OK || iWrite==0 );
+       if( iWrite>=iFirst ){
++        ANT_REACH("writer: overwrote an existing WAL frame in place");
+         i64 iOff = walFrameOffset(iWrite, szPage) + WAL_FRAME_HDRSIZE;
+         void *pData;
+         if( pWal->iReCksum==0 || iWrite<pWal->iReCksum ){
+@@ -4337,6 +4364,7 @@ int sqlite3WalCheckpoint(
+           pWal->writeLock = 1;
+         }else if( rc==SQLITE_BUSY ){
+           eMode2 = SQLITE_CHECKPOINT_PASSIVE;
++          ANT_REACH("checkpoint: downgraded to PASSIVE (writer lock busy)");
+           xBusy2 = 0;
+           rc = SQLITE_OK;
+         }

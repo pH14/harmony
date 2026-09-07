@@ -10,6 +10,7 @@
 //! | 5 | bitmap of the `assert_sometimes` ids a hook reported |
 //! | 6 | node exits with no fault in force |
 //! | 7 | node starts after the initial one |
+//! | 8 | threads the guest kernel parked at a place |
 //!
 //! The tick register is emitted every tick so the host always has a fresh
 //! liveness signal; the others are emitted only when their value changes, which
@@ -29,6 +30,8 @@ pub const REG_SOMETIMES: u32 = 5;
 pub const REG_UNEXPECTED_DEATHS: u32 = 6;
 /// Node starts after the initial one.
 pub const REG_RESTARTS: u32 = 7;
+/// Threads the guest kernel parked at a place.
+pub const REG_PARKED: u32 = 8;
 
 /// The number of `assert_sometimes` ids [`REG_SOMETIMES`] can hold. A hit at a
 /// higher id still reaches the host as an assertion event; it just has no bit.
@@ -58,12 +61,14 @@ pub struct RegisterSnapshot {
     pub unexpected_deaths: u64,
     /// [`REG_RESTARTS`].
     pub restarts: u64,
+    /// [`REG_PARKED`].
+    pub parked: u64,
 }
 
 impl RegisterSnapshot {
     /// The `(register, value)` pairs in register order.
     #[must_use]
-    pub fn pairs(&self) -> [(u32, u64); 7] {
+    pub fn pairs(&self) -> [(u32, u64); 8] {
         [
             (REG_TICKS, self.ticks),
             (REG_ALIVE, self.alive),
@@ -72,6 +77,7 @@ impl RegisterSnapshot {
             (REG_SOMETIMES, self.sometimes),
             (REG_UNEXPECTED_DEATHS, self.unexpected_deaths),
             (REG_RESTARTS, self.restarts),
+            (REG_PARKED, self.parked),
         ]
     }
 }
@@ -91,7 +97,7 @@ impl Registers {
 
     /// The `(register, value)` pairs to emit for `snapshot`: the tick register
     /// always, every other register whose value moved, and on the first call
-    /// all seven so the host starts from a complete picture.
+    /// all eight so the host starts from a complete picture.
     pub fn updates(&mut self, snapshot: RegisterSnapshot) -> Vec<(u32, u64)> {
         let pairs = snapshot.pairs();
         let updates = match self.last {
@@ -133,6 +139,7 @@ mod tests {
                 (REG_SOMETIMES, 0),
                 (REG_UNEXPECTED_DEATHS, 0),
                 (REG_RESTARTS, 0),
+                (REG_PARKED, 0),
             ]
         );
     }

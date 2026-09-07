@@ -30,6 +30,9 @@ Environment sections).
    `SEEK_HOLE` race, issue #15526; initially misattributed to block cloning). The marquee
    "no fault injection needed" entry: a pure timing race under nominal conditions, found by
    perturbing schedules alone.
+5. `sqlite-wal-reset/` — SQLite 3.7.0–3.51.2 losing committed pages when a writer resets
+   the WAL while a checkpoint is starting (fixed in 3.51.3). Two processes on one file, a
+   pause-at-Moment trigger, `integrity_check` plus a journal read-back oracle.
 
 ## Notes
 

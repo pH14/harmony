@@ -831,6 +831,7 @@ dependencies = [
  "control-proto",
  "criterion",
  "environment",
+ "libc",
  "machine",
  "postcard",
  "serde",

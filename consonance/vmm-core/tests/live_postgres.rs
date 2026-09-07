@@ -53,7 +53,7 @@
 //! the workload never streams. Both gates therefore run patched.
 //!
 //! **Gate honesty (why `#[ignore]`).** These need real + patched KVM, the built
-//! Postgres image, and the `det-cfl-v1` host — none in the default `cargo nextest`
+//! Postgres image — none in the default `cargo nextest`
 //! lane — so they are `#[ignore]`d (like `live_linux_boot.rs`); default CI shows
 //! them not-run, never a vacuous green. Every missing precondition is a loud panic.
 //! macOS builds an empty test binary. Run on the box (build the image first), with
@@ -160,29 +160,6 @@ fn require_kvm() {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
          patched KVM modules, CPU-pinned per .github/workflows/box.yml."
-    );
-}
-
-/// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report
-/// (`boot_linux` would also refuse such a host).
-fn require_host_baseline() {
-    let report = vmm_core::vendor::x86::hostassert::report();
-    let mut all = true;
-    eprintln!("[host-assert] x86 CPU contract baseline:");
-    for o in &report {
-        eprintln!(
-            "[host-assert]   {}  {}: expected {}, observed {}",
-            if o.pass { "PASS" } else { "FAIL" },
-            o.key,
-            o.expected,
-            o.actual
-        );
-        all &= o.pass;
-    }
-    assert!(
-        all,
-        "host CPU is not the det-cfl-v1 baseline — boot_linux cannot run the frozen contract here. \
-         Run on the determinism box (i9-9900K) per .github/workflows/box.yml."
     );
 }
 
@@ -446,11 +423,10 @@ fn assert_uuid_time_shape(tag: &str, out: &BootOutcome) -> String {
 /// executes the workload, streams the query results + postgres' stdout/stderr to
 /// `ttyS0`, and powers off cleanly within budget.
 #[test]
-#[ignore = "box-only live gate (LOADED patched KVM + built Postgres image + det-cfl-v1 host); \
+#[ignore = "box-only live gate (LOADED patched KVM + built Postgres image); \
             run on `ssh <det-box>` with `-- --ignored --nocapture`"]
 fn p1_postgres_runs_and_streams_patched() {
     require_kvm();
-    require_host_baseline();
     eprintln!("[pg] cmdline: {}", cmdline());
     let (_serial, _hash, out) = boot_pg(SEED);
     report("p1", &out);
@@ -501,7 +477,6 @@ fn p1_postgres_runs_and_streams_patched() {
             the LOADED patched KVM and `-- --ignored --nocapture`"]
 fn p2_postgres_deterministic_twice_patched() {
     require_kvm();
-    require_host_baseline();
 
     // boot_pg drops run A's Vmm (and its PMU counter) before we boot run B.
     let (serial_a, hash_a, out_a) = boot_pg(SEED);
@@ -571,7 +546,6 @@ fn p2_postgres_deterministic_twice_patched() {
             box with the LOADED patched KVM and `-- --ignored --nocapture`"]
 fn p3_postgres_seed_sensitivity_patched() {
     require_kvm();
-    require_host_baseline();
 
     // boot_pg drops each run's Vmm (and its PMU counter) before the next boots.
     let (_serial_a, _hash_a, out_a) = boot_pg(SEED);
