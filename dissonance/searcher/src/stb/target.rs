@@ -22,6 +22,9 @@ pub use machine::nes::{ButtonChord, MAX_HOLD_FRAMES, WRAM_SIZE};
 /// A Super Tilt Bro input replayed from the sealed local-match genesis.
 pub type StbInput = crate::search::archive::Input<ButtonChord>;
 
+/// Initial raw stock counter; zero still denotes the final live stock.
+pub const INITIAL_STOCKS: u8 = 4;
+
 const GAME_STATE_INGAME: u8 = 0x00;
 const GAME_STATE_GAMEOVER: u8 = 0x02;
 const GAME_MODE_LOCAL: u8 = 0x00;
@@ -54,6 +57,7 @@ const PLAYER_A_WALLED: usize = 0x64;
 const PLAYER_B_WALLED: usize = 0x65;
 const GAME_WINNER: usize = 0x05db;
 const GLOBAL_GAME_STATE: usize = 0xd4;
+const CONFIG_INITIAL_STOCKS: usize = 0xd9;
 const CONFIG_AI_LEVEL: usize = 0xda;
 const CONFIG_SELECTED_STAGE: usize = 0xdb;
 const CONFIG_GAME_MODE: usize = 0xe2;
@@ -229,7 +233,7 @@ impl<M: Machine> StbTarget<M> {
     pub fn from_machine(mut machine: M) -> Result<Self, MachineError> {
         let wram = read_wram(&machine)?;
         let state = decode_state(&wram)?;
-        validate_genesis(state)?;
+        validate_genesis(state, byte(&wram, CONFIG_INITIAL_STOCKS)?)?;
         let genesis = machine.snapshot()?;
         let observation = StbObservations {
             frame_count: 0,
@@ -318,7 +322,9 @@ impl<M: Machine> StbTarget<M> {
         } else {
             false
         };
-        if self.machine.replay(current).is_err() {
+        if self.machine.replay(current).is_err()
+            || read_wram(&self.machine).as_ref().ok() != Some(&self.current_wram)
+        {
             self.failed = true;
             return false;
         }
@@ -593,10 +599,10 @@ impl<M: Machine> StbTarget<M> {
                         .is_some_and(|prior| gameplay.player_a_stocks < prior.player_a_stocks);
                     let player_b_ko = last_valid_gameplay
                         .is_some_and(|prior| gameplay.player_b_stocks < prior.player_b_stocks);
-                    player_a_ko_count =
-                        player_a_ko_count.max(4_u8.saturating_sub(gameplay.player_a_stocks));
-                    player_b_ko_count =
-                        player_b_ko_count.max(4_u8.saturating_sub(gameplay.player_b_stocks));
+                    player_a_ko_count = player_a_ko_count
+                        .max(INITIAL_STOCKS.saturating_sub(gameplay.player_a_stocks));
+                    player_b_ko_count = player_b_ko_count
+                        .max(INITIAL_STOCKS.saturating_sub(gameplay.player_b_stocks));
                     last_valid_gameplay = Some(gameplay);
                     (player_a_ko, player_b_ko)
                 } else if state.match_over() && !terminal_loss_recorded {
@@ -620,7 +626,7 @@ impl<M: Machine> StbTarget<M> {
                 endpoint_player_a_ko = player_a_ko;
                 endpoint_player_b_ko = player_b_ko;
                 let boundary = spatial_bucket(state) != spatial_bucket(prior_state)
-                    || preference_tuple(state) != preference_tuple(prior_state)
+                    || boundary_fields(state) != boundary_fields(prior_state)
                     || state.game_state != prior_state.game_state;
                 if boundary {
                     let frame_count = self.observation.frame_count.saturating_add(
@@ -859,12 +865,14 @@ impl<M: Machine> Target for StbTarget<M> {
             .import(&snapshot.emulator_state)
             .map_err(|error| error.to_string())?;
         if let Err(error) = self.machine.replay(imported) {
+            self.failed = true;
             let _ = self.machine.drop_snapshot(imported);
             return Err(error.to_string().into());
         }
         if self.current != self.genesis
             && let Err(error) = self.machine.drop_snapshot(self.current)
         {
+            self.failed = true;
             let _ = self.machine.drop_snapshot(imported);
             return Err(error.to_string().into());
         }
@@ -1019,7 +1027,7 @@ fn read_wram<M: Machine>(machine: &M) -> Result<[u8; WRAM_SIZE], MachineError> {
         .map_err(|_| MachineError::Backend("STB system RAM window has invalid length".to_owned()))
 }
 
-fn validate_genesis(state: StbMechanicalState) -> Result<(), MachineError> {
+fn validate_genesis(state: StbMechanicalState, initial_stocks: u8) -> Result<(), MachineError> {
     let Some(gameplay) = state.gameplay else {
         return Err(MachineError::Backend(format!(
             "Super Tilt Bro setup did not reach live local AI match: state={} mode={} ai={} gameplay=none",
@@ -1029,14 +1037,18 @@ fn validate_genesis(state: StbMechanicalState) -> Result<(), MachineError> {
     if state.game_state != GAME_STATE_INGAME
         || state.game_mode != GAME_MODE_LOCAL
         || state.ai_level != 1
-        || gameplay.player_a_stocks == 0
-        || gameplay.player_b_stocks == 0
+        || state.stage != 0
+        || initial_stocks != INITIAL_STOCKS
+        || gameplay.player_a_stocks != INITIAL_STOCKS
+        || gameplay.player_b_stocks != INITIAL_STOCKS
     {
         return Err(MachineError::Backend(format!(
-            "Super Tilt Bro setup did not reach live local AI match: state={} mode={} ai={} player_states=({}, {}) stocks=({}, {})",
+            "Super Tilt Bro setup did not reach live local AI match: state={} mode={} ai={} stage={} initial_stocks={} player_states=({}, {}) stocks=({}, {})",
             state.game_state,
             state.game_mode,
             state.ai_level,
+            state.stage,
+            initial_stocks,
             gameplay.player_a_state,
             gameplay.player_b_state,
             gameplay.player_a_stocks,
@@ -1060,12 +1072,12 @@ pub fn spatial_bucket(state: StbMechanicalState) -> Option<(i16, i16, i16, i16)>
     })
 }
 
-/// Same-location preference: retain damage/stocks/capability information
-/// without multiplying archive locations by every volatile field.
-pub type StbPreference = (u8, u8, u8, u8, u8, u8, bool, bool);
+/// Equality-only fields that trigger observation boundaries. This tuple is
+/// not an ordering: the archive owns progress and capability preferences.
+pub type StbBoundaryFields = (u8, u8, u8, u8, u8, u8, bool, bool);
 
 #[must_use]
-pub fn preference_tuple(state: StbMechanicalState) -> Option<StbPreference> {
+pub fn boundary_fields(state: StbMechanicalState) -> Option<StbBoundaryFields> {
     state.gameplay.map(|gameplay| {
         (
             gameplay.player_a_stocks,
@@ -1083,6 +1095,276 @@ pub fn preference_tuple(state: StbMechanicalState) -> Option<StbPreference> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::BTreeMap;
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct FakeState {
+        wram: Vec<u8>,
+        cursor: usize,
+    }
+
+    struct ScriptedMachine {
+        state: FakeState,
+        timeline: Vec<Vec<u8>>,
+        snapshots: BTreeMap<u64, FakeState>,
+        next_id: u64,
+        staged: Vec<ButtonChord>,
+        frames: Vec<[u8; WRAM_SIZE]>,
+        clock: u64,
+        fail_drop: bool,
+        skip_replay: bool,
+    }
+
+    fn live_wram() -> Vec<u8> {
+        let mut wram = vec![0; WRAM_SIZE];
+        wram[PLAYER_A_STATE] = 5;
+        wram[PLAYER_B_STATE] = 5;
+        wram[PLAYER_A_STOCKS] = INITIAL_STOCKS;
+        wram[PLAYER_B_STOCKS] = INITIAL_STOCKS;
+        wram[CONFIG_INITIAL_STOCKS] = INITIAL_STOCKS;
+        wram[CONFIG_AI_LEVEL] = 1;
+        wram
+    }
+
+    impl ScriptedMachine {
+        fn match_timeline() -> Self {
+            let mut timeline = vec![live_wram()];
+            for stocks in (0..INITIAL_STOCKS).rev() {
+                let mut wram = live_wram();
+                wram[PLAYER_A_STOCKS] = stocks;
+                wram[PLAYER_B_STOCKS] = stocks;
+                timeline.push(wram);
+            }
+            let mut invalid = timeline.last().unwrap().clone();
+            invalid[PLAYER_B_STATE] = PLAYER_STATE_INNEXISTANT;
+            invalid[PLAYER_B_STOCKS] = 255;
+            timeline.extend([invalid.clone(), invalid.clone()]);
+            invalid[GLOBAL_GAME_STATE] = GAME_STATE_GAMEOVER;
+            invalid[GAME_WINNER] = 0;
+            invalid[PLAYER_A_STOCKS] = 103;
+            invalid[PLAYER_B_STOCKS] = 89;
+            timeline.push(invalid.clone());
+            // A post-terminal frame must not become the saved endpoint.
+            invalid[GAME_WINNER] = 1;
+            timeline.push(invalid);
+            Self {
+                state: FakeState {
+                    wram: timeline[0].clone(),
+                    cursor: 0,
+                },
+                timeline,
+                snapshots: BTreeMap::new(),
+                next_id: 0,
+                staged: vec![],
+                frames: vec![],
+                clock: 0,
+                fail_drop: false,
+                skip_replay: false,
+            }
+        }
+        fn save(&mut self, state: FakeState) -> SnapId {
+            let id = SnapId(self.next_id);
+            self.next_id += 1;
+            self.snapshots.insert(id.0, state);
+            id
+        }
+    }
+
+    impl Machine for ScriptedMachine {
+        type Portable = FakeState;
+        fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            Ok(self.save(self.state.clone()))
+        }
+        fn drop_snapshot(&mut self, id: SnapId) -> Result<(), MachineError> {
+            if std::mem::take(&mut self.fail_drop) {
+                return Err(MachineError::Backend("injected drop failure".into()));
+            }
+            self.snapshots
+                .remove(&id.0)
+                .map(|_| ())
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+        fn branch(&mut self, id: SnapId, input: &machine::Reproducer) -> Result<(), MachineError> {
+            self.state = self
+                .snapshots
+                .get(&id.0)
+                .cloned()
+                .ok_or(MachineError::UnknownSnapshot)?;
+            self.staged = nes::actions_of(input)?;
+            Ok(())
+        }
+        fn replay(&mut self, id: SnapId) -> Result<(), MachineError> {
+            if std::mem::take(&mut self.skip_replay) {
+                return Ok(());
+            }
+            self.state = self
+                .snapshots
+                .get(&id.0)
+                .cloned()
+                .ok_or(MachineError::UnknownSnapshot)?;
+            self.staged.clear();
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            _: StopConditions,
+            _: Option<&machine::Answer>,
+        ) -> Result<machine::StopReason, MachineError> {
+            self.frames.clear();
+            for action in std::mem::take(&mut self.staged) {
+                for _ in 0..action.bounded_hold_frames() {
+                    self.state.cursor += 1;
+                    self.state.wram =
+                        self.timeline[self.state.cursor.min(self.timeline.len() - 1)].clone();
+                    self.state.wram[PLAYER_A_X] = action.buttons;
+                    self.frames
+                        .push(self.state.wram.clone().try_into().unwrap());
+                    self.clock += 1;
+                }
+            }
+            Ok(machine::StopReason::Quiescent { vtime: self.now() })
+        }
+        fn read(&self, addr: u64, len: u32) -> Result<Vec<u8>, MachineError> {
+            let start = usize::try_from(addr).map_err(|_| MachineError::ReadOutOfBounds)?;
+            let end = start
+                .checked_add(len as usize)
+                .ok_or(MachineError::ReadOutOfBounds)?;
+            self.state
+                .wram
+                .get(start..end)
+                .map(ToOwned::to_owned)
+                .ok_or(MachineError::ReadOutOfBounds)
+        }
+        fn export(&mut self, id: SnapId, _: Option<&FakeState>) -> Result<FakeState, MachineError> {
+            self.snapshots
+                .get(&id.0)
+                .cloned()
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+        fn import(&mut self, state: &FakeState) -> Result<SnapId, MachineError> {
+            Ok(self.save(state.clone()))
+        }
+        fn portable_memory_charge(state: &FakeState) -> usize {
+            state.wram.len() + size_of::<usize>()
+        }
+        fn now(&self) -> machine::Moment {
+            machine::Moment(self.clock)
+        }
+        fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+            &self.frames
+        }
+    }
+
+    #[test]
+    fn interior_terminal_has_one_aligned_endpoint_and_final_stock_loss() {
+        let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        target.apply(&ButtonChord::new(1, 10));
+        let observed = target.observe();
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        assert_eq!(observed.frame_count, 7);
+        assert!(observed.decoded.player_a_won());
+        assert_eq!(observed.decoded.gameplay, None);
+        assert_eq!(
+            (observed.player_a_ko_count, observed.player_b_ko_count),
+            (4, 5)
+        );
+        assert!(observed.player_b_ko);
+        assert!(
+            target
+                .last_action_observations()
+                .iter()
+                .any(|o| o.decoded.gameplay.is_none() && !o.terminal)
+        );
+        let snapshot = target.snapshot().unwrap();
+        assert_eq!(snapshot.emulator_state.cursor, 7);
+        assert_eq!(snapshot.emulator_state.wram, snapshot.wram);
+        assert_eq!(snapshot.wram, target.machine.state.wram);
+        assert_eq!(snapshot.observation, observed);
+        target.apply(&ButtonChord::new(2, 3));
+        assert_eq!(target.observe(), observed);
+    }
+
+    #[test]
+    fn restore_across_invalid_phase_and_another_worker_preserves_stock_evidence() {
+        let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        target.apply(&ButtonChord::new(1, 5));
+        let saved = target.snapshot().unwrap();
+        assert_eq!(saved.observation.decoded.gameplay, None);
+        assert_eq!(saved.player_b_ko_count, 4);
+        let continuation = ButtonChord::new(2, 2);
+        target.apply(&continuation);
+        let expected = target.observe();
+        let expected_events = target.last_action_observations().to_vec();
+        target.restore(&saved).unwrap();
+        target.apply(&ButtonChord::new(4, 1));
+        target.restore(&saved).unwrap();
+        target.apply(&continuation);
+        assert_eq!(target.observe(), expected);
+        assert_eq!(target.last_action_observations(), expected_events);
+        assert_eq!(expected.player_b_ko_count, 5);
+        let mut other = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        other.restore(&saved).unwrap();
+        other.apply(&continuation);
+        assert_eq!(other.observe(), expected);
+        assert_eq!(other.fingerprint(), target.fingerprint());
+        target.reset();
+        assert_eq!(target.observe().frame_count, 0);
+        assert_eq!(target.observe().player_b_ko_count, 0);
+        assert_eq!(target.machine.snapshots.len(), 1);
+    }
+
+    #[test]
+    fn adverse_probe_checks_the_future_and_restores_live_machine_state() {
+        let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        let state = target.machine.state.clone();
+        assert!(!target.survives_probe(0, 8));
+        assert_eq!(target.exit_kind(), ExitKind::Ok);
+        assert_eq!(target.machine.state, state);
+        assert!(target.machine.staged.is_empty());
+        assert_eq!(target.observe().player_b_ko_count, 0);
+        target.apply(&ButtonChord::new(1, 2));
+        let mut baseline = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        baseline.apply(&ButtonChord::new(1, 2));
+        assert_eq!(target.observe(), baseline.observe());
+    }
+
+    #[test]
+    fn probe_rejects_a_backend_that_claims_restore_without_restoring_ram() {
+        let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        target.machine.skip_replay = true;
+        assert!(!target.survives_probe(0, 2));
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+    }
+
+    #[test]
+    fn failed_handle_release_during_restore_poison_target() {
+        let mut target = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        target.apply(&ButtonChord::new(1, 1));
+        let saved = target.snapshot().unwrap();
+        target.apply(&ButtonChord::new(2, 1));
+        target.machine.fail_drop = true;
+        assert!(target.restore(&saved).is_err());
+        assert_eq!(target.exit_kind(), ExitKind::Crash);
+        assert!(target.snapshot().is_none());
+    }
+
+    #[test]
+    fn genesis_rejects_a_different_stage_or_initial_stock_configuration() {
+        for (address, value) in [
+            (CONFIG_SELECTED_STAGE, 1),
+            (CONFIG_INITIAL_STOCKS, 3),
+            (PLAYER_A_STOCKS, 3),
+            (PLAYER_B_STOCKS, 3),
+        ] {
+            let mut machine = ScriptedMachine::match_timeline();
+            machine.state.wram[address] = value;
+            assert!(
+                StbTarget::from_machine(machine).is_err(),
+                "accepted address {address:#x}={value}"
+            );
+        }
+    }
 
     #[test]
     fn source_coordinates_keep_signed_screen_component() {

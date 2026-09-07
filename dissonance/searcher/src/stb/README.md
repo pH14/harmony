@@ -6,8 +6,8 @@ This module adapts the source-built [Super Tilt Bro](https://github.com/sgadrat/
 NES game to Dissonance's target-neutral search interfaces. It owns the
 source-labelled memory decoder, ordinary menu setup, controller encoding,
 mechanical observations, archive identity, progress milestones, terminal
-conditions, and QuickNES replay/rendering seam. The generic coordinator sees
-only those interfaces and does not receive a combat strategy.
+conditions, and QuickNES replay and rendering interface. The generic coordinator
+sees only those interfaces and does not receive a combat strategy.
 
 ## Declared workload
 
@@ -51,13 +51,11 @@ source is patched. Upstream's generic `python` interpreter spelling is bound
 to Python 3 inside the temporary build directory.
 
 The compiler release is Linux x86-64. On another host use a `linux/amd64`
-container with the repository mounted and the same packages/commands. The
-initial macOS trial used an Ubuntu 24.04 container to build the same ROM and
-a native QuickNES core to execute it. QuickNES revision
+container with the repository mounted and the same packages/commands. QuickNES
+revision
 `26bb785c9deddb66a17717b21bb4e328f03ade32` is pinned by the shared core script;
 the core binary digest is measured on each host and included in campaign
-identity. The initial macOS core digest was
-`47cb5d0872e4a293c81de5dc0b5c975bf389514f4fc15075fdba4d172eff83b4`.
+identity.
 
 Build outputs are ignored under `dissonance/stb-build/`. ROMs and cores are
 local/build inputs; the CI upload includes compact evidence and the
@@ -107,7 +105,7 @@ reproducible witness for that event.
 
 ## Archive and input policy
 
-The archive key (`stb_local_ai_spatial_16_preference_v2`) uses one
+The archive key (`stb_local_ai_spatial_16_preference_v3`) uses one
 representative per location slot. Paired Player-A and
 Player-B signed world-coordinate buckets (16 pixels) plus stage and opponent
 knockout count provide identity; wider groups pool those locations and then
@@ -142,90 +140,30 @@ game-neutral `AlphabetOnly` draw mixture. The repaired survival helper is
 standalone probe code; `ProbeAtAdmission45` is explicitly rejected because
 the primary mode has no demonstrated admission problem.
 
-## Local probe and campaign
+## Evidence and compatibility
 
-Build the binaries from the Dissonance workspace:
+Campaigns start from a validated stage-0 local-AI genesis, with initial raw
+stock counters and configuration all equal to four. Zero is the last live
+stock, so the terminal loss is number five. A different setup is rejected.
 
-```sh
-cargo build --locked --manifest-path dissonance/Cargo.toml \
-  --bin stb-probe --bin stb-campaign
-```
+Champion selection reuses the archive's progress and resource preference;
+higher player damage, hitstun, grounded flags, and coordinates are not extra
+champion rewards. Run-wide progress reports only peak opponent knockout and
+damage values. Those are independent maxima across observed branches, not a
+single achieved endpoint; use the champion observation for that endpoint's
+resources. Player stock losses remain in milestones and observations.
 
-The setup and control probe records the menu-to-genesis trace, positive and
-negative controller examples, autonomous opponent movement, snapshot restore,
-and the 45-frame standalone survival helper:
+Policy `stb_local_ai_spatial_16_preference_v3` fixes the unsolved-champion
+ordering and uses floor division at every pooling depth, including negative
+coordinates. Stream/checkpoint formats are v3 because the progress report
+schema also changed. Recordings from the earlier v2 policy require the previous
+implementation; the PR preserves that history and its qualification evidence.
+Compare searcher changes only with the same recorded adapter policy.
 
-```sh
-HARMONY_QUICKNES_CORE=/private/tmp/harmony-quicknes-test.dylib \
-HARMONY_STB_CORRECTNESS=1 \
-dissonance/target/debug/stb-probe \
-  /private/tmp/stb-luna-v1-artifacts/tilt_no_network_unrom_E.nes \
-  > /private/tmp/stb-luna-v1-artifacts/control-snapshot-probe.jsonl
-```
-
-The binary defaults to a 2,000-execution, two-worker pilot; explicit larger
-limits remain available for sustained evaluation under the generic campaign
-limits. `--fixed-execution-soak` keeps issuing reservations through the
-requested cap after a victory; it is useful when measuring the exact budget.
-This trial uses only the default worker and execution bounds. All outputs
-below belong in an ignored or temporary directory:
-
-```sh
-HARMONY_QUICKNES_CORE=/private/tmp/harmony-quicknes-test.dylib \
-dissonance/target/debug/stb-campaign \
-  --core /private/tmp/harmony-quicknes-test.dylib \
-  --rom /private/tmp/stb-luna-v1-artifacts/tilt_no_network_unrom_E.nes \
-  --output /private/tmp/stb-luna-v1-artifacts/pilot \
-  --seed 1 --executions 2000 --workers 2 --action-limit 512 \
-  --fixed-execution-soak
-```
-
-The campaign writes `stream.jsonl`, `progress.jsonl`, `campaign-report.json`,
-`replay-report.json`, `archive.json`, and `snapshots.bin`; it replays the
-stream and whole-tree checkpoint before reporting success. It records the
-actual champion (or first verified victory) in `champion-input.json` and
-`champion-observation.json`, then renders that same input when it fits the
-600-frame excerpt bound. Longer champions are fully replayed headlessly and
-rendered from an explicitly recorded prefix in `render-input.json`, with the
-rendered endpoint compared to `render-observation.json`. The bounded excerpt
-is written to `witness.rgb24`, `witness.s16le`, and `witness.mp4`.
-`run-summary.json` records seeds, workers, limits, frames, resource counters,
-digests, progress, milestones, full-champion versus rendered-excerpt lengths,
-and all artifact paths.
-
-## Qualification status
-
-Execution qualification passed with
-`/private/tmp/stb-luna-v1-artifacts/control-snapshot-probe-v2.jsonl`: the
-decoder reaches live local-AI genesis, the native opponent advances during
-no-op input, all searched controls have positive traces, and snapshot/restore
-returns the decoded observation and fingerprint exactly. The retained
-transition regression at
-`/private/tmp/stb-luna-v1-victory-v4-restore.jsonl` also covers live gameplay,
-the phase-invalid interval, and game-over; its terminal frame is 3468 with
-`game_state=2`, `game_winner=0`, `gameplay=null`, and cumulative losses
-`player_a=4`, `player_b=5`. Reapplying the final action after restoration
-reports `observation_exact=true`.
-
-Search qualification passed with the fixed-policy pilot at
-`/private/tmp/stb-luna-v1-artifacts/pilot-2000-v2/`: seed 1 completed exactly
-2,000 executions on two workers, emulated 296,557 frames, reached the first
-victory at execution 803, and recorded 38 victories, both victory and defeat
-milestones, and `replay_verified=true`. The same-policy post-cleanup repeat at
-`pilot-2000-v3/` produced byte-identical campaign/replay reports, stream,
-archive, checkpoint, champion input/observation, and rendered audio/video
-artifacts. The verified champion has 72 actions and ends at frame 3630 with
-`game_state=2`, `game_winner=0`, no phase-invalid gameplay payload, and
-cumulative losses `player_a=4`, `player_b=5`. Its full input is replayed
-headlessly; the witness render is an explicitly bounded 600-input-frame prefix
-plus a 180-frame neutral input tail, and its rendered endpoint matches the
-headless endpoint. The earlier `pilot-2000/` directory is retained as
-pre-fix evidence and is not the qualified result.
-
-The Dissonance format, build, clippy, test, and dependency checks use the
-standalone workspace commands in `CONTRIBUTING.md`. The trial establishes the
-pinned direct QuickNES backend and declared local-AI mode; it does not establish
-many-core, hours-long, alternate-backend, or host-resource-sweep behavior.
+`frames_emulated` measures actual emulator work, including the short terminal
+prefix re-execution needed to align the saved endpoint. It is not the number
+of unique game frames explored. The champion tape and observation carry the
+separate logical frame count.
 
 ## Continuous evaluation
 

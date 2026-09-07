@@ -28,22 +28,19 @@ use crate::{
     stb::{
         archive::{
             DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_STB_ACTIONS, REPLACEMENT_IDENTIFIER,
-            StbArchiveKey, StbArchiveReport, StbMilestoneInputs, StbMilestoneTimes, StbMilestones,
-            StbProgressWatermark, archive_key, chord_time, merge_milestones,
+            StbArchiveKey, StbArchiveReport, StbChampionKey, StbMilestoneInputs, StbMilestoneTimes,
+            StbMilestones, StbProgressWatermark, archive_key, chord_time, merge_milestones,
             merge_progress_watermark, milestone_key, milestones_from_observation, sample_chord,
         },
-        target::{
-            ButtonChord, MAX_HOLD_FRAMES, StbInput, StbObservations, StbSnapshot, StbTarget,
-            preference_tuple,
-        },
+        target::{ButtonChord, MAX_HOLD_FRAMES, StbInput, StbObservations, StbSnapshot, StbTarget},
     },
     target::{ExitKind, Target},
 };
 
 /// Stream format written by Stb campaigns.
-pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v3";
 /// Snapshot checkpoint format written by Stb campaigns.
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v2";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";
@@ -53,9 +50,6 @@ const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v1";
 const TERMINAL_POLICY_IDENTIFIER: &str = "local_match_gameover_player_a_win_v2";
-
-type StbPreference = (u8, u8, u8, u8, u8, u8, bool, bool);
-type StbChampionKey = (StbProgressWatermark, StbPreference);
 
 /// Header placeholder for a game with no adaptive draw table.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -360,18 +354,9 @@ fn update_first_inputs(
 }
 
 fn action_champion_key(observations: &[StbObservations]) -> Option<StbChampionKey> {
-    observations.last().and_then(|observation| {
-        let state = observation.decoded;
-        let gameplay = state.gameplay?;
-        Some((
-            StbProgressWatermark {
-                opponent_kos: observation.player_b_ko_count,
-                opponent_damage: gameplay.player_b_damage,
-                player_a_stocks: gameplay.player_a_stocks,
-            },
-            preference_tuple(state)?,
-        ))
-    })
+    observations
+        .last()
+        .and_then(|observation| archive_key(observation.decoded).map(StbArchiveKey::champion_key))
 }
 
 impl Game for StbGame {
@@ -828,6 +813,55 @@ mod tests {
                 }),
             }],
         }
+    }
+
+    #[test]
+    fn champion_preserves_resources_without_ranking_diagnostic_fields() {
+        let mut healthy = result_with_portable(vec![]).actions.remove(0).observations;
+        let gameplay = healthy[0].decoded.gameplay.as_mut().unwrap();
+        gameplay.player_a_stocks = 4;
+        gameplay.player_b_stocks = 4;
+        let mut wounded = healthy.clone();
+        wounded[0]
+            .decoded
+            .gameplay
+            .as_mut()
+            .unwrap()
+            .player_a_damage = 80;
+        assert!(action_champion_key(&healthy) > action_champion_key(&wounded));
+        let mut diagnostic = healthy.clone();
+        let gameplay = diagnostic[0].decoded.gameplay.as_mut().unwrap();
+        gameplay.player_a_hitstun = 20;
+        gameplay.player_a_grounded = true;
+        gameplay.player_a_x = 200;
+        assert_eq!(
+            action_champion_key(&healthy),
+            action_champion_key(&diagnostic)
+        );
+    }
+
+    #[test]
+    fn source_identity_matches_the_pinned_build_input() {
+        let commit = include_str!("../../../stb-versions.env")
+            .lines()
+            .find_map(|line| line.strip_prefix("STB_COMMIT="))
+            .unwrap();
+        let game = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64));
+        assert!(
+            game.emulator_identity()
+                .contains(&format!("source=sgadrat/super-tilt-bro@{commit};"))
+        );
+    }
+
+    #[test]
+    fn previous_key_policy_requires_its_previous_implementation() {
+        let game = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64));
+        let mut policies = game.policies(&StbCampaignRun);
+        policies.insert(
+            KEY_POLICY_FIELD.to_owned(),
+            "stb_local_ai_spatial_16_preference_v2".to_owned(),
+        );
+        assert!(game.resolve_recorded(&policies).is_err());
     }
 
     #[test]

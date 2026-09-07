@@ -205,9 +205,22 @@ fn run_correctness_probes(
     let probe_survived = target.survives_probe(0, 45);
     let after_probe = (target.observe(), target.fingerprint());
     let after_probe_lifetime_frame = target.frames_clocked();
-    if before_probe != after_probe {
-        return Err("STB admission probe failed to restore the complete state".into());
+    if before_probe != after_probe || target.exit_kind() != searcher::target::ExitKind::Ok {
+        return Err(
+            "STB admission probe failed its live-RAM and cached-state restoration checks".into(),
+        );
     }
+    // survives_probe verifies live RAM immediately after restoration. Compare
+    // a subsequent continuation too; cached observations alone prove nothing.
+    let continuation = ButtonChord::new(0x80, 12);
+    target.apply(&continuation);
+    let after_probed_continuation = (target.observe(), target.fingerprint());
+    target.restore(&genesis)?;
+    target.apply(&continuation);
+    if (target.observe(), target.fingerprint()) != after_probed_continuation {
+        return Err("STB post-probe continuation diverged".into());
+    }
+    target.restore(&genesis)?;
     println!(
         "admission_probe {}",
         serde_json::to_string(&serde_json::json!({

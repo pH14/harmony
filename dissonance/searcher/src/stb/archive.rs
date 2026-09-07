@@ -22,13 +22,12 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by an STB campaign.
 pub const MAX_STB_ACTIONS: usize = 8_192;
 /// Recorded archive identity policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "stb_local_ai_spatial_16_preference_v2";
+pub const KEY_POLICY_IDENTIFIER: &str = "stb_local_ai_spatial_16_preference_v3";
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// Recorded controller hold distribution.
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
-/// Initial stock count selected by the normal local-match setup.
-pub const INITIAL_STOCKS: u8 = 4;
+pub use crate::stb::target::INITIAL_STOCKS;
 
 /// Resolve a recorded parent selector under STB's group depths.
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
@@ -109,17 +108,17 @@ impl ArchiveKey for StbArchiveKey {
         match depth {
             0 => location,
             1 => StbArchiveGroup {
-                player_a_x: self.player_a_x / 2,
-                player_a_y: self.player_a_y / 2,
-                player_b_x: self.player_b_x / 2,
-                player_b_y: self.player_b_y / 2,
+                player_a_x: self.player_a_x.div_euclid(2),
+                player_a_y: self.player_a_y.div_euclid(2),
+                player_b_x: self.player_b_x.div_euclid(2),
+                player_b_y: self.player_b_y.div_euclid(2),
                 ..location
             },
             2 => StbArchiveGroup {
-                player_a_x: self.player_a_x / 8,
-                player_a_y: self.player_a_y / 8,
-                player_b_x: self.player_b_x / 8,
-                player_b_y: self.player_b_y / 8,
+                player_a_x: self.player_a_x.div_euclid(8),
+                player_a_y: self.player_a_y.div_euclid(8),
+                player_b_x: self.player_b_x.div_euclid(8),
+                player_b_y: self.player_b_y.div_euclid(8),
                 ..location
             },
             3 => StbArchiveGroup {
@@ -151,7 +150,22 @@ impl ArchiveKey for StbArchiveKey {
     fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
+/// Champion quality uses the archive's progress and capability order, without
+/// coordinate, state-ID, hitstun or posture tie breakers.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct StbChampionKey {
+    progress: (u8, u8, u8),
+    preference: (u8, u8, u8, u8, u8),
+}
+
 impl StbArchiveKey {
+    pub(super) fn champion_key(self) -> StbChampionKey {
+        StbChampionKey {
+            progress: self.progress_key(),
+            preference: self.preference(),
+        }
+    }
+
     fn progress_key(self) -> (u8, u8, u8) {
         (
             self.opponent_kos,
@@ -258,7 +272,6 @@ pub struct StbMilestoneInputs {
 pub struct StbProgressWatermark {
     pub opponent_kos: u8,
     pub opponent_damage: u8,
-    pub player_a_stocks: u8,
 }
 
 pub type StbArchiveProgressPoint = ProgressPoint<StbMilestones, StbProgressWatermark>;
@@ -339,13 +352,13 @@ pub fn merge_progress_watermark(
 ) {
     for observation in observations {
         let state = observation.decoded;
-        let (opponent_damage, player_a_stocks) = state.gameplay.map_or(
-            (watermark.opponent_damage, watermark.player_a_stocks),
-            |gameplay| (gameplay.player_b_damage, gameplay.player_a_stocks),
-        );
+        let opponent_damage = state
+            .gameplay
+            .map_or(watermark.opponent_damage, |gameplay| {
+                gameplay.player_b_damage
+            });
         watermark.opponent_kos = watermark.opponent_kos.max(observation.player_b_ko_count);
         watermark.opponent_damage = watermark.opponent_damage.max(opponent_damage);
-        watermark.player_a_stocks = watermark.player_a_stocks.max(player_a_stocks);
     }
 }
 
@@ -395,6 +408,15 @@ mod tests {
                 ..crate::stb::target::StbGameplayState::default()
             }),
             ..StbMechanicalState::default()
+        }
+    }
+
+    #[test]
+    fn coarse_groups_have_uniform_width_on_both_sides_of_zero() {
+        for x in -512_i16..=512 {
+            let key = archive_key(state(x, 0, 4)).unwrap();
+            assert_eq!(key.group(1).player_a_x, x.div_euclid(32));
+            assert_eq!(key.group(2).player_a_x, x.div_euclid(128));
         }
     }
 

@@ -35,8 +35,7 @@ use sha2::{Digest, Sha256};
 
 /// Safe defaults for a first local qualification run. Larger explicit values
 /// remain available for sustained evaluation under the generic campaign
-/// limits; this trial invokes the defaults and never exceeds two workers or
-/// 2,000 executions.
+/// limits. These defaults do not cap explicitly supplied run budgets.
 const DEFAULT_EXECUTIONS: u64 = 2_000;
 const DEFAULT_WORKERS: u32 = 2;
 const MAX_RENDER_FRAMES: u64 = 600;

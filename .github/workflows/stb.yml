@@ -111,8 +111,10 @@ jobs:
             --fixed-execution-soak
       - name: Check and describe compact evidence
         run: |
-          # Correct execution and replay are gates. A win is an outcome, never
-          # a reason to tune policy/seeds or fail an otherwise valid workload.
+          # The binary's exit status gates actual replay/render equality. The
+          # fields below pin the artifact contract and exact execution budget.
+          # A win is an outcome, never a reason to tune policy/seeds or fail an
+          # otherwise valid workload.
           jq -e --argjson budget "${STB_EXECUTIONS}" \
             --argjson seed "${STB_SEED}" --argjson workers "${STB_WORKERS}" \
             '.campaign_seed == $seed and .workers == $workers and
@@ -123,6 +125,22 @@ jobs:
              .champion_endpoint.game_mode == 0 and .champion_endpoint.ai_level == 1' \
             "${STB_ARTIFACT}/run-summary.json" >/dev/null
           cmp "${STB_ARTIFACT}/campaign-report.json" "${STB_ARTIFACT}/replay-report.json"
+          python3 - "${STB_ARTIFACT}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          artifact = Path(sys.argv[1])
+          summary = json.loads((artifact / "run-summary.json").read_text())
+          champion = json.loads((artifact / "champion-observation.json").read_text())
+          tape = json.loads((artifact / "champion-input.json").read_text())
+          assert champion["frame_count"] == sum(action["hold_frames"] for action in tape["actions"]), "recorded tape and endpoint frames disagree"
+          assert champion["decoded"] == summary["champion_endpoint"]
+          if summary["victories"] > 0:
+              assert champion["terminal"] and champion["decoded"]["game_state"] == 2
+              assert champion["decoded"]["game_winner"] == 0, "claimed victory tape did not win"
+              assert champion["player_b_ko_count"] == 5, "terminal loss evidence disagrees with the declared match"
+          PY
           test -s "${STB_ARTIFACT}/witness.mp4"
           test "$(ffprobe -v error -select_streams a:0 \
             -show_entries stream=codec_type -of csv=p=0 \
