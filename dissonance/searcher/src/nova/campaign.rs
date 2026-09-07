@@ -61,7 +61,8 @@ const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v1";
-const TERMINAL_POLICY_IDENTIFIER: &str = "first_durable_level_clear";
+const TERMINAL_LEVEL_CLEAR_IDENTIFIER: &str = "first_durable_level_clear";
+const TERMINAL_GAME_VICTORY_IDENTIFIER: &str = "every_level_cleared";
 
 const VIABILITY_PROBE_MASKS: [u8; 4] = [0, 0x01, 0x80, 0x81];
 const VIABILITY_PROBE_FRAMES: u16 = 60;
@@ -231,9 +232,60 @@ impl<M> NovaGame<M> {
     }
 }
 
-/// Nova's fixed recorded run policy.
-#[derive(Clone, Copy, Debug)]
-pub struct NovaCampaignRun;
+/// When a Nova campaign treats a state as terminal.
+///
+/// Clearing a level is the level panel's whole goal and the whole game's
+/// ordinary progress, so which one it is has to be a run policy rather than
+/// a constant. Under [`GameVictory`](Self::GameVictory) a clear is an
+/// archived state like any other and the search carries on into the level it
+/// opens; under [`LevelClear`](Self::LevelClear) it ends the run.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NovaTerminalPredicate {
+    /// Stop as soon as the run clears one more level than its genesis holds.
+    #[default]
+    LevelClear,
+    /// Stop only once every campaign level is cleared.
+    GameVictory,
+}
+
+impl NovaTerminalPredicate {
+    /// Stable stream-header identifier for this predicate.
+    #[must_use]
+    pub fn identifier(self) -> &'static str {
+        match self {
+            Self::LevelClear => TERMINAL_LEVEL_CLEAR_IDENTIFIER,
+            Self::GameVictory => TERMINAL_GAME_VICTORY_IDENTIFIER,
+        }
+    }
+
+    /// The predicate a recorded identifier names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the identifier names no compiled predicate.
+    pub fn from_identifier(identifier: &str) -> Result<Self, Box<dyn Error>> {
+        match identifier {
+            TERMINAL_LEVEL_CLEAR_IDENTIFIER => Ok(Self::LevelClear),
+            TERMINAL_GAME_VICTORY_IDENTIFIER => Ok(Self::GameVictory),
+            other => Err(format!("Nova terminal predicate {other} is not recognized").into()),
+        }
+    }
+
+    /// Whether `target` has reached this predicate's victory.
+    fn reached<M: NovaMachineKind>(self, target: &NovaTarget<M>) -> bool {
+        match self {
+            Self::LevelClear => target.cleared_a_level(),
+            Self::GameVictory => target.cleared_every_level(),
+        }
+    }
+}
+
+/// Nova's recorded run policy.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NovaCampaignRun {
+    /// The state this run stops on.
+    pub terminal: NovaTerminalPredicate,
+}
 
 /// Game-owned campaign evidence.
 #[derive(Clone, Default)]
@@ -344,6 +396,8 @@ pub struct NovaCampaignConfig {
     pub mixture: DrawMixture,
     /// Live-only path receiving the first level-clearing input.
     pub victory_input_path: Option<PathBuf>,
+    /// The state this campaign stops on.
+    pub terminal: NovaTerminalPredicate,
 }
 
 impl NovaCampaignConfig {
@@ -361,7 +415,9 @@ impl NovaCampaignConfig {
                 crate::search::campaign::DEFAULT_ADMISSION_RESERVATIONS_PER_WORKER,
             memory_budget_mib: self.memory_budget_mib,
             materialize_final_artifacts: self.materialize_final_artifacts,
-            run: NovaCampaignRun,
+            run: NovaCampaignRun {
+                terminal: self.terminal,
+            },
             suffix: self.suffix,
             mixture: self.mixture,
             retention: self.retention,
@@ -417,11 +473,12 @@ fn execute_suffix<M: NovaMachineKind>(
     suffix: &[ButtonChord],
     max_actions: usize,
     retention: RetentionPolicy,
+    terminal: NovaTerminalPredicate,
 ) -> Result<NovaCampaignJobResult<M>, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
-    if target.is_dead() || target.cleared_a_level() {
+    if target.is_dead() || terminal.reached(target) {
         return Ok(CampaignJobResult { actions });
     }
     for action in suffix {
@@ -433,7 +490,7 @@ fn execute_suffix<M: NovaMachineKind>(
         merge_action_milestones(&mut aggregate, target)?;
         let observations = target.last_action_observations().to_vec();
         let dead = target.is_dead();
-        let victory = target.cleared_a_level();
+        let victory = terminal.reached(target);
         let failed = target.exit_kind() != ExitKind::Ok;
         let candidate = if dead || victory || failed {
             None
@@ -562,7 +619,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
         nova_result_sha256(result)
     }
 
-    fn policies(&self, _run: &NovaCampaignRun) -> GamePolicies {
+    fn policies(&self, run: &NovaCampaignRun) -> GamePolicies {
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
@@ -571,7 +628,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
             (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
-            (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (TERMINAL_POLICY_FIELD, run.terminal.identifier()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -583,7 +640,10 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
     }
 
     fn resolve_recorded(&self, policies: &GamePolicies) -> Result<NovaCampaignRun, Box<dyn Error>> {
-        let expected = self.policies(&NovaCampaignRun);
+        let terminal =
+            NovaTerminalPredicate::from_identifier(recorded(policies, TERMINAL_POLICY_FIELD)?)?;
+        let run = NovaCampaignRun { terminal };
+        let expected = self.policies(&run);
         if policies != &expected {
             for (field, value) in &expected {
                 if recorded(policies, field)? != value {
@@ -592,7 +652,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
             }
             return Err("Nova stream carries an unknown game policy".into());
         }
-        Ok(NovaCampaignRun)
+        Ok(run)
     }
 
     fn new_target(&self) -> Result<NovaTarget<M>, String> {
@@ -631,13 +691,13 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
 
     fn is_run_terminal(
         &self,
-        _run: &NovaCampaignRun,
+        run: &NovaCampaignRun,
         target: &NovaTarget<M>,
     ) -> Result<bool, Box<dyn Error>> {
         if target.exit_kind() != ExitKind::Ok {
             return Err("Nova terminal predicate cannot inspect a failed emulator".into());
         }
-        Ok(target.is_dead() || target.cleared_a_level())
+        Ok(target.is_dead() || run.terminal.reached(target))
     }
 
     fn snapshot(
@@ -663,7 +723,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
 
     fn execute_job(
         &self,
-        _run: &NovaCampaignRun,
+        run: &NovaCampaignRun,
         target: &mut NovaTarget<M>,
         origin_snapshot: &NovaSnapshot<M::Portable>,
         replay: &[ButtonChord],
@@ -684,6 +744,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
             suffix,
             max_actions,
             retention,
+            run.terminal,
         )
     }
 
@@ -960,8 +1021,10 @@ mod tests {
     #[test]
     fn recorded_policy_set_is_exact_and_game_owned() {
         let game = NovaGame::new(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64));
-        let policies = game.policies(&NovaCampaignRun);
-        let NovaCampaignRun = game.resolve_recorded(&policies).expect("resolve");
+        let run = NovaCampaignRun::default();
+        let policies = game.policies(&run);
+        let resolved = game.resolve_recorded(&policies).expect("resolve");
+        assert_eq!(resolved.terminal, run.terminal);
         let mut foreign = policies;
         foreign.insert("level".to_owned(), "understood-by-search".to_owned());
         assert!(game.resolve_recorded(&foreign).is_err());

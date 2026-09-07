@@ -412,6 +412,12 @@ impl<M: Machine> NovaTarget<M> {
         self.observation.decoded.cleared_count() > self.genesis_cleared
     }
 
+    /// Whether every campaign level is durably cleared.
+    #[must_use]
+    pub fn cleared_every_level(&self) -> bool {
+        self.observation.decoded.cleared_count() >= NOVA_CAMPAIGN_LEVEL_COUNT
+    }
+
     /// Total deterministic frames this instance has emulated.
     #[must_use]
     pub fn frames_clocked(&self) -> u64 {

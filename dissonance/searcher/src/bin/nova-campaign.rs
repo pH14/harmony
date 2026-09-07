@@ -16,8 +16,8 @@ use searcher::{
     nova::{
         archive::MAX_ARCHIVE_ENTRIES,
         campaign::{
-            NovaCampaignConfig, NovaCampaignOrigin, NovaGame, replay_nova_campaign_checkpointed,
-            run_nova_campaign_checkpointed,
+            NovaCampaignConfig, NovaCampaignOrigin, NovaGame, NovaTerminalPredicate,
+            replay_nova_campaign_checkpointed, run_nova_campaign_checkpointed,
         },
         target::{NovaInput, NovaLevel, NovaMechanicalState, NovaVideoMetadata},
     },
@@ -48,6 +48,7 @@ struct Args {
     memory_budget_mib: Option<usize>,
     suffix: SuffixShape,
     mixture: DrawMixture,
+    terminal: NovaTerminalPredicate,
 }
 
 struct RenderedMedia {
@@ -79,6 +80,7 @@ impl Args {
         let mut memory_budget_mib = None;
         let mut suffix = SuffixShape::OneToSix;
         let mut mixture = DrawMixture::AlphabetOnly;
+        let mut terminal = NovaTerminalPredicate::default();
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
@@ -119,6 +121,11 @@ impl Args {
                         &value.into_string().map_err(|_| "mixture is not UTF-8")?,
                     )?;
                 }
+                "--terminal" => {
+                    terminal = NovaTerminalPredicate::from_identifier(
+                        &value.into_string().map_err(|_| "terminal is not UTF-8")?,
+                    )?;
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -137,6 +144,7 @@ impl Args {
             memory_budget_mib,
             suffix,
             mixture,
+            terminal,
         })
     }
 }
@@ -186,6 +194,7 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         }),
         suffix: args.suffix,
         mixture: args.mixture,
+        terminal: args.terminal,
         victory_input_path: Some(args.output.join("victory-input.json")),
     }
 }

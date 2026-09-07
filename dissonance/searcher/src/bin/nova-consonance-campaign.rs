@@ -259,6 +259,7 @@ mod real {
         let initramfs = fs::read(&args.initramfs)?;
         let game = NovaGame::new_consonance(&rom, &kernel, &initramfs);
         let config = NovaCampaignConfig {
+            terminal: Default::default(),
             campaign_seed: args.seed,
             workers: args.workers,
             execution_budget: args.executions,
