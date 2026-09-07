@@ -35,13 +35,17 @@ defaults:
 
 jobs:
   campaign:
-    name: Source build, probe, search and replay (seed ${{ matrix.seed }})
+    name: Source build, probe, search and replay (${{ matrix.ai.name }}, seed ${{ matrix.seed }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
+        ai:
+          - { name: easy, level: 1 }
+          - { name: fair, level: 2 }
+          - { name: hard, level: 3 }
         # Register the seed set before observing outcomes. PRs use one seed;
         # nightly/manual runs exercise the same policy across all three.
         seed: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3]') }}
@@ -50,6 +54,8 @@ jobs:
       STB_ARTIFACT: workloads/nes/build/stb-artifact
       STB_EXECUTIONS: "2000"
       STB_SEED: ${{ matrix.seed }}
+      STB_AI: ${{ matrix.ai.name }}
+      STB_AI_LEVEL: ${{ matrix.ai.level }}
       STB_WORKERS: "2"
       HARMONY_STB_BUILD_JOBS: "2"
       HARMONY_QUICKNES_BUILD_JOBS: "2"
@@ -77,10 +83,10 @@ jobs:
           cp "${STB_BUILD}/UPSTREAM-LICENSE.txt" "${STB_BUILD}/UPSTREAM-CREDITS.asm" \
             "${STB_BUILD}/stb-versions.env" "${STB_ARTIFACT}/"
           HARMONY_QUICKNES_CORE="${STB_BUILD}/quicknes_libretro.so" \
-          HARMONY_STB_CORRECTNESS=1 \
+          HARMONY_STB_CORRECTNESS=1 HARMONY_STB_AI="${STB_AI}" \
             workloads/nes/target/release/stb-probe "${STB_BUILD}/stb.nes" \
             | tee "${STB_ARTIFACT}/control-snapshot-probe.jsonl"
-          python3 - "${STB_ARTIFACT}/control-snapshot-probe.jsonl" <<'PY'
+          python3 - "${STB_ARTIFACT}/control-snapshot-probe.jsonl" "${STB_AI_LEVEL}" <<'PY'
           import json
           import sys
 
@@ -93,7 +99,7 @@ jobs:
               assert row["hold"] == 6
               for state in (row["before"], row["after"]):
                   assert state["game_state"] == 0 and state["game_mode"] == 0
-                  assert state["ai_level"] == 1 and state["gameplay"] is not None
+                  assert state["ai_level"] == int(sys.argv[2]) and state["gameplay"] is not None
           before = rows["noop"]["before"]["gameplay"]
           after = {name: row["after"]["gameplay"] for name, row in rows.items()}
           assert all(row["before"]["gameplay"] == before for row in rows.values())
@@ -110,7 +116,7 @@ jobs:
             --core "${STB_BUILD}/quicknes_libretro.so" \
             --rom "${STB_BUILD}/stb.nes" \
             --output "${STB_ARTIFACT}" \
-            --seed "${STB_SEED}" --executions "${STB_EXECUTIONS}" \
+            --ai "${STB_AI}" --seed "${STB_SEED}" --executions "${STB_EXECUTIONS}" \
             --workers "${STB_WORKERS}" --action-limit 512 \
             --fixed-execution-soak
       - name: Check and describe compact evidence
@@ -121,14 +127,17 @@ jobs:
           # otherwise valid workload.
           jq -e --argjson budget "${STB_EXECUTIONS}" \
             --argjson seed "${STB_SEED}" --argjson workers "${STB_WORKERS}" \
+            --argjson ai "${STB_AI_LEVEL}" \
             '.campaign_seed == $seed and .workers == $workers and
              .execution_budget == $budget and .executions == $budget and
              .execution_budget_exact == true and .replay_verified == true and
              .rendered_endpoint_verified == true and .frames_emulated > 0 and
              .archive_entries > 0 and .champion_input_actions > 0 and
-             .champion_endpoint.game_mode == 0 and .champion_endpoint.ai_level == 1' \
+             .champion_endpoint.game_mode == 0 and .champion_endpoint.ai_level == $ai and .ai_level == $ai and .render_excerpt == false' \
             "${STB_ARTIFACT}/run-summary.json" >/dev/null
           cmp "${STB_ARTIFACT}/campaign-report.json" "${STB_ARTIFACT}/replay-report.json"
+          cmp "${STB_ARTIFACT}/champion-input.json" "${STB_ARTIFACT}/render-input.json"
+          cmp "${STB_ARTIFACT}/champion-observation.json" "${STB_ARTIFACT}/render-observation.json"
           python3 - "${STB_ARTIFACT}" <<'PY'
           import json
           import sys
@@ -140,12 +149,19 @@ jobs:
           tape = json.loads((artifact / "champion-input.json").read_text())
           assert champion["frame_count"] == sum(action["hold_frames"] for action in tape["actions"]), "recorded tape and endpoint frames disagree"
           assert champion["decoded"] == summary["champion_endpoint"]
+          assert summary["rendered_input_frames"] == champion["frame_count"]
+          assert summary["video"]["frames"] == champion["frame_count"] + summary["render_tail_frames"]
+          assert summary["match_completed"] == champion["terminal"]
           if summary["victories"] > 0:
               assert champion["terminal"] and champion["decoded"]["game_state"] == 2
               assert champion["decoded"]["game_winner"] == 0, "claimed victory tape did not win"
               assert champion["player_b_ko_count"] == 5, "terminal loss evidence disagrees with the declared match"
           PY
           test -s "${STB_ARTIFACT}/witness.mp4"
+          test "$(ffprobe -v error -count_frames -select_streams v:0 \
+            -show_entries stream=nb_read_frames -of csv=p=0 \
+            "${STB_ARTIFACT}/witness.mp4")" = \
+            "$(jq -r '.video.frames' "${STB_ARTIFACT}/run-summary.json")"
           test "$(ffprobe -v error -select_streams a:0 \
             -show_entries stream=codec_type -of csv=p=0 \
             "${STB_ARTIFACT}/witness.mp4")" = audio
@@ -158,7 +174,7 @@ jobs:
               UPSTREAM-CREDITS.asm stb-versions.env > SHA256SUMS
           )
           {
-            echo "## Super Tilt Bro — native Easy AI"
+            echo "## Super Tilt Bro — native ${STB_AI} AI"
             echo
             echo "Seed ${STB_SEED}; ${STB_EXECUTIONS} executions; ${STB_WORKERS} workers."
             echo "Campaign report/checkpoint replay and rendered endpoint verified."
@@ -166,14 +182,14 @@ jobs:
             echo "Milestones: $(jq -c '.milestones' "${STB_ARTIFACT}/run-summary.json")."
             echo "Frames emulated: $(jq -r '.frames_emulated' "${STB_ARTIFACT}/run-summary.json")."
             echo "Rendered excerpt: $(jq -r '.render_excerpt' "${STB_ARTIFACT}/run-summary.json"); input frames: $(jq -r '.rendered_input_frames' "${STB_ARTIFACT}/run-summary.json")."
-            echo "The full champion is replayed headlessly. A prefix film does not show its ending."
+            echo "The film contains the full champion plus 180 neutral frames. Match complete: $(jq -r '.match_completed' "${STB_ARTIFACT}/run-summary.json")."
           } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4
         # Explicit list excludes ROMs, cores, snapshots and raw media. Partial
         # probes/reports remain available to diagnose a failed qualification.
         if: always()
         with:
-          name: stb-seed-${{ matrix.seed }}-${{ github.run_id }}
+          name: stb-${{ matrix.ai.name }}-seed-${{ matrix.seed }}-${{ github.run_id }}
           path: |
             workloads/nes/build/stb-artifact/witness.mp4
             workloads/nes/build/stb-artifact/run-summary.json

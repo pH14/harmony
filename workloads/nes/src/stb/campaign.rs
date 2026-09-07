@@ -32,7 +32,9 @@ use crate::{
             StbMilestones, StbProgressWatermark, archive_key, chord_time, merge_milestones,
             merge_progress_watermark, milestone_key, milestones_from_observation, sample_chord,
         },
-        target::{ButtonChord, MAX_HOLD_FRAMES, StbInput, StbObservations, StbSnapshot, StbTarget},
+        target::{
+            ButtonChord, MAX_HOLD_FRAMES, StbAi, StbInput, StbObservations, StbSnapshot, StbTarget,
+        },
     },
     target::{ExitKind, Target},
 };
@@ -61,14 +63,22 @@ pub struct StbGame {
     core_path: PathBuf,
     core_sha256: String,
     identity: String,
+    ai: StbAi,
 }
 
 impl StbGame {
-    /// Build a game context over a pinned QuickNES core.
+    /// Build the original Easy-AI context over a pinned QuickNES core.
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+        Self::with_ai(rom, core_path, core_sha256, StbAi::Easy)
+    }
+
+    /// Build a context with an explicitly selected native opponent difficulty.
+    #[must_use]
+    pub fn with_ai(rom: &[u8], core_path: &Path, core_sha256: &str, ai: StbAi) -> Self {
+        let ai_level = ai.level();
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai=1;stage=0;genesis=stb-local-ai-v1;result_digest=stb-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-semantic-postcard-1.1.3-sha256-hex-v4;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -78,6 +88,7 @@ impl StbGame {
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
             identity,
+            ai,
         }
     }
 
@@ -93,6 +104,11 @@ impl StbGame {
 }
 
 impl StbGame {
+    #[must_use]
+    pub const fn ai(&self) -> StbAi {
+        self.ai
+    }
+
     /// Pinned emulator identity recorded in streams.
     #[must_use]
     pub fn emulator_identity(&self) -> &str {
@@ -551,8 +567,13 @@ impl TargetExecution for StbGame {
     }
 
     fn new_target(&self) -> Result<StbTarget, String> {
-        StbTarget::from_rom_bytes_headless(&self.rom, &self.core_path, &self.core_sha256)
-            .map_err(|error| error.to_string())
+        StbTarget::from_rom_bytes_headless_with_ai(
+            &self.rom,
+            &self.core_path,
+            &self.core_sha256,
+            self.ai,
+        )
+        .map_err(|error| error.to_string())
     }
 
     fn reset(&self, target: &mut StbTarget) {
@@ -883,6 +904,33 @@ mod tests {
         let mut foreign = policies;
         foreign.insert("level".to_owned(), "understood-by-search".to_owned());
         assert!(game.resolve_recorded(&foreign).is_err());
+    }
+
+    #[test]
+    fn recordings_reject_another_ai_difficulty() {
+        let easy = StbGame::new(&[], Path::new("core.so"), &"a".repeat(64));
+        for ai in [StbAi::Fair, StbAi::Hard] {
+            let harder = StbGame::with_ai(&[], Path::new("core.so"), &"a".repeat(64), ai);
+            assert!(
+                harder
+                    .emulator_identity()
+                    .contains(&format!(";ai={};", ai.level()))
+            );
+            assert!(
+                harder
+                    .resolve_recorded(&easy.policies(&StbCampaignRun))
+                    .is_err()
+            );
+            assert!(
+                easy.resolve_recorded(&harder.policies(&StbCampaignRun))
+                    .is_err()
+            );
+            assert!(
+                harder
+                    .resolve_recorded(&harder.policies(&StbCampaignRun))
+                    .is_ok()
+            );
+        }
     }
 
     #[test]

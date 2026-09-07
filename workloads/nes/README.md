@@ -32,7 +32,7 @@ that experiment does not provide SMB acceptance evidence.
 | Nova/Consonance | Real VM campaign and backend checks run in `.github/workflows/nova-consonance-experiment.yml`. | Linux/KVM, pinned kernel, generic NES base image, and the pinned Nova ROM/core. |
 | SMB/native | Adapter and loopback tests are checked in; no current real-ROM CI lane is claimed here. | Pinned QuickNES core and a licensed SMB ROM supplied by the caller. |
 | SMB/Consonance | `nes-backend-oracle` supports the path; no repository CI VM result is claimed here. | Linux/KVM, a capable NES base image, pinned core, and a caller-supplied licensed SMB ROM. |
-| Super Tilt Bro/native | `.github/workflows/stb.yml` builds the pinned ROM, probes controls/restoration, runs fixed-budget search and verifies replay/video. | Host QuickNES core and the pinned source-built offline UNROM game. |
+| Super Tilt Bro/native | `.github/workflows/stb.yml` builds the pinned ROM, probes controls/restoration, runs fixed-budget search against Easy/Fair/Hard AI and verifies replay/full-champion video. | Host QuickNES core and the pinned source-built offline UNROM game. |
 
 On Linux/KVM, the shared oracle is invoked as:
 

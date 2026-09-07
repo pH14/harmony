@@ -25,6 +25,42 @@ pub type StbInput = crate::search::archive::Input<ButtonChord>;
 /// Initial raw stock counter; zero still denotes the final live stock.
 pub const INITIAL_STOCKS: u8 = 4;
 
+/// Built-in autonomous AI levels from the normal configuration menu.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StbAi {
+    Easy = 1,
+    Fair = 2,
+    Hard = 3,
+}
+
+impl StbAi {
+    #[must_use]
+    pub const fn level(self) -> u8 {
+        self as u8
+    }
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Easy => "easy",
+            Self::Fair => "fair",
+            Self::Hard => "hard",
+        }
+    }
+}
+impl std::str::FromStr for StbAi {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "easy" => Ok(Self::Easy),
+            "fair" => Ok(Self::Fair),
+            "hard" => Ok(Self::Hard),
+            _ => Err(format!(
+                "unknown STB AI {value:?}; expected easy, fair, or hard"
+            )),
+        }
+    }
+}
+
 const GAME_STATE_INGAME: u8 = 0x00;
 const GAME_STATE_GAMEOVER: u8 = 0x02;
 const GAME_MODE_LOCAL: u8 = 0x00;
@@ -230,10 +266,15 @@ pub struct StbTarget<M: Machine = QuickNesMachine> {
 
 impl<M: Machine> StbTarget<M> {
     /// Seal a machine that is already stopped at a valid local-match genesis.
-    pub fn from_machine(mut machine: M) -> Result<Self, MachineError> {
+    pub fn from_machine(machine: M) -> Result<Self, MachineError> {
+        Self::from_machine_with_ai(machine, StbAi::Easy)
+    }
+
+    /// Validate the requested native opponent before sealing gameplay genesis.
+    pub fn from_machine_with_ai(mut machine: M, ai: StbAi) -> Result<Self, MachineError> {
         let wram = read_wram(&machine)?;
         let state = decode_state(&wram)?;
-        validate_genesis(state, byte(&wram, CONFIG_INITIAL_STOCKS)?)?;
+        validate_genesis(state, byte(&wram, CONFIG_INITIAL_STOCKS)?, ai)?;
         let genesis = machine.snapshot()?;
         let observation = StbObservations {
             frame_count: 0,
@@ -340,9 +381,19 @@ impl StbTarget<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
+        Self::from_rom_bytes_headless_with_ai(rom, core_path, core_sha256, StbAi::Easy)
+    }
+
+    /// Reach the selected native AI match using ordinary menu inputs.
+    pub fn from_rom_bytes_headless_with_ai(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        ai: StbAi,
+    ) -> Result<Self, MachineError> {
         let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
         let power_on = machine.snapshot()?;
-        machine.branch(power_on, &nes::reproducer(&setup_tape()))?;
+        machine.branch(power_on, &nes::reproducer(&setup_tape_with_ai(ai)))?;
         let run = machine.run(StopConditions::default(), None)?;
         if !matches!(run, machine::StopReason::Quiescent { .. }) {
             return Err(MachineError::Backend(
@@ -350,7 +401,7 @@ impl StbTarget<QuickNesMachine> {
             ));
         }
         machine.drop_snapshot(power_on)?;
-        Self::from_machine(machine)
+        Self::from_machine_with_ai(machine, ai)
     }
 
     /// Replay a searched input while writing packed RGB24 frames and S16LE
@@ -378,8 +429,7 @@ impl StbTarget<QuickNesMachine> {
             }
             let endpoint = decode_state(&read_wram(&self.machine)?)?;
             let mut remaining = tail_frames;
-            let mut tail_terminal = endpoint.match_over();
-            while remaining > 0 && !tail_terminal {
+            while remaining > 0 {
                 let hold = remaining.min(u32::from(MAX_HOLD_FRAMES));
                 self.render_action(
                     ButtonChord::new(0, u8::try_from(hold)?),
@@ -388,7 +438,6 @@ impl StbTarget<QuickNesMachine> {
                     &mut metadata,
                 )?;
                 remaining -= hold;
-                tail_terminal = decode_state(&read_wram(&self.machine)?)?.match_over();
             }
             let mut metadata = metadata.ok_or("QuickNES produced no video frames")?;
             if metadata.audio_frames == 0 {
@@ -455,9 +504,6 @@ impl StbTarget<QuickNesMachine> {
                 existing.audio_frames = existing.audio_frames.saturating_add(u64::try_from(
                     audio.len() / usize::from(QUICKNES_AUDIO_CHANNELS),
                 )?);
-            }
-            if decode_state(&read_wram(&self.machine)?)?.match_over() {
-                break;
             }
         }
         Ok(())
@@ -860,6 +906,9 @@ impl<M: Machine> Target for StbTarget<M> {
             .clone()
             .try_into()
             .map_err(|_| "STB snapshot work RAM has an invalid length")?;
+        if decode_state(&restored_wram)?.ai_level != self.genesis_observation.decoded.ai_level {
+            return Err("STB snapshot belongs to a different AI workload".into());
+        }
         let imported = self
             .machine
             .import(&snapshot.emulator_state)
@@ -905,6 +954,11 @@ impl<M: Machine> Drop for StbTarget<M> {
 /// The probe binary exposes this tape's state boundaries so a changed ROM or
 /// emulator backend cannot silently turn a menu input into gameplay genesis.
 pub fn setup_tape() -> Vec<ButtonChord> {
+    setup_tape_with_ai(StbAi::Easy)
+}
+
+/// Select difficulty with ordinary menu input, preserving the Easy setup tape.
+pub fn setup_tape_with_ai(ai: StbAi) -> Vec<ButtonChord> {
     let mut tape = Vec::new();
     let press_release = |tape: &mut Vec<ButtonChord>, button| {
         tape.push(ButtonChord::new(button, 1));
@@ -917,7 +971,7 @@ pub fn setup_tape() -> Vec<ButtonChord> {
     // rendering is disabled. Keep a generous fixed settle interval so an A
     // edge is never delivered to a transition initializer rather than the
     // intended menu. Local is the default mode and the following screens keep
-    // four stocks and Easy AI unchanged.
+    // four stocks unchanged and select the requested AI below.
     wait(&mut tape, 180);
     // Title -> mode selection.
     // ButtonChord uses the NES serial/input layout consumed by QuickNES:
@@ -929,6 +983,14 @@ pub fn setup_tape() -> Vec<ButtonChord> {
     // Mode selection -> config.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
+    // Config options are music, stocks, then AI. Changes trigger on release.
+    if ai != StbAi::Easy {
+        press_release(&mut tape, 0x20);
+        press_release(&mut tape, 0x20);
+        for _ in 1..ai.level() {
+            press_release(&mut tape, 0x80);
+        }
+    }
     // Config -> character selection.
     press_release(&mut tape, 0x01);
     wait(&mut tape, 180);
@@ -1027,7 +1089,11 @@ fn read_wram<M: Machine>(machine: &M) -> Result<[u8; WRAM_SIZE], MachineError> {
         .map_err(|_| MachineError::Backend("STB system RAM window has invalid length".to_owned()))
 }
 
-fn validate_genesis(state: StbMechanicalState, initial_stocks: u8) -> Result<(), MachineError> {
+fn validate_genesis(
+    state: StbMechanicalState,
+    initial_stocks: u8,
+    ai: StbAi,
+) -> Result<(), MachineError> {
     let Some(gameplay) = state.gameplay else {
         return Err(MachineError::Backend(format!(
             "Super Tilt Bro setup did not reach live local AI match: state={} mode={} ai={} gameplay=none",
@@ -1036,7 +1102,7 @@ fn validate_genesis(state: StbMechanicalState, initial_stocks: u8) -> Result<(),
     };
     if state.game_state != GAME_STATE_INGAME
         || state.game_mode != GAME_MODE_LOCAL
-        || state.ai_level != 1
+        || state.ai_level != ai.level()
         || state.stage != 0
         || initial_stocks != INITIAL_STOCKS
         || gameplay.player_a_stocks != INITIAL_STOCKS
@@ -1347,6 +1413,23 @@ mod tests {
         assert!(target.restore(&saved).is_err());
         assert_eq!(target.exit_kind(), ExitKind::Crash);
         assert!(target.snapshot().is_none());
+    }
+
+    #[test]
+    fn requested_ai_is_validated_and_snapshots_cannot_cross_difficulties() {
+        let mut easy = StbTarget::from_machine(ScriptedMachine::match_timeline()).unwrap();
+        let saved = easy.snapshot().unwrap();
+        for ai in [StbAi::Fair, StbAi::Hard] {
+            let mut machine = ScriptedMachine::match_timeline();
+            assert!(StbTarget::from_machine_with_ai(machine, ai).is_err());
+            machine = ScriptedMachine::match_timeline();
+            machine.state.wram[CONFIG_AI_LEVEL] = ai.level();
+            let mut target = StbTarget::from_machine_with_ai(machine, ai).unwrap();
+            assert_eq!(target.mechanical_state().ai_level, ai.level());
+            assert!(target.restore(&saved).is_err());
+            assert_eq!(target.exit_kind(), ExitKind::Ok);
+            assert_eq!(target.machine.state.wram[CONFIG_AI_LEVEL], ai.level());
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::{env, error::Error, fs, path::PathBuf};
 
 use machine::nes::ButtonChord;
 use machine::{Machine, StopConditions, nes, quicknes::QuickNesMachine};
-use nes_workload::stb::target::{StbInput, StbTarget, decode_state, setup_tape};
+use nes_workload::stb::target::{StbAi, StbInput, StbTarget, decode_state, setup_tape_with_ai};
 use nes_workload::target::Target;
 use sha2::{Digest, Sha256};
 
@@ -22,6 +22,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|value| value.into_string().map_err(|_| "schedule is not UTF-8"))
         .transpose()?
         .unwrap_or_default();
+    let ai = env::var("HARMONY_STB_AI")
+        .unwrap_or_else(|_| "hard".to_owned())
+        .parse::<StbAi>()?;
     let core = PathBuf::from(
         env::var_os("HARMONY_QUICKNES_CORE").ok_or("HARMONY_QUICKNES_CORE must name QuickNES")?,
     );
@@ -30,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if env::var_os("HARMONY_STB_TRACE_SETUP").is_some() {
         let mut machine = QuickNesMachine::from_rom_bytes(&rom_bytes, &core, &core_sha256)?;
         let mut current = machine.snapshot()?;
-        let tape = setup_tape();
+        let tape = setup_tape_with_ai(ai);
         let mut prior = decode_state(&machine.read_wram()?)?;
         println!("setup[0] {}", serde_json::to_string(&prior)?);
         for (index, action) in tape.iter().enumerate() {
@@ -53,14 +56,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         machine.drop_snapshot(current)?;
     }
-    let mut target = StbTarget::from_rom_bytes_headless(&rom_bytes, &core, &core_sha256)?;
+    let mut target =
+        StbTarget::from_rom_bytes_headless_with_ai(&rom_bytes, &core, &core_sha256, ai)?;
     println!(
         "genesis {}",
         serde_json::to_string(&target.mechanical_state())?
     );
 
     if env::var_os("HARMONY_STB_CORRECTNESS").is_some() {
-        run_correctness_probes(&rom_bytes, &core, &core_sha256, &mut target)?;
+        run_correctness_probes(&rom_bytes, &core, &core_sha256, &mut target, ai)?;
         return Ok(());
     }
 
@@ -129,6 +133,7 @@ fn run_correctness_probes(
     core: &std::path::Path,
     core_sha256: &str,
     target: &mut StbTarget,
+    ai: StbAi,
 ) -> Result<(), Box<dyn Error>> {
     let genesis = target
         .snapshot()
@@ -235,7 +240,7 @@ fn run_correctness_probes(
         }))?
     );
 
-    let clean = StbTarget::from_rom_bytes_headless(rom, core, core_sha256)?;
+    let clean = StbTarget::from_rom_bytes_headless_with_ai(rom, core, core_sha256, ai)?;
     if clean.mechanical_state() != genesis.state() {
         return Err("STB clean reset disagreed with sealed genesis".into());
     }

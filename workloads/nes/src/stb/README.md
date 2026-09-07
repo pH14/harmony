@@ -20,10 +20,16 @@ archive maintenance, recording, and replay remain owned by Dissonance.
 ## Declared workload
 
 The primary workload is a normal local match from power-on setup: stage 0,
-four stocks, and the game's built-in Player-B Easy AI (`config_ai_level = 1`).
+four stocks, and a built-in autonomous Player-B AI: Easy (`1`), Fair (`2`), or
+Hard (`3`). `stb-campaign --ai easy|fair|hard` selects it; the command defaults
+to Hard. The source assigns reaction-delay parameters 30, 10, and 1 to these
+levels. Difficulty changes use the normal configuration menu, not RAM edits.
 The setup tape leaves controller B untouched during character selection, so
 the opponent remains autonomous. The source's default local mode is recorded
-as `mode=local;stocks=4;ai=1;stage=0` in the campaign identity. A match ending
+as `mode=local;stocks=4;ai=<level>;stage=0` in the campaign identity.
+Recordings and snapshots cannot be replayed into a different AI workload.
+The legacy library constructors retain Easy and its unchanged setup tape; new
+callers can select `StbAi` explicitly. A match ending
 with `game_state = 2` is terminal; `game_winner = 0` is a Player-A victory and
 `game_winner = 1` is a defeat. A passive opponent or disabled hazards would be
 a reduced fixture and is not used by the primary pilot.
@@ -82,7 +88,7 @@ camera transition.
 | --- | ---: | --- | --- |
 | `game_state` | `$00d4` | Global state (`0` in-game, `2` game-over) | Terminal/report |
 | `game_mode` | `$00e2` | Local/online/arcade/server mode (`0` local) | Genesis identity |
-| `ai_level` | `$00da` | Configured opponent level (`1` Easy) | Genesis identity |
+| `ai_level` | `$00da` | Configured opponent level (`1` Easy, `2` Fair, `3` Hard) | Genesis identity |
 | `stage` | `$00db` | Selected versus stage | Location identity |
 | `gameplay.fighter states` | `$0000/$0001` | Player-A/Player-B state-machine values | Mechanical observation while gameplay is valid |
 | `gameplay.world X/Y` | `$0004..$0007`, `$000e..$0011` | Pixel bytes and signed page components | Paired location identity while gameplay is valid |
@@ -177,8 +183,9 @@ separate logical frame count.
 
 [The Super Tilt Bro workflow](../../../../.github/workflows/stb.yml) follows
 Nova's source-build/search/film pattern and additionally gates full recorded
-campaign replay. Relevant pull requests run seed 1; scheduled and manual runs
-use the registered seeds 1, 2, and 3. Each runs 2,000 executions on two workers,
+campaign replay. Relevant pull requests run seed 1 against all three AI levels;
+scheduled and manual runs cross all three levels with registered seeds 1, 2,
+and 3. Each cell runs 2,000 executions on two workers,
 with ordinary admission, the existing fixed input/key policy, and a 30-minute
 job timeout. The correctness probe checks controls, autonomous opposition,
 and restored continuations before search. The campaign compares live/replayed
@@ -192,8 +199,15 @@ and expose search behavior; they are not a scalability benchmark.
 
 Artifacts are retained for 30 days: summary and progress, full champion input
 and observation, campaign/replay reports, control probe, the explicitly labeled
-600-frame film prefix (plus neutral tail), and source/credit notices with
-checksums. ROMs, core/compiler binaries, snapshots and raw media are excluded.
+full champion film (plus 180 neutral frames), and source/credit notices with
+checksums. The winning match is filmed through its ending when a victory is
+found. Without one, the full best retained tape is shown and `match_completed`
+reports whether it ends a match; an unfinished search is not called a full win.
+CI compares the champion and rendered tapes/observations and counts encoded
+video frames to ensure the film includes the entire input and tail. RGB frames
+stream into the encoder; only temporary PCM audio and compressed video are
+written, then removed after muxing. ROMs, core/compiler binaries, snapshots and
+raw media are excluded.
 Scheduled runs become active after the workflow reaches the default branch.
 
 Public CI builds and runs the author's WTFPL source release; the author also
@@ -213,11 +227,11 @@ root:
 cargo build --locked --release --manifest-path workloads/nes/Cargo.toml \
   --bin stb-probe --bin stb-campaign
 HARMONY_QUICKNES_CORE=workloads/nes/build/stb/quicknes_libretro.so \
-HARMONY_STB_CORRECTNESS=1 \
+HARMONY_STB_CORRECTNESS=1 HARMONY_STB_AI=hard \
   workloads/nes/target/release/stb-probe workloads/nes/build/stb/stb.nes
 workloads/nes/target/release/stb-campaign \
   --core workloads/nes/build/stb/quicknes_libretro.so \
   --rom workloads/nes/build/stb/stb.nes --output workloads/nes/build/stb-artifact \
-  --seed 1 --executions 2000 --workers 2 --action-limit 512 \
+  --ai hard --seed 1 --executions 2000 --workers 2 --action-limit 512 \
   --fixed-execution-soak
 ```

@@ -11,7 +11,7 @@ use std::{
     fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use nes_workload::{
@@ -26,7 +26,7 @@ use nes_workload::{
             StbCampaignConfig, StbCampaignOrigin, StbGame, replay_stb_campaign_checkpointed,
             run_stb_campaign_checkpointed,
         },
-        target::{StbInput, StbMechanicalState, StbVideoMetadata},
+        target::{StbAi, StbInput, StbMechanicalState, StbVideoMetadata},
     },
     target::{ExitKind, Target},
 };
@@ -38,7 +38,6 @@ use sha2::{Digest, Sha256};
 /// limits. These defaults do not cap explicitly supplied run budgets.
 const DEFAULT_EXECUTIONS: u64 = 2_000;
 const DEFAULT_WORKERS: u32 = 2;
-const MAX_RENDER_FRAMES: u64 = 600;
 
 struct Args {
     core: PathBuf,
@@ -51,6 +50,7 @@ struct Args {
     fixed_execution_soak: bool,
     host: String,
     memory_budget_mib: Option<usize>,
+    ai: StbAi,
 }
 
 struct RenderedMedia {
@@ -78,6 +78,7 @@ impl Args {
         let mut fixed_execution_soak = false;
         let mut host = "local-stb-trial".to_owned();
         let mut memory_budget_mib = None;
+        let mut ai = StbAi::Hard;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--fixed-execution-soak" {
@@ -91,6 +92,12 @@ impl Args {
                 "--core" => core = Some(PathBuf::from(value)),
                 "--rom" => rom = Some(PathBuf::from(value)),
                 "--output" => output = Some(PathBuf::from(value)),
+                "--ai" => {
+                    ai = value
+                        .into_string()
+                        .map_err(|_| "AI name is not UTF-8")?
+                        .parse()?
+                }
                 "--seed" => seed = parse_number("seed", value)?,
                 "--executions" => executions = parse_number("executions", value)?,
                 "--workers" => workers = parse_number("workers", value)?,
@@ -129,6 +136,7 @@ impl Args {
             fixed_execution_soak,
             host,
             memory_budget_mib,
+            ai,
         })
     }
 }
@@ -150,7 +158,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = sha256(&fs::read(&args.core)?);
-    let game = StbGame::new(&rom, &args.core, &core_sha256);
+    let game = StbGame::with_ai(&rom, &args.core, &core_sha256, args.ai);
     run_qualified_campaign(&game, &campaign_config(&args), &args.output)
 }
 
@@ -225,14 +233,14 @@ fn run_qualified_campaign(
     fs::write(output.join("snapshots.bin"), &checkpoint_bytes)?;
 
     // Use the actual champion (or the first verified victory input) for
-    // qualification. Full headless replay evidence is retained even when the
-    // rendered excerpt must be bounded for disk and encoding cost.
+    // qualification. Render every recorded action, including the ending when
+    // reached; an unsolved champion remains explicitly an unfinished match.
     let champion = live
         .victory_input
         .clone()
         .unwrap_or_else(|| live.archive.champion_input.clone());
     let champion_endpoint = write_headless_observation(game, &champion, output, "champion")?;
-    let render_input = bounded_render_excerpt(&champion, MAX_RENDER_FRAMES);
+    let render_input = champion.clone();
     let rendered_endpoint = write_headless_observation(game, &render_input, output, "render")?;
     let media = render_video(game, &render_input, output, 180)?;
     if media.video.input_endpoint != rendered_endpoint {
@@ -246,6 +254,9 @@ fn run_qualified_campaign(
             "qualified_campaign"
         },
         "rom_sha256": game.image_sha256(),
+        "ai": game.ai().name(),
+        "ai_level": game.ai().level(),
+        "match_completed": champion_endpoint.match_over(),
         "emulator_identity": game.emulator_identity(),
         "campaign_seed": live.campaign_seed,
         "workers": live.workers,
@@ -277,7 +288,7 @@ fn run_qualified_campaign(
             .iter()
             .map(|action| u64::from(action.bounded_hold_frames()))
             .sum::<u64>(),
-        "render_excerpt_max_frames": MAX_RENDER_FRAMES,
+        "render_tail_frames": 180,
         "render_excerpt": render_input != champion,
         "rendered_endpoint": rendered_endpoint,
         "rendered_endpoint_verified": true,
@@ -294,8 +305,6 @@ fn run_qualified_campaign(
             "champion_observation": output.join("champion-observation.json"),
             "render_input": output.join("render-input.json"),
             "render_observation": output.join("render-observation.json"),
-            "video_raw": output.join("witness.rgb24"),
-            "audio_raw": output.join("witness.s16le"),
             "video_mp4": output.join("witness.mp4"),
         },
     });
@@ -335,47 +344,22 @@ fn write_headless_observation(
     Ok(observation.decoded)
 }
 
-fn bounded_render_excerpt(input: &StbInput, max_frames: u64) -> StbInput {
-    let mut frames_left = max_frames;
-    let mut actions = Vec::new();
-    for action in &input.actions {
-        if frames_left == 0 {
-            break;
-        }
-        let hold = u64::from(action.bounded_hold_frames()).min(frames_left);
-        actions.push(machine::nes::ButtonChord::new(
-            action.buttons,
-            u8::try_from(hold).expect("ButtonChord hold is bounded"),
-        ));
-        frames_left -= hold;
-    }
-    StbInput { actions }
-}
-
 fn render_video(
     game: &StbGame,
     input: &StbInput,
     output: &Path,
     tail_frames: u32,
 ) -> Result<RenderedMedia, Box<dyn Error>> {
-    let video_path = output.join("witness.rgb24");
+    // Encode frames as they arrive: full matches must not accumulate raw RGB
+    // in RAM or on disk. The pinned QuickNES configuration crops vertical
+    // overscan and emits 256x224 RGB24.
+    let encoded_path = output.join("witness-video.mp4");
     let audio_path = output.join("witness.s16le");
-    let mut video_output = BufWriter::new(fs::File::create(&video_path)?);
-    let mut audio_output = BufWriter::new(fs::File::create(&audio_path)?);
     let mut target = game
         .new_target()
         .map_err(|error| -> Box<dyn Error> { error.into() })?;
-    let video = target.render_input(input, tail_frames, &mut video_output, &mut audio_output)?;
-    video_output.flush()?;
-    audio_output.flush()?;
-    drop(video_output);
-    drop(audio_output);
-    let audio_pcm_sha256 = sha256(&fs::read(&audio_path)?);
-    let geometry = format!("{}x{}", video.width, video.height);
-    let sample_rate = video.audio_sample_rate.to_string();
-    let channels = video.audio_channels.to_string();
-    let mp4_path = output.join("witness.mp4");
-    let status = Command::new("ffmpeg")
+    let mut audio_output = BufWriter::new(fs::File::create(&audio_path)?);
+    let mut encoder = Command::new("ffmpeg")
         .args([
             "-hide_banner",
             "-loglevel",
@@ -385,17 +369,12 @@ fn render_video(
             "-pixel_format",
             "rgb24",
             "-video_size",
-        ])
-        .arg(geometry)
-        .args(["-framerate", "60", "-i"])
-        .arg(&video_path)
-        .args(["-f", "s16le", "-ar", &sample_rate, "-ac", &channels, "-i"])
-        .arg(&audio_path)
-        .args([
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
+            "256x224",
+            "-framerate",
+            "60",
+            "-i",
+            "pipe:0",
+            "-an",
             "-c:v",
             "libx264",
             "-preset",
@@ -404,6 +383,51 @@ fn render_video(
             "18",
             "-pix_fmt",
             "yuv420p",
+            "-y",
+        ])
+        .arg(&encoded_path)
+        .stdin(Stdio::piped())
+        .spawn()?;
+    let mut video_output = BufWriter::new(encoder.stdin.take().ok_or("missing encoder input")?);
+    let rendered = target.render_input(input, tail_frames, &mut video_output, &mut audio_output);
+    let flushed = video_output.flush();
+    drop(video_output); // Close stdin even on a rendering error so ffmpeg exits.
+    let status = encoder.wait()?;
+    let video = rendered?;
+    flushed?;
+    if !status.success() {
+        return Err(format!("video encoder failed with {status}").into());
+    }
+    if (video.width, video.height) != (256, 224) {
+        return Err("unexpected pinned QuickNES video geometry".into());
+    }
+    let expected_frames = input
+        .actions
+        .iter()
+        .map(|action| u64::from(action.bounded_hold_frames()))
+        .sum::<u64>()
+        + u64::from(tail_frames);
+    if video.frames != expected_frames {
+        return Err("video replay did not render the full input and tail".into());
+    }
+    audio_output.flush()?;
+    drop(audio_output);
+    let audio_pcm_sha256 = sha256(&fs::read(&audio_path)?);
+    let sample_rate = video.audio_sample_rate.to_string();
+    let channels = video.audio_channels.to_string();
+    let mp4_path = output.join("witness.mp4");
+    let status = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(&encoded_path)
+        .args(["-f", "s16le", "-ar", &sample_rate, "-ac", &channels, "-i"])
+        .arg(&audio_path)
+        .args([
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
             "-c:a",
             "aac",
             "-b:a",
@@ -418,8 +442,10 @@ fn render_video(
         .arg(&mp4_path)
         .status()?;
     if !status.success() {
-        return Err(format!("ffmpeg failed with {status}").into());
+        return Err(format!("audio mux failed with {status}").into());
     }
+    fs::remove_file(encoded_path)?;
+    fs::remove_file(audio_path)?;
     let mp4_sha256 = sha256(&fs::read(&mp4_path)?);
     fs::write(
         output.join("video.json"),
@@ -460,6 +486,18 @@ mod tests {
         assert_eq!(args.workers, super::DEFAULT_WORKERS);
         assert_eq!(args.action_limit, 512);
         assert!(!args.fixed_execution_soak);
+        assert_eq!(args.ai, super::StbAi::Hard);
+    }
+
+    #[test]
+    fn only_builtin_active_ai_levels_are_accepted() {
+        for (name, level) in [("easy", 1), ("fair", 2), ("hard", 3)] {
+            let args = Args::parse_from(required_args(&["--ai", name])).unwrap();
+            assert_eq!(args.ai.level(), level);
+        }
+        for value in ["human", "0", "4", "impossible"] {
+            assert!(Args::parse_from(required_args(&["--ai", value])).is_err());
+        }
     }
 
     #[test]
