@@ -501,7 +501,7 @@ fn execute_suffix<M: NovaMachineKind>(
                 RetentionPolicy::AdmitAlive => true,
             };
             Some(CampaignCandidate {
-                key: archive_key(target.mechanical_state()),
+                key: archive_key(target.mechanical_state(), target.work_ram()),
                 viable,
                 snapshot,
             })
@@ -710,7 +710,7 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
     }
 
     fn current_key(&self, target: &NovaTarget<M>) -> Result<NovaArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.mechanical_state()))
+        Ok(archive_key(target.mechanical_state(), target.work_ram()))
     }
 
     fn complete_candidate_key(
@@ -1008,7 +1008,7 @@ mod tests {
                 victory: false,
                 failed: false,
                 candidate: Some(CampaignCandidate {
-                    key: archive_key(state),
+                    key: archive_key(state, &[0_u8; 16]),
                     viable: true,
                     snapshot: NovaSnapshot {
                         emulator_state: portable,
@@ -1057,7 +1057,8 @@ mod tests {
             x: 64,
             ..crate::nova::target::NovaMechanicalState::default()
         };
-        second.actions[0].candidate.as_mut().expect("candidate").key = archive_key(changed);
+        second.actions[0].candidate.as_mut().expect("candidate").key =
+            archive_key(changed, &[0_u8; 16]);
         assert_ne!(
             nova_result_sha256(&first).expect("first digest"),
             nova_result_sha256(&second).expect("changed digest"),

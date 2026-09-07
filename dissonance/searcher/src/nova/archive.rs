@@ -5,6 +5,7 @@
 use std::{cmp::Ordering, error::Error, num::NonZeroUsize};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     nova::target::{
@@ -25,11 +26,22 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Nova campaign.
 pub const MAX_NOVA_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_v1";
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_fingerprint6_v1";
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// Recorded controller hold distribution.
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
+
+/// Bits of the work-RAM digest the retention slot keeps.
+///
+/// Nova's key names a location and the durable resources; everything else
+/// the machine is holding -- pose, momentum, what the level's own actors are
+/// doing -- is invisible to it. Two arrivals at one location that differ
+/// only in that state then contend for a single slot, and the cheaper one
+/// keeps it however badly it is placed. Six bits bound the split at
+/// sixty-four variants per location, and the grouping pools them away above
+/// depth 0 so selection still sees one cell.
+const STATE_FINGERPRINT_MASK: u8 = 0x3f;
 
 /// The parent selector named by a stream, resolved under Nova's group depths.
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
@@ -52,6 +64,7 @@ pub struct NovaArchiveGroup {
     level: u8,
     x: u16,
     y: u16,
+    state_fingerprint: u8,
 }
 
 /// Quality-diversity key for one Nova endpoint.
@@ -88,6 +101,11 @@ pub struct NovaArchiveKey {
     pub x: u16,
     /// Player vertical 16-pixel bucket.
     pub y: u16,
+    /// Six-bit digest of work RAM, separating retention slots only. It sorts
+    /// last so it never outranks progress, and no group above depth 0 keeps
+    /// it.
+    #[serde(default)]
+    pub state_fingerprint: u8,
 }
 
 impl ArchiveKey for NovaArchiveKey {
@@ -110,7 +128,10 @@ impl ArchiveKey for NovaArchiveKey {
             ..NovaArchiveGroup::default()
         };
         match depth {
-            0 => location,
+            0 => NovaArchiveGroup {
+                state_fingerprint: self.state_fingerprint,
+                ..location
+            },
             1 => NovaArchiveGroup {
                 x: self.x / 2,
                 y: self.y / 2,
@@ -173,8 +194,9 @@ impl NovaArchiveKey {
 
 /// Build the opaque archive key from a decoded Nova state.
 #[must_use]
-pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
+pub fn archive_key(state: NovaMechanicalState, work_ram: &[u8]) -> NovaArchiveKey {
     let (cleared, collectibles, available, has_ability, health, chips) = preference_tuple(state);
+    let state_fingerprint = Sha256::digest(work_ram)[0] & STATE_FINGERPRINT_MASK;
     NovaArchiveKey {
         cleared,
         collectibles,
@@ -186,6 +208,7 @@ pub fn archive_key(state: NovaMechanicalState) -> NovaArchiveKey {
         level: state.level,
         x: state.x / 16,
         y: state.y / 16,
+        state_fingerprint,
     }
 }
 
@@ -378,6 +401,7 @@ mod tests {
                         for chips in [0_u8, 2] {
                             for cleared in [0_u8, 1] {
                                 samples.push(NovaArchiveKey {
+                                    state_fingerprint: 0,
                                     cleared,
                                     collectibles: 0,
                                     available: 1,
@@ -411,8 +435,8 @@ mod tests {
 
     #[test]
     fn one_location_uses_opaque_resources_only_for_preference() {
-        let weak = archive_key(state(100, 2, 0));
-        let strong = archive_key(state(100, 4, 1));
+        let weak = archive_key(state(100, 2, 0), &[0_u8; 16]);
+        let strong = archive_key(state(100, 4, 1), &[0_u8; 16]);
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(weak.group(1), strong.group(1));
         assert_eq!(strong.preference_cmp(weak), Ordering::Greater);

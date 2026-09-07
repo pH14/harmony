@@ -402,6 +402,16 @@ impl<M: Machine> NovaTarget<M> {
         self.observation.decoded
     }
 
+    /// The work RAM behind the current observation.
+    ///
+    /// The archive key hashes this into a bounded fingerprint so two
+    /// arrivals at one location that differ only in state the key does not
+    /// name still compete for separate slots.
+    #[must_use]
+    pub fn work_ram(&self) -> &[u8; WRAM_SIZE] {
+        &self.current_wram
+    }
+
     /// Whether the current state has no health.
     #[must_use]
     pub fn is_dead(&self) -> bool {
