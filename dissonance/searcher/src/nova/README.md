@@ -60,6 +60,21 @@ is sealed after health and coordinates confirm gameplay. Search actions exclude
 Start and Select. They combine nine non-conflicting directional states with the
 four A/B button states.
 
+## Terminal predicate
+
+A run records which state it stops on. `first_durable_level_clear` is the
+default and the level panel's meaning: the run ends the moment it clears one
+more level than its genesis holds. `every_level_cleared` ends only once all
+`NOVA_CAMPAIGN_LEVEL_COUNT` levels are cleared, and under it a level clear is
+an ordinary archived candidate, so the search carries on into the level the
+clear opens. `nova-campaign --terminal` selects one; `--suffix` and
+`--mixture` select the generic draw policies the same way `smb-campaign`
+does.
+
+A whole-game campaign needs `every_level_cleared`. Under the default a clear
+is terminal and is never archived, so the search cannot pass its first
+cleared level however large the execution budget is.
+
 ## Replay and media capture
 
 `nova-campaign` records and replays the campaign stream in its standard mode.
