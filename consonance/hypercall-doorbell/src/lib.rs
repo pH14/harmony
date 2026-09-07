@@ -404,7 +404,6 @@ impl<D: IoDoorbell> hypercall_proto::Transport for VmcallTransport<D> {
             return Err(TransportError::RequestTooLarge);
         }
 
-        // Keep this transport boundary covered by the CI mutation probe.
         // Steps 2 & 3: clear both pages and stage the request. Raw-pointer ops
         // only — no `&`/`&mut` to either page is created here, and none is live
         // across the doorbell below. The volatile scalar helpers are required
