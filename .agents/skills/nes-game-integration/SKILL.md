@@ -24,6 +24,11 @@ skill reference. Read the current `AGENTS.md`, `dissonance/README.md`,
 - Read [the implementation map](references/implementation.md) for files,
   contracts, and the validation ladder. Follow existing interfaces rather
   than creating a new search loop or undertaking a package migration.
+- Choose a normal, self-contained game mode when available. Record difficulty,
+  opponent behavior, and seeds as part of the workload identity. Preserve built-in
+  autonomous opposition. A passive opponent or disabled hazard is a reduced
+  fixture: useful for probes, but not the primary game evaluation unless requested.
+  Do not weaken the challenge just to make the pilot succeed.
 - Record whether this is a normal new game, an independently initialized
   level/stage, or a continuation from a searched input. Fixed menu navigation
   is setup; traversing gameplay is part of the search. Disclose any save edits,
@@ -44,18 +49,28 @@ Reach a bounded, deterministic gameplay genesis with controller release frames
 where presses are edge-triggered. Verify readiness from observations. Fail
 clearly if setup does not reach it; do not silently continue from a menu.
 
-Build a small probe that accepts recorded chords and emits decoded state and
+Before porting a full campaign adapter, prove ROM loading and a small
+controller/RAM trace. Keep a raw-boot probe path so failed menu setup remains
+diagnosable. The probe accepts recorded chords and emits decoded state and
 only the relevant RAM fields. Ground addresses, bit order, units, and terminal
 conditions in source/disassembly or controlled traces. Test both positive and
 negative examples. In particular:
 
-- Verify left/right, A/B, and hold duration against the emulator's encoding.
+- Verify left/right, A/B, and hold duration through the host mask, backend
+  translation, and game's observed controller bytes. Source-code button
+  constants are not necessarily the masks accepted by `ButtonChord`.
 - Preserve gameplay controls such as weapon menus and missile toggles. Exclude
   a button only for documented semantics, not because it slows the pilot.
 - Distinguish world position, screen position, camera scroll, and transitions.
   A wrapped coordinate is not proof of a fall or death.
+- Validate the phase in which each RAM label has meaning. Menus and ending
+  screens can reuse gameplay memory. Exclude invalid fields from milestones
+  and preferences; do not turn reused bytes into resources or clamp them into
+  plausible values. Terminal flags may remain valid after gameplay fields become invalid.
 - Observe events inside held actions. Preserve a reproducible endpoint or an
   exact shortened tape for a claimed event; a watermark alone is not a witness.
+  The snapshot and observation must describe the same executed frame. Filtering
+  observations after a bulk run does not rewind the emulator to that event.
 - Distinguish death, level clear, full ending, and infrastructure failure.
   An unknown ending means progress-only qualification, not completion.
 
@@ -87,6 +102,12 @@ not the full RAM as new independent archive dimensions. Do not use one game's
 16-pixel buckets, preference order, or controller exclusions without checking
 their meaning for this game.
 
+Start with observed terminal conditions and ordinary admission, without extra
+admission lookahead where the interface permits. Copying a survival probe also
+copies input policy and compute cost. Add one only for an evidenced admission
+problem; record its masks and actual horizon, inspect the simulated future for
+its verdict, and verify complete restoration before enabling it.
+
 Routes, waypoints, boss weakness tables, recommended weapon/item orders,
 location-conditioned button choices, prerecorded solutions, and rewards for
 following a walkthrough are strategy. Keep them out of the evaluation policy,
@@ -116,6 +137,9 @@ game and another existing game, plus a meaningful synthetic invariant test.
 Record executions, frames, elapsed search time, memory, and achieved outcomes.
 Treat a single-game win as provisional. Follow the searcher README's performance
 goals; do not launch an unbounded campaign or materialize huge reports by default.
+The task's compute allowance limits the runs you launch, not the reusable runner's
+capabilities. Keep bounded defaults and expose supported worker, execution,
+horizon, and memory settings; do not hard-code a trial allowance as a game limit.
 
 ## 5. Deliver a library entry with an honest status
 

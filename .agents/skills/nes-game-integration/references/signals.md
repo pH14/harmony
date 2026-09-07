@@ -15,8 +15,12 @@ rooms, changing a boss's weakness, or moving an item?
 ## Distinguish identity, progress, and preference
 
 - Location IDs are labels. In a game with backtracking, larger room IDs, map X,
-  or map Y do not imply progress. Override `ArchiveKey::progress_cmp` when
-  derived ordering would accidentally reward those values.
+  or map Y do not imply progress. Inspect the current archive's comparison
+  path before implementing ordering. Some branches expose `progress_cmp`;
+  others use the key's `Ord` for progress as well as identity. Use an available
+  progress hook deliberately. If those roles cannot be separated in the current
+  API, document the limitation and propose the smallest generic change; do not
+  invent a trait method or silently reward derived coordinate/state-ID order.
 - Durable inventory/clear flags describe achievements. Counts are compact but
   may alias different abilities; preserve identity where two equal counts
   give different capabilities. Validate a proposed split before adopting it.
