@@ -120,6 +120,10 @@ under pressure and workload-neutral tests of the changed invariant.
 - `nova/` maps Nova system/save RAM to spatial keys, level and collectible
   progress, milestones, and its input vocabulary. Its optional `consonance`
   module drives the consonance control protocol for a live guest.
+- `stb/` maps the source-built Super Tilt Bro local-AI match to paired fighter
+  observations, durable knockout progress, and a QuickNES controller
+  vocabulary. Its `stb-probe` and `stb-campaign` binaries record setup,
+  replay, and bounded campaign evidence without committing the ROM.
 - `target.rs` provides the smaller action/observation/snapshot seam used by
   target implementations and tests.
 
