@@ -95,8 +95,9 @@ Keep these roles distinct:
 | Same-location preference | Which comparable state preserves more capability? |
 | Terminal condition | What exact event ends this branch or completes this task? |
 
-Start with spatial/topological identity, observed durable changes, and verified
-terminal conditions. Add a field only to correct demonstrated aliasing or
+Start with a coarse mechanically meaningful identity (spatial/topological where
+appropriate), observed durable changes, and verified terminal conditions.
+Add a field only to correct demonstrated aliasing or
 represent a mechanically relevant capability. Expose minimal sufficient state,
 not the full RAM as new independent archive dimensions. Do not use one game's
 16-pixel buckets, preference order, or controller exclusions without checking
