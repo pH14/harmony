@@ -43,16 +43,17 @@ jobs:
       max-parallel: 3
       matrix:
         ai:
-          - { name: easy, level: 1 }
-          - { name: fair, level: 2 }
-          - { name: hard, level: 3 }
+          - { name: easy, level: 1, executions: 2000, require_victory: false }
+          - { name: fair, level: 2, executions: 2000, require_victory: false }
+          - { name: hard, level: 3, executions: 20000, require_victory: true }
         # Register the seed set before observing outcomes. PRs use one seed;
         # nightly/manual runs exercise the same policy across all three.
         seed: ${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1,2,3]') }}
     env:
       STB_BUILD: workloads/nes/build/stb
       STB_ARTIFACT: workloads/nes/build/stb-artifact
-      STB_EXECUTIONS: "2000"
+      STB_EXECUTIONS: ${{ matrix.ai.executions }}
+      STB_REQUIRE_VICTORY: ${{ matrix.ai.require_victory }}
       STB_SEED: ${{ matrix.seed }}
       STB_AI: ${{ matrix.ai.name }}
       STB_AI_LEVEL: ${{ matrix.ai.level }}
@@ -112,25 +113,29 @@ jobs:
           PY
       - name: Search the normal local match and verify recorded replay
         run: |
+          stop_flags=()
+          if [[ "${STB_REQUIRE_VICTORY}" != true ]]; then
+            stop_flags+=(--fixed-execution-soak)
+          fi
           workloads/nes/target/release/stb-campaign \
             --core "${STB_BUILD}/quicknes_libretro.so" \
             --rom "${STB_BUILD}/stb.nes" \
             --output "${STB_ARTIFACT}" \
             --ai "${STB_AI}" --seed "${STB_SEED}" --executions "${STB_EXECUTIONS}" \
             --workers "${STB_WORKERS}" --action-limit 512 \
-            --fixed-execution-soak
+            "${stop_flags[@]}"
       - name: Check and describe compact evidence
         run: |
-          # The binary's exit status gates actual replay/render equality. The
-          # fields below pin the artifact contract and exact execution budget.
-          # A win is an outcome, never a reason to tune policy/seeds or fail an
-          # otherwise valid workload.
+          # The binary's exit status gates actual replay/render equality.
+          # Hard is a completion regression: stop after a win, or fail if the
+          # fixed ceiling is exhausted. Easy/Fair retain exact-budget soaks.
+          # Keep seeds and search policy fixed; do not retry a losing campaign.
           jq -e --argjson budget "${STB_EXECUTIONS}" \
             --argjson seed "${STB_SEED}" --argjson workers "${STB_WORKERS}" \
             --argjson ai "${STB_AI_LEVEL}" \
             '.campaign_seed == $seed and .workers == $workers and
-             .execution_budget == $budget and .executions == $budget and
-             .execution_budget_exact == true and .replay_verified == true and
+             .execution_budget == $budget and .executions > 0 and .executions <= $budget and
+             .execution_budget_exact == (.executions == .execution_budget) and .replay_verified == true and
              .rendered_endpoint_verified == true and .frames_emulated > 0 and
              .archive_entries > 0 and .champion_input_actions > 0 and
              .champion_endpoint.game_mode == 0 and .champion_endpoint.ai_level == $ai and .ai_level == $ai and .render_excerpt == false' \
@@ -138,7 +143,7 @@ jobs:
           cmp "${STB_ARTIFACT}/campaign-report.json" "${STB_ARTIFACT}/replay-report.json"
           cmp "${STB_ARTIFACT}/champion-input.json" "${STB_ARTIFACT}/render-input.json"
           cmp "${STB_ARTIFACT}/champion-observation.json" "${STB_ARTIFACT}/render-observation.json"
-          python3 - "${STB_ARTIFACT}" <<'PY'
+          python3 - "${STB_ARTIFACT}" "${STB_REQUIRE_VICTORY}" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -147,6 +152,13 @@ jobs:
           summary = json.loads((artifact / "run-summary.json").read_text())
           champion = json.loads((artifact / "champion-observation.json").read_text())
           tape = json.loads((artifact / "champion-input.json").read_text())
+          if sys.argv[2] == "true":
+              assert summary["victories"] > 0, "required Hard AI victory was not found within the execution ceiling"
+              assert summary["mode"] == "qualified_campaign"
+              assert 0 < summary["first_reached"]["first_victory"] <= summary["executions"]
+          else:
+              assert summary["mode"] == "direct_quicknes_fixed_execution_soak"
+              assert summary["execution_budget_exact"], "fixed-execution soak stopped early"
           assert champion["frame_count"] == sum(action["hold_frames"] for action in tape["actions"]), "recorded tape and endpoint frames disagree"
           assert champion["decoded"] == summary["champion_endpoint"]
           assert summary["rendered_input_frames"] == champion["frame_count"]
@@ -176,7 +188,8 @@ jobs:
           {
             echo "## Super Tilt Bro — native ${STB_AI} AI"
             echo
-            echo "Seed ${STB_SEED}; ${STB_EXECUTIONS} executions; ${STB_WORKERS} workers."
+            echo "Seed ${STB_SEED}; $(jq -r '.executions' "${STB_ARTIFACT}/run-summary.json")/${STB_EXECUTIONS} executions; ${STB_WORKERS} workers."
+            echo "Victory required: ${STB_REQUIRE_VICTORY}."
             echo "Campaign report/checkpoint replay and rendered endpoint verified."
             echo "First reached: $(jq -c '.first_reached' "${STB_ARTIFACT}/run-summary.json")."
             echo "Milestones: $(jq -c '.milestones' "${STB_ARTIFACT}/run-summary.json")."

@@ -185,17 +185,21 @@ separate logical frame count.
 Nova's source-build/search/film pattern and additionally gates full recorded
 campaign replay. Relevant pull requests run seed 1 against all three AI levels;
 scheduled and manual runs cross all three levels with registered seeds 1, 2,
-and 3. Each cell runs 2,000 executions on two workers,
-with ordinary admission, the existing fixed input/key policy, and a 30-minute
+and 3. Easy and Fair run exact 2,000-execution soaks. Hard searches up to
+20,000 executions and stops after finding a victory (then drains outstanding
+worker reservations). Every cell uses two workers, ordinary admission, the
+existing fixed input/key policy, and a 30-minute
 job timeout. The correctness probe checks controls, autonomous opposition,
 and restored continuations before search. The campaign compares live/replayed
 reports and checkpoint bytes and verifies the headless/rendered endpoint.
 
-CI gates execution count, replay consistency, and usable evidence. Victory
-counts and first-win executions are reported without a minimum or fixed target;
-an unsolved run remains useful search evaluation. CI does not change difficulty,
-seed selection, or policy to recover a win. These small runs qualify an adapter
-and expose search behavior; they are not a scalability benchmark.
+CI gates execution limits, replay consistency, and usable evidence. Every Hard
+cell must also produce a verified Player-A victory with all five opponent
+stock losses; exhausting its ceiling without a win fails CI. Easy/Fair retain
+progress-only qualification. First-win executions remain measured outcomes,
+not exact golden values. CI does not retry, change difficulty, select another
+seed, or alter search policy to recover a win. These bounded runs qualify an
+adapter and check Hard completion; they are not a scalability benchmark.
 
 Artifacts are retained for 30 days: summary and progress, full champion input
 and observation, campaign/replay reports, control probe, the explicitly labeled
@@ -232,6 +236,10 @@ HARMONY_STB_CORRECTNESS=1 HARMONY_STB_AI=hard \
 workloads/nes/target/release/stb-campaign \
   --core workloads/nes/build/stb/quicknes_libretro.so \
   --rom workloads/nes/build/stb/stb.nes --output workloads/nes/build/stb-artifact \
-  --ai hard --seed 1 --executions 2000 --workers 2 --action-limit 512 \
-  --fixed-execution-soak
+  --ai hard --seed 1 --executions 20000 --workers 2 --action-limit 512
 ```
+
+For the Easy/Fair soak cells, select the corresponding AI, use
+`--executions 2000`, and add `--fixed-execution-soak`. The reusable campaign binary can still
+report an unsolved search successfully; the CI evidence check enforces the
+additional Hard victory requirement.
