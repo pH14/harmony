@@ -1,0 +1,29 @@
+name: Search evaluation contracts
+on:
+  pull_request:
+    paths:
+      - benchmarks/search/**
+      - dissonance/searcher/**
+      - workloads/nes/**
+      - .github/workflows/search-eval.yml
+  push:
+    branches: [main]
+    paths:
+      - benchmarks/search/**
+      - dissonance/searcher/**
+      - workloads/nes/**
+  workflow_dispatch:
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Runner failures and publication contracts
+        run: python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+      - name: Generic search and deterministic replay
+        run: cargo test --manifest-path dissonance/searcher/Cargo.toml --locked
+      - name: Workload contracts without licensed ROMs
+        run: cargo test --manifest-path workloads/nes/Cargo.toml --lib --locked
+      - name: Dependency ownership
+        run: python3 scripts/check-dependency-boundaries.py

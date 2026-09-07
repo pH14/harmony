@@ -1,0 +1,161 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+
+# Local search evaluation
+
+This suite evaluates Dissonance search mechanisms against fixed NES workloads.
+It is designed for a private Linux host with licensed ROMs; ordinary CI uses
+synthetic engine/runner tests and source-built games. A stage fixture is never
+counted as a whole-game solve. No run starts from a supplied solution tape.
+
+## Run
+
+Build the pinned QuickNES core with `scripts/build-quicknes-core.sh`. Build Nova
+and Super Tilt Bro with the scripts in `workloads/nes/scripts`. Supply your own
+SMB, MM2, and Metroid ROMs. Put their absolute paths and SHA-256 values in a
+private inventory outside the repository:
+
+```json
+{
+  "core": {"path": "/private/assets/quicknes_libretro.so", "sha256": "YOUR_CORE_SHA256"},
+  "smb": {"path": "/private/assets/smb.nes", "sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea"},
+  "mm2": {"path": "/private/assets/mm2.nes", "sha256": "49136b412ff61beac6e40d0bbcd8691a39a50cd2744fdcdde3401eed53d71edf"},
+  "metroid": {"path": "/private/assets/metroid.nes", "sha256": "e6e6b7014685adae447ebb3833242815747bc1e5df83ade79f693fb67cf565b6"},
+  "nova": {"path": "/private/assets/nova.nes", "sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08"},
+  "stb": {"path": "/private/assets/stb.nes", "sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3"}
+}
+```
+
+From the repository root, with Python 3.9+, the pinned Rust toolchain, and Linux
+`taskset` available:
+
+```sh
+python3 benchmarks/search/eval.py build --out /private/builds/search-001 --jobs 24
+python3 benchmarks/search/eval.py run benchmarks/search/qualification.json \
+  --assets /private/assets.json --binary /private/builds/search-001/nes-eval \
+  --build-info /private/builds/search-001/build-info.json \
+  --out /private/runs/qualification-001 --jobs 6 --cpus 24 \
+  --memory-capacity-mib 40000
+python3 benchmarks/search/eval.py run benchmarks/search/evaluation.json \
+  --assets /private/assets.json --binary /private/builds/search-001/nes-eval \
+  --build-info /private/builds/search-001/build-info.json \
+  --out /private/runs/evaluation-001 --jobs 3 --cpus 24 \
+  --memory-capacity-mib 40000
+```
+
+Builds and matrix output directories must be new. The build helper checks that
+source identity is unchanged during compilation and records compiler versions,
+source hash, flags and executable hash. `--build-info` is checked against the
+binary when it includes a binary digest. An arbitrary supplied legacy build
+identity is an operator attestation; absent build information is reported as
+unavailable, never inferred from an unrelated current checkout.
+
+`--case ID` restricts a run to explicitly selected registered cases. The runner
+allocates disjoint CPU sets and reserves each cell's logical memory budget plus
+`--overhead-mib` (default 1024) against host capacity. These are scheduling
+reservations, not OS memory enforcement. Keep other heavy processes off the
+host for publishable timing comparisons. CPU affinity, host model, concurrent
+job limit, budgets, executable, core, ROM, adapter and mechanism identities are
+retained in every matrix. Native resource sampling uses Linux `/proc`; missing
+platform measurements must not be interpreted as zero.
+
+## Registered panels
+
+| Manifest | Purpose |
+| --- | --- |
+| `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
+| `pilot.json` | Three exploratory seeds on SMB, Nova level 1, Metal Man, Metroid new game and STB Hard. |
+| `evaluation.json` | Five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
+| `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, three seeds. Every cell must solve within its declared budget. |
+
+All manifests specify exact ROM hashes and normal menu origins. MM2 is currently
+an independent-stage panel; it does not claim full-game evaluation. Metroid
+progress is reported even when its ending is not reached. Nova whole-game runs
+require all 40 cleared-level flags from level 1; a single cleared level cannot
+satisfy that predicate. Isolated later-level Nova setup is a declared fixture.
+
+Copy a manifest to change **search** mechanisms for an ablation. Keep case IDs,
+origins, seed panel, ROM/core, adapter policies and resource budgets fixed. The
+comparison command rejects mismatches rather than quietly combining them.
+Engine experiments are described in [SYNTHESIS.md](SYNTHESIS.md); prototype claims
+are not accepted merely because a previous single seed succeeded.
+
+## Evidence and resource accounting
+
+Each cell writes a private request, logs, `summary.json`, `resources.jsonl`, and
+a `campaign` directory containing identities, progress, compact reports and
+witness inputs. Failed, timed-out and required-but-unsolved runs remain visible.
+Completed cell summaries and the results index are saved incrementally; an
+incomplete matrix cannot be silently exported or compared as a complete panel.
+The watchdog kills only its own process group after the search wall budget plus
+`--finish-seconds`, or when its sampled disk footprint exceeds
+`--disk-limit-gib`. The search itself stops issuing reservations at its wall
+limit, then drains admitted work and verifies evidence.
+
+- **Search quality:** verified completion, first-victory executions and emulator
+  frames, objective progress/milestones, deaths and coverage. Aggregate evidence
+  can combine explored branches; it is not a claimed single trajectory.
+- **Throughput:** actual admitted emulator frames / search wall time and
+  executions / search wall time. Frames include snapshot-to-parent replay,
+  suffix execution and admission probes. Power-on worker construction is inside
+  the timed search call but excluded from its admitted frame counter. Final
+  internal campaign compaction is also inside this timer. External report
+  export and witness/campaign verification have separate durations.
+- **Memory:** sampled process-group RSS by phase, OS maximum process RSS, logical
+  archive/snapshot/index/history/draw-state charges, evictions and compactions.
+  OS RSS and logical charges answer different questions and are both retained.
+- **Disk:** sampled current/peak and final logical and allocated bytes, categorized
+  by stream, checkpoints, media, telemetry and reports/logs. The final footprint
+  includes the summary. Sampling can miss short-lived peaks.
+- **I/O and CPU:** sampled `/proc` read/write bytes, CPU seconds and OS block
+  operation/context-switch counts. The final sampled byte totals are lower bounds
+  if a process exits between samples; block operations are not byte counts.
+- **Coordinator:** optional phase timing and dispatched action budgets. Requested
+  replay/suffix time is labelled separately from actual emulator frame work.
+
+Performance runs hash and discard the full event stream while retaining compact
+reports and a best/winning input. This bounds disk growth without pretending a
+full verification stream was saved. Each witness is replayed twice on fresh
+native targets; every claimed victory must reproduce. Qualification uses
+`verification: campaign`, limited to at most 5,000 executions, and additionally
+re-executes the complete stream and compares the report and portable checkpoint.
+These modes and verification time are explicit in the matrix. No large-run
+full-campaign verification is implied by a witness-only result.
+
+## Compare and publish
+
+```sh
+python3 benchmarks/search/eval.py compare /private/runs/baseline \
+  /private/runs/candidate --out /private/comparison.json
+python3 benchmarks/search/eval.py export /private/runs/candidate \
+  --out /private/public/search-001
+```
+
+The export is a standalone HTML report plus allowlisted JSON/JSONL, discovered
+controller inputs and SHA-256 checksums. It excludes ROMs, cores, snapshots,
+full streams, private requests, arbitrary files and logs. Symlinks are rejected.
+Copy the export directory to your static publication location; publishing is a
+separate operator action. Source-built STB artifacts also carry the license
+notice in `workloads/nes/STB-ARTIFACT-LICENSE.md` when redistributed as required.
+
+Keep one immutable directory per revision/run. Case IDs, policy identities and
+seed/resource axes support longitudinal comparisons without renaming away
+regressions. Solve fractions include Wilson 95% intervals; failed infrastructure
+runs are counted separately, and missing victories are censored at their budget.
+The reported median victory frame count is conditional on success. Do not
+replace an unsolved run with the budget as an invented completion time or infer
+statistical confidence from a three-seed pilot.
+
+## Checks
+
+```sh
+python3 -m unittest discover -s benchmarks/search -p 'test_*.py'
+cargo test --manifest-path dissonance/searcher/Cargo.toml
+cargo test --manifest-path workloads/nes/Cargo.toml --lib
+python3 scripts/check-dependency-boundaries.py
+```
+
+The runner tests plant failures, timeouts, disk overuse, changed assets/policies,
+missing cells and publication leaks. The engine's generic continuation fixture
+requires actual reuse and memory pressure before comparing live/replay results.
+Licensed-ROM qualification runs locally; it is not skipped code presented as a
+passing CI test.
