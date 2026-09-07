@@ -46,18 +46,19 @@ pub fn key_policy_identifier(fingerprint_bits: u8) -> String {
 }
 /// Recorded same-slot replacement policy keeping the cheapest route.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
-/// Prefix of the recorded replacement policy that also lets an incumbent
-/// drawn barren past a count lose its slot; the count follows the colon.
+/// Prefix of the recorded replacement policy that splits a slot once enough
+/// arrivals have been rejected against an unproductive incumbent; the count
+/// follows the colon.
 pub const REPLACEMENT_OR_BARREN_PREFIX: &str =
-    "opaque_preference_then_fewest_frames_or_barren_split:";
+    "opaque_preference_then_fewest_frames_or_pressured_split:";
 
 /// The recorded identifier of a replacement policy.
 #[must_use]
 pub fn replacement_identifier(policy: ReplacementPolicy) -> String {
     match policy {
         ReplacementPolicy::FewestFrames => REPLACEMENT_IDENTIFIER.to_owned(),
-        ReplacementPolicy::FewestFramesOrBarrenSplit { draws } => {
-            format!("{REPLACEMENT_OR_BARREN_PREFIX}{draws}")
+        ReplacementPolicy::FewestFramesOrPressuredSplit { rejections } => {
+            format!("{REPLACEMENT_OR_BARREN_PREFIX}{rejections}")
         }
     }
 }
@@ -72,12 +73,12 @@ pub fn replacement_from_identifier(identifier: &str) -> Result<ReplacementPolicy
     if identifier == REPLACEMENT_IDENTIFIER {
         return Ok(ReplacementPolicy::FewestFrames);
     }
-    if let Some(draws) = identifier.strip_prefix(REPLACEMENT_OR_BARREN_PREFIX) {
-        let draws = draws.parse::<u64>()?;
-        if draws == 0 {
-            return Err("barren replacement count must be nonzero".into());
+    if let Some(rejections) = identifier.strip_prefix(REPLACEMENT_OR_BARREN_PREFIX) {
+        let rejections = rejections.parse::<u64>()?;
+        if rejections == 0 {
+            return Err("pressured split count must be nonzero".into());
         }
-        return Ok(ReplacementPolicy::FewestFramesOrBarrenSplit { draws });
+        return Ok(ReplacementPolicy::FewestFramesOrPressuredSplit { rejections });
     }
     Err(format!("Nova replacement policy {identifier} is not recognized").into())
 }

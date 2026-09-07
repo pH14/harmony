@@ -149,20 +149,21 @@ pub enum ReplacementPolicy {
     /// Equal preference keeps the route with fewer frames in its group.
     #[default]
     FewestFrames,
-    /// As above until an incumbent has been drawn `draws` times since it last
-    /// produced a retained child; the slot then splits by
-    /// [`ArchiveKey::variant`], and each variant competes for its own
-    /// representative under the fewest-frames rule. The count survives the
-    /// selector's exhaustion reset, so it measures a lifetime of barren
-    /// draws. A slot whose representative keeps producing never splits and
-    /// costs nothing; one that has gone barren retains up to one arrival per
-    /// variant, which is what lets a search past a location its cheapest
-    /// arrival cannot leave. Displacing the incumbent instead was measured
-    /// and lost: it trades a cheap route for a random one at every barren
-    /// cell, and a hard level has many.
-    FewestFramesOrBarrenSplit {
-        /// Barren draws an incumbent must reach before its slot splits.
-        draws: u64,
+    /// As above until `rejections` arrivals have lost a slot contest to an
+    /// incumbent that has produced no retained child since; the slot then
+    /// splits by [`ArchiveKey::variant`], and each variant competes for its
+    /// own representative under the fewest-frames rule. Pressure is measured
+    /// at the slot, from the routes that reach it, so it does not depend on
+    /// how often the selector draws the incumbent: a location many routes
+    /// reach and none can leave splits whether or not the frontier's draws
+    /// have decayed, and a slot whose representative keeps producing never
+    /// splits and costs nothing. Triggering on the incumbent's own barren
+    /// draws was measured and inverted the intent, splitting the well-drawn
+    /// regions that did not need it while the starved frontier waited.
+    FewestFramesOrPressuredSplit {
+        /// Rejected arrivals an incumbent must accumulate, since it last
+        /// produced, before its slot splits.
+        rejections: u64,
     },
 }
 
@@ -830,9 +831,9 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     selected: Vec<u64>,
     productive: Vec<u64>,
     since_retained: Vec<u64>,
-    /// Draws since the entry last produced a retained child; unlike
-    /// `since_retained` this is never cleared by the exhaustion reset.
-    barren_draws: Vec<u64>,
+    /// Arrivals rejected against the entry since it last produced a retained
+    /// child.
+    rejections: Vec<u64>,
     /// Depth-0 slots that have split by variant.
     split_slots: BTreeSet<K::Group>,
     in_window_ever: Vec<bool>,
@@ -1415,7 +1416,7 @@ where
             selected: Vec::new(),
             productive: Vec::new(),
             since_retained: Vec::new(),
-            barren_draws: Vec::new(),
+            rejections: Vec::new(),
             split_slots: BTreeSet::new(),
             in_window_ever: Vec::new(),
             opened_slot: Vec::new(),
@@ -1915,7 +1916,7 @@ where
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
         self.productive = retain_marked(std::mem::take(&mut self.productive), &keep);
         self.since_retained = retain_marked(std::mem::take(&mut self.since_retained), &keep);
-        self.barren_draws = retain_marked(std::mem::take(&mut self.barren_draws), &keep);
+        self.rejections = retain_marked(std::mem::take(&mut self.rejections), &keep);
         self.in_window_ever = retain_marked(std::mem::take(&mut self.in_window_ever), &keep);
         self.opened_slot = retain_marked(std::mem::take(&mut self.opened_slot), &keep);
         self.opened_cell = retain_marked(std::mem::take(&mut self.opened_cell), &keep);
@@ -2744,10 +2745,10 @@ where
         // barren; from then on an arrival contends only with its own variant.
         let split = match self.replacement_policy {
             ReplacementPolicy::FewestFrames => false,
-            ReplacementPolicy::FewestFramesOrBarrenSplit { draws } => {
+            ReplacementPolicy::FewestFramesOrPressuredSplit { rejections } => {
                 let group = key.group(0);
                 if !self.split_slots.contains(&group)
-                    && slot.iter().any(|id| self.barren_draws[*id] >= draws)
+                    && slot.iter().any(|id| self.rejections[*id] >= rejections)
                 {
                     self.split_slots.insert(group);
                 }
@@ -2763,16 +2764,16 @@ where
             slot.clone()
         };
         let slot_full = contenders.len() >= K::slot_capacity().max(1);
+        let worst = contenders.iter().copied().min_by(|left, right| {
+            let left_entry = &self.entries[*left];
+            let right_entry = &self.entries[*right];
+            left_entry
+                .key
+                .preference_cmp(right_entry.key)
+                .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
+                .then_with(|| right_entry.id.cmp(&left_entry.id))
+        });
         let replace = if slot_full {
-            let worst = contenders.iter().copied().min_by(|left, right| {
-                let left_entry = &self.entries[*left];
-                let right_entry = &self.entries[*right];
-                left_entry
-                    .key
-                    .preference_cmp(right_entry.key)
-                    .then_with(|| self.time_in_group[*right].cmp(&self.time_in_group[*left]))
-                    .then_with(|| right_entry.id.cmp(&left_entry.id))
-            });
             worst.filter(|id| match key.preference_cmp(self.entries[*id].key) {
                 Ordering::Greater => true,
                 Ordering::Equal => candidate_time_in_group < self.time_in_group[*id],
@@ -2783,6 +2784,9 @@ where
         };
         if slot_full && replace.is_none() {
             self.rejected = self.rejected.saturating_add(1);
+            if let Some(id) = worst {
+                self.rejections[id] = self.rejections[id].saturating_add(1);
+            }
             return Ok((None, key));
         }
         let population_retirements = self
@@ -2879,7 +2883,7 @@ where
         self.selected.push(0);
         self.productive.push(0);
         self.since_retained.push(0);
-        self.barren_draws.push(0);
+        self.rejections.push(0);
         self.in_window_ever.push(false);
         self.opened_slot.push(new_slot);
         // A one-group key has no pooled cell depth; slot novelty stands in.
@@ -3703,7 +3707,6 @@ where
         let was_sampleable = self.entry_unexhausted(id);
         self.selected[id] = self.selected[id].saturating_add(1);
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
-        self.barren_draws[id] = self.barren_draws[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
         if let Some(members) = self
@@ -3778,7 +3781,7 @@ where
         let was_sampleable = self.entry_unexhausted(id);
         self.productive[id] = self.productive[id].saturating_add(1);
         self.since_retained[id] = 0;
-        self.barren_draws[id] = 0;
+        self.rejections[id] = 0;
         if !was_sampleable && self.entry_unexhausted(id) {
             self.set_entry_sampleable(id, true);
         }
@@ -4265,13 +4268,15 @@ mod tests {
     }
 
     /// A costlier equal-preference arrival of another variant is rejected
-    /// while the incumbent is productive under both policies. Once the
-    /// incumbent has been drawn barren past the split policy's count, the
-    /// slot splits: the other variant is retained beside the incumbent, and
-    /// the incumbent's own variant still keeps the cheaper route.
+    /// while the incumbent is under no pressure, under both policies, and
+    /// each rejection is charged to the incumbent it lost to. Once enough
+    /// arrivals have lost to an incumbent that has produced nothing since,
+    /// the slot splits under the pressured policy: the other variant is
+    /// retained beside the incumbent, and the incumbent's own variant still
+    /// keeps the cheaper route.
     #[test]
-    fn barren_split_retains_another_variant_beside_a_dead_incumbent() {
-        let run = |policy: ReplacementPolicy, barren: bool| {
+    fn pressured_split_retains_another_variant_beside_a_dead_incumbent() {
+        let run = |policy: ReplacementPolicy, pressured: bool| {
             let mut archive = Archive::<u8, PreferredKey, (), ()>::new(|_| 1);
             archive.replacement_policy = policy;
             let candidate = |suffix: Vec<u8>, variant: u8| ArchiveCandidate {
@@ -4287,8 +4292,8 @@ mod tests {
                 .insert(None, 0, candidate(vec![1], 0), ())
                 .expect("insert incumbent")
                 .expect("incumbent retained");
-            if barren {
-                archive.barren_draws[incumbent] = 16;
+            if pressured {
+                archive.rejections[incumbent] = 64;
             }
             // Two actions cost more than one, so both arrivals are costlier routes.
             let other_variant = archive
@@ -4297,19 +4302,27 @@ mod tests {
             let same_variant = archive
                 .insert(None, 0, candidate(vec![4, 5], 0), ())
                 .expect("insert same variant");
-            (other_variant, same_variant, archive.active[incumbent])
+            let charged = archive.rejections[incumbent];
+            (
+                other_variant,
+                same_variant,
+                archive.active[incumbent],
+                charged,
+            )
         };
+        // Both rejected arrivals charge the incumbent; once the slot has
+        // split only the same-variant loss does.
         assert_eq!(
             run(ReplacementPolicy::FewestFrames, false),
-            (None, None, true)
+            (None, None, true, 2)
         );
         assert_eq!(
             run(ReplacementPolicy::FewestFrames, true),
-            (None, None, true)
+            (None, None, true, 66)
         );
-        let split = ReplacementPolicy::FewestFramesOrBarrenSplit { draws: 16 };
-        assert_eq!(run(split, false), (None, None, true));
-        assert_eq!(run(split, true), (Some(1), None, true));
+        let split = ReplacementPolicy::FewestFramesOrPressuredSplit { rejections: 64 };
+        assert_eq!(run(split, false), (None, None, true, 2));
+        assert_eq!(run(split, true), (Some(1), None, true, 65));
     }
 
     fn flat_archive<const DEPTHS: usize>(
