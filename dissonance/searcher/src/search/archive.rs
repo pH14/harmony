@@ -165,6 +165,10 @@ pub enum ReplacementPolicy {
         /// Rejected arrivals an incumbent must accumulate, since it last
         /// produced, before its slot splits.
         rejections: u64,
+        /// Times the incumbent must itself have been drawn. A representative
+        /// the selector has not yet tried is not a dead end, however many
+        /// routes converge on it; one drawn this often with no child is.
+        draws: u64,
     },
 }
 
@@ -2746,12 +2750,14 @@ where
         // barren; from then on an arrival contends only with its own variant.
         let split = match self.replacement_policy {
             ReplacementPolicy::FewestFrames => false,
-            ReplacementPolicy::FewestFramesOrPressuredSplit { rejections } => {
+            ReplacementPolicy::FewestFramesOrPressuredSplit { rejections, draws } => {
                 let group = key.group(0);
                 if !self.split_slots.contains(&group)
-                    && slot
-                        .iter()
-                        .any(|id| self.productive[*id] == 0 && self.rejections[*id] >= rejections)
+                    && slot.iter().any(|id| {
+                        self.productive[*id] == 0
+                            && self.selected[*id] >= draws
+                            && self.rejections[*id] >= rejections
+                    })
                 {
                     self.split_slots.insert(group);
                 }
@@ -4297,8 +4303,14 @@ mod tests {
                 .expect("incumbent retained");
             if pressured {
                 archive.rejections[incumbent] = 64;
+                archive.selected[incumbent] = 8;
             }
-            if policy == (ReplacementPolicy::FewestFramesOrPressuredSplit { rejections: 1 }) {
+            if policy
+                == (ReplacementPolicy::FewestFramesOrPressuredSplit {
+                    rejections: 1,
+                    draws: 1,
+                })
+            {
                 // A representative that has produced is one the search went
                 // past; pressure on it never splits the slot.
                 archive.productive[incumbent] = 1;
@@ -4328,10 +4340,16 @@ mod tests {
             run(ReplacementPolicy::FewestFrames, true),
             (None, None, true, 66)
         );
-        let split = ReplacementPolicy::FewestFramesOrPressuredSplit { rejections: 64 };
+        let split = ReplacementPolicy::FewestFramesOrPressuredSplit {
+            rejections: 64,
+            draws: 8,
+        };
         assert_eq!(run(split, false), (None, None, true, 2));
         assert_eq!(run(split, true), (Some(1), None, true, 65));
-        let past = ReplacementPolicy::FewestFramesOrPressuredSplit { rejections: 1 };
+        let past = ReplacementPolicy::FewestFramesOrPressuredSplit {
+            rejections: 1,
+            draws: 1,
+        };
         assert_eq!(run(past, true), (None, None, true, 66));
     }
 
