@@ -92,6 +92,9 @@ impl CampaignTypes for TestGame {
 }
 
 impl Reporting for TestGame {
+    fn diagnostics(_: &()) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"observed": 42}))
+    }
     fn stream_format(&self) -> &'static str {
         "test-campaign-v1"
     }
@@ -312,6 +315,29 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
         )
         .unwrap();
         let text = std::str::from_utf8(&bytes).unwrap();
+        if workers == 1 {
+            let mut with_sidecar = Vec::new();
+            let mut sidecar = Vec::new();
+            let observed = run_campaign_checkpointed(
+                &TestGame,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut with_sidecar,
+                Some(&mut sidecar),
+            )
+            .unwrap();
+            assert_eq!(with_sidecar, bytes);
+            assert_eq!(observed, (live.clone(), checkpoint.clone()));
+            let final_point: serde_json::Value = serde_json::from_str(
+                std::str::from_utf8(&sidecar)
+                    .unwrap()
+                    .lines()
+                    .last()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(final_point["workload_diagnostics"]["observed"], 42);
+        }
         let continuation_count = text
             .lines()
             .filter(|line| line.contains("\"path\":\"continuation\""))

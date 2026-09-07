@@ -98,7 +98,9 @@ The watchdog kills only its own process group after the search wall budget plus
 limit, then drains admitted work and verifies evidence.
 
 - **Search quality:** verified completion, first-victory executions and emulator
-  frames, objective progress/milestones, deaths and coverage. Aggregate evidence
+  frames, objective progress/milestones, deaths and retained novelty cells. The
+  novelty ledger is compacted under memory pressure and is not cumulative world
+  coverage. Aggregate evidence
   can combine explored branches; it is not a claimed single trajectory.
 - **Throughput:** actual admitted emulator frames / search wall time and
   executions / search wall time. Frames include snapshot-to-parent replay,

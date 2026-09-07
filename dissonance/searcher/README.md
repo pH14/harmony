@@ -2,6 +2,12 @@
 
 # searcher
 
+Workloads can expose bounded observation counters through `Reporting::diagnostics`.
+The engine places them only in the live progress sidecar. They never influence
+selection, admission, deterministic reports, or replay. Workloads must document
+their scope and bound their memory; these observer allocations are reflected in
+RSS rather than the archive's logical memory budget.
+
 `searcher` implements deterministic search independently of a workload. The
 `search::` modules own archive retention, parent selection, input mutation,
 campaign coordination, worker execution, seeded draws, checkpoints, stream

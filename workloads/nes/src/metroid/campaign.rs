@@ -147,6 +147,7 @@ pub struct MetroidCampaignRun;
 /// Game-owned campaign evidence.
 #[derive(Clone, Default)]
 pub struct MetroidCampaignEvidence {
+    observed_map: MapCoverage,
     aggregate: MetroidMilestones,
     watermark: MetroidProgressWatermark,
     first_reached: MetroidMilestoneTimes,
@@ -155,6 +156,31 @@ pub struct MetroidCampaignEvidence {
     champion_milestones: MetroidMilestones,
     champion_key: Option<MetroidChampionKey>,
     genesis_area: Option<u8>,
+}
+
+/// Observation-only bitmap over raw area bytes and the engine's 32x32 map.
+/// Its fixed 32 KiB allocation cannot grow with campaign history. It has no
+/// route semantics and is never exposed to archive keys or input selection.
+#[derive(Clone)]
+struct MapCoverage(Box<[u64; 4096]>);
+
+impl Default for MapCoverage {
+    fn default() -> Self {
+        Self(Box::new([0; 4096]))
+    }
+}
+
+impl MapCoverage {
+    fn observe(&mut self, area: u8, x: u8, y: u8) {
+        if x < 32 && y < 32 {
+            let bit = usize::from(area) * 1024 + usize::from(y) * 32 + usize::from(x);
+            self.0[bit / 64] |= 1 << (bit % 64);
+        }
+    }
+
+    fn count(&self) -> u32 {
+        self.0.iter().map(|word| word.count_ones()).sum()
+    }
 }
 
 /// Campaign origin.
@@ -407,6 +433,13 @@ impl CampaignTypes for MetroidGame {
 }
 
 impl Reporting for MetroidGame {
+    fn diagnostics(evidence: &MetroidCampaignEvidence) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "map_cells_observed": evidence.observed_map.count(),
+            "coverage_bitmap_bytes": 32768,
+            "scope": "this run's live gameplay observations; union across explored branches"
+        }))
+    }
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -710,6 +743,9 @@ impl Evaluation for MetroidGame {
     ) -> Result<(), Box<dyn Error>> {
         let state = target.mechanical_state();
         evidence.watermark = evidence.watermark.max(progress_watermark(state));
+        evidence
+            .observed_map
+            .observe(state.area, state.map_x, state.map_y);
         evidence.genesis_area.get_or_insert(state.area);
         Ok(())
     }
@@ -747,6 +783,14 @@ impl Evaluation for MetroidGame {
         F: FnOnce() -> Result<MetroidInput, Box<dyn Error>>,
     {
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
+        for observation in &action.observations {
+            let state = observation.decoded;
+            if !observation.dead && state.in_play() {
+                evidence
+                    .observed_map
+                    .observe(state.area, state.map_x, state.map_y);
+            }
+        }
         merge_milestones(&mut evidence.aggregate, action.milestones);
         let genesis_area = evidence.genesis_area.unwrap_or(0);
         let left_starting_area = action.milestones.areas & !(1_u8 << (genesis_area % 8)) != 0;
@@ -817,4 +861,23 @@ pub fn replay_metroid_campaign_checkpointed(
     origin_checkpoint: Option<&MetroidCampaignCheckpoint>,
 ) -> Result<(MetroidCampaignModeReport, MetroidSnapshotCheckpoint), Box<dyn Error>> {
     replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MapCoverage;
+
+    #[test]
+    fn observed_map_union_deduplicates_and_keeps_area_identity() {
+        let mut coverage = MapCoverage::default();
+        for _ in 0..100 {
+            coverage.observe(16, 3, 14);
+            coverage.observe(17, 3, 14);
+        }
+        coverage.observe(255, 31, 31);
+        coverage.observe(16, 32, 0);
+        coverage.observe(16, 0, 255);
+        assert_eq!(coverage.count(), 3);
+        assert_eq!(coverage.0.len() * size_of::<u64>(), 32768);
+    }
 }

@@ -352,7 +352,8 @@ def compare(base, candidate):
                           'frames': r.get('frames_emulated', progress.get('frames_emulated')),
                           'search_seconds': r.get('search_seconds'), 'frames_per_second': r.get('frames_per_second'),
                           'peak_rss': value.get('max_process_rss_bytes'), 'peak_disk': value.get('peak_disk_logical_bytes_sampled'),
-                          'progress': r.get('progress', progress.get('progress'))}
+                          'progress': r.get('progress', progress.get('progress')),
+                          'workload_diagnostics': progress.get('workload_diagnostics')}
         rows.append(row)
     return {'format': 'harmony-search-comparison-v1', 'pairs': rows,
             'baseline': aggregates(list(left.values())), 'candidate': aggregates(list(right.values()))}

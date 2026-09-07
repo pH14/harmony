@@ -27,6 +27,14 @@ trajectory achieved their union. The inherited count representation and
 lexicographic resource preference are policy tradeoffs, not true capability
 or resource dominance.
 
+The live sidecar separately counts observed map cells with a fixed 32 KiB bitmap
+over raw area identity and the 32x32 map coordinates. It includes living gameplay
+observations across explored branches in this run, and does not claim that one
+trajectory visited their union. This observation memory is outside the archive's
+logical budget and included in process RSS. The counter never enters archive
+keys, input selection, rewards, or deterministic reports; it remains cumulative
+when the archive's novelty ledger is compacted.
+
 Use the common [local evaluation runner](../../../../benchmarks/search/README.md)
 for paired search comparisons and full small-campaign replay. `metroid-campaign`
 also exposes the native experiment command. The source lineage is documented in

@@ -253,6 +253,11 @@ pub trait CampaignTypes: Sync {
 
 /// Stream and result serialization owned by a campaign adapter.
 pub trait Reporting: CampaignTypes {
+    /// Optional bounded observation diagnostics for the live sidecar. These
+    /// values never influence selection, admission, or deterministic reports.
+    fn diagnostics(_evidence: &Self::Evidence) -> Option<serde_json::Value> {
+        None
+    }
     /// Stream format identifier written as the first line of every stream.
     fn stream_format(&self) -> &'static str;
     /// Format tag of the snapshot checkpoint file.
@@ -2349,6 +2354,9 @@ fn replay_splice<G: Game>(
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
+    /// Workload-owned observation counters; no selector feedback is implied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_diagnostics: Option<serde_json::Value>,
     /// Objective workload evidence, independent of the selector's deepest key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<serde_json::Value>,
@@ -2460,6 +2468,7 @@ fn write_live_progress<G: Game>(
         .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
         .unwrap_or((None, 0, 0));
     let line = serde_json::to_string(&CampaignProgressRecord {
+        workload_diagnostics: G::diagnostics(&core.evidence),
         coordinator: coordinator_profile
             .enabled
             .then(|| serde_json::to_value(coordinator_profile))

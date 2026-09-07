@@ -33,7 +33,7 @@ def completions(items, cost):
 def numeric_metrics(progress):
     keys = set()
     for point in progress:
-        for group in ('progress', 'milestones'):
+        for group in ('progress', 'milestones', 'workload_diagnostics'):
             for key, value in (point.get(group) or {}).items():
                 if isinstance(value, (int, float)):
                     keys.add((group, key))
@@ -134,7 +134,7 @@ def render(runs, out):
                   ('Logical search memory', 'Search seconds', 'MiB charged'),
                   ('Process group RSS · all phases', 'Elapsed seconds', 'MiB sampled'),
                   ('Disk footprint · all phases', 'Elapsed seconds', 'MiB logical, sampled'),
-                  ('Observed selection-cell coverage', 'Emulator frames', 'Distinct historical cells')]
+                  ('Remembered novelty cells', 'Emulator frames', 'Cells in the live novelty ledger')]
         for axis, (title, xlabel, ylabel) in zip(axes.flat, titles):
             axis.set(title=title, xlabel=xlabel, ylabel=ylabel)
             axis.xaxis.set_major_locator(MaxNLocator(5))
@@ -144,7 +144,8 @@ def render(runs, out):
         fig.tight_layout()
         save(fig, name, 'Unsolved and failed trials never become completion events. Lines stop at observed work; '
              'there is no extrapolation beyond the run budget. Resource sampling includes preparation and verification. '
-             'Coverage depends on the frozen archive identity and can combine different explored branches.')
+             'The novelty ledger is compacted under memory pressure, so its cell count can decrease; '
+             'it is not cumulative world coverage.')
         metrics = numeric_metrics(all_progress)
         if metrics:
             columns = min(3, len(metrics))
