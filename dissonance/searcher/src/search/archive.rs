@@ -21,6 +21,7 @@ use std::{
 
 use crate::search::{
     continuation::{Continuation, ContinuationBank},
+    key_counts::{KEY_COUNT_CAPACITY, KeyCounts},
     rand::RomuDuoJrRand,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -220,6 +221,9 @@ pub enum SelectorPolicy {
     /// Count-weighted cost selection using the workload's progress relation
     /// instead of interpreting location identity as progress.
     EnergyProgressCheapestCount(RetireThresholds),
+    /// Count weighting backed by bounded retention-key history, surviving
+    /// entry replacement and metadata compaction.
+    EnergyFrontierCheapestKeyCount(RetireThresholds),
 }
 
 /// The recorded identifier of a parent selector.
@@ -242,6 +246,10 @@ pub fn selector_policy_identifier(policy: &SelectorPolicy) -> String {
                 threshold_values(scales)
             )
         }
+        SelectorPolicy::EnergyFrontierCheapestKeyCount(scales) => format!(
+            "{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:{}",
+            threshold_values(scales)
+        ),
         SelectorPolicy::EnergyProgressCheapestCount(scales) => format!(
             "{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:{}",
             threshold_values(scales)
@@ -284,6 +292,7 @@ pub fn selector_policy_from_identifier(
     let retire_prefix = format!("{SELECTOR_IDENTIFIER}_retire:");
     let energy_prefix = format!("{SELECTOR_IDENTIFIER}_energy:");
     let frontier_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier:");
+    let key_count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_key_count_v1:");
     let progress_prefix = format!("{SELECTOR_IDENTIFIER}_energy_progress_cheapest_count_v1:");
     let count_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest_count_v1:");
     let cheapest_prefix = format!("{SELECTOR_IDENTIFIER}_energy_frontier_cheapest:");
@@ -294,9 +303,12 @@ pub fn selector_policy_from_identifier(
         EnergyFrontierCheapest,
         EnergyFrontierCheapestCount,
         EnergyProgressCheapestCount,
+        EnergyFrontierCheapestKeyCount,
     }
     let (values, selector) = if let Some(values) = identifier.strip_prefix(&retire_prefix) {
         (values, Parsed::Retire)
+    } else if let Some(values) = identifier.strip_prefix(&key_count_prefix) {
+        (values, Parsed::EnergyFrontierCheapestKeyCount)
     } else if let Some(values) = identifier.strip_prefix(&progress_prefix) {
         (values, Parsed::EnergyProgressCheapestCount)
     } else if let Some(values) = identifier.strip_prefix(&count_prefix) {
@@ -329,6 +341,9 @@ pub fn selector_policy_from_identifier(
         groups: parsed[1..].to_vec(),
     };
     Ok(match selector {
+        Parsed::EnergyFrontierCheapestKeyCount => {
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
+        }
         Parsed::EnergyProgressCheapestCount => {
             SelectorPolicy::EnergyProgressCheapestCount(thresholds)
         }
@@ -409,6 +424,9 @@ pub struct ConcentrationDraw {
 /// Per-campaign accounting for the selector.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SelectorAccounting {
+    /// Bounded selection history by retention key; absent for legacy policies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_counts: Option<KeyCountAccounting>,
     /// Admitted attempts at learned continuations, absent in historical policies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_selections: Option<u64>,
@@ -429,6 +447,21 @@ pub struct SelectorAccounting {
     /// reports recorded under the compiled selector keep their exact bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement: Option<RetirementAccounting>,
+}
+
+/// Resource accounting for persistent retention-key selection counts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct KeyCountAccounting {
+    /// Maximum distinct keys remembered.
+    pub capacity: usize,
+    /// Keys currently remembered.
+    pub keys: usize,
+    /// Recorded selections (including skips) with a remembered key.
+    pub hits: u64,
+    /// Least-recently-selected keys evicted from the bounded history.
+    pub evictions: u64,
+    /// Fixed conservative reserve included in logical history memory.
+    pub reserve_bytes: usize,
 }
 
 /// Retirement state at report time under a retiring selector.
@@ -887,6 +920,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     /// Rare full-input reconstructions from the compact prefix structure.
     input_reconstructions: Cell<u64>,
     continuations: Option<ContinuationBank<K::Group, A>>,
+    key_counts: KeyCounts<K::Group>,
 }
 
 /// Members of one walk class, ascending per selection cell.
@@ -1410,6 +1444,7 @@ where
             historical_entries_dropped: 0,
             input_reconstructions: Cell::new(0),
             continuations: None,
+            key_counts: KeyCounts::default(),
         }
     }
 
@@ -3038,6 +3073,13 @@ where
         self.walk_to_cell_scan(rand, classes_skipped, ignore_streaks)
     }
 
+    fn persistent_key_counts(&self) -> bool {
+        matches!(
+            self.selector_policy,
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
+        )
+    }
+
     fn semantic_progress(&self) -> bool {
         matches!(
             self.selector_policy,
@@ -3347,6 +3389,7 @@ where
             SelectorPolicy::EnergyFrontier(scales)
             | SelectorPolicy::EnergyFrontierCheapest(scales)
             | SelectorPolicy::EnergyFrontierCheapestCount(scales)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(scales)
             | SelectorPolicy::EnergyProgressCheapestCount(scales) => (scales, true),
             _ => return Ok(rand.below(count)),
         };
@@ -3465,6 +3508,7 @@ where
             | SelectorPolicy::EnergyFrontier(thresholds)
             | SelectorPolicy::EnergyFrontierCheapest(thresholds)
             | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
             | SelectorPolicy::EnergyProgressCheapestCount(thresholds) => {
                 self.since_retained[id] < thresholds.entry
             }
@@ -3480,6 +3524,7 @@ where
             | SelectorPolicy::EnergyFrontier(_)
             | SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => true,
             SelectorPolicy::Retire(thresholds) => {
                 thresholds
@@ -3536,6 +3581,7 @@ where
             self.selector_policy,
             SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
+                | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             let mut ranked = window
@@ -3546,6 +3592,7 @@ where
             let count_weighted = matches!(
                 self.selector_policy,
                 SelectorPolicy::EnergyFrontierCheapestCount(_)
+                    | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                     | SelectorPolicy::EnergyProgressCheapestCount(_)
             );
             let weights = ranked
@@ -3554,7 +3601,13 @@ where
                 .map(|(rank, (_, id))| {
                     let halvings = (rank / CHEAPEST_RANK_SCALE).min(8);
                     if count_weighted {
-                        let draws = usize::try_from(self.selected[*id]).unwrap_or(usize::MAX);
+                        let count = if self.persistent_key_counts() {
+                            self.selected[*id]
+                                .max(self.key_counts.get(self.entries[*id].key.group(0)))
+                        } else {
+                            self.selected[*id]
+                        };
+                        let draws = usize::try_from(count).unwrap_or(usize::MAX);
                         ((65_536_usize >> halvings) / draws.saturating_add(1)).max(1)
                     } else {
                         256_usize >> halvings
@@ -3682,6 +3735,13 @@ where
     pub fn history_memory_bytes(&self) -> usize {
         self.history_memory_bytes
             .saturating_add(self.auxiliary_history_memory_bytes())
+            .saturating_add(
+                if self.persistent_key_counts() || self.key_counts.len() > 0 {
+                    KeyCounts::<K::Group>::reserve_bytes()
+                } else {
+                    0
+                },
+            )
             .saturating_add(if self.continuations.is_some() {
                 ContinuationBank::<K::Group, A>::reserve_bytes()
             } else {
@@ -3769,6 +3829,9 @@ where
         self.since_retained[id] = self.since_retained[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
+        if self.persistent_key_counts() {
+            self.key_counts.record(key.group(0), self.selected[id]);
+        }
         if let Some(members) = self
             .classes
             .get_mut(&Reverse(key.group(Self::class_depth())))
@@ -3787,6 +3850,7 @@ where
                 | SelectorPolicy::EnergyFrontier(_)
                 | SelectorPolicy::EnergyFrontierCheapest(_)
                 | SelectorPolicy::EnergyFrontierCheapestCount(_)
+                | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
                 | SelectorPolicy::EnergyProgressCheapestCount(_)
         ) {
             for (offset, map) in self.group_barren.iter_mut().enumerate() {
@@ -3862,6 +3926,7 @@ where
             SelectorPolicy::Energy(_) | SelectorPolicy::EnergyFrontier(_) => new_slot_descendant,
             SelectorPolicy::EnergyFrontierCheapest(_)
             | SelectorPolicy::EnergyFrontierCheapestCount(_)
+            | SelectorPolicy::EnergyFrontierCheapestKeyCount(_)
             | SelectorPolicy::EnergyProgressCheapestCount(_) => new_cell_descendant,
             SelectorPolicy::GroupUniform => false,
         };
@@ -3881,11 +3946,21 @@ where
     #[must_use]
     pub fn selector_report(&self) -> SelectorAccounting {
         let mut accounting = self.selector_accounting.clone();
+        if self.persistent_key_counts() {
+            accounting.key_counts = Some(KeyCountAccounting {
+                capacity: KEY_COUNT_CAPACITY,
+                keys: self.key_counts.len(),
+                hits: self.key_counts.hits,
+                evictions: self.key_counts.evictions,
+                reserve_bytes: KeyCounts::<K::Group>::reserve_bytes(),
+            });
+        }
         if let SelectorPolicy::Retire(thresholds)
         | SelectorPolicy::Energy(thresholds)
         | SelectorPolicy::EnergyFrontier(thresholds)
         | SelectorPolicy::EnergyFrontierCheapest(thresholds)
         | SelectorPolicy::EnergyFrontierCheapestCount(thresholds)
+        | SelectorPolicy::EnergyFrontierCheapestKeyCount(thresholds)
         | SelectorPolicy::EnergyProgressCheapestCount(thresholds) = &self.selector_policy
         {
             let entries_over_threshold = u64::try_from(
@@ -5116,6 +5191,49 @@ mod tests {
             archive.historical_entries_dropped(),
             u64::try_from(HISTORY_COMPACTION_MIN_DROPS).expect("threshold fits in u64")
         );
+    }
+
+    #[test]
+    fn key_selection_history_survives_metadata_compaction_and_rebirth() {
+        let mut archive = archive_with_prunable_history();
+        archive.selector_policy =
+            SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
+                entry: 1000,
+                groups: vec![1000],
+            });
+        let old = archive.entries[0].key;
+        let draw = SelectorDraw {
+            path: SelectorPath::GroupWalk,
+            classes_skipped: 0,
+            counter_reset: false,
+            concentration: None,
+        };
+        for _ in 0..19 {
+            archive.record_selection(0, &draw);
+        }
+        archive.compact_history_for_final_report().unwrap();
+        assert!(archive.entries.iter().all(|entry| entry.key != old));
+        let new = archive
+            .insert(
+                None,
+                100,
+                ArchiveCandidate {
+                    suffix: vec![255, 255, 255],
+                    key: old,
+                    milestones: (),
+                },
+                (),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(archive.selected[new], 0);
+        assert_eq!(archive.key_counts.get(old.group(0)), 19);
+        archive.record_selection(new, &draw);
+        assert_eq!(archive.key_counts.get(old.group(0)), 20);
+        let accounting = archive.selector_report().key_counts.unwrap();
+        assert_eq!(accounting.keys, 1);
+        assert_eq!(accounting.hits, 19);
+        assert!(archive.history_memory_bytes() >= accounting.reserve_bytes);
     }
 
     #[test]

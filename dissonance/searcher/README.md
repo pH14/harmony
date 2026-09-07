@@ -2,12 +2,6 @@
 
 # searcher
 
-Workloads can expose bounded observation counters through `Reporting::diagnostics`.
-The engine places them only in the live progress sidecar. They never influence
-selection, admission, deterministic reports, or replay. Workloads must document
-their scope and bound their memory; these observer allocations are reflected in
-RSS rather than the archive's logical memory budget.
-
 `searcher` implements deterministic search independently of a workload. The
 `search::` modules own archive retention, parent selection, input mutation,
 campaign coordination, worker execution, seeded draws, checkpoints, stream
@@ -43,6 +37,12 @@ Each contract depends on `CampaignTypes` and can be implemented independently.
 A complete adapter receives the aggregate `Game` implementation automatically.
 The `tests/interfaces.rs` fixture implements execution alone and exercises it
 through a function bounded only by `TargetExecution`.
+
+Workloads can expose bounded observation counters through `Reporting::diagnostics`.
+The engine places them only in the live progress sidecar. They never influence
+selection, admission, deterministic reports, or replay. Workloads must document
+their scope and bound their memory; these observer allocations are reflected in
+RSS rather than the archive's logical memory budget.
 
 The shared `search::rollout` loop owns suffix
 limits, action evidence capture, candidate creation, retention probe placement,
@@ -90,6 +90,22 @@ panels, fresh SMB completion, and resource costs through
 fixture exercises actual continuation dispatch, snapshot eviction, concurrent
 reservations, exact report/checkpoint replay, and planted recording corruption
 without an emulator or ROM.
+
+`room_cell_uniform_128_energy_frontier_cheapest_key_count_v1:<thresholds>` is a
+separate count-history experiment. It uses the larger of an entry's selection
+count and the remembered count of its depth-0 retention key. A cache of 16,384
+recently selected keys survives entry replacement and metadata compaction within
+the campaign. Least-recently-selected keys are evicted when it fills; an entry's
+own count remains a floor. Counts saturate and a fixed conservative reserve for
+both ordered indexes is charged before bootstrap. Recorded skips also count as
+selections. Reports include capacity,
+occupancy, cache hits, evictions and that reserve. The cache starts empty for a
+new campaign, including an archive-origin run, and never pins old entries.
+
+This tests whether archive churn repeatedly gives an already-sampled state a
+fresh sampling count. It also carries history across same-slot resource
+improvements, which may reduce their ordinary draw share; the companion game
+panels must check that tradeoff. No default change is implied by the mechanism.
 
 Progress sidecars carry objective workload evidence, actual admitted execution
 frames, final totals, logical memory categories, and monotonic host time. With

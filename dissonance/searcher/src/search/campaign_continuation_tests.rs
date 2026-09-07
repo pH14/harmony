@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Generic sixteen-location resource fixture: no NES or game dependencies.
 use super::*;
-use crate::search::archive::{RetireThresholds, entries_by_suffix};
+use crate::search::archive::{RetireThresholds, SelectorAccounting, entries_by_suffix};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 struct TestAction {
     input: u8,
@@ -70,6 +70,7 @@ impl TestTarget {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TestArchiveReport {
+    selector: SelectorAccounting,
     #[serde(with = "entries_by_suffix")]
     entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
 }
@@ -114,6 +115,7 @@ impl Reporting for TestGame {
         state: ArchiveReportState<Self>,
     ) -> Self::ArchiveReport {
         TestArchiveReport {
+            selector: state.selector,
             entries: state.entries,
         }
     }
@@ -275,7 +277,12 @@ impl Evaluation for TestGame {
 }
 #[test]
 fn continuations_and_count_selection_replay_under_snapshot_pressure() {
-    for (workers, semantic) in [(1, false), (4, false), (4, true)] {
+    for (workers, semantic, persistent) in [
+        (1, false, false),
+        (4, false, false),
+        (4, true, false),
+        (4, false, true),
+    ] {
         let config = CampaignConfig {
             campaign_seed: 947,
             workers,
@@ -286,13 +293,18 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             continue_after_victory: false,
             archive_entry_limit: 128,
             reservations_per_worker: 2,
-            memory_budget_mib: Some(12),
+            memory_budget_mib: Some(if persistent { 18 } else { 12 }),
             materialize_final_artifacts: true,
             run: (),
             suffix: SuffixShape::OneOrTwo,
             mixture: DrawMixture::EnergySpliceContinuation { scale: 6 },
             retention: RetentionPolicy::AdmitAlive,
-            selector: if semantic {
+            selector: if persistent {
+                SelectorPolicy::EnergyFrontierCheapestKeyCount(RetireThresholds {
+                    entry: 3,
+                    groups: vec![],
+                })
+            } else if semantic {
                 SelectorPolicy::EnergyProgressCheapestCount(RetireThresholds {
                     entry: 3,
                     groups: vec![],
@@ -358,6 +370,20 @@ fn continuations_and_count_selection_replay_under_snapshot_pressure() {
             replay_campaign_checkpointed(&TestGame, &bytes, None, None).unwrap();
         assert_eq!(live, replayed);
         assert_eq!(checkpoint, replay_checkpoint);
+        if persistent {
+            let counts = live
+                .archive
+                .entries
+                .iter()
+                .map(|entry| entry.selector.map_or(0, |counters| counters.selected))
+                .sum::<u64>();
+            assert!(
+                counts < live.executions_completed,
+                "replacement must remove entry-local sampling history"
+            );
+            let history = live.archive.selector.key_counts.as_ref().unwrap();
+            assert!(history.keys > 0 && history.hits > 0);
+        }
         let mut bounded_stream = Vec::new();
         let (bounded, bounded_checkpoint) = run_campaign_checkpointed_with_frame_budget(
             &TestGame,

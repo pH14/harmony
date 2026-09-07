@@ -33,3 +33,10 @@ separate ablations;
 being hidden behind `ArchiveKey` does not make them unbiased. Source-labelled
 mechanics are allowed; inferred routes, waypoint rewards, curated winning chords,
 per-obstacle weapon advice, and imported solution tapes are not.
+
+The historical SMB ledger also notes that entry-local sampling counts disappear
+when the memory budget drops an entry. The versioned retention-key count cache
+tests that specific lifetime problem with a bounded history. It does not ban
+backward movement, encode a castle loop, or add any state to a game adapter.
+Its effect must be measured separately from ordinary entry counts at both memory
+budgets and on games whose same-slot replacements improve resources.
