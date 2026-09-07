@@ -303,7 +303,11 @@ def solve_interval(solved, total):
     denominator = 1 + z * z / total
     middle = (p + z * z / (2 * total)) / denominator
     radius = z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total)) / denominator
-    return [max(0., middle - radius), min(1., middle + radius)]
+    # Wilson's endpoints are exactly 0/1 at the boundary. Floating point
+    # cancellation can otherwise put the observed fraction just outside its
+    # interval, producing a negative error-bar length in publication plots.
+    return [0. if solved == 0 else max(0., middle - radius),
+            1. if solved == total else min(1., middle + radius)]
 
 
 def aggregates(results):

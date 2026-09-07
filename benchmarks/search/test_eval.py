@@ -180,6 +180,16 @@ class EvaluationTests(unittest.TestCase):
         self.assertLess(low, .2)
         self.assertGreater(high, .8)
 
+    def test_solve_intervals_include_observed_fraction_at_boundaries(self):
+        self.assertIsNone(eval.solve_interval(0, 0))
+        for total in range(1, 101):
+            for solved in range(total + 1):
+                low, high = eval.solve_interval(solved, total)
+                self.assertLessEqual(0., low)
+                self.assertLessEqual(low, solved / total)
+                self.assertLessEqual(solved / total, high)
+                self.assertLessEqual(high, 1.)
+
     def test_completion_figures_keep_failed_and_censored_trials_in_denominator(self):
         import plots
         solved = {'result': {'solved': True, 'frames_to_first_victory': 12}}
