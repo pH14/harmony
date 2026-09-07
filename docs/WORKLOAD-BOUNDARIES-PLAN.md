@@ -1,10 +1,9 @@
 # Workload packages and a fault-free execution core
 
-Status: architecture and delivery specification. The restructuring establishes
-the package boundaries, existing NES execution paths, and extracted fault policy
-and SDK libraries. A separate delivery stage adds the systems fault package, its
-guest runtime, fixture, CLI registration, and acceptance gates. Component READMEs
-describe implemented capabilities and their validation coverage.
+Status: architecture and delivery specification. Package boundaries, NES execution
+paths, and the systems fault package are implemented. Component READMEs and CI
+describe validation coverage. The delivery sequence keeps the generic extraction
+and the optional systems package independently reviewable.
 
 ## Purpose
 

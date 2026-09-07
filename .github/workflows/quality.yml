@@ -205,13 +205,22 @@ jobs:
 
       - name: Workload support and fault toolkit gates
         run: |
-          for package in oci guest-image nes-protocol fault-policy tools; do
+          for package in oci guest-image fault-guest nes-protocol fault-policy fault-runtime faults tools; do
             manifest="workloads/$package/Cargo.toml"
             cargo fmt --manifest-path "$manifest" --all -- --check
             cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
             cargo test --locked --manifest-path "$manifest" --all-features
             cargo deny --manifest-path "$manifest" check --config deny.toml
           done
+
+      - name: Replicated workload fixture gates
+        run: |
+          manifest=workloads/faults/fixtures/replicated-service/Cargo.toml
+          cargo fmt --manifest-path "$manifest" --all -- --check
+          cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
+          cargo test --locked --manifest-path "$manifest"
+          cargo build --locked --manifest-path "$manifest" --bins
+          sudo unshare --net workloads/faults/fixtures/replicated-service/smoke.sh
 
       - name: NES workload package gates
         run: |

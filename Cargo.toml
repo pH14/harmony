@@ -23,7 +23,10 @@ exclude = [
   "workloads/nes-guest",
   "workloads/tetanes-guest",
   "workloads/guest-image",
+  "workloads/fault-guest",
   "workloads/fault-policy",
+  "workloads/fault-runtime",
+  "workloads/faults",
   "workloads/fault-sdk",
   "workloads/oci",
 ]

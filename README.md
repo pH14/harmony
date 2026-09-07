@@ -12,8 +12,8 @@ Its components have distinct roles:
   retains useful paths for further search.
 - workload packages supply programs, actions, observations, evaluation, and
   runtime preparation. The NES package supports direct emulator execution and
-  Consonance. Extracted fault policy and SDK libraries supply optional fault
-  semantics through the generic execution interfaces.
+  Consonance. The faults package supplies guest fault injection for systems
+  running together in one VM on one virtual CPU.
 
 Harmony is under active development. The repository contains x86-64 and arm64
 virtualization paths, a controlled Linux guest environment, deterministic
@@ -34,6 +34,7 @@ Search selects a workload package and, when needed, its execution backend:
 ```sh
 harmony search --package nes smb.nes
 harmony search --package nes --backend consonance smb.nes
+harmony search --package faults foo.oci
 ```
 
 NES defaults to the native QuickNES backend. Packages resolve their input and

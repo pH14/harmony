@@ -143,13 +143,15 @@ host/guest codec code validates publication versions and region bounds. Native
 emulator snapshots and whole-VM snapshots retain distinct execution identities.
 
 `workloads/fault-policy` owns the optional fault decision catalog and its legacy
-compatibility adapter. `workloads/fault-sdk` carries the existing fault request
-codecs over the generic service channel. A workload supplies enforcement through
-these optional libraries; the execution core records opaque requests and answers.
+compatibility adapter. `workloads/fault-runtime` owns deterministic guest fault
+schedules and process/network enforcement. The systems package puts its
+supervisor, logical nodes, message paths, and files inside one VM on one virtual
+CPU, so whole-VM snapshots preserve the entire experiment.
 
 The CLI selects a package and backend at campaign startup. Packages prepare the
 input and record workload semantics, execution artifacts, and search settings as
-separate identities. The default NES backend is native.
+separate identities. The default NES backend is native; the systems faults
+package uses Consonance.
 
 ## Enforcing ownership
 

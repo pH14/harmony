@@ -17,3 +17,7 @@ The catalog codec has unit, property, golden, and Kani checks:
 cargo test --manifest-path workloads/fault-policy/Cargo.toml
 cargo kani --manifest-path workloads/fault-policy/Cargo.toml
 ```
+
+For guest-local process and network enforcement, see
+[`fault-runtime`](../fault-runtime/README.md) and the
+[`faults` package](../faults/README.md).
