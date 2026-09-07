@@ -50,6 +50,7 @@ struct Args {
     mixture: DrawMixture,
     terminal: NovaTerminalPredicate,
     selector: SelectorPolicy,
+    fingerprint_bits: u8,
 }
 
 struct RenderedMedia {
@@ -83,6 +84,7 @@ impl Args {
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut terminal = NovaTerminalPredicate::default();
         let mut selector = default_selector();
+        let mut fingerprint_bits = 0_u8;
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
@@ -133,6 +135,9 @@ impl Args {
                         &value.into_string().map_err(|_| "selector is not UTF-8")?,
                     )?;
                 }
+                "--fingerprint-bits" => {
+                    fingerprint_bits = parse_number("fingerprint-bits", value)?;
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -153,6 +158,7 @@ impl Args {
             mixture,
             terminal,
             selector,
+            fingerprint_bits,
         })
     }
 }
@@ -181,7 +187,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
-    let game = NovaGame::new_at_level(&rom, &args.core, &core_sha256, args.level);
+    let game = NovaGame::new_at_level(&rom, &args.core, &core_sha256, args.level)
+        .with_fingerprint_bits(args.fingerprint_bits);
     let config = campaign_config(&args);
     if args.marketing_soak {
         run_marketing_soak(&game, &config, &args.output)

@@ -26,27 +26,51 @@ pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 /// Largest bounded input horizon accepted by a Nova campaign.
 pub const MAX_NOVA_ACTIONS: usize = 8_192;
 /// Recorded archive-key and per-location preference policy.
-pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_fingerprint6_v1";
+/// Recorded archive-key and per-location preference policy for a run
+/// retaining one arrival per location.
+pub const KEY_POLICY_IDENTIFIER: &str = "nova_spatial_16_preference_v1";
+
+/// Widest work-RAM fingerprint a run may retain slots by.
+pub const MAX_FINGERPRINT_BITS: u8 = 8;
+
+/// The recorded key policy for a fingerprint width. Zero bits reproduce
+/// [`KEY_POLICY_IDENTIFIER`] exactly, so a run that keeps one arrival per
+/// location records what it always did.
+#[must_use]
+pub fn key_policy_identifier(fingerprint_bits: u8) -> String {
+    if fingerprint_bits == 0 {
+        KEY_POLICY_IDENTIFIER.to_owned()
+    } else {
+        format!("nova_spatial_16_preference_fingerprint{fingerprint_bits}_v1")
+    }
+}
 /// Recorded same-slot replacement policy.
 pub const REPLACEMENT_IDENTIFIER: &str = "opaque_preference_then_fewest_frames";
 /// Recorded controller hold distribution.
 pub const DURATION_IDENTIFIER: &str = "stratified_short_or_long_v1";
 
-/// Bits of the work-RAM digest the retention slot keeps.
+/// The digest mask retaining `bits` variants of otherwise-hidden state.
 ///
 /// Nova's key names a location and the durable resources; everything else
 /// the machine is holding -- pose, momentum, what the level's own actors are
 /// doing -- is invisible to it. Two arrivals at one location that differ
 /// only in that state then contend for a single slot, and the cheaper one
-/// keeps it however badly it is placed. Six bits bound the split at
-/// sixty-four variants per location, and the grouping pools them away above
-/// depth 0 so selection still sees one cell.
+/// keeps it however badly it is placed. These bits bound the split, and the
+/// grouping pools them away above depth 0 so selection still sees one cell.
 ///
-/// Measured on level 9: without the split its corridor cell took 123
-/// selections and had all 411 of its candidates rejected as duplicates, and
-/// four configurations stalled at the same pixel, one of them at 1.6M
-/// executions. With it the same seed clears in 154,281.
-const STATE_FINGERPRINT_MASK: u8 = 0x3f;
+/// The width is a run policy because it is not one trade. Level 9 cannot be
+/// cleared without it: its corridor cell took 123 selections and had all 411
+/// candidates rejected as duplicates, and four configurations stalled at the
+/// same pixel, one at 1.6M executions, while six bits clear it in 154,281.
+/// Three bits are worse than none, diluting draws without separating enough
+/// to cross. Level 25 needs none of it and pays for the dilution. Pick the
+/// width per workload and record it.
+fn fingerprint_mask(bits: u8) -> u8 {
+    match bits.min(MAX_FINGERPRINT_BITS) {
+        0 => 0,
+        bits => u8::try_from((1_u16 << bits).saturating_sub(1)).unwrap_or(u8::MAX),
+    }
+}
 
 /// The parent selector named by a stream, resolved under Nova's group depths.
 pub fn selector_policy_from_identifier(identifier: &str) -> Result<SelectorPolicy, Box<dyn Error>> {
@@ -199,9 +223,18 @@ impl NovaArchiveKey {
 
 /// Build the opaque archive key from a decoded Nova state.
 #[must_use]
-pub fn archive_key(state: NovaMechanicalState, work_ram: &[u8]) -> NovaArchiveKey {
+pub fn archive_key(
+    state: NovaMechanicalState,
+    work_ram: &[u8],
+    fingerprint_bits: u8,
+) -> NovaArchiveKey {
     let (cleared, collectibles, available, has_ability, health, chips) = preference_tuple(state);
-    let state_fingerprint = Sha256::digest(work_ram)[0] & STATE_FINGERPRINT_MASK;
+    let mask = fingerprint_mask(fingerprint_bits);
+    let state_fingerprint = if mask == 0 {
+        0
+    } else {
+        Sha256::digest(work_ram)[0] & mask
+    };
     NovaArchiveKey {
         cleared,
         collectibles,
@@ -440,8 +473,8 @@ mod tests {
 
     #[test]
     fn one_location_uses_opaque_resources_only_for_preference() {
-        let weak = archive_key(state(100, 2, 0), &[0_u8; 16]);
-        let strong = archive_key(state(100, 4, 1), &[0_u8; 16]);
+        let weak = archive_key(state(100, 2, 0), &[0_u8; 16], 0);
+        let strong = archive_key(state(100, 4, 1), &[0_u8; 16], 0);
         assert_eq!(weak.group(0), strong.group(0));
         assert_eq!(weak.group(1), strong.group(1));
         assert_eq!(strong.preference_cmp(weak), Ordering::Greater);

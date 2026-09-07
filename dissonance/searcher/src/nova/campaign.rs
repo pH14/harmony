@@ -17,10 +17,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     nova::{
         archive::{
-            DURATION_IDENTIFIER, KEY_POLICY_IDENTIFIER, MAX_NOVA_ACTIONS, NovaArchiveKey,
+            DURATION_IDENTIFIER, MAX_FINGERPRINT_BITS, MAX_NOVA_ACTIONS, NovaArchiveKey,
             NovaArchiveReport, NovaMilestoneInputs, NovaMilestoneTimes, NovaMilestones,
             NovaProgressWatermark, REPLACEMENT_IDENTIFIER, archive_key, chord_time,
-            merge_milestones, merge_progress_watermark, milestone_key, milestones, sample_chord,
+            key_policy_identifier, merge_milestones, merge_progress_watermark, milestone_key,
+            milestones, sample_chord,
         },
         target::{
             ButtonChord, NovaInput, NovaLevel, NovaObservations, NovaSnapshot, NovaTarget,
@@ -82,6 +83,7 @@ pub struct NovaGame<M = QuickNesMachine> {
     level: NovaLevel,
     identity: String,
     backend: NovaBackend,
+    fingerprint_bits: u8,
     machine: PhantomData<fn() -> M>,
 }
 
@@ -157,6 +159,15 @@ impl NovaGame<QuickNesMachine> {
         Self::new_at_level(rom, core_path, core_sha256, NovaLevel::default())
     }
 
+    /// Retain slots by `bits` of the work-RAM digest, up to
+    /// [`MAX_FINGERPRINT_BITS`]. Zero, the default, keeps one arrival per
+    /// location and records the unchanged key policy.
+    #[must_use]
+    pub fn with_fingerprint_bits(mut self, bits: u8) -> Self {
+        self.fingerprint_bits = bits.min(MAX_FINGERPRINT_BITS);
+        self
+    }
+
     /// Build a game context whose sealed genesis starts at one independently
     /// selected Nova campaign level.
     #[must_use]
@@ -173,6 +184,7 @@ impl NovaGame<QuickNesMachine> {
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
             level,
+            fingerprint_bits: 0,
             identity,
             backend: NovaBackend::QuickNes,
             machine: PhantomData,
@@ -205,6 +217,7 @@ impl NovaGame<ConsonanceMachine> {
             core_path: PathBuf::new(),
             core_sha256: String::new(),
             level: NovaLevel::default(),
+            fingerprint_bits: 0,
             identity: format!(
                 "{};result_digest=nova-semantic-postcard-1.1.3-sha256-hex-v3",
                 consonance_identity(kernel, initramfs),
@@ -466,15 +479,28 @@ fn admission_is_viable<M: Machine>(
     Ok(viable)
 }
 
+/// What one job needs from the run beyond its own actions: when to stop,
+/// which candidates to admit, and how finely a location splits its slots.
+#[derive(Clone, Copy, Debug)]
+struct SuffixPolicy {
+    retention: RetentionPolicy,
+    terminal: NovaTerminalPredicate,
+    fingerprint_bits: u8,
+}
+
 fn execute_suffix<M: NovaMachineKind>(
     target: &mut NovaTarget<M>,
     parent_actions: usize,
     parent_milestones: NovaMilestones,
     suffix: &[ButtonChord],
     max_actions: usize,
-    retention: RetentionPolicy,
-    terminal: NovaTerminalPredicate,
+    policy: SuffixPolicy,
 ) -> Result<NovaCampaignJobResult<M>, Box<dyn Error>> {
+    let SuffixPolicy {
+        retention,
+        terminal,
+        fingerprint_bits,
+    } = policy;
     let mut aggregate = parent_milestones;
     let mut length = parent_actions;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -501,7 +527,11 @@ fn execute_suffix<M: NovaMachineKind>(
                 RetentionPolicy::AdmitAlive => true,
             };
             Some(CampaignCandidate {
-                key: archive_key(target.mechanical_state(), target.work_ram()),
+                key: archive_key(
+                    target.mechanical_state(),
+                    target.work_ram(),
+                    fingerprint_bits,
+                ),
                 viable,
                 snapshot,
             })
@@ -620,12 +650,13 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
     }
 
     fn policies(&self, run: &NovaCampaignRun) -> GamePolicies {
+        let key_identifier = key_policy_identifier(self.fingerprint_bits);
         [
             (
                 CONTROLLER_VOCABULARY_FIELD,
                 CONTROLLER_VOCABULARY_IDENTIFIER,
             ),
-            (KEY_POLICY_FIELD, KEY_POLICY_IDENTIFIER),
+            (KEY_POLICY_FIELD, key_identifier.as_str()),
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, run.terminal.identifier()),
@@ -710,7 +741,11 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
     }
 
     fn current_key(&self, target: &NovaTarget<M>) -> Result<NovaArchiveKey, Box<dyn Error>> {
-        Ok(archive_key(target.mechanical_state(), target.work_ram()))
+        Ok(archive_key(
+            target.mechanical_state(),
+            target.work_ram(),
+            self.fingerprint_bits,
+        ))
     }
 
     fn complete_candidate_key(
@@ -746,8 +781,11 @@ impl<M: NovaMachineKind> Game for NovaGame<M> {
             parent_milestones,
             suffix,
             max_actions,
-            retention,
-            run.terminal,
+            SuffixPolicy {
+                retention,
+                terminal: run.terminal,
+                fingerprint_bits: self.fingerprint_bits,
+            },
         )
     }
 
@@ -1008,7 +1046,7 @@ mod tests {
                 victory: false,
                 failed: false,
                 candidate: Some(CampaignCandidate {
-                    key: archive_key(state, &[0_u8; 16]),
+                    key: archive_key(state, &[0_u8; 16], 0),
                     viable: true,
                     snapshot: NovaSnapshot {
                         emulator_state: portable,
@@ -1058,7 +1096,7 @@ mod tests {
             ..crate::nova::target::NovaMechanicalState::default()
         };
         second.actions[0].candidate.as_mut().expect("candidate").key =
-            archive_key(changed, &[0_u8; 16]);
+            archive_key(changed, &[0_u8; 16], 0);
         assert_ne!(
             nova_result_sha256(&first).expect("first digest"),
             nova_result_sha256(&second).expect("changed digest"),
