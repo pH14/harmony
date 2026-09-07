@@ -14,7 +14,7 @@ use std::{
 
 use searcher::{
     nova::{
-        archive::MAX_ARCHIVE_ENTRIES,
+        archive::{MAX_ARCHIVE_ENTRIES, selector_policy_from_identifier},
         campaign::{
             NovaCampaignConfig, NovaCampaignOrigin, NovaGame, NovaTerminalPredicate,
             replay_nova_campaign_checkpointed, run_nova_campaign_checkpointed,
@@ -49,6 +49,7 @@ struct Args {
     suffix: SuffixShape,
     mixture: DrawMixture,
     terminal: NovaTerminalPredicate,
+    selector: SelectorPolicy,
 }
 
 struct RenderedMedia {
@@ -81,6 +82,7 @@ impl Args {
         let mut suffix = SuffixShape::OneToSix;
         let mut mixture = DrawMixture::AlphabetOnly;
         let mut terminal = NovaTerminalPredicate::default();
+        let mut selector = default_selector();
         let mut args = values.into_iter();
         while let Some(flag) = args.next() {
             if flag == "--marketing-soak" {
@@ -126,6 +128,11 @@ impl Args {
                         &value.into_string().map_err(|_| "terminal is not UTF-8")?,
                     )?;
                 }
+                "--selector" => {
+                    selector = selector_policy_from_identifier(
+                        &value.into_string().map_err(|_| "selector is not UTF-8")?,
+                    )?;
+                }
                 other => return Err(format!("unknown argument {other:?}").into()),
             }
         }
@@ -145,8 +152,16 @@ impl Args {
             suffix,
             mixture,
             terminal,
+            selector,
         })
     }
+}
+
+fn default_selector() -> SelectorPolicy {
+    SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
+        entry: 3,
+        groups: vec![6, 12, 2],
+    })
 }
 
 fn parse_number<T>(name: &str, value: OsString) -> Result<T, Box<dyn Error>>
@@ -188,10 +203,7 @@ fn campaign_config(args: &Args) -> NovaCampaignConfig {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::AdmitAlive,
-        selector: SelectorPolicy::EnergyFrontierCheapest(RetireThresholds {
-            entry: 3,
-            groups: vec![6, 12, 2],
-        }),
+        selector: args.selector.clone(),
         suffix: args.suffix,
         mixture: args.mixture,
         terminal: args.terminal,
