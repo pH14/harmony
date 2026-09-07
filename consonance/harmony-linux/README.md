@@ -64,3 +64,7 @@ does not provide a host-randomness fallback.
 The x86 Nova image requires GNU cpio 2.14 or newer. Its `--reproducible`
 mode normalizes inode, device, and directory-link metadata before the
 initramfs hash is recorded in deterministic campaign streams.
+
+Cold Nix guest builds fetch the pinned BusyBox archive from the Buildroot mirror
+with the upstream URL as fallback. Both locations use the same locked SHA-256;
+the mirror choice leaves the guest source version and bytes unchanged.

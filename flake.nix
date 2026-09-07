@@ -33,7 +33,10 @@
             sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236";
           };
           busyboxSource = pkgs.fetchurl {
-            url = "https://busybox.net/downloads/busybox-1.38.0.tar.bz2";
+            urls = [
+              "https://sources.buildroot.net/busybox/busybox-1.38.0.tar.bz2"
+              "https://busybox.net/downloads/busybox-1.38.0.tar.bz2"
+            ];
             sha256 = "34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2";
           };
           muslSource = pkgs.fetchurl {
