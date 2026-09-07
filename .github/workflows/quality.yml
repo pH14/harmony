@@ -317,8 +317,12 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest
-      - name: Compute PR diff
-        run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
+      - name: Compute PR diffs
+        run: |
+          git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
+          # The standalone SDK workspace resolves paths from its own root, so
+          # provide cargo-mutants the same diff with SDK-relative file names.
+          git diff --relative=consonance/harmony-linux/sdk "origin/${{ github.base_ref }}"...HEAD -- consonance/harmony-linux/sdk > sdk.diff
       - name: cargo mutants --in-diff
         # Infra-only retry; exit-code decision table is in the mutants-job header
         # comment. Exit 2/3 (real surviving/timed-out mutants) is never retried.
@@ -357,7 +361,7 @@ jobs:
         run: |
           mkdir -p "$GITHUB_WORKSPACE/mutants/sdk"
           for attempt in 1 2; do
-            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --in-place --profile mutants --no-shuffle --sharding round-robin --in-diff pr.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 --output "$GITHUB_WORKSPACE/mutants/sdk"; rc=$?; set -e
+            set +e; cargo mutants --manifest-path consonance/harmony-linux/sdk/Cargo.toml --in-place --profile mutants --no-shuffle --sharding round-robin --in-diff sdk.diff --shard ${{ matrix.shard }}/16 --minimum-test-timeout=180 --output "$GITHUB_WORKSPACE/mutants/sdk"; rc=$?; set -e
             if [ "$rc" -eq 0 ]; then exit 0; fi
             if [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ]; then
               echo "::error::cargo-mutants real result (exit $rc: surviving/timed-out mutants) — not retrying"; exit "$rc"
