@@ -34,5 +34,17 @@ for the transport lifetime. The doorbell must service those same pages, and
 caller buffers must not alias them. The `unsafe` pointer logic is isolated in
 the transport and covered through the `IoDoorbell` loopback seam.
 
-The crate depends only on `hypercall-proto`, builds without `std`, and is
-validated by protocol loopback, hostile-response, boundary, and Miri tests.
+The crate depends only on `hypercall-proto` in its default build and remains
+`no_std`. Linux guest supervisors that cannot safely map the fixed pages may
+enable the `linux-device` feature. It adds
+`hypercall_doorbell::linux::DeviceTransport::open()`, which opens the
+kernel-owned `/dev/harmony` device and exchanges frames through its synchronous
+ioctl UAPI. The feature is Linux-only and adds `std` plus `libc`; it does not
+change the raw mapped-page transport or its privileged guest contract.
+
+The Linux UAPI adapter validates both caller lengths before issuing ioctl and
+validates the driver-reported response length afterward. Its pure validation
+and UAPI framing helper accepts the ioctl as a closure, so malformed lengths,
+driver errors, and boundary cases are covered without requiring a device.
+The crate is validated by protocol loopback, hostile-response, boundary, and
+Miri tests.

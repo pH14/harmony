@@ -14,12 +14,12 @@
           pkgs = import nixpkgs { inherit system; };
           isArm64 = system == "aarch64-linux";
           agentCargoVendor = pkgs.rustPlatform.importCargoLock {
-            lockFile = ./consonance/harmony-linux/tetanes-agent/Cargo.lock;
+            lockFile = ./workloads/tetanes-guest/Cargo.lock;
           };
           rustCargoVendor = pkgs.rustPlatform.fetchCargoVendor {
             name = "harmony-rust-std-cargo-vendor";
             src = pkgs.rustPlatform.rustLibSrc;
-            hash = "sha256-5oJ/mtsJW0R3F7jgxafP23+WMLkyMKu10De5WIzb7Ro=";
+            hash = "sha256-5oJ/mtsJW0R3F7jgxafP23+WMLkyMKu10De5WIzb7Ro="; # pragma: allowlist secret — public source integrity hash
           };
           cargoVendor = pkgs.symlinkJoin {
             name = "harmony-guest-cargo-vendor";
@@ -129,6 +129,7 @@
             '';
           };
         in {
+          busybox-source = busyboxSource;
           guest-images = builder;
           default = builder;
         });

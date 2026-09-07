@@ -203,8 +203,8 @@ fn run_once() -> ([u8; 32], Results) {
         TerminalReason::DebugExit { code: 0 },
         "payload must end on a clean isa-debug-exit PASS"
     );
-    let blob = vmm.state_blob();
-    (vmm.state_hash(), parse_results(&blob))
+    let blob = vmm.state_blob().unwrap();
+    (vmm.state_hash().unwrap(), parse_results(&blob))
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn p6_snapshot_restore_resumes_both_clocks_exactly() {
 
     let r = vmm.run().expect("run to terminal after restore");
     assert_eq!(r.reason, TerminalReason::DebugExit { code: 0 });
-    let snap_res = parse_results(&vmm.state_blob());
+    let snap_res = parse_results(&vmm.state_blob().unwrap());
 
     // The restored timeline is bit-identical to the un-snapshotted reference:
     // the V-time clock and the RNG stream both resumed exactly (INTEGRATION §4).

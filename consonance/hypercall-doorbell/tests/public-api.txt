@@ -1,4 +1,11 @@
 pub mod hypercall_doorbell
+pub mod hypercall_doorbell::linux
+pub struct hypercall_doorbell::linux::DeviceTransport
+impl hypercall_doorbell::linux::DeviceTransport
+pub fn hypercall_doorbell::linux::DeviceTransport::open() -> std::io::error::Result<Self>
+impl hypercall_proto::guest::Transport for hypercall_doorbell::linux::DeviceTransport
+pub type hypercall_doorbell::linux::DeviceTransport::Error = std::io::error::Error
+pub fn hypercall_doorbell::linux::DeviceTransport::exchange(&mut self, &[u8], &mut [u8]) -> core::result::Result<usize, Self::Error>
 pub enum hypercall_doorbell::TransportError
 pub hypercall_doorbell::TransportError::BadResponseLength
 pub hypercall_doorbell::TransportError::HostRejected

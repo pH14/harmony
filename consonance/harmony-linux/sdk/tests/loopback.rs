@@ -2,8 +2,7 @@
 //! End-to-end gate for the guest SDK with **no hypervisor**: an `Sdk` over a
 //! loopback `Transport` that services a real `hypercall_proto::Dispatcher`
 //! (exactly as `hypercall-doorbell` is loopback-tested). The SDK's every emission
-//! must land as the expected `(event_id, payload)` on the host EventSink, the
-//! `buggify` verb must round-trip the host's fire decision and record it, and the
+//! must land as the expected `(event_id, payload)` on the host EventSink, and the
 //! whole thing must be deterministic (same catalog + calls ⇒ identical stream).
 
 use std::cell::RefCell;
@@ -12,7 +11,7 @@ use std::rc::Rc;
 use harmony_sdk::wire;
 use harmony_sdk::{Point, Sdk, SdkError};
 use hypercall_proto::{
-    Client, Dispatcher, ProtoError, SdkBuggify, Service, ServiceId, Status, Transport,
+    Client, CoverageService, Dispatcher, ProtoError, Service, ServiceId, Status, Transport,
 };
 
 // ---------------------------------------------------------------------------
@@ -55,34 +54,6 @@ impl Service for SharedEvent {
     }
 }
 
-/// Buggify service that fires iff the point is odd, and records every ask, into
-/// handles the test keeps clones of.
-#[derive(Clone, Default)]
-struct SharedBuggify {
-    asks: Rc<RefCell<Vec<u32>>>,
-}
-
-impl Service for SharedBuggify {
-    fn handle(&mut self, opcode: u16, payload: &[u8], resp: &mut [u8]) -> (Status, usize) {
-        if opcode != 1 {
-            return (Status::UnknownOpcode, 0);
-        }
-        if payload.len() != 4 || resp.is_empty() {
-            return (Status::BadRequest, 0);
-        }
-        let point = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-        self.asks.borrow_mut().push(point);
-        resp[0] = u8::from(point % 2 == 1); // fire on odd points
-        (Status::Ok, 1)
-    }
-    fn save_state(&self) -> Vec<u8> {
-        Vec::new()
-    }
-    fn restore_state(&mut self, _state: &[u8]) -> Result<(), ProtoError> {
-        Ok(())
-    }
-}
-
 /// The demo catalog: two sometimes points, an always, an unreachable, a state
 /// register, and a buggify site.
 fn catalog() -> Vec<Point> {
@@ -96,19 +67,14 @@ fn catalog() -> Vec<Point> {
     ]
 }
 
-/// Build an `Sdk` over a fresh loopback, returning it plus the shared event log
-/// and buggify-ask log. `init` has already emitted the catalog declaration.
-fn harness() -> (Sdk<DispatcherLoopback>, EventLog, Rc<RefCell<Vec<u32>>>) {
+/// Build an `Sdk` over a fresh loopback, returning it plus the shared event log.
+/// `init` has already emitted the catalog declaration.
+fn harness() -> (Sdk<DispatcherLoopback>, EventLog) {
     let events: EventLog = Rc::new(RefCell::new(Vec::new()));
-    let asks = Rc::new(RefCell::new(Vec::new()));
     let mut d = Dispatcher::new();
     d.register(ServiceId::Event, Box::new(SharedEvent(events.clone())));
-    d.register(
-        ServiceId::Sdk,
-        Box::new(SharedBuggify { asks: asks.clone() }),
-    );
     let sdk = Sdk::init(DispatcherLoopback(d), &catalog()).expect("init");
-    (sdk, events, asks)
+    (sdk, events)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +85,7 @@ fn harness() -> (Sdk<DispatcherLoopback>, EventLog, Rc<RefCell<Vec<u32>>>) {
 /// version + point count).
 #[test]
 fn init_declares_the_catalog_first() {
-    let (_sdk, events, _asks) = harness();
+    let (_sdk, events) = harness();
     let ev = events.borrow();
     assert_eq!(ev.len(), 1, "init emits exactly one event (the catalog)");
     let (id, data) = &ev[0];
@@ -191,7 +157,7 @@ fn init_rejects_duplicate_names() {
 /// and only when they should.
 #[test]
 fn assertion_verbs_emit_expected_dispositions() {
-    let (mut sdk, events, _asks) = harness();
+    let (mut sdk, events) = harness();
     let base = events.borrow().len();
 
     sdk.assert_always(true, 20).unwrap(); // holds -> nothing
@@ -229,7 +195,7 @@ fn assertion_verbs_emit_expected_dispositions() {
 /// state_set / state_max emit `[op, value_le]` under the state namespace.
 #[test]
 fn state_verbs_emit_op_and_value() {
-    let (mut sdk, events, _asks) = harness();
+    let (mut sdk, events) = harness();
     let base = events.borrow().len();
 
     sdk.state_set(40, 0x0102_0304_0506_0708).unwrap();
@@ -250,32 +216,6 @@ fn state_verbs_emit_op_and_value() {
     );
 }
 
-/// buggify returns the host's fire decision and records it on the event stream.
-#[test]
-fn buggify_round_trips_and_records_the_result() {
-    let (mut sdk, events, asks) = harness();
-    let base = events.borrow().len();
-
-    // The host fires on odd points (SharedBuggify).
-    assert!(sdk.buggify(51).unwrap(), "odd point fires");
-    assert!(!sdk.buggify(50).unwrap(), "even point is nominal");
-
-    assert_eq!(
-        asks.borrow().as_slice(),
-        &[51, 50],
-        "both points were asked"
-    );
-    let ev = events.borrow();
-    let got: Vec<(u32, Vec<u8>)> = ev[base..].to_vec();
-    assert_eq!(
-        got,
-        vec![
-            (wire::event_id(wire::NS_BUGGIFY, 51), vec![1]),
-            (wire::event_id(wire::NS_BUGGIFY, 50), vec![0]),
-        ]
-    );
-}
-
 /// M6 SDK surface is the production op-2 protocol, not a test-only scheduler:
 /// the wrapper returns the host-prescribed next threshold and runnable index.
 #[test]
@@ -283,7 +223,7 @@ fn coverage_yield_round_trips_through_the_sdk() {
     let events: EventLog = Rc::new(RefCell::new(Vec::new()));
     let mut dispatcher = Dispatcher::new();
     dispatcher.register(ServiceId::Event, Box::new(SharedEvent(events)));
-    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    dispatcher.register(ServiceId::Sdk, Box::new(CoverageService::new()));
     let mut sdk = Sdk::init(DispatcherLoopback(dispatcher), &[]).unwrap();
 
     assert_eq!(sdk.coverage_yield(7, 1, 3).unwrap(), (2, 0));
@@ -294,7 +234,7 @@ fn coverage_yield_round_trips_through_the_sdk() {
 /// setup_complete emits the lifecycle event (empty payload).
 #[test]
 fn setup_complete_emits_the_lifecycle_event() {
-    let (mut sdk, events, _asks) = harness();
+    let (mut sdk, events) = harness();
     let base = events.borrow().len();
     sdk.setup_complete().unwrap();
     let ev = events.borrow();
@@ -304,7 +244,7 @@ fn setup_complete_emits_the_lifecycle_event() {
 /// frame_complete emits an exact little-endian cumulative frame counter.
 #[test]
 fn frame_complete_emits_the_frame_clock_lifecycle_event() {
-    let (mut sdk, events, _asks) = harness();
+    let (mut sdk, events) = harness();
     let base = events.borrow().len();
     sdk.frame_complete(0x0102_0304_0506_0708).unwrap();
     let ev = events.borrow();
@@ -322,10 +262,9 @@ fn frame_complete_emits_the_frame_clock_lifecycle_event() {
 #[test]
 fn same_calls_yield_identical_event_streams() {
     fn run() -> Vec<(u32, Vec<u8>)> {
-        let (mut sdk, events, _asks) = harness();
+        let (mut sdk, events) = harness();
         sdk.assert_sometimes(true, 1).unwrap();
         sdk.state_max(40, 7).unwrap();
-        let _ = sdk.buggify(51).unwrap();
         sdk.assert_always(false, 20).unwrap();
         sdk.setup_complete().unwrap();
         events.borrow().clone()
@@ -336,13 +275,12 @@ fn same_calls_yield_identical_event_streams() {
 /// An id past the 24-bit local space is a typed error, never a silent overflow.
 #[test]
 fn oversize_ids_are_rejected() {
-    let (mut sdk, _events, _asks) = harness();
+    let (mut sdk, _events) = harness();
     assert_eq!(
         sdk.assert_always(false, wire::LOCAL_MAX + 1),
         Err(SdkError::PointIdTooLarge)
     );
     assert_eq!(sdk.state_set(u32::MAX, 0), Err(SdkError::PointIdTooLarge));
-    assert_eq!(sdk.buggify(1 << 24), Err(SdkError::PointIdTooLarge));
 }
 
 /// A catalog too large to fit one Event frame is rejected, not truncated.

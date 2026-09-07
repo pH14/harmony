@@ -248,7 +248,7 @@ impl Subject for ToyMachine {
         self.work
     }
 
-    fn state_hash(&self) -> [u8; 32] {
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
         // Canonical layout, all integers little-endian:
         //   "unison-toy-v1"    17-byte domain tag
         //   r0..r7                 8 × 8 bytes
@@ -269,7 +269,7 @@ impl Subject for ToyMachine {
         h.update(&self.out_log);
         h.update(self.prng.to_le_bytes());
         h.update([u8::from(self.halted)]);
-        h.finalize().into()
+        Ok(h.finalize().into())
     }
 
     fn observable_digest(&self) -> [u8; 32] {
@@ -476,11 +476,11 @@ mod tests {
         let a = run(prog.clone(), 7, 100);
         let b = run(prog.clone(), 7, 100);
         let c = run(prog.clone(), 8, 100);
-        assert_eq!(a.state_hash(), b.state_hash());
-        assert_ne!(a.state_hash(), c.state_hash());
+        assert_eq!(a.state_hash().unwrap(), b.state_hash().unwrap());
+        assert_ne!(a.state_hash().unwrap(), c.state_hash().unwrap());
         let zero = run(prog.clone(), 0, 100);
         let subst = run(prog, ZERO_SEED_STATE, 100);
-        assert_eq!(zero.state_hash(), subst.state_hash());
+        assert_eq!(zero.state_hash().unwrap(), subst.state_hash().unwrap());
     }
 
     #[test]
@@ -519,13 +519,13 @@ mod tests {
     fn state_hash_is_pure_and_state_sensitive() {
         let prog = vec![asm::loadi(0, 1), asm::out(0), asm::halt()];
         let mut m = ToyMachine::new(prog, 9);
-        let h0 = m.state_hash();
-        assert_eq!(h0, m.state_hash(), "hashing must not change state");
+        let h0 = m.state_hash().unwrap();
+        assert_eq!(h0, m.state_hash().unwrap(), "hashing must not change state");
         m.run_to(1).unwrap();
-        let h1 = m.state_hash();
+        let h1 = m.state_hash().unwrap();
         assert_ne!(h0, h1);
         m.run_to(2).unwrap();
-        assert_ne!(h1, m.state_hash());
+        assert_ne!(h1, m.state_hash().unwrap());
     }
 
     #[test]
@@ -562,12 +562,12 @@ mod tests {
             "pure output must not depend on the seed"
         );
         assert_ne!(
-            a.state_hash(),
-            b.state_hash(),
+            a.state_hash().unwrap(),
+            b.state_hash().unwrap(),
             "state_hash still differs via the latent seeded PRNG"
         );
         // And the observable digest is genuinely distinct from state_hash.
-        assert_ne!(a.observable_digest(), a.state_hash());
+        assert_ne!(a.observable_digest(), a.state_hash().unwrap());
     }
 
     #[test]

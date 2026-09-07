@@ -74,15 +74,17 @@ fn golden_request_bytes_for_every_service_opcode() {
     event.extend_from_slice(&event_payload);
     assert_eq!(enc_req(ServiceId::Event, 1, 11, &event_payload), event);
 
-    // The task-73 SDK control service: a `buggify_decide` request
-    // (ServiceId::Sdk = 6, op 1) carrying the u32 catalog point id.
+    // SDK opcode 3 carries a namespace, request id, and opaque package bytes.
+    let mut service_payload = le32(7).to_vec();
+    service_payload.extend_from_slice(&le64(50));
+    service_payload.extend_from_slice(&[0xa5, 0x5a]);
     let mut sdk = b"HCP1".to_vec();
-    sdk.extend_from_slice(&[1, 0, 6, 0, 1, 0, 0, 0]); // version 1, service 6, opcode 1
-    sdk.extend_from_slice(&le32(12)); // seq
-    sdk.extend_from_slice(&le32(4)); // payload len (one u32)
-    sdk.extend_from_slice(&le32(0)); // reserved
-    sdk.extend_from_slice(&le32(50)); // point 50
-    assert_eq!(enc_req(ServiceId::Sdk, 1, 12, &le32(50)), sdk);
+    sdk.extend_from_slice(&[1, 0, 6, 0, 3, 0, 0, 0]);
+    sdk.extend_from_slice(&le32(12));
+    sdk.extend_from_slice(&le32(service_payload.len() as u32));
+    sdk.extend_from_slice(&le32(0));
+    sdk.extend_from_slice(&service_payload);
+    assert_eq!(enc_req(ServiceId::Sdk, 3, 12, &service_payload), sdk);
 
     let mut coverage_payload = Vec::new();
     coverage_payload.extend_from_slice(&le32(7));
@@ -117,8 +119,8 @@ fn golden_response_bytes_for_every_service_opcode() {
         (ServiceId::Block, 1, 3, Status::Ok, le64(99).to_vec()),
         (ServiceId::Block, 2, 4, Status::OutOfRange, Vec::new()),
         (ServiceId::Event, 1, 5, Status::Ok, Vec::new()),
-        // SDK `buggify_decide` reply: one byte, fire = 1 (task 73).
-        (ServiceId::Sdk, 1, 6, Status::Ok, vec![1]),
+        // SDK opcode 3 data response: package payloads are opaque here.
+        (ServiceId::Sdk, 3, 6, Status::Ok, vec![1, 0xa5]),
         // SDK `coverage_yield`: next threshold 2, runnable index 1.
         (
             ServiceId::Sdk,
@@ -362,50 +364,12 @@ fn payload_fetch_is_exact_and_exhaustion_is_a_clean_status() {
     assert!(maximum.iter().all(|&byte| byte == 0xa5));
 }
 
-/// The task-73 SDK buggify round-trip: the guest `buggify_decide(point)` reaches
-/// the [`SdkBuggify`] service (id 6, op 1), which answers a one-byte fire flag
-/// from its per-point table (default otherwise), and records every asked point.
-#[test]
-fn buggify_decide_round_trips_the_fire_flag() {
-    let mut svc = SdkBuggify::new(false); // default: don't fire
-    svc.set_point(1, true); // point 1 fires
-    svc.set_point(2, false); // point 2 explicitly nominal
-
-    let mut dispatcher = Dispatcher::new();
-    dispatcher.register(ServiceId::Sdk, Box::new(svc));
-    let mut client = Client::new(DispatcherLoopback(dispatcher));
-
-    assert!(
-        !client.buggify_decide(0).unwrap(),
-        "point 0 uses the default"
-    );
-    assert!(client.buggify_decide(1).unwrap(), "point 1 fires");
-    assert!(!client.buggify_decide(2).unwrap(), "point 2 is nominal");
-    assert!(
-        !client.buggify_decide(9).unwrap(),
-        "an unmapped point uses the default"
-    );
-}
-
-/// The SDK service errors as `UnknownService` when nothing is registered at id 6,
-/// so a guest whose host lacks SDK support gets a clean status, never a panic.
-#[test]
-fn buggify_decide_without_sdk_service_is_a_clean_status() {
-    let mut dispatcher = Dispatcher::new();
-    dispatcher.register(ServiceId::Event, Box::new(EventSink::new()));
-    let mut client = Client::new(DispatcherLoopback(dispatcher));
-    assert_eq!(
-        client.buggify_decide(0),
-        Err(ClientError::Status(Status::UnknownService))
-    );
-}
-
 /// M6 threshold handshake: the first per-thread threshold is one, each exit
 /// prescribes the next exact count, and the selected runnable is in range.
 #[test]
 fn coverage_yield_round_trips_threshold_and_scheduler_selection() {
     let mut dispatcher = Dispatcher::new();
-    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    dispatcher.register(ServiceId::Sdk, Box::new(CoverageService::new()));
     let mut client = Client::new(DispatcherLoopback(dispatcher));
 
     assert_eq!(client.coverage_yield(7, 1, 3).unwrap(), (2, 0));
@@ -419,7 +383,7 @@ fn coverage_yield_round_trips_threshold_and_scheduler_selection() {
 #[test]
 fn coverage_yield_rejects_skipped_stale_and_invalid_thresholds() {
     let mut dispatcher = Dispatcher::new();
-    dispatcher.register(ServiceId::Sdk, Box::new(SdkBuggify::new(false)));
+    dispatcher.register(ServiceId::Sdk, Box::new(CoverageService::new()));
     let mut client = Client::new(DispatcherLoopback(dispatcher));
 
     assert_eq!(
@@ -453,7 +417,7 @@ fn coverage_yield_rejects_each_malformed_response_field_independently() {
 /// Request and response buffer lengths are separate protocol invariants.
 #[test]
 fn sdk_coverage_rejects_each_bad_buffer_length_independently() {
-    let mut svc = SdkBuggify::new(false);
+    let mut svc = CoverageService::new();
     let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
     request[0..4].copy_from_slice(&7_u32.to_le_bytes());
     request[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
@@ -468,69 +432,35 @@ fn sdk_coverage_rejects_each_bad_buffer_length_independently() {
         svc.handle(2, &request, &mut response[..SDK_COVERAGE_RESPONSE_LEN - 1]),
         (Status::BadRequest, 0)
     );
-    assert!(svc.coverage_asked().is_empty());
+    assert!(svc.asked().is_empty());
 }
 
-/// `SdkBuggify` snapshots and restores its table + asked log, so a buggify
-/// service survives a corpus snapshot exactly like the other reference services.
+/// Coverage state is the generic SDK reference service's only stateful policy.
 #[test]
-fn sdk_buggify_state_round_trips() {
-    let mut svc = SdkBuggify::new(true);
-    svc.set_point(3, false);
-    // Drive op 1 directly so the asked log is populated on this very instance.
-    let mut out = [0_u8; 1];
-    for point in [3u32, 7] {
-        let (status, n) = svc.handle(1, &point.to_le_bytes(), &mut out);
-        assert_eq!(status, Status::Ok);
-        assert_eq!(n, 1);
-    }
-    let mut coverage = [0_u8; SDK_COVERAGE_REQUEST_LEN];
-    coverage[0..4].copy_from_slice(&11_u32.to_le_bytes());
-    coverage[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
-    coverage[12..16].copy_from_slice(&2_u32.to_le_bytes());
-    let mut coverage_out = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
+fn coverage_service_state_round_trips() {
+    let mut service = CoverageService::new();
+    let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+    request[0..4].copy_from_slice(&11_u32.to_le_bytes());
+    request[4..12].copy_from_slice(&SDK_COVERAGE_QUANTUM.to_le_bytes());
+    request[12..16].copy_from_slice(&2_u32.to_le_bytes());
+    let mut response = [0_u8; SDK_COVERAGE_RESPONSE_LEN];
     assert_eq!(
-        svc.handle(2, &coverage, &mut coverage_out),
+        service.handle(2, &request, &mut response),
         (Status::Ok, SDK_COVERAGE_RESPONSE_LEN)
     );
-    assert_eq!(svc.asked(), [3, 7]);
-    assert_eq!(svc.coverage_asked(), [(11, SDK_COVERAGE_QUANTUM, 2, 0)]);
-    let saved = svc.save_state();
-    let mut restored = SdkBuggify::new(false);
+    assert_eq!(service.asked(), [(11, SDK_COVERAGE_QUANTUM, 2, 0)]);
+    let saved = service.save_state();
+    let mut restored = CoverageService::new();
     restored.restore_state(&saved).unwrap();
-    assert_eq!(restored, svc, "state round-trips exactly");
-    assert_eq!(
-        restored.save_state(),
-        saved,
-        "bytes are stable across restore"
-    );
+    assert_eq!(restored, service);
+    assert_eq!(restored.save_state(), saved);
 }
 
-/// The optional coverage-state extension is absent only when both collections
-/// are empty, and remains present when exactly one collection is populated.
+/// A persisted runnable selection is checked even when `ready` is nonzero;
+/// `selected == ready` is out of range and must fail closed.
 #[test]
-fn sdk_coverage_state_extension_presence_is_exact() {
-    let empty = SdkBuggify::new(false);
-    let empty_state = vec![0_u8; 9];
-    assert_eq!(empty.save_state(), empty_state);
-
-    let mut thresholds_only = empty_state;
-    thresholds_only.extend_from_slice(b"COVR");
-    thresholds_only.extend_from_slice(&1_u32.to_le_bytes());
-    thresholds_only.extend_from_slice(&4_u32.to_le_bytes());
-    thresholds_only.extend_from_slice(&7_u64.to_le_bytes());
-    thresholds_only.extend_from_slice(&0_u32.to_le_bytes());
-    let mut restored = SdkBuggify::new(true);
-    restored.restore_state(&thresholds_only).unwrap();
-    assert_eq!(restored.save_state(), thresholds_only);
-}
-
-/// A persisted runnable selection is checked even when `ready` itself is
-/// nonzero; `selected == ready` is out of range and must fail closed.
-#[test]
-fn sdk_coverage_restore_rejects_out_of_range_selection() {
-    let mut state = vec![0_u8; 9];
-    state.extend_from_slice(b"COVR");
+fn coverage_service_restore_rejects_out_of_range_selection() {
+    let mut state = Vec::new();
     state.extend_from_slice(&0_u32.to_le_bytes());
     state.extend_from_slice(&1_u32.to_le_bytes());
     state.extend_from_slice(&3_u32.to_le_bytes());
@@ -538,7 +468,7 @@ fn sdk_coverage_restore_rejects_out_of_range_selection() {
     state.extend_from_slice(&2_u32.to_le_bytes());
     state.extend_from_slice(&2_u32.to_le_bytes());
     assert_eq!(
-        SdkBuggify::new(false).restore_state(&state),
+        CoverageService::new().restore_state(&state),
         Err(ProtoError::BadState)
     );
 }
@@ -709,178 +639,87 @@ fn dispatcher_failed_restore_preserves_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 61: the `Net` per-flow decision service (ServiceId::Net = 5, op 1).
+// Package requests use the generic SDK opcode-3 channel. The protocol tests
+// assert framing and response bounds without decoding any package payload.
 // ---------------------------------------------------------------------------
 
-/// Pack a `net_decide` request payload the way the guest client does, so the
-/// golden-byte and decode tests share one source of truth.
-fn net_req_payload(src: u32, dst: u32, conn: u64, event: u16) -> Vec<u8> {
-    let mut p = Vec::new();
-    p.extend_from_slice(&src.to_le_bytes());
-    p.extend_from_slice(&dst.to_le_bytes());
-    p.extend_from_slice(&conn.to_le_bytes());
-    p.extend_from_slice(&event.to_le_bytes());
-    assert_eq!(p.len(), NET_REQUEST_LEN);
-    p
-}
+#[derive(Clone)]
+struct OpaquePackageService;
 
-/// The wire form of a `net_decide` request is the fixed 18-byte little-endian
-/// `NetFlow { src, dst, conn, event }` decision point behind service id 5, op 1.
-#[test]
-fn golden_net_decide_request_bytes() {
-    let payload = net_req_payload(11, 22, 0xDEAD_BEEF, 0);
-    let mut expected = b"HCP1".to_vec();
-    expected.extend_from_slice(&[1, 0, 5, 0, 1, 0, 0, 0]); // kind 1, service 5, opcode 1
-    expected.extend_from_slice(&le32(42)); // seq
-    expected.extend_from_slice(&le32(NET_REQUEST_LEN as u32)); // payload len
-    expected.extend_from_slice(&le32(0)); // reserved
-    expected.extend_from_slice(&payload);
-    assert_eq!(enc_req(ServiceId::Net, 1, 42, &payload), expected);
-}
-
-/// `NetFlowPoint::decode` is the inverse of the client's request packing and
-/// rejects any payload that is not exactly [`NET_REQUEST_LEN`] bytes.
-#[test]
-fn net_flow_point_decodes_the_fixed_wire_form() {
-    let payload = net_req_payload(1, 2, 3, 0);
-    let point = NetFlowPoint::decode(&payload).unwrap();
-    assert_eq!(
-        point,
-        NetFlowPoint {
-            src: 1,
-            dst: 2,
-            conn: 3,
-            event: 0
+impl Service for OpaquePackageService {
+    fn handle(&mut self, opcode: u16, payload: &[u8], response: &mut [u8]) -> (Status, usize) {
+        if opcode != 3 || payload.len() < 10 {
+            return (Status::BadRequest, 0);
         }
-    );
-    assert!(NetFlowPoint::decode(&payload[..17]).is_none());
-    let mut too_long = payload.clone();
-    too_long.push(0);
-    assert!(NetFlowPoint::decode(&too_long).is_none());
+        // Echo the package bytes as an opaque data response. Namespace and
+        // request id are routing coordinates, not a fault-specific schema here.
+        if response.len() < payload.len() - 10 + 1 {
+            return (Status::Internal, 0);
+        }
+        response[0] = 1;
+        response[1..payload.len() - 9].copy_from_slice(&payload[10..]);
+        (Status::Ok, payload.len() - 9)
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        Vec::new()
+    }
+
+    fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
+        if state.is_empty() {
+            Ok(())
+        } else {
+            Err(ProtoError::BadState)
+        }
+    }
 }
 
-/// The `net_decide` round-trip: the guest reaches the [`NetDecider`] reference
-/// answerer (id 5, op 1), which returns the opaque per-flow policy bytes from its
-/// table (default otherwise) and records every asked flow in call order.
 #[test]
-fn net_decide_round_trips_the_flow_policy() {
-    // Opaque "policy" bytes — this crate never interprets them. Model a
-    // one-byte Nominal default and a multi-byte fault answer for conn 7.
-    let nominal = vec![0u8];
-    let fault = vec![2u8, 12, 0, 0, 0, 0]; // stand-in for an encoded NetLatency
-    let mut svc = NetDecider::new(nominal.clone());
-    svc.set_flow(7, fault.clone());
-
+fn generic_service_request_round_trips_opaque_namespace_and_payload() {
     let mut dispatcher = Dispatcher::new();
-    dispatcher.register(ServiceId::Net, Box::new(svc));
+    dispatcher.register(ServiceId::Sdk, Box::new(OpaquePackageService));
     let mut client = Client::new(DispatcherLoopback(dispatcher));
-
-    let mut out = [0u8; 64];
-    let n = client.net_decide(1, 2, 5, 0, &mut out).unwrap();
-    assert_eq!(&out[..n], &nominal[..], "conn 5 uses the default answer");
-    let n = client.net_decide(1, 2, 7, 0, &mut out).unwrap();
-    assert_eq!(&out[..n], &fault[..], "conn 7 uses its pinned answer");
+    let mut out = [0_u8; 8];
+    let n = client
+        .service_request(7, 0xDEAD_BEEF, &[0x11, 0x22, 0x33], &mut out)
+        .unwrap()
+        .unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(&out[..n], &[0x11, 0x22, 0x33]);
 }
 
-/// A too-small caller buffer surfaces `BufferTooSmall`, never a truncated answer
-/// or a panic — the guest must be able to trust the length it gets back.
 #[test]
-fn net_decide_rejects_an_undersized_out_buffer() {
-    let mut svc = NetDecider::new(vec![0u8]);
-    svc.set_flow(7, vec![1, 2, 3, 4]);
+fn generic_service_request_preserves_buffer_and_namespace_guards() {
     let mut dispatcher = Dispatcher::new();
-    dispatcher.register(ServiceId::Net, Box::new(svc));
+    dispatcher.register(ServiceId::Sdk, Box::new(OpaquePackageService));
     let mut client = Client::new(DispatcherLoopback(dispatcher));
-    let mut out = [0u8; 2];
+    let mut out = [0_u8; 2];
     assert_eq!(
-        client.net_decide(1, 2, 7, 0, &mut out),
+        client.service_request(7, 1, &[1, 2, 3], &mut out),
         Err(ClientError::Protocol(ProtoError::BufferTooSmall))
     );
+    assert_eq!(
+        client.service_request(3, 1, &[1], &mut out),
+        Err(ClientError::InvalidLength)
+    );
+    assert_eq!(
+        client.service_request(7, 1, &[1; MAX_PAYLOAD - 9], &mut out),
+        Err(ClientError::InvalidLength)
+    );
 }
 
-/// With nothing registered at id 5, a guest whose host lacks the `Net` vertical
-/// gets a clean `UnknownService`, never a hang or a panic.
 #[test]
-fn net_decide_without_the_service_is_a_clean_status() {
+fn retired_fault_service_id_has_no_package_decoder() {
     let mut dispatcher = Dispatcher::new();
-    dispatcher.register(ServiceId::Event, Box::new(EventSink::new()));
+    dispatcher.register(ServiceId::Net, Box::new(OpaquePackageService));
     let mut client = Client::new(DispatcherLoopback(dispatcher));
-    let mut out = [0u8; 8];
+    let mut frame = [0_u8; 1];
     assert_eq!(
-        client.net_decide(1, 2, 3, 0, &mut out),
+        client.service_request(7, 1, &[1, 2, 3, 4], &mut frame),
         Err(ClientError::Status(Status::UnknownService))
     );
-}
-
-/// `NetDecider` snapshots and restores its table + asked log, so a Net service
-/// survives a corpus snapshot exactly like the other reference services.
-#[test]
-fn net_decider_state_round_trips() {
-    let mut svc = NetDecider::new(vec![0u8]);
-    svc.set_flow(3, vec![9, 9]);
-    let mut out = [0u8; 16];
-    for (conn, event) in [(3u64, 0u16), (8, 0)] {
-        let (status, _n) = svc.handle(1, &net_req_payload(1, 2, conn, event), &mut out);
-        assert_eq!(status, Status::Ok);
-    }
-    assert_eq!(svc.asked().len(), 2);
-    assert_eq!(svc.asked()[0].conn, 3);
-    assert_eq!(svc.asked()[1].conn, 8);
-    let saved = svc.save_state();
-    let mut restored = NetDecider::new(Vec::new());
-    restored.restore_state(&saved).unwrap();
-    assert_eq!(restored, svc);
-}
-
-/// An opcode the `Net` service does not implement is `UnknownOpcode`, and a
-/// malformed (wrong-length) request is `BadRequest` — never a silent drop.
-#[test]
-fn net_decider_rejects_bad_opcode_and_payload() {
-    let mut svc = NetDecider::new(vec![0u8]);
-    let mut out = [0u8; 8];
-    assert_eq!(
-        svc.handle(2, &net_req_payload(1, 2, 3, 0), &mut out).0,
-        Status::UnknownOpcode
-    );
-    assert_eq!(svc.handle(1, &[0u8; 4], &mut out).0, Status::BadRequest);
-    // A rejected request records no phantom ask.
-    assert!(svc.asked().is_empty());
-}
-
-/// Additive-versioning invariant: adding the `Net` vertical must fill id 5
-/// without moving any released service id — a released wire ABI never renumbers.
-#[test]
-fn service_ids_are_a_stable_additive_registry() {
-    assert_eq!(ServiceId::Console as u16, 1);
-    assert_eq!(ServiceId::Entropy as u16, 2);
-    assert_eq!(ServiceId::Block as u16, 3);
-    assert_eq!(ServiceId::Event as u16, 4);
     assert_eq!(ServiceId::Net as u16, 5);
     assert_eq!(ServiceId::Sdk as u16, 6);
-    assert_eq!(ServiceId::Pvclock as u16, 7);
-    assert_eq!(ServiceId::Payload as u16, 8);
-}
-
-proptest! {
-    /// For any flow fields and any opaque answer that fits the caller buffer, the
-    /// `net_decide` round-trip returns exactly the answer bytes the host set for
-    /// that connection and logs exactly one ask with the sent fields.
-    #[test]
-    fn net_decide_round_trip_is_faithful(
-        src in any::<u32>(),
-        dst in any::<u32>(),
-        conn in any::<u64>(),
-        answer in proptest::collection::vec(any::<u8>(), 1..64),
-    ) {
-        let mut svc = NetDecider::new(vec![0u8]);
-        svc.set_flow(conn, answer.clone());
-        let mut dispatcher = Dispatcher::new();
-        dispatcher.register(ServiceId::Net, Box::new(svc));
-        let mut client = Client::new(DispatcherLoopback(dispatcher));
-        let mut out = [0u8; 64];
-        let n = client.net_decide(src, dst, conn, 0, &mut out).unwrap();
-        prop_assert_eq!(&out[..n], &answer[..]);
-    }
 }
 
 /// The task-110 pvclock registration round-trip: the guest
@@ -1024,4 +863,86 @@ fn pvclock_registrar_rejects_bad_frames() {
     assert_eq!(svc.handle(1, &[0; 7], &mut out).0, Status::BadRequest);
     assert_eq!(svc.handle(1, &[0; 9], &mut out).0, Status::BadRequest);
     assert_eq!(svc.registered(), None, "no registration on any rejection");
+}
+
+struct PackageResponse(Vec<u8>);
+impl Transport for PackageResponse {
+    type Error = ();
+    fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, ()> {
+        let (header, payload) = decode(req).map_err(|_| ())?;
+        assert_eq!((header.service, header.opcode), (6, 3));
+        assert_eq!(payload, &[19, 0, 77, 0, 0, 0, 0, 0, 0, 0, b'x']);
+        encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &self.0, resp).map_err(|_| ())
+    }
+}
+
+#[test]
+fn package_service_response_distinguishes_nominal_empty_data_and_malformed_frames() {
+    for (bytes, expected) in [
+        (vec![0], None),
+        (vec![1], Some(0)),
+        (vec![1, 9, 8], Some(2)),
+    ] {
+        let mut client = Client::new(PackageResponse(bytes));
+        let mut out = [0; 2];
+        assert_eq!(
+            client.service_request(19, 77, b"x", &mut out).unwrap(),
+            expected
+        );
+        if expected == Some(2) {
+            assert_eq!(out, [9, 8]);
+        }
+    }
+    for bytes in [vec![], vec![0, 9], vec![2], vec![1, 1, 2, 3]] {
+        let mut client = Client::new(PackageResponse(bytes));
+        assert!(client.service_request(19, 77, b"x", &mut [0; 2]).is_err());
+    }
+    let mut client = Client::new(PackageResponse(vec![0]));
+    assert!(client.service_request(3, 77, b"x", &mut []).is_err());
+    assert!(
+        client
+            .service_request(19, 77, &vec![0; MAX_PAYLOAD], &mut [])
+            .is_err()
+    );
+}
+
+#[test]
+fn package_service_uses_the_complete_frame_and_rejects_overflow_before_transport() {
+    struct FullFrame(Rc<RefCell<usize>>);
+    impl Transport for FullFrame {
+        type Error = ();
+        fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, ()> {
+            *self.0.borrow_mut() += 1;
+            let (header, payload) = decode(req).map_err(|_| ())?;
+            assert_eq!((header.service, header.opcode), (ServiceId::Sdk as u16, 3));
+            assert_eq!(payload.len(), MAX_PAYLOAD);
+            assert_eq!(&payload[..2], &4_u16.to_le_bytes());
+            assert_eq!(&payload[2..10], &u64::MAX.to_le_bytes());
+            assert!(payload[10..].iter().all(|byte| *byte == 0xa5));
+            let mut answer = vec![0x5a; MAX_PAYLOAD];
+            answer[0] = 1;
+            encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &answer, resp)
+                .map_err(|_| ())
+        }
+    }
+    let calls = Rc::new(RefCell::new(0));
+    let mut client = Client::new(FullFrame(calls.clone()));
+    let mut out = vec![0; MAX_PAYLOAD - 1];
+    assert_eq!(
+        client.service_request(4, u64::MAX, &vec![0xa5; MAX_PAYLOAD - 10], &mut out),
+        Ok(Some(MAX_PAYLOAD - 1))
+    );
+    assert!(out.iter().all(|byte| *byte == 0x5a));
+    assert_eq!(*calls.borrow(), 1);
+    assert_eq!(
+        client.service_request(4, 0, &vec![0; MAX_PAYLOAD - 9], &mut out),
+        Err(ClientError::InvalidLength)
+    );
+    for namespace in 0..=3 {
+        assert_eq!(
+            client.service_request(namespace, 0, &[], &mut out),
+            Err(ClientError::InvalidLength)
+        );
+    }
+    assert_eq!(*calls.borrow(), 1, "invalid requests never reach transport");
 }

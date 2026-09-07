@@ -8,6 +8,7 @@ pub enum vmm_core::control::ServeError
 pub vmm_core::control::ServeError::Io(std::io::error::Error)
 pub vmm_core::control::ServeError::Poisoned
 pub vmm_core::control::ServeError::Protocol(control_proto::error::ProtocolError)
+pub vmm_core::control::ServeError::Service(environment::channel::ChannelError)
 pub vmm_core::control::ServeError::Snapshot(vmm_core::snapshot::SnapshotError)
 pub vmm_core::control::ServeError::Vmm(vmm_core::vmm::VmmError)
 pub struct vmm_core::control::ControlServer<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>>
@@ -23,13 +24,14 @@ pub fn vmm_core::control::ControlServer<B>::last_restore_bytes_written(&self) ->
 pub fn vmm_core::control::ControlServer<B>::last_seal_dirty_gfns(&self) -> core::option::Option<&[u64]>
 pub fn vmm_core::control::ControlServer<B>::latest_snapshot(&self) -> core::option::Option<control_proto::types::SnapId>
 pub fn vmm_core::control::ControlServer<B>::new(vmm_core::vmm::Vmm<B>, vmm_core::control::VmmFactory<B>) -> Self
-pub fn vmm_core::control::ControlServer<B>::recorded_env(&self) -> &environment::recorded::EnvSpec
+pub fn vmm_core::control::ControlServer<B>::recorded_env(&self) -> &environment::input_spec::InputSpec
 pub fn vmm_core::control::ControlServer<B>::restore_mode(&self) -> vmm_core::control::RestoreMode
 pub fn vmm_core::control::ControlServer<B>::serve<S: std::io::Read + std::io::Write>(&mut self, S) -> core::result::Result<(), vmm_core::control::ServeError>
 pub fn vmm_core::control::ControlServer<B>::session_virtual_time_trace(&self) -> core::option::Option<vmm_core::session_trace::SessionVirtualTimeTrace>
 pub fn vmm_core::control::ControlServer<B>::set_max_chain_len(&mut self, u32)
 pub fn vmm_core::control::ControlServer<B>::set_remap_factory(&mut self, vmm_core::control::RemapVmmFactory<B>)
 pub fn vmm_core::control::ControlServer<B>::set_restore_mode(&mut self, vmm_core::control::RestoreMode)
+pub fn vmm_core::control::ControlServer<B>::set_service_factory(&mut self, environment::input_spec::ServiceFactory)
 pub fn vmm_core::control::ControlServer<B>::snapshot_chain_len(&self, control_proto::types::SnapId) -> core::option::Option<u32>
 pub fn vmm_core::control::ControlServer<B>::snapshot_stats(&self, control_proto::types::SnapId) -> core::option::Option<snapshot_store::SnapStats>
 pub fn vmm_core::control::ControlServer<B>::snapshot_store_stats(&self) -> snapshot_store::StoreStats
@@ -56,7 +58,7 @@ pub fn vmm_core::corpus::CorpusMachine<B>::vmm(&self) -> &vmm_core::vmm::Vmm<B>
 impl<B: vmm_backend::backend::Backend<Avmm_core::vendor::Vendor>> unison::Subject for vmm_core::corpus::CorpusMachine<B>
 pub fn vmm_core::corpus::CorpusMachine<B>::observable_digest(&self) -> [u8; 32]
 pub fn vmm_core::corpus::CorpusMachine<B>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::SubjectError>
-pub fn vmm_core::corpus::CorpusMachine<B>::state_hash(&self) -> [u8; 32]
+pub fn vmm_core::corpus::CorpusMachine<B>::state_hash(&self) -> core::result::Result<[u8; 32], unison::SubjectError>
 pub fn vmm_core::corpus::CorpusMachine<B>::work(&self) -> u64
 pub fn vmm_core::corpus::observable_digest_of(&[u32], &[u8]) -> [u8; 32]
 pub mod vmm_core::exec
@@ -150,7 +152,7 @@ pub vmm_core::portable_snapshot::PortableSnapshotError::BadFlags
 pub vmm_core::portable_snapshot::PortableSnapshotError::BadMagic
 pub vmm_core::portable_snapshot::PortableSnapshotError::BadVersion(u16)
 pub vmm_core::portable_snapshot::PortableSnapshotError::DigestMismatch
-pub vmm_core::portable_snapshot::PortableSnapshotError::Environment(environment::error::EnvError)
+pub vmm_core::portable_snapshot::PortableSnapshotError::Environment(environment::channel::ChannelError)
 pub vmm_core::portable_snapshot::PortableSnapshotError::Io(std::io::error::Error)
 pub vmm_core::portable_snapshot::PortableSnapshotError::Length
 pub vmm_core::portable_snapshot::PortableSnapshotError::Length::got: u64
@@ -849,6 +851,10 @@ pub enum vmm_core::vmm::SdkStop
 pub vmm_core::vmm::SdkStop::Assertion
 pub vmm_core::vmm::SdkStop::Assertion::data: alloc::vec::Vec<u8>
 pub vmm_core::vmm::SdkStop::Assertion::id: u32
+pub vmm_core::vmm::SdkStop::Decision
+pub vmm_core::vmm::SdkStop::Decision::moment: u64
+pub vmm_core::vmm::SdkStop::Decision::question: environment::channel::Question
+pub vmm_core::vmm::SdkStop::Decision::seq: u32
 pub vmm_core::vmm::SdkStop::Quiescent
 pub enum vmm_core::vmm::Step
 pub vmm_core::vmm::Step::Continued
@@ -862,6 +868,7 @@ pub vmm_core::vmm::TerminalReason::SdkStop
 pub vmm_core::vmm::TerminalReason::Shutdown
 pub enum vmm_core::vmm::VmmError
 pub vmm_core::vmm::VmmError::Backend(vmm_backend::error::BackendError)
+pub vmm_core::vmm::VmmError::Channel(environment::channel::ChannelError)
 pub vmm_core::vmm::VmmError::ContractViolation(alloc::string::String)
 pub vmm_core::vmm::VmmError::HostAssert(alloc::string::String)
 pub vmm_core::vmm::VmmError::Snapshot(vmm_core::snapshot::SnapshotError)
@@ -876,7 +883,6 @@ pub fn vmm_core::vmm::GuestRam::as_mut_bytes(&mut self) -> &mut [u8]
 pub fn vmm_core::vmm::GuestRam::is_empty(&self) -> bool
 pub fn vmm_core::vmm::GuestRam::len(&self) -> usize
 pub fn vmm_core::vmm::GuestRam::new(usize) -> core::result::Result<Self, vmm_core::vmm::VmmError>
-pub struct vmm_core::vmm::NetSnapshot
 pub struct vmm_core::vmm::PvclockSnapshot
 pub struct vmm_core::vmm::RunResult
 pub vmm_core::vmm::RunResult::exit_counts: vmm_backend::exit::ExitCounts
@@ -896,16 +902,15 @@ impl<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>> vmm_core
 pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_lapic(&mut self, lapic::device::Lapic) -> &mut Self
 impl<B: vmm_backend::backend::Backend> vmm_core::vmm::Vmm<B> where <B as vmm_backend::backend::Backend>::A: vmm_core::vendor::Vendor
-pub fn vmm_core::vmm::Vmm<B>::apply_host_fault(&mut self, &environment::host::HostFault) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::apply_effect(&mut self, &environment::channel::Effect) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace(&mut self) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::checkpoint_virtual_time_trace_at(&mut self, u64, [u8; 32]) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::defer_virtual_time_checkpoint_hashes(&mut self) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::doorbell_exits(&self) -> u64
 pub fn vmm_core::vmm::Vmm<B>::drain_dirty_pages(&mut self) -> core::option::Option<alloc::vec::Vec<u64>>
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
-pub fn vmm_core::vmm::Vmm<B>::enable_net(&mut self) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::enable_pvclock(&mut self) -> &mut Self
-pub fn vmm_core::vmm::Vmm<B>::enable_sdk(&mut self, environment::recorded::RecordedEnv, &environment::policy::FaultPolicy) -> &mut Self
+pub fn vmm_core::vmm::Vmm<B>::enable_sdk(&mut self, environment::channel::RecordedEnv<alloc::boxed::Box<dyn environment::channel::ServiceHandler>>, &environment::input_spec::ServiceConfig) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::entropy_state(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
 pub fn vmm_core::vmm::Vmm<B>::guest_memory(&self) -> &[u8]
@@ -915,11 +920,9 @@ pub fn vmm_core::vmm::Vmm<B>::has_pending_guest_interrupt(&mut self) -> core::re
 pub fn vmm_core::vmm::Vmm<B>::idle_landings(&self) -> &[u64]
 pub fn vmm_core::vmm::Vmm<B>::inject_serial_input(&mut self, &[u8])
 pub fn vmm_core::vmm::Vmm<B>::inspect_vcpu(&self) -> vmm_core::vmm::VcpuOf<B>
-pub fn vmm_core::vmm::Vmm<B>::net_decisions(&self) -> &[(u64, u64, environment::catalog::Answer)]
-pub fn vmm_core::vmm::Vmm<B>::net_restore(&mut self, &vmm_core::vmm::NetSnapshot)
-pub fn vmm_core::vmm::Vmm<B>::net_snapshot(&self) -> core::option::Option<vmm_core::vmm::NetSnapshot>
 pub fn vmm_core::vmm::Vmm<B>::new(B, vmm_core::vmm::GuestRam) -> Self
 pub fn vmm_core::vmm::Vmm<B>::observable_digest(&self) -> [u8; 32]
+pub fn vmm_core::vmm::Vmm<B>::pending_service_question(&self) -> core::option::Option<(u64, &environment::channel::Question)>
 pub fn vmm_core::vmm::Vmm<B>::pvclock_check_oracle(&self) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::pvclock_clear_refreshes(&mut self)
 pub fn vmm_core::vmm::Vmm<B>::pvclock_offered(&self) -> bool
@@ -931,6 +934,7 @@ pub fn vmm_core::vmm::Vmm<B>::ram_backing_is_snapshot(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::report_stream(&self) -> &[u32]
 pub fn vmm_core::vmm::Vmm<B>::reseed_entropy(&mut self, u64) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::reset_dirty_tracking(&mut self) -> bool
+pub fn vmm_core::vmm::Vmm<B>::resolve_service_answer(&mut self, environment::channel::Answer) -> core::result::Result<(u64, environment::channel::Question), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::restore_guest_memory(&mut self, &[u8]) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::restore_snapshot(&mut self, &[u8], &<<B as vmm_backend::backend::Backend>::A as vmm_core::vendor::Vendor>::Snapshot) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::restore_vm_state(&mut self, &<<B as vmm_backend::backend::Backend>::A as vmm_core::vendor::Vendor>::Snapshot) -> core::result::Result<(), vmm_core::vmm::VmmError>
@@ -938,18 +942,17 @@ pub fn vmm_core::vmm::Vmm<B>::restore_vtime(&mut self, &vmm_core::vmm::VtimeSnap
 pub fn vmm_core::vmm::Vmm<B>::run(&mut self) -> core::result::Result<vmm_core::vmm::RunResult, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::save_vm_state(&self) -> core::result::Result<<<B as vmm_backend::backend::Backend>::A as vmm_core::vendor::Vendor>::Snapshot, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::save_vtime(&self) -> core::result::Result<core::option::Option<vmm_core::vmm::VtimeSnapshot>, vmm_core::vmm::VmmError>
-pub fn vmm_core::vmm::Vmm<B>::sdk_buggify(&self) -> &[(u64, environment::catalog::Answer)]
 pub fn vmm_core::vmm::Vmm<B>::sdk_coverage(&self) -> &[(u64, u32, u64, u32, u32)]
 pub fn vmm_core::vmm::Vmm<B>::sdk_events(&self) -> &[(u64, u32, alloc::vec::Vec<u8>)]
-pub fn vmm_core::vmm::Vmm<B>::sdk_restore(&mut self, &vmm_core::vmm::SdkSnapshot)
+pub fn vmm_core::vmm::Vmm<B>::sdk_restore(&mut self, &vmm_core::vmm::SdkSnapshot) -> core::result::Result<(), environment::channel::ChannelError>
 pub fn vmm_core::vmm::Vmm<B>::sdk_restore_events(&mut self, &vmm_core::vmm::SdkSnapshot)
-pub fn vmm_core::vmm::Vmm<B>::sdk_snapshot(&self) -> core::option::Option<vmm_core::vmm::SdkSnapshot>
+pub fn vmm_core::vmm::Vmm<B>::sdk_snapshot(&self) -> core::result::Result<core::option::Option<vmm_core::vmm::SdkSnapshot>, environment::channel::ChannelError>
 pub fn vmm_core::vmm::Vmm<B>::serial(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::serial_output(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::snapshot_hashing_wired(&self) -> bool
-pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> alloc::vec::Vec<u8>
+pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> core::result::Result<alloc::vec::Vec<u8>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::state_components(&self) -> alloc::vec::Vec<(&'static str, [u8; 32])>
-pub fn vmm_core::vmm::Vmm<B>::state_hash(&self) -> [u8; 32]
+pub fn vmm_core::vmm::Vmm<B>::state_hash(&self) -> core::result::Result<[u8; 32], vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::step(&mut self) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::take_sdk_stop(&mut self) -> core::option::Option<vmm_core::vmm::SdkStop>
 pub fn vmm_core::vmm::Vmm<B>::take_snapshot_point(&mut self) -> bool

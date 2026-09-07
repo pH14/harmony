@@ -66,6 +66,10 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-deny@0.19.9
+      - name: Cargo dependency boundaries
+        run: |
+          python3 -m unittest discover -s scripts -p test_check_dependency_boundaries.py
+          python3 scripts/check-dependency-boundaries.py
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -137,38 +141,50 @@ jobs:
       - name: consonance/acceptance-suite/payloads sdk-demo build (bare metal, from its dir)
         working-directory: consonance/acceptance-suite/payloads
         run: cargo build -p sdk-demo
-      # consonance/harmony-linux/play-agent (task 86) is out-of-workspace (its own manifest).
+      # Fault request codecs are optional package code. Keep their no_std
+      # adapter independently gated so the generic SDK/protocol crates cannot
+      # regain a dependency on fault policy while the guest adapter still
+      # compiles for the real bare-metal target.
+      - name: workloads/fault-sdk gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path workloads/fault-sdk/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path workloads/fault-sdk/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/fault-sdk/Cargo.toml --all-features
+          cargo deny --manifest-path workloads/fault-sdk/Cargo.toml check --config deny.toml licenses
+          rustup target add x86_64-unknown-none
+          cargo build --locked --manifest-path workloads/fault-sdk/Cargo.toml --lib --target x86_64-unknown-none
+      # workloads/nes-guest (task 86) is out-of-workspace (its own manifest).
       # Gate it explicitly or it rots green. The portable brain
       # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
       # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
       # doorbell glue, which the macOS dev host skips. Dynamic glibc build (it
       # dlopens the pinned core at runtime), so the native build IS the ship
       # target here — no musl step.
-      - name: consonance/harmony-linux/play-agent gates (out-of-workspace manifest)
+      - name: workloads/nes-guest gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all -- --check
-          cargo clippy --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo fmt --manifest-path workloads/nes-guest/Cargo.toml --all -- --check
+          cargo clippy --manifest-path workloads/nes-guest/Cargo.toml --all-features --all-targets -- -D warnings
           # The static QuickNES feature needs the pinned external archive that
           # the Nova guest workflow supplies. Exercise the portable library
           # with all features, then the integration and Linux binary tests
           # through the archive-free dynamic-core profile. Cargo otherwise
           # links every binary while preparing an integration-test target.
-          cargo test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --all-features --lib
-          cargo test --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --no-default-features --test agent --bin play-agent
-          cargo deny --manifest-path consonance/harmony-linux/play-agent/Cargo.toml check --config deny.toml licenses
-          cargo build --manifest-path consonance/harmony-linux/play-agent/Cargo.toml --bin play-agent
+          cargo test --manifest-path workloads/nes-guest/Cargo.toml --all-features --lib
+          cargo test --manifest-path workloads/nes-guest/Cargo.toml --no-default-features --test agent --bin play-agent
+          cargo deny --manifest-path workloads/nes-guest/Cargo.toml check --config deny.toml licenses
+          cargo build --manifest-path workloads/nes-guest/Cargo.toml --bin play-agent
       # M2's arm64 TetaNES agent is another standalone guest workspace. Its
       # portable loop tests prove exact chord consumption, frame reports, WRAM
       # mirrors, and an independent TetaNES deck differential. The cross-target
       # check compiles the live /dev/mem + MMIO composition without executing it.
-      - name: consonance/harmony-linux/tetanes-agent gates (out-of-workspace manifest)
+      - name: workloads/tetanes-guest gates (out-of-workspace manifest)
         run: |
-          cargo fmt --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --all -- --check
-          cargo clippy --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --all-targets -- -D warnings
-          cargo test --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml
-          cargo deny --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml check --config deny.toml licenses
+          cargo fmt --manifest-path workloads/tetanes-guest/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path workloads/tetanes-guest/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/tetanes-guest/Cargo.toml
+          cargo deny --manifest-path workloads/tetanes-guest/Cargo.toml check --config deny.toml licenses
           rustup target add aarch64-unknown-linux-gnu
-          cargo check --locked --manifest-path consonance/harmony-linux/tetanes-agent/Cargo.toml --target aarch64-unknown-linux-gnu
+          cargo check --locked --manifest-path workloads/tetanes-guest/Cargo.toml --target aarch64-unknown-linux-gnu
       # consonance/harmony-linux/libvoidstar is a C subtree with its own Makefile — the
       # root cargo gates never see it, and nothing else in CI builds it, so a change
       # that broke the clean-room ABI shim would merge green. `make test-libvoidstar`
@@ -178,24 +194,34 @@ jobs:
       # gated here even though the guest-image repro that installs the .so is box-only.
       - name: consonance/harmony-linux/libvoidstar ABI (C subtree, out-of-workspace)
         run: make -C consonance/harmony-linux test-libvoidstar
-      # dissonance/ is a standalone workspace root, so the root gates above never
-      # see it. Run its full gate whenever that workspace changes; unrelated PRs
-      # must not inherit failures from its independently pinned dependency graph.
-      # --locked: the committed Cargo.lock pins the emulator and serialization
-      # stack. Release profile: its own gate set is release-only.
-      - name: dissonance gates when changed (out-of-workspace manifest)
+      # Dissonance's standalone workspace is checked independently of the root.
+      - name: Dissonance search core gates
         run: |
-          if git diff --quiet HEAD^1 HEAD -- dissonance; then
-            echo "Dissonance is unchanged; its standalone workspace gate is out of scope."
-            exit 0
-          fi
           cargo fmt --manifest-path dissonance/Cargo.toml --all -- --check
-          # Default-feature Linux builds must not auto-build a Consonance-only
-          # binary whose optional machine backend is absent.
           cargo build --locked --manifest-path dissonance/Cargo.toml --release
           cargo clippy --locked --manifest-path dissonance/Cargo.toml --release --all-features --all-targets -- -D warnings
           cargo test --locked --release --manifest-path dissonance/Cargo.toml --all-features
           cargo deny --manifest-path dissonance/Cargo.toml check
+
+      - name: Workload support and fault toolkit gates
+        run: |
+          for package in oci guest-image nes-protocol fault-policy tools; do
+            manifest="workloads/$package/Cargo.toml"
+            cargo fmt --manifest-path "$manifest" --all -- --check
+            cargo clippy --locked --manifest-path "$manifest" --all-features --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$manifest" --all-features
+            cargo deny --manifest-path "$manifest" check --config deny.toml
+          done
+
+      - name: NES workload package gates
+        run: |
+          cargo fmt --manifest-path workloads/nes/Cargo.toml --all -- --check
+          cargo fmt --manifest-path workloads/nes-machine/Cargo.toml --all -- --check
+          cargo build --locked --manifest-path workloads/nes/Cargo.toml --release
+          cargo clippy --locked --manifest-path workloads/nes/Cargo.toml --release --all-features --all-targets -- -D warnings
+          cargo test --locked --manifest-path workloads/nes/Cargo.toml --release --all-features
+          cargo test --locked --manifest-path workloads/nes-machine/Cargo.toml --all-features
+          cargo deny --manifest-path workloads/nes/Cargo.toml check --config deny.toml
 
   # Miri validation for crates containing `unsafe` runs in the nightly workflow.
   # Changes to `unsafe` should also run the matching crate's Miri suite before merge.
@@ -237,7 +263,10 @@ jobs:
       # `consonance/acceptance-suite/src/realvmm.rs` is excluded on the same grounds:
       # it is the acceptance runner's real-VMM composition root and needs a
       # real `/dev/kvm`, the patched modules, and built payloads, so no portable test can
-      # reach it. The
+      # reach it. The same applies to the generic Consonance live Session
+      # composition root (`consonance/client/src/session/live.rs`): portable
+      # identity and sparse snapshot validation remain coverage-counted in
+      # `session.rs`, while boot/control calls require the hardware lane. The
       # coverage-gated set is the portable, platform-agnostic logic the splits
       # factored out: `region`/`run_buf`, the value types, the run-loop contract
       # (`mock`/`run_loop`) and vmm-core's V-time
@@ -245,7 +274,7 @@ jobs:
       - name: cargo llvm-cov (region floor 90%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/acceptance-suite/src/realvmm\.rs' \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|hvf\.rs|bin/(hvf_probe|hvf_state_oracle|arm64_kvm_id_probe)\.rs)|consonance/vmm-core/src/bin/(hvf_boot|hvf_control_probe|hvf_control_server|hvf_postgres_m3|kvm_arm64_boot|kvm_arm64_control_server)\.rs|consonance/acceptance-suite/src/realvmm\.rs|consonance/client/src/session/live\.rs' \
             --fail-under-regions 90
       - uses: actions/upload-artifact@v4
         if: always()
@@ -345,7 +374,7 @@ jobs:
           echo "::error::cargo-mutants infrastructure failure persisted after 2 attempts (exit $rc)"; exit "$rc"
       # consonance/harmony-linux/sdk is out-of-workspace (its own manifest), so the root run above
       # never mutates it even when the PR diff touches its files — leaving the SDK
-      # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
+      # harness (assert/state hooks + generic service encoding) ungated. Mutate its
       # diffed lines on their own manifest, mirroring the fmt/clippy/test/public-api
       # split the `gates` job already applies to consonance/harmony-linux/sdk. `--in-diff` filters to
       # the PR's changed consonance/harmony-linux/sdk lines. The SDK has no local
@@ -388,7 +417,7 @@ jobs:
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in
   # `consonance/vtime/src/clock.rs`, `consonance/lapic/src/device.rs`,
   # `consonance/vmm-backend/src/region_proofs.rs`, and
-  # `consonance/environment/src/envcodec.rs` prove "never panics / law holds for
+  # `workloads/fault-policy/src/envcodec.rs` prove "never panics / law holds for
   # ALL inputs" — strictly stronger than the proptest sampling. Kani is
   # Linux-only, so this job runs on a Linux runner. The proof files are
   # `cfg(kani)`-only (not compiled by the normal test suite, excluded from the
@@ -421,12 +450,12 @@ jobs:
             cargo install --locked --force --version "${HARMONY_KANI_VERSION}" kani-verifier
           fi
           cargo kani setup
-      - name: cargo kani (vtime + lapic + vmm-backend + environment)
+      - name: cargo kani (vtime + lapic + vmm-backend + fault-policy)
         run: |
           cargo kani -p vtime
           cargo kani -p lapic
           cargo kani -p vmm-backend
-          cargo kani -p environment
+          cargo kani --manifest-path workloads/fault-policy/Cargo.toml
 
   # Gating: frozen public-API snapshots (quality-d). The per-crate
   # `public_api` tests regenerate each crate's public surface with

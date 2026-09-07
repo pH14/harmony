@@ -2,8 +2,8 @@
 //! Host-neutral control-snapshot artifacts.
 //!
 //! A snapshot-store layer is not portable by itself: the control server keeps
-//! the SDK stream, remaining ordered payloads, network-decision prefix, active
-//! fault policy, evidence cut, and lineage taint in handle-keyed side tables.
+//! the SDK stream, remaining ordered payloads, generic service configuration,
+//! evidence cut, and lineage taint in handle-keyed side tables.
 //! This module serializes that complete replay state together with materialized
 //! RAM and the canonical vendor VM-state blob. The format is fixed-order,
 //! little-endian, length-bounded, and protected by a trailing SHA-256 digest.
@@ -14,34 +14,30 @@ use std::{
     sync::Arc,
 };
 
-use environment::{Answer, EnvError, FaultPolicy};
+use environment::{channel, input_spec::ServiceConfig};
 use sha2::{Digest, Sha256};
 
 use crate::snapshot::SnapshotError;
-use crate::vmm::{NetSnapshot, SdkSnapshot};
+use crate::vmm::SdkSnapshot;
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 1;
-const FLAG_SDK: u16 = 1 << 0;
-const FLAG_NET: u16 = 1 << 1;
-const FLAG_TAINTED: u16 = 1 << 2;
-const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_NET | FLAG_TAINTED;
+const VERSION: u16 = 3;
+const FLAG_SDK: u16 = 1;
+const FLAG_TAINTED: u16 = 1 << 1;
+const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
 
 const MAX_VM_STATE_LEN: usize = 16 * 1024 * 1024;
 const MAX_SDK_LEN: usize = 64 * 1024 * 1024;
-const MAX_NET_LEN: usize = 64 * 1024 * 1024;
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 1;
-const SPARSE_FLAG_SDK: u16 = 1 << 0;
-const SPARSE_FLAG_NET: u16 = 1 << 1;
-const SPARSE_FLAG_TAINTED: u16 = 1 << 2;
-const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_NET | SPARSE_FLAG_TAINTED;
+const SPARSE_VERSION: u16 = 3;
+const SPARSE_FLAG_SDK: u16 = 1;
+const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
+const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_TAINTED;
 const MAX_SUFFIX_LEN: usize = 16 * 1024 * 1024;
 const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_SDK_LEN)
-    .saturating_add(MAX_NET_LEN)
     .saturating_add(MAX_POLICY_LEN)
     .saturating_add(MAX_SUFFIX_LEN)
     .saturating_add(128);
@@ -82,8 +78,7 @@ pub struct SparsePortableSnapshotReceipt {
 pub(crate) struct SparsePortableSidecar {
     pub(crate) vm_state: Vec<u8>,
     pub(crate) sdk: Option<SdkSnapshot>,
-    pub(crate) net: Option<NetSnapshot>,
-    pub(crate) policy: FaultPolicy,
+    pub(crate) policy: ServiceConfig,
     pub(crate) at: u64,
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
@@ -95,8 +90,7 @@ pub(crate) struct SparsePortableSidecar {
 pub(crate) struct SparsePortableSidecarRef<'a> {
     pub(crate) vm_state: &'a [u8],
     pub(crate) sdk: Option<&'a SdkSnapshot>,
-    pub(crate) net: Option<&'a NetSnapshot>,
-    pub(crate) policy: &'a FaultPolicy,
+    pub(crate) policy: &'a ServiceConfig,
     pub(crate) at: u64,
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
@@ -110,8 +104,7 @@ pub(crate) struct PortableSnapshot {
     pub(crate) memory: Vec<u8>,
     pub(crate) vm_state: Vec<u8>,
     pub(crate) sdk: Option<SdkSnapshot>,
-    pub(crate) net: Option<NetSnapshot>,
-    pub(crate) policy: FaultPolicy,
+    pub(crate) policy: ServiceConfig,
     pub(crate) at: u64,
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
@@ -125,8 +118,7 @@ pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) memory: &'a [u8],
     pub(crate) vm_state: &'a [u8],
     pub(crate) sdk: Option<&'a SdkSnapshot>,
-    pub(crate) net: Option<&'a NetSnapshot>,
-    pub(crate) policy: &'a FaultPolicy,
+    pub(crate) policy: &'a ServiceConfig,
     pub(crate) at: u64,
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
@@ -166,9 +158,9 @@ pub enum PortableSnapshotError {
     /// The trailing artifact digest does not authenticate the preceding bytes.
     #[error("portable snapshot SHA-256 mismatch")]
     DigestMismatch,
-    /// The embedded fault policy or network answer was malformed.
+    /// The embedded generic service configuration or channel answer was malformed.
     #[error("portable snapshot environment state malformed")]
-    Environment(#[from] EnvError),
+    Environment(#[from] channel::ChannelError),
     /// The snapshot store or vendor VM-state codec rejected imported bytes.
     #[error("portable snapshot store/VM-state failure")]
     Snapshot(#[from] SnapshotError),
@@ -180,23 +172,18 @@ pub enum PortableSnapshotError {
 impl PortableSnapshotRef<'_> {
     pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<(), PortableSnapshotError> {
         let sdk = self.sdk.map(encode_sdk).transpose()?;
-        let net = self.net.map(encode_net).transpose()?;
-        let policy = self.policy.to_bytes();
+        let policy = self.policy.encode();
         if self.vm_state.is_empty() {
             return Err(PortableSnapshotError::BadFlags);
         }
         check_len("memory", self.memory.len(), self.memory.len())?;
         check_len("vm_state", self.vm_state.len(), MAX_VM_STATE_LEN)?;
         check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
-        check_len("net", net.as_ref().map_or(0, Vec::len), MAX_NET_LEN)?;
         check_len("policy", policy.len(), MAX_POLICY_LEN)?;
 
         let mut flags = 0;
         if sdk.is_some() {
             flags |= FLAG_SDK;
-        }
-        if net.is_some() {
-            flags |= FLAG_NET;
         }
         if self.tainted {
             flags |= FLAG_TAINTED;
@@ -209,7 +196,6 @@ impl PortableSnapshotRef<'_> {
         put_len(&mut out, self.memory.len())?;
         put_len(&mut out, self.vm_state.len())?;
         put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
-        put_len(&mut out, net.as_ref().map_or(0, Vec::len))?;
         put_len(&mut out, policy.len())?;
         put_u64(&mut out, self.at)?;
         put_u64(&mut out, self.sdk_events)?;
@@ -219,9 +205,6 @@ impl PortableSnapshotRef<'_> {
         out.write_all(self.memory)?;
         out.write_all(self.vm_state)?;
         if let Some(bytes) = &sdk {
-            out.write_all(bytes)?;
-        }
-        if let Some(bytes) = &net {
             out.write_all(bytes)?;
         }
         out.write_all(&policy)?;
@@ -265,15 +248,9 @@ impl PortableSnapshot {
         }
         let vm_state_len = bounded_len(&mut input, "vm_state", MAX_VM_STATE_LEN)?;
         let sdk_len = bounded_len(&mut input, "sdk", MAX_SDK_LEN)?;
-        let net_len = bounded_len(&mut input, "net", MAX_NET_LEN)?;
         let policy_len = bounded_len(&mut input, "policy", MAX_POLICY_LEN)?;
         let has_sdk = flags & FLAG_SDK != 0;
-        let has_net = flags & FLAG_NET != 0;
-        if vm_state_len == 0
-            || has_sdk != (sdk_len != 0)
-            || has_net != (net_len != 0)
-            || policy_len == 0
-        {
+        if vm_state_len == 0 || has_sdk != (sdk_len != 0) || policy_len == 0 {
             return Err(PortableSnapshotError::BadFlags);
         }
         let at = get_u64(&mut input)?;
@@ -285,7 +262,6 @@ impl PortableSnapshot {
         let memory = read_vec(&mut input, expected_memory_len)?;
         let vm_state = read_vec(&mut input, vm_state_len)?;
         let sdk_bytes = read_vec(&mut input, sdk_len)?;
-        let net_bytes = read_vec(&mut input, net_len)?;
         let policy_bytes = read_vec(&mut input, policy_len)?;
         let calculated = input.finish();
         let mut recorded = [0; 32];
@@ -298,13 +274,11 @@ impl PortableSnapshot {
             return Err(PortableSnapshotError::Malformed("trailing bytes"));
         }
         let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
-        let net = has_net.then(|| decode_net(&net_bytes)).transpose()?;
-        let policy = FaultPolicy::from_bytes(&policy_bytes)?;
+        let policy = ServiceConfig::decode(&policy_bytes)?;
         Ok(Self {
             memory,
             vm_state,
             sdk,
-            net,
             policy,
             at,
             sdk_events,
@@ -325,14 +299,12 @@ pub(crate) fn encode_sparse_sidecar(
     sidecar: &SparsePortableSidecarRef<'_>,
 ) -> Result<Vec<u8>, PortableSnapshotError> {
     let sdk = sidecar.sdk.map(encode_sdk).transpose()?;
-    let net = sidecar.net.map(encode_net).transpose()?;
-    let policy = sidecar.policy.to_bytes();
+    let policy = sidecar.policy.encode();
     if sidecar.vm_state.is_empty() {
         return Err(PortableSnapshotError::BadFlags);
     }
     check_len("vm_state", sidecar.vm_state.len(), MAX_VM_STATE_LEN)?;
     check_len("sdk", sdk.as_ref().map_or(0, Vec::len), MAX_SDK_LEN)?;
-    check_len("net", net.as_ref().map_or(0, Vec::len), MAX_NET_LEN)?;
     check_len("policy", policy.len(), MAX_POLICY_LEN)?;
     check_len(
         "state_blob_suffix",
@@ -344,9 +316,6 @@ pub(crate) fn encode_sparse_sidecar(
     if sdk.is_some() {
         flags |= SPARSE_FLAG_SDK;
     }
-    if net.is_some() {
-        flags |= SPARSE_FLAG_NET;
-    }
     if sidecar.tainted {
         flags |= SPARSE_FLAG_TAINTED;
     }
@@ -357,7 +326,6 @@ pub(crate) fn encode_sparse_sidecar(
     put_u16(&mut out, flags)?;
     put_len(&mut out, sidecar.vm_state.len())?;
     put_len(&mut out, sdk.as_ref().map_or(0, Vec::len))?;
-    put_len(&mut out, net.as_ref().map_or(0, Vec::len))?;
     put_len(&mut out, policy.len())?;
     put_len(&mut out, sidecar.state_blob_suffix.len())?;
     put_u64(&mut out, sidecar.at)?;
@@ -366,9 +334,6 @@ pub(crate) fn encode_sparse_sidecar(
     put_u64(&mut out, sidecar.trace_schedules)?;
     out.extend_from_slice(sidecar.vm_state);
     if let Some(bytes) = &sdk {
-        out.extend_from_slice(bytes);
-    }
-    if let Some(bytes) = &net {
         out.extend_from_slice(bytes);
     }
     out.extend_from_slice(&policy);
@@ -399,16 +364,10 @@ pub(crate) fn decode_sparse_sidecar(
     }
     let vm_state_len = input.bounded_len("vm_state", MAX_VM_STATE_LEN)?;
     let sdk_len = input.bounded_len("sdk", MAX_SDK_LEN)?;
-    let net_len = input.bounded_len("net", MAX_NET_LEN)?;
     let policy_len = input.bounded_len("policy", MAX_POLICY_LEN)?;
     let suffix_len = input.bounded_len("state_blob_suffix", MAX_SUFFIX_LEN)?;
     let has_sdk = flags & SPARSE_FLAG_SDK != 0;
-    let has_net = flags & SPARSE_FLAG_NET != 0;
-    if vm_state_len == 0
-        || policy_len == 0
-        || has_sdk != (sdk_len != 0)
-        || has_net != (net_len != 0)
-    {
+    if vm_state_len == 0 || policy_len == 0 || has_sdk != (sdk_len != 0) {
         return Err(PortableSnapshotError::BadFlags);
     }
     let at = input.u64()?;
@@ -417,17 +376,14 @@ pub(crate) fn decode_sparse_sidecar(
     let trace_schedules = input.u64()?;
     let vm_state = input.section(vm_state_len)?;
     let sdk_bytes = input.section(sdk_len)?;
-    let net_bytes = input.section(net_len)?;
     let policy_bytes = input.section(policy_len)?;
     let state_blob_suffix = input.section(suffix_len)?;
     input.finish("sparse sidecar")?;
     let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
-    let net = has_net.then(|| decode_net(&net_bytes)).transpose()?;
-    let policy = FaultPolicy::from_bytes(&policy_bytes)?;
+    let policy = ServiceConfig::decode(&policy_bytes)?;
     Ok(SparsePortableSidecar {
         vm_state,
         sdk,
-        net,
         policy,
         at,
         sdk_events,
@@ -440,7 +396,9 @@ pub(crate) fn decode_sparse_sidecar(
 
 fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
     let mut out = Vec::new();
-    out.extend_from_slice(&sdk.stream);
+    let recorded = sdk.recorded.encode();
+    put_vec_len(&mut out, recorded.len());
+    out.extend_from_slice(&recorded);
     out.push(u8::from(sdk.pending_snapshot));
     put_vec_len(&mut out, sdk.events.len());
     for (moment, local, payload) in &sdk.events {
@@ -448,17 +406,6 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
         out.extend_from_slice(&local.to_le_bytes());
         put_vec_len(&mut out, payload.len());
         out.extend_from_slice(payload);
-    }
-    match &sdk.payloads {
-        None => out.push(0),
-        Some(payloads) => {
-            out.push(1);
-            put_vec_len(&mut out, payloads.len());
-            for payload in payloads {
-                put_vec_len(&mut out, payload.len());
-                out.extend_from_slice(payload);
-            }
-        }
     }
     if !sdk.coverage_thresholds.is_empty() {
         out.extend_from_slice(b"COVR");
@@ -474,8 +421,8 @@ fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
 
 fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
     let mut input = SliceReader::new(bytes);
-    let mut stream = [0; 16];
-    stream.copy_from_slice(input.take(16)?);
+    let recorded = channel::RecordedState::decode(&input.bytes()?)
+        .map_err(|_| PortableSnapshotError::Malformed("SDK recorded state"))?;
     let pending_snapshot = input.boolean()?;
     let event_count = input.count("SDK event count", 20)?;
     let mut events = Vec::new();
@@ -488,21 +435,6 @@ fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
         let payload = input.bytes()?;
         events.push((moment, local, payload));
     }
-    let payloads = match input.u8()? {
-        0 => None,
-        1 => {
-            let count = input.count("SDK payload count", 8)?;
-            let mut payloads = Vec::new();
-            payloads
-                .try_reserve_exact(count)
-                .map_err(|_| PortableSnapshotError::Malformed("SDK payload allocation"))?;
-            for _ in 0..count {
-                payloads.push(input.bytes()?);
-            }
-            Some(payloads)
-        }
-        _ => return Err(PortableSnapshotError::Malformed("SDK payload option")),
-    };
     let mut coverage_thresholds = BTreeMap::new();
     if input.remaining() != 0 {
         if input.take(4)? != b"COVR" {
@@ -527,43 +459,11 @@ fn decode_sdk(bytes: &[u8]) -> Result<SdkSnapshot, PortableSnapshotError> {
     }
     input.finish("SDK")?;
     Ok(SdkSnapshot {
-        stream,
+        recorded,
         events,
         pending_snapshot,
-        payloads,
         coverage_thresholds,
     })
-}
-
-fn encode_net(net: &NetSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
-    let mut out = Vec::new();
-    put_vec_len(&mut out, net.decisions.len());
-    for (moment, connection, answer) in &net.decisions {
-        out.extend_from_slice(&moment.to_le_bytes());
-        out.extend_from_slice(&connection.to_le_bytes());
-        let answer = answer.encode();
-        put_vec_len(&mut out, answer.len());
-        out.extend_from_slice(&answer);
-    }
-    check_len("net", out.len(), MAX_NET_LEN)?;
-    Ok(out)
-}
-
-fn decode_net(bytes: &[u8]) -> Result<NetSnapshot, PortableSnapshotError> {
-    let mut input = SliceReader::new(bytes);
-    let count = input.count("Net decision count", 24)?;
-    let mut decisions = Vec::new();
-    decisions
-        .try_reserve_exact(count)
-        .map_err(|_| PortableSnapshotError::Malformed("Net decision allocation"))?;
-    for _ in 0..count {
-        let moment = input.u64()?;
-        let connection = input.u64()?;
-        let answer = Answer::decode(&input.bytes()?)?;
-        decisions.push((moment, connection, answer));
-    }
-    input.finish("Net")?;
-    Ok(NetSnapshot { decisions })
 }
 
 fn check_len(section: &'static str, got: usize, max: usize) -> Result<(), PortableSnapshotError> {
@@ -806,64 +706,64 @@ mod tests {
 
     fn fixture_with_memory_len(
         memory_len: usize,
-    ) -> (Vec<u8>, Vec<u8>, SdkSnapshot, NetSnapshot, FaultPolicy) {
+    ) -> (Vec<u8>, Vec<u8>, SdkSnapshot, ServiceConfig) {
         let memory = (0..=255).cycle().take(memory_len).collect();
         let vm_state = b"strict-vm-state".to_vec();
+        let mut recorded_env = channel::RecordedEnv::nominal(0x5a5a_5a5a_5a5a_5a5a);
+        recorded_env
+            .set_payloads(Some(vec![vec![4, 5], Vec::new()]))
+            .unwrap();
         let sdk = SdkSnapshot {
-            stream: [0x5a; 16],
+            recorded: recorded_env.snapshot_state().unwrap(),
             events: vec![(7, 3, vec![1, 2, 3]), (11, 9, Vec::new())],
             pending_snapshot: true,
-            payloads: Some(vec![vec![4, 5], Vec::new()]),
             coverage_thresholds: BTreeMap::from([(2, 9), (7, 14)]),
         };
-        let net = NetSnapshot {
-            decisions: vec![(13, 17, Answer::Nominal)],
-        };
-        (memory, vm_state, sdk, net, FaultPolicy::none())
+        (memory, vm_state, sdk, ServiceConfig::default())
     }
 
-    fn fixture() -> (Vec<u8>, Vec<u8>, SdkSnapshot, NetSnapshot, FaultPolicy) {
+    fn fixture() -> (Vec<u8>, Vec<u8>, SdkSnapshot, ServiceConfig) {
         fixture_with_memory_len(8192)
     }
 
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 1);
-        assert_eq!(
-            (FLAG_SDK, FLAG_NET, FLAG_TAINTED, KNOWN_FLAGS),
-            (1, 2, 4, 7)
-        );
+        assert_eq!(VERSION, 3);
+        assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
-        assert_eq!(MAX_NET_LEN, 64 * 1024 * 1024);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 1);
+        assert_eq!(SPARSE_VERSION, 3);
         assert_eq!(
-            (
-                SPARSE_FLAG_SDK,
-                SPARSE_FLAG_NET,
-                SPARSE_FLAG_TAINTED,
-                SPARSE_KNOWN_FLAGS,
-            ),
-            (1, 2, 4, 7)
+            (SPARSE_FLAG_SDK, SPARSE_FLAG_TAINTED, SPARSE_KNOWN_FLAGS),
+            (1, 2, 3)
         );
         assert_eq!(MAX_SUFFIX_LEN, 16 * 1024 * 1024);
         assert_eq!(
             MAX_SPARSE_SIDECAR_LEN,
-            MAX_VM_STATE_LEN + MAX_SDK_LEN + MAX_NET_LEN + MAX_POLICY_LEN + MAX_SUFFIX_LEN + 128
+            MAX_VM_STATE_LEN + MAX_SDK_LEN + MAX_POLICY_LEN + MAX_SUFFIX_LEN + 128
         );
+
+        for old_version in [1_u16, 2] {
+            let mut old = encoded();
+            old[8..10].copy_from_slice(&old_version.to_le_bytes());
+            refresh_digest(&mut old);
+            assert!(matches!(
+                PortableSnapshot::read_from(old.as_slice(), 8192),
+                Err(PortableSnapshotError::BadVersion(version)) if version == old_version
+            ));
+        }
     }
 
     fn encoded_with_memory_len(memory_len: usize) -> Vec<u8> {
-        let (memory, vm_state, sdk, net, policy) = fixture_with_memory_len(memory_len);
+        let (memory, vm_state, sdk, policy) = fixture_with_memory_len(memory_len);
         let mut bytes = Vec::new();
         PortableSnapshotRef {
             memory: &memory,
             vm_state: &vm_state,
             sdk: Some(&sdk),
-            net: Some(&net),
             policy: &policy,
             at: 23,
             sdk_events: 2,
@@ -882,11 +782,10 @@ mod tests {
     }
 
     fn sparse_sidecar_fixture() -> Vec<u8> {
-        let (_, vm_state, sdk, net, policy) = fixture();
+        let (_, vm_state, sdk, policy) = fixture();
         encode_sparse_sidecar(&SparsePortableSidecarRef {
             vm_state: &vm_state,
             sdk: Some(&sdk),
-            net: Some(&net),
             policy: &policy,
             at: 23,
             sdk_events: 2,
@@ -905,7 +804,6 @@ mod tests {
         let decoded = decode_sparse_sidecar(&bytes).unwrap();
         assert_eq!(decoded.vm_state, b"strict-vm-state");
         assert_eq!(decoded.sdk.as_ref().unwrap().events.len(), 2);
-        assert_eq!(decoded.net.as_ref().unwrap().decisions.len(), 1);
         assert_eq!(decoded.state_blob_suffix, b"canonical-suffix");
         assert_eq!(decoded.at, 23);
         assert_eq!(decoded.sdk_events, 2);
@@ -932,6 +830,14 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
+        for old_version in [1_u16, 2] {
+            let mut old = original.clone();
+            old[8..10].copy_from_slice(&old_version.to_le_bytes());
+            assert!(matches!(
+                decode_sparse_sidecar(&old),
+                Err(PortableSnapshotError::BadVersion(version)) if version == old_version
+            ));
+        }
         let mut bad_flags = original;
         bad_flags[10..12].copy_from_slice(&0x8000_u16.to_le_bytes());
         assert!(matches!(
@@ -942,18 +848,11 @@ mod tests {
 
     #[test]
     fn sparse_sidecar_optional_flags_are_independent() {
-        let (_, vm_state, sdk, net, policy) = fixture();
-        for (has_sdk, has_net, tainted) in [
-            (false, false, false),
-            (true, false, false),
-            (false, true, false),
-            (false, false, true),
-            (true, true, true),
-        ] {
+        let (_, vm_state, sdk, policy) = fixture();
+        for (has_sdk, tainted) in [(false, false), (true, false), (false, true), (true, true)] {
             let bytes = encode_sparse_sidecar(&SparsePortableSidecarRef {
                 vm_state: &vm_state,
                 sdk: has_sdk.then_some(&sdk),
-                net: has_net.then_some(&net),
                 policy: &policy,
                 at: 23,
                 sdk_events: 2,
@@ -965,7 +864,6 @@ mod tests {
             .unwrap();
             let decoded = decode_sparse_sidecar(&bytes).unwrap();
             assert_eq!(decoded.sdk.is_some(), has_sdk);
-            assert_eq!(decoded.net.is_some(), has_net);
             assert_eq!(decoded.tainted, tainted);
         }
     }
@@ -975,8 +873,7 @@ mod tests {
         const FLAGS: std::ops::Range<usize> = 10..12;
         const VM_STATE_LEN: std::ops::Range<usize> = 12..20;
         const SDK_LEN: std::ops::Range<usize> = 20..28;
-        const NET_LEN: std::ops::Range<usize> = 28..36;
-        const POLICY_LEN: std::ops::Range<usize> = 36..44;
+        const POLICY_LEN: std::ops::Range<usize> = 28..36;
 
         let original = sparse_sidecar_fixture();
         for range in [VM_STATE_LEN, POLICY_LEN] {
@@ -988,7 +885,8 @@ mod tests {
             ));
         }
 
-        for range in [SDK_LEN, NET_LEN] {
+        {
+            let range = SDK_LEN;
             let mut missing_section = original.clone();
             missing_section[range].copy_from_slice(&0_u64.to_le_bytes());
             assert!(matches!(
@@ -997,7 +895,8 @@ mod tests {
             ));
         }
 
-        for flag in [SPARSE_FLAG_SDK, SPARSE_FLAG_NET] {
+        {
+            let flag = SPARSE_FLAG_SDK;
             let mut missing_flag = original.clone();
             let flags = u16::from_le_bytes(missing_flag[FLAGS.clone()].try_into().unwrap());
             missing_flag[FLAGS.clone()].copy_from_slice(&(flags & !flag).to_le_bytes());
@@ -1011,14 +910,13 @@ mod tests {
     #[test]
     fn snapshot_and_sparse_encoders_reject_empty_vm_state() {
         let memory = [0_u8; 16];
-        let policy = FaultPolicy::none();
+        let policy = ServiceConfig::default();
         let mut artifact = Vec::new();
         assert!(matches!(
             (PortableSnapshotRef {
                 memory: &memory,
                 vm_state: &[],
                 sdk: None,
-                net: None,
                 policy: &policy,
                 at: 0,
                 sdk_events: 0,
@@ -1036,7 +934,6 @@ mod tests {
             encode_sparse_sidecar(&SparsePortableSidecarRef {
                 vm_state: &[],
                 sdk: None,
-                net: None,
                 policy: &policy,
                 at: 0,
                 sdk_events: 0,
@@ -1064,13 +961,12 @@ mod tests {
     #[test]
     fn absent_optional_sections_and_clear_flags_round_trip() {
         let memory = vec![0x5a; 32];
-        let policy = FaultPolicy::none();
+        let policy = ServiceConfig::default();
         let mut bytes = Vec::new();
         PortableSnapshotRef {
             memory: &memory,
             vm_state: b"vm",
             sdk: None,
-            net: None,
             policy: &policy,
             at: 1,
             sdk_events: 0,
@@ -1083,14 +979,14 @@ mod tests {
         .unwrap();
         let decoded = PortableSnapshot::read_from(bytes.as_slice(), memory.len()).unwrap();
         assert!(decoded.sdk.is_none());
-        assert!(decoded.net.is_none());
         assert!(!decoded.tainted);
     }
 
     #[test]
     fn every_presence_flag_must_match_its_section_length() {
-        // Header offsets: flags=10, sdk length=28, net length=36.
-        for flag in [FLAG_SDK, FLAG_NET] {
+        // Header offsets: flags=10, sdk length=28.
+        {
+            let flag = FLAG_SDK;
             let mut flag_without_section = encoded();
             flag_without_section[10..12].copy_from_slice(&(KNOWN_FLAGS & !flag).to_le_bytes());
             refresh_digest(&mut flag_without_section);
@@ -1100,13 +996,12 @@ mod tests {
             ));
 
             let memory = vec![0; 16];
-            let policy = FaultPolicy::none();
+            let policy = ServiceConfig::default();
             let mut section_without_flag = Vec::new();
             PortableSnapshotRef {
                 memory: &memory,
                 vm_state: b"v",
                 sdk: None,
-                net: None,
                 policy: &policy,
                 at: 0,
                 sdk_events: 0,
@@ -1136,17 +1031,21 @@ mod tests {
 
     #[test]
     fn sdk_without_optional_payloads_round_trips() {
-        let (_, _, mut sdk, _, _) = fixture();
-        sdk.payloads = None;
+        let (_, _, mut sdk, _) = fixture();
+        let mut recorded_env = channel::RecordedEnv::nominal(7);
+        recorded_env.set_payloads(None).unwrap();
+        sdk.recorded = recorded_env.snapshot_state().unwrap();
         let bytes = encode_sdk(&sdk).unwrap();
-        assert_eq!(decode_sdk(&bytes).unwrap().payloads, None);
+        assert_eq!(decode_sdk(&bytes).unwrap().remaining_payloads(), None);
     }
 
     #[test]
     fn sdk_decoder_rejects_impossible_counts_and_trailing_bytes() {
-        let (_, _, sdk, _, _) = fixture();
+        let (_, _, sdk, _) = fixture();
         let mut impossible = encode_sdk(&sdk).unwrap();
-        impossible[17..25].copy_from_slice(&u64::MAX.to_le_bytes());
+        let recorded_len = u64::from_le_bytes(impossible[..8].try_into().unwrap()) as usize;
+        let event_count = 8 + recorded_len + 1;
+        impossible[event_count..event_count + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
             decode_sdk(&impossible),
             Err(PortableSnapshotError::Malformed("SDK event count"))
@@ -1162,7 +1061,7 @@ mod tests {
 
     #[test]
     fn sdk_decoder_rejects_empty_or_noncanonical_coverage_tables() {
-        let (_, _, mut sdk, _, _) = fixture();
+        let (_, _, mut sdk, _) = fixture();
         sdk.coverage_thresholds.clear();
         let mut empty = encode_sdk(&sdk).unwrap();
         empty.extend_from_slice(b"COVR");
@@ -1174,7 +1073,7 @@ mod tests {
             ))
         ));
 
-        let (_, _, sdk, _, _) = fixture();
+        let (_, _, sdk, _) = fixture();
         let mut descending = encode_sdk(&sdk).unwrap();
         let tag = descending
             .windows(4)
@@ -1204,12 +1103,11 @@ mod tests {
         }
 
         let memory = [0; 1];
-        let policy = FaultPolicy::none();
+        let policy = ServiceConfig::default();
         let result = PortableSnapshotRef {
             memory: &memory,
             vm_state: b"v",
             sdk: None,
-            net: None,
             policy: &policy,
             at: 0,
             sdk_events: 0,
@@ -1243,12 +1141,11 @@ mod tests {
 
         let flushes = Rc::new(Cell::new(0));
         let memory = [0; 1];
-        let policy = FaultPolicy::none();
+        let policy = ServiceConfig::default();
         PortableSnapshotRef {
             memory: &memory,
             vm_state: b"v",
             sdk: None,
-            net: None,
             policy: &policy,
             at: 0,
             sdk_events: 0,
@@ -1282,18 +1179,17 @@ mod tests {
         let decoded = PortableSnapshot::read_from(bytes.as_slice(), 8192).unwrap();
         assert_eq!(decoded.memory, fixture().0);
         assert_eq!(decoded.vm_state, b"strict-vm-state");
-        assert_eq!(decoded.sdk.as_ref().unwrap().stream, [0x5a; 16]);
+        assert_eq!(decoded.sdk.as_ref().unwrap().recorded, fixture().2.recorded);
         assert_eq!(decoded.sdk.as_ref().unwrap().events.len(), 2);
         assert_eq!(
             decoded.sdk.as_ref().unwrap().coverage_thresholds,
             BTreeMap::from([(2, 9), (7, 14)])
         );
         assert_eq!(
-            decoded.sdk.as_ref().unwrap().payloads.as_ref().unwrap()[0],
+            decoded.sdk.as_ref().unwrap().remaining_payloads().unwrap()[0],
             [4, 5]
         );
-        assert_eq!(decoded.net.as_ref().unwrap().decisions.len(), 1);
-        assert_eq!(decoded.policy, FaultPolicy::none());
+        assert_eq!(decoded.policy, ServiceConfig::default());
         assert_eq!(decoded.at, 23);
         assert_eq!(decoded.sdk_events, 2);
         assert_eq!(decoded.trace_events, 17);
@@ -1305,7 +1201,7 @@ mod tests {
     #[test]
     fn planted_corruption_in_each_load_bearing_section_is_rejected() {
         let original = encoded();
-        const HEADER_LEN: usize = 116;
+        const HEADER_LEN: usize = 108;
         let section_len = |offset: usize| {
             let mut bytes = [0; 8];
             bytes.copy_from_slice(&original[offset..offset + 8]);
@@ -1314,23 +1210,15 @@ mod tests {
         let memory_len = section_len(12);
         let vm_state_len = section_len(20);
         let sdk_len = section_len(28);
-        let net_len = section_len(36);
-        let policy_len = section_len(44);
+        let policy_len = section_len(36);
         let memory_start = HEADER_LEN;
         let vm_state_start = memory_start + memory_len;
         let sdk_start = vm_state_start + vm_state_len;
-        let net_start = sdk_start + sdk_len;
-        let policy_start = net_start + net_len;
+        let policy_start = sdk_start + sdk_len;
         assert_eq!(policy_start + policy_len + 32, original.len());
-        // Flip RAM, VM state, SDK, Net, and policy bytes; every mutation must
+        // Flip RAM, VM state, SDK, and policy bytes; every mutation must
         // reach the independent trailing digest check.
-        for index in [
-            memory_start,
-            vm_state_start,
-            sdk_start,
-            net_start,
-            policy_start,
-        ] {
+        for index in [memory_start, vm_state_start, sdk_start, policy_start] {
             let mut planted = original.clone();
             planted[index] ^= 1;
             assert!(matches!(
@@ -1366,7 +1254,7 @@ mod tests {
 
     #[test]
     fn sdk_coverage_threshold_fields_fail_independently() {
-        let (_, _, sdk, _, _) = fixture();
+        let (_, _, sdk, _) = fixture();
         let bytes = encode_sdk(&sdk).unwrap();
         let covr = bytes
             .windows(4)

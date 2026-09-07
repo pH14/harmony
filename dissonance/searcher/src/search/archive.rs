@@ -2519,6 +2519,16 @@ where
         self.lineages.get(id)
     }
 
+    /// Return the completed key retained at an entry index.
+    ///
+    /// The archive keeps its entry storage private so callers cannot mutate
+    /// retention state, but workload adapters need read-only access when
+    /// validating game-owned key completion against a generic archive.
+    #[must_use]
+    pub fn entry_key(&self, id: usize) -> Option<K> {
+        self.entries.get(id).map(|entry| entry.key)
+    }
+
     /// Slot collisions the time-in-group rule decided, counted for the report.
     #[must_use]
     pub fn replacement_time_displaced(&self) -> u64 {
@@ -3768,12 +3778,91 @@ mod tests {
         SelectorPolicy, selector_policy_from_identifier,
     };
     use crate::search::rand::RomuDuoJrRand;
-    use crate::smb::archive::{MAX_SMB_COMPLETION_ACTIONS, SmbArchiveKey};
-    use crate::smb::target::ButtonChord;
     use serde::{Deserialize, Serialize};
     use std::{cmp::Reverse, collections::BTreeMap, sync::Arc};
 
-    type TestArchive = Archive<u8, SmbArchiveKey, (), ()>;
+    /// A small action fixture with the same two dimensions the extracted
+    /// archive tests need: an input identity and a deterministic duration.
+    #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    struct TestAction {
+        buttons: u8,
+        hold_frames: u8,
+    }
+
+    impl TestAction {
+        fn new(buttons: u8, hold_frames: u8) -> Self {
+            Self {
+                buttons,
+                hold_frames: hold_frames.max(1),
+            }
+        }
+
+        fn duration(action: &Self) -> u64 {
+            u64::from(action.hold_frames)
+        }
+    }
+
+    /// A game-neutral key fixture that preserves the five-level geometry used
+    /// by the selector tests. The fields intentionally describe only generic
+    /// coordinates, progress, and state partitions; no emulator state is
+    /// involved in exercising the archive.
+    #[derive(
+        Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize,
+    )]
+    struct TestKey {
+        world: u8,
+        level: u8,
+        progress: u16,
+        player_y_bucket: u8,
+        state_fingerprint: u8,
+        room_x_bucket: u8,
+        time_bucket: u8,
+        room: [u8; 3],
+    }
+
+    impl ArchiveKey for TestKey {
+        type Group = Self;
+
+        fn groups() -> usize {
+            5
+        }
+
+        fn group(self, depth: usize) -> Self::Group {
+            assert!(depth < Self::groups(), "group depth is out of range");
+            let mut group = self;
+            if depth >= 1 {
+                group.state_fingerprint = 0;
+                group.progress = group
+                    .progress
+                    .saturating_add(u16::from(group.room_x_bucket));
+                group.room_x_bucket = 0;
+            }
+            if depth >= 2 {
+                group.player_y_bucket = 0;
+                group.time_bucket = 0;
+                group.progress /= 4;
+            }
+            if depth >= 3 {
+                group.progress = 0;
+            }
+            if depth >= 4 {
+                group.room = [0; 3];
+            }
+            group
+        }
+
+        type Lineage = Vec<[u8; 3]>;
+
+        fn complete(self, _parent: Option<(Self, &Self::Lineage)>) -> Self {
+            self
+        }
+
+        fn record(_lineage: &mut Self::Lineage, _key: Self) {}
+    }
+
+    const MAX_COMPLETION_ACTIONS: usize = 8_192;
+
+    type TestArchive = Archive<u8, TestKey, (), ()>;
 
     #[test]
     fn active_ids_preserve_ascending_rank_across_word_boundaries() {
@@ -5424,7 +5513,7 @@ mod tests {
         let leaf = insert(&mut archive, Some(middle), [1, 2, 3, 7], vec![0, 1, 2]);
         let arrival = insert(&mut archive, None, [0, 2, 3, 4], vec![9]);
         let dispatched = archive
-            .splice_tail_for_campaign(arrival, MAX_SMB_COMPLETION_ACTIONS, 8)
+            .splice_tail_for_campaign(arrival, MAX_COMPLETION_ACTIONS, 8)
             .expect("dispatch-time splice");
         assert_eq!((dispatched.donor_id, dispatched.leaf_id), (root, leaf));
         assert_eq!(dispatched.actions, vec![1, 2]);
@@ -5437,7 +5526,7 @@ mod tests {
         let later = insert(&mut archive, Some(leaf), [1, 2, 3, 8], vec![0, 1, 2, 3]);
         assert_eq!(
             archive
-                .splice_tail_for_campaign(arrival, MAX_SMB_COMPLETION_ACTIONS, 8)
+                .splice_tail_for_campaign(arrival, MAX_COMPLETION_ACTIONS, 8)
                 .map(|splice| splice.actions),
             Some(vec![1, 2, 3]),
             "a later admission may advance the current donor frontier"
@@ -5456,7 +5545,7 @@ mod tests {
         );
         assert!(
             archive
-                .splice_tail_for_campaign(leaf, MAX_SMB_COMPLETION_ACTIONS, 8)
+                .splice_tail_for_campaign(leaf, MAX_COMPLETION_ACTIONS, 8)
                 .is_none(),
             "the deepest entry has no deeper cell-mate"
         );
@@ -5473,7 +5562,7 @@ mod tests {
             let mut rand = RomuDuoJrRand::with_seed(seed);
             for _ in 0..128 {
                 let (id, draw) = archive
-                    .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                    .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                     .expect("selection under a shallow key");
                 assert!(id < keys.len());
                 archive.record_selection(id, &draw);
@@ -5516,7 +5605,7 @@ mod tests {
                     u8::try_from(index % 256).expect("input byte"),
                 ],
             };
-            let key = SmbArchiveKey {
+            let key = TestKey {
                 world: *world,
                 level: *level,
                 progress: *progress,
@@ -5568,7 +5657,7 @@ mod tests {
         let mut cell_draws = 0_u64;
         for _ in 0..900 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("walk selection");
             if draw.path != SelectorPath::GroupWalk {
                 continue;
@@ -5620,7 +5709,7 @@ mod tests {
         let mut fell_through = 0;
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
             if draw.path == SelectorPath::GroupWalk {
                 assert_eq!(id, 2, "cell draws must fall through to the 124 band");
@@ -5638,7 +5727,7 @@ mod tests {
         let mut upper_band_seen = false;
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection after reset");
             if draw.path == SelectorPath::GroupWalk && (id == 0 || id == 1) {
                 upper_band_seen = true;
@@ -5681,7 +5770,7 @@ mod tests {
         let mut walks = 0_u64;
         for _ in 0..4_096 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("energy selection");
             if draw.path != SelectorPath::GroupWalk {
                 continue;
@@ -5713,7 +5802,7 @@ mod tests {
             let input = Input {
                 actions: vec![0; usize::from(index) + 1],
             };
-            let key = SmbArchiveKey {
+            let key = TestKey {
                 world: 1,
                 level: 0,
                 progress: 144,
@@ -5775,7 +5864,7 @@ mod tests {
         let mut walks = 0_u64;
         for _ in 0..4_096 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("frontier selection");
             if draw.path != SelectorPath::GroupWalk {
                 continue;
@@ -5819,7 +5908,7 @@ mod tests {
         let mut reset_seen = false;
         for _ in 0..64 {
             let (_, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection under a retired class");
             if draw.path == SelectorPath::GroupWalk {
                 if draw.counter_reset {
@@ -5849,7 +5938,7 @@ mod tests {
         let mut fell_through = 0;
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
             if draw.path == SelectorPath::GroupWalk {
                 fell_through += 1;
@@ -5887,7 +5976,7 @@ mod tests {
         let mut reset_seen = false;
         for _ in 0..256 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("selection");
             if draw.path == SelectorPath::GroupWalk {
                 assert!(
@@ -5917,7 +6006,7 @@ mod tests {
         let mut cell_draws = 0;
         for _ in 0..256 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
             match draw.path {
                 SelectorPath::GroupWalk => {
@@ -5962,7 +6051,7 @@ mod tests {
         let mut slid = false;
         for _ in 0..64 {
             let (id, draw) = archive
-                .select_parent(&mut rand, MAX_SMB_COMPLETION_ACTIONS)
+                .select_parent(&mut rand, MAX_COMPLETION_ACTIONS)
                 .expect("concentrated selection");
             if draw.path == SelectorPath::GroupWalk {
                 assert_eq!(id, 0, "the only unexhausted member must be sampled");
@@ -5976,10 +6065,10 @@ mod tests {
         assert!(slid);
     }
 
-    type ChordArchive = Archive<ButtonChord, SmbArchiveKey, (), ()>;
+    type ChordArchive = Archive<TestAction, TestKey, (), ()>;
 
-    fn probe_key(world: u8, level: u8, progress: u16, vertical: u8) -> SmbArchiveKey {
-        SmbArchiveKey {
+    fn probe_key(world: u8, level: u8, progress: u16, vertical: u8) -> TestKey {
+        TestKey {
             world,
             level,
             progress,
@@ -5995,19 +6084,19 @@ mod tests {
     fn chain_insert(
         archive: &mut ChordArchive,
         parent: Option<usize>,
-        prefix: &Input<ButtonChord>,
+        prefix: &Input<TestAction>,
         buttons: u8,
         hold: u8,
-        key: SmbArchiveKey,
-    ) -> (Option<usize>, Input<ButtonChord>) {
+        key: TestKey,
+    ) -> (Option<usize>, Input<TestAction>) {
         let mut input = prefix.clone();
-        input.actions.push(ButtonChord::new(buttons, hold));
+        input.actions.push(TestAction::new(buttons, hold));
         let id = archive
             .insert(
                 parent,
                 0,
                 ArchiveCandidate {
-                    suffix: vec![ButtonChord::new(buttons, hold)],
+                    suffix: vec![TestAction::new(buttons, hold)],
                     key,
                     milestones: (),
                 },
@@ -6019,7 +6108,7 @@ mod tests {
 
     #[test]
     fn time_in_group_counts_from_the_recorded_coarse_transition() {
-        let mut archive = ChordArchive::new(crate::smb::archive::chord_time);
+        let mut archive = ChordArchive::new(TestAction::duration);
         let genesis = archive
             .insert(
                 None,
@@ -6084,7 +6173,7 @@ mod tests {
         // Three routes into one slot. The first two are short in actions and
         // long in frames; the third is longer in actions and much shorter in
         // frames, which is exactly the collision the group clock cares about.
-        let mut archive = ChordArchive::new(crate::smb::archive::chord_time);
+        let mut archive = ChordArchive::new(TestAction::duration);
         let genesis = archive
             .insert(
                 None,

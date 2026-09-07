@@ -30,6 +30,19 @@ Linux:
 nix run .#guest-images -- --output "$PWD/guest-output"
 ```
 
+The pinned BusyBox source is also available as a standalone flake package for
+reproducible image preparation and CI reuse:
+
+```sh
+nix build .#busybox-source --no-link --print-out-paths
+```
+
+The resulting store path is the hash-verified `busybox-1.38.0.tar.bz2` source
+from the same pin used by the guest image builder. NES acceptance fetches that
+archive from Buildroot's mirror, with the Nix package as a fallback, and checks
+the same lock-file SHA-256 before building. An upstream download outage therefore
+does not change the accepted source bytes.
+
 ## Components
 
 - `linux/` builds the pinned kernel and workload-specific initramfs images.
@@ -39,8 +52,10 @@ nix run .#guest-images -- --output "$PWD/guest-output"
   `/dev/harmony`.
 - `sdk/` provides the no-std event, state, assertion, lifecycle, and entropy
   hooks used by guest payloads.
-- `play-agent/` runs the headless NES workload and publishes its state through
-  the SDK. `tetanes-agent/` is the arm64 TetaNES payload.
+- `workloads/nes-guest/` builds the headless NES workload and publishes its
+  state through the SDK. `workloads/tetanes-guest/` is the arm64 TetaNES
+  payload. The historical `linux/build-*-game-image.sh` entry points remain
+  as compatibility launchers for the package-owned recipes.
 
 The guest transport is synchronous and serialized by the kernel driver. Guest
 entropy comes from the host-provided seeded service; the compatibility library

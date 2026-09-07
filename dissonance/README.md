@@ -1,35 +1,13 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+# Dissonance
 
-# dissonance
+Dissonance is a standalone workspace for deterministic exploration. Its `searcher`
+crate owns archive retention, deterministic campaign scheduling, rollout mechanics,
+input mutation machinery, stream recording, and replay.
 
-dissonance is a standalone workspace for deterministic search over a machine
-boundary. It is separate from the consonance workspace so target execution,
-search policy, and hardware-backed control remain independently testable.
-
-## Workspace crates
-
-- `machine/` defines the snapshot, branch, replay, run, and read interface and
-  provides the native QuickNES adapter used by the NES workloads.
-- `searcher/` contains the game-neutral archive, campaign coordinator,
-  selection, mutation, worker scheduling, recording, and replay code. Its SMB
-  and Nova modules supply target-specific observations and policies.
-
-The generic search layer sees actions, observations, snapshots, ordered archive
-keys, and opaque policy values. Game addresses, setup sequences, progress
-interpretation, and state preferences belong to the workload adapters.
-
-## Running checks
+Workload packages implement the search interfaces with typed actions, observations,
+keys, and snapshots. The NES package and machine drivers live under `../workloads`.
 
 ```sh
 cargo test --manifest-path dissonance/Cargo.toml
 cargo clippy --manifest-path dissonance/Cargo.toml --all-targets -- -D warnings
 ```
-
-The `smb-*` and `nova-*` binaries run campaigns or replay recorded streams.
-They require the workload ROM and the matching QuickNES core. Campaign output
-contains a recorded stream and checkpoint so a completed run can be replayed
-without re-running the search decisions.
-
-`searcher/src/nova/README.md` documents the source-built Nova workload and its
-input and observation map. `machine/README.md` and `searcher/README.md`
-describe the reusable interfaces.

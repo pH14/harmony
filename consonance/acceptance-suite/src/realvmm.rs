@@ -28,7 +28,7 @@ use vmm_core::corpus::CorpusMachine;
 use vmm_core::vendor::x86::bringup::boot_patched_corpus;
 
 /// 256 MiB of guest RAM — the size the C1 payloads were validated under, and
-/// what `consonance/vmm-core/tests/box_corpus.rs` boots them with. Kept
+/// what `consonance/acceptance-tests/tests/box_corpus.rs` boots them with. Kept
 /// identical so the two entry points compare the same quantity.
 const GUEST_RAM_LEN: usize = 256 << 20;
 

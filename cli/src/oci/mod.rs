@@ -8,10 +8,7 @@
 //! digest. Identical inputs produce an identical digest; that claim is
 //! ISA-scoped (docs/DETERMINISM.md §4).
 
-mod bundle;
-mod cache;
-mod cpio;
-mod image;
+use oci_support::{bundle, cache, image};
 mod runner;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod watchdog;

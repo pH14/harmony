@@ -16,6 +16,16 @@ members = ["cli", "consonance/*"]
 exclude = [
   "consonance/harmony-linux",
   "dissonance",
+  "workloads/nes",
+  "workloads/tools",
+  "workloads/nes-machine",
+  "workloads/nes-protocol",
+  "workloads/nes-guest",
+  "workloads/tetanes-guest",
+  "workloads/guest-image",
+  "workloads/fault-policy",
+  "workloads/fault-sdk",
+  "workloads/oci",
 ]
 
 [workspace.package]

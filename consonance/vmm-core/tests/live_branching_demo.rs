@@ -493,7 +493,7 @@ fn run_fork(
     }
     let (outcome, _) = drive(&mut vmm, None);
     ForkResult {
-        hash: vmm.state_hash(),
+        hash: vmm.state_hash().unwrap(),
         components: vmm.state_components(),
         outcome,
     }

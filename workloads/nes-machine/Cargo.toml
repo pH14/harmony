@@ -1,0 +1,23 @@
+[package]
+name = "machine"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace]
+
+[features]
+test-loopback = []
+consonance = [
+    "dep:control-proto",
+    "dep:consonance-client",
+]
+
+[dependencies]
+consonance-client = { path = "../../consonance/client", version = "=0.1.0", features = ["in-process"], optional = true }
+nes-protocol = { path = "../nes-protocol", version = "=0.1.0" }
+# Pinned for reproducibility; upgrade deliberately.
+libc = "=0.2.189"
+serde = { version = "=1.0.228", features = ["derive"] }
+sha2 = "=0.10.9"
+control-proto = { path = "../../consonance/control-proto", version = "=0.1.0", optional = true }

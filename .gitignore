@@ -25,3 +25,8 @@ spikes/
 docs/QEMU-TCG-EXACT-BRANCH-CLOCK-SPIKE.md
 docs/MACOS-M3-BACKEND-ALTERNATIVES.md
 flake.nix
+
+# Standalone workload crate build output.
+/workloads/**/target/
+/workloads/**/build/
+__pycache__/

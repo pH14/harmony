@@ -22,7 +22,7 @@ proptest! {
         let mut m1 = factory.spawn(seed);
         let mut m2 = factory.spawn(seed);
 
-        prop_assert_eq!(m1.state_hash(), m2.state_hash(), "fresh spawns must match");
+        prop_assert_eq!(m1.state_hash().unwrap(), m2.state_hash().unwrap(), "fresh spawns must match");
 
         let mut t = 0u64;
         while t < limit {
@@ -31,7 +31,7 @@ proptest! {
             let o2 = m2.run_to(t).unwrap();
             prop_assert_eq!(o1, o2);
             prop_assert_eq!(m1.work(), m2.work());
-            prop_assert_eq!(m1.state_hash(), m2.state_hash(), "checkpoint {} differs", t);
+            prop_assert_eq!(m1.state_hash().unwrap(), m2.state_hash().unwrap(), "checkpoint {} differs", t);
             if o1 == RunOutcome::Halted {
                 break;
             }
@@ -43,7 +43,7 @@ proptest! {
         prop_assert_eq!(f1, RunOutcome::Halted);
         prop_assert_eq!(f2, RunOutcome::Halted);
         prop_assert_eq!(m1.work(), m2.work());
-        prop_assert_eq!(m1.state_hash(), m2.state_hash(), "final state differs");
+        prop_assert_eq!(m1.state_hash().unwrap(), m2.state_hash().unwrap(), "final state differs");
     }
 
     #[test]

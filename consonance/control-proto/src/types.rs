@@ -8,21 +8,21 @@
 //! [`mod@crate::codec`].
 
 /// One run's **reproducer** — the recorded artifact (entropy, scheduling,
-/// payload, and faults) that reconstitutes its environment — carried as an
+/// payload, and service answers) that reconstitutes its environment — carried as an
 /// **opaque, versioned blob**. R2 is schema-blind: it never parses these
-/// bytes (their structure is `environment::EnvSpec`'s contract). `blob_version`
+/// bytes (their structure is `environment::input_spec::InputSpec`'s contract). `blob_version`
 /// lets the backend answer [`BadEnvVersion`](crate::ControlError::BadEnvVersion)
 /// without the codec ever validating it (the codec carries any version through).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Reproducer {
-    /// The `EnvSpec` blob-format version (validated by the backend, not the codec).
+    /// The `InputSpec` blob-format version (validated by the backend, not the codec).
     pub blob_version: u16,
-    /// The opaque serialized `EnvSpec`.
+    /// The opaque serialized `InputSpec`.
     pub bytes: Vec<u8>,
 }
 
-/// The opaque resolution of one [`Decision`](StopReason::Decision), carried
-/// schema-blind. Its structure is `environment::Answer`'s contract; the backend
+/// The opaque answer to one [`Decision`](StopReason::Decision), carried
+/// schema-blind. Its structure is `environment::channel::Answer`'s contract; the backend
 /// checks it for admissibility before staging, never the codec.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Answer(pub Vec<u8>);
@@ -51,13 +51,26 @@ pub struct SnapId(pub u64);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct DecisionId(pub u64);
 
-/// Decision-class discriminants, frozen to mirror `environment::DecisionClass`
-/// (conventions rule 2 — defined locally, not imported). [`StopMask::arm`] takes
-/// one of these as its `class_bit` and sets bit `1 << class_bit`; both crates
-/// encode the identical bit so the armed-class set can never diverge. The numbers
-/// are task 24's `DecisionClass` enum (`1..=6`, plus task 73's `Buggify` = `7`)
-/// and never move — the `class_bit_mirrors_decision_class` test pins them against
-/// the real enum so they cannot drift apart.
+/// A response to one specific outstanding service decision.
+///
+/// The control plane carries the complete decision identity back with the
+/// opaque answer. This lets the server reject a delayed or retried response
+/// instead of applying it to a later decision that happens to be pending.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Resolution {
+    /// The deterministic moment at which the decision surfaced.
+    pub vtime: Moment,
+    /// The package-owned service namespace.
+    pub service: u16,
+    /// The package-owned request identity.
+    pub id: DecisionId,
+    /// The opaque service answer.
+    pub answer: Answer,
+}
+
+/// Frozen run-stop discriminants owned by this control contract.
+/// [`StopMask::arm`] sets bit `1 << class_bit`; workload adapters translate
+/// their service questions into these stable wire categories.
 pub mod class_bit {
     /// `DecisionClass::Entropy` — the guest pulled entropy.
     pub const ENTROPY: u16 = 1;
@@ -101,10 +114,8 @@ pub mod class_bit {
 /// `StopMask::NONE` runs an SDK guest straight through to the terminal.
 ///
 /// Bit layout is the integrator-pinned mapping: `bit N == (1 << class_bit)` where
-/// `class_bit` is the [`class_bit`] — the `environment::DecisionClass` discriminant
-/// for decision classes (1..=6, plus 7 reserved for buggify), and standalone
-/// constants (≥ 8) for the SDK stops. The same bit is computed in both crates so
-/// the armed-class set can never diverge.
+/// `class_bit` is one of the frozen [`class_bit`] constants. The control server
+/// and its clients use this mapping for service decisions and SDK stops.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct StopMask(pub u32);
 
@@ -180,15 +191,16 @@ pub enum Request {
     /// Restore verbatim — the reproduce / determinism-gate path →
     /// [`Unit`](Reply::Unit).
     Replay(SnapId),
-    /// Advance the VM. `resolve` answers the immediately-prior
-    /// [`Decision`](StopReason::Decision); a `resolve` with no outstanding
-    /// decision is a loud [`ResolveWithoutDecision`](crate::ControlError::ResolveWithoutDecision),
+    /// Advance the VM. `resolve` answers the specifically identified
+    /// immediately-prior [`Decision`](StopReason::Decision); a mismatched or
+    /// absent outstanding decision is a loud
+    /// [`ResolveWithoutDecision`](crate::ControlError::ResolveWithoutDecision),
     /// never silently dropped. Returns a [`Stop`](Reply::Stop).
     Run {
         /// When and on which classes to stop.
         until: StopConditions,
-        /// The staged answer to the prior decision, if any.
-        resolve: Option<Answer>,
+        /// The staged answer and full identity of the prior decision, if any.
+        resolve: Option<Resolution>,
     },
     /// Canonical state digest → [`Hash`](Reply::Hash).
     Hash {
@@ -363,7 +375,8 @@ pub enum Reply {
     ///
     /// (The pre-127 taint-free bare-handle reply — wire tag 2, `Reply::SnapId`
     /// — is retired: it carried no cut, so it could not honor the seal-evidence
-    /// binding. `APP_PROTOCOL_VERSION` 8 gates the reshape at `hello`.)
+    /// binding. This snapshot shape was introduced in application protocol 8;
+    /// current peers negotiate the later `APP_PROTOCOL_VERSION`.)
     Snapshot {
         /// The pool-wide snapshot handle.
         id: SnapId,

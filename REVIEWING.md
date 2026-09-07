@@ -31,6 +31,17 @@ or machine-readable contracts change. Identify every producer and consumer,
 make version behavior explicit, and verify that the relevant golden or
 round-trip checks observe the change.
 
+## Semantic ownership
+
+Use this lens when behavior moves between an execution core, a contract crate,
+the Consonance client, a workload package, or a composition application. A
+dependency-boundary check confirms that the crate graph has the intended shape;
+this lens checks that behavior placed in an otherwise correctly classified
+crate still belongs there. Identify the mechanism being changed, its consumer,
+and the snapshot/replay contract that observes its state or output. Report
+scenarios where an interface-owned rule has leaked into an adapter or where a
+workload-specific policy has become part of a reusable core.
+
 ## Unsafe code
 
 Use this lens whenever `unsafe` code or one of its assumptions changes. Check

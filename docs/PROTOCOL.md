@@ -47,6 +47,27 @@ errors. A `Run` returns a guest outcome such as a deadline, quiescence, crash,
 surfaced decision, snapshot point, or assertion. Protocol and machine failures
 are reported separately from these outcomes.
 
+A package service uses SDK opcode 3 with a little-endian namespace (`u16`),
+request identity (`u64`), and opaque payload. Namespaces 1–3 are reserved for
+platform supplies. Packages assign identities that are unique within a service
+at a given execution moment.
+
+A host handler can answer immediately or request an external decision. In the
+latter case, the guest remains stopped and `Run` returns `Decision`, even with
+an empty stop mask. Its `ctx` contains the namespace followed by the request
+payload. The next `Run.resolve` carries the surfaced V-time, namespace, and
+request identity together with the answer, so a delayed or retried resolution
+cannot answer a later decision. A matching resolution's byte zero alone selects
+nominal behavior; byte one followed by data supplies a package response. Invalid
+or mismatched resolutions leave the request pending. Snapshots require the
+request to be resolved; restoring an earlier snapshot replaces it.
+
+Recorded answers carry the moment, namespace, and request identity. Replay
+supplies them without invoking the external handler. Tentative handler state
+changes are committed only for immediate answers, so waiting for an external
+answer cannot change the replay state. A regression test compares complete
+state hashes and guest response bytes across this path.
+
 ## Observation plane
 
 The observation operations are:
@@ -73,7 +94,10 @@ current server implements the whole-state digest. An unavailable scope returns
 
 ## Intervention plane
 
-`Perturb` stages a host-plane fault at a `Moment`. `Exec` injects an interactive
+`Perturb` stages a bounded mechanical effect at a `Moment`: memory write, memory
+XOR, or interrupt delivery. Protocol version 11 and input format version 5 bind
+this vocabulary to the negotiated contract. Workload fault tooling translates
+its fault definitions into these operations. `Exec` injects an interactive
 serial command and runs to a completion marker or deadline. Each operation has
 an explicit recording policy.
 

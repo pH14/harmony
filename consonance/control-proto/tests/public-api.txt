@@ -99,7 +99,7 @@ pub control_proto::Request::RecordedEnv
 pub control_proto::Request::Regs
 pub control_proto::Request::Replay(control_proto::SnapId)
 pub control_proto::Request::Run
-pub control_proto::Request::Run::resolve: core::option::Option<control_proto::Answer>
+pub control_proto::Request::Run::resolve: core::option::Option<control_proto::Resolution>
 pub control_proto::Request::Run::until: control_proto::StopConditions
 pub control_proto::Request::SdkEvents
 pub control_proto::Request::SdkEvents::offset: u32
@@ -162,6 +162,11 @@ pub const control_proto::RegsView::VERSION: u16
 pub struct control_proto::Reproducer
 pub control_proto::Reproducer::blob_version: u16
 pub control_proto::Reproducer::bytes: alloc::vec::Vec<u8>
+pub struct control_proto::Resolution
+pub control_proto::Resolution::answer: control_proto::Answer
+pub control_proto::Resolution::id: control_proto::DecisionId
+pub control_proto::Resolution::service: u16
+pub control_proto::Resolution::vtime: control_proto::Moment
 pub struct control_proto::SnapId(pub u64)
 pub struct control_proto::StopConditions
 pub control_proto::StopConditions::deadline: core::option::Option<control_proto::Moment>

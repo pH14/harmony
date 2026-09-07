@@ -10,6 +10,7 @@ name = "harmony"
 path = "src/main.rs"
 
 [dependencies]
+nes-workload = { version = "=0.1.0", path = "../workloads/nes", features = ["consonance"] }
 # CLI dispatch (whitelist: clap is bins-only; this crate is a binary).
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
@@ -17,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
+oci-support = { path = "../workloads/oci", version = "=0.1.0" }
 vmm-core = { path = "../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../consonance/vmm-backend", version = "0.1.0" }
 
