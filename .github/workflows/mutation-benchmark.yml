@@ -1,0 +1,105 @@
+name: Mutation performance benchmark
+
+on:
+  push:
+    branches: [codex/mutation-benchmark]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired:
+    name: paired shard ${{ matrix.shard }}/16
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    env:
+      CARGO_TERM_COLOR: never
+      SOURCE_SHA: 2c1e3ecc21ceef42b804ec371ec1014f029ae736
+      BASE_SHA: 3b9d5b1879d0aba9fb662f8b64cb20a7b5144a0b
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+          path: source
+      - name: Install identical toolchain and tools
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.143
+      - name: Prepare immutable workload
+        working-directory: source
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff "$BASE_SHA"...HEAD > "$RUNNER_TEMP/benchmark.diff"
+          # Available to both scenarios; only the new scenario selects it.
+          cat >> Cargo.toml <<'EOF'
+
+          [profile.mutants]
+          inherits = "test"
+          debug = 0
+          EOF
+          mkdir -p "$RUNNER_TEMP/benchmark"
+          git rev-parse HEAD > "$RUNNER_TEMP/benchmark/source-sha.txt"
+          sha256sum "$RUNNER_TEMP/benchmark.diff" > "$RUNNER_TEMP/benchmark/diff-sha256.txt"
+          lscpu > "$RUNNER_TEMP/benchmark/cpu.txt"
+          cargo mutants --list --json --no-shuffle --in-diff "$RUNNER_TEMP/benchmark.diff" > "$RUNNER_TEMP/benchmark/mutants.json"
+      - name: Run old and new configurations on the same runner
+        working-directory: source
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import time
+
+          shard = int(os.environ["SHARD"])
+          root = Path(os.environ["RUNNER_TEMP"]) / "benchmark"
+          # Each invocation builds in a new scratch tree with no target cache.
+          # Counterbalance shared registry/OS cache effects across paired jobs.
+          order = ["old", "new"] if shard % 2 == 0 else ["new", "old"]
+          results = []
+          for variant in order:
+              output = root / variant
+              output.mkdir()
+              env = dict(os.environ, CARGO_INCREMENTAL="0" if variant == "old" else "1")
+              argv = [
+                  "cargo", "mutants", "--no-shuffle",
+                  "--sharding", "slice" if variant == "old" else "round-robin",
+                  "--in-diff", str(Path(os.environ["RUNNER_TEMP"]) / "benchmark.diff"),
+                  "--shard", f"{shard}/16", "--minimum-test-timeout=180",
+                  "--output", str(output),
+                  "--cargo-test-arg=--profile", "--cargo-test-arg=mutants",
+              ]
+              if variant == "new":
+                  argv += ["--profile", "mutants"]
+              print(f"Starting {variant} shard {shard}: {argv}", flush=True)
+              started = time.monotonic()
+              with (output / "console.log").open("w") as log:
+                  result = subprocess.run(argv, env=env, stdout=log, stderr=subprocess.STDOUT)
+              elapsed = time.monotonic() - started
+              results.append(dict(variant=variant, shard=shard, seconds=elapsed,
+                                  exit_code=result.returncode, argv=argv,
+                                  incremental=env["CARGO_INCREMENTAL"]))
+              (root / "timings.json").write_text(json.dumps(dict(
+                  source=os.environ["SOURCE_SHA"], base=os.environ["BASE_SHA"],
+                  order=order, results=results), indent=2))
+              print(f"Finished {variant} shard {shard}: {elapsed:.1f}s, exit {result.returncode}", flush=True)
+          raise SystemExit(1 if any(r["exit_code"] != 0 for r in results) else 0)
+      - name: Upload paired timings and mutation outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-benchmark-${{ matrix.shard }}
+          path: ${{ runner.temp }}/benchmark
+          if-no-files-found: error
+          retention-days: 14
