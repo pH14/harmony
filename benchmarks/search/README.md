@@ -63,6 +63,7 @@ platform measurements must not be interpreted as zero.
 | Manifest | Purpose |
 | --- | --- |
 | `qualification.json` | Six small cases: all five games plus whole-game Nova configuration. Full stream/checkpoint replay and twice-repeated witness replay; 500 executions per case. |
+| `ci.json` | Source-built Nova (level and whole-game origins) and STB through the common runner, with full small-campaign replay and a frame cap. No licensed commercial ROM is used. |
 | `pilot.json` | Three exploratory seeds on SMB, Nova level 1 and whole game, Metal Man, Metroid new game and STB Hard. |
 | `evaluation.json` | Five seeds across SMB, five Nova level fixtures plus whole-game Nova, all eight MM2 Robot Master stages, Metroid new game, and STB Easy/Fair/Hard. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
@@ -183,8 +184,9 @@ python3 scripts/check-dependency-boundaries.py
 The runner tests plant failures, timeouts, disk overuse, changed assets/policies,
 missing cells and publication leaks. The engine's generic continuation fixture
 requires actual reuse and memory pressure before comparing live/replay results.
-Licensed-ROM qualification runs locally; it is not skipped code presented as a
-passing CI test.
+Licensed-ROM qualification runs locally. CI also builds Nova and STB from pinned
+sources and exercises the common binary, runner, full campaign replay and compact
+export; its short qualification budgets do not claim whole-game completion.
 
 For comparisons across different suffix lengths, set `search.frames` to a
 positive admitted-frame budget as well as an execution ceiling and wall limit.

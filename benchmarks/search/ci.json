@@ -1,0 +1,57 @@
+{
+  "format": "harmony-search-eval-v1",
+  "id": "nes-source-built-ci-v1",
+  "seeds": [
+    1
+  ],
+  "workers": [
+    2
+  ],
+  "memory_mib": [
+    512
+  ],
+  "search": {
+    "executions": 500,
+    "actions": 8192,
+    "window": 1,
+    "wall_seconds": 120,
+    "selector": "room_cell_uniform_128_energy_progress_cheapest_count_v1:3,6,12,2",
+    "suffix": "one_to_six_within_3_longest_actions_full_hold",
+    "mixture": "energy_splice_continuation_v1:6",
+    "verification": "campaign",
+    "frames": 50000
+  },
+  "cases": [
+    {
+      "id": "nova-level-1",
+      "game": "nova",
+      "level": 1,
+      "origin": "level 1 gameplay genesis",
+      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+      "search": {
+        "actions": 512
+      }
+    },
+    {
+      "id": "stb-hard",
+      "game": "stb",
+      "ai": "hard",
+      "origin": "power-on local match, default stage, native Hard AI",
+      "rom_sha256": "6f80d56ce0b242a4faceafafea321feb1c364ab8e7937646e8580ae9289a4ec3",
+      "search": {
+        "actions": 512
+      }
+    },
+    {
+      "id": "nova-full",
+      "game": "nova",
+      "level": 1,
+      "origin": "power-on level 1 genesis; all 40 level flags required",
+      "rom_sha256": "9107be62a08a0ae51a01f900bd18a95a52fe043f53e9cae4a64d1e8e73114b08",
+      "search": {
+        "actions": 8192
+      },
+      "whole_game": true
+    }
+  ]
+}
